@@ -26,7 +26,7 @@ public enum DeadReason: String, Codable, Sendable {
 public enum StartIn: String, Codable, Sendable {
     case plan, impl
 
-    var column: Column { self == .plan ? .plan : .impl }
+    public var column: Column { self == .plan ? .plan : .impl }
 }
 
 // MARK: - Task (the card)

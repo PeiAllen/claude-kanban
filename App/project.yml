@@ -1,0 +1,50 @@
+# XcodeGen spec for the Orchestra.app SwiftUI target.
+#   brew install xcodegen        # one-time
+#   cd App && xcodegen generate  # produces Orchestra.xcodeproj
+#   open Orchestra.xcodeproj     # build/run in Xcode (needs full Xcode, not just CLT)
+#
+# The app links the local OrchestraCore SwiftPM library (the daemon/CLI/MCP share it) and SwiftTerm
+# for the embedded terminals.
+name: Orchestra
+options:
+  bundleIdPrefix: com.orchestra
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  OrchestraCore:
+    path: ..                       # the SwiftPM package at the repo root
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.2.0
+
+targets:
+  Orchestra:
+    type: application
+    platform: macOS
+    sources:
+      - path: .
+        excludes: ["project.yml", "README.md", "*.entitlements"]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: Orchestra
+        CFBundleDisplayName: Orchestra
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "Local-only agent orchestration board."
+    entitlements:
+      path: Orchestra.entitlements
+    dependencies:
+      - package: OrchestraCore
+        product: OrchestraCore
+      - package: SwiftTerm
+        product: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.orchestra.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
