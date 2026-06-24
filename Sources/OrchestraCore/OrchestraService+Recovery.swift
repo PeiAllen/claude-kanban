@@ -23,21 +23,16 @@ extension OrchestraService {
         guard !toRevive.isEmpty else { return }
         let cap = max(1, config.maxConcurrentRevivals)
         let grace = config.revivalGraceSeconds
-        // Bounded-concurrency drain: at most `cap` resume() calls outstanding at once.
+        // Windowed task group: keep at most `cap` resume() calls in flight (start one more each time
+        // one finishes). resume is inert until prompted, so the cap only paces process launches.
         await withTaskGroup(of: Void.self) { group in
             var iter = toRevive.makeIterator()
-            var inFlight = 0
             func startNext() {
                 guard let id = iter.next() else { return }
-                inFlight += 1
                 group.addTask { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
             }
             for _ in 0..<cap { startNext() }
-            while inFlight > 0 {
-                await group.next()
-                inFlight -= 1
-                startNext()
-            }
+            while await group.next() != nil { startNext() }
         }
     }
 
@@ -50,6 +45,9 @@ extension OrchestraService {
         let adapter = try registry.get(task.agentId)
         let grace = graceSeconds ?? config.revivalGraceSeconds
 
+        // INVARIANT: `recovering` must stay set across kill → ensure → awaitResume so that a stale
+        // SessionEnd from the killed process (and the poll's liveness reconcile) is ignored mid-revival
+        // — both gate on `!recovering.contains(id)`. Do not narrow this window.
         recovering.insert(id)
         defer { recovering.remove(id) }
 
@@ -64,11 +62,10 @@ extension OrchestraService {
         }
 
         // Recreate the session off the actor so a mass revival overlaps (and report() stays serviced).
-        let task2 = try await require(id)
         do {
             try await offActor { [sessions] in
                 _ = try sessions.kill(sessions.sessionName(id))
-                _ = try sessions.ensure(task2, argv: argv)
+                _ = try sessions.ensure(task, argv: argv)
             }
         } catch {
             return try await failResume(id, detail: "\(error)", source: source)

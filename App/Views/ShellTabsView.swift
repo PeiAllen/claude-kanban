@@ -8,18 +8,19 @@ struct ShellTabsView: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
-    @State private var windows: [String] = []
-    @State private var selected: String?
+    // Shell windows + selection live on BoardModel (keyed by task id) so they survive deselect/
+    // reselect; only the minimize toggle is transient view state.
     @State private var minimized = false
-    @State private var panelHeight: CGFloat = 220
+    private let panelHeight: CGFloat = 220
 
-    private var selectedWindow: String { selected ?? windows.first ?? "shell-1" }
+    private var windows: [String] { model.shellWindows[task.id] ?? [] }
+    private var selectedWindow: String { model.selectedShell[task.id] ?? windows.first ?? "shell-1" }
 
     var body: some View {
         VStack(spacing: 0) {
             ribbon
             if !minimized && !windows.isEmpty {
-                AgentTerminalView(session: "orchestra-\(task.id.uuidString.lowercased())", window: selectedWindow)
+                AgentTerminalView(session: task.tmuxSession, window: selectedWindow)
                     .frame(height: panelHeight)
                     .background(theme.termBg)
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
@@ -31,7 +32,7 @@ struct ShellTabsView: View {
     private var ribbon: some View {
         HStack(spacing: 4) {
             ForEach(windows, id: \.self) { w in
-                Button { selected = w } label: {
+                Button { model.selectedShell[task.id] = w } label: {
                     HStack(spacing: 4) {
                         Text("›_").font(F.mono(10))
                         Text(w).font(F.mono(10, .medium))
@@ -46,12 +47,7 @@ struct ShellTabsView: View {
             }
 
             Button {
-                _Concurrency.Task {
-                    if let w = await model.openShell(task.id) {
-                        windows.append(w)
-                        selected = w
-                    }
-                }
+                _Concurrency.Task { await model.newShell(task.id) }
             } label: {
                 Image(systemName: "plus").font(F.ui(11))
                     .foregroundColor(theme.text2)
@@ -74,15 +70,5 @@ struct ShellTabsView: View {
         .frame(height: 26)
         .background(theme.chip)
         .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
-        .onAppear {
-            if windows.isEmpty {
-                _Concurrency.Task {
-                    if let w = await model.openShell(task.id) {
-                        windows.append(w)
-                        selected = w
-                    }
-                }
-            }
-        }
     }
 }

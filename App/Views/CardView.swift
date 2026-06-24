@@ -62,24 +62,27 @@ struct CardView: View {
 
     // MARK: - Status pill
 
-    private var statusPill: some View {
+    @ViewBuilder private var statusPill: some View {
+        if isRunning || isWaiting {
+            // Live age: re-render the label once a second so "Running · 3s" actually ticks.
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                pill(theme.statusLabel(statusKey) + " · " + relativeAge(task.updatedAt, now: ctx.date))
+            }
+        } else {
+            pill(theme.statusLabel(statusKey))
+        }
+    }
+
+    private func pill(_ label: String) -> some View {
         HStack(spacing: 6) {
             BreathingDot(color: sem.dot, size: 6, active: isRunning || isWaiting)
-            Text(pillLabel)
+            Text(label)
                 .font(F.ui(10.5, .semibold))
                 .tracking(0.0525)
                 .foregroundStyle(sem.text)
         }
         .padding(.init(top: 3, leading: 7, bottom: 3, trailing: 8))
         .background(Capsule(style: .continuous).fill(sem.tint))
-    }
-
-    private var pillLabel: String {
-        let base = theme.statusLabel(statusKey)
-        if isRunning || isWaiting {
-            return base + " · " + relativeAge(task.updatedAt)
-        }
-        return base
     }
 
     // MARK: - Title
@@ -124,36 +127,23 @@ struct CardView: View {
         .padding(.top, 11)
     }
 
+    /// Right-side meta: the selected model (real data we have). The prototype's per-column meta
+    /// (plan-layer chip, edited-file path, +/− diff stat) needs fields the daemon doesn't yet plumb,
+    /// so we show the model rather than fabricate those.
     @ViewBuilder private var meta: some View {
-        switch task.column {
-        case .plan:
-            Text("Plan")
-                .font(F.mono(10.5, .semibold))
-                .foregroundStyle(theme.indigo.text)
-                .padding(.vertical, 2)
-                .padding(.horizontal, 7)
-                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(theme.indigo.tint))
-        case .impl:
-            Text(task.desc.isEmpty ? "—" : task.desc)
+        if !task.model.isEmpty {
+            Text(ModelDisplay.short(task.model))
                 .font(F.mono(10.5, .medium))
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)
                 .truncationMode(.tail)
-        case .review:
-            HStack(spacing: 3) {
-                Text("+0")
-                    .foregroundStyle(theme.green.text)
-                Text("−0")
-                    .foregroundStyle(theme.red.text)
-            }
-            .font(F.mono(10.5, .semibold))
         }
     }
 
     // MARK: - Age formatting
 
-    private func relativeAge(_ date: Date) -> String {
-        let s = Int(max(0, Date().timeIntervalSince(date)))
+    private func relativeAge(_ date: Date, now: Date = Date()) -> String {
+        let s = Int(max(0, now.timeIntervalSince(date)))
         if s < 60 { return "\(s)s" }
         let m = s / 60
         if m < 60 { return "\(m)m" }

@@ -96,7 +96,6 @@ private struct AgentChrome: View {
     let task: Task
 
     @State private var promptText: String = ""
-    @State private var shellOpen = false
 
     private var ctxColor: Color {
         if task.ctxPct >= 80 { return theme.red.dot }
@@ -121,15 +120,15 @@ private struct AgentChrome: View {
             TerminalHeader(task: task)
             BreadcrumbStrip(task: task)
 
-            AgentTerminalView(session: "orchestra-\(task.id.uuidString.lowercased())", window: "agent")
+            AgentTerminalView(session: task.tmuxSession, window: "agent")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.termBg)
 
             PromptRow(task: task, text: $promptText)
 
-            BottomStrip(task: task, shellOpen: $shellOpen)
+            BottomStrip(task: task)
 
-            if shellOpen {
+            if model.shellOpen.contains(task.id) {
                 ShellTabsView(task: task)
             }
         }
@@ -229,7 +228,7 @@ private struct BreadcrumbStrip: View {
             Rectangle().fill(theme.hair).frame(width: 0.5, height: 14)
 
             Button {
-                copy("orchestra-\(task.id.uuidString.lowercased()):agent")
+                copy("\(task.tmuxSession):agent")
             } label: {
                 Text("Copy tmux target").font(F.mono(10)).foregroundColor(theme.text2)
                     .padding(.horizontal, 10).frame(maxHeight: .infinity)
@@ -295,14 +294,10 @@ private struct BottomStrip: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
-    @Binding var shellOpen: Bool
 
     var body: some View {
         Button {
-            _Concurrency.Task {
-                _ = await model.openShell(task.id)
-                shellOpen = true
-            }
+            _Concurrency.Task { await model.newShell(task.id) }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "terminal").font(F.ui(11))

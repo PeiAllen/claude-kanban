@@ -6,6 +6,11 @@ import Foundation
 /// `archived = true`, removing the card from the board into the Done popover.
 public enum Column: String, Codable, Sendable, CaseIterable {
     case plan, impl, review
+
+    /// Human-readable column name — shared by the daemon, CLI, and app so they never drift.
+    public var displayName: String {
+        switch self { case .plan: return "Plan"; case .impl: return "Implementation"; case .review: return "Review" }
+    }
 }
 
 /// Live status pill. `dead` = the session is no longer running and the card awaits user recovery
@@ -112,6 +117,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
 
     // Card reference — the agent-facing handle ("Copy chat link" copies `ref`).
     public var shortId: String { String(id.uuidString.prefix(6)).lowercased() }
+
+    /// The card's tmux session name (`orchestra-<id>`) — the single definition clients and the
+    /// daemon share instead of re-interpolating the literal.
+    public var tmuxSession: String { "orchestra-\(id.uuidString.lowercased())" }
 
     /// orchestra://task/<shortId>-<slug>
     public func ref(slugging slug: Bool = true) -> String {
@@ -269,8 +278,10 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     public var branch: String
     public var model: String?
     public var startIn: StartIn?
-    public init(prompt: String, repo: String, branch: String, model: String? = nil, startIn: StartIn? = nil) {
+    public var agentId: String?   // which adapter to use; nil → Config.defaultAgentId
+    public init(prompt: String, repo: String, branch: String, model: String? = nil,
+                startIn: StartIn? = nil, agentId: String? = nil) {
         self.prompt = prompt; self.repo = repo; self.branch = branch
-        self.model = model; self.startIn = startIn
+        self.model = model; self.startIn = startIn; self.agentId = agentId
     }
 }

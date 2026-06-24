@@ -29,12 +29,9 @@ struct OrchestraApp: App {
         // Ensure the background daemon is installed/running, then connect.
         let life = DaemonLifecycle()
         if !life.isRunning() {
-            let orchestrad = siblingBinary("orchestrad")
-            try? life.ensureRunning(orchestradBin: orchestrad)
-            // give launchd a moment to bind the socket
-            try? await _Concurrency.Task.sleep(for: .milliseconds(400))
+            try? life.ensureRunning(orchestradBin: siblingBinary("orchestrad"))
         }
-        await model.start()
+        await model.start()   // start() retries the connect while the socket comes up
     }
 }
 

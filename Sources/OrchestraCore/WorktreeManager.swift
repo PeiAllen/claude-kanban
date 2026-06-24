@@ -73,8 +73,12 @@ public struct WorktreeManager: Sendable {
         return r?.ok ?? false
     }
 
+    /// True if the worktree has uncommitted changes. **Fails safe:** if git can't be queried we treat
+    /// the tree as dirty so `remove` (without `force`) never deletes work it couldn't verify is clean.
     func isDirty(worktree: String) -> Bool {
-        guard let r = try? Proc.run(["git", "-C", worktree, "status", "--porcelain"]) else { return false }
-        return r.ok && !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard let r = try? Proc.run(["git", "-C", worktree, "status", "--porcelain"]), r.ok else {
+            return true
+        }
+        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

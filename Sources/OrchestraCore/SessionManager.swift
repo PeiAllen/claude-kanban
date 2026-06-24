@@ -62,8 +62,6 @@ public struct SessionManager: Sendable {
         return r.ok
     }
 
-    public func isAlive(taskId: UUID) throws -> Bool { try isAlive(sessionName(taskId)) }
-
     /// Add a `shell-N` window in the worktree; returns the window name.
     @discardableResult
     public func newShellWindow(_ name: String, cwd: String) throws -> String {

@@ -25,9 +25,6 @@ public struct PathResolver: Sendable {
         return (expanded as NSString).standardizingPath
     }
 
-    /// Test/back-compat alias.
-    static func realpath(_ path: String) -> String { canonical(path) }
-
     private static func resolveExisting(_ path: String) -> String? {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
         if Darwin.realpath(path, &buf) != nil {
@@ -44,14 +41,14 @@ public struct PathResolver: Sendable {
 
     /// Resolve a repo path and assert it is allowed.
     public func resolveRepo(_ repo: String) throws -> String {
-        let real = Self.realpath(repo)
+        let real = Self.canonical(repo)
         try assertAllowed(real)
         return real
     }
 
     /// Throws `pathNotAllowed` unless `absPath` is equal to or sits under an allowlisted root.
     public func assertAllowed(_ absPath: String) throws {
-        let real = Self.realpath(absPath)
+        let real = Self.canonical(absPath)
         for root in allowedRoots where isPrefix(root, of: real) {
             return
         }

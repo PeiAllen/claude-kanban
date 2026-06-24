@@ -78,7 +78,7 @@ struct RecoveryView: View {
                         Button {
                             resuming = true
                             _Concurrency.Task {
-                                try? await model.resume(task.id)
+                                await model.resume(task.id)   // toasts on failure; card stays .dead
                                 resuming = false
                             }
                         } label: {

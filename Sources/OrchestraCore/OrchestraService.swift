@@ -65,7 +65,7 @@ public actor OrchestraService {
     // MARK: - spawn
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
-        let adapter = try registry.get("claude-code")
+        let adapter = try registry.get(input.agentId ?? config.defaultAgentId)
         // Security: reject a non-allowlisted repo BEFORE creating anything.
         let realRepo = try resolver.resolveRepo(input.repo)
         let (wt, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
@@ -107,11 +107,9 @@ public actor OrchestraService {
 
     @discardableResult
     public func move(_ id: UUID, to column: Column, source: ActivitySource = .daemon) async throws -> Task {
-        let all = await store.all()
-        let maxOrder = all.filter { $0.column == column && !$0.archived && $0.id != id }.map(\.order).max() ?? -1
-        let updated = try await store.update(id) { $0.column = column; $0.order = maxOrder + 1 }
+        let updated = try await store.move(id, to: column)
         emit(.taskUpserted(updated))
-        emitActivity(.moved, updated, source, "→ \(label(column))")
+        emitActivity(.moved, updated, source, "→ \(column.displayName)")
         return updated
     }
 
@@ -143,6 +141,7 @@ public actor OrchestraService {
             catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
         }
         let updated = try await store.update(id) { $0.status = .done; $0.archived = true }
+        lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
         emit(.taskUpserted(updated))
         emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
     }
@@ -210,17 +209,15 @@ public actor OrchestraService {
         return try resolve(TaskRef(parsing: raw), in: all)
     }
 
-    public func models() -> [String] {
-        (try? registry.get("claude-code").models()) ?? []
+    // (column display names live on `Column.displayName`)
+
+    public func models(agentId: String? = nil) -> [String] {
+        (try? registry.get(agentId ?? config.defaultAgentId).models()) ?? []
     }
 
     /// Emit a generic `.command` activity for a public verb arriving over CLI/MCP that doesn't already
     /// emit its own semantic activity (list/status/send/shell/exec/sessions).
     public func logCommand(_ verb: String, ref task: Task?, source: ActivitySource) {
         emitActivity(.command, task, source, "\(verb)\(task.map { " \($0.shortId)" } ?? "")")
-    }
-
-    private func label(_ c: Column) -> String {
-        switch c { case .plan: return "Plan"; case .impl: return "Implementation"; case .review: return "Review" }
     }
 }

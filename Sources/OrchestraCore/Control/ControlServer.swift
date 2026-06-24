@@ -153,19 +153,13 @@ public final class ControlServer: @unchecked Sendable {
         for c in conns where !c.write(line) { removeSubscriber(c); c.close() }
     }
 
-    private func eventNotification(_ event: Event) -> RPCResponse {
-        // Encode as a notification: method "event", params = the Event.
-        // Reuse RPCResponse-with-id=nil shape isn't a notification; build a request-shaped frame.
-        RPCResponse(id: nil, result: (try? JSONValue(encodable: EventEnvelope(event: event))), error: nil)
+    /// A proper JSON-RPC notification: `{method:"event", params:<Event>}`.
+    private func eventNotification(_ event: Event) -> RPCNotification {
+        RPCNotification(method: "event", params: try? JSONValue(encodable: event))
     }
 
     private func addSubscriber(_ conn: Connection) { lock.withLock { subscribers[conn.fd] = conn } }
     private func removeSubscriber(_ conn: Connection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
-}
-
-/// Wraps an Event so a notification frame is self-describing on the wire.
-struct EventEnvelope: Codable, Sendable {
-    var event: Event
 }
 
 /// A single client connection with a serialized writer.

@@ -22,6 +22,23 @@ struct RPCResponse: Codable, Sendable {
     var error: RPCError?
 }
 
+/// A server→client notification (no id), used for the live event stream: `{method:"event", params:<Event>}`.
+struct RPCNotification: Encodable, Sendable {
+    var jsonrpc = "2.0"
+    var method: String
+    var params: JSONValue?
+}
+
+/// What a client decodes off the wire — either a response (`id` + `result`/`error`) or a notification
+/// (`method` + `params`). One shape so the read loop doesn't have to guess-and-retry.
+struct WireMessage: Decodable, Sendable {
+    var id: Int?
+    var method: String?
+    var params: JSONValue?
+    var result: JSONValue?
+    var error: RPCError?
+}
+
 enum RPCCodec {
     static let encoder: JSONEncoder = {
         let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e

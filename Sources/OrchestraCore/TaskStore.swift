@@ -83,12 +83,28 @@ public actor TaskStore {
     public func create(_ task: Task) throws -> Task {
         ensureLoaded()
         var t = task
-        let maxOrder = tasks.filter { $0.column == t.column && !$0.archived }.map(\.order).max() ?? -1
-        t.order = maxOrder + 1
+        t.order = nextOrder(in: t.column)
         t.updatedAt = Date()
         tasks.append(t)
         try persist()
         return t
+    }
+
+    /// Next free order slot at the end of a column (excluding `ignoring`, e.g. the card being moved).
+    public func nextOrder(in column: Column, ignoring: UUID? = nil) -> Int {
+        ensureLoaded()
+        let maxOrder = tasks
+            .filter { $0.column == column && !$0.archived && $0.id != ignoring }
+            .map(\.order).max() ?? -1
+        return maxOrder + 1
+    }
+
+    /// Move a card to a column, appending it at the end of that column's order. One place owns the
+    /// ordering invariant.
+    @discardableResult
+    public func move(_ id: UUID, to column: Column) throws -> Task {
+        let order = nextOrder(in: column, ignoring: id)
+        return try update(id) { $0.column = column; $0.order = order }
     }
 
     /// Apply a mutation to the task with `id`, persist, and return the updated task.

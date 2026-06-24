@@ -11,10 +11,12 @@ extension OrchestraService {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
 
-        // Snapshot guard: stamped statusLine reports (seq>0) are coalesced/dropped when stale.
-        // Hook reports (seq==0) are naturally ordered and always apply.
-        let snapshotAllowed = patch.seq == 0 || patch.seq > (lastSeqStore[id] ?? 0)
-        if patch.seq > 0 { lastSeqStore[id] = max(lastSeqStore[id] ?? 0, patch.seq) }
+        // Snapshot guard: stamped statusLine reports (seq>0) are coalesced/dropped when stale (an
+        // equal seq is treated as already-applied). Hook reports (seq==0) are naturally ordered and
+        // always apply. The cursor is monotonic — it never moves backward.
+        let lastSeq = lastSeqStore[id] ?? 0
+        let snapshotAllowed = patch.seq == 0 || patch.seq > lastSeq
+        if patch.seq > lastSeq { lastSeqStore[id] = patch.seq }
 
         var statusTransition: (from: AgentStatus, to: AgentStatus)? = nil
 
@@ -78,7 +80,8 @@ extension OrchestraService {
                 task.status = s
             }
         }
-        if let tp = patch.transcriptPath, !tp.isEmpty { /* transcript path tracked via sessionInfo */ _ = tp }
+        // Note: `transcriptPath` is carried on StatusReport for completeness but isn't persisted — the
+        // path is re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.
 
         // Clear dead metadata if we left .dead.
         if before.status == .dead && task.status != .dead {

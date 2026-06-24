@@ -134,18 +134,22 @@ enum ReportHelper {
 
     // MARK: bounded send
 
+    /// Send the report, returning as soon as the daemon acks OR the budget elapses — whichever is
+    /// first. (Awaiting the full budget unconditionally would make every hook block for the whole
+    /// window even when the local UDS round-trip is sub-millisecond.)
     static func boundedSend(sock: String, params: JSONValue, budgetMs: Int) async {
-        let task = _Concurrency.Task {
-            let client = ControlClient(socketPath: sock, source: .agent)
-            do { try client.connect() } catch { return }
-            _ = try? await client.call("report", params)
-            client.close()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let client = ControlClient(socketPath: sock, source: .agent)
+                do { try client.connect() } catch { return }
+                _ = try? await client.call("report", params)
+                client.close()
+            }
+            group.addTask {
+                try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs))
+            }
+            await group.next()   // first to finish: send completed, or budget tripped
+            group.cancelAll()
         }
-        // Race the send against the budget.
-        let timeout = _Concurrency.Task {
-            try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs))
-        }
-        _ = await timeout.value
-        task.cancel()
     }
 }

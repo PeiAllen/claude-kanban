@@ -12,7 +12,7 @@ struct PathResolverTests {
         let outside = base + "/outside"
         try FileManager.default.createDirectory(atPath: repos + "/myrepo", withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: outside + "/secret", withIntermediateDirectories: true)
-        return (PathResolver.realpath(base), PathResolver.realpath(repos), PathResolver.realpath(outside))
+        return (PathResolver.canonical(base), PathResolver.canonical(repos), PathResolver.canonical(outside))
     }
 
     @Test("allows a path inside an allowed root")

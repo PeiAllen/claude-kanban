@@ -1,7 +1,6 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
-import MachO
 #endif
 
 /// Load/save the daemon-owned `config.json`.

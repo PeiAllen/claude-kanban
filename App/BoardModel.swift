@@ -28,6 +28,11 @@ final class BoardModel: ObservableObject {
     @Published var showActivity = false
     @Published var spawnDefaultColumn: Column = .impl
 
+    // Per-card shell state (keyed by task id so it survives selecting away and back).
+    @Published var shellOpen: Set<UUID> = []
+    @Published var shellWindows: [UUID: [String]] = [:]
+    @Published var selectedShell: [UUID: String] = [:]
+
     // Preferences (host props in the prototype).
     @AppStorage("orch_accent") var accentRaw = Accent.blue.rawValue
     @AppStorage("orch_density") var densityRaw = Density.comfortable.rawValue
@@ -56,11 +61,10 @@ final class BoardModel: ObservableObject {
     // MARK: lifecycle
 
     func start() async {
-        do {
-            try client.connect()
-            connected = true
-        } catch {
-            connected = false
+        // Retry briefly — the daemon may still be binding its socket right after launch.
+        for _ in 0..<15 {
+            do { try client.connect(); connected = true; break }
+            catch { connected = false; try? await _Concurrency.Task.sleep(for: .milliseconds(200)) }
         }
         await refresh()
         // live event stream
@@ -109,6 +113,7 @@ final class BoardModel: ObservableObject {
         if let model { p["model"] = .string(model) }
         do {
             let t = try await client.call("spawn", .object(p)).decode(Task.self)
+            apply(.taskUpserted(t))   // show the card immediately; the event stream is idempotent
             selectedId = t.id
             toast("Spawned “\(t.title)”", sub: "\((t.repo as NSString).lastPathComponent) · \(t.branch)")
         } catch { toast("Spawn failed", sub: "\(error)", color: .red) }
@@ -128,12 +133,22 @@ final class BoardModel: ObservableObject {
     func restart(_ id: UUID) async {
         _ = try? await client.call("restart", .object(["ref": .string(id.uuidString)]))
     }
-    func resume(_ id: UUID) async throws {
-        _ = try await client.call("resume", .object(["ref": .string(id.uuidString)]))
+    func resume(_ id: UUID) async {
+        do { _ = try await client.call("resume", .object(["ref": .string(id.uuidString)])) }
+        catch { toast("Resume failed", sub: "\(error)", color: .red) }
     }
     func openShell(_ id: UUID) async -> String? {
         guard let r = try? await client.call("shell", .object(["ref": .string(id.uuidString)])) else { return nil }
         return r["window"]?.stringValue
+    }
+
+    /// Open a new shell window for a card and track it (the one place that mutates shell state).
+    func newShell(_ id: UUID) async {
+        if let w = await openShell(id) {
+            shellWindows[id, default: []].append(w)
+            selectedShell[id] = w
+            shellOpen.insert(id)
+        }
     }
     func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)

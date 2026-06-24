@@ -36,48 +36,44 @@ public enum Proc {
         p.standardOutput = outPipe
         p.standardError = errPipe
 
-        // Drain pipes concurrently to avoid deadlock on large output.
-        let outBox = DataBox(), errBox = DataBox()
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            if d.isEmpty { h.readabilityHandler = nil } else { outBox.append(d) }
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            if d.isEmpty { h.readabilityHandler = nil } else { errBox.append(d) }
-        }
-
         do {
             try p.run()
         } catch {
             throw OrchestraError.toolMissing(first)
         }
 
-        if let timeout {
-            let deadline = DispatchTime.now() + .milliseconds(Int(timeout.components.seconds * 1000 + timeout.components.attoseconds / 1_000_000_000_000_000))
-            let group = DispatchGroup()
-            group.enter()
-            DispatchQueue.global().async { p.waitUntilExit(); group.leave() }
-            if group.wait(timeout: deadline) == .timedOut {
-                p.terminate()
-                _ = group.wait(timeout: .now() + .seconds(2))
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        // Drain both pipes to EOF on background queues — avoids a pipe-buffer deadlock on large
+        // output, and each read returns once the child closes its write end (exit or terminate).
+        let outBox = DataBox(), errBox = DataBox()
+        let drained = DispatchGroup()
+        for (pipe, box) in [(outPipe, outBox), (errPipe, errBox)] {
+            drained.enter()
+            DispatchQueue.global().async {
+                box.set(pipe.fileHandleForReading.readDataToEndOfFile())
+                drained.leave()
             }
-        } else {
-            p.waitUntilExit()
         }
 
-        // Drain any remainder synchronously.
-        let outRest = (try? outPipe.fileHandleForReading.readToEnd()) ?? nil
-        let errRest = (try? errPipe.fileHandleForReading.readToEnd()) ?? nil
-        if let outRest { outBox.append(outRest) }
-        if let errRest { errBox.append(errRest) }
+        if let timeout, !waitUntilExit(p, within: timeout) {
+            p.terminate()
+            if !waitUntilExit(p, within: .seconds(2)) { kill(p.processIdentifier, SIGKILL) }
+        } else if timeout == nil {
+            p.waitUntilExit()
+        }
+        drained.wait()
 
         return ProcResult(
             stdout: String(decoding: outBox.data, as: UTF8.self),
             stderr: String(decoding: errBox.data, as: UTF8.self),
             exitCode: p.terminationStatus
         )
+    }
+
+    /// Wait for the process to exit, up to `timeout`. Returns true if it exited in time.
+    private static func waitUntilExit(_ p: Process, within timeout: Duration) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
+        return done.wait(timeout: .now() + .milliseconds(timeout.milliseconds)) == .success
     }
 
     /// Run, throwing if the exit code is non-zero (for control verbs where failure is an error).
@@ -104,5 +100,14 @@ final class DataBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _data = Data()
     func append(_ d: Data) { lock.lock(); _data.append(d); lock.unlock() }
+    func set(_ d: Data) { lock.lock(); _data = d; lock.unlock() }
     var data: Data { lock.lock(); defer { lock.unlock() }; return _data }
+}
+
+extension Duration {
+    /// Whole milliseconds (floored), for bridging to DispatchTimeInterval.
+    var milliseconds: Int {
+        let (s, attos) = (components.seconds, components.attoseconds)
+        return Int(s) * 1000 + Int(attos / 1_000_000_000_000_000)
+    }
 }

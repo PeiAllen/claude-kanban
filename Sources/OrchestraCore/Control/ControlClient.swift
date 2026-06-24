@@ -72,16 +72,17 @@ public final class ControlClient: @unchecked Sendable {
     private func readLoop() {
         let reader = LineReader(fd: fd)
         while let line = reader.next() {
-            guard !line.isEmpty else { continue }
-            guard let resp = try? RPCCodec.decoder.decode(RPCResponse.self, from: line) else { continue }
-            if let id = resp.id {
-                let cont = stateLock.withLock { pending.removeValue(forKey: id) }
-                if let cont {
-                    if let err = resp.error { cont.resume(throwing: err) }
-                    else { cont.resume(returning: resp.result ?? .null) }
+            guard !line.isEmpty,
+                  let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
+            if msg.method == "event" {
+                if let event = try? msg.params?.decode(Event.self) {
+                    stateLock.withLock { eventContinuation }?.yield(event)
                 }
-            } else if let result = resp.result, let envelope = try? result.decode(EventEnvelope.self) {
-                stateLock.withLock { eventContinuation }?.yield(envelope.event)
+            } else if let id = msg.id {
+                if let cont = stateLock.withLock({ pending.removeValue(forKey: id) }) {
+                    if let err = msg.error { cont.resume(throwing: err) }
+                    else { cont.resume(returning: msg.result ?? .null) }
+                }
             }
         }
         close()

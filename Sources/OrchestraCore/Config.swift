@@ -16,6 +16,7 @@ public struct Config: Codable, Sendable, Equatable {
     public var reposRoot: String
     public var worktreesRoot: String
     public var defaultModel: String?
+    public var defaultAgentId: String
     public var allowlist: [String]
     public var maxConcurrentRevivals: Int
     public var revivalGraceSeconds: Int
@@ -26,6 +27,7 @@ public struct Config: Codable, Sendable, Equatable {
         reposRoot: String = Config.defaultReposRoot,
         worktreesRoot: String = Config.defaultWorktreesRoot,
         defaultModel: String? = nil,
+        defaultAgentId: String = "claude-code",
         allowlist: [String] = [],
         maxConcurrentRevivals: Int = 4,
         revivalGraceSeconds: Int = 15,
@@ -35,6 +37,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.reposRoot = reposRoot
         self.worktreesRoot = worktreesRoot
         self.defaultModel = defaultModel
+        self.defaultAgentId = defaultAgentId
         self.allowlist = allowlist
         self.maxConcurrentRevivals = maxConcurrentRevivals
         self.revivalGraceSeconds = revivalGraceSeconds

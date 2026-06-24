@@ -18,8 +18,15 @@ struct SpawnSheet: View {
             : model.models
     }
 
+    /// Mirror the daemon's own worktree layout (Config.worktreePath) so the preview can't diverge.
     private var worktree: String {
-        "~/.orchestra/worktrees/\(repo)/\(branch.replacingOccurrences(of: "/", with: "-"))"
+        let root = model.config.worktreesRoot.replacingOccurrences(of: Config.home, with: "~")
+        let repoName = (repo as NSString).lastPathComponent
+        return "\(root)/\(repoName)/\(branch.replacingOccurrences(of: "/", with: "-"))"
+    }
+
+    private var canSpawn: Bool {
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !repo.isEmpty && !branch.isEmpty
     }
 
     private var cliPreview: String {
@@ -142,10 +149,11 @@ struct SpawnSheet: View {
                 } label: {
                     Text("Spawn agent").font(F.ui(12, .semibold)).foregroundColor(.white)
                         .padding(.horizontal, 16).frame(height: 32)
-                        .background(theme.accent)
+                        .background(theme.accent.opacity(canSpawn ? 1 : 0.4))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
+                .disabled(!canSpawn)
             }
             .padding(.horizontal, 19).padding(.top, 6).padding(.bottom, 17)
         }

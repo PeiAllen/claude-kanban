@@ -93,13 +93,16 @@ public struct ClaudeCodeAdapter: Adapter {
     func discover(cwd: String) -> String? {
         let dir = "\(Config.home)/.claude/projects/\(cwdSlug(cwd))"
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
-        let jsonls = entries.filter { $0.hasSuffix(".jsonl") }
-        let sorted = jsonls.sorted { a, b in
-            let am = (try? FileManager.default.attributesOfItem(atPath: "\(dir)/\(a)")[.modificationDate] as? Date) ?? nil
-            let bm = (try? FileManager.default.attributesOfItem(atPath: "\(dir)/\(b)")[.modificationDate] as? Date) ?? nil
-            return (am ?? .distantPast) > (bm ?? .distantPast)
-        }
-        guard let newest = sorted.first else { return nil }
-        return String(newest.dropLast(".jsonl".count))
+        // Newest *.jsonl by mtime (stat each file once, then take the max).
+        let newest = entries
+            .filter { $0.hasSuffix(".jsonl") }
+            .map { (name: $0, mtime: mtime("\(dir)/\($0)")) }
+            .max { $0.mtime < $1.mtime }
+        guard let newest else { return nil }
+        return String(newest.name.dropLast(".jsonl".count))
+    }
+
+    private func mtime(_ path: String) -> Date {
+        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date ?? .distantPast
     }
 }
