@@ -129,6 +129,24 @@ enum F {
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight, design: .monospaced) }
 }
 
+// MARK: - Reusable chrome
+
+extension View {
+    /// The prototype's standard surface chrome — a fill, a 0.5px hairline border, and a rounded clip,
+    /// collapsed from a repeated `.background / .overlay(stroke) / .clipShape` recipe. Modifier order
+    /// matches the hand-written sites exactly, so rendering is unchanged.
+    func surface(_ fill: Color, corner: CGFloat, hair: Color) -> some View {
+        background(fill)
+            .overlay(RoundedRectangle(cornerRadius: corner).stroke(hair, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: corner))
+    }
+
+    /// Just the 0.5px hairline border (for surfaces that fill/clip separately).
+    func hairline(_ hair: Color, corner: CGFloat) -> some View {
+        overlay(RoundedRectangle(cornerRadius: corner).stroke(hair, lineWidth: 0.5))
+    }
+}
+
 // MARK: - Environment
 
 private struct ThemeKey: EnvironmentKey {

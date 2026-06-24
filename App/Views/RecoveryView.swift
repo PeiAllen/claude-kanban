@@ -68,9 +68,7 @@ struct RecoveryView: View {
                     } label: {
                         Text("Archive").font(F.ui(12, .medium)).foregroundColor(theme.text2)
                             .padding(.horizontal, 12).frame(height: 29)
-                            .background(theme.card)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .surface(theme.card, corner: 8, hair: theme.hair)
                     }
                     .buttonStyle(.plain)
 
@@ -87,9 +85,7 @@ struct RecoveryView: View {
                                 Text("Try resume").font(F.ui(12, .medium)).foregroundColor(theme.text2)
                             }
                             .padding(.horizontal, 12).frame(height: 29)
-                            .background(theme.card)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .surface(theme.card, corner: 8, hair: theme.hair)
                         }
                         .buttonStyle(.plain)
                         .disabled(resuming)
@@ -104,6 +100,6 @@ struct RecoveryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.termBg)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.hair, lineWidth: 0.5))
+        .hairline(theme.hair, corner: 10)
     }
 }

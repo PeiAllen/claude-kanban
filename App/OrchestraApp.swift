@@ -115,9 +115,7 @@ struct ToastView: View {
         }
         .padding(EdgeInsets(top: 11, leading: 13, bottom: 11, trailing: 13))
         .frame(minWidth: 236, maxWidth: 320, alignment: .leading)
-        .background(theme.panelOpaque)
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(theme.hair, lineWidth: 0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 11))
+        .surface(theme.panelOpaque, corner: 11, hair: theme.hair)
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.26), radius: 20, y: 14)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }

@@ -48,9 +48,7 @@ private struct HeaderBar: View {
                 }
                 .padding(.horizontal, 11)
                 .frame(height: 29)
-                .background(theme.card)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
 
@@ -64,9 +62,7 @@ private struct HeaderBar: View {
                 .foregroundColor(theme.text2)
                 .padding(.horizontal, 10)
                 .frame(height: 29)
-                .background(theme.card)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
 
@@ -134,7 +130,7 @@ private struct AgentChrome: View {
         }
         .background(theme.termBg)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.hair, lineWidth: 0.5))
+        .hairline(theme.hair, corner: 10)
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
     }

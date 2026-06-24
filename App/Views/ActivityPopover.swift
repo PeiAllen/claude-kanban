@@ -31,9 +31,7 @@ struct ActivityPopover: View {
             if tab == .live { liveTab } else { cliTab }
         }
         .frame(width: 312)
-        .background(theme.panelOpaque)
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(theme.hair, lineWidth: 0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 13))
+        .surface(theme.panelOpaque, corner: 13, hair: theme.hair)
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.26), radius: 24, x: 0, y: 16)
     }
 

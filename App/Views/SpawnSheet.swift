@@ -96,9 +96,7 @@ struct SpawnSheet: View {
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 11).frame(height: 34)
-                        .background(theme.chip)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .surface(theme.chip, corner: 8, hair: theme.hair)
                 }
 
                 field("Start in") {
@@ -123,9 +121,7 @@ struct SpawnSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(theme.chip)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .surface(theme.chip, corner: 8, hair: theme.hair)
             .padding(.horizontal, 19).padding(.top, 4)
 
             // Footer
@@ -134,9 +130,7 @@ struct SpawnSheet: View {
                 Button { model.showSpawn = false } label: {
                     Text("Cancel").font(F.ui(12, .medium)).foregroundColor(theme.text)
                         .padding(.horizontal, 15).frame(height: 32)
-                        .background(theme.card)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hair, lineWidth: 0.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .surface(theme.card, corner: 8, hair: theme.hair)
                 }
                 .buttonStyle(.plain)
 
@@ -158,9 +152,7 @@ struct SpawnSheet: View {
             .padding(.horizontal, 19).padding(.top, 6).padding(.bottom, 17)
         }
         .frame(width: 470)
-        .background(theme.winBg)
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(theme.hair, lineWidth: 0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 13))
+        .surface(theme.winBg, corner: 13, hair: theme.hair)
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.4), radius: 35, x: 0, y: 28)
         .onAppear {
             if repo.isEmpty {
