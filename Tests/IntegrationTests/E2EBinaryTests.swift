@@ -93,7 +93,8 @@ final class E2EBinaryTests {
         try #expect(Bool(FileManager.default.fileExists(atPath: mcp)))
 
         let requests = [
-            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
             #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"spawn","arguments":{"prompt":"From MCP","repo":"\#(repo)","branch":"mcpbranch"}}}"#,
         ].joined(separator: "\n") + "\n"
@@ -114,7 +115,9 @@ final class E2EBinaryTests {
         #expect(list.stdout.contains("From MCP"))
     }
 
-    /// Run the MCP binary, feed stdin, read all stdout until it exits.
+    /// Run the MCP binary, feed stdin, and collect stdout. The SDK server handles requests in async
+    /// child tasks and exits on stdin EOF, so we keep stdin OPEN (like a real client), drain stdout for
+    /// a short window, then terminate.
     private func runMCP(_ bin: String, stdin: String) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -126,11 +129,25 @@ final class E2EBinaryTests {
         p.standardInput = inPipe
         p.standardOutput = outPipe
         p.standardError = Pipe()
+
+        let acc = ByteAccumulator()
+        outPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData
+            if !d.isEmpty { acc.append(d) }
+        }
         try p.run()
-        inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+        inPipe.fileHandleForWriting.write(Data(stdin.utf8))   // keep stdin open
+        Thread.sleep(forTimeInterval: 1.5)                    // let the server respond
+        outPipe.fileHandleForReading.readabilityHandler = nil
         try? inPipe.fileHandleForWriting.close()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+        p.terminate()
+        return String(decoding: acc.data, as: UTF8.self)
     }
+}
+
+final class ByteAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buf = Data()
+    func append(_ d: Data) { lock.lock(); buf.append(d); lock.unlock() }
+    var data: Data { lock.lock(); defer { lock.unlock() }; return buf }
 }

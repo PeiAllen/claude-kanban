@@ -25,12 +25,15 @@ MCP  ─ ControlClient ─┘                    (orchestrad daemon)            
   `CommandRegistry`, the control server/client). Fully unit-tested.
 - **`orchestrad`** — the background daemon (launchd LaunchAgent).
 - **`orchestra`** — the CLI client (also hosts the hidden `_report` status-channel helper).
-- **`orchestra-mcp`** — the MCP stdio bridge (one tool per command).
+- **`orchestra-mcp`** — the MCP stdio bridge (official `modelcontextprotocol/swift-sdk`; one tool per
+  command, generated from the same `CommandRegistry`).
 - **`App/`** — the SwiftUI app (built separately; needs SwiftTerm + an app bundle).
 
 ## Building & testing
 
-The core, daemon, CLI, and MCP bridge are **dependency-free** and build offline:
+The core, daemon, and CLI are **dependency-free**. Only `orchestra-mcp` pulls a dependency (the MCP
+swift-sdk), so the **first** `swift build` needs network to resolve it; after `Package.resolved` is
+populated, builds are offline again.
 
 ```sh
 scripts/build.sh        # swift build
@@ -39,9 +42,8 @@ scripts/test.sh         # swift test  (adds the swift-testing search paths for C
 
 > **Toolchain note.** This repo targets a **Command Line Tools** (no full Xcode) environment. CLT
 > ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds
-> the needed `-F`/`-rpath` flags. The SwiftUI app target is kept out of `Package.swift` so the
-> backend stays offline-buildable; see `App/README.md` for building the app bundle (needs Xcode +
-> SwiftTerm).
+> the needed `-F`/`-rpath` flags. The SwiftUI app target is kept out of `Package.swift` so the rest of
+> the build stays light; see `App/README.md` for building the app bundle (needs Xcode + SwiftTerm).
 
 ## Status
 

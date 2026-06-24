@@ -3,11 +3,12 @@ import PackageDescription
 
 // Orchestra — a local-only macOS agent-orchestration board.
 //
-// The buildable/testable surface is dependency-free so it compiles offline:
+// The core, daemon, and CLI are dependency-free (offline builds). Only orchestra-mcp pulls a
+// dependency (the official MCP swift-sdk), so the first build needs network to resolve it.
 //   * OrchestraCore  — the shared library (all business logic, fully unit-tested)
 //   * orchestrad     — the background daemon (launchd LaunchAgent)
 //   * orchestra      — the CLI client
-//   * orchestra-mcp  — the MCP stdio bridge (hand-rolled JSON-RPC, no SDK dependency)
+//   * orchestra-mcp  — the MCP stdio bridge (official modelcontextprotocol/swift-sdk)
 //
 // The SwiftUI app (App/) is built separately (it needs SwiftTerm + an app bundle); it is
 // intentionally NOT a SwiftPM target here so `swift build` / `swift test` stay offline-green.
@@ -20,6 +21,11 @@ let package = Package(
         .executable(name: "orchestra", targets: ["orchestra"]),
         .executable(name: "orchestra-mcp", targets: ["orchestra-mcp"]),
     ],
+    dependencies: [
+        // Used ONLY by the orchestra-mcp target — the core/daemon/CLI stay dependency-free so they
+        // build offline. Run `swift build` once with network access to populate Package.resolved.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.9.0"),
+    ],
     targets: [
         .target(
             name: "OrchestraCore",
@@ -31,7 +37,10 @@ let package = Package(
         ),
         .executableTarget(name: "orchestrad", dependencies: ["OrchestraCore"]),
         .executableTarget(name: "orchestra", dependencies: ["OrchestraCore"]),
-        .executableTarget(name: "orchestra-mcp", dependencies: ["OrchestraCore"]),
+        .executableTarget(
+            name: "orchestra-mcp",
+            dependencies: ["OrchestraCore", .product(name: "MCP", package: "swift-sdk")]
+        ),
         .testTarget(
             name: "OrchestraCoreTests",
             dependencies: ["OrchestraCore"]

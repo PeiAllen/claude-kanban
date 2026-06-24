@@ -54,10 +54,10 @@ updated: 2026-06-24
 > and covered by **76 passing tests** (`scripts/test.sh`), including real-git/real-tmux integration and
 > an end-to-end CLI+MCP binary smoke against a live in-process daemon. The SwiftUI app (`App/`) matches
 > the prototype (tokens in [[ui-spec]]) and type-checks against the CLT SDK; building the `.app` bundle
-> needs full Xcode + SwiftTerm (see `App/README.md`). Two deviations from the design, both forced by the
-> Command-Line-Tools-only environment and noted in `README`: tests use **swift-testing via CLT search
-> paths** (XCTest absent), and the MCP bridge is a **hand-rolled stdio relay** (the design's allowed
-> alternative to the swift-sdk) to keep the build offline/dependency-free.
+> needs full Xcode + SwiftTerm (see `App/README.md`). The MCP bridge uses the **official
+> `modelcontextprotocol/swift-sdk`** (as the design specifies), scoped to the `orchestra-mcp` target so
+> the core/daemon/CLI stay dependency-free. One environment-forced deviation remains, noted in `README`:
+> tests run **swift-testing via CLT search paths** (XCTest is absent without full Xcode).
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
