@@ -44,10 +44,20 @@ updated: 2026-06-24
 
 | Layer | Document | Status |
 |-------|----------|--------|
-| 1 — Initial design | [[01-design]] | in-review |
-| 2 — Contract | [[02-contract]] | in-review |
-| 3 — Implementation | [[03-implementation]] | in-review |
-| 3 — Tests | [[04-tests]] | in-review |
+| 1 — Initial design | [[01-design]] | approved |
+| 2 — Contract | [[02-contract]] | approved |
+| 3 — Implementation | [[03-implementation]] | approved |
+| 3 — Tests | [[04-tests]] | approved |
+
+> **Implementation note (2026-06-24):** plans approved and built. The backend — `OrchestraCore`,
+> `orchestrad`, the `orchestra` CLI, and the `orchestra-mcp` bridge — is implemented dependency-free
+> and covered by **76 passing tests** (`scripts/test.sh`), including real-git/real-tmux integration and
+> an end-to-end CLI+MCP binary smoke against a live in-process daemon. The SwiftUI app (`App/`) matches
+> the prototype (tokens in [[ui-spec]]) and type-checks against the CLT SDK; building the `.app` bundle
+> needs full Xcode + SwiftTerm (see `App/README.md`). Two deviations from the design, both forced by the
+> Command-Line-Tools-only environment and noted in `README`: tests use **swift-testing via CLT search
+> paths** (XCTest absent), and the MCP bridge is a **hand-rolled stdio relay** (the design's allowed
+> alternative to the swift-sdk) to keep the build offline/dependency-free.
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
