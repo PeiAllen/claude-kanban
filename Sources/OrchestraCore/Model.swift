@@ -211,16 +211,19 @@ public struct StatusReport: Codable, Sendable, Equatable {
     public var desc: String?
     public var status: AgentStatus?
     public var promptText: String?
-    /// SessionStart source / SessionEnd reason carrier — drives waiting/clear/dead transitions.
+    /// SessionStart `source` (startup/resume/clear/compact) — drives waiting/clear transitions + resume confirm.
     public var sessionSource: String?
+    /// SessionEnd genuine-termination reason (exit/logout/other) — drives the mid-life `.dead` transition.
+    /// Transition reasons (clear/resume/compact) are dropped by the `_report` helper and never reach here.
+    public var endReason: String?
     public init(seq: UInt64 = 0, sessionId: String? = nil, transcriptPath: String? = nil,
                 ctxPct: Double? = nil, model: String? = nil, sessionName: String? = nil,
                 desc: String? = nil, status: AgentStatus? = nil, promptText: String? = nil,
-                sessionSource: String? = nil) {
+                sessionSource: String? = nil, endReason: String? = nil) {
         self.seq = seq; self.sessionId = sessionId; self.transcriptPath = transcriptPath
         self.ctxPct = ctxPct; self.model = model; self.sessionName = sessionName
         self.desc = desc; self.status = status; self.promptText = promptText
-        self.sessionSource = sessionSource
+        self.sessionSource = sessionSource; self.endReason = endReason
     }
 }
 
