@@ -1,0 +1,30 @@
+{
+  "_comment": "Orchestra-managed Claude Code --settings template. orchestrad renders this into dataDir/claude-hooks.json, replacing __ORCHESTRA_BIN__ with the absolute path of the live `orchestra` binary. The statusLine + hooks side-channel a StatusReport to the daemon via `orchestra _report --event <kind>` (keyed by $ORCHESTRA_TASK_ID, sent over $ORCHESTRA_SOCK).",
+  "statusLine": {
+    "type": "command",
+    "command": "__ORCHESTRA_BIN__ _report --event statusline"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event tool" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event tool" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notify" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notify" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event sessionend" } ] }
+    ]
+  }
+}

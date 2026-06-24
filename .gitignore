@@ -1,0 +1,13 @@
+.DS_Store
+.scratch/
+.claude/settings.local.json
+
+# Swift / SwiftPM
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+Package.resolved
+
+# Orchestra runtime artifacts (live under ~/Library/Application Support/Orchestra)
+*.sock

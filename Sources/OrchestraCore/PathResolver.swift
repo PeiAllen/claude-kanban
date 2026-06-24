@@ -1,0 +1,67 @@
+import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
+
+/// Security boundary: every repo/worktree path must canonicalize to inside an allowlisted root.
+/// Symlink-escape safe (it resolves the real path before the prefix check).
+public struct PathResolver: Sendable {
+    public let allowedRoots: [String]
+
+    public init(allowedRoots: [String]) {
+        self.allowedRoots = allowedRoots.map { Self.canonical($0) }
+    }
+
+    public init(config: Config) {
+        self.init(allowedRoots: config.allowedRoots)
+    }
+
+    /// realpath(3), falling back to a lexical normalization when the path doesn't exist yet (e.g. a
+    /// worktree about to be created). We resolve the deepest existing ancestor with realpath, then
+    /// re-append the non-existent tail, so a symlinked ancestor can't be used to escape.
+    public static func canonical(_ path: String) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        if let resolved = resolveExisting(expanded) { return resolved }
+        return (expanded as NSString).standardizingPath
+    }
+
+    /// Test/back-compat alias.
+    static func realpath(_ path: String) -> String { canonical(path) }
+
+    private static func resolveExisting(_ path: String) -> String? {
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        if Darwin.realpath(path, &buf) != nil {
+            return String(validatingCString: buf) ?? String(cString: buf)
+        }
+        // Resolve the deepest existing ancestor, then re-append the missing tail.
+        let ns = path as NSString
+        let parent = ns.deletingLastPathComponent
+        let last = ns.lastPathComponent
+        guard !parent.isEmpty, parent != path, !last.isEmpty else { return nil }
+        guard let resolvedParent = resolveExisting(parent) else { return nil }
+        return (resolvedParent as NSString).appendingPathComponent(last)
+    }
+
+    /// Resolve a repo path and assert it is allowed.
+    public func resolveRepo(_ repo: String) throws -> String {
+        let real = Self.realpath(repo)
+        try assertAllowed(real)
+        return real
+    }
+
+    /// Throws `pathNotAllowed` unless `absPath` is equal to or sits under an allowlisted root.
+    public func assertAllowed(_ absPath: String) throws {
+        let real = Self.realpath(absPath)
+        for root in allowedRoots where isPrefix(root, of: real) {
+            return
+        }
+        throw OrchestraError.pathNotAllowed(absPath)
+    }
+
+    /// True when `root` is `path` or a parent directory of `path` (component-wise, not substring).
+    private func isPrefix(_ root: String, of path: String) -> Bool {
+        if root == path { return true }
+        let rootSlash = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(rootSlash)
+    }
+}
