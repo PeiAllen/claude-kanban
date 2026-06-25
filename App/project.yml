@@ -33,6 +33,11 @@ targets:
         CFBundleDisplayName: Orchestra
         LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: "Local-only agent orchestration board."
+        # Register the orchestra:// scheme so `orchestra://task/<ref>` URIs (printed by the CLI and
+        # usable from Raycast/Spotlight) open the app and focus the card via onOpenURL.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.orchestra.app.task
+            CFBundleURLSchemes: [orchestra]
     entitlements:
       path: Orchestra.entitlements
     dependencies:
@@ -48,3 +53,15 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # `#if DEBUG` (e.g. the ORCH_SHOW screenshot hook) is only compiled into Debug builds.
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          # Xcode 16 defaults this YES, splitting the app code into a separate Orchestra.debug.dylib.
+          # That dylib keeps Xcode's team-stamped signature while build-app.sh re-signs the bundle
+          # ad-hoc, so dyld refuses to load it ("different Team IDs" → "could not be opened"). Build a
+          # single binary like Release instead, so the installed Debug bundle launches.
+          ENABLE_DEBUG_DYLIB: NO
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
