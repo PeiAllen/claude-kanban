@@ -40,16 +40,12 @@ struct WireMessage: Decodable, Sendable {
 }
 
 enum RPCCodec {
-    static let encoder: JSONEncoder = {
-        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
-    }()
-    static let decoder: JSONDecoder = {
-        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
-    }()
+    /// Shared with the rest of the codebase (compact wire output + iso8601 dates).
+    static var decoder: JSONDecoder { OrchestraJSON.decoder }
 
-    /// Encode a value to a single NDJSON line (no embedded newlines: JSONEncoder emits compact JSON).
+    /// Encode a value to a single NDJSON line (no embedded newlines: wire JSON is compact).
     static func line<T: Encodable>(_ value: T) throws -> Data {
-        var data = try encoder.encode(value)
+        var data = try OrchestraJSON.wire.encode(value)
         data.append(0x0A)   // '\n'
         return data
     }

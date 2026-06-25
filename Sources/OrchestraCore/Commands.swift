@@ -140,8 +140,8 @@ public struct CommandRegistry: Sendable {
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:))))
                 }
-                let tasks = try await svc.batchSpawn(inputs, source: src)
-                return try JSONValue(encodable: tasks)
+                let result = await svc.batchSpawn(inputs, source: src)
+                return try JSONValue(encodable: result)
             },
         ]
     }

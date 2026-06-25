@@ -55,7 +55,7 @@ public final class ControlServer: @unchecked Sendable {
         while let line = reader.next() {
             guard !line.isEmpty else { continue }
             guard let req = try? RPCCodec.decoder.decode(RPCRequest.self, from: line) else {
-                conn.write((try? RPCCodec.line(RPCResponse(id: nil, result: nil,
+                conn.enqueue((try? RPCCodec.line(RPCResponse(id: nil, result: nil,
                     error: RPCError(code: -32700, message: "parse error")))) ?? Data())
                 continue
             }
@@ -72,20 +72,20 @@ public final class ControlServer: @unchecked Sendable {
         do {
             let result = try await dispatch(req, conn, source: source)
             if let id = req.id {
-                conn.write(try RPCCodec.line(RPCResponse(id: id, result: result)))
+                conn.enqueue((try? RPCCodec.line(RPCResponse(id: id, result: result))) ?? Data())
             }
         } catch let e as OrchestraError {
             if let id = req.id {
-                conn.write((try? RPCCodec.line(RPCResponse(id: id, result: nil,
+                conn.enqueue((try? RPCCodec.line(RPCResponse(id: id, result: nil,
                     error: RPCError(code: e.code, message: e.description)))) ?? Data())
             }
         } catch let e as RPCError {
             if let id = req.id {
-                conn.write((try? RPCCodec.line(RPCResponse(id: id, result: nil, error: e))) ?? Data())
+                conn.enqueue((try? RPCCodec.line(RPCResponse(id: id, result: nil, error: e))) ?? Data())
             }
         } catch {
             if let id = req.id {
-                conn.write((try? RPCCodec.line(RPCResponse(id: id, result: nil,
+                conn.enqueue((try? RPCCodec.line(RPCResponse(id: id, result: nil,
                     error: RPCError(code: -32000, message: "\(error)")))) ?? Data())
             }
         }
@@ -97,11 +97,18 @@ public final class ControlServer: @unchecked Sendable {
         case "version": return .object(["version": .string(OrchestraVersion.current)])
         case "subscribe":
             conn.isSubscriber = true
-            addSubscriber(conn)
-            // Replay the activity ring buffer to the freshly-connected client.
-            let snapshot = lock.withLock { ring }
-            for item in snapshot {
-                conn.write((try? RPCCodec.line(eventNotification(.activity(item)))) ?? Data())
+            conn.onBroken = { [weak self, weak conn] in
+                guard let self, let conn else { return }
+                self.removeSubscriber(conn); conn.close()
+            }
+            // Register + replay the ring under one lock (paired with handleEvent's lock) so live
+            // delivery and history replay can't duplicate or reorder. enqueue() only appends to the
+            // connection's serial queue, so holding the lock is cheap.
+            lock.withLock {
+                subscribers[conn.fd] = conn
+                for item in ring {
+                    conn.enqueue((try? RPCCodec.line(eventNotification(.activity(item)))) ?? Data())
+                }
             }
             return .object(["ok": .bool(true)])
         case "getConfig":
@@ -113,7 +120,7 @@ public final class ControlServer: @unchecked Sendable {
             onConfigChanged?(newConfig)
             return try JSONValue(encodable: newConfig)
         case "models":
-            return try JSONValue(encodable: await service.models())
+            return try JSONValue(encodable: await service.models(agentId: req.params?.optString("agentId")))
         case "archivedList":
             return try JSONValue(encodable: await service.archivedTasks())
         case "openInZed":
@@ -142,15 +149,20 @@ public final class ControlServer: @unchecked Sendable {
     // MARK: - events
 
     private func handleEvent(_ event: Event) {
-        if case .activity(let item) = event {
-            lock.withLock {
+        let line = (try? RPCCodec.line(eventNotification(event))) ?? Data()
+        // Append-to-ring and the subscriber snapshot happen under one lock so a concurrent
+        // `subscribe` either fully replays this event from the ring (and never delivers it live too)
+        // or registers in time to receive it live — never both, never out of order.
+        let conns: [Connection] = lock.withLock {
+            if case .activity(let item) = event {
                 ring.append(item)
                 if ring.count > ringCap { ring.removeFirst(ring.count - ringCap) }
             }
+            return Array(subscribers.values)
         }
-        let conns = lock.withLock { Array(subscribers.values) }
-        let line = (try? RPCCodec.line(eventNotification(event))) ?? Data()
-        for c in conns where !c.write(line) { removeSubscriber(c); c.close() }
+        // enqueue() is non-blocking, so a slow/stuck client can't stall delivery to the others; a
+        // failed write fires the connection's `onBroken` to drop it.
+        for c in conns { c.enqueue(line) }
     }
 
     /// A proper JSON-RPC notification: `{method:"event", params:<Event>}`.
@@ -158,28 +170,48 @@ public final class ControlServer: @unchecked Sendable {
         RPCNotification(method: "event", params: try? JSONValue(encodable: event))
     }
 
-    private func addSubscriber(_ conn: Connection) { lock.withLock { subscribers[conn.fd] = conn } }
     private func removeSubscriber(_ conn: Connection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
 }
 
-/// A single client connection with a serialized writer.
+/// A single client connection with a serial, non-blocking writer. All writes (responses + events)
+/// go through one per-connection serial queue, so frames stay ordered and a slow/stuck client only
+/// backs up its own queue — never the shared event pump.
 final class Connection: @unchecked Sendable {
     let fd: Int32
     var isSubscriber = false
-    private let writeLock = NSLock()
+    /// Fired once, off the event pump, when a queued write fails — lets the server drop a dead
+    /// subscriber without ever blocking on it.
+    var onBroken: (@Sendable () -> Void)?
+
+    private let queue: DispatchQueue
+    private let lock = NSLock()
     private var closed = false
+    private var broken = false
 
-    init(fd: Int32) { self.fd = fd }
+    init(fd: Int32) {
+        self.fd = fd
+        self.queue = DispatchQueue(label: "orchestra.conn.\(fd)")
+    }
 
-    @discardableResult
-    func write(_ data: Data) -> Bool {
-        writeLock.lock(); defer { writeLock.unlock() }
-        if closed { return false }
-        return UDS.writeAll(fd, data)
+    /// Enqueue a frame for ordered delivery. Returns immediately; the actual `write(2)` happens on
+    /// the connection's serial queue. A failed write marks the connection broken and fires
+    /// `onBroken` exactly once.
+    func enqueue(_ data: Data) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let skip = self.closed || self.broken
+            self.lock.unlock()
+            if skip { return }
+            if !UDS.writeAll(self.fd, data) {
+                self.lock.lock(); let first = !self.broken; self.broken = true; self.lock.unlock()
+                if first { self.onBroken?() }
+            }
+        }
     }
 
     func close() {
-        writeLock.lock(); defer { writeLock.unlock() }
+        lock.lock(); defer { lock.unlock() }
         if !closed { Darwin.close(fd); closed = true }
     }
 }
