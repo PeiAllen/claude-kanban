@@ -70,7 +70,27 @@ struct CommandsTests {
             .object(["prompt": .string("two"), "repo": .string(repo), "branch": .string("t")]),
         ])])
         let res = try await bs.run(env.svc, params, .cli)
-        #expect(try res.decode([Task].self).count == 2)
+        let result = try res.decode(BatchSpawnResult.self)
+        #expect(result.spawned.count == 2)
+        #expect(result.failed.isEmpty)
+    }
+
+    @Test("batch-spawn reports partial failure instead of aborting")
+    func batchSpawnPartial() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let reg = CommandRegistry()
+        let bs = try #require(reg.command("batch-spawn"))
+        let params = JSONValue.object(["tasks": .array([
+            .object(["prompt": .string("ok"), "repo": .string(repo), "branch": .string("a")]),
+            // a non-allowlisted repo fails resolveRepo → recorded, not thrown
+            .object(["prompt": .string("bad"), "repo": .string("/not/allowed"), "branch": .string("b")]),
+        ])])
+        let result = try await bs.run(env.svc, params, .cli).decode(BatchSpawnResult.self)
+        #expect(result.spawned.count == 1)
+        #expect(result.failed.count == 1)
+        #expect(result.failed.first?.index == 1)
+        #expect(result.failed.first?.prompt == "bad")
     }
 
     @Test("an unknown ref surfaces as a thrown OrchestraError")

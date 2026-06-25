@@ -16,12 +16,23 @@ struct ReportTests {
     @Test("merges only present fields; ctxPct/desc/model update in place")
     func mergeFields() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(ctxPct: 42, model: "m2", desc: "Editing Foo.swift", status: .running))
+        try await env.svc.report(t.id, StatusReport(ctxPct: 42, modelId: "m2", desc: "Editing Foo.swift", status: .running))
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.ctxPct == 42)
         #expect(after.desc == "Editing Foo.swift")
-        #expect(after.model == "m2")
+        #expect(after.model.id == "m2")   // a reported launch id updates the model (never a display label)
         #expect(after.status == .running)
+    }
+
+    @Test("a reported display label updates modelDisplay only — never the launch id")
+    func modelDisplayDoesNotClobberLaunchId() async throws {
+        let (env, t) = try await spawned()
+        let launchId = (await env.svc.list().first { $0.id == t.id })!.model.id
+        // A statusline that carries only a human label must not become the launch id.
+        try await env.svc.report(t.id, StatusReport(modelDisplay: "Sonnet 4.6 (Pretty)"))
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.model.id == launchId)                       // launch id intact
+        #expect(after.model.displayName == "Sonnet 4.6 (Pretty)") // label updated
     }
 
     @Test("a new sessionId rolls the old onto priorSessionIds")
@@ -73,6 +84,22 @@ struct ReportTests {
         try await env.svc.report(t.id, StatusReport(promptText: "Should not become the title"))
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Explicit Name")
+    }
+
+    @Test("a session_name echoing the current title keeps provisional, so re-title still works")
+    func sessionNameEchoKeepsProvisional() async throws {
+        let (env, t) = try await spawned()
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))  // provisional = true
+        let title = try #require(await env.svc.list().first { $0.id == t.id }).title
+        // A statusline echoing the `--name` we launched with (== current title) must NOT clear
+        // provisional, or the next prompt's re-title would be defeated.
+        try await env.svc.report(t.id, StatusReport(seq: 100, sessionName: title))
+        var after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.titleProvisional == true)
+        try await env.svc.report(t.id, StatusReport(promptText: "Fresh task now"))
+        after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.title == "Fresh task now")
+        #expect(after.titleProvisional == false)
     }
 
     @Test("no-delta report = no persist, no event (idempotent)")

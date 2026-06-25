@@ -71,7 +71,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     let transcriptDir: String
     init(transcriptDir: String) { self.transcriptDir = transcriptDir }
 
-    func models() -> [String] { ["m1", "m2"] }
+    func models() -> [AgentModel] { [AgentModel(id: "m1"), AgentModel(id: "m2")] }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
     func start(_ ctx: AdapterContext) -> [String] {
         var a = [bin]

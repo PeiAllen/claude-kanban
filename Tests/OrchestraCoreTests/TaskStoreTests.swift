@@ -11,7 +11,7 @@ struct TaskStoreTests {
 
     private func sample(_ title: String = "Fix login", column: Column = .plan) -> Task {
         Task(title: title, repo: "/repos/app", branch: "feature", worktree: "/wt/app/feature",
-             model: "claude-sonnet-4-5", startIn: .plan, column: column, order: 0, initialPrompt: title)
+             model: AgentModel(id: "claude-sonnet-4-5"), startIn: .plan, column: column, order: 0, initialPrompt: title)
     }
 
     @Test("create fills id + timestamps + order and persists")
