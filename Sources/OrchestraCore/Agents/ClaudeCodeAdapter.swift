@@ -19,12 +19,25 @@ public struct ClaudeCodeAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    public func models() -> [String] {
-        // Claude Code's selectable models. Not hardcoded into business logic — just this adapter's list.
-        ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7"]
+    public func models() -> [AgentModel] {
+        // Claude Code's selectable models. Not hardcoded into business logic — just this adapter's
+        // catalog (launch id + display label). The `family` is fixed for this provider.
+        [
+            AgentModel(id: "claude-opus-4-8", displayName: "Opus 4.8", family: "claude"),
+            AgentModel(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6", family: "claude"),
+            AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
+            AgentModel(id: "claude-opus-4-7", displayName: "Opus 4.7", family: "claude"),
+        ]
     }
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
+
+    /// Pre-accept the worktree's directory-trust dialog. Each worktree is a fresh path, so otherwise
+    /// `claude` shows "Is this a project you created or one you trust?" on every launch and the agent
+    /// blocks waiting for an answer. The user explicitly spawned an agent here, so trust is implied.
+    public func prepareToLaunch(_ ctx: AdapterContext) throws {
+        ClaudeTrust.accept(directory: ctx.cwd)
+    }
 
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
@@ -104,5 +117,31 @@ public struct ClaudeCodeAdapter: Adapter {
 
     private func mtime(_ path: String) -> Date {
         (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date ?? .distantPast
+    }
+}
+
+/// Marks a directory trusted in `~/.claude.json` so Claude Code skips its first-run "trust this
+/// folder?" dialog there. Claude keeps trust state per absolute path under `projects.<path>`; we set
+/// `hasTrustDialogAccepted` (merging into any existing entry) and leave every other field untouched.
+enum ClaudeTrust {
+    static func accept(directory: String, home: String = Config.home) {
+        let url = URL(fileURLWithPath: "\(home)/.claude.json")
+
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = obj
+        }
+        var projects = root["projects"] as? [String: Any] ?? [:]
+        var project = projects[directory] as? [String: Any] ?? [:]
+        if (project["hasTrustDialogAccepted"] as? Bool) == true { return }  // already trusted — no write
+
+        project["hasTrustDialogAccepted"] = true
+        projects[directory] = project
+        root["projects"] = projects
+
+        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
+            try? out.write(to: url, options: .atomic)
+        }
     }
 }

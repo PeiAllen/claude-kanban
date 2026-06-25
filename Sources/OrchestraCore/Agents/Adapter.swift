@@ -23,16 +23,27 @@ public protocol Adapter: Sendable {
     var icon: String { get }       // SF Symbol name
     var bin: String { get }
     var enabled: Bool { get }
-    func models() -> [String]
+    func models() -> [AgentModel]
     func newSessionId() -> String?
     func start(_ ctx: AdapterContext) -> [String]
     func resume(_ ctx: AdapterContext) -> [String]?
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo?
+    /// Side-effecting prep run just before launch (default no-op). Claude uses it to pre-accept the
+    /// worktree's directory-trust dialog so an autonomous agent never blocks on the "trust this
+    /// folder?" prompt — every worktree is a fresh path the CLI would otherwise ask about each time.
+    func prepareToLaunch(_ ctx: AdapterContext) throws
     var env: [String: String] { get }
 }
 
 public extension Adapter {
     var env: [String: String] { [:] }
+    func prepareToLaunch(_ ctx: AdapterContext) throws {}
+
+    /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic
+    /// handle derived from the id. Keeps callers from ever fabricating a bad launch model.
+    func model(for id: String) -> AgentModel {
+        models().first { $0.id == id } ?? AgentModel(id: id)
+    }
 }
 
 /// Look up / list adapters; list an agent's models.

@@ -70,7 +70,9 @@ public actor OrchestraService {
         let realRepo = try resolver.resolveRepo(input.repo)
         let (wt, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
         let sid = adapter.newSessionId()
-        let model = input.model ?? config.defaultModel ?? adapter.models().first ?? ""
+        // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
+        let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
+        let model = adapter.model(for: modelId)
         let startIn = input.startIn ?? .plan
         let title = titleSeed(from: input.prompt)
 
@@ -83,8 +85,9 @@ public actor OrchestraService {
         )
         let created = try await store.create(task)
 
-        let ctx = AdapterContext(cwd: wt, model: model, startIn: startIn, sessionId: sid,
+        let ctx = AdapterContext(cwd: wt, model: model.id, startIn: startIn, sessionId: sid,
                                  prompt: input.prompt, name: title, hooksPath: Config.hooksPath)
+        try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 
         emit(.taskUpserted(created))
@@ -92,10 +95,16 @@ public actor OrchestraService {
         return created
     }
 
-    public func batchSpawn(_ inputs: [SpawnInput], source: ActivitySource = .daemon) async throws -> [Task] {
-        var out: [Task] = []
-        for input in inputs { out.append(try await spawn(input, source: source)) }
-        return out
+    /// Spawn many at once. A failed entry is recorded (not thrown) so the rest still spawn and the
+    /// caller learns exactly which ones failed and why.
+    public func batchSpawn(_ inputs: [SpawnInput], source: ActivitySource = .daemon) async -> BatchSpawnResult {
+        var spawned: [Task] = []
+        var failed: [BatchSpawnFailure] = []
+        for (i, input) in inputs.enumerated() {
+            do { spawned.append(try await spawn(input, source: source)) }
+            catch { failed.append(BatchSpawnFailure(index: i, prompt: input.prompt, error: "\(error)")) }
+        }
+        return BatchSpawnResult(spawned: spawned, failed: failed)
     }
 
     // MARK: - steer / move / status / list
@@ -170,7 +179,7 @@ public actor OrchestraService {
         let name = sessions.sessionName(id)
         let targets = (try? sessions.windows(name)) ?? []
         let running = !targets.isEmpty
-        let ctx = AdapterContext(cwd: t.worktree, model: t.model, sessionId: t.agentSessionId,
+        let ctx = AdapterContext(cwd: t.worktree, model: t.model.id, sessionId: t.agentSessionId,
                                  name: t.title, hooksPath: Config.hooksPath)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
@@ -211,7 +220,7 @@ public actor OrchestraService {
 
     // (column display names live on `Column.displayName`)
 
-    public func models(agentId: String? = nil) -> [String] {
+    public func models(agentId: String? = nil) -> [AgentModel] {
         (try? registry.get(agentId ?? config.defaultAgentId).models()) ?? []
     }
 

@@ -10,9 +10,11 @@ extension OrchestraService {
         let tasks = await store.all().filter { !$0.archived && $0.status != .dead }
         var toRevive: [UUID] = []
 
+        // One `tmux list-sessions` instead of an `has-session` per card.
+        let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+
         for t in tasks {
-            let alive = (try? sessions.isAlive(sessions.sessionName(t.id))) ?? false
-            if alive { continue }   // daemon-crash no-op / still-running card
+            if aliveNames.contains(sessions.sessionName(t.id)) { continue }   // daemon-crash no-op / still-running
             if isResumable(t) {
                 toRevive.append(t.id)
             } else {
@@ -52,7 +54,7 @@ extension OrchestraService {
         defer { recovering.remove(id) }
 
         // Pre-check: must have a tracked id whose transcript still exists.
-        let ctx = AdapterContext(cwd: task.worktree, model: task.model, sessionId: task.agentSessionId,
+        let ctx = AdapterContext(cwd: task.worktree, model: task.model.id, sessionId: task.agentSessionId,
                                  name: task.title, hooksPath: Config.hooksPath)
         guard let sid = task.agentSessionId,
               let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
@@ -62,6 +64,7 @@ extension OrchestraService {
         }
 
         // Recreate the session off the actor so a mass revival overlaps (and report() stays serviced).
+        try? adapter.prepareToLaunch(ctx)
         do {
             try await offActor { [sessions] in
                 _ = try sessions.kill(sessions.sessionName(id))
@@ -100,10 +103,11 @@ extension OrchestraService {
         var prior = task.priorSessionIds
         if let old = task.agentSessionId, !old.isEmpty { prior.append(old) }
 
-        let ctx = AdapterContext(cwd: task.worktree, model: task.model, startIn: task.startIn,
+        let ctx = AdapterContext(cwd: task.worktree, model: task.model.id, startIn: task.startIn,
                                  sessionId: freshId, prompt: nil, name: task.title,
                                  hooksPath: Config.hooksPath)
         let launchTask = task
+        try? adapter.prepareToLaunch(ctx)
         try await offActor { [sessions] in
             _ = try sessions.kill(sessions.sessionName(id))
             _ = try sessions.ensure(launchTask, argv: adapter.start(ctx))
@@ -128,10 +132,11 @@ extension OrchestraService {
     /// guarded against cards mid-resume/restart.
     public func reconcileLiveness() async {
         let tasks = await store.all()
+        // One `tmux list-sessions` per poll tick, not one `has-session` per card.
+        let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
         for t in tasks where !t.archived && t.status != .dead && t.status != .done {
             if recovering.contains(t.id) { continue }
-            let alive = (try? sessions.isAlive(sessions.sessionName(t.id))) ?? false
-            if !alive {
+            if !aliveNames.contains(sessions.sessionName(t.id)) {
                 await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
             }
         }

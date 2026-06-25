@@ -29,6 +29,7 @@ public enum Proc {
         if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
 
         var env = ProcessInfo.processInfo.environment
+        env["PATH"] = Self.augmentedPATH(env["PATH"])
         for (k, v) in extraEnv { env[k] = v }
         p.environment = env
 
@@ -36,44 +37,57 @@ public enum Proc {
         p.standardOutput = outPipe
         p.standardError = errPipe
 
-        do {
-            try p.run()
-        } catch {
-            throw OrchestraError.toolMissing(first)
-        }
-
-        // Drain both pipes to EOF on background queues — avoids a pipe-buffer deadlock on large
-        // output, and each read returns once the child closes its write end (exit or terminate).
+        // Drain both pipes with readability handlers (event-driven, on Foundation's own queues) and
+        // detect exit via terminationHandler — NOT a blocking reader thread per pipe + a blocking
+        // waitUntilExit thread. The old design burned ~3 GCD worker threads per call; under heavy
+        // concurrency that starved the global pool so the wait dispatch never got scheduled, tripping
+        // a FALSE timeout at exactly the configured value. Handlers still drain continuously, so a
+        // large child can't deadlock on a full pipe buffer.
         let outBox = DataBox(), errBox = DataBox()
         let drained = DispatchGroup()
         for (pipe, box) in [(outPipe, outBox), (errPipe, errBox)] {
             drained.enter()
-            DispatchQueue.global().async {
-                box.set(pipe.fileHandleForReading.readDataToEndOfFile())
-                drained.leave()
+            pipe.fileHandleForReading.readabilityHandler = { fh in
+                let chunk = fh.availableData
+                if chunk.isEmpty {                 // EOF: the child closed its write end
+                    fh.readabilityHandler = nil
+                    drained.leave()
+                } else {
+                    box.append(chunk)
+                }
             }
         }
 
-        if let timeout, !waitUntilExit(p, within: timeout) {
-            p.terminate()
-            if !waitUntilExit(p, within: .seconds(2)) { kill(p.processIdentifier, SIGKILL) }
-        } else if timeout == nil {
-            p.waitUntilExit()
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+
+        do {
+            try p.run()
+        } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            throw OrchestraError.toolMissing(first)
         }
-        drained.wait()
+
+        // Wait for exit on the CALLING thread (no extra worker thread). On timeout, escalate.
+        if let timeout {
+            if exited.wait(timeout: .now() + .milliseconds(timeout.milliseconds)) == .timedOut {
+                p.terminate()
+                if exited.wait(timeout: .now() + .seconds(2)) == .timedOut {
+                    kill(p.processIdentifier, SIGKILL)
+                    exited.wait()
+                }
+            }
+        } else {
+            exited.wait()
+        }
+        drained.wait()   // let the readability handlers finish appending through EOF
 
         return ProcResult(
             stdout: String(decoding: outBox.data, as: UTF8.self),
             stderr: String(decoding: errBox.data, as: UTF8.self),
             exitCode: p.terminationStatus
         )
-    }
-
-    /// Wait for the process to exit, up to `timeout`. Returns true if it exited in time.
-    private static func waitUntilExit(_ p: Process, within timeout: Duration) -> Bool {
-        let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
-        return done.wait(timeout: .now() + .milliseconds(timeout.milliseconds)) == .success
     }
 
     /// Run, throwing if the exit code is non-zero (for control verbs where failure is an error).
@@ -93,6 +107,23 @@ public enum Proc {
     public static func toolExists(_ name: String) -> Bool {
         (try? run(["which", name]))?.ok ?? false
     }
+
+    /// The inherited PATH plus the standard CLI install locations, so tools resolve even when the
+    /// daemon/app was launched by launchd or Finder (a login session's PATH is minimal — typically
+    /// just `/usr/bin:/bin:/usr/sbin:/sbin` — and omits Homebrew + per-user bins where `tmux`,
+    /// `claude`, etc. actually live). Common dirs are appended (not prepended) so an explicitly-set
+    /// PATH still wins. Public so the app (e.g. the embedded terminal launching tmux) shares it.
+    public static func augmentedPATH(_ inherited: String?) -> String {
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        let common = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+                      "\(home)/.local/bin", "\(home)/bin"]
+        var seen = Set<String>()
+        var dirs: [String] = []
+        for dir in (inherited?.split(separator: ":").map(String.init) ?? []) + common {
+            if !dir.isEmpty, seen.insert(dir).inserted { dirs.append(dir) }
+        }
+        return dirs.joined(separator: ":")
+    }
 }
 
 /// A tiny thread-safe data accumulator for pipe draining.
@@ -100,7 +131,6 @@ final class DataBox: @unchecked Sendable {
     private let lock = NSLock()
     private var _data = Data()
     func append(_ d: Data) { lock.lock(); _data.append(d); lock.unlock() }
-    func set(_ d: Data) { lock.lock(); _data = d; lock.unlock() }
     var data: Data { lock.lock(); defer { lock.unlock() }; return _data }
 }
 
