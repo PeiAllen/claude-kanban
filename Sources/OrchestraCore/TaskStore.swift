@@ -11,18 +11,6 @@ public actor TaskStore {
         self.path = path
     }
 
-    private static var encoder: JSONEncoder {
-        let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        e.dateEncodingStrategy = .iso8601
-        return e
-    }
-    private static var decoder: JSONDecoder {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }
-
     /// Read + decode. `[]` if absent; malformed → `.bak` + `[]`.
     @discardableResult
     public func load() -> [Task] {
@@ -32,7 +20,7 @@ public actor TaskStore {
         }
         do {
             let data = try Data(contentsOf: url)
-            tasks = try Self.decoder.decode([Task].self, from: data)
+            tasks = try OrchestraJSON.decoder.decode([Task].self, from: data)
         } catch {
             let bak = path + ".bak"
             try? FileManager.default.removeItem(atPath: bak)
@@ -67,7 +55,7 @@ public actor TaskStore {
     private func persist() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let data = try Self.encoder.encode(tasks)
+        let data = try OrchestraJSON.pretty.encode(tasks)
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)

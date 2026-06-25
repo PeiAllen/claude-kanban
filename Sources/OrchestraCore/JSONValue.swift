@@ -38,29 +38,22 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
     // MARK: conversions
 
-    private static let encoder: JSONEncoder = {
-        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
-    }()
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
-    }()
-
     /// Build a JSONValue from any Encodable model.
     public init(encodable: some Encodable) throws {
-        let data = try JSONValue.encoder.encode(encodable)
-        self = try JSONValue.decoder.decode(JSONValue.self, from: data)
+        let data = try OrchestraJSON.wire.encode(encodable)
+        self = try OrchestraJSON.decoder.decode(JSONValue.self, from: data)
     }
 
     /// Decode this JSONValue into a Codable type.
     public func decode<T: Decodable>(_ type: T.Type) throws -> T {
-        let data = try JSONValue.encoder.encode(self)
-        return try JSONValue.decoder.decode(T.self, from: data)
+        let data = try OrchestraJSON.wire.encode(self)
+        return try OrchestraJSON.decoder.decode(T.self, from: data)
     }
 
-    public func rawData() throws -> Data { try JSONValue.encoder.encode(self) }
+    public func rawData() throws -> Data { try OrchestraJSON.wire.encode(self) }
 
     public static func parse(_ data: Data) throws -> JSONValue {
-        try JSONValue.decoder.decode(JSONValue.self, from: data)
+        try OrchestraJSON.decoder.decode(JSONValue.self, from: data)
     }
 
     // MARK: accessors

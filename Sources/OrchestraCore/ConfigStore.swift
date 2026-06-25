@@ -7,7 +7,7 @@ import Darwin
 public enum ConfigStore {
     public static func load(path: String = Config.configPath) -> Config {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let c = try? JSONDecoder().decode(Config.self, from: data) else {
+              let c = try? OrchestraJSON.decoder.decode(Config.self, from: data) else {
             return Config()
         }
         return c
@@ -17,8 +17,7 @@ public enum ConfigStore {
     public static func save(_ config: Config, path: String = Config.configPath) throws -> Config {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try e.encode(config)
+        let data = try OrchestraJSON.pretty.encode(config)
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
         return config
     }

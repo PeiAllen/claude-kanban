@@ -34,6 +34,62 @@ public enum StartIn: String, Codable, Sendable {
     public var column: Column { self == .plan ? .plan : .impl }
 }
 
+// MARK: - Model identity
+
+/// A provider-agnostic model handle. `id` is the launch identifier handed to the adapter (e.g.
+/// `claude-opus-4-8`); `displayName` is the human label for the UI; `family` is a coarse provider
+/// bucket used for accenting. Adapters catalog their own models; the heuristics here only fill gaps
+/// for ids an adapter doesn't know (and for legacy persisted data).
+///
+/// Decodes from EITHER the structured object OR a bare `"<id>"` string, so existing `tasks.json`
+/// files (which stored `model` as a plain string) migrate transparently on first read.
+public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
+    public let id: String          // launch id, passed to the adapter
+    public var displayName: String // human label
+    public var family: String      // "claude" | "gpt" | "gemini" | "other"
+
+    public init(id: String, displayName: String, family: String) {
+        self.id = id; self.displayName = displayName; self.family = family
+    }
+
+    /// Derive a sensible label + family from a bare id (used for un-cataloged ids + legacy data).
+    public init(id: String) {
+        self.init(id: id, displayName: AgentModel.humanize(id), family: AgentModel.detectFamily(id))
+    }
+
+    public init(from decoder: Decoder) throws {
+        // Legacy form: a bare string id. (Assign members directly — can't delegate to `init(id:)`
+        // here because the object branch below assigns the `let id` directly.)
+        if let single = try? decoder.singleValueContainer(), let s = try? single.decode(String.self) {
+            self.id = s
+            self.displayName = AgentModel.humanize(s)
+            self.family = AgentModel.detectFamily(s)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        self.id = id
+        self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? AgentModel.humanize(id)
+        self.family = try c.decodeIfPresent(String.self, forKey: .family) ?? AgentModel.detectFamily(id)
+    }
+
+    /// Coarse provider family from an id — the one place this string-sniffing lives.
+    public static func detectFamily(_ id: String) -> String {
+        let m = id.lowercased()
+        if m.contains("claude") { return "claude" }
+        if m.contains("gpt") || m.contains("o1") || m.contains("o3") { return "gpt" }
+        if m.contains("gemini") { return "gemini" }
+        return "other"
+    }
+
+    /// Best-effort label from an id when no catalog entry exists: strip a leading vendor token.
+    public static func humanize(_ id: String) -> String {
+        let vendors = ["claude-", "anthropic-", "openai-", "google-", "gemini-"]
+        for v in vendors where id.hasPrefix(v) { return String(id.dropFirst(v.count)) }
+        return id
+    }
+}
+
 // MARK: - Task (the card)
 
 public struct Task: Codable, Identifiable, Sendable, Equatable {
@@ -52,7 +108,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var branch: String      // working branch
     public var worktree: String    // abs path to the git worktree (derived: repo + branch)
     public var agentId: String     // -> AgentRegistry (default "claude-code")
-    public var model: String       // selected model (from the adapter's list)
+    public var model: AgentModel   // selected model (launch id + display label, from the adapter)
     public var startIn: StartIn    // where the agent began
     public var column: Column      // board column
     public var order: Int          // sort within a column
@@ -76,7 +132,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         branch: String,
         worktree: String,
         agentId: String = "claude-code",
-        model: String,
+        model: AgentModel,
         startIn: StartIn,
         column: Column,
         order: Int,
@@ -154,6 +210,25 @@ public struct TaskStatus: Codable, Sendable, Equatable {
     public init(task: Task, running: Bool) { self.task = task; self.running = running }
 }
 
+/// Outcome of `batch-spawn`: which entries succeeded and which failed, so a mid-batch failure
+/// reports partial success instead of aborting and stranding the cards already created.
+public struct BatchSpawnResult: Codable, Sendable, Equatable {
+    public let spawned: [Task]
+    public let failed: [BatchSpawnFailure]
+    public init(spawned: [Task], failed: [BatchSpawnFailure]) {
+        self.spawned = spawned; self.failed = failed
+    }
+}
+
+public struct BatchSpawnFailure: Codable, Sendable, Equatable {
+    public let index: Int        // position in the submitted batch
+    public let prompt: String    // the entry's prompt (for identifying which failed)
+    public let error: String
+    public init(index: Int, prompt: String, error: String) {
+        self.index = index; self.prompt = prompt; self.error = error
+    }
+}
+
 // MARK: - Debug handles (the `sessions` command)
 
 public enum WindowKind: String, Codable, Sendable {
@@ -209,30 +284,82 @@ public struct CardSessions: Codable, Sendable, Equatable {
 
 // MARK: - Status channel (agent -> Orchestra)
 
-/// A live patch the agent pushes to the daemon. All fields optional — only present ones are merged.
-public struct StatusReport: Codable, Sendable, Equatable {
+/// Seq-stamped **snapshot** half of a status patch: fields that describe the agent's *current* state
+/// with no ordering guarantee (statusLine + Pre/PostToolUse/Notification hooks). The whole struct is
+/// applied as a unit behind the per-card monotonic `seq` guard, so a stale snapshot can never
+/// overwrite a fresher one. Putting these together (separate from `EventReport`) makes the
+/// seq-gating contract type-level: a field here is *always* gated, a field on `EventReport` never is.
+public struct SnapshotReport: Codable, Sendable, Equatable {
     public var seq: UInt64
-    public var sessionId: String?
-    public var transcriptPath: String?
     public var ctxPct: Double?
-    public var model: String?
-    public var sessionName: String?
-    public var desc: String?
+    /// Current model *launch id* (e.g. `model.id`). Tracks in-session `/model` switches; resolved to
+    /// a full `AgentModel` via the adapter. Never the display label.
+    public var modelId: String?
+    /// Current model *display label* (e.g. `model.display_name`) — UI only, never used to launch.
+    public var modelDisplay: String?
     public var status: AgentStatus?
-    public var promptText: String?
+    public var desc: String?
+    /// A `/rename` mirror — applied only on a genuine change (see report) so it can't clobber the
+    /// re-title-after-restart flow.
+    public var sessionName: String?
+    public init(seq: UInt64 = 0, ctxPct: Double? = nil, modelId: String? = nil,
+                modelDisplay: String? = nil, status: AgentStatus? = nil, desc: String? = nil,
+                sessionName: String? = nil) {
+        self.seq = seq; self.ctxPct = ctxPct; self.modelId = modelId
+        self.modelDisplay = modelDisplay; self.status = status; self.desc = desc
+        self.sessionName = sessionName
+    }
+}
+
+/// **Event-ordered** half of a status patch: fields from discrete, causally-ordered hooks
+/// (SessionStart / UserPromptSubmit / SessionEnd). Applied unconditionally — never seq-gated — so a
+/// genuine transition is never dropped as "stale".
+public struct EventReport: Codable, Sendable, Equatable {
+    public var sessionId: String?
+    /// Carried for completeness; re-derived from the live id in `Adapter.sessionInfo`, not persisted.
+    public var transcriptPath: String?
     /// SessionStart `source` (startup/resume/clear/compact) — drives waiting/clear transitions + resume confirm.
     public var sessionSource: String?
     /// SessionEnd genuine-termination reason (exit/logout/other) — drives the mid-life `.dead` transition.
     /// Transition reasons (clear/resume/compact) are dropped by the `_report` helper and never reach here.
     public var endReason: String?
+    public var promptText: String?
+    public init(sessionId: String? = nil, transcriptPath: String? = nil, sessionSource: String? = nil,
+                endReason: String? = nil, promptText: String? = nil) {
+        self.sessionId = sessionId; self.transcriptPath = transcriptPath
+        self.sessionSource = sessionSource; self.endReason = endReason; self.promptText = promptText
+    }
+}
+
+/// A live patch the agent pushes to the daemon: an optional ordered-`event` part and/or an optional
+/// seq-gated `snapshot` part. A single hook can carry both (e.g. UserPromptSubmit → `promptText`
+/// event + `status` snapshot). Consumers read `.event` / `.snapshot`; the flat initializer below is
+/// the single place that routes a field to its bucket.
+public struct StatusReport: Codable, Sendable, Equatable {
+    public var event: EventReport?
+    public var snapshot: SnapshotReport?
+
+    public init(event: EventReport?, snapshot: SnapshotReport?) {
+        self.event = event; self.snapshot = snapshot
+    }
+
+    /// Ergonomic flat constructor — routes each field to its bucket. The classification lives here
+    /// (and is exercised by the report tests) instead of being re-derived at every call site.
     public init(seq: UInt64 = 0, sessionId: String? = nil, transcriptPath: String? = nil,
-                ctxPct: Double? = nil, model: String? = nil, sessionName: String? = nil,
-                desc: String? = nil, status: AgentStatus? = nil, promptText: String? = nil,
-                sessionSource: String? = nil, endReason: String? = nil) {
-        self.seq = seq; self.sessionId = sessionId; self.transcriptPath = transcriptPath
-        self.ctxPct = ctxPct; self.model = model; self.sessionName = sessionName
-        self.desc = desc; self.status = status; self.promptText = promptText
-        self.sessionSource = sessionSource; self.endReason = endReason
+                ctxPct: Double? = nil, modelId: String? = nil, modelDisplay: String? = nil,
+                sessionName: String? = nil, desc: String? = nil, status: AgentStatus? = nil,
+                promptText: String? = nil, sessionSource: String? = nil, endReason: String? = nil) {
+        let hasSnapshot = seq != 0 || ctxPct != nil || modelId != nil || modelDisplay != nil
+            || sessionName != nil || desc != nil || status != nil
+        let hasEvent = sessionId != nil || transcriptPath != nil || promptText != nil
+            || sessionSource != nil || endReason != nil
+        self.init(
+            event: hasEvent ? EventReport(sessionId: sessionId, transcriptPath: transcriptPath,
+                                          sessionSource: sessionSource, endReason: endReason,
+                                          promptText: promptText) : nil,
+            snapshot: hasSnapshot ? SnapshotReport(seq: seq, ctxPct: ctxPct, modelId: modelId,
+                                                   modelDisplay: modelDisplay, status: status,
+                                                   desc: desc, sessionName: sessionName) : nil)
     }
 }
 
