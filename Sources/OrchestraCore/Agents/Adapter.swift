@@ -3,16 +3,18 @@ import Foundation
 /// Context handed to an adapter when building launch argv.
 public struct AdapterContext: Sendable {
     public let cwd: String          // the worktree
+    public let repo: String?        // the source repo the worktree was cut from (for trust mirroring)
     public let model: String?
     public let startIn: StartIn?
     public let sessionId: String?   // seeded id for `start`; target id for `resume`
     public let prompt: String?      // initial prompt (launch positional arg); nil on restart/resume
     public let name: String?        // card title -> `claude --name`
     public let hooksPath: String    // managed --settings file
-    public init(cwd: String, model: String? = nil, startIn: StartIn? = nil, sessionId: String? = nil,
-                prompt: String? = nil, name: String? = nil, hooksPath: String = Config.hooksPath) {
-        self.cwd = cwd; self.model = model; self.startIn = startIn; self.sessionId = sessionId
-        self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
+    public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
+                sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
+                hooksPath: String = Config.hooksPath) {
+        self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
+        self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
     }
 }
 

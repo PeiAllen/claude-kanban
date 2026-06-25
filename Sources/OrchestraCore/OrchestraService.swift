@@ -85,8 +85,9 @@ public actor OrchestraService {
         )
         let created = try await store.create(task)
 
-        let ctx = AdapterContext(cwd: wt, model: model.id, startIn: startIn, sessionId: sid,
-                                 prompt: input.prompt, name: title, hooksPath: Config.hooksPath)
+        let ctx = AdapterContext(cwd: wt, repo: realRepo, model: model.id, startIn: startIn,
+                                 sessionId: sid, prompt: input.prompt, name: title,
+                                 hooksPath: Config.hooksPath)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 

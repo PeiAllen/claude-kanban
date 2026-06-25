@@ -32,11 +32,12 @@ public struct ClaudeCodeAdapter: Adapter {
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
 
-    /// Pre-accept the worktree's directory-trust dialog. Each worktree is a fresh path, so otherwise
-    /// `claude` shows "Is this a project you created or one you trust?" on every launch and the agent
-    /// blocks waiting for an answer. The user explicitly spawned an agent here, so trust is implied.
+    /// Mirror the source repo's trust onto the worktree: only when the user has already trusted the
+    /// main project folder in Claude Code do we pre-accept the worktree's trust dialog (each worktree
+    /// is a fresh path Claude would otherwise re-prompt for). If the repo isn't trusted, we leave the
+    /// worktree alone so Claude still asks — we don't silently grant trust the user never gave.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        ClaudeTrust.accept(directory: ctx.cwd)
+        ClaudeTrust.mirror(toWorktree: ctx.cwd, fromRepo: ctx.repo)
     }
 
     private func modelFlag(_ model: String?) -> [String] {
@@ -120,28 +121,35 @@ public struct ClaudeCodeAdapter: Adapter {
     }
 }
 
-/// Marks a directory trusted in `~/.claude.json` so Claude Code skips its first-run "trust this
-/// folder?" dialog there. Claude keeps trust state per absolute path under `projects.<path>`; we set
-/// `hasTrustDialogAccepted` (merging into any existing entry) and leave every other field untouched.
+/// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under
+/// `projects.<path>`, flagged via `hasTrustDialogAccepted`). We only ever *mirror* trust the user has
+/// already granted to a repo onto that repo's worktrees — never grant trust they haven't given.
 enum ClaudeTrust {
-    static func accept(directory: String, home: String = Config.home) {
+    /// If `repo` is trusted in `~/.claude.json`, mark `worktree` trusted too (merging into any existing
+    /// entry, leaving every other field untouched). No-op when the repo is untrusted/unknown, the
+    /// worktree is already trusted, or the config can't be read.
+    static func mirror(toWorktree worktree: String, fromRepo repo: String?, home: String = Config.home) {
+        guard let repo else { return }
         let url = URL(fileURLWithPath: "\(home)/.claude.json")
 
-        var root: [String: Any] = [:]
-        if let data = try? Data(contentsOf: url),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            root = obj
-        }
+        guard let data = try? Data(contentsOf: url),
+              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         var projects = root["projects"] as? [String: Any] ?? [:]
-        var project = projects[directory] as? [String: Any] ?? [:]
-        if (project["hasTrustDialogAccepted"] as? Bool) == true { return }  // already trusted — no write
+
+        guard isTrusted(repo, in: projects) else { return }                 // repo not trusted → don't grant
+        var project = projects[worktree] as? [String: Any] ?? [:]
+        if (project["hasTrustDialogAccepted"] as? Bool) == true { return }   // already trusted → no write
 
         project["hasTrustDialogAccepted"] = true
-        projects[directory] = project
+        projects[worktree] = project
         root["projects"] = projects
 
         if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
             try? out.write(to: url, options: .atomic)
         }
+    }
+
+    private static func isTrusted(_ path: String, in projects: [String: Any]) -> Bool {
+        (projects[path] as? [String: Any])?["hasTrustDialogAccepted"] as? Bool == true
     }
 }
