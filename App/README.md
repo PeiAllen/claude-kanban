@@ -26,6 +26,27 @@ XcodeGen wires two packages (see `project.yml`): the local `OrchestraCore` libra
 `SwiftTerm` (fetched from GitHub on first resolve). On first launch the app ensures the `orchestrad`
 LaunchAgent is installed/running, then connects over the user unix socket.
 
+> First app build under Xcode 26+ fails on SwiftTerm's Metal shader until you fetch the now-separate
+> Metal toolchain once: `xcodebuild -downloadComponent MetalToolchain` (~688 MB).
+
+## Scripts
+
+One-shot helpers (regenerate the project, set `DEVELOPER_DIR` to Xcode.app if `xcode-select` still
+points at the Command Line Tools):
+
+```sh
+scripts/build-app.sh             # build Release → install into /Applications
+scripts/build-app.sh --run       # build, install, and launch
+scripts/build-app.sh --debug     # Debug configuration instead of Release
+scripts/reset-state.sh           # stop daemon, remove LaunchAgent + data store, kill tmux (keeps worktrees)
+scripts/reset-state.sh --worktrees   # also delete ~/.orchestra worktrees (DESTRUCTIVE)
+```
+
+State lives under `~/Library/Application Support/Orchestra/` (daemon: `config.json`, `tasks.json`,
+socket, log), `~/Library/LaunchAgents/com.orchestra.daemon.plist`, the app's UI prefs in
+`com.orchestra.app`, and git worktrees under `~/.orchestra/worktrees/` — all keyed off `$HOME`, not
+the bundle location. `reset-state.sh` clears the first three; `--worktrees` adds the last.
+
 ## Verifying without Xcode
 
 The app sources **type-check** against the Command Line Tools SDK (SwiftUI is present there) plus the

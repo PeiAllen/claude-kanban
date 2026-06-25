@@ -131,8 +131,8 @@ struct CardView: View {
     /// (plan-layer chip, edited-file path, +/− diff stat) needs fields the daemon doesn't yet plumb,
     /// so we show the model rather than fabricate those.
     @ViewBuilder private var meta: some View {
-        if !task.model.isEmpty {
-            Text(ModelDisplay.short(task.model))
+        if !task.model.id.isEmpty {
+            Text(task.model.displayName)
                 .font(F.mono(10.5, .medium))
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)

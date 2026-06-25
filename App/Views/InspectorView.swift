@@ -10,15 +10,15 @@ struct InspectorView: View {
 
     var body: some View {
         if let t = model.selected {
-            VStack(spacing: 0) {
-                HeaderBar(task: t)
+            Group {
                 if t.status == .dead {
+                    // Recovery fills the whole sidebar and owns its own close button + actions.
                     RecoveryView(task: t)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
                 } else {
-                    AgentChrome(task: t)
+                    VStack(spacing: 0) {
+                        HeaderBar(task: t)
+                        AgentChrome(task: t)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -52,19 +52,22 @@ private struct HeaderBar: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                _Concurrency.Task { await model.archive(task.id) }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "checkmark").font(F.ui(10, .semibold))
-                    Text("Archive").font(F.ui(12, .medium))
+            // The recovery panel owns Archive when the card is dead, so we don't duplicate it here.
+            if task.status != .dead {
+                Button {
+                    _Concurrency.Task { await model.archive(task.id) }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark").font(F.ui(10, .semibold))
+                        Text("Archive").font(F.ui(12, .medium))
+                    }
+                    .foregroundColor(theme.text2)
+                    .padding(.horizontal, 10)
+                    .frame(height: 29)
+                    .surface(theme.card, corner: 8, hair: theme.hair)
                 }
-                .foregroundColor(theme.text2)
-                .padding(.horizontal, 10)
-                .frame(height: 29)
-                .surface(theme.card, corner: 8, hair: theme.hair)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 
@@ -91,8 +94,6 @@ private struct AgentChrome: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
-    @State private var promptText: String = ""
-
     private var ctxColor: Color {
         if task.ctxPct >= 80 { return theme.red.dot }
         if task.ctxPct >= 50 { return theme.amber.dot }
@@ -116,11 +117,10 @@ private struct AgentChrome: View {
             TerminalHeader(task: task)
             BreadcrumbStrip(task: task)
 
-            AgentTerminalView(session: task.tmuxSession, window: "agent")
+            AgentTerminalView(session: task.tmuxSession, window: "agent",
+                              background: theme.termBg, foreground: theme.term)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.termBg)
-
-            PromptRow(task: task, text: $promptText)
 
             BottomStrip(task: task)
 
@@ -140,7 +140,7 @@ private struct TerminalHeader: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
-    private var family: String { ModelDisplay.family(task.model) }
+    private var family: String { task.model.family }
     private var modelColor: Color {
         switch family {
         case "claude": return theme.dark ? Color(hex: 0xE8896A) : Color(hex: 0xBF5836)
@@ -155,7 +155,7 @@ private struct TerminalHeader: View {
         HStack(spacing: 7) {
             HStack(spacing: 5) {
                 Circle().fill(modelColor).frame(width: 6, height: 6)
-                Text(ModelDisplay.short(task.model)).font(F.mono(9.5, .semibold)).foregroundColor(modelColor)
+                Text(task.model.displayName).font(F.mono(9.5, .semibold)).foregroundColor(modelColor)
             }
             .padding(.horizontal, 6)
             .frame(height: 18)
@@ -256,33 +256,6 @@ private struct BreadcrumbStrip: View {
     private func copy(_ s: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(s, forType: .string)
-    }
-}
-
-private struct PromptRow: View {
-    @EnvironmentObject var model: BoardModel
-    @Environment(\.theme) var theme: Theme
-    let task: Task
-    @Binding var text: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text("›").font(F.mono(12)).foregroundColor(theme.statusColor(task.status.rawValue).dot)
-            TextField("", text: $text)
-                .textFieldStyle(.plain)
-                .font(F.mono(12))
-                .foregroundColor(theme.term)
-                .onSubmit(send)
-        }
-        .padding(.horizontal, 13)
-        .padding(.top, 1).padding(.bottom, 10)
-    }
-
-    private func send() {
-        let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !msg.isEmpty else { return }
-        text = ""
-        _Concurrency.Task { await model.send(task.id, msg) }
     }
 }
 

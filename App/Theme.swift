@@ -158,19 +158,3 @@ extension EnvironmentValues {
         set { self[ThemeKey.self] = newValue }
     }
 }
-
-// MARK: - Model display helpers
-
-enum ModelDisplay {
-    /// Strip a leading "claude-" for the chip label, e.g. claude-opus-4-8 → opus-4-8.
-    static func short(_ model: String) -> String {
-        model.hasPrefix("claude-") ? String(model.dropFirst("claude-".count)) : model
-    }
-    static func family(_ model: String) -> String {
-        let m = model.lowercased()
-        if m.contains("claude") { return "claude" }
-        if m.contains("gpt") || m.contains("o1") || m.contains("o3") { return "gpt" }
-        if m.contains("gemini") { return "gemini" }
-        return "other"
-    }
-}

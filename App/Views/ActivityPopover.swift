@@ -43,6 +43,7 @@ struct ActivityPopover: View {
                 .padding(.horizontal, 10).frame(height: 22)
                 .background(active ? theme.card : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

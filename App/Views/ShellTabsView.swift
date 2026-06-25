@@ -20,7 +20,8 @@ struct ShellTabsView: View {
         VStack(spacing: 0) {
             ribbon
             if !minimized && !windows.isEmpty {
-                AgentTerminalView(session: task.tmuxSession, window: selectedWindow)
+                AgentTerminalView(session: task.tmuxSession, window: selectedWindow,
+                                  background: theme.termBg, foreground: theme.term)
                     .frame(height: panelHeight)
                     .background(theme.termBg)
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
@@ -42,6 +43,7 @@ struct ShellTabsView: View {
                     .frame(height: 20)
                     .background(w == selectedWindow ? theme.card : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

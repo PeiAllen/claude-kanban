@@ -18,15 +18,20 @@ final class BoardModel: ObservableObject {
     @Published var activity: [ActivityItem] = []
     @Published var selectedId: UUID?
     @Published var config = Config()
-    @Published var models: [String] = []
+    @Published var models: [AgentModel] = []
     @Published var connected = false
+    @Published var connecting = false
     @Published var toasts: [Toast] = []
 
     // Sheet / popover UI state.
     @Published var showSpawn = false
     @Published var showDone = false
     @Published var showActivity = false
-    @Published var spawnDefaultColumn: Column = .impl
+    @Published var showOnboarding = false
+    @Published var spawnDefaultColumn: Column = .plan
+
+    /// First-run flag: once the user has installed the daemon we skip the welcome screen.
+    @AppStorage("orch_onboarded") var onboarded = false
 
     // Per-card shell state (keyed by task id so it survives selecting away and back).
     @Published var shellOpen: Set<UUID> = []
@@ -60,14 +65,69 @@ final class BoardModel: ObservableObject {
 
     // MARK: lifecycle
 
+    private var streamStarted = false
+
+    /// Launch-time bootstrap. We never install the background daemon implicitly — that's an explicit,
+    /// approved step. Flow:
+    ///   • daemon already running        → attach (and consider the user onboarded)
+    ///   • first run, daemon not running → show the welcome / install screen
+    ///   • returning user, daemon down   → stay offline; the banner offers a one-click restart
+    func bootstrap() async {
+        if DaemonLifecycle().isRunning() {
+            onboarded = true
+            await start()
+        } else if !onboarded {
+            showOnboarding = true
+        } else {
+            connected = false
+        }
+    }
+
+    /// Invoked from the onboarding screen's primary button. Installs + starts the daemon and, on
+    /// success, marks onboarding complete and dismisses the welcome screen.
+    func installDaemon() async {
+        await ensureDaemonAndStart()
+        if connected {
+            onboarded = true
+            showOnboarding = false
+        }
+    }
+
+    /// Ensure the background daemon is installed/running, then connect and start streaming. This is
+    /// the user-approved path (button / banner) — it may install the LaunchAgent on first use.
+    func ensureDaemonAndStart() async {
+        guard !connecting else { return }
+        connecting = true
+        defer { connecting = false }
+
+        let life = DaemonLifecycle()
+        if !life.isRunning() {
+            try? life.ensureRunning(orchestradBin: Self.bundledDaemonBinary())
+        }
+        await start()
+    }
+
+    /// Path to the orchestrad we ship inside the app bundle (Contents/Resources/bin). Falls back to a
+    /// sibling/PATH lookup for dev runs where the binary isn't embedded.
+    static func bundledDaemonBinary() -> String {
+        let embedded = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/bin/orchestrad").path
+        if FileManager.default.isExecutableFile(atPath: embedded) { return embedded }
+        return siblingBinary("orchestrad")
+    }
+
     func start() async {
         // Retry briefly — the daemon may still be binding its socket right after launch.
-        for _ in 0..<15 {
+        connected = false
+        for _ in 0..<25 {
             do { try client.connect(); connected = true; break }
-            catch { connected = false; try? await _Concurrency.Task.sleep(for: .milliseconds(200)) }
+            catch { try? await _Concurrency.Task.sleep(for: .milliseconds(200)) }
         }
+        guard connected else { return }
         await refresh()
-        // live event stream
+        // live event stream — only wire it once, even across reconnect attempts.
+        guard !streamStarted else { return }
+        streamStarted = true
         let stream = client.subscribe()
         _Concurrency.Task { [weak self] in
             for await event in stream { await self?.apply(event) }
@@ -78,7 +138,7 @@ final class BoardModel: ObservableObject {
         if let list = try? await client.call("list", .object([:])).decode([Task].self) { tasks = list }
         if let arch = try? await client.call("archivedList").decode([Task].self) { archived = arch }
         if let cfg = try? await client.call("getConfig").decode(Config.self) { config = cfg }
-        if let ms = try? await client.call("models").decode([String].self) { models = ms }
+        if let ms = try? await client.call("models").decode([AgentModel].self) { models = ms }
     }
 
     private func apply(_ event: Event) {
@@ -131,7 +191,10 @@ final class BoardModel: ObservableObject {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
     func restart(_ id: UUID) async {
-        _ = try? await client.call("restart", .object(["ref": .string(id.uuidString)]))
+        do {
+            _ = try await client.call("restart", .object(["ref": .string(id.uuidString)]))
+            toast("Started a new session", sub: nil)
+        } catch { toast("Couldn't start session", sub: "\(error)", color: .red) }
     }
     func resume(_ id: UUID) async {
         do { _ = try await client.call("resume", .object(["ref": .string(id.uuidString)])) }

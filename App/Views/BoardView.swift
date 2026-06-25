@@ -13,14 +13,16 @@ struct BoardView: View {
     ]
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 14) {
-                ForEach(Self.columns, id: \.0) { col, label in
-                    ColumnView(column: col, label: label)
-                }
+        // Three fixed columns share the width equally and fill the height. Each column scrolls its
+        // own cards vertically, so the board itself doesn't need to scroll.
+        HStack(alignment: .top, spacing: 14) {
+            ForEach(Self.columns, id: \.0) { col, label in
+                ColumnView(column: col, label: label)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .padding(16)
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.winBg)
     }
 }
@@ -42,7 +44,7 @@ private struct ColumnView: View {
             header
             content
         }
-        .frame(minWidth: 210, maxWidth: .infinity, alignment: .top)
+        .frame(minWidth: 210, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .fill(isTargeted ? theme.overTint : theme.colBg)
@@ -107,32 +109,37 @@ private struct ColumnView: View {
     @ViewBuilder private var content: some View {
         if cards.isEmpty {
             emptyPlaceholder
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else {
-            VStack(spacing: model.density.cardGap) {
-                ForEach(cards) { task in
-                    CardView(task: task)
-                        .draggable(task.id.uuidString)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: model.density.cardGap) {
+                    ForEach(cards) { task in
+                        CardView(task: task)
+                            .draggable(task.id.uuidString)
+                    }
                 }
+                .padding(.top, 2)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
             }
-            .padding(.top, 2)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 12)
+            .frame(maxHeight: .infinity)
         }
     }
 
     private var emptyPlaceholder: some View {
-        Text("Drop a card here")
-            .font(F.ui(11.5))
-            .foregroundStyle(theme.text2)
-            .frame(maxWidth: .infinity)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .foregroundStyle(theme.hair)
-            )
-            .padding(.top, 2)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 12)
+        VStack(spacing: 9) {
+            Image(systemName: "tray")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(theme.text3)
+            Text("No agents here")
+                .font(F.ui(12, .medium))
+                .foregroundStyle(theme.text2)
+            Text("Drag a card in, or click + to spawn one")
+                .font(F.ui(11))
+                .foregroundStyle(theme.text3)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 16)
+        .opacity(isTargeted ? 0.35 : 1)
     }
 }

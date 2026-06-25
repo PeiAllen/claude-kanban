@@ -1,11 +1,14 @@
 import SwiftUI
 import OrchestraCore
 
-/// The 53px application toolbar (ui-spec §3.2, §4.1). Native window chrome provides the traffic
-/// lights, so this view starts at the app-identity group.
+/// The 53px application toolbar (ui-spec §3.2, §4.1). The window uses a hidden title bar, so the
+/// traffic lights overlay the top-left of this toolbar — the leading inset clears them.
 struct ToolbarView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+
+    /// Shared with WindowConfigurator so the traffic lights center in this exact band.
+    static let height: CGFloat = 52
 
     var body: some View {
         HStack(spacing: 10) {
@@ -17,8 +20,8 @@ struct ToolbarView: View {
             themeToggle
             newAgentButton
         }
-        .padding(.horizontal, 14)
-        .frame(height: 53)
+        .padding(.leading, 80).padding(.trailing, 14)
+        .frame(height: Self.height)
         .background(theme.toolbar)
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -54,25 +57,39 @@ struct ToolbarView: View {
 
     // MARK: - MCP chip
 
+    /// Connected → a static status pill. Offline → a button that (re)starts + connects the daemon.
     private var mcpChip: some View {
-        HStack(spacing: 7) {
-            PulseDot(color: model.connected ? theme.green.dot : theme.gray.dot,
-                     size: 7,
-                     active: model.connected)
-            Text(model.connected
-                 ? "MCP connected · \(model.activeAgentCount) agents"
-                 : "MCP offline")
-                .font(F.ui(11.5, .medium))
-                .foregroundStyle(theme.text)
+        Button {
+            guard !model.connected else { return }
+            _Concurrency.Task { await model.ensureDaemonAndStart() }
+        } label: {
+            HStack(spacing: 7) {
+                PulseDot(color: dotColor, size: 7, active: model.connected || model.connecting)
+                Text(chipLabel)
+                    .font(F.ui(11.5, .medium))
+                    .foregroundStyle(theme.text)
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 11)
+            .background(Capsule(style: .continuous).fill(theme.chip))
+            .overlay(Capsule(style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+            .contentShape(Capsule())
         }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 11)
-        .background(
-            Capsule(style: .continuous).fill(theme.chip)
-        )
-        .overlay(
-            Capsule(style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5)
-        )
+        .buttonStyle(.plain)
+        .disabled(model.connected)
+        .help(model.connected ? "Daemon connected" : "Click to start the Orchestra daemon")
+    }
+
+    private var dotColor: Color {
+        if model.connected { return theme.green.dot }
+        if model.connecting { return theme.amber.dot }
+        return theme.gray.dot
+    }
+
+    private var chipLabel: String {
+        if model.connected { return "MCP connected · \(model.activeAgentCount) agents" }
+        if model.connecting { return "Starting daemon…" }
+        return "MCP offline · Start"
     }
 
     // MARK: - Done / Activity buttons
@@ -138,6 +155,7 @@ struct ToolbarView: View {
                         .shadow(color: active ? Color(r: 0, g: 0, b: 0, a: 0.16) : .clear,
                                 radius: 1, x: 0, y: 1)
                 )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -146,7 +164,7 @@ struct ToolbarView: View {
 
     private var newAgentButton: some View {
         Button {
-            model.spawnDefaultColumn = .impl
+            model.spawnDefaultColumn = .plan
             model.showSpawn = true
         } label: {
             HStack(spacing: 6) {
