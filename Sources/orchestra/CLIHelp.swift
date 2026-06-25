@@ -23,6 +23,8 @@ enum CLIHelp {
       ping | version
 
     A <ref> is a card UUID, shortId, or orchestra://task/<ref> URI.
+    Use `--` to end flag parsing when a message/command contains `--tokens`
+      (e.g. orchestra send <ref> -- run with --verbose).
     Set ORCHESTRA_SOCK to target a non-default daemon socket.
     """
 }

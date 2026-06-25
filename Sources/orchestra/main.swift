@@ -13,8 +13,7 @@ func die(_ msg: String, code: Int32 = 1) -> Never {
 }
 
 func printJSON(_ value: JSONValue) {
-    let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    if let data = try? e.encode(value), let s = String(data: data, encoding: .utf8) { print(s) }
+    if let data = try? OrchestraJSON.pretty.encode(value), let s = String(data: data, encoding: .utf8) { print(s) }
 }
 
 guard let verb = args.first else {

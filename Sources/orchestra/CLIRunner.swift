@@ -151,9 +151,15 @@ enum CLIRunner {
             }
         }
         let r = try await client.call("batch-spawn", .object(["tasks": .array(tasks)]))
-        let created = (try? r.decode([Task].self)) ?? []
-        print("spawned \(created.count) card(s)")
-        for t in created { print("  \(t.ref())") }
+        let result = try r.decode(BatchSpawnResult.self)
+        print("spawned \(result.spawned.count) card(s)")
+        for t in result.spawned { print("  \(t.ref())") }
+        if !result.failed.isEmpty {
+            FileHandle.standardError.write(Data("failed \(result.failed.count):\n".utf8))
+            for f in result.failed {
+                FileHandle.standardError.write(Data("  [\(f.index)] \(f.prompt): \(f.error)\n".utf8))
+            }
+        }
     }
 
     static func optional(_ key: String, _ value: String?) -> [String: JSONValue] {
@@ -172,6 +178,9 @@ struct Flags {
         var i = 0
         while i < args.count {
             let a = args[i]
+            if a == "--" {   // end-of-flags: everything after is a literal positional
+                positionals.append(contentsOf: args[(i + 1)...]); break
+            }
             if a.hasPrefix("--") {
                 let key = String(a.dropFirst(2))
                 if i + 1 < args.count && !args[i + 1].hasPrefix("--") {

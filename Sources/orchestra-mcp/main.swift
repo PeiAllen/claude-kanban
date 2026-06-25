@@ -14,7 +14,7 @@ func logErr(_ s: String) { FileHandle.standardError.write(Data("[orchestra-mcp] 
 func toMCPValue(_ jv: JSONValue) -> Value { (try? Value(jv)) ?? .null }
 func argsToJSON(_ args: [String: Value]?) -> JSONValue {
     guard let args else { return .object([:]) }
-    let data = (try? JSONEncoder().encode(args)) ?? Data("{}".utf8)
+    let data = (try? OrchestraJSON.wire.encode(args)) ?? Data("{}".utf8)
     return (try? JSONValue.parse(data)) ?? .object([:])
 }
 

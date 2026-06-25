@@ -40,7 +40,8 @@ enum ReportHelper {
                 sessionId: p["session_id"]?.stringValue,
                 transcriptPath: p["transcript_path"]?.stringValue,
                 ctxPct: p["context_window"]?["used_percentage"]?.doubleValue,
-                model: p["model"]?["display_name"]?.stringValue,
+                modelId: p["model"]?["id"]?.stringValue,            // launch id (for resume/restart)
+                modelDisplay: p["model"]?["display_name"]?.stringValue,  // UI label only
                 sessionName: p["session_name"]?.stringValue)
         case "session":
             return StatusReport(
