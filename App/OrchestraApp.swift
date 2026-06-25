@@ -167,17 +167,19 @@ struct PopoverScrim: View {
 }
 
 /// Draggable divider between the board and the inspector — grab anywhere in the 8px hit strip and
-/// drag to resize the inspector (clamped). Persisted width lives on ContentView.
+/// drag to resize the inspector (clamped). Persisted width lives on ContentView. The strip is backed
+/// by a non-window-draggable AppKit view so the drag resizes instead of moving the whole window.
 struct InspectorResizer: View {
     @Binding var width: Double
     @Environment(\.theme) var theme
     @State private var startWidth: Double?
 
     var body: some View {
-        Rectangle()
-            .fill(theme.hair)
-            .frame(width: 0.5)
-            .overlay(Color.clear.frame(width: 9).contentShape(Rectangle()))
+        theme.hair.frame(width: 0.5)
+            .frame(width: 8)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .background(NonWindowDraggable())
             .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
             .gesture(
                 DragGesture(minimumDistance: 1)
@@ -192,44 +194,61 @@ struct InspectorResizer: View {
     }
 }
 
+/// An AppKit view whose region never initiates a window drag, so a SwiftUI gesture on top of it
+/// (the resize handle) works even under a full-size-content / movable window.
+struct NonWindowDraggable: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NoDragView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+    private final class NoDragView: NSView {
+        override var mouseDownCanMoveWindow: Bool { false }
+    }
+}
+
 /// Pulls the SwiftUI content under a transparent, full-size titlebar and vertically centers the
-/// traffic lights within the app toolbar band, so the window chrome reads as one unified bar.
+/// traffic lights in the app toolbar band, so the chrome reads as one unified bar. Implemented as a
+/// real NSView so it configures reliably from `viewDidMoveToWindow` (the window exists by then) and
+/// re-centers on the events that make AppKit reset the buttons.
 struct WindowConfigurator: NSViewRepresentable {
     let toolbarHeight: CGFloat
+    func makeNSView(context: Context) -> NSView { ConfiguratorView(toolbarHeight: toolbarHeight) }
+    func updateNSView(_ nsView: NSView, context: Context) { (nsView as? ConfiguratorView)?.center() }
 
-    func makeCoordinator() -> Coordinator { Coordinator(toolbarHeight: toolbarHeight) }
-
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView()
-        DispatchQueue.main.async { context.coordinator.attach(v.window) }
-        return v
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { context.coordinator.reposition() }
-    }
-
-    final class Coordinator: NSObject {
+    private final class ConfiguratorView: NSView {
         let toolbarHeight: CGFloat
-        weak var window: NSWindow?
-        init(toolbarHeight: CGFloat) { self.toolbarHeight = toolbarHeight }
+        private var tokens: [NSObjectProtocol] = []
 
-        func attach(_ window: NSWindow?) {
-            guard let window, self.window == nil else { return }
-            self.window = window
+        init(toolbarHeight: CGFloat) {
+            self.toolbarHeight = toolbarHeight
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            tokens.forEach { NotificationCenter.default.removeObserver($0) }
+            tokens.removeAll()
+            guard let window else { return }
+
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = true
-            NotificationCenter.default.addObserver(self, selector: #selector(repositionNote),
-                                                   name: NSWindow.didResizeNotification, object: window)
-            reposition()
+            window.isMovableByWindowBackground = false   // let the resize handle work; titlebar still drags
+
+            // AppKit re-lays-out the traffic lights on these; re-center each time so they stay aligned.
+            for name in [NSWindow.didResizeNotification, NSWindow.didBecomeKeyNotification,
+                         NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+                tokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) {
+                    [weak self] _ in self?.center()
+                })
+            }
+            center()
+            // Beat AppKit's own post-launch relayout passes.
+            DispatchQueue.main.async { [weak self] in self?.center() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.center() }
         }
 
-        @objc private func repositionNote() { reposition() }
-
-        /// Center the three standard window buttons in the top `toolbarHeight` band. AppKit lays them
-        /// out near the very top by default; we nudge them down so they line up with the toolbar.
-        func reposition() {
+        /// Center the three standard window buttons in the top `toolbarHeight` band.
+        func center() {
             guard let window else { return }
             let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
                 .compactMap { window.standardWindowButton($0) }
@@ -241,6 +260,7 @@ struct WindowConfigurator: NSViewRepresentable {
                 }
             }
         }
+        // Observers are torn down at the top of viewDidMoveToWindow (incl. when window becomes nil).
     }
 }
 
