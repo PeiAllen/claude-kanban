@@ -36,7 +36,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             theme.winBg.ignoresSafeArea()
-            WindowConfigurator(toolbarHeight: ToolbarView.height)
+            WindowConfigurator()
 
             VStack(spacing: 0) {
                 ToolbarView()
@@ -45,17 +45,27 @@ struct ContentView: View {
                     OfflineBanner()
                     Divider().overlay(theme.hair)
                 }
-                HStack(spacing: 0) {
-                    BoardView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if model.selected != nil {
-                        InspectorResizer(width: $inspectorWidth)
-                        InspectorView()
-                            .frame(width: inspectorWidth)
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        BoardView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if model.selected != nil {
+                            // Allow dragging the inspector out nearly all the way — leave only a thin
+                            // board sliver so the divider stays grabbable to pull it back.
+                            InspectorResizer(width: $inspectorWidth,
+                                             maxWidth: max(360, geo.size.width - 56))
+                            InspectorView()
+                                .frame(width: inspectorWidth)
+                        }
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
                 .frame(maxHeight: .infinity)
             }
+            // Pull the toolbar up under the (hidden) titlebar so it shares the band with the traffic
+            // lights. Without this, the title-bar safe-area inset pushes the toolbar down, leaving an
+            // empty strip above it that looks like the old native bar.
+            .ignoresSafeArea(.container, edges: .top)
 
             // Spawn sheet overlay
             if model.showSpawn {
@@ -171,6 +181,9 @@ struct PopoverScrim: View {
 /// by a non-window-draggable AppKit view so the drag resizes instead of moving the whole window.
 struct InspectorResizer: View {
     @Binding var width: Double
+    /// Upper bound for the drag — supplied by the parent from the live window width so the inspector
+    /// can be pulled out nearly the whole way.
+    var maxWidth: Double = 760
     @Environment(\.theme) var theme
     @State private var startWidth: Double?
 
@@ -187,7 +200,7 @@ struct InspectorResizer: View {
                         let base = startWidth ?? width
                         if startWidth == nil { startWidth = width }
                         // Dragging left (negative translation) widens the inspector.
-                        width = min(760, max(320, base - Double(v.translation.width)))
+                        width = min(maxWidth, max(320, base - Double(v.translation.width)))
                     }
                     .onEnded { _ in startWidth = nil }
             )
@@ -204,63 +217,23 @@ struct NonWindowDraggable: NSViewRepresentable {
     }
 }
 
-/// Pulls the SwiftUI content under a transparent, full-size titlebar and vertically centers the
-/// traffic lights in the app toolbar band, so the chrome reads as one unified bar. Implemented as a
-/// real NSView so it configures reliably from `viewDidMoveToWindow` (the window exists by then) and
-/// re-centers on the events that make AppKit reset the buttons.
+/// Static, one-time window setup: pull the SwiftUI content under a transparent full-size titlebar so
+/// our toolbar occupies the same band as the traffic lights (the toolbar then lays itself out to line
+/// up — no runtime querying or moving of the OS buttons). Also disables move-by-background so the
+/// inspector resize handle works. Done from `viewDidMoveToWindow`, where the window already exists.
 struct WindowConfigurator: NSViewRepresentable {
-    let toolbarHeight: CGFloat
-    func makeNSView(context: Context) -> NSView { ConfiguratorView(toolbarHeight: toolbarHeight) }
-    func updateNSView(_ nsView: NSView, context: Context) { (nsView as? ConfiguratorView)?.center() }
+    func makeNSView(context: Context) -> NSView { ConfiguratorView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ConfiguratorView: NSView {
-        let toolbarHeight: CGFloat
-        private var tokens: [NSObjectProtocol] = []
-
-        init(toolbarHeight: CGFloat) {
-            self.toolbarHeight = toolbarHeight
-            super.init(frame: .zero)
-        }
-        required init?(coder: NSCoder) { fatalError() }
-
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            tokens.forEach { NotificationCenter.default.removeObserver($0) }
-            tokens.removeAll()
             guard let window else { return }
-
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = false   // let the resize handle work; titlebar still drags
-
-            // AppKit re-lays-out the traffic lights on these; re-center each time so they stay aligned.
-            for name in [NSWindow.didResizeNotification, NSWindow.didBecomeKeyNotification,
-                         NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
-                tokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) {
-                    [weak self] _ in self?.center()
-                })
-            }
-            center()
-            // Beat AppKit's own post-launch relayout passes.
-            DispatchQueue.main.async { [weak self] in self?.center() }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.center() }
+            window.isMovableByWindowBackground = false
         }
-
-        /// Center the three standard window buttons in the top `toolbarHeight` band.
-        func center() {
-            guard let window else { return }
-            let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
-                .compactMap { window.standardWindowButton($0) }
-            guard let container = buttons.first?.superview else { return }
-            for b in buttons {
-                let targetY = container.bounds.height - toolbarHeight / 2 - b.frame.height / 2
-                if abs(b.frame.origin.y - targetY) > 0.5 {
-                    b.setFrameOrigin(NSPoint(x: b.frame.origin.x, y: targetY))
-                }
-            }
-        }
-        // Observers are torn down at the top of viewDidMoveToWindow (incl. when window becomes nil).
     }
 }
 

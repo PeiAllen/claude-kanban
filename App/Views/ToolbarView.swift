@@ -7,10 +7,19 @@ struct ToolbarView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
 
-    /// Shared with WindowConfigurator so the traffic lights center in this exact band.
-    static let height: CGFloat = 52
+    // The OS traffic lights are fixed with their center ~16pt below the window top. Making the bar 32pt
+    // tall puts the bottom divider at 32pt, so 16pt is the exact midpoint between the top and the
+    // divider — the lights (and the vertically-centered content) sit on that centerline.
+    static let height: CGFloat = 32
+
+    /// Control height for the bar's chips/buttons — kept compact so they read at roughly the scale of
+    /// the 14pt traffic lights rather than towering over them.
+    private static let ctl: CGFloat = 22
 
     var body: some View {
+        // Content is vertically centered in the bar, so there's balanced breathing room above (between
+        // the window top / traffic lights and the items) and below (before the board) — no top-glued
+        // items and no large empty gap underneath. The leading inset clears the traffic lights.
         HStack(spacing: 10) {
             appIdentity
             Spacer(minLength: 8)
@@ -33,23 +42,23 @@ struct ToolbarView: View {
     // MARK: - App identity
 
     private var appIdentity: some View {
-        HStack(spacing: 9) {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(theme.accent)
-                .frame(width: 21, height: 21)
+                .frame(width: 16, height: 16)
                 .overlay(
                     Text("◧")
-                        .font(F.ui(12, .heavy))
+                        .font(F.ui(9.5, .heavy))
                         .foregroundStyle(.white)
                 )
                 .shadow(color: Color(r: 0, g: 0, b: 0, a: 0.18), radius: 1, x: 0, y: 1)
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Text("Orchestra")
-                    .font(F.ui(13.5, .semibold))
-                    .tracking(-0.135)
+                    .font(F.ui(12, .semibold))
+                    .tracking(-0.12)
                     .foregroundStyle(theme.text)
                 Text("· Personal")
-                    .font(F.ui(12.5))
+                    .font(F.ui(11))
                     .foregroundStyle(theme.text2)
             }
         }
@@ -63,14 +72,14 @@ struct ToolbarView: View {
             guard !model.connected else { return }
             _Concurrency.Task { await model.ensureDaemonAndStart() }
         } label: {
-            HStack(spacing: 7) {
-                PulseDot(color: dotColor, size: 7, active: model.connected || model.connecting)
+            HStack(spacing: 6) {
+                PulseDot(color: dotColor, size: 6, active: model.connected || model.connecting)
                 Text(chipLabel)
-                    .font(F.ui(11.5, .medium))
+                    .font(F.ui(10.5, .medium))
                     .foregroundStyle(theme.text)
             }
-            .padding(.vertical, 5)
-            .padding(.horizontal, 11)
+            .frame(height: Self.ctl)
+            .padding(.horizontal, 9)
             .background(Capsule(style: .continuous).fill(theme.chip))
             .overlay(Capsule(style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
             .contentShape(Capsule())
@@ -98,18 +107,18 @@ struct ToolbarView: View {
         Button {
             model.showDone.toggle()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Text("✓")
-                    .font(F.ui(10))
+                    .font(F.ui(9))
                     .opacity(0.6)
                 Text("Done")
-                    .font(F.ui(12, .medium))
+                    .font(F.ui(11, .medium))
             }
             .foregroundStyle(theme.text)
-            .padding(.horizontal, 11)
-            .frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.chip))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+            .padding(.horizontal, 9)
+            .frame(height: Self.ctl)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(theme.chip))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
     }
@@ -118,16 +127,16 @@ struct ToolbarView: View {
         Button {
             model.showActivity.toggle()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 EqualizerGlyph(color: theme.text)
                 Text("Activity")
-                    .font(F.ui(12, .medium))
+                    .font(F.ui(11, .medium))
             }
             .foregroundStyle(theme.text)
-            .padding(.horizontal, 11)
-            .frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.chip))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+            .padding(.horizontal, 9)
+            .frame(height: Self.ctl)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(theme.chip))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
     }
@@ -146,11 +155,11 @@ struct ToolbarView: View {
     private func segment(glyph: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(glyph)
-                .font(F.ui(12))
+                .font(F.ui(11))
                 .foregroundStyle(active ? theme.text : theme.text2)
-                .frame(width: 28, height: 24)
+                .frame(width: 24, height: 18)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(active ? theme.card : Color.clear)
                         .shadow(color: active ? Color(r: 0, g: 0, b: 0, a: 0.16) : .clear,
                                 radius: 1, x: 0, y: 1)
@@ -167,16 +176,16 @@ struct ToolbarView: View {
             model.spawnDefaultColumn = .plan
             model.showSpawn = true
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Text("+")
-                    .font(F.ui(15, .medium))
+                    .font(F.ui(13, .medium))
                 Text("New agent")
-                    .font(F.ui(12.5, .semibold))
+                    .font(F.ui(11.5, .semibold))
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 13)
-            .frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(theme.accent))
+            .padding(.horizontal, 11)
+            .frame(height: Self.ctl)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(theme.accent))
             .shadow(color: Color(r: 0, g: 0, b: 0, a: 0.16), radius: 1, x: 0, y: 1)
         }
         .buttonStyle(.plain)
