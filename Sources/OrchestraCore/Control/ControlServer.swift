@@ -35,18 +35,28 @@ public final class ControlServer: @unchecked Sendable {
     }
 
     public func stop() {
-        if serverFd >= 0 { close(serverFd); serverFd = -1 }
+        // Take and clear serverFd under the lock so acceptLoop never reads it concurrently with this
+        // close (which would risk acting on a closed/reused fd).
+        let fd = lock.withLock { let f = serverFd; serverFd = -1; return f }
+        if fd >= 0 { close(fd) }
         unlink(socketPath)
     }
 
     // MARK: - accept / connections
 
     private func acceptLoop() {
-        while serverFd >= 0 {
-            let fd = UDS.accept(serverFd)
-            if fd < 0 { continue }
-            let conn = Connection(fd: fd)
-            DispatchQueue.global().async { [weak self] in self?.serve(conn) }
+        while true {
+            let fd = lock.withLock { serverFd }
+            if fd < 0 { break }
+            let conn = UDS.accept(fd)
+            if conn < 0 {
+                // accept() returns -1 when stop() closes the listener — exit then; otherwise a
+                // transient error, so loop (re-reading serverFd avoids a busy-spin after shutdown).
+                if lock.withLock({ serverFd }) < 0 { break }
+                continue
+            }
+            let c = Connection(fd: conn)
+            DispatchQueue.global().async { [weak self] in self?.serve(c) }
         }
     }
 

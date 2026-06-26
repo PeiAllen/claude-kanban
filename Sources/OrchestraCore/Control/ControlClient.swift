@@ -27,7 +27,11 @@ public final class ControlClient: @unchecked Sendable {
     }
 
     public func close() {
+        // Guard `fd` with writeLock so we never close it out from under an in-flight `writeAll`
+        // (which would race the `fd = -1` store and risk writing to a reused fd).
+        writeLock.lock()
         if fd >= 0 { Darwin.close(fd); fd = -1 }
+        writeLock.unlock()
         stateLock.withLock {
             for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }
             pending.removeAll()
@@ -46,8 +50,12 @@ public final class ControlClient: @unchecked Sendable {
             stateLock.withLock { pending[id] = cont }
             writeLock.lock(); let ok = UDS.writeAll(fd, line); writeLock.unlock()
             if !ok {
-                stateLock.withLock { pending[id] = nil }
-                cont.resume(throwing: OrchestraError.io("write failed"))
+                // Resume ONLY if we still own the pending entry. If `close()` raced in and already
+                // resumed+removed it, `removeValue` returns nil and we skip — never double-resume
+                // (which is a fatal continuation misuse).
+                if let c = stateLock.withLock({ pending.removeValue(forKey: id) }) {
+                    c.resume(throwing: OrchestraError.io("write failed"))
+                }
             }
         }
     }
@@ -62,7 +70,12 @@ public final class ControlClient: @unchecked Sendable {
     /// request and returns a live stream.
     public func subscribe() -> AsyncStream<Event> {
         AsyncStream { cont in
-            stateLock.withLock { self.eventContinuation = cont }
+            // Finish any prior stream before replacing it, so its consumer doesn't hang forever on a
+            // continuation that will never yield or finish.
+            stateLock.withLock {
+                self.eventContinuation?.finish()
+                self.eventContinuation = cont
+            }
             _Concurrency.Task { try? await self.call("subscribe") }
         }
     }

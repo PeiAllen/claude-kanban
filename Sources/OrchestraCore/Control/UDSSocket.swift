@@ -112,8 +112,9 @@ final class LineReader {
                 return line
             }
             guard let n = UDS.read(fd, into: &buf) else {
-                // EOF: flush any trailing partial as a final line if non-empty.
-                if !pending.isEmpty { let l = pending; pending.removeAll(); return l }
+                // EOF or read error. Every wire frame is newline-terminated, so any bytes left in
+                // `pending` are an INCOMPLETE frame — drop them rather than deliver a truncated line
+                // that would parse-error (or, worse, decode into a malformed request).
                 return nil
             }
             if n > 0 { pending.append(contentsOf: buf[0..<n]) }
