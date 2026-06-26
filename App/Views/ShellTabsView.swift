@@ -22,6 +22,8 @@ struct ShellTabsView: View {
             if !minimized && !windows.isEmpty {
                 AgentTerminalView(session: task.tmuxSession, window: selectedWindow,
                                   background: theme.termBg, foreground: theme.term)
+                    // Re-create the terminal per shell tab so each attaches to its own tmux window.
+                    .id("\(task.tmuxSession):\(selectedWindow)")
                     .frame(height: panelHeight)
                     .background(theme.termBg)
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
