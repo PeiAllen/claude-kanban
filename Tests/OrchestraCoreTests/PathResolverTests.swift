@@ -63,4 +63,25 @@ struct PathResolverTests {
         let r = PathResolver(allowedRoots: [t.root])
         #expect(throws: Never.self) { try r.assertAllowed(t.root + "/worktrees/myrepo/feature-x") }
     }
+
+    @Test("rejects a ../ escape buried in a NON-existent tail (the realpath fallback path)")
+    func rejectsDotDotEscapeInNonexistentTail() throws {
+        let t = try makeTree()
+        let r = PathResolver(allowedRoots: [t.repos])
+        // `<repos>/myrepo` exists, but the tail `newbranch/../../../outside/secret` does not, so this
+        // exercises the lexical-fallback branch. It must NOT pass the textual prefix check.
+        #expect(throws: OrchestraError.self) {
+            try r.assertAllowed(t.repos + "/myrepo/newbranch/../../../outside/secret")
+        }
+    }
+
+    @Test("collapses a harmless ../ inside an allowed root (still allowed)")
+    func allowsHarmlessDotDotWithinRoot() throws {
+        let t = try makeTree()
+        let r = PathResolver(allowedRoots: [t.repos])
+        // Resolves to <repos>/myrepo/feature — inside the root — even though it routes through `..`.
+        #expect(throws: Never.self) {
+            try r.assertAllowed(t.repos + "/myrepo/sub/../feature")
+        }
+    }
 }

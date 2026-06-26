@@ -30,13 +30,21 @@ public struct PathResolver: Sendable {
         if Darwin.realpath(path, &buf) != nil {
             return String(validatingCString: buf) ?? String(cString: buf)
         }
-        // Resolve the deepest existing ancestor, then re-append the missing tail.
+        // Resolve the deepest existing ancestor, then re-append the missing tail — collapsing `.`/`..`
+        // against the realpath-resolved ancestor. This is the security crux: the tail is non-existent
+        // (so realpath can't normalize it) and the prefix check that follows is purely textual, so a
+        // literal `..` left in the tail (e.g. an attacker-chosen branch `a/../../../etc`) would let a
+        // path that resolves OUTSIDE the root still pass `hasPrefix(root)`. Collapsing here closes that.
         let ns = path as NSString
         let parent = ns.deletingLastPathComponent
         let last = ns.lastPathComponent
         guard !parent.isEmpty, parent != path, !last.isEmpty else { return nil }
         guard let resolvedParent = resolveExisting(parent) else { return nil }
-        return (resolvedParent as NSString).appendingPathComponent(last)
+        switch last {
+        case ".":  return resolvedParent
+        case "..": return (resolvedParent as NSString).deletingLastPathComponent   // can't climb above "/"
+        default:   return (resolvedParent as NSString).appendingPathComponent(last)
+        }
     }
 
     /// Resolve a repo path and assert it is allowed.
