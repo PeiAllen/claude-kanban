@@ -29,7 +29,8 @@ public struct CommandRegistry: Sendable {
                     params: schema(["col": colProp()], required: [])) { svc, p, src in
                 let col = p.optString("col").flatMap(Column.init(rawValue:))
                 let tasks = await svc.list(col)
-                await svc.logCommand("list", ref: nil, source: src)
+                // `list` is a read-only poll (app refresh + MCP clients hit it constantly) —
+                // logging it would flood the activity feed and bury real events.
                 return try JSONValue(encodable: tasks)
             },
 

@@ -12,22 +12,16 @@ struct ToolbarView: View {
     // divider — the lights (and the vertically-centered content) sit on that centerline.
     static let height: CGFloat = 32
 
-    /// Control height for the bar's chips/buttons — kept compact so they read at roughly the scale of
-    /// the 14pt traffic lights rather than towering over them.
-    private static let ctl: CGFloat = 22
-
     var body: some View {
-        // Content is vertically centered in the bar, so there's balanced breathing room above (between
-        // the window top / traffic lights and the items) and below (before the board) — no top-glued
-        // items and no large empty gap underneath. The leading inset clears the traffic lights.
+        // This view is the toolbar BACKGROUND strip + app identity only. It renders in the SwiftUI
+        // content, under the transparent title bar. The interactive controls live in `ControlsRow`,
+        // hosted in a real title-bar accessory (see WindowConfigurator) — that's the only way they
+        // receive clicks, since AppKit's title-bar container sits above this content in the shared
+        // band and would otherwise swallow every mouse-down. Identity is display-only, so it's fine
+        // for it to live here (under the title bar) where it can't be clicked.
         HStack(spacing: 10) {
             appIdentity
             Spacer(minLength: 8)
-            mcpChip
-            doneButton
-            activityButton
-            themeToggle
-            newAgentButton
         }
         .padding(.leading, 80).padding(.trailing, 14)
         .frame(height: Self.height)
@@ -61,6 +55,41 @@ struct ToolbarView: View {
                     .font(F.ui(11))
                     .foregroundStyle(theme.text2)
             }
+        }
+    }
+}
+
+/// The interactive toolbar controls, hosted in a real title-bar accessory so they sit on the
+/// traffic-light row and actually receive clicks (see WindowConfigurator). The accessory is a
+/// separate NSHostingView outside ContentView's environment, so this wrapper observes the model and
+/// re-supplies the theme (which recomputes when dark mode / accent change).
+struct ToolbarControls: View {
+    @EnvironmentObject var model: BoardModel
+    var body: some View {
+        ControlsRow()
+            .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+            .padding(.trailing, 14)
+            .frame(height: ToolbarView.height)
+            .fixedSize()
+    }
+}
+
+/// The trailing cluster of toolbar controls (MCP status, Done, Activity, theme toggle, New agent).
+struct ControlsRow: View {
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) var theme: Theme
+
+    /// Control height for the bar's chips/buttons — kept compact so they read at roughly the scale of
+    /// the 14pt traffic lights rather than towering over them.
+    private static let ctl: CGFloat = 22
+
+    var body: some View {
+        HStack(spacing: 10) {
+            mcpChip
+            doneButton
+            activityButton
+            themeToggle
+            newAgentButton
         }
     }
 
@@ -121,6 +150,13 @@ struct ToolbarView: View {
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
+        // Anchor the popover to the button itself so it drops from the control with an arrow,
+        // instead of floating at a hardcoded offset in the window.
+        .popover(isPresented: $model.showDone, arrowEdge: .bottom) {
+            DonePopover()
+                .environmentObject(model)
+                .environment(\.theme, theme)
+        }
     }
 
     private var activityButton: some View {
@@ -139,6 +175,11 @@ struct ToolbarView: View {
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
+        .popover(isPresented: $model.showActivity, arrowEdge: .bottom) {
+            ActivityPopover()
+                .environmentObject(model)
+                .environment(\.theme, theme)
+        }
     }
 
     // MARK: - Light/Dark segmented toggle

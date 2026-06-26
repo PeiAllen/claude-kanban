@@ -31,8 +31,9 @@ struct ActivityPopover: View {
             if tab == .live { liveTab } else { cliTab }
         }
         .frame(width: 312)
-        .surface(theme.panelOpaque, corner: 13, hair: theme.hair)
-        .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.26), radius: 24, x: 0, y: 16)
+        // Hosted in a native `.popover` (anchored to the Activity button), which supplies the bubble,
+        // arrow, and shadow — so the content only needs to fill itself with the panel color.
+        .background(theme.panelOpaque)
     }
 
     private func tabButton(_ label: String, _ value: Tab) -> some View {

@@ -40,7 +40,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             theme.winBg.ignoresSafeArea()
-            WindowConfigurator()
+            WindowConfigurator(model: model)
 
             VStack(spacing: 0) {
                 ToolbarView()
@@ -100,17 +100,8 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            // Popovers
-            if model.showDone {
-                PopoverScrim { model.showDone = false }
-                DonePopover().frame(width: 460).padding(.top, 48).padding(.trailing, 268)
-                    .frame(maxWidth: .infinity, alignment: .topTrailing)
-            }
-            if model.showActivity {
-                PopoverScrim { model.showActivity = false }
-                ActivityPopover().frame(width: 312).padding(.top, 48).padding(.trailing, 120)
-                    .frame(maxWidth: .infinity, alignment: .topTrailing)
-            }
+            // The Done / Activity popovers are anchored to their toolbar buttons via SwiftUI's
+            // `.popover` (see ControlsRow) — they're no longer free-floating overlays here.
 
             // Toasts (bottom-right)
             VStack(alignment: .trailing, spacing: 9) {
@@ -127,8 +118,6 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
-        .animation(.easeOut(duration: 0.16), value: model.showDone)
-        .animation(.easeOut(duration: 0.16), value: model.showActivity)
         .modifier(DebugLaunchHook())
     }
 }
@@ -188,13 +177,6 @@ struct OfflineBanner: View {
         .padding(.horizontal, 16).padding(.vertical, 9)
         .frame(maxWidth: .infinity)
         .background(theme.amber.tint)
-    }
-}
-
-struct PopoverScrim: View {
-    let onTap: () -> Void
-    var body: some View {
-        Color.clear.contentShape(Rectangle()).ignoresSafeArea().onTapGesture(perform: onTap)
     }
 }
 
@@ -258,10 +240,20 @@ struct NonWindowDraggable: NSViewRepresentable {
 /// up — no runtime querying or moving of the OS buttons). Also disables move-by-background so the
 /// inspector resize handle works. Done from `viewDidMoveToWindow`, where the window already exists.
 struct WindowConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { ConfiguratorView() }
+    let model: BoardModel
+    func makeNSView(context: Context) -> NSView { ConfiguratorView(model: model) }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ConfiguratorView: NSView {
+        let model: BoardModel
+        private var installedAccessory = false
+
+        init(model: BoardModel) {
+            self.model = model
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
@@ -269,6 +261,24 @@ struct WindowConfigurator: NSViewRepresentable {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = false
+
+            // Host the interactive controls in a real title-bar accessory. Controls placed in the
+            // SwiftUI content can't be clicked in this band: the bar shares the OS title-bar region,
+            // whose container view sits ABOVE the content and swallows the mouse-down. A title-bar
+            // accessory lives *inside* that container, so its controls receive clicks while the empty
+            // middle of the title bar still drags the window.
+            if !installedAccessory {
+                installedAccessory = true
+                let acc = NSTitlebarAccessoryViewController()
+                acc.layoutAttribute = .right
+                let host = NSHostingView(rootView: ToolbarControls().environmentObject(model))
+                let fit = host.fittingSize
+                host.frame = NSRect(x: 0, y: 0,
+                                    width: max(fit.width, 1),
+                                    height: max(fit.height, ToolbarView.height))
+                acc.view = host
+                window.addTitlebarAccessoryViewController(acc)
+            }
         }
     }
 }

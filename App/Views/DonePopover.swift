@@ -37,8 +37,9 @@ struct DonePopover: View {
             }
         }
         .frame(width: 460)
-        .surface(theme.panelOpaque, corner: 13, hair: theme.hair)
-        .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.26), radius: 24, x: 0, y: 16)
+        // Hosted in a native `.popover` (anchored to the Done button), which supplies the bubble,
+        // arrow, and shadow — so the content only needs to fill itself with the panel color.
+        .background(theme.panelOpaque)
     }
 }
 
