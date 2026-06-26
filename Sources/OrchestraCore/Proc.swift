@@ -81,7 +81,14 @@ public enum Proc {
         } else {
             exited.wait()
         }
-        drained.wait()   // let the readability handlers finish appending through EOF
+        // Bounded drain. Handlers normally finish at the child's EOF, but a backgrounded grandchild
+        // that inherited our stdout/stderr (e.g. `exec`-ing `foo &`) can hold the pipe open after the
+        // child itself exits — `drained.wait()` with no bound would then hang forever. After a short
+        // grace, detach the handlers and return with whatever was captured.
+        if drained.wait(timeout: .now() + .seconds(2)) == .timedOut {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+        }
 
         return ProcResult(
             stdout: String(decoding: outBox.data, as: UTF8.self),

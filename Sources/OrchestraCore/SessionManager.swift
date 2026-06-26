@@ -121,7 +121,9 @@ public struct SessionManager: Sendable {
     public func sendKeys(_ name: String, text: String, window: String = "agent") throws {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         // Literal text, then Enter — two calls so tmux doesn't interpret the text as a key name.
-        _ = try tmux(["send-keys", "-t", "\(name):\(window)", "-l", text])
+        // `--` ends option parsing so a message starting with `-` (e.g. "-x", "--foo") is sent as
+        // literal text rather than swallowed as a tmux flag.
+        _ = try tmux(["send-keys", "-t", "\(name):\(window)", "-l", "--", text])
         _ = try tmux(["send-keys", "-t", "\(name):\(window)", "Enter"])
     }
 
