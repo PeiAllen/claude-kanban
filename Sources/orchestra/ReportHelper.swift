@@ -12,9 +12,13 @@ enum ReportHelper {
         let raw = FileHandle.standardInput.readDataToEndOfFile()
         let payload = (try? JSONValue.parse(raw)) ?? .object([:])
 
-        // statusLine display happens regardless of whether the report send succeeds.
+        // statusLine display happens regardless of whether the report send succeeds. Write it
+        // UNBUFFERED and BEFORE the send: against a pipe (Claude captures stdout) stdio is
+        // block-buffered and would otherwise only flush at exit() — i.e. after the bounded send — so
+        // a momentarily-slow daemon could stall the self-healing status bar. The bar must never wait
+        // on the network. FileHandle.write bypasses stdio buffering.
         if kind == "statusline" {
-            print(renderStatusLine(payload: payload, raw: raw), terminator: "")
+            FileHandle.standardOutput.write(Data(renderStatusLine(payload: payload, raw: raw).utf8))
         }
 
         guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty else { return }
@@ -136,20 +140,18 @@ enum ReportHelper {
     // MARK: bounded send
 
     /// Send the report, returning as soon as the daemon acks OR the budget elapses — whichever is
-    /// first. (Awaiting the full budget unconditionally would make every hook block for the whole
-    /// window even when the local UDS round-trip is sub-millisecond.)
+    /// first. Critically, on a budget trip we `close()` the client, which RESUMES the in-flight
+    /// `call` with an error so the send task ends immediately. (Cancellation alone wouldn't bound it:
+    /// `call` is a CheckedContinuation that doesn't observe cancellation, so without the close the
+    /// task group would still implicitly await the full round-trip and the "budget" would be a lie.)
     static func boundedSend(sock: String, params: JSONValue, budgetMs: Int) async {
+        let client = ControlClient(socketPath: sock, source: .agent)
+        do { try client.connect() } catch { return }
         await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                let client = ControlClient(socketPath: sock, source: .agent)
-                do { try client.connect() } catch { return }
-                _ = try? await client.call("report", params)
-                client.close()
-            }
-            group.addTask {
-                try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs))
-            }
+            group.addTask { _ = try? await client.call("report", params) }
+            group.addTask { try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs)) }
             await group.next()   // first to finish: send completed, or budget tripped
+            client.close()       // unblock the send if the budget tripped; idempotent if it acked
             group.cancelAll()
         }
     }
