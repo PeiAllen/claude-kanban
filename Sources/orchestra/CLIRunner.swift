@@ -61,7 +61,9 @@ enum CLIRunner {
             case "exec":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let cmd = flags.value("cmd") ?? flags.positionalsFrom(1).joined(separator: " ")
-                let r = try await client.call("exec", .object(["ref": .string(ref), "cmd": .string(cmd)]))
+                var execParams: [String: JSONValue] = ["ref": .string(ref), "cmd": .string(cmd)]
+                if let t = flags.value("timeout").flatMap(Int.init) { execParams["timeout"] = .int(t) }
+                let r = try await client.call("exec", .object(execParams))
                 let res = try r.decode(ExecResult.self)
                 if !res.stdout.isEmpty { FileHandle.standardOutput.write(Data(res.stdout.utf8)) }
                 if !res.stderr.isEmpty { FileHandle.standardError.write(Data(res.stderr.utf8)) }
@@ -159,6 +161,7 @@ enum CLIRunner {
             for f in result.failed {
                 FileHandle.standardError.write(Data("  [\(f.index)] \(f.prompt): \(f.error)\n".utf8))
             }
+            exit(1)   // non-zero so scripts can detect partial/total failure
         }
     }
 
@@ -195,7 +198,9 @@ struct Flags {
     func positionalsFrom(_ idx: Int) -> [String] { idx < positionals.count ? Array(positionals[idx...]) : [] }
     func require(_ key: String) -> String {
         if let v = value(key) { return v }
-        if let p = positional(0) { return p }
+        // No positional(0) fallback: it made multiple required flags collide onto the same bare
+        // positional (e.g. `spawn foo` → prompt=repo=branch=foo). Ref-style commands that DO accept a
+        // bare positional already do `positional(0) ?? require("ref")` at the call site.
         die("missing --\(key)")
     }
 }
