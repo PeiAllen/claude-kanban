@@ -30,8 +30,12 @@ struct ContentView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme
 
-    /// Inspector width, drag-resizable via the divider and persisted across launches.
-    @AppStorage("inspectorWidth") private var inspectorWidth: Double = 392
+    /// Inspector width, persisted across launches. During a live drag we don't touch this (a
+    /// per-frame UserDefaults write + KVO fan-out makes the drag stutter); `dragWidth` holds the
+    /// in-flight value and we commit it back here only when the drag ends.
+    @AppStorage("inspectorWidth") private var savedInspectorWidth: Double = 392
+    /// Non-nil only while the divider is being dragged — the live width that drives layout.
+    @State private var dragWidth: Double? = nil
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -46,19 +50,37 @@ struct ContentView: View {
                     Divider().overlay(theme.hair)
                 }
                 GeometryReader { geo in
-                    HStack(spacing: 0) {
+                    // The board fills the area to the left of the inspector. While the split can
+                    // give up room the board just shrinks. Once the inspector is dragged wider than
+                    // that — the board has hit its ~690pt minimum (3 columns) — the board stops
+                    // shrinking and the inspector slides *over* it instead of shoving the whole row
+                    // off-screen.
+                    let w = Double(geo.size.width)
+                    let h = Double(geo.size.height)
+                    let boardMin = 690.0
+                    let hasInspector = model.selected != nil
+                    let inspectorWidth = dragWidth ?? savedInspectorWidth
+                    let split = w - inspectorWidth
+                    let boardW = hasInspector ? max(boardMin, split) : w
+                    ZStack(alignment: .topLeading) {
                         BoardView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if model.selected != nil {
-                            // Allow dragging the inspector out nearly all the way — leave only a thin
-                            // board sliver so the divider stays grabbable to pull it back.
-                            InspectorResizer(width: $inspectorWidth,
-                                             maxWidth: max(360, geo.size.width - 56))
-                            InspectorView()
-                                .frame(width: inspectorWidth)
+                            .frame(width: boardW, height: h)
+                        if hasInspector {
+                            HStack(spacing: 0) {
+                                // Allow dragging the inspector out nearly all the way — leave only a
+                                // thin board sliver so the divider stays grabbable to pull it back.
+                                InspectorResizer(width: inspectorWidth,
+                                                 maxWidth: max(360, geo.size.width - 56),
+                                                 onChange: { dragWidth = $0 },
+                                                 onEnd: { savedInspectorWidth = $0; dragWidth = nil })
+                                InspectorView()
+                                    .frame(width: inspectorWidth)
+                            }
+                            .frame(width: w, height: h, alignment: .trailing)
                         }
                     }
-                    .frame(width: geo.size.width, height: geo.size.height)
+                    .frame(width: w, height: h, alignment: .topLeading)
+                    .clipped()
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -180,12 +202,22 @@ struct PopoverScrim: View {
 /// drag to resize the inspector (clamped). Persisted width lives on ContentView. The strip is backed
 /// by a non-window-draggable AppKit view so the drag resizes instead of moving the whole window.
 struct InspectorResizer: View {
-    @Binding var width: Double
+    /// Current (live) inspector width — read-only; changes are reported via the closures below.
+    var width: Double
     /// Upper bound for the drag — supplied by the parent from the live window width so the inspector
     /// can be pulled out nearly the whole way.
     var maxWidth: Double = 760
+    /// Called every drag frame with the new width (parent keeps this in cheap @State).
+    var onChange: (Double) -> Void
+    /// Called once when the drag ends with the final width (parent persists it).
+    var onEnd: (Double) -> Void
     @Environment(\.theme) var theme
     @State private var startWidth: Double?
+
+    private func resolve(_ translation: CGFloat, base: Double) -> Double {
+        // Dragging left (negative translation) widens the inspector.
+        min(maxWidth, max(320, base - Double(translation)))
+    }
 
     var body: some View {
         theme.hair.frame(width: 0.5)
@@ -195,14 +227,18 @@ struct InspectorResizer: View {
             .background(NonWindowDraggable())
             .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
             .gesture(
-                DragGesture(minimumDistance: 1)
+                // Measure in GLOBAL space: the handle re-lays-out to a new x on every width change,
+                // so a .local translation would be measured against a moving origin and jitter.
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { v in
-                        let base = startWidth ?? width
                         if startWidth == nil { startWidth = width }
-                        // Dragging left (negative translation) widens the inspector.
-                        width = min(maxWidth, max(320, base - Double(v.translation.width)))
+                        onChange(resolve(v.translation.width, base: startWidth ?? width))
                     }
-                    .onEnded { _ in startWidth = nil }
+                    .onEnded { v in
+                        let base = startWidth ?? width
+                        startWidth = nil
+                        onEnd(resolve(v.translation.width, base: base))
+                    }
             )
     }
 }
