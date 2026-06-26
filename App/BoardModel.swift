@@ -125,13 +125,25 @@ final class BoardModel: ObservableObject {
         }
         guard connected else { return }
         await refresh()
-        // live event stream — only wire it once, even across reconnect attempts.
+        // Live event stream. Re-wire it on every (re)connect: when the daemon restarts, the previous
+        // stream ends, so a one-shot subscribe would leave the board doing a single refresh and then
+        // going permanently silent. `streamStarted` only guards against double-subscribing while one
+        // is already live; it's reset when the stream ends (below).
         guard !streamStarted else { return }
         streamStarted = true
         let stream = client.subscribe()
         _Concurrency.Task { [weak self] in
             for await event in stream { await self?.apply(event) }
+            // Stream ended → the daemon connection dropped. Reflect offline and allow the next
+            // (re)connect to wire a fresh stream.
+            await self?.handleStreamEnded()
         }
+    }
+
+    /// The event stream ended (daemon went away). Surface offline and re-arm subscription.
+    private func handleStreamEnded() {
+        connected = false
+        streamStarted = false
     }
 
     func refresh() async {
@@ -148,6 +160,10 @@ final class BoardModel: ObservableObject {
                 tasks.removeAll { $0.id == t.id }
                 if let idx = archived.firstIndex(where: { $0.id == t.id }) { archived[idx] = t }
                 else { archived.insert(t, at: 0) }
+                // Archived elsewhere (CLI/MCP/another client): it left the board, so don't keep the
+                // inspector pinned to it (`selected` also searches `archived`, so it wouldn't clear
+                // on its own).
+                if selectedId == t.id { selectedId = nil }
             } else {
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
@@ -157,6 +173,8 @@ final class BoardModel: ObservableObject {
             tasks.removeAll { $0.id == id }
             archived.removeAll { $0.id == id }
             if selectedId == id { selectedId = nil }
+            // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
+            shellOpen.remove(id); shellWindows[id] = nil; selectedShell[id] = nil
         case .activity(let item):
             activity.insert(item, at: 0)
             if activity.count > 200 { activity.removeLast(activity.count - 200) }
