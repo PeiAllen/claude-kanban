@@ -17,20 +17,16 @@ public struct Launcher: Sendable {
             return
         }
 
-        // Open the worktree as the project first. Combining the directory and `--diff` pairs in ONE
-        // `zed` invocation opens the project but silently drops the diff, so the multi-diff must be a
-        // SECOND invocation — Zed then drops the diff into the (now-focused) worktree workspace.
-        let opened = try Proc.run(["zed", worktree])
-        if !opened.ok { throw OrchestraError.io(opened.stderr.isEmpty ? "zed failed to open" : opened.stderr) }
-
-        let pairs = (try? branchDiffPairs(worktree: worktree)) ?? []
-        guard !pairs.isEmpty else { return }
-        // Give a cold-started Zed a moment to come up and take the workspace before we send the diff,
-        // otherwise the second invocation can race the launch and land in the wrong (or a new) window.
-        Thread.sleep(forTimeInterval: 0.8)
-        var argv = ["zed"]
-        for (old, new) in pairs { argv += ["--diff", old, new] }
-        _ = try? Proc.run(argv)   // best-effort: the worktree is already open even if the diff fails
+        // Open the worktree project + its branch-vs-base diff in ONE new window. `-n` (new window) is
+        // essential: without it `zed --diff` routes the diff into whatever Zed window is currently
+        // focused (typically a *different* project), and reusing an existing window drops the diff
+        // entirely. A dedicated new window keeps the worktree project and the multi-diff together.
+        var argv = ["zed", "-n", worktree]
+        for (old, new) in (try? branchDiffPairs(worktree: worktree)) ?? [] {
+            argv += ["--diff", old, new]
+        }
+        let r = try Proc.run(argv)
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "zed failed to open" : r.stderr) }
     }
 
     // MARK: - branch-vs-base diff
