@@ -37,7 +37,9 @@ struct AgentTerminalView: NSViewRepresentable {
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
-        if autofocus { focusWhenReady(term) }
+        // The view has no window yet at make time, so we can't grab focus now. Flag it and let the view
+        // claim first responder the instant it's actually mounted (see ScrollableTerminalView).
+        if autofocus { term.claimFocusOnMount = true }
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
@@ -48,21 +50,8 @@ struct AgentTerminalView: NSViewRepresentable {
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             attach(nsView)
-            if autofocus { focusWhenReady(nsView) }
-        }
-    }
-
-    /// Make the terminal the window's first responder so typed keys go straight to the agent without
-    /// an extra click. The view isn't mounted in a window yet at make/attach time, so defer to the next
-    /// runloop tick(s) and retry until it has a window.
-    private func focusWhenReady(_ term: LocalProcessTerminalView, attempts: Int = 8) {
-        guard attempts > 0 else { return }
-        DispatchQueue.main.async {
-            if let window = term.window {
-                window.makeFirstResponder(term)
-            } else {
-                focusWhenReady(term, attempts: attempts - 1)
-            }
+            // By updateNSView the view is already in a window, so focus it directly.
+            if autofocus { (nsView as? ScrollableTerminalView)?.claimFocusNow() }
         }
     }
 
@@ -199,6 +188,29 @@ struct AgentTerminalView: NSViewRepresentable {
 /// normally, so nothing else regresses.
 final class ScrollableTerminalView: LocalProcessTerminalView {
     private static var monitorInstalled = false
+
+    /// When set, the view grabs keyboard focus the moment it's mounted in a window. At `makeNSView`
+    /// time the view has no window yet, and polling on a timer races the mount (the old approach drained
+    /// its retries before the view was ever in a window, so focus never landed). `viewDidMoveToWindow`
+    /// is the exact lifecycle hook — no guessing.
+    var claimFocusOnMount = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard claimFocusOnMount, window != nil else { return }
+        claimFocusOnMount = false
+        claimFocusNow()
+    }
+
+    /// Make this terminal the window's first responder so typed keys reach the agent without an extra
+    /// click. Deferred one runloop tick so SwiftUI's own focus/layout pass on the same update can't
+    /// immediately clobber it.
+    func claimFocusNow() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeFirstResponder(self)
+        }
+    }
 
     /// Install the shared scroll/motion monitor once. Safe to call repeatedly.
     static func installScrollMonitorIfNeeded() {

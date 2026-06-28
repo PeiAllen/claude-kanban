@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 import OrchestraCore
 
 /// The "Spawn a new agent" sheet. ui-spec §3.7 / §4.7.
@@ -18,7 +19,6 @@ struct SpawnSheet: View {
     @State private var branches: [String] = []
     @State private var showBranchPopover = false
     @State private var branchQuery = ""
-    @FocusState private var branchSearchFocused: Bool
 
     @State private var showRepoPopover = false
     @State private var repoQuery = ""
@@ -314,16 +314,13 @@ struct SpawnSheet: View {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11)).foregroundColor(theme.text3)
-                TextField("Search or create branch", text: $branchQuery)
-                    .textFieldStyle(.plain)
-                    .font(F.mono(12.5)).foregroundColor(theme.text)
-                    .focused($branchSearchFocused)
-                    .onSubmit {
-                        // Read branchQuery live — `q` is snapshotted at body-render time and
-                        // lags one keystroke behind when the final char + Return arrive together.
-                        let cur = branchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                        commitBranch(cur.isEmpty ? (filteredBranches.first ?? "") : cur)
-                    }
+                BranchSearchField(text: $branchQuery, textColor: theme.text) { live in
+                    // `live` is the field's own current content, read straight off the NSTextField at
+                    // Return time — unlike a SwiftUI binding it never lags the final keystroke.
+                    let cur = live.trimmingCharacters(in: .whitespacesAndNewlines)
+                    commitBranch(cur.isEmpty ? (filteredBranches.first ?? "") : cur)
+                }
+                .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 11).frame(height: 36)
 
@@ -350,7 +347,6 @@ struct SpawnSheet: View {
             .frame(maxHeight: 220)
         }
         .frame(width: 270)
-        .onAppear { branchSearchFocused = true }
     }
 
     /// Commit a branch choice (existing or new) and close the popover.
@@ -471,5 +467,77 @@ private struct ComboRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Branch search field (AppKit-backed)
+
+/// The branch search/create field, backed by an AppKit `NSTextField` rather than SwiftUI's `TextField`.
+/// SwiftUI flushes a `TextField`'s text binding asynchronously, so when the user types the final
+/// character and presses Return together, `.onSubmit` fires *before* the binding catches up and the
+/// committed branch name comes out one character short. Reading the field's own `string` at Return time
+/// is always current, so the last character is never dropped.
+private struct BranchSearchField: NSViewRepresentable {
+    @Binding var text: String
+    var textColor: Color
+    var onSubmit: (String) -> Void
+
+    func makeNSView(context: Context) -> NSTextField {
+        let tf = AutoFocusTextField()
+        tf.delegate = context.coordinator
+        tf.placeholderString = "Search or create branch"
+        tf.isBordered = false
+        tf.isBezeled = false
+        tf.drawsBackground = false
+        tf.focusRingType = .none
+        tf.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        tf.textColor = NSColor(textColor)
+        tf.cell?.usesSingleLineMode = true
+        tf.cell?.wraps = false
+        tf.cell?.isScrollable = true
+        tf.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tf.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return tf
+    }
+
+    func updateNSView(_ tf: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if tf.stringValue != text { tf.stringValue = text }
+        tf.textColor = NSColor(textColor)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: BranchSearchField
+        init(_ parent: BranchSearchField) { self.parent = parent }
+
+        func controlTextDidChange(_ note: Notification) {
+            guard let tf = note.object as? NSTextField else { return }
+            parent.text = tf.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+            if sel == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit(textView.string)   // live field content — never lags a keystroke
+                return true
+            }
+            return false
+        }
+    }
+}
+
+/// An `NSTextField` that grabs keyboard focus the instant it's mounted in a window, so the branch
+/// popover's search field is ready to type into without a click.
+private final class AutoFocusTextField: NSTextField {
+    private var didFocus = false
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard !didFocus, window != nil else { return }
+        didFocus = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self)
+        }
     }
 }
