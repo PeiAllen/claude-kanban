@@ -43,7 +43,8 @@ struct DonePopover: View {
     }
 }
 
-private struct ArchiveRow: View {
+struct ArchiveRow: View {
+    @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
 
@@ -62,19 +63,75 @@ private struct ArchiveRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(initials)
-                .font(F.mono(9, .heavy)).foregroundColor(.white)
-                .frame(width: 22, height: 22)
-                .background(theme.gray.dot)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(initials)
+                    .font(F.mono(9, .heavy)).foregroundColor(.white)
+                    .frame(width: 22, height: 22)
+                    .background(theme.gray.dot)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.title).font(F.ui(12.5, .semibold)).foregroundColor(theme.text).lineLimit(1)
-                Text("\(repoName) · \(age)").font(F.mono(10.5)).foregroundColor(theme.text2).lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(task.title).font(F.ui(12.5, .semibold)).foregroundColor(theme.text).lineLimit(1)
+                    Text("\(repoName) · \(age)").font(F.mono(10.5)).foregroundColor(theme.text2).lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+
+            // Action row (ui-spec §4.9): chat-link (agent/session id) + branch, both copyable,
+            // and "Zed" to open the worktree's changes. Indented to align under the title.
+            HStack(spacing: 6) {
+                CopyChip(icon: "link", label: "\(task.agentId)/\(task.shortId)", value: task.ref())
+                CopyChip(icon: "doc.on.doc", label: task.branch, value: task.branch)
+                Button {
+                    _Concurrency.Task { await model.openInZed(task.id) }
+                } label: {
+                    HStack(spacing: 5) {
+                        ZedBadge(size: 13, corner: 3, glyph: 8)
+                        Text("Zed").font(F.mono(10)).foregroundColor(theme.text2)
+                    }
+                    .padding(.horizontal, 8).frame(height: 22)
+                    .surface(theme.chip, corner: 6, hair: theme.hair)
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 32)
         }
         .padding(.vertical, 9).padding(.horizontal, 6)
+    }
+}
+
+/// A small pill that copies `value` to the pasteboard and flashes a checkmark. Used for the
+/// archive row's chat-link + branch buttons (ui-spec §4.9).
+private struct CopyChip: View {
+    @Environment(\.theme) var theme: Theme
+    let icon: String
+    let label: String
+    let value: String
+
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            copied = true
+            _Concurrency.Task {
+                try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
+                copied = false
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: copied ? "checkmark" : icon)
+                    .font(F.ui(8.5))
+                    .foregroundColor(copied ? theme.green.dot : theme.text3)
+                Text(label).font(F.mono(10)).foregroundColor(theme.text2).lineLimit(1)
+            }
+            .padding(.horizontal, 8).frame(height: 22)
+            .surface(theme.chip, corner: 6, hair: theme.hair)
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied!" : "Copy \(value)")
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import OrchestraCore
 
 @main
@@ -130,12 +131,76 @@ private struct DebugLaunchHook: ViewModifier {
     @Environment(\.openSettings) private var openSettings
     #endif
 
+    #if DEBUG
+    /// Two fake archived cards so `ORCH_SHOW=done` can screenshot the Done popover headlessly.
+    static var mockArchived: [Task] {
+        func mk(_ title: String, repo: String, branch: String, agent: String, model: String, ago: TimeInterval) -> Task {
+            Task(title: title, repo: repo, branch: branch,
+                 worktree: "~/worktrees/\((repo as NSString).lastPathComponent)/\(branch.replacingOccurrences(of: "/", with: "-"))",
+                 agentId: agent, model: AgentModel(id: model), startIn: .impl, column: .review, order: 0,
+                 status: .done, initialPrompt: title, archived: true,
+                 updatedAt: Date(timeIntervalSinceNow: -ago))
+        }
+        return [
+            mk("Fix passthrough statusLine timeout", repo: "/Users/allen/code/orchestra",
+               branch: "fix/statusline-timeout", agent: "claude-code", model: "claude-opus-4-8", ago: 1800),
+            mk("Add done-popover session info", repo: "/Users/allen/code/orchestra",
+               branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-4-6", ago: 7200),
+        ]
+    }
+    /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
+    /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
+    static func snapshotDone(to path: String, model: BoardModel) {
+        model.archived = mockArchived
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        // ImageRenderer can't lay out a ScrollView's children, so render the same rows in a plain
+        // VStack at the popover's real width — faithful to what DonePopover shows, minus the scroll.
+        let rows = VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text("DONE").font(F.ui(11, .semibold)).tracking(0.8).foregroundColor(theme.text2)
+                Spacer(minLength: 0)
+                Text("\(model.archived.count) tasks").font(F.ui(11)).foregroundColor(theme.text2)
+            }
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+            VStack(spacing: 0) {
+                ForEach(Array(model.archived.enumerated()), id: \.element.id) { idx, t in
+                    ArchiveRow(task: t)
+                    if idx < model.archived.count - 1 {
+                        Rectangle().fill(theme.hair).frame(height: 0.5)
+                    }
+                }
+            }
+            .padding(.horizontal, 8).padding(.bottom, 10)
+        }
+        .frame(width: 460)
+        .background(theme.panelOpaque)
+        let view = rows
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        guard let img = renderer.nsImage,
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+    }
+    #endif
+
     func body(content: Content) -> some View {
         #if DEBUG
         content.task {
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DONE"] {
+                DebugLaunchHook.snapshotDone(to: path, model: model)
+                exit(0)
+            }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {
             case "spawn": model.showSpawn = true
             case "settings": openSettings()
+            case "done":
+                model.archived = DebugLaunchHook.mockArchived
+                model.showDone = true
             default: break
             }
         }
