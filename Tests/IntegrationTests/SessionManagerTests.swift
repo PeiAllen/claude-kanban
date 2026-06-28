@@ -67,6 +67,43 @@ final class SessionManagerTests {
         try sm.kill(name)
     }
 
+    @Test("closeShellWindow removes one shell, leaves agent + siblings; refuses to kill agent")
+    func closeShell() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        let (name, _) = try sm.ensure(task, argv: keepAliveArgv)
+        _ = try sm.newShellWindow(name, cwd: cwd)   // shell-1
+        _ = try sm.newShellWindow(name, cwd: cwd)   // shell-2
+
+        try sm.closeShellWindow(name, window: "shell-1")
+        let wins = try sm.windows(name)
+        #expect(!wins.contains { $0.window == "shell-1" })
+        #expect(wins.contains { $0.window == "agent" })
+        #expect(wins.contains { $0.window == "shell-2" })
+
+        // Closing a missing window is a no-op, not an error.
+        try sm.closeShellWindow(name, window: "shell-1")
+        // The agent window is protected.
+        try sm.closeShellWindow(name, window: "agent")
+        #expect(try sm.windows(name).contains { $0.window == "agent" })
+        try sm.kill(name)
+    }
+
+    @Test("kill tears down grouped view sessions so shared windows don't leak")
+    func killReapsViewSessions() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        let (name, _) = try sm.ensure(task, argv: keepAliveArgv)
+        // Mimic a SwiftTerm client: a grouped "view" session pinned to the agent window.
+        let view = SessionManager.viewSession(name, "agent")
+        _ = try Proc.run(["tmux", "-L", socket, "new-session", "-d", "-s", view, "-t", name])
+        #expect(try sm.isAlive(view))
+
+        try sm.kill(name)
+        #expect(try !sm.isAlive(name))
+        #expect(try !sm.isAlive(view))
+    }
+
     @Test("list filters to orchestra-* sessions")
     func listFilters() throws {
         let cwd = IntegrationSupport.tempDir("sm")

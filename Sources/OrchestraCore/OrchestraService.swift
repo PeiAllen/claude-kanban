@@ -170,6 +170,11 @@ public actor OrchestraService {
         return ShellTab(window: win, label: win, pwd: t.worktree)
     }
 
+    public func closeShell(_ id: UUID, window: String) async throws {
+        let t = try await require(id)
+        try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
+    }
+
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
         let t = try await require(id)
         try resolver.assertAllowed(t.worktree)

@@ -27,6 +27,14 @@ public struct SessionManager: Sendable {
 
     public func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
+    /// Name of the throwaway *grouped* "view" session that pins one client to a single window.
+    /// Multiple SwiftTerm clients can't share one tmux session — tmux forces every client of a
+    /// session onto the same active window, so opening a shell would yank the agent terminal onto
+    /// it. Each client instead attaches to its own grouped view session: same shared window list,
+    /// but an independent active window. The double underscore can't collide with a session name
+    /// (those are `orchestra-<uuid>`, no underscores) so prefix matching in `kill` is unambiguous.
+    public static func viewSession(_ base: String, _ window: String) -> String { "\(base)__\(window)" }
+
     private func base() -> [String] {
         var b = ["tmux", "-L", socket]
         if let c = confPath { b += ["-f", c] }
@@ -72,6 +80,26 @@ public struct SessionManager: Sendable {
         let r = try tmux(["new-window", "-t", name, "-n", win, "-c", cwd])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux new-window failed" : r.stderr) }
         return win
+    }
+
+    /// Close a shell window and its grouped view session. No-op for a missing window; refuses to
+    /// touch the `agent` window (window 0) so a stray call can't kill the agent.
+    public func closeShellWindow(_ name: String, window: String) throws {
+        guard window != "agent" else { return }
+        _ = try? tmux(["kill-session", "-t", SessionManager.viewSession(name, window)])
+        let r = try tmux(["kill-window", "-t", "\(name):\(window)"])
+        // A gone window isn't an error — the caller just wants it closed.
+        if !r.ok, try isAlive(name), try windowNames(name).contains(window) {
+            throw OrchestraError.io(r.stderr.isEmpty ? "tmux kill-window failed" : r.stderr)
+        }
+    }
+
+    /// Grouped view sessions pinned to this base session's windows (named `<base>__<window>`).
+    private func viewSessions(of base: String) throws -> [String] {
+        let r = try tmux(["list-sessions", "-F", "#{session_name}"])
+        guard r.ok else { return [] }
+        let prefix = base + "__"
+        return r.stdout.split(whereSeparator: \.isNewline).map(String.init).filter { $0.hasPrefix(prefix) }
     }
 
     private func windowNames(_ name: String) throws -> [String] {
@@ -128,6 +156,11 @@ public struct SessionManager: Sendable {
     }
 
     public func kill(_ name: String) throws {
+        // Kill every grouped view session first: they share (and so keep alive) the base session's
+        // windows — including the agent pane — so killing only the base would leak the processes.
+        for view in (try? viewSessions(of: name)) ?? [] {
+            _ = try? tmux(["kill-session", "-t", view])
+        }
         guard try isAlive(name) else { return }
         _ = try tmux(["kill-session", "-t", name])
     }

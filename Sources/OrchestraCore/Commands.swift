@@ -107,6 +107,15 @@ public struct CommandRegistry: Sendable {
                 return .object(["session": .string(t.tmuxSession), "window": .string(tab.window)])
             },
 
+            Command(name: "closeShell", summary: "Close a shell window opened via `shell`.",
+                    params: schema(["ref": refProp(), "window": strProp("Shell window name, e.g. shell-1")],
+                                   required: ["ref", "window"])) { svc, p, src in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                try await svc.closeShell(t.id, window: try p.string("window"))
+                await svc.logCommand("closeShell", ref: t, source: src)
+                return .object(["ok": .bool(true)])
+            },
+
             Command(name: "exec", summary: "Run a one-shot command in the worktree.",
                     params: schema(["ref": refProp(), "cmd": strProp("Command to run (/bin/sh -c)"),
                                     "timeout": intProp("Seconds")],

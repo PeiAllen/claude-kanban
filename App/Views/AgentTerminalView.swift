@@ -22,7 +22,8 @@ struct AgentTerminalView: NSViewRepresentable {
 
     #if canImport(SwiftTerm)
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let term = LocalProcessTerminalView(frame: .zero)
+        ScrollableTerminalView.installScrollMonitorIfNeeded()
+        let term = ScrollableTerminalView(frame: .zero)
         term.processDelegate = context.coordinator
         term.font = Self.terminalFont
         applyColors(term)
@@ -68,10 +69,9 @@ struct AgentTerminalView: NSViewRepresentable {
     }
 
     private func attach(_ term: LocalProcessTerminalView) {
-        // Resolve tmux on PATH via /usr/bin/env — a Finder/launchd-launched app has a minimal PATH
-        // that omits Homebrew (where tmux lives), so a hard-coded /usr/bin/tmux doesn't exist and the
-        // terminal stayed black. Hand env an augmented PATH so `tmux` is found.
-        let args = ["tmux", "-L", socket, "attach", "-t", "\(session):\(window)"]
+        // A Finder/launchd-launched app has a minimal PATH that omits Homebrew (where tmux lives), so
+        // hand the shell an augmented PATH so bare `tmux` in the attach script resolves (otherwise the
+        // terminal stays black).
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Proc.augmentedPATH(env["PATH"])
         // A GUI-launched app inherits no locale, so the attaching tmux client falls back to non-UTF-8
@@ -80,7 +80,24 @@ struct AgentTerminalView: NSViewRepresentable {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         let envArray = env.map { "\($0.key)=\($0.value)" }
-        term.startProcess(executable: "/usr/bin/env", args: args, environment: envArray)
+        term.startProcess(executable: "/bin/sh", args: ["sh", "-c", attachScript()], environment: envArray)
+    }
+
+    /// Attach through a per-window *grouped* "view" session instead of the base session directly.
+    /// Several SwiftTerm clients (agent + each shell) are visible at once; tmux keeps every client of
+    /// a single session on the same active window, so attaching them all to `session` would make
+    /// opening a shell yank the agent terminal onto the shell window. A grouped view session shares
+    /// the window list but holds its own active window, keeping the panes disjoint. The view session
+    /// is reused if it already exists (e.g. after deselect/reselect).
+    private func attachScript() -> String {
+        let view = SessionManager.viewSession(session, window)
+        func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let sock = q(socket), v = q(view), base = q(session), win = q("\(view):\(window)")
+        return """
+        tmux -L \(sock) new-session -d -s \(v) -t \(base) 2>/dev/null
+        tmux -L \(sock) select-window -t \(win) 2>/dev/null
+        exec tmux -L \(sock) attach -t \(v)
+        """
     }
 
     final class Coordinator: NSObject, LocalProcessTerminalViewDelegate {
@@ -109,3 +126,74 @@ struct AgentTerminalView: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
     #endif
 }
+
+#if canImport(SwiftTerm)
+/// A `LocalProcessTerminalView` that makes the mouse wheel scroll tmux's scrollback.
+///
+/// tmux attaches as a full-screen application, which switches SwiftTerm to the *alternate* screen
+/// buffer. The alternate buffer has no SwiftTerm-side scrollback, so the stock `scrollWheel` — which
+/// only scrolls SwiftTerm's own buffer — does nothing, and it never forwards the wheel to the running
+/// program either. The net effect was that nothing scrolled in any pane.
+///
+/// When mouse reporting is active (our embedded tmux config sets `mouse on`), we instead forward the
+/// wheel as mouse-wheel button events, so tmux enters copy-mode and scrolls its own history — exactly
+/// how Terminal.app and iTerm2 drive a tmux client. On the normal buffer we fall back to SwiftTerm's
+/// native scrollback.
+///
+/// SwiftTerm declares `scrollWheel(with:)` as `public` (not `open`), so we can't override it from this
+/// module. Instead a single app-wide local event monitor catches scroll events and, when the pointer
+/// is over one of our terminals, routes them through `handleScroll` before SwiftTerm's own (no-op)
+/// handler can swallow them.
+final class ScrollableTerminalView: LocalProcessTerminalView {
+    private static var monitorInstalled = false
+
+    /// Install the shared scroll-wheel monitor once. Safe to call repeatedly.
+    static func installScrollMonitorIfNeeded() {
+        guard !monitorInstalled else { return }
+        monitorInstalled = true
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard let hit = event.window?.contentView?.hitTest(event.locationInWindow) else { return event }
+            var view: NSView? = hit
+            while let cur = view {
+                if let term = cur as? ScrollableTerminalView {
+                    return term.handleScroll(event) ? nil : event   // nil = consumed (forwarded to tmux)
+                }
+                view = cur.superview
+            }
+            return event   // not over a terminal — leave board/list scrolling alone
+        }
+    }
+
+    /// Forward the wheel to the running program as mouse-wheel events. Returns `true` if it consumed
+    /// the event (alternate buffer with mouse reporting on), `false` to let SwiftTerm scroll natively.
+    func handleScroll(_ event: NSEvent) -> Bool {
+        guard event.deltaY != 0 else { return false }
+        guard terminal != nil, terminal.isCurrentBufferAlternate,
+              allowMouseReporting, terminal.mouseMode != .off else { return false }
+        // Wheel up = button 4, wheel down = button 5 (xterm convention).
+        let flags = terminal.encodeButton(button: event.deltaY > 0 ? 4 : 5,
+                                          release: false, shift: false, meta: false, control: false)
+        let (col, row) = gridLocation(of: event)
+        // A discrete mouse wheel delivers a few large-delta events; a trackpad streams many small ones
+        // (with momentum). Emit a few ticks for the former and one per event for the latter so both
+        // feel natural rather than glacial.
+        let ticks = event.hasPreciseScrollingDeltas ? 1 : max(1, min(5, Int(abs(event.deltaY).rounded(.up))))
+        for _ in 0..<ticks {
+            terminal.sendEvent(buttonFlags: flags, x: col, y: row)
+        }
+        return true
+    }
+
+    /// The grid cell under the pointer, clamped in-bounds. tmux only needs this to pick the pane the
+    /// wheel is over; with our single full-window pane any valid cell works. AppKit's view origin is
+    /// bottom-left while terminal rows count from the top, so y is inverted.
+    private func gridLocation(of event: NSEvent) -> (col: Int, row: Int) {
+        guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
+        let p = convert(event.locationInWindow, from: nil)
+        let cols = max(1, terminal.cols), rows = max(1, terminal.rows)
+        let col = min(cols - 1, max(0, Int(p.x / bounds.width * CGFloat(cols))))
+        let row = min(rows - 1, max(0, Int((bounds.height - p.y) / bounds.height * CGFloat(rows))))
+        return (col, row)
+    }
+}
+#endif
