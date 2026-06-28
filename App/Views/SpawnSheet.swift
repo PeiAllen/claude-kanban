@@ -318,7 +318,12 @@ struct SpawnSheet: View {
                     .textFieldStyle(.plain)
                     .font(F.mono(12.5)).foregroundColor(theme.text)
                     .focused($branchSearchFocused)
-                    .onSubmit { commitBranch(q.isEmpty ? (filteredBranches.first ?? "") : q) }
+                    .onSubmit {
+                        // Read branchQuery live — `q` is snapshotted at body-render time and
+                        // lags one keystroke behind when the final char + Return arrive together.
+                        let cur = branchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                        commitBranch(cur.isEmpty ? (filteredBranches.first ?? "") : cur)
+                    }
             }
             .padding(.horizontal, 11).frame(height: 36)
 
