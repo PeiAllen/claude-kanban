@@ -74,6 +74,9 @@ struct AgentTerminalView: NSViewRepresentable {
         let args = ["tmux", "-L", socket, "attach", "-t", "\(session):\(window)"]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Proc.augmentedPATH(env["PATH"])
+        // A GUI-launched app inherits no locale, so the attaching tmux client falls back to non-UTF-8
+        // and renders multibyte glyphs (the logo's block chars, em-dashes, rules) as `_`. Force UTF-8.
+        Proc.ensureUTF8Locale(&env)
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         let envArray = env.map { "\($0.key)=\($0.value)" }

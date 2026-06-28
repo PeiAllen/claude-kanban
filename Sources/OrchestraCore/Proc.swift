@@ -30,6 +30,7 @@ public enum Proc {
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.augmentedPATH(env["PATH"])
+        Self.ensureUTF8Locale(&env)   // tmux server + claude render multibyte glyphs as `_` without one
         for (k, v) in extraEnv { env[k] = v }
         p.environment = env
 
@@ -130,6 +131,25 @@ public enum Proc {
             if !dir.isEmpty, seen.insert(dir).inserted { dirs.append(dir) }
         }
         return dirs.joined(separator: ":")
+    }
+
+    /// Ensure the environment names a UTF-8 locale. tmux and ink/Node (Claude Code's renderer) decide
+    /// whether the terminal is UTF-8 from the locale's codeset (`LC_ALL` → `LC_CTYPE` → `LANG`); when
+    /// none is UTF-8 they down-convert multibyte glyphs — box-drawing, block elements (the Claude Code
+    /// logo), em-dashes, rules — to `_` placeholders. A Finder/launchd-launched GUI app and the
+    /// launchd-started daemon both inherit a bare env with NO locale, so we'd hit exactly that. Fill in
+    /// a UTF-8 locale only when one isn't already present, so a user's explicit locale still wins.
+    /// Public so the app (e.g. the embedded terminal attaching tmux) shares the same logic.
+    public static func ensureUTF8Locale(_ env: inout [String: String]) {
+        func isUTF8(_ value: String?) -> Bool {
+            guard let v = value?.uppercased() else { return false }
+            return v.contains("UTF-8") || v.contains("UTF8")
+        }
+        // Some UTF-8 locale is already in effect (via LC_ALL, LC_CTYPE, or LANG) — leave it untouched.
+        if isUTF8(env["LC_ALL"]) || isUTF8(env["LC_CTYPE"]) || isUTF8(env["LANG"]) { return }
+        // LC_CTYPE is the category tmux/libc key codeset off; LANG is the low-priority fallback.
+        env["LC_CTYPE"] = "en_US.UTF-8"
+        if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
     }
 }
 
