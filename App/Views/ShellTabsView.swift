@@ -35,19 +35,32 @@ struct ShellTabsView: View {
     private var ribbon: some View {
         HStack(spacing: 4) {
             ForEach(windows, id: \.self) { w in
-                Button { model.selectedShell[task.id] = w } label: {
-                    HStack(spacing: 4) {
-                        Text("›_").font(F.mono(10))
-                        Text(w).font(F.mono(10, .medium))
+                let active = w == selectedWindow
+                HStack(spacing: 3) {
+                    Button { model.selectedShell[task.id] = w } label: {
+                        HStack(spacing: 4) {
+                            Text("›_").font(F.mono(10))
+                            Text(w).font(F.mono(10, .medium))
+                        }
+                        .foregroundColor(active ? theme.text : theme.text2)
+                        .contentShape(Rectangle())
                     }
-                    .foregroundColor(w == selectedWindow ? theme.text : theme.text2)
-                    .padding(.horizontal, 7)
-                    .frame(height: 20)
-                    .background(w == selectedWindow ? theme.card : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+
+                    Button { _Concurrency.Task { await model.closeShell(task.id, w) } } label: {
+                        Image(systemName: "xmark").font(F.ui(8, .bold))
+                            .foregroundColor(active ? theme.text2 : theme.text3)
+                            .frame(width: 13, height: 13)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close \(w)")
                 }
-                .buttonStyle(.plain)
+                .padding(.leading, 7)
+                .padding(.trailing, 4)
+                .frame(height: 20)
+                .background(active ? theme.card : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
             }
 
             Button {

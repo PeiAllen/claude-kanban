@@ -246,6 +246,21 @@ final class BoardModel: ObservableObject {
             shellOpen.insert(id)
         }
     }
+
+    /// Close one shell window, dropping it from the daemon and the per-card state. Selects a
+    /// neighbouring tab if the closed one was active; hides the strip once the last shell is gone.
+    func closeShell(_ id: UUID, _ window: String) async {
+        _ = try? await client.call("closeShell", .object(["ref": .string(id.uuidString),
+                                                          "window": .string(window)]))
+        var ws = shellWindows[id] ?? []
+        guard let idx = ws.firstIndex(of: window) else { return }
+        ws.remove(at: idx)
+        shellWindows[id] = ws.isEmpty ? nil : ws
+        if selectedShell[id] == window {
+            selectedShell[id] = ws.isEmpty ? nil : ws[min(idx, ws.count - 1)]
+        }
+        if ws.isEmpty { shellOpen.remove(id) }
+    }
     func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
     }
