@@ -116,6 +116,58 @@ public enum Proc {
         (try? run(["which", name]))?.ok ?? false
     }
 
+    /// Run a user shell command (`sh -c <cmd>`) the way Claude runs a statusLine command: feed it
+    /// `stdin` (the event JSON), inherit the environment, and return its trimmed stdout — or `nil` if
+    /// it fails to launch, exits non-zero, or exceeds `timeout`, so the caller can fall back.
+    ///
+    /// `timeout` is only a hung-script backstop, NOT a mirror of Claude (Claude imposes no fixed
+    /// timeout — it cancels an in-flight statusLine run when the next refresh fires). It must therefore
+    /// comfortably exceed real statusLine scripts, which routinely take 2-4s for cost/ccusage lookups;
+    /// too tight a bound makes passthrough always fall back to the orchestra default.
+    ///
+    /// Exit is detected via `terminationHandler` and waited on the calling thread — NOT a
+    /// `DispatchQueue.global().async { waitUntilExit() }` worker — so a starved global pool under heavy
+    /// concurrency can't trip a false timeout (see the note on `run` above).
+    public static func runShell(_ cmd: String, stdin: Data, timeout: Duration) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", cmd]
+        let inPipe = Pipe(), outPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = FileHandle.nullDevice   // discarded; nullDevice can't fill + block like an undrained Pipe
+
+        let outBox = DataBox()
+        let drained = DispatchGroup()
+        drained.enter()
+        outPipe.fileHandleForReading.readabilityHandler = { fh in
+            let chunk = fh.availableData
+            if chunk.isEmpty { fh.readabilityHandler = nil; drained.leave() }
+            else { outBox.append(chunk) }
+        }
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+
+        do { try p.run() } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            return nil
+        }
+        // The payload is small (well under the 64KB pipe buffer), so a single write + close can't
+        // deadlock against a child that hasn't started reading yet.
+        inPipe.fileHandleForWriting.write(stdin)
+        try? inPipe.fileHandleForWriting.close()
+
+        if exited.wait(timeout: .now() + .milliseconds(timeout.milliseconds)) == .timedOut {
+            p.terminate()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            return nil
+        }
+        _ = drained.wait(timeout: .now() + .milliseconds(200))   // let the EOF handler flush the tail
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        guard p.terminationStatus == 0 else { return nil }
+        return String(decoding: outBox.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The inherited PATH plus the standard CLI install locations, so tools resolve even when the
     /// daemon/app was launched by launchd or Finder (a login session's PATH is minimal — typically
     /// just `/usr/bin:/bin:/usr/sbin:/sbin` — and omits Homebrew + per-user bins where `tmux`,

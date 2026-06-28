@@ -88,6 +88,12 @@ enum ReportHelper {
 
     // MARK: statusLine display
 
+    /// Hung-script backstop for the passthrough statusLine command. Not a Claude mirror — Claude
+    /// imposes no fixed timeout (it cancels the in-flight run on the next refresh) — so this only has
+    /// to exceed real statusLine scripts (ccusage/cost lookups routinely take 2-4s). A tighter bound
+    /// (the old 1s) made passthrough always time out and fall back to the orchestra default.
+    static let statusLineTimeout: Duration = .seconds(5)
+
     static func renderStatusLine(payload p: JSONValue, raw: Data) -> String {
         let config = ConfigStore.load()
         let model = p["model"]?["display_name"]?.stringValue ?? "claude"
@@ -99,10 +105,11 @@ enum ReportHelper {
             return defaultLine
         case .custom:
             guard let cmd = config.customStatusLine, !cmd.isEmpty,
-                  let out = runStatusCommand(cmd, stdin: raw) else { return defaultLine }
+                  let out = Proc.runShell(cmd, stdin: raw, timeout: statusLineTimeout) else { return defaultLine }
             return out.isEmpty ? defaultLine : out
         case .passthroughGlobal:
-            guard let cmd = globalStatusLineCommand(), let out = runStatusCommand(cmd, stdin: raw)
+            guard let cmd = globalStatusLineCommand(),
+                  let out = Proc.runShell(cmd, stdin: raw, timeout: statusLineTimeout)
             else { return defaultLine }
             return out.isEmpty ? defaultLine : out
         }
@@ -113,28 +120,6 @@ enum ReportHelper {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let jv = try? JSONValue.parse(data) else { return nil }
         return jv["statusLine"]?["command"]?.stringValue
-    }
-
-    /// Run a user statusLine command like Claude does: sh -c, same stdin JSON, inherited env, short
-    /// timeout so a hung script can't wedge the bar. Returns stdout (trimmed) or nil on failure.
-    static func runStatusCommand(_ cmd: String, stdin: Data) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", cmd]
-        let inPipe = Pipe(), outPipe = Pipe()
-        p.standardInput = inPipe
-        p.standardOutput = outPipe
-        p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        inPipe.fileHandleForWriting.write(stdin)
-        try? inPipe.fileHandleForWriting.close()
-        // 1s timeout
-        let sem = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { p.waitUntilExit(); sem.signal() }
-        if sem.wait(timeout: .now() + 1.0) == .timedOut { p.terminate(); return nil }
-        guard p.terminationStatus == 0 else { return nil }
-        let out = outPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: bounded send
