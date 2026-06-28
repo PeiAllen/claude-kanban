@@ -80,7 +80,10 @@ struct AgentTerminalView: NSViewRepresentable {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         let envArray = env.map { "\($0.key)=\($0.value)" }
-        term.startProcess(executable: "/bin/sh", args: ["sh", "-c", attachScript()], environment: envArray)
+        // SwiftTerm prepends argv[0] (the executable) itself, so args must start at argv[1] — i.e.
+        // just ["-c", script], NOT ["sh", "-c", script] (which would make sh treat the extra "sh" as a
+        // script file and fail with "cannot execute binary file").
+        term.startProcess(executable: "/bin/sh", args: ["-c", attachScript()], environment: envArray)
     }
 
     /// Attach through a per-window *grouped* "view" session instead of the base session directly.
