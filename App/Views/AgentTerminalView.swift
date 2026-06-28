@@ -28,6 +28,12 @@ struct AgentTerminalView: NSViewRepresentable {
         let term = ScrollableTerminalView(frame: .zero)
         term.processDelegate = context.coordinator
         term.font = Self.terminalFont
+        // SwiftTerm v1.13.0 defaults its 256-colour palette to a "base16 LAB" strategy that re-derives
+        // the whole 16–255 cube from the active theme's colours. That remaps fixed xterm indices: e.g.
+        // 231 (normally pure white) becomes the theme *foreground*, so a TUI that uses 48;5;231 for a
+        // white-box background — Claude Code's hover/expand previews — paints a solid black rectangle in
+        // a light theme. Force the standard fixed xterm palette so indexed colours mean what apps expect.
+        term.getTerminal().ansi256PaletteStrategy = .xterm
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
@@ -84,6 +90,23 @@ struct AgentTerminalView: NSViewRepresentable {
         term.nativeBackgroundColor = bg
         term.nativeForegroundColor = fg
         term.layer?.backgroundColor = bg.cgColor
+        // Also tell the *emulator* its colours so OSC 10/11 background/foreground queries report the live
+        // theme. SwiftTerm otherwise answers those queries with its hard-coded defaults (black bg)
+        // regardless of what we actually render, so a TUI like Claude Code — which queries OSC 11 to pick
+        // a light/dark theme — can't detect our theme. (Needs tmux `allow-passthrough on`, set in
+        // embedded.conf, so the OSC 11 reply can traverse tmux back to the program.)
+        let t = term.getTerminal()
+        if let f = Self.stColor(fg) { t.foregroundColor = f }
+        if let b = Self.stColor(bg) { t.backgroundColor = b }
+    }
+
+    /// Convert an `NSColor` to SwiftTerm's 16-bit `Color`, via sRGB. Returns nil if the colour can't be
+    /// resolved into RGB components (so we leave the emulator's existing colour untouched rather than
+    /// crash on `redComponent` of a non-RGB colour).
+    private static func stColor(_ ns: NSColor) -> SwiftTerm.Color? {
+        guard let c = ns.usingColorSpace(.sRGB) else { return nil }
+        func chan(_ v: CGFloat) -> UInt16 { UInt16((max(0, min(1, v)) * 65535).rounded()) }
+        return SwiftTerm.Color(red: chan(c.redComponent), green: chan(c.greenComponent), blue: chan(c.blueComponent))
     }
 
     private func attach(_ term: LocalProcessTerminalView) {
@@ -161,23 +184,39 @@ struct AgentTerminalView: NSViewRepresentable {
 /// how Terminal.app and iTerm2 drive a tmux client. On the normal buffer we fall back to SwiftTerm's
 /// native scrollback.
 ///
-/// SwiftTerm declares `scrollWheel(with:)` as `public` (not `open`), so we can't override it from this
-/// module. Instead a single app-wide local event monitor catches scroll events and, when the pointer
-/// is over one of our terminals, routes them through `handleScroll` before SwiftTerm's own (no-op)
-/// handler can swallow them.
+/// SwiftTerm declares `scrollWheel(with:)` and `mouseMoved(with:)` as `public` (not `open`), so we
+/// can't override them from this module. Instead a single app-wide local event monitor catches scroll
+/// and motion events and, when the pointer is over one of our terminals, handles them before SwiftTerm's
+/// own handlers run:
+///   • scroll → forwarded to tmux via `handleScroll` (SwiftTerm's own wheel handling is a no-op here).
+///   • no-button hover motion → swallowed (see below).
+///
+/// Why drop hover motion: SwiftTerm encodes a buttonless move as `CSI<32;…m`, which in the SGR mouse
+/// protocol is a *left-button release* (`m` = release, low bits = button 0) — not the no-button motion
+/// `CSI<35;…M` that xterm/Terminal.app send. A TUI like Claude Code therefore reads every hover as a
+/// click and opens the item under the cursor (flashing its preview box). Dropping hover motion makes
+/// expansion happen on a real click only; button drags (text selection) and clicks still reach SwiftTerm
+/// normally, so nothing else regresses.
 final class ScrollableTerminalView: LocalProcessTerminalView {
     private static var monitorInstalled = false
 
-    /// Install the shared scroll-wheel monitor once. Safe to call repeatedly.
+    /// Install the shared scroll/motion monitor once. Safe to call repeatedly.
     static func installScrollMonitorIfNeeded() {
         guard !monitorInstalled else { return }
         monitorInstalled = true
-        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved]) { event in
             guard let hit = event.window?.contentView?.hitTest(event.locationInWindow) else { return event }
             var view: NSView? = hit
             while let cur = view {
                 if let term = cur as? ScrollableTerminalView {
-                    return term.handleScroll(event) ? nil : event   // nil = consumed (forwarded to tmux)
+                    switch event.type {
+                    case .scrollWheel:
+                        return term.handleScroll(event) ? nil : event   // nil = consumed (forwarded to tmux)
+                    case .mouseMoved:
+                        return nil                                       // swallow hover motion (see above)
+                    default:
+                        return event
+                    }
                 }
                 view = cur.superview
             }

@@ -77,12 +77,27 @@ if [[ -d "$SWIFT_BIN/$RES_BUNDLE" ]]; then
   cp -R "$SWIFT_BIN/$RES_BUNDLE" "$BIN_DIR/$RES_BUNDLE"
 fi
 
-# Adding files to the bundle invalidates the app's signature, so re-sign everything ad-hoc (sufficient
-# for local runs under hardened runtime). Sign inside-out — nested binaries first, then the outer
-# bundle (which seals the flat resource bundle as data — it has no Info.plist, so it must NOT be
-# signed on its own).
+# Pick a signing identity. Prefer the stable self-signed "Orchestra Dev" identity if it exists
+# (scripts/make-dev-cert.sh creates it): a constant identity gives the app a constant designated
+# requirement, so macOS TCC grants (Screen Recording, etc.) survive rebuilds instead of being dropped
+# every time an ad-hoc re-sign changes the code hash. Falls back to ad-hoc ("-") when absent.
+SIGN_ID="-"
+# Resolve to the cert's SHA-1 hash (not its name) so signing stays unambiguous even if more than one
+# "Orchestra Dev" cert is present in the keychain.
+DEV_HASH="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Orchestra Dev/{print $2; exit}')"
+if [[ -n "$DEV_HASH" ]]; then
+  SIGN_ID="$DEV_HASH"
+  echo "Signing with stable identity: Orchestra Dev ($DEV_HASH)"
+else
+  echo "Signing ad-hoc (run scripts/make-dev-cert.sh once for a stable identity that keeps TCC grants)"
+fi
+
+# Adding files to the bundle invalidates the app's signature, so re-sign everything (sufficient for
+# local runs under hardened runtime). Sign inside-out — nested binaries first, then the outer bundle
+# (which seals the flat resource bundle as data — it has no Info.plist, so it must NOT be signed on
+# its own).
 for b in orchestrad orchestra orchestra-mcp; do
-  codesign --force --options runtime --timestamp=none --sign - "$BIN_DIR/$b"
+  codesign --force --options runtime --timestamp=none --sign "$SIGN_ID" "$BIN_DIR/$b"
 done
 
 # Re-sign nested Mach-O code (frameworks + any dylibs) ad-hoc before sealing the bundle. Debug builds
@@ -95,12 +110,12 @@ done
 for dir in "$BUILT_APP/Contents/Frameworks" "$BUILT_APP/Contents/MacOS"; do
   [[ -d "$dir" ]] || continue
   while IFS= read -r -d '' c; do
-    codesign --force --options runtime --timestamp=none --sign - "$c"
+    codesign --force --options runtime --timestamp=none --sign "$SIGN_ID" "$c"
   done < <(find "$dir" -maxdepth 1 \( -name '*.framework' -o -name '*.dylib' \) -print0 2>/dev/null)
 done
 
 codesign --force --options runtime --timestamp=none \
-  --entitlements App/Orchestra.entitlements --sign - "$BUILT_APP"
+  --entitlements App/Orchestra.entitlements --sign "$SIGN_ID" "$BUILT_APP"
 
 # Install into /Applications, replacing any previous copy. ditto preserves the bundle's codesign.
 INSTALLED_APP="$DEST_DIR/$(basename "$BUILT_APP")"
