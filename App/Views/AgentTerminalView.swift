@@ -13,11 +13,13 @@ struct AgentTerminalView: NSViewRepresentable {
     let window: String           // "agent"
     var background: SwiftUI.Color  // app theme — terminal opens in (and switches to) the app's mode
     var foreground: SwiftUI.Color
+    var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
-         background: SwiftUI.Color, foreground: SwiftUI.Color) {
+         background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false) {
         self.socket = socket; self.session = session; self.window = window
         self.background = background; self.foreground = foreground
+        self.autofocus = autofocus
     }
 
     #if canImport(SwiftTerm)
@@ -29,6 +31,7 @@ struct AgentTerminalView: NSViewRepresentable {
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
+        if autofocus { focusWhenReady(term) }
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
@@ -39,6 +42,21 @@ struct AgentTerminalView: NSViewRepresentable {
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             attach(nsView)
+            if autofocus { focusWhenReady(nsView) }
+        }
+    }
+
+    /// Make the terminal the window's first responder so typed keys go straight to the agent without
+    /// an extra click. The view isn't mounted in a window yet at make/attach time, so defer to the next
+    /// runloop tick(s) and retry until it has a window.
+    private func focusWhenReady(_ term: LocalProcessTerminalView, attempts: Int = 8) {
+        guard attempts > 0 else { return }
+        DispatchQueue.main.async {
+            if let window = term.window {
+                window.makeFirstResponder(term)
+            } else {
+                focusWhenReady(term, attempts: attempts - 1)
+            }
         }
     }
 

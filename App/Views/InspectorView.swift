@@ -118,7 +118,7 @@ private struct AgentChrome: View {
             BreadcrumbStrip(task: task)
 
             AgentTerminalView(session: task.tmuxSession, window: "agent",
-                              background: theme.termBg, foreground: theme.term)
+                              background: theme.termBg, foreground: theme.term, autofocus: true)
                 // Key by session so switching cards tears down the old terminal and attaches a fresh
                 // one — without this, SwiftUI reuses the same NSView and every card shows card #1's tmux.
                 .id(task.tmuxSession)
