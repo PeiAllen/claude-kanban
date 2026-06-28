@@ -265,8 +265,13 @@ final class BoardModel: ObservableObject {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
     }
     func openInZed(_ id: UUID) async {
-        _ = try? await client.call("openInZed", .object(["ref": .string(id.uuidString)]))
-        if let t = selected { toast("Opening changes in Zed…", sub: "\((t.repo as NSString).lastPathComponent) · \(t.branch)") }
+        let t = (tasks + archived).first { $0.id == id }
+        do {
+            _ = try await client.call("openInZed", .object(["ref": .string(id.uuidString)]))
+            if let t { toast("Opening changes in Zed…", sub: "\((t.repo as NSString).lastPathComponent) · \(t.branch)") }
+        } catch {
+            toast("Couldn't open in Zed", sub: "\(error)", color: .red)
+        }
     }
     func saveConfig(_ cfg: Config) async {
         if let saved = try? await client.call("setConfig", JSONValue(encodable: cfg)).decode(Config.self) { config = saved }

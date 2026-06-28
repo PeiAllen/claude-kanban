@@ -116,6 +116,33 @@ public enum Proc {
         (try? run(["which", name]))?.ok ?? false
     }
 
+    /// Run `argv`, streaming stdout straight to `outputURL` (binary-safe — no String round-trip, so
+    /// non-UTF-8 blobs like images survive). stderr is discarded. Returns the exit code, or throws if
+    /// the process can't be launched. Used to materialize a file's content at a git ref via
+    /// `git show <ref>:<path>` for Zed's diff view.
+    @discardableResult
+    public static func runStdoutToFile(_ argv: [String], cwd: String? = nil, outputURL: URL) throws -> Int32 {
+        guard !argv.isEmpty else { throw OrchestraError.invalidParams("empty argv") }
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: outputURL) else {
+            throw OrchestraError.io("cannot open \(outputURL.path) for writing")
+        }
+        defer { try? handle.close() }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = argv
+        if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = Self.augmentedPATH(env["PATH"])
+        p.environment = env
+        p.standardOutput = handle
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { throw OrchestraError.toolMissing(argv[0]) }
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
     /// Run a user shell command (`sh -c <cmd>`) the way Claude runs a statusLine command: feed it
     /// `stdin` (the event JSON), inherit the environment, and return its trimmed stdout — or `nil` if
     /// it fails to launch, exits non-zero, or exceeds `timeout`, so the caller can fall back.
