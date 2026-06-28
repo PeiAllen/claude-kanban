@@ -120,6 +120,29 @@ struct RecoveryTests {
         #expect(argv.count == nameIdx + 2)   // nothing after the name value → the prompt is NOT re-handed
     }
 
+    @Test("recoverSessions: never-prompted (provisional, no transcript) card restarts fresh, not dead")
+    func recoverRestartsNeverPrompted() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+        // No initial prompt → titleProvisional, and no transcript ever written.
+        let p = try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "fresh"))
+        #expect(p.titleProvisional == true)
+        let oldId = try #require(p.agentSessionId)
+        env.sessions.setAlive(p.id, false)   // session gone (reboot), no transcript on disk
+
+        await env.svc.recoverSessions()
+
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == p.id })
+        #expect(after.status == .waiting)        // restarted fresh, NOT marked dead
+        #expect(after.deadReason == nil)
+        let newId = try #require(after.agentSessionId)
+        #expect(newId != oldId)                   // restart mints a fresh session id
+        #expect(after.priorSessionIds.contains(oldId))
+        // Relaunched via a fresh `start` (no --resume).
+        let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(p.id)])
+        #expect(!argv.contains("--resume"))
+    }
+
     @Test("reconcileLiveness: vanished session → .dead sessionVanished; recovering card not falsely killed")
     func reconcile() async throws {
         let env = TestEnv.make()

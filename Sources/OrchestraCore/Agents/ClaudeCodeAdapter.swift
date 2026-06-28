@@ -105,6 +105,9 @@ public struct ClaudeCodeAdapter: Adapter {
 
     /// Fallback for sessions Orchestra didn't start: newest *.jsonl under the cwd-slug dir whose first
     /// record's cwd matches. Returns nil (never a fabricated id) when nothing matches.
+    /// NOTE: when multiple cards share a worktree they share this cwd-slug dir, so "newest" is ambiguous
+    /// across co-located cards. Only safe as the `agentSessionId == nil` fallback — orchestra-spawned
+    /// cards always carry a tracked id, so `sessionInfo` never reaches this for them.
     func discover(cwd: String) -> String? {
         let dir = "\(Config.home)/.claude/projects/\(cwdSlug(cwd))"
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }

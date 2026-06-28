@@ -79,18 +79,22 @@ public actor OrchestraService {
         let provisional = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let title = provisional ? (input.branch.isEmpty ? "New agent" : input.branch)
                                  : titleSeed(from: input.prompt)
+        // A provisional card is idle awaiting the user's first prompt, so it starts `.waiting`; a real
+        // prompt means the agent is working immediately, so `.running`. The launch gets no positional
+        // prompt when provisional (a whitespace-only prompt must not be submitted to the agent).
+        let launchPrompt: String? = provisional ? nil : input.prompt
 
         let task = Task(
             title: title, titleProvisional: provisional, desc: "",
             repo: realRepo, branch: input.branch, worktree: wt,
             agentId: adapter.id, model: model, startIn: startIn,
-            column: startIn.column, order: 0, status: .running,
+            column: startIn.column, order: 0, status: provisional ? .waiting : .running,
             ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
         )
         let created = try await store.create(task)
 
         let ctx = AdapterContext(cwd: wt, repo: realRepo, model: model.id, startIn: startIn,
-                                 sessionId: sid, prompt: input.prompt, name: title,
+                                 sessionId: sid, prompt: launchPrompt, name: title,
                                  hooksPath: Config.hooksPath)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
@@ -150,9 +154,16 @@ public actor OrchestraService {
         let t = try await require(id)
         try? sessions.kill(sessions.sessionName(id))
         if removeWorktree {
-            // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
-            do { try worktrees.remove(worktree: t.worktree, force: false) }
-            catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
+            // Multiple cards can intentionally share one worktree — only remove it when no other
+            // non-archived card still lives there, or we'd pull the dir out from under a live sibling.
+            let siblings = await store.all().filter {
+                $0.id != id && !$0.archived && $0.worktree == t.worktree
+            }
+            if siblings.isEmpty {
+                // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
+                do { try worktrees.remove(worktree: t.worktree, force: false) }
+                catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
+            }
         }
         let updated = try await store.update(id) { $0.status = .done; $0.archived = true }
         lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor

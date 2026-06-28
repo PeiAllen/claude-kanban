@@ -8,30 +8,35 @@ extension OrchestraService {
     /// `resume`; the rest are marked `.dead` (rebootUnrevived). Idempotent.
     public func recoverSessions() async {
         let tasks = await store.all().filter { !$0.archived && $0.status != .dead }
-        var toRevive: [UUID] = []
+        let grace = config.revivalGraceSeconds
+        var jobs: [@Sendable () async -> Void] = []
 
         // One `tmux list-sessions` instead of an `has-session` per card.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
 
         for t in tasks {
             if aliveNames.contains(sessions.sessionName(t.id)) { continue }   // daemon-crash no-op / still-running
+            let id = t.id
             if isResumable(t) {
-                toRevive.append(t.id)
+                jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
+            } else if t.titleProvisional {
+                // Never-prompted (or freshly restarted/cleared): no current-session work to lose and no
+                // transcript to resume, so relaunch a blank session rather than killing the card.
+                jobs.append { _ = try? await self.restart(id, source: .daemon) }
             } else {
                 await markDead(t.id, reason: .rebootUnrevived, detail: nil, source: .daemon)
             }
         }
 
-        guard !toRevive.isEmpty else { return }
+        guard !jobs.isEmpty else { return }
         let cap = max(1, config.maxConcurrentRevivals)
-        let grace = config.revivalGraceSeconds
-        // Windowed task group: keep at most `cap` resume() calls in flight (start one more each time
-        // one finishes). resume is inert until prompted, so the cap only paces process launches.
+        // Windowed task group: keep at most `cap` revivals (resume or restart) in flight (start one more
+        // each time one finishes). resume is inert until prompted, so the cap only paces process launches.
         await withTaskGroup(of: Void.self) { group in
-            var iter = toRevive.makeIterator()
+            var iter = jobs.makeIterator()
             func startNext() {
-                guard let id = iter.next() else { return }
-                group.addTask { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
+                guard let job = iter.next() else { return }
+                group.addTask { await job() }
             }
             for _ in 0..<cap { startNext() }
             while await group.next() != nil { startNext() }

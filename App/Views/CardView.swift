@@ -120,11 +120,26 @@ struct CardView: View {
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)
                 .truncationMode(.tail)
+            worktreeBadge
             Spacer(minLength: 6)
             meta
                 .frame(maxWidth: 148, alignment: .trailing)
         }
         .padding(.top, 11)
+    }
+
+    /// Passive count of other agents sharing this card's worktree. Hover lists their ids; opening the
+    /// card's inspector exposes the clickable jump-to-sibling list. Hidden when the worktree is solo.
+    @ViewBuilder private var worktreeBadge: some View {
+        let siblings = model.worktreeSiblings(of: task)
+        if !siblings.isEmpty {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.triangle.branch").font(F.ui(8.5))
+                Text("\(siblings.count)").font(F.mono(10, .medium))
+            }
+            .foregroundStyle(theme.text3)
+            .help(model.worktreeSiblingsHelp(of: task))
+        }
     }
 
     /// Right-side meta: the selected model (real data we have). The prototype's per-column meta
