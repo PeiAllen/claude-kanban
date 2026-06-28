@@ -8,23 +8,29 @@ public struct Launcher: Sendable {
 
     public func openInZed(_ worktree: String) throws {
         try resolver.assertAllowed(worktree)
-        // Prefer the `zed` CLI: it can open the worktree as a project AND open a multi-file diff view
-        // (`--diff <old> <new>` pairs). We point those pairs at the branch's changes vs the commit it
-        // forked from, so the window lands on a PR-style "branch vs base" review of the worktree.
-        if Proc.toolExists("zed") {
-            var argv = ["zed"]
-            for (old, new) in (try? branchDiffPairs(worktree: worktree)) ?? [] {
-                argv += ["--diff", old, new]
-            }
-            argv.append(worktree)
-            let r = try Proc.run(argv)
-            if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "zed failed to open" : r.stderr) }
+        guard Proc.toolExists("zed") else {
+            // No CLI (Zed.app installed without running "Install CLI") — launch the bundle instead.
+            // `open` can't pass `--diff`, so this just opens the worktree; the user is one step from
+            // the git panel.
+            let r = try Proc.run(["/usr/bin/open", "-a", "Zed", worktree])
+            if !r.ok { throw OrchestraError.zedMissing }   // `open` fails only when the app isn't found
             return
         }
-        // No CLI (Zed.app installed without running "Install CLI") — launch the bundle instead. `open`
-        // can't pass `--diff`, so this just opens the worktree; the user is one step from the git panel.
-        let r = try Proc.run(["/usr/bin/open", "-a", "Zed", worktree])
-        if !r.ok { throw OrchestraError.zedMissing }   // `open` fails only when the app isn't found
+
+        // Open the worktree as the project first. Combining the directory and `--diff` pairs in ONE
+        // `zed` invocation opens the project but silently drops the diff, so the multi-diff must be a
+        // SECOND invocation — Zed then drops the diff into the (now-focused) worktree workspace.
+        let opened = try Proc.run(["zed", worktree])
+        if !opened.ok { throw OrchestraError.io(opened.stderr.isEmpty ? "zed failed to open" : opened.stderr) }
+
+        let pairs = (try? branchDiffPairs(worktree: worktree)) ?? []
+        guard !pairs.isEmpty else { return }
+        // Give a cold-started Zed a moment to come up and take the workspace before we send the diff,
+        // otherwise the second invocation can race the launch and land in the wrong (or a new) window.
+        Thread.sleep(forTimeInterval: 0.8)
+        var argv = ["zed"]
+        for (old, new) in pairs { argv += ["--diff", old, new] }
+        _ = try? Proc.run(argv)   // best-effort: the worktree is already open even if the diff fails
     }
 
     // MARK: - branch-vs-base diff
