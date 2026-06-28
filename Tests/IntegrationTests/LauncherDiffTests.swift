@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-/// `Launcher.branchDiffPairs` — the branch-vs-base file pairs that drive Zed's `--diff` view.
+/// `Launcher.branchDiffDirs` — the two mirror directories that drive Zed's single multi-diff view.
 @Suite("Launcher — branch-vs-base diff", .enabled(if: IntegrationSupport.gitAvailable))
 struct LauncherDiffTests {
 
@@ -41,34 +41,35 @@ struct LauncherDiffTests {
         return (PathResolver.canonical(wt), base, Launcher(resolver: PathResolver(config: config)))
     }
 
-    @Test("pairs cover modify/add/delete with correct base content")
-    func diffPairs() throws {
+    @Test("two mirror dirs cover modify/add/delete; new side hardlinks to live worktree files")
+    func diffDirs() throws {
         let (wt, _, launcher) = try makeWorktree()
-        let pairs = try launcher.branchDiffPairs(worktree: wt)
-
-        // One pair per changed file: keep.txt (M), new.txt (A), gone.txt (D).
-        #expect(pairs.count == 3)
+        let dirs = try #require(try launcher.branchDiffDirs(worktree: wt))
 
         func read(_ p: String) -> String { (try? String(contentsOfFile: p, encoding: .utf8)) ?? "" }
+        let fm = FileManager.default
+        func inode(_ p: String) -> UInt? {
+            (try? fm.attributesOfItem(atPath: p)[.systemFileNumber]) as? UInt
+        }
 
-        // Modify: old = base content, new = live worktree file with the committed edit.
-        let keep = try #require(pairs.first { $0.1.hasSuffix("/keep.txt") })
-        #expect(read(keep.0) == "base keep\n")          // base side
-        #expect(read(keep.1) == "feature keep\n")       // worktree side
-        #expect(keep.1 == wt + "/keep.txt")
+        // OLD side holds materialized base content for modify/delete, an empty placeholder for adds.
+        #expect(read(dirs.old + "/keep.txt") == "base keep\n")
+        #expect(read(dirs.old + "/gone.txt") == "base gone\n")
+        #expect(read(dirs.old + "/new.txt") == "")
 
-        // Add: old side is the empty placeholder, new side is the new worktree file.
-        let new = try #require(pairs.first { $0.1.hasSuffix("/new.txt") })
-        #expect(read(new.0) == "")
-        #expect(read(new.1) == "brand new\n")
+        // NEW side: modify/add are hardlinks to the live worktree file (shared inode → Zed reads real
+        // content); a delete is an empty placeholder (the worktree file is gone).
+        #expect(read(dirs.new + "/keep.txt") == "feature keep\n")
+        #expect(inode(dirs.new + "/keep.txt") == inode(wt + "/keep.txt"))   // hardlink, not a copy
 
-        // Delete: old = base content, new side is the empty placeholder (file is gone).
-        let gone = try #require(pairs.first { $0.0.hasSuffix("/gone.txt") })
-        #expect(read(gone.0) == "base gone\n")
-        #expect(read(gone.1) == "")
+        #expect(read(dirs.new + "/new.txt") == "brand new\n")
+        #expect(inode(dirs.new + "/new.txt") == inode(wt + "/new.txt"))
+
+        #expect(read(dirs.new + "/gone.txt") == "")
+        #expect(inode(dirs.new + "/gone.txt") != inode(wt + "/keep.txt"))   // placeholder, not linked
     }
 
-    @Test("a worktree with no branch divergence yields no pairs")
+    @Test("a worktree with no branch divergence yields no dirs")
     func noChanges() throws {
         let root = IntegrationSupport.tempDir("ld0")
         let repo = root + "/repo"
@@ -84,6 +85,6 @@ struct LauncherDiffTests {
         let config = Config(reposRoot: PathResolver.canonical(root),
                             worktreesRoot: PathResolver.canonical(root))
         let launcher = Launcher(resolver: PathResolver(config: config))
-        #expect(try launcher.branchDiffPairs(worktree: PathResolver.canonical(wt)).isEmpty)
+        #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt)) == nil)
     }
 }

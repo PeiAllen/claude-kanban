@@ -21,9 +21,13 @@ public struct Launcher: Sendable {
         // essential: without it `zed --diff` routes the diff into whatever Zed window is currently
         // focused (typically a *different* project), and reusing an existing window drops the diff
         // entirely. A dedicated new window keeps the worktree project and the multi-diff together.
+        //
+        // Passing two DIRECTORIES to `--diff` (rather than one `--diff old new` per file) makes Zed
+        // recurse and render every changed file in a SINGLE multi-diff multibuffer — the same view as
+        // its native "Branch Diff" button, which has no external trigger of its own.
         var argv = ["zed", "-n", worktree]
-        for (old, new) in (try? branchDiffPairs(worktree: worktree)) ?? [] {
-            argv += ["--diff", old, new]
+        if let dirs = try? branchDiffDirs(worktree: worktree) {
+            argv += ["--diff", dirs.old, dirs.new]
         }
         let r = try Proc.run(argv)
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "zed failed to open" : r.stderr) }
@@ -34,48 +38,59 @@ public struct Launcher: Sendable {
     private enum ChangeStatus { case modified, added, deleted }
     private struct Change { let status: ChangeStatus; let oldPath: String; let newPath: String }
 
-    /// Build `(oldPath, newPath)` pairs for every file the worktree's branch changed relative to the
-    /// commit it forked from (the merge-base with the repo's default branch). The "new" side is the
-    /// live worktree file (editable in Zed); the "old" side is that file's content at the base,
-    /// materialized into a temp dir. Returns `[]` when the base can't be determined or nothing
-    /// changed — the caller then just opens the worktree with no diff.
-    func branchDiffPairs(worktree: String) throws -> [(String, String)] {
-        guard let base = mergeBase(worktree: worktree) else { return [] }
+    /// Build two mirror directories — `old` and `new` — that contain ONLY the files the worktree's
+    /// branch changed relative to the commit it forked from (the merge-base with the repo's default
+    /// branch), each at its worktree-relative path. Pointing `zed --diff old new` at the pair makes
+    /// Zed recurse and show every change in one multi-diff multibuffer.
+    ///
+    /// The `new` side is a tree of *hardlinks* to the live worktree files; the `old` side holds that
+    /// file's content at the base, materialized via `git show`. An add has an empty placeholder on the
+    /// `old` side; a delete has one on the `new` side. Returns `nil` when the base can't be determined
+    /// or nothing changed — the caller then just opens the worktree with no diff.
+    ///
+    /// Hardlinks (not symlinks) because Zed renders a symlinked diff side as empty; a hardlink reads as
+    /// the real file. The multibuffer is for review — to *edit*, use the worktree project that opens in
+    /// the same window (Zed saves atomically, so edits in the diff don't reliably reach the worktree).
+    func branchDiffDirs(worktree: String) throws -> (old: String, new: String)? {
+        guard let base = mergeBase(worktree: worktree) else { return nil }
         let changes = changedFiles(worktree: worktree, base: base)
-        guard !changes.isEmpty else { return [] }
+        guard !changes.isEmpty else { return nil }
 
-        let tmp = FileManager.default.temporaryDirectory
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
             .appendingPathComponent("orchestra-zeddiff-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        // A shared empty file stands in for the missing side of an add (no base) or delete (no worktree).
-        let empty = tmp.appendingPathComponent("empty")
-        FileManager.default.createFile(atPath: empty.path, contents: Data())
+        let oldRoot = root.appendingPathComponent("old", isDirectory: true)
+        let newRoot = root.appendingPathComponent("new", isDirectory: true)
 
-        var pairs: [(String, String)] = []
         for change in changes {
-            let new: String
-            if change.status == .deleted {
-                new = empty.path
-            } else {
-                let p = (worktree as NSString).appendingPathComponent(change.newPath)
-                new = FileManager.default.fileExists(atPath: p) ? p : empty.path
-            }
+            // Both sides key off the same relative path so Zed pairs them as one file's diff. A rename
+            // is shown as a modify at the file's new location.
+            let rel = change.status == .deleted ? change.oldPath : change.newPath
 
-            let old: String
+            let oldDst = oldRoot.appendingPathComponent(rel)
+            try fm.createDirectory(at: oldDst.deletingLastPathComponent(), withIntermediateDirectories: true)
             if change.status == .added {
-                old = empty.path
+                fm.createFile(atPath: oldDst.path, contents: Data())
             } else {
-                let dst = tmp.appendingPathComponent("base/\(change.oldPath)")
-                try? FileManager.default.createDirectory(
-                    at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
                 // Binary-safe: `git show` streams the blob straight to disk (no String round-trip).
                 let code = try? Proc.runStdoutToFile(
-                    ["git", "show", "\(base):\(change.oldPath)"], cwd: worktree, outputURL: dst)
-                old = (code == 0) ? dst.path : empty.path
+                    ["git", "show", "\(base):\(change.oldPath)"], cwd: worktree, outputURL: oldDst)
+                if code != 0 { fm.createFile(atPath: oldDst.path, contents: Data()) }
             }
-            pairs.append((old, new))
+
+            let newDst = newRoot.appendingPathComponent(rel)
+            try fm.createDirectory(at: newDst.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let live = (worktree as NSString).appendingPathComponent(change.newPath)
+            if change.status != .deleted && fm.fileExists(atPath: live) {
+                // Copy is the fallback when the temp dir is on a different volume (hardlinks can't
+                // cross filesystems).
+                do { try fm.linkItem(atPath: live, toPath: newDst.path) }
+                catch { try? fm.copyItem(atPath: live, toPath: newDst.path) }
+            } else {
+                fm.createFile(atPath: newDst.path, contents: Data())
+            }
         }
-        return pairs
+        return (oldRoot.path, newRoot.path)
     }
 
     /// The merge-base of HEAD and the repo's default branch (origin/HEAD → local `main` → `master`):
