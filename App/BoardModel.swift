@@ -58,6 +58,21 @@ final class BoardModel: ObservableObject {
         tasks.filter { $0.column == column && !$0.archived }.sorted { $0.order < $1.order }
     }
 
+    /// Other non-archived cards that share this card's worktree (any status). Multiple agents on one
+    /// worktree is intentional — keeping them from clobbering each other is the user's job; this just
+    /// surfaces the co-located cards. Oldest-first for a stable list.
+    func worktreeSiblings(of task: Task) -> [Task] {
+        tasks.filter { $0.worktree == task.worktree && $0.id != task.id }
+             .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Hover-tooltip text listing the co-located cards (`<shortId>  <title>` per line). Empty when none.
+    func worktreeSiblingsHelp(of task: Task) -> String {
+        let sibs = worktreeSiblings(of: task)
+        guard !sibs.isEmpty else { return "" }
+        return "Also on this worktree:\n" + sibs.map { "\($0.shortId)  \($0.title)" }.joined(separator: "\n")
+    }
+
     /// distinct agents with running/waiting cards (for the MCP chip count).
     var activeAgentCount: Int {
         Set(tasks.filter { $0.status == .running || $0.status == .waiting }.map(\.agentId)).count

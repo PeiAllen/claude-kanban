@@ -70,6 +70,44 @@ struct OrchestraServiceTests {
         #expect(await env.svc.list().isEmpty)
     }
 
+    @Test("archive keeps a worktree shared by a live sibling; removes it once the last card leaves")
+    func archiveRefcountsSharedWorktree() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        // Two cards on the SAME branch resolve to the SAME worktree (ensure is idempotent on the path).
+        let a = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "shared"))
+        let b = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "shared"))
+        #expect(a.worktree == b.worktree)
+
+        // Archiving the first must NOT remove the worktree — b still lives there.
+        try await env.svc.archive(a.id, source: .app)
+        #expect(!env.worktrees.removed.contains(a.worktree))
+
+        // Archiving the last card on the worktree removes it.
+        try await env.svc.archive(b.id, source: .app)
+        #expect(env.worktrees.removed.contains(b.worktree))
+    }
+
+    @Test("spawn with no prompt → provisional title (branch), status .waiting, no positional prompt handed to launch")
+    func spawnNoPromptIsWaiting() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+
+        let blank = try await env.svc.spawn(SpawnInput(prompt: "   ", repo: repo, branch: "feat-x"))
+        #expect(blank.titleProvisional == true)
+        #expect(blank.title == "feat-x")       // branch-name placeholder
+        #expect(blank.status == .waiting)       // idle, awaiting the first user prompt
+        // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
+        let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(blank.id)])
+        let nameIdx = try #require(argv.firstIndex(of: "--name"))
+        #expect(argv.count == nameIdx + 2)      // --name <value> is last; nothing trails it
+
+        // A real prompt still spawns running + non-provisional.
+        let real = try await env.svc.spawn(SpawnInput(prompt: "Do the thing", repo: repo, branch: "feat-y"))
+        #expect(real.status == .running)
+        #expect(real.titleProvisional == false)
+    }
+
     @Test("exec runs in the worktree and returns output without throwing on non-zero exit")
     func exec() async throws {
         let env = TestEnv.make()

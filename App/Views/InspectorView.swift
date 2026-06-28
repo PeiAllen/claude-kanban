@@ -140,6 +140,7 @@ private struct AgentChrome: View {
 }
 
 private struct TerminalHeader: View {
+    @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
 
@@ -176,6 +177,8 @@ private struct TerminalHeader: View {
 
             Text(task.branch).font(F.mono(11)).foregroundColor(theme.text2).lineLimit(1)
 
+            SharedWorktreeBadge(task: task)
+
             Spacer(minLength: 0)
 
             StatusPill(status: task.status.rawValue)
@@ -198,6 +201,75 @@ private struct StatusPill: View {
         .padding(.leading, 7).padding(.trailing, 8).padding(.vertical, 3)
         .background(sem.tint)
         .clipShape(Capsule())
+    }
+}
+
+// MARK: - Shared-worktree indicator
+
+/// Small chip shown when other non-archived cards share this card's worktree. Hover lists their ids;
+/// click opens a popover where picking a sibling selects it (opening that card's inspector). Multiple
+/// agents per worktree is intentional — this is the passive signal + jump affordance, not coordination.
+private struct SharedWorktreeBadge: View {
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) var theme: Theme
+    let task: Task
+    @State private var showList = false
+
+    var body: some View {
+        let siblings = model.worktreeSiblings(of: task)
+        if !siblings.isEmpty {
+            Button { showList.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch").font(F.ui(8.5))
+                    Text("\(siblings.count)").font(F.mono(9.5, .semibold))
+                }
+                .foregroundColor(theme.text2)
+                .padding(.horizontal, 6)
+                .frame(height: 18)
+                .background(theme.chip)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .help(model.worktreeSiblingsHelp(of: task))
+            .popover(isPresented: $showList, arrowEdge: .bottom) {
+                SharedWorktreeList(siblings: siblings) { id in
+                    model.selectedId = id
+                    showList = false
+                }
+                .environment(\.theme, theme)
+            }
+        }
+    }
+}
+
+/// Popover body: one selectable row per co-located card (status dot · shortId · title).
+private struct SharedWorktreeList: View {
+    @Environment(\.theme) var theme: Theme
+    let siblings: [Task]
+    let onPick: (UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Other agents on this worktree")
+                .font(F.ui(10.5, .semibold)).foregroundColor(theme.text2)
+                .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
+            ForEach(siblings) { sib in
+                Button { onPick(sib.id) } label: {
+                    HStack(spacing: 8) {
+                        Circle().fill(theme.statusColor(sib.status.rawValue).dot).frame(width: 6, height: 6)
+                        Text(sib.shortId).font(F.mono(10)).foregroundColor(theme.text3)
+                        Text(sib.title).font(F.ui(11.5)).foregroundColor(theme.text).lineLimit(1)
+                        Spacer(minLength: 12)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(width: 248)
+        .padding(.bottom, 8)
+        .background(theme.inspector)
     }
 }
 
