@@ -52,8 +52,10 @@ struct SpawnSheet: View {
         return "\(root)/\(repoName)/\(slug)"
     }
 
+    /// The prompt is optional: spawning with an empty prompt drops you into the agent and the card is
+    /// named off the first prompt you type (e.g. `/layered-plan`). Repo + branch are still required.
     private var canSpawn: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !repo.isEmpty && !branch.isEmpty
+        !repo.isEmpty && !branch.isEmpty
     }
 
     private var cliPreview: String {
@@ -73,7 +75,7 @@ struct SpawnSheet: View {
 
             // Body
             VStack(alignment: .leading, spacing: 12) {
-                field("Initial prompt") {
+                field("Initial prompt (optional)") {
                     ZStack(alignment: .topLeading) {
                         if prompt.isEmpty {
                             Text("e.g. Add rate limiting to the API")

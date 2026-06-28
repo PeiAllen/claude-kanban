@@ -35,7 +35,7 @@ struct AdapterTests {
         #expect(argv.first == "claude")
         #expect(argv.contains("--model"))
         #expect(argv.contains("claude-sonnet-4-6"))
-        #expect(argv.contains("--permission-mode"))   // plan mode
+        #expect(adjacent(argv, "--permission-mode", "auto"))   // plan column → auto mode
         #expect(adjacent(argv, "--session-id", "the-id"))
         #expect(adjacent(argv, "--settings", "/hooks.json"))
         // --name defaults to the prompt's first line (== Task.title seed)

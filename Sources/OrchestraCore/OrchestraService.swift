@@ -74,10 +74,14 @@ public actor OrchestraService {
         let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
         let model = adapter.model(for: modelId)
         let startIn = input.startIn ?? .plan
-        let title = titleSeed(from: input.prompt)
+        // No initial prompt → the card is named off the first prompt the user types (titleProvisional),
+        // showing the branch as a placeholder until then. A real prompt seeds the title immediately.
+        let provisional = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let title = provisional ? (input.branch.isEmpty ? "New agent" : input.branch)
+                                 : titleSeed(from: input.prompt)
 
         let task = Task(
-            title: title, titleProvisional: false, desc: "",
+            title: title, titleProvisional: provisional, desc: "",
             repo: realRepo, branch: input.branch, worktree: wt,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: .running,

@@ -45,10 +45,11 @@ public struct ClaudeCodeAdapter: Adapter {
         return ["--model", m]
     }
 
-    /// In plan mode we hand `--permission-mode plan`; impl just starts normally.
+    /// In the plan column we hand `--permission-mode auto` so planning workflows (e.g. `/layered-plan`)
+    /// can actually read/write design docs while the user steers; impl just starts normally.
     private func startInFlags(_ startIn: StartIn?) -> [String] {
         guard let s = startIn else { return [] }
-        return s == .plan ? ["--permission-mode", "plan"] : []
+        return s == .plan ? ["--permission-mode", "auto"] : []
     }
 
     public func start(_ ctx: AdapterContext) -> [String] {

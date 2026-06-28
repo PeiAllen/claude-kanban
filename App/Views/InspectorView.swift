@@ -205,6 +205,9 @@ private struct BreadcrumbStrip: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
+    @State private var copied = false
+    @State private var hovering = false
+
     private var pathParts: [String] {
         task.worktree.split(separator: "/").map(String.init)
     }
@@ -236,24 +239,43 @@ private struct BreadcrumbStrip: View {
 
             Spacer(minLength: 0)
 
-            // worktree path with › separators
-            HStack(spacing: 4) {
-                ForEach(Array(pathParts.enumerated()), id: \.offset) { idx, part in
-                    if idx > 0 {
-                        Text("›").font(F.ui(8.5)).foregroundColor(theme.text3)
+            // worktree path with › separators — click to copy the full absolute path
+            Button { copyPath() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(F.ui(8.5))
+                        .foregroundColor(copied ? theme.green.dot : theme.text3)
+                        .opacity(copied || hovering ? 1 : 0)
+                    ForEach(Array(pathParts.enumerated()), id: \.offset) { idx, part in
+                        if idx > 0 {
+                            Text("›").font(F.ui(8.5)).foregroundColor(theme.text3)
+                        }
+                        Text(part)
+                            .font(F.mono(10))
+                            .foregroundColor(idx == pathParts.count - 1 ? theme.text2 : theme.text3)
                     }
-                    Text(part)
-                        .font(F.mono(10))
-                        .foregroundColor(idx == pathParts.count - 1 ? theme.text2 : theme.text3)
                 }
+                .lineLimit(1)
+                .padding(.trailing, 10).padding(.leading, 6)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
             }
-            .lineLimit(1)
-            .padding(.trailing, 10)
-            .onTapGesture { copy(task.worktree) }
+            .buttonStyle(.plain)
+            .help(copied ? "Copied!" : "Copy path")
+            .onHover { hovering = $0 }
         }
         .frame(height: 25)
         .background(theme.chip)
         .overlay(alignment: .bottom) { Rectangle().fill(theme.hair).frame(height: 0.5) }
+    }
+
+    private func copyPath() {
+        copy(task.worktree)
+        copied = true
+        _Concurrency.Task {
+            try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
+            copied = false
+        }
     }
 
     private func copy(_ s: String) {
