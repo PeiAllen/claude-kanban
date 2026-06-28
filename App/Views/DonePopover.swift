@@ -78,22 +78,11 @@ struct ArchiveRow: View {
                 Spacer(minLength: 0)
             }
 
-            // Action row (ui-spec §4.9): chat-link (agent/session id) + branch, both copyable,
-            // and "Zed" to open the worktree's changes. Indented to align under the title.
+            // Action row (ui-spec §4.9): chat-link (agent/session id) + branch, both copyable.
+            // No "Zed" action here — archiving removes the worktree, so there are no changes to open.
             HStack(spacing: 6) {
                 CopyChip(icon: "link", label: "\(task.agentId)/\(task.shortId)", value: task.ref())
                 CopyChip(icon: "doc.on.doc", label: task.branch, value: task.branch)
-                Button {
-                    _Concurrency.Task { await model.openInZed(task.id) }
-                } label: {
-                    HStack(spacing: 5) {
-                        ZedBadge(size: 13, corner: 3, glyph: 8)
-                        Text("Zed").font(F.mono(10)).foregroundColor(theme.text2)
-                    }
-                    .padding(.horizontal, 8).frame(height: 22)
-                    .surface(theme.chip, corner: 6, hair: theme.hair)
-                }
-                .buttonStyle(.plain)
                 Spacer(minLength: 0)
             }
             .padding(.leading, 32)
