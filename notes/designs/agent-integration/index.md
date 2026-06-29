@@ -28,6 +28,12 @@ updated: 2026-06-29
   field still missing.
 - The `link` verb + a new `Task.parentCardId` underpin **fork lineage** in
   [[context-passing-topologies]] / [[stacked-branches-and-guardian-handoff]] — cross-linked below.
+- **The report/telemetry path now generalizes to the normalized-event seam** per
+  [[agent-provider-interface]] §6: each adapter parses its agent's output (Claude hooks-push, Codex
+  rollout-tail, PTY-scrape fallback) into **one normalized event type**, resolved server-side by
+  `agentId`, with the board rendered from a snapshot + JSON-Patch deltas. The `progress`/`note`/`link`
+  verbs ride this **same normalized bus**, and `additionalContext` (still the keystone) is delivered
+  **per-adapter**. Cross-linked, not duplicated.
 
 ## Layers
 

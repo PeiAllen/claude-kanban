@@ -35,6 +35,15 @@ the **handoff capture**, the **seed** (the axis-3 field), the **seeded restart/s
 > *handoff carries intent, artifacts carry facts*: the seed carries navigation + next-steps, while
 > committed code, plan files, and the durable record live in the worktree (see [[context-passing-topologies]] §1).
 
+> **Reconciliation to the boundary-injector model ([[agent-provider-interface]] §8).** Handoff/restart-
+> with-context is one instance of the **durable per-card inbox + capability-keyed boundary-injector**: the
+> `pendingContext` inbox **IS** the channel, and delivery follows `capabilities.steering` —
+> queue-until-turn-boundary is the universal pattern (Stop-hook drain for Claude/Codex, **resume-seed** —
+> which is exactly this axis's seeded `restart`/`spawn` — MCP `check_inbox`, send-keys fallback), with one
+> wake for an idle parent. This is why the merge-back conclusion must ride the inbox (injected as
+> `additionalContext` at the next live turn) and **never** `send`-to-tmux. Consistent with the maxim above:
+> **merge-back artifacts ride git; the inbox carries only the conclusion.** Cross-linked, not duplicated.
+
 ## Goals / non-goals
 
 **Goals**

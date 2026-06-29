@@ -88,6 +88,14 @@ loops). Delivery: the adapter renders `Handoff` into `additionalContext` text (C
   rerouted by `Task.succeededBy`) — *not* `send` — injected as `additionalContext` on the card's next live
   turn (see [[context-passing-topologies]] §5).
 
+> **Delivery = capability-keyed boundary-injector ([[agent-provider-interface]] §8).** The seeded
+> `restart`/`spawn` and the `pendingContext` inbox are the **durable per-card inbox + capability-keyed
+> boundary-injector** specified in the seam note. `pendingContext` **IS** the inbox; delivery is keyed on
+> `capabilities.steering` (Stop-hook drain for Claude/Codex, **resume-seed** = this axis's seeded launch,
+> MCP `check_inbox`, send-keys fallback) under the universal *queue-until-turn-boundary* rule, with one
+> wake for an idle parent. This is why the conclusion must never `send`-to-tmux. **Merge-back artifacts
+> ride git; the inbox carries only the conclusion.** Cross-linked, not duplicated.
+
 ### `continue` verb (registry — CLI + MCP) → `ContinuityController.continue(ref, mode:)`
 - **Does:** trigger continuity for a card — if no current handoff, `send` a "write a handoff" prompt, await
   the `handoff` verb (grace window), then `restart(withContext:)` (mode `.same`, default) or

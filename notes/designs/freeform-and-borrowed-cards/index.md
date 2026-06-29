@@ -10,6 +10,7 @@ related:
   - "[[../code-review-on-board/index|code-review-on-board (axis 7)]]"
   - "[[../stacked-branches-and-guardian-handoff|stacked-branches & guardian hand-off]]"
   - "[[../context-passing-topologies|context-passing topologies]]"
+  - "[[../agent-provider-interface|agent-provider interface]]"
 ---
 
 # Freeform, Borrowed & Read-only Cards — Design Spec
@@ -117,6 +118,15 @@ claude --session-id <id> \
 > semantic mutation detector chosen over a brittle Bash deny-list. The two-lock framing below is the
 > original design; the third (classifier) layer was added in commits `98c685d`/`5614c6d`.
 
+> **Now generalized as a provider-agnostic preset — see [[../agent-provider-interface|agent-provider interface]] §7.**
+> Read-only is not a single knob but a **preset across 3 orthogonal permission layers** — tool-gating
+> (L1) + the auto-mode classifier (L1.5) + the OS sandbox (L3) — and enforcement strength is a capability:
+> `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`. The shipped Claude recipe here
+> (tool denies + strict sandbox + classifier) **is the `sandboxed` case** — true read-only. Agents without
+> an OS sandbox can only offer `toolGatedOnly` (a Bash escape could still write), so Orchestra must either
+> wrap them in its own containment (`orchestraSandboxed`) or surface that the read-only is weak — *never
+> advertise a read-only card it can't enforce.* Codex maps to `--sandbox read-only -a never`.
+
 - **Two independent locks.** `--disallowedTools` removes the edit tools from context (the model can't
   call what it doesn't have). The OS sandbox `denyWrite` blocks the Bash escape hatch (`sed -i`, `tee`,
   `>`, `python -c 'open(...,"w")'`) at the kernel — string-matching Bash deny patterns is whack-a-mole.
@@ -152,7 +162,10 @@ lifecycle).
 `access` defaults `.readWrite`. A `.readOnly` freeform card (the "inspect `main`, no owning card" case)
 launches via the same read-only recipe as Mechanism A — but at the **adapter** level (the launch argv
 in `ClaudeCodeAdapter.start/resume`), and it **keeps** the orchestra hooks (it *is* a tracked card, so
-its reports are wanted). Reuse the `readonly.json` asset introduced in PR1.
+its reports are wanted). Reuse the `readonly.json` asset introduced in PR1. Per
+[[../agent-provider-interface|agent-provider interface]] §7, `access = .readOnly` is the abstract
+`AccessPolicy` each adapter maps to its native `readOnlyEnforcement` level (the Claude path here is the
+`sandboxed` case).
 
 ### 4.3 lifecycle & archive
 

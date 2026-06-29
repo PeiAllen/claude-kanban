@@ -27,6 +27,13 @@ updated: 2026-06-29
 - **Load-bearing addition from the synthesis notes:** the merge-back / fork-safety / lineage model —
   durable `Task.pendingContext` inbox, `Task.succeededBy` lineage pointer, orphan-promotion. Cross-linked,
   not duplicated, below.
+- **Handoff delivery is now specified concretely in [[agent-provider-interface]] §8** — the **durable
+  per-card inbox + capability-keyed boundary-injector** (Stop-hook drain for Claude/Codex, resume-seed,
+  MCP `check_inbox`, send-keys fallback; *queue-until-turn-boundary* is the universal pattern, with one
+  wake for an idle parent). The `pendingContext` inbox **IS** that channel, and the seeded
+  `restart(withContext:)` / `spawn(withContext:)` mechanism is the capability-keyed injector in its
+  resume-seed form. **Merge-back artifacts ride git; the inbox carries only the conclusion.** Cross-linked,
+  not duplicated.
 - **Two prerequisite bugs** bear directly on seeded restart/handoff safety (noted, not fixed): `require()`
   does not reject **archived** cards (no `assertActive` guard), and **concurrent `restart` is not
   serialized** (the `recovering` set only guards report-attribution). See [[01-design]] risks.

@@ -14,6 +14,12 @@ links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]",
 > The **what**: a second (third, …) agent provider should slot into the existing `Adapter` seam without
 > rewriting the daemon, the report channel, or the UI.
 
+> **Deepened in [[agent-provider-interface]]** (the authoritative L3). That note keeps this seam and
+> generalizes it: the report path becomes **one normalized-event type** every adapter parses into (§4 D3),
+> variation rides a **capability descriptor** (§4 D4), session id is **discover-by-default** (§5 D5),
+> telemetry is structured-parse + PTY-scrape fallback (§6), and read-only becomes a **3-orthogonal-layer**
+> model (§7). Section pointers below mark what it supersedes; this doc stays the L1 record.
+
 ## Purpose & problem
 
 Orchestra already has the right shape for this: an `Adapter` protocol, an `AgentRegistry`, a
@@ -109,8 +115,13 @@ abstraction is shaped so this concrete second provider fits — not just a hypot
 **Three things Codex forces on the abstraction** (a Claude-only design would have missed all three):
 1. **Id is optional** — `newSessionId() -> nil` is a first-class path; `agentSessionId` is nil until the
    first report. (The seam allows it; the daemon flow must be verified to tolerate it.)
+   [[agent-provider-interface]] §5 (D5) elevates this to the *default*: **discover-and-store** is the
+   normalized model, Claude's seedable id is just an optimization, and resumability becomes an adapter
+   answer (`resumeHandle`) replacing the Claude `~/.claude` transcript-stat coupling.
 2. **ctxPct is adapter-derived** — `mapReport` may *compute* a field; `AgentModel` needs a context-window
    capacity so Codex can turn token counts into a percentage. The gauge hides if even that's unavailable.
+   [[agent-provider-interface]] §6 (D7) sources that capacity from a **vendored models.dev/LiteLLM
+   registry** (`limit.context` as the denominator) rather than a hand-maintained `AgentModel.contextWindow`.
 3. **Reporting wiring ≠ one file** — it's {extra argv, env, worktree-local files} plus **trust as a
    prerequisite** (Codex won't run project hooks in an untrusted dir), so `prepareToLaunch` must run first.
 
@@ -126,6 +137,11 @@ carried `cwd/repo/model/startIn/sessionId/prompt/name/hooksPath` and nothing els
   unsandboxed). **Layer 3 is Claude-Code-specific** — a `CodexAdapter` expresses read-only natively via
   `--sandbox read-only`, with no classifier-policy equivalent. So "how a provider expresses read-only" is
   itself an adapter concern the seam must carry, distinct from the `startIn` plan/impl axis.
+  **Generalized in [[agent-provider-interface]] §7 (D8):** the three layers map to the canonical
+  **tool-gating · approval-policy · OS-sandbox** layers; read-only is a **preset** over them, the shipped
+  Claude barrier is the `sandboxed` case, and the real adapter knob is
+  `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}` (so a card never advertises a
+  read-only it can't enforce).
 - **`trustCwd: Bool` (scratch pre-trust).** When Orchestra owns the cwd (a scratch dir it created),
   `prepareToLaunch` pre-trusts it outright (`ClaudeTrust.grant`) rather than mirroring repo trust. A
   `CodexAdapter`'s trust step (`config.toml trust_level`) needs the same outright-vs-mirror branch.
@@ -136,6 +152,10 @@ field `AdapterContext.additionalContext: String?` must be threaded through **eve
 seed" ([[context-passing-topologies]]). Delivery is **per-adapter**: Claude injects it as `SessionStart`
 `additionalContext`; Codex has no equivalent, so its adapter delivers the seed as an initial prompt or a
 `--context` file. This axis must reserve that carry-through even though the field doesn't exist in code yet.
+[[agent-provider-interface]] §8 (D9) refines *into-a-live-agent* delivery: a **durable per-card inbox**
+drained at the turn boundary by a **capability-keyed boundary-injector** (`capabilities.steering ∈
+{stopHook, resumeSeed, mcpInbox, sendKeys}`) — e.g. Claude `decision:block` + `additionalContext`, Codex
+`decision:block` + `reason`. The inbox is provider-agnostic; the seed/injection mechanism is the capability.
 
 ## Complexity & risks
 

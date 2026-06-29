@@ -85,6 +85,15 @@ underneath them**: the [[../freeform-and-borrowed-cards/index|freeform/borrowed/
 and provide axis 1's freeform lane. The **`additionalContext` seed** (axis 3) is now the elevated keystone
 the topology family depends on — build it first.
 
+**Axis 2 is now deepened to an implementable L3.** [[../agent-provider-interface|agent-provider interface]]
+(+ [[../agent-provider-research-appendix|research appendix]]) takes model-providers from L2 to an
+implementable design and **pins the provider-seam decisions** the other axes depend on: the ~5-method
+process-adapter shape, the one normalized-event type, the capability descriptor, discover-by-default
+session ids, the model registry, the 3-layer permission model, and the durable-inbox/boundary-injector
+steering seam. It also pins the **auth finding — drive-the-binary, never-the-token** (the hard ToS
+constraint; ACP is opt-in / API-key-only for Claude, while native CLI + Codex `app-server` both preserve
+the subscription). This is the L3 backing the committed CodexAdapter follow-on below.
+
 **Sequencing notes from the gates:**
 - **Foundational, do first:** the `CommandRegistry` single-source refactor (in axis 3) — it unblocks axes
   3/5/8. `ControlClient` auto-reconnect (from axis 9) is a near-term standalone fix that also hardens the
