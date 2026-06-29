@@ -86,7 +86,7 @@ public actor OrchestraService {
 
         let task = Task(
             title: title, titleProvisional: provisional, desc: "",
-            repo: realRepo, branch: input.branch, worktree: wt,
+            repo: realRepo, branch: input.branch, cwd: wt, origin: .worktree,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
             ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
@@ -157,11 +157,11 @@ public actor OrchestraService {
             // Multiple cards can intentionally share one worktree — only remove it when no other
             // non-archived card still lives there, or we'd pull the dir out from under a live sibling.
             let siblings = await store.all().filter {
-                $0.id != id && !$0.archived && $0.worktree == t.worktree
+                $0.id != id && !$0.archived && $0.cwd == t.cwd
             }
             if siblings.isEmpty {
                 // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
-                do { try worktrees.remove(worktree: t.worktree, force: false) }
+                do { try worktrees.remove(worktree: t.cwd, force: false) }
                 catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
             }
         }
@@ -177,8 +177,8 @@ public actor OrchestraService {
         let t = try await require(id)
         let name = sessions.sessionName(id)
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
-        let win = try sessions.newShellWindow(name, cwd: t.worktree)
-        return ShellTab(window: win, label: win, pwd: t.worktree)
+        let win = try sessions.newShellWindow(name, cwd: t.cwd)
+        return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
@@ -188,8 +188,8 @@ public actor OrchestraService {
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
         let t = try await require(id)
-        try resolver.assertAllowed(t.worktree)
-        let r = try Proc.run(["sh", "-c", cmd], cwd: t.worktree, timeout: timeout ?? .seconds(120))
+        try resolver.assertAllowed(t.cwd)
+        let r = try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
         let cap = 256 * 1024
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)
     }
@@ -200,18 +200,18 @@ public actor OrchestraService {
         let name = sessions.sessionName(id)
         let targets = (try? sessions.windows(name)) ?? []
         let running = !targets.isEmpty
-        let ctx = AdapterContext(cwd: t.worktree, model: t.model.id, sessionId: t.agentSessionId,
+        let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                  name: t.title, hooksPath: Config.hooksPath)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
-        return CardSessions(ref: t.ref(), id: t.id, worktree: t.worktree, tmuxSocket: Config.tmuxSocket,
+        return CardSessions(ref: t.ref(), id: t.id, worktree: t.cwd, tmuxSocket: Config.tmuxSocket,
                             session: name, running: running, targets: targets, agent: info)
     }
 
     public func openInZed(_ id: UUID) async throws {
         let t = try await require(id)
-        try launcher.openInZed(t.worktree)
+        try launcher.openInZed(t.cwd)
     }
 
     // MARK: - config

@@ -52,7 +52,7 @@ public struct SessionManager: Sendable {
         let name = sessionName(task.id)
         if try isAlive(name) { return (name, false) }
 
-        var args = ["new-session", "-d", "-s", name, "-n", "agent", "-c", task.worktree,
+        var args = ["new-session", "-d", "-s", name, "-n", "agent", "-c", task.cwd,
                     "-e", "ORCHESTRA_TASK_ID=\(task.id.uuidString.lowercased())",
                     "-e", "ORCHESTRA_SOCK=\(sockEnvPath)"]
         args.append("--")

@@ -20,7 +20,7 @@ final class SessionManagerTests {
     }
 
     private func makeTask(cwd: String) -> Task {
-        Task(title: "t", repo: cwd, branch: "b", worktree: cwd, model: AgentModel(id: "m"),
+        Task(title: "t", repo: cwd, branch: "b", cwd: cwd, model: AgentModel(id: "m"),
              startIn: .impl, column: .impl, order: 0, initialPrompt: "t")
     }
 
