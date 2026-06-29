@@ -55,7 +55,15 @@ final class BoardModel: ObservableObject {
     var selected: Task? { tasks.first { $0.id == selectedId } ?? archived.first { $0.id == selectedId } }
 
     func cards(in column: Column) -> [Task] {
-        tasks.filter { $0.column == column && !$0.archived }.sorted { $0.order < $1.order }
+        tasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
+             .sorted { $0.order < $1.order }
+    }
+
+    /// Non-worktree cards (`.borrowed`/`.scratch`) live in the standalone freeform region, not the
+    /// plan/impl/review lifecycle columns. Oldest-first for a stable order.
+    var freeformTasks: [Task] {
+        tasks.filter { $0.origin != .worktree && !$0.archived }
+             .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Other non-archived cards that share this card's worktree (any status). Multiple agents on one

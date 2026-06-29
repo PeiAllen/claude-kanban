@@ -20,6 +20,13 @@ struct BoardView: View {
                 ColumnView(column: col, label: label)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
+            // Standalone freeform region for non-worktree cards (.borrowed/.scratch). Only present when
+            // there are freeform cards — it's a card category, not a workflow stage, so it doesn't take
+            // up a permanent lane the way the lifecycle columns do.
+            if !model.freeformTasks.isEmpty {
+                FreeformRegionView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -141,5 +148,61 @@ private struct ColumnView: View {
         }
         .padding(.horizontal, 16)
         .opacity(isTargeted ? 0.35 : 1)
+    }
+}
+
+// MARK: - Freeform region
+
+/// Standalone lane for non-worktree cards (`.borrowed`/`.scratch`). Mirrors the column chrome but has
+/// no workflow lifecycle: cards aren't draggable between stages and the lane is not a drop destination.
+private struct FreeformRegionView: View {
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) var theme: Theme
+
+    private var cards: [OrchestraCore.Task] { model.freeformTasks }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            content
+        }
+        .frame(minWidth: 210, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(theme.colBg)
+        )
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Freeform")
+                .font(F.ui(12.5, .semibold))
+                .tracking(-0.0625)
+                .foregroundStyle(theme.text)
+            Text("\(cards.count)")
+                .font(F.ui(10.5, .semibold))
+                .foregroundStyle(theme.text2)
+                .padding(.horizontal, 5)
+                .frame(minWidth: 18, minHeight: 18)
+                .background(Capsule(style: .continuous).fill(theme.chip))
+            Spacer(minLength: 4)
+        }
+        .padding(.top, 13)
+        .padding(.horizontal, 13)
+        .padding(.bottom, 9)
+    }
+
+    private var content: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: model.density.cardGap) {
+                ForEach(cards) { task in
+                    CardView(task: task)
+                }
+            }
+            .padding(.top, 2)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 12)
+        }
+        .frame(maxHeight: .infinity)
     }
 }
