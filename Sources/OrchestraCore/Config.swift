@@ -53,6 +53,12 @@ public struct Config: Codable, Sendable, Equatable {
     public static var defaultReposRoot: String { "\(home)/Documents/Projects" }
     public static var defaultWorktreesRoot: String { "\(home)/.orchestra/worktrees" }
 
+    /// Root for ephemeral scratch-card dirs (`~/.orchestra/scratch/<id>`), parallel to worktrees.
+    /// Not user-configurable: scratch dirs are throwaway and per-card-id, never shared.
+    public static var scratchRoot: String { "\(home)/.orchestra/scratch" }
+    /// The scratch dir for a given card id — `scratchRoot/<lowercased-uuid>`.
+    public static func scratchDir(_ id: UUID) -> String { "\(scratchRoot)/\(id.uuidString.lowercased())" }
+
     // MARK: Derived (not user-facing)
 
     public static var dataDir: String { "\(home)/Library/Application Support/Orchestra" }
