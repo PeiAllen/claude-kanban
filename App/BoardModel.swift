@@ -207,17 +207,23 @@ final class BoardModel: ObservableObject {
 
     // MARK: actions
 
-    func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn) async {
+    func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
+               cwd: String? = nil, access: CardAccess = .readWrite) async {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
         ]
         if let model { p["model"] = .string(model) }
+        // Freeform card: a borrowed cwd (and its access mode) instead of a worktree.
+        if let cwd { p["cwd"] = .string(cwd); p["access"] = .string(access.rawValue) }
         do {
             let t = try await client.call("spawn", .object(p)).decode(Task.self)
             apply(.taskUpserted(t))   // show the card immediately; the event stream is idempotent
             selectedId = t.id
-            toast("Spawned “\(t.title)”", sub: "\((t.repo as NSString).lastPathComponent) · \(t.branch)")
+            let sub = t.origin == .worktree
+                ? "\((t.repo as NSString).lastPathComponent) · \(t.branch)"
+                : (t.cwd as NSString).lastPathComponent
+            toast("Spawned “\(t.title)”", sub: sub)
         } catch { toast("Spawn failed", sub: "\(error)", color: .red) }
     }
 

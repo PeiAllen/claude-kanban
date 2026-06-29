@@ -8,11 +8,19 @@ struct SpawnSheet: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
 
+    /// Worktree (repo + branch, the default) vs Freeform (run in an existing directory).
+    private enum Mode { case worktree, freeform }
+    @State private var mode: Mode = .worktree
+
     @State private var prompt = ""
     @State private var repo = ""
     @State private var branch = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
+
+    /// Freeform card: the borrowed directory to run in, and whether it's read-only.
+    @State private var cwd = ""
+    @State private var readOnly = false
 
     /// Existing local branches in the selected repo (most-recently-committed first), loaded on appear
     /// and whenever the repo changes. Used to power the branch combo's fuzzy search.
@@ -55,11 +63,19 @@ struct SpawnSheet: View {
     /// The prompt is optional: spawning with an empty prompt drops you into the agent and the card is
     /// named off the first prompt you type (e.g. `/layered-plan`). Repo + branch are still required.
     private var canSpawn: Bool {
-        !repo.isEmpty && !branch.isEmpty
+        switch mode {
+        case .worktree: return !repo.isEmpty && !branch.isEmpty
+        case .freeform: return !cwd.isEmpty
+        }
     }
 
     private var cliPreview: String {
-        "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
+        switch mode {
+        case .worktree:
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
+        case .freeform:
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
+        }
     }
 
     var body: some View {
@@ -95,9 +111,23 @@ struct SpawnSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
-                HStack(spacing: 11) {
-                    field("Repository") { repoPicker }
-                    field("Branch") { branchPicker }
+                field("Run in") {
+                    HStack(spacing: 2) {
+                        modeButton("Worktree", .worktree)
+                        modeButton("Freeform", .freeform)
+                    }
+                    .padding(2)
+                    .background(theme.chip)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if mode == .worktree {
+                    HStack(spacing: 11) {
+                        field("Repository") { repoPicker }
+                        field("Branch") { branchPicker }
+                    }
+                } else {
+                    field("Directory") { directoryPicker }
                 }
 
                 field("Model") {
@@ -121,23 +151,31 @@ struct SpawnSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
-                field("Worktree") {
-                    Text(worktree)
-                        .font(F.mono(11.5)).foregroundColor(theme.text2)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 11).frame(height: 34)
-                        .surface(theme.chip, corner: 8, hair: theme.hair)
-                }
-
-                field("Start in") {
-                    HStack(spacing: 2) {
-                        startButton("Plan", .plan)
-                        startButton("Implementation", .impl)
+                if mode == .worktree {
+                    field("Worktree") {
+                        Text(worktree)
+                            .font(F.mono(11.5)).foregroundColor(theme.text2)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 11).frame(height: 34)
+                            .surface(theme.chip, corner: 8, hair: theme.hair)
                     }
-                    .padding(2)
-                    .background(theme.chip)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    field("Start in") {
+                        HStack(spacing: 2) {
+                            startButton("Plan", .plan)
+                            startButton("Implementation", .impl)
+                        }
+                        .padding(2)
+                        .background(theme.chip)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                } else {
+                    Toggle(isOn: $readOnly) {
+                        Text("Read-only (agent can read, search & run git, but cannot edit or write)")
+                            .font(F.ui(12)).foregroundColor(theme.text2)
+                    }
+                    .toggleStyle(.checkbox)
                 }
             }
             .padding(.horizontal, 19).padding(.top, 12).padding(.bottom, 4)
@@ -168,7 +206,13 @@ struct SpawnSheet: View {
                 Button {
                     let m = modelSel.isEmpty ? nil : modelSel
                     _Concurrency.Task {
-                        await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn)
+                        switch mode {
+                        case .worktree:
+                            await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn)
+                        case .freeform:
+                            await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                                              cwd: cwd, access: readOnly ? .readOnly : .readWrite)
+                        }
                         model.showSpawn = false
                     }
                 } label: {
@@ -408,6 +452,46 @@ struct SpawnSheet: View {
             .background(theme.field)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func modeButton(_ label: String, _ value: Mode) -> some View {
+        let active = mode == value
+        return Button { mode = value } label: {
+            Text(label).font(F.ui(12, .semibold))
+                .foregroundColor(active ? theme.text : theme.text2)
+                .padding(.horizontal, 14).frame(maxWidth: .infinity).frame(height: 28)
+                .background(active ? theme.card : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Freeform directory chooser: shows the picked path and opens an `NSOpenPanel` (directories only).
+    private var directoryPicker: some View {
+        Button {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Choose"
+            if panel.runModal() == .OK, let url = panel.url { cwd = url.path }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "folder").font(.system(size: 11)).foregroundColor(theme.text2)
+                Text(cwd.isEmpty ? "Choose a directory" : cwd)
+                    .font(F.mono(12.5)).foregroundColor(cwd.isEmpty ? theme.text3 : theme.text)
+                    .lineLimit(1).truncationMode(.head)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .background(theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func startButton(_ label: String, _ value: StartIn) -> some View {

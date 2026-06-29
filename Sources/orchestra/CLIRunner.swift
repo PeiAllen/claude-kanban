@@ -22,12 +22,20 @@ enum CLIRunner {
                 renderTasks(result)
 
             case "spawn":
-                let p = JSONValue.object([
-                    "prompt": .string(flags.require("prompt")),
-                    "repo": .string(flags.require("repo")),
-                    "branch": .string(flags.require("branch")),
-                ].merging(optional("model", flags.value("model"))) { a, _ in a }
-                 .merging(optional("col", flags.value("col"))) { a, _ in a })
+                // Freeform: `--cwd <dir>` runs in an existing directory (no worktree, sandbox-trusted),
+                // optionally `--read-only`. Otherwise repo + branch are required (the worktree path).
+                var fields: [String: JSONValue] = ["prompt": .string(flags.require("prompt"))]
+                if let cwd = flags.value("cwd") {
+                    fields["cwd"] = .string(cwd)
+                    if flags.has("read-only") { fields["access"] = .string(CardAccess.readOnly.rawValue) }
+                    if let r = flags.value("repo") { fields["repo"] = .string(r) }       // optional context
+                } else {
+                    fields["repo"] = .string(flags.require("repo"))
+                    fields["branch"] = .string(flags.require("branch"))
+                }
+                let p = JSONValue.object(fields
+                    .merging(optional("model", flags.value("model"))) { a, _ in a }
+                    .merging(optional("col", flags.value("col"))) { a, _ in a })
                 let task = try await client.call("spawn", p)
                 printRef(task)
 

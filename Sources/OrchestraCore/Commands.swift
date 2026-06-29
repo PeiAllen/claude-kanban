@@ -38,15 +38,21 @@ public struct CommandRegistry: Sendable {
                     summary: "Spawn a new agent. Only `prompt` is free text — no title/desc.",
                     params: schema([
                         "prompt": strProp("Initial prompt — what the agent should start working on"),
-                        "repo": strProp("Repository root (allowlisted)"),
-                        "branch": strProp("Working branch"),
+                        "repo": strProp("Repository root (allowlisted). Omit for a freeform (cwd) card."),
+                        "branch": strProp("Working branch. Omit for a freeform (cwd) card."),
+                        "cwd": strProp("Freeform: run in this existing directory — no worktree is cut and "
+                            + "the path is trusted via the sandbox (not the allowlist). Omit repo/branch when set."),
+                        "access": strProp("'readWrite' (default) or 'readOnly' (agent cannot edit/write/commit)."),
                         "model": strProp("Model id (from the adapter's list)"),
                         "col": colProp(startInOnly: true),
-                    ], required: ["prompt", "repo", "branch"])) { svc, p, src in
+                    ], required: ["prompt"])) { svc, p, src in
                 let input = SpawnInput(
-                    prompt: try p.string("prompt"), repo: try p.string("repo"),
-                    branch: try p.string("branch"), model: p.optString("model"),
-                    startIn: p.optString("col").flatMap(StartIn.init(rawValue:)))
+                    prompt: try p.string("prompt"),
+                    repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
+                    model: p.optString("model"),
+                    startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
+                    cwd: p.optString("cwd"),
+                    access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite)
                 let task = try await svc.spawn(input, source: src)
                 return try JSONValue(encodable: task)
             },
