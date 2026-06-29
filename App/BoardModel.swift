@@ -62,7 +62,8 @@ final class BoardModel: ObservableObject {
     /// worktree is intentional — keeping them from clobbering each other is the user's job; this just
     /// surfaces the co-located cards. Oldest-first for a stable list.
     func worktreeSiblings(of task: Task) -> [Task] {
-        tasks.filter { $0.worktree == task.worktree && $0.id != task.id }
+        tasks.filter { $0.cwd == task.cwd && $0.id != task.id
+                       && $0.origin == .worktree && task.origin == .worktree }
              .sorted { $0.createdAt < $1.createdAt }
     }
 
