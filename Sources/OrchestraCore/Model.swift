@@ -494,12 +494,15 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     public var cwd: String?
     /// Read-only vs read-write (defaults read-write). A `.readOnly` borrowed card launches locked down.
     public var access: CardAccess
+    /// Scratch spawn: create a fresh throwaway `~/.orchestra/scratch/<id>` dir, set `cwd` to it, and
+    /// mark `origin = .scratch`. Takes precedence over `cwd`/worktree. nil/false ⇒ borrowed-or-worktree.
+    public var scratch: Bool
     public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,
                 startIn: StartIn? = nil, agentId: String? = nil,
-                cwd: String? = nil, access: CardAccess = .readWrite) {
+                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) {
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
-        self.cwd = cwd; self.access = access
+        self.cwd = cwd; self.access = access; self.scratch = scratch
     }
 
     public init(from decoder: Decoder) throws {
@@ -512,5 +515,6 @@ public struct SpawnInput: Codable, Sendable, Equatable {
         self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId)
         self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
         self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
+        self.scratch = try c.decodeIfPresent(Bool.self, forKey: .scratch) ?? false
     }
 }

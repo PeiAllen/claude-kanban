@@ -66,19 +66,30 @@ public actor OrchestraService {
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
         let adapter = try registry.get(input.agentId ?? config.defaultAgentId)
-        // Freeform (borrowed) vs worktree. A borrowed spawn runs in a user-chosen dir: no worktree is
-        // cut and the allowlist gate is skipped — the OS sandbox is the trust boundary (the path may
-        // even be outside any repo). A normal spawn resolves+allowlists the repo and cuts the worktree.
-        let isBorrowed = input.cwd != nil
+        // The card id is generated up front so a scratch spawn can name its dir after the card.
+        let id = UUID()
+        // Scratch vs freeform (borrowed) vs worktree. A scratch spawn mkdir's a fresh throwaway
+        // `~/.orchestra/scratch/<id>` and owns it (rm -rf on archive). A borrowed spawn runs in a
+        // user-chosen dir: no worktree is cut and the allowlist gate is skipped — the OS sandbox is the
+        // trust boundary (the path may even be outside any repo). A normal spawn resolves+allowlists the
+        // repo and cuts the worktree. Scratch takes precedence over `cwd`/worktree.
         let realRepo: String
         let cwd: String
-        if let borrowed = input.cwd {
+        let origin: CardOrigin
+        if input.scratch {
+            cwd = Config.scratchDir(id)
+            try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+            origin = .scratch
+            realRepo = input.repo            // optional context only; never resolved/allowlisted
+        } else if let borrowed = input.cwd {
             cwd = borrowed
+            origin = .borrowed
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
             (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            origin = .worktree
         }
         let sid = adapter.newSessionId()
         // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
@@ -96,9 +107,10 @@ public actor OrchestraService {
         let launchPrompt: String? = provisional ? nil : input.prompt
 
         let task = Task(
+            id: id,
             title: title, titleProvisional: provisional, desc: "",
             repo: realRepo, branch: input.branch, cwd: cwd,
-            origin: isBorrowed ? .borrowed : .worktree, access: input.access,
+            origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
             ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
