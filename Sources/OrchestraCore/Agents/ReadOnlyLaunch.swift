@@ -15,3 +15,14 @@ enum ReadOnlyLaunch {
         return String(decoding: data, as: UTF8.self)
     }
 }
+
+extension ReadOnlyLaunch {
+    static func gitDir(repo: String, worktreeName: String) -> String {
+        "\(repo)/.git/worktrees/\(worktreeName)"
+    }
+
+    static func argv(binary: String, settingsPath: String) -> [String] {
+        [binary, "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit",
+         "--settings", settingsPath]
+    }
+}

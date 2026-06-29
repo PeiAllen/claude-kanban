@@ -17,4 +17,15 @@ final class ReadOnlyLaunchTests: XCTestCase {
         let fs = (obj["sandbox"] as! [String: Any])["filesystem"] as! [String: Any]
         XCTAssertEqual(fs["denyWrite"] as! [String], ["/wt/foo"])
     }
+
+    func test_argv_disallows_edit_tools_and_passes_settings() {
+        let argv = ReadOnlyLaunch.argv(binary: "claude", settingsPath: "/tmp/ro.json")
+        XCTAssertEqual(argv, ["claude", "--disallowedTools", "Edit", "Write", "MultiEdit",
+                              "NotebookEdit", "--settings", "/tmp/ro.json"])
+    }
+
+    func test_gitDir_points_into_repo_worktrees() {
+        XCTAssertEqual(ReadOnlyLaunch.gitDir(repo: "/r/app", worktreeName: "feature"),
+                       "/r/app/.git/worktrees/feature")
+    }
 }
