@@ -192,9 +192,14 @@ public actor OrchestraService {
                     catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
                 }
             case .scratch:
-                // PR4 fills this in (rm -rf t.cwd, under the scratch root). No-op for now — no
-                // .scratch cards exist yet (spawn only ever produces .worktree).
-                break
+                // Scratch dirs are truly ephemeral: rm -rf unconditionally (no dirty-guard; the user
+                // moves out anything useful first). The destructive op is double-gated — this `.scratch`
+                // arm, plus a runtime check that the path is under the scratch root. The `assert` is a
+                // debug catch only; the `if` is the release-safe guard a destructive op must never skip.
+                assert(t.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
+                if t.cwd.hasPrefix(Config.scratchRoot + "/") {
+                    try? FileManager.default.removeItem(atPath: t.cwd)
+                }
             case .borrowed:
                 // Orchestra never deletes a borrowed dir. No-op (also none exist yet).
                 break
