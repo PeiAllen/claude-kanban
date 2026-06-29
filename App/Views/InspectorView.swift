@@ -125,10 +125,13 @@ private struct AgentChrome: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.termBg)
 
-            BottomStrip(task: task)
-
+            // ui-spec §3.5: the bottom strip is *either* the full-width "New terminal" button (no
+            // shells) *or* the shell tab ribbon (which carries its own "+" to add more). They never
+            // stack — closing the last shell drops `shellOpen` and the button comes back.
             if model.shellOpen.contains(task.id) {
                 ShellTabsView(task: task)
+            } else {
+                BottomStrip(task: task)
             }
         }
         .background(theme.termBg)
