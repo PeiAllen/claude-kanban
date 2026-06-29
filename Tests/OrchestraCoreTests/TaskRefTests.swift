@@ -7,7 +7,7 @@ struct TaskRefTests {
 
     private func sample() -> Task {
         Task(title: "Fix the login flow!", repo: "/repos/app", branch: "feature",
-             worktree: "/wt/app/feature", model: AgentModel(id: "m"), startIn: .plan, column: .plan, order: 0,
+             cwd: "/wt/app/feature", model: AgentModel(id: "m"), startIn: .plan, column: .plan, order: 0,
              initialPrompt: "Fix the login flow!")
     }
 

@@ -120,7 +120,7 @@ enum CLIRunner {
 
     static func renderSessions(_ cs: CardSessions) {
         print("ref:        \(cs.ref)")
-        print("worktree:   \(cs.worktree)")
+        print("cwd:        \(cs.worktree)")
         print("running:    \(cs.running)")
         if let sid = cs.agent.sessionId { print("session id: \(sid)") }
         if let tp = cs.agent.transcriptPath { print("transcript: \(tp)") }

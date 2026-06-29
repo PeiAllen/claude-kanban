@@ -92,6 +92,10 @@ public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
 
 // MARK: - Task (the card)
 
+/// What kind of directory a card runs in. Drives archive cleanup ("Orchestra deletes only dirs it
+/// made": `.worktree` + `.scratch`) and board placement (`.worktree` ⇒ workflow column).
+public enum CardOrigin: String, Codable, Sendable { case worktree, scratch, borrowed }
+
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 
@@ -106,7 +110,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var desc: String
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
-    public var worktree: String    // abs path to the git worktree (derived: repo + branch)
+    public var cwd: String         // the ONE path: where the agent + shells run (== worktree root for .worktree)
+    public var origin: CardOrigin  // worktree | scratch | borrowed
     public var agentId: String     // -> AgentRegistry (default "claude-code")
     public var model: AgentModel   // selected model (launch id + display label, from the adapter)
     public var startIn: StartIn    // where the agent began
@@ -130,7 +135,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         desc: String = "",
         repo: String,
         branch: String,
-        worktree: String,
+        cwd: String,
+        origin: CardOrigin = .worktree,
         agentId: String = "claude-code",
         model: AgentModel,
         startIn: StartIn,
@@ -153,7 +159,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.desc = desc
         self.repo = repo
         self.branch = branch
-        self.worktree = worktree
+        self.cwd = cwd
+        self.origin = origin
         self.agentId = agentId
         self.model = model
         self.startIn = startIn
@@ -169,6 +176,71 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.titleProvisional = try c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
+        self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
+        self.repo = try c.decode(String.self, forKey: .repo)
+        self.branch = try c.decode(String.self, forKey: .branch)
+        // MIGRATION: prefer new `cwd`; fall back to the old `worktree` string.
+        let legacyWorktree = try c.decodeIfPresent(String.self, forKey: .worktree)
+        self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? legacyWorktree ?? ""
+        self.origin = try c.decodeIfPresent(CardOrigin.self, forKey: .origin) ?? .worktree
+        self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
+        self.model = try c.decode(AgentModel.self, forKey: .model)
+        self.startIn = try c.decode(StartIn.self, forKey: .startIn)
+        self.column = try c.decode(Column.self, forKey: .column)
+        self.order = try c.decode(Int.self, forKey: .order)
+        self.status = try c.decodeIfPresent(AgentStatus.self, forKey: .status) ?? .running
+        self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
+        self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
+        self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
+        self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
+        self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
+        self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
+        self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
+
+    // `worktree` stays here as a decode-only key (migration); it is no longer a stored property and is
+    // never encoded — `encode(to:)` writes `cwd`/`origin` instead. (An extra CodingKey with no matching
+    // property defeats synthesized Encodable, so the encoder is spelled out explicitly.)
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(titleProvisional, forKey: .titleProvisional)
+        try c.encode(desc, forKey: .desc)
+        try c.encode(repo, forKey: .repo)
+        try c.encode(branch, forKey: .branch)
+        try c.encode(cwd, forKey: .cwd)
+        try c.encode(origin, forKey: .origin)
+        try c.encode(agentId, forKey: .agentId)
+        try c.encode(model, forKey: .model)
+        try c.encode(startIn, forKey: .startIn)
+        try c.encode(column, forKey: .column)
+        try c.encode(order, forKey: .order)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(deadReason, forKey: .deadReason)
+        try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
+        try c.encode(ctxPct, forKey: .ctxPct)
+        try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
+        try c.encode(priorSessionIds, forKey: .priorSessionIds)
+        try c.encode(initialPrompt, forKey: .initialPrompt)
+        try c.encode(archived, forKey: .archived)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, titleProvisional, desc, repo, branch, cwd, worktree, origin, agentId, model,
+             startIn, column, order, status, deadReason, deadDetail, ctxPct, agentSessionId,
+             priorSessionIds, initialPrompt, archived, createdAt, updatedAt
     }
 
     // Card reference — the agent-facing handle ("Copy chat link" copies `ref`).

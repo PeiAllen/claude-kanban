@@ -291,7 +291,7 @@ private struct BreadcrumbStrip: View {
     @State private var hovering = false
 
     private var pathParts: [String] {
-        task.worktree.split(separator: "/").map(String.init)
+        task.cwd.split(separator: "/").map(String.init)
     }
 
     var body: some View {
@@ -352,7 +352,7 @@ private struct BreadcrumbStrip: View {
     }
 
     private func copyPath() {
-        copy(task.worktree)
+        copy(task.cwd)
         copied = true
         _Concurrency.Task {
             try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)

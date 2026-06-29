@@ -59,7 +59,7 @@ extension OrchestraService {
         defer { recovering.remove(id) }
 
         // Pre-check: must have a tracked id whose transcript still exists.
-        let ctx = AdapterContext(cwd: task.worktree, repo: task.repo, model: task.model.id,
+        let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  sessionId: task.agentSessionId, name: task.title, hooksPath: Config.hooksPath)
         guard let sid = task.agentSessionId,
               let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
@@ -108,7 +108,7 @@ extension OrchestraService {
         var prior = task.priorSessionIds
         if let old = task.agentSessionId, !old.isEmpty { prior.append(old) }
 
-        let ctx = AdapterContext(cwd: task.worktree, repo: task.repo, model: task.model.id,
+        let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  startIn: task.startIn, sessionId: freshId, prompt: nil,
                                  name: task.title, hooksPath: Config.hooksPath)
         let launchTask = task
@@ -152,7 +152,7 @@ extension OrchestraService {
     func isResumable(_ t: Task) -> Bool {
         guard let sid = t.agentSessionId, !sid.isEmpty else { return false }
         let adapter = (try? registry.get(t.agentId))
-        let ctx = AdapterContext(cwd: t.worktree, sessionId: sid, name: t.title, hooksPath: Config.hooksPath)
+        let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, hooksPath: Config.hooksPath)
         guard let tp = adapter?.sessionInfo(ctx, current: sid, prior: t.priorSessionIds)?.transcriptPath
         else { return false }
         return FileManager.default.fileExists(atPath: tp)

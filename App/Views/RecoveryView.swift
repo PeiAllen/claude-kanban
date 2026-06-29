@@ -40,7 +40,7 @@ struct RecoveryView: View {
                             .font(F.ui(11.5)).foregroundColor(theme.text2)
                         Text("\(repoName) · \(task.branch)")
                             .font(F.mono(11)).foregroundColor(theme.text2)
-                        Text(task.worktree)
+                        Text(task.cwd)
                             .font(F.mono(10.5)).foregroundColor(theme.text3).lineLimit(1)
                             .truncationMode(.middle)
 
@@ -53,9 +53,9 @@ struct RecoveryView: View {
                             .buttonStyle(.plain)
                             miniButton("Reveal in Finder", "folder") {
                                 NSWorkspace.shared.activateFileViewerSelecting(
-                                    [URL(fileURLWithPath: task.worktree)])
+                                    [URL(fileURLWithPath: task.cwd)])
                             }
-                            miniButton("Copy path", "doc.on.doc") { copy(task.worktree) }
+                            miniButton("Copy path", "doc.on.doc") { copy(task.cwd) }
                         }
                         .padding(.top, 2)
                     }

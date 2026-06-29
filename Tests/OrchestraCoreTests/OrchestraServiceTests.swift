@@ -77,15 +77,15 @@ struct OrchestraServiceTests {
         // Two cards on the SAME branch resolve to the SAME worktree (ensure is idempotent on the path).
         let a = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "shared"))
         let b = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "shared"))
-        #expect(a.worktree == b.worktree)
+        #expect(a.cwd == b.cwd)
 
         // Archiving the first must NOT remove the worktree — b still lives there.
         try await env.svc.archive(a.id, source: .app)
-        #expect(!env.worktrees.removed.contains(a.worktree))
+        #expect(!env.worktrees.removed.contains(a.cwd))
 
         // Archiving the last card on the worktree removes it.
         try await env.svc.archive(b.id, source: .app)
-        #expect(env.worktrees.removed.contains(b.worktree))
+        #expect(env.worktrees.removed.contains(b.cwd))
     }
 
     @Test("spawn with no prompt → provisional title (branch), status .waiting, no positional prompt handed to launch")
