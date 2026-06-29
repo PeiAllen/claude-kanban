@@ -136,7 +136,7 @@ private struct DebugLaunchHook: ViewModifier {
     static var mockArchived: [Task] {
         func mk(_ title: String, repo: String, branch: String, agent: String, model: String, ago: TimeInterval) -> Task {
             Task(title: title, repo: repo, branch: branch,
-                 worktree: "~/worktrees/\((repo as NSString).lastPathComponent)/\(branch.replacingOccurrences(of: "/", with: "-"))",
+                 cwd: "~/worktrees/\((repo as NSString).lastPathComponent)/\(branch.replacingOccurrences(of: "/", with: "-"))",
                  agentId: agent, model: AgentModel(id: model), startIn: .impl, column: .review, order: 0,
                  status: .done, initialPrompt: title, archived: true,
                  updatedAt: Date(timeIntervalSinceNow: -ago))
@@ -148,6 +148,33 @@ private struct DebugLaunchHook: ViewModifier {
                branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-4-6", ago: 7200),
         ]
     }
+    /// Visual-check harness for the inspector's shell strip (scripts/orch-ui-shot.sh). Injects one
+    /// mock *running* card (so AgentChrome renders, not Recovery) and selects it — no daemon needed,
+    /// so it never touches the live app/daemon. `ORCH_SHELLS_N` (default 2) sets how many shell tabs
+    /// to open: 0 leaves the "New terminal" button showing, ≥1 swaps in the tab ribbon. The agent /
+    /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
+    /// `ORCH_SHELL_HEIGHT` overrides the persisted shell-panel height so resize wiring is screenshot-
+    /// able at different sizes.
+    static func showShells(model: BoardModel) {
+        let env = ProcessInfo.processInfo.environment
+        let n = Int(env["ORCH_SHELLS_N"] ?? "") ?? 2
+        if let h = env["ORCH_SHELL_HEIGHT"], let hv = Double(h) {
+            UserDefaults.standard.set(hv, forKey: "shellPanelHeight")
+        }
+        let mock = Task(title: "Wire shell-panel resize + strip swap",
+                        repo: "/Users/allen/code/orchestra", branch: "fix/shells",
+                        cwd: "/Users/allen/code/orchestra/.worktrees/fix-shells",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, status: .running, initialPrompt: "demo")
+        model.tasks = [mock]
+        model.selectedId = mock.id
+        if n > 0 {
+            model.shellWindows[mock.id] = (1...n).map { "shell-\($0)" }
+            model.selectedShell[mock.id] = "shell-1"
+            model.shellOpen.insert(mock.id)
+        }
+    }
+
     /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
     /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
     static func snapshotDone(to path: String, model: BoardModel) {
@@ -201,6 +228,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "done":
                 model.archived = DebugLaunchHook.mockArchived
                 model.showDone = true
+            case "shells": DebugLaunchHook.showShells(model: model)
             default: break
             }
         }

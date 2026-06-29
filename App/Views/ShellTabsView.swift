@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import OrchestraCore
 
 /// A tab ribbon of opened shell windows + a resizable shell terminal panel below the agent
@@ -11,10 +12,19 @@ struct ShellTabsView: View {
     // Shell windows + selection live on BoardModel (keyed by task id) so they survive deselect/
     // reselect; only the minimize toggle is transient view state.
     @State private var minimized = false
-    private let panelHeight: CGFloat = 220
 
+    // Shell-panel height, persisted across launches; clamped 80–500 (ui-spec §3.5). During a live
+    // drag we hold the in-flight value in `dragHeight` and commit to @AppStorage only on release
+    // (a per-frame UserDefaults write would stutter the drag — same pattern as InspectorResizer).
+    @AppStorage("shellPanelHeight") private var savedHeight: Double = 220
+    @State private var dragHeight: Double? = nil
+    @State private var startHeight: Double? = nil
+
+    private var panelHeight: CGFloat { CGFloat(dragHeight ?? savedHeight) }
     private var windows: [String] { model.shellWindows[task.id] ?? [] }
     private var selectedWindow: String { model.selectedShell[task.id] ?? windows.first ?? "shell-1" }
+    // The ribbon doubles as a drag handle, but only when a panel is actually showing below it.
+    private var resizable: Bool { !minimized && !windows.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,5 +97,37 @@ struct ShellTabsView: View {
         .frame(height: 26)
         .background(theme.chip)
         .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
+        .contentShape(Rectangle())
+        // ns-resize cursor + drag-to-resize, but only while a panel is open below. `including:
+        // .subviews` parks this gesture when not resizable so the tab/+/minimize buttons still get
+        // their taps; window move-by-background is already disabled (OrchestraApp) so no AppKit
+        // backing is needed to keep the drag from dragging the whole window.
+        .onHover { hovering in
+            guard resizable else { return }
+            if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+        }
+        .gesture(resizeDrag, including: resizable ? .all : .subviews)
+    }
+
+    // Dragging the ribbon up grows the shell panel (and shrinks the flexible agent terminal above).
+    private var resizeDrag: some Gesture {
+        // Measure in GLOBAL space: the ribbon shifts up/down as the panel grows, so a .local
+        // translation would be read against a moving origin and jitter (cf. InspectorResizer).
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            .onChanged { v in
+                if startHeight == nil { startHeight = savedHeight }
+                dragHeight = resolve(v.translation.height, base: startHeight ?? savedHeight)
+            }
+            .onEnded { v in
+                let base = startHeight ?? savedHeight
+                savedHeight = resolve(v.translation.height, base: base)
+                startHeight = nil
+                dragHeight = nil
+            }
+    }
+
+    private func resolve(_ translation: CGFloat, base: Double) -> Double {
+        // Up (negative translation) → taller panel. Clamp 80–500 per ui-spec §3.5.
+        min(500, max(80, base - Double(translation)))
     }
 }
