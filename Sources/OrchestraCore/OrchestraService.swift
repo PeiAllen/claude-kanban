@@ -66,19 +66,30 @@ public actor OrchestraService {
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
         let adapter = try registry.get(input.agentId ?? config.defaultAgentId)
-        // Freeform (borrowed) vs worktree. A borrowed spawn runs in a user-chosen dir: no worktree is
-        // cut and the allowlist gate is skipped — the OS sandbox is the trust boundary (the path may
-        // even be outside any repo). A normal spawn resolves+allowlists the repo and cuts the worktree.
-        let isBorrowed = input.cwd != nil
+        // The card id is generated up front so a scratch spawn can name its dir after the card.
+        let id = UUID()
+        // Scratch vs freeform (borrowed) vs worktree. A scratch spawn mkdir's a fresh throwaway
+        // `~/.orchestra/scratch/<id>` and owns it (rm -rf on archive). A borrowed spawn runs in a
+        // user-chosen dir: no worktree is cut and the allowlist gate is skipped — the OS sandbox is the
+        // trust boundary (the path may even be outside any repo). A normal spawn resolves+allowlists the
+        // repo and cuts the worktree. Scratch takes precedence over `cwd`/worktree.
         let realRepo: String
         let cwd: String
-        if let borrowed = input.cwd {
+        let origin: CardOrigin
+        if input.scratch {
+            cwd = Config.scratchDir(id)
+            try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+            origin = .scratch
+            realRepo = input.repo            // optional context only; never resolved/allowlisted
+        } else if let borrowed = input.cwd {
             cwd = borrowed
+            origin = .borrowed
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
             (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            origin = .worktree
         }
         let sid = adapter.newSessionId()
         // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
@@ -96,9 +107,10 @@ public actor OrchestraService {
         let launchPrompt: String? = provisional ? nil : input.prompt
 
         let task = Task(
+            id: id,
             title: title, titleProvisional: provisional, desc: "",
             repo: realRepo, branch: input.branch, cwd: cwd,
-            origin: isBorrowed ? .borrowed : .worktree, access: input.access,
+            origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
             ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
@@ -114,6 +126,22 @@ public actor OrchestraService {
         emit(.taskUpserted(created))
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
         return created
+    }
+
+    /// Remove orphaned scratch dirs — `~/.orchestra/scratch/<id>` subdirs with no matching non-archived
+    /// `.scratch` card. Covers a scratch card that died without a clean archive (so its `rm -rf` never
+    /// ran). Run once at daemon startup. Like the archive arm, this only ever deletes under the scratch
+    /// root (the entries are children of `Config.scratchRoot`).
+    public func sweepOrphanScratch() async {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: Config.scratchRoot) else { return }
+        let liveScratchDirs = Set(await store.all()
+            .filter { $0.origin == .scratch && !$0.archived }
+            .map { $0.cwd })
+        for name in entries {
+            let path = "\(Config.scratchRoot)/\(name)"
+            if !liveScratchDirs.contains(path) { try? fm.removeItem(atPath: path) }
+        }
     }
 
     /// Spawn many at once. A failed entry is recorded (not thrown) so the rest still spawn and the
@@ -180,9 +208,14 @@ public actor OrchestraService {
                     catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
                 }
             case .scratch:
-                // PR4 fills this in (rm -rf t.cwd, under the scratch root). No-op for now — no
-                // .scratch cards exist yet (spawn only ever produces .worktree).
-                break
+                // Scratch dirs are truly ephemeral: rm -rf unconditionally (no dirty-guard; the user
+                // moves out anything useful first). The destructive op is double-gated — this `.scratch`
+                // arm, plus a runtime check that the path is under the scratch root. The `assert` is a
+                // debug catch only; the `if` is the release-safe guard a destructive op must never skip.
+                assert(t.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
+                if t.cwd.hasPrefix(Config.scratchRoot + "/") {
+                    try? FileManager.default.removeItem(atPath: t.cwd)
+                }
             case .borrowed:
                 // Orchestra never deletes a borrowed dir. No-op (also none exist yet).
                 break

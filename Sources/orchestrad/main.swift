@@ -30,7 +30,11 @@ do {
 }
 
 // Reboot/crash recovery — fired async so a slow revival never blocks the daemon coming up.
-_Concurrency.Task { await service.recoverSessions() }
+// Sweep orphaned scratch dirs first (cards that died without a clean archive), then recover.
+_Concurrency.Task {
+    await service.sweepOrphanScratch()
+    await service.recoverSessions()
+}
 
 // Background poll: continuous liveness reconcile (safety net for crashes / tmux kill).
 _Concurrency.Task {

@@ -117,6 +117,36 @@ actor EventCollector {
     }
 }
 
+/// A minimal async mutex. Scratch-card tests share ONE global resource — the real
+/// `Config.scratchRoot` (`~/.orchestra/scratch`, not test-overridable) — and one of them
+/// (`sweepOrphanScratch`) deletes every dir there that isn't a live card. swift-testing runs suites
+/// in parallel, so without serialization that sweep would yank a sibling suite's in-flight scratch
+/// dir out from under it. `.serialized` only orders tests *within* one suite; this lock orders the
+/// filesystem-touching scratch tests *across* suites. Wrap each such test body in `withScratchLock`.
+final class AsyncLock: @unchecked Sendable {
+    private let nslock = NSLock()
+    private var locked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func acquire() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            nslock.withLock {
+                if !locked { locked = true; c.resume() } else { waiters.append(c) }
+            }
+        }
+    }
+    func release() {
+        nslock.withLock {
+            if waiters.isEmpty { locked = false } else { waiters.removeFirst().resume() }
+        }
+    }
+}
+let scratchTestLock = AsyncLock()
+func withScratchLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    await scratchTestLock.acquire()
+    defer { scratchTestLock.release() }
+    return try await body()
+}
+
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
     static func make(maxRevivals: Int = 4, grace: Int = 1)

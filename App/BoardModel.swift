@@ -208,7 +208,7 @@ final class BoardModel: ObservableObject {
     // MARK: actions
 
     func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
-               cwd: String? = nil, access: CardAccess = .readWrite) async {
+               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
@@ -216,6 +216,8 @@ final class BoardModel: ObservableObject {
         if let model { p["model"] = .string(model) }
         // Freeform card: a borrowed cwd (and its access mode) instead of a worktree.
         if let cwd { p["cwd"] = .string(cwd); p["access"] = .string(access.rawValue) }
+        // Scratch card: a fresh throwaway dir the daemon mkdir's (and rm -rf's on archive).
+        if scratch { p["scratch"] = .bool(true) }
         do {
             let t = try await client.call("spawn", .object(p)).decode(Task.self)
             apply(.taskUpserted(t))   // show the card immediately; the event stream is idempotent
