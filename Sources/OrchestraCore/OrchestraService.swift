@@ -128,6 +128,22 @@ public actor OrchestraService {
         return created
     }
 
+    /// Remove orphaned scratch dirs — `~/.orchestra/scratch/<id>` subdirs with no matching non-archived
+    /// `.scratch` card. Covers a scratch card that died without a clean archive (so its `rm -rf` never
+    /// ran). Run once at daemon startup. Like the archive arm, this only ever deletes under the scratch
+    /// root (the entries are children of `Config.scratchRoot`).
+    public func sweepOrphanScratch() async {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: Config.scratchRoot) else { return }
+        let liveScratchDirs = Set(await store.all()
+            .filter { $0.origin == .scratch && !$0.archived }
+            .map { $0.cwd })
+        for name in entries {
+            let path = "\(Config.scratchRoot)/\(name)"
+            if !liveScratchDirs.contains(path) { try? fm.removeItem(atPath: path) }
+        }
+    }
+
     /// Spawn many at once. A failed entry is recorded (not thrown) so the rest still spawn and the
     /// caller learns exactly which ones failed and why.
     public func batchSpawn(_ inputs: [SpawnInput], source: ActivitySource = .daemon) async -> BatchSpawnResult {
