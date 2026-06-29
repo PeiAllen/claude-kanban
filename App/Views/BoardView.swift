@@ -218,10 +218,6 @@ private struct FreeformRegionView: View {
                 .padding(.horizontal, 5)
                 .frame(minWidth: 18, minHeight: 18)
                 .background(Capsule(style: .continuous).fill(theme.chip))
-            // Grip hint that the ribbon is draggable to resize the dock.
-            if resizable {
-                Image(systemName: "line.3.horizontal").font(F.ui(9)).foregroundStyle(theme.text3)
-            }
             Spacer(minLength: 4)
             Button { collapsed.toggle() } label: {
                 Image(systemName: collapsed ? "chevron.up" : "chevron.down")
