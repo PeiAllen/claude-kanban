@@ -181,6 +181,16 @@ private struct TerminalHeader: View {
 
             Spacer(minLength: 0)
 
+            Button {
+                _Concurrency.Task { await model.inspect(task.id) }
+            } label: {
+                Image(systemName: "eye")
+                    .font(F.mono(10.5))
+                    .foregroundColor(theme.text2)
+            }
+            .buttonStyle(.plain)
+            .help("Open a read-only agent in this worktree (can read/search/git, cannot edit)")
+
             StatusPill(status: task.status.rawValue)
         }
         .padding(.horizontal, 12)
