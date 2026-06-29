@@ -153,16 +153,27 @@ public actor OrchestraService {
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
         try? sessions.kill(sessions.sessionName(id))
-        if removeWorktree {
-            // Multiple cards can intentionally share one worktree — only remove it when no other
-            // non-archived card still lives there, or we'd pull the dir out from under a live sibling.
-            let siblings = await store.all().filter {
-                $0.id != id && !$0.archived && $0.cwd == t.cwd
-            }
-            if siblings.isEmpty {
-                // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
-                do { try worktrees.remove(worktree: t.cwd, force: false) }
-                catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
+        if removeWorktree {                              // gates ALL run-dir reclaim
+            switch t.origin {
+            case .worktree:
+                // Multiple cards can intentionally share one worktree — only remove it when no other
+                // non-archived .worktree card still lives there, or we'd pull the dir out from under a
+                // live sibling. `cwd` == worktree root for .worktree cards.
+                let siblings = await store.all().filter {
+                    $0.id != id && !$0.archived && $0.origin == .worktree && $0.cwd == t.cwd
+                }
+                if siblings.isEmpty {
+                    // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
+                    do { try worktrees.remove(worktree: t.cwd, force: false) }
+                    catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
+                }
+            case .scratch:
+                // PR4 fills this in (rm -rf t.cwd, under the scratch root). No-op for now — no
+                // .scratch cards exist yet (spawn only ever produces .worktree).
+                break
+            case .borrowed:
+                // Orchestra never deletes a borrowed dir. No-op (also none exist yet).
+                break
             }
         }
         let updated = try await store.update(id) { $0.status = .done; $0.archived = true }
