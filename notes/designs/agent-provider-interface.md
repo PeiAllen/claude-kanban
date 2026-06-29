@@ -54,14 +54,21 @@ the login token.**
 | D5 | Session identity | **Discover-by-default** (store the id the backend emits); seeding is an optimization | Recommend |
 | D6 | Telemetry | **Structured-stream parse** where available (Claude hooks-push, Codex rollout-tail), **PTY-scrape** fallback; turn-done detected **out-of-band** | Recommend |
 | D7 | Context window / cost | **Vendor a model registry** (models.dev / LiteLLM JSON) → `contextWindow` + capability flags | Recommend |
-| D8 | Permissions | **3 orthogonal layers** (tool-gating · approval-policy · OS-sandbox); read-only is a **preset** | Recommend |
-| D9 | Steering / merge-back | **Durable inbox + capability-keyed boundary-injector** (queue-until-turn-boundary); live path only for approvals | Recommend |
-| D10 | Transport | **Native Claude (TUI+hooks) + native Codex (TUI+rollout-tail) now**; ACP = opt-in/long-tail; Codex `app-server` = future steering upgrade | Recommend |
+| D8 | Permissions | **3 orthogonal layers** (tool-gating · approval-policy · OS-sandbox); read-only is a **preset** | **Confirmed** — no-sandbox agents → `toolGatedOnly` + a visible **weak-RO badge** |
+| D9 | Steering / merge-back | **All input to a running agent — user follow-ups AND merge-back — rides the durable inbox**, drained at the turn boundary by the capability-keyed injector; `send-keys` only for the idle-wake | **Confirmed** |
+| D10 | Transport | **Native Claude (TUI+hooks) + native Codex (TUI+rollout-tail) only.** ACP adapter **not built** (design reference only); Codex `app-server` **not needed for v1** (the inbox covers steering) | **Confirmed** |
 | D11 | Auth invariant | **Drive the binary, never the token/API client** | **Hard constraint** |
 | D12 | Auth modes | Carry `authMode ∈ {subscription, apiKey}`; warn on heavy parallel subscription use | Recommend |
 
-The **only true constraint** is D11 (it's a ToS bright line). Everything else is a recommendation you can
-push back on. The open questions are collected in §11.
+The **only true constraint** is D11 (a ToS bright line); the rest are recommendations. Items confirmed
+2026-06-29 are marked **Confirmed**; remaining open items are in §12.
+
+> **Scope (confirmed 2026-06-29).** The targets that matter are **Claude, Codex, and (eventually) a local
+> model.** The seam is built *agnostic* — the capability descriptor + normalized-event type mean any agent
+> *could* be added — but the only concrete adapters built now are **Claude (done) + Codex (next)**. The
+> long-tail (Gemini/opencode/Amp/Goose/…) and **ACP** are **not implemented**: we build the *base infra*
+> that would admit them, nothing more. A **local-model** adapter (likely via Codex `--oss`/Ollama or a thin
+> dedicated adapter) is a tracked future, not built now.
 
 ---
 
@@ -285,11 +292,13 @@ flowchart TB
 | **L3 OS sandbox** | seatbelt + `denyWrite` | `--sandbox read-only/workspace-write/…` | **none** |
 | **read-only** | L1+L1.5+L3 (shipped 3-layer barrier) | `--sandbox read-only -a never` | L1 only → **not true RO** |
 
-**The real read-only decision:** `supportsReadOnly` is too coarse — model it as
-`readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`. For agents with no OS sandbox,
-either Orchestra wraps the process in its own containment (`sandbox-exec`/seatbelt profile or a container)
-or it must **surface that read-only is tool-gated-only (a Bash escape could still write)**. *Never advertise
-a read-only card you can't enforce.* Approvals normalize to one `ApprovalRequest{id, action}` event + a
+**The real read-only decision (confirmed 2026-06-29):** `supportsReadOnly` is too coarse — model it as
+`readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`. **For agents with no OS sandbox,
+ship `toolGatedOnly` with a visible "weak read-only" badge** (a Bash escape could still write) rather than
+Orchestra wrapping the process itself; `orchestraSandboxed` (our own `sandbox-exec`/container) stays a
+*future* option, not built now. This is moot for the targets that matter — **Claude and Codex both have
+native OS sandboxes → `sandboxed` (true read-only).** *Never advertise a read-only card you can't enforce —
+the badge makes the weaker guarantee explicit.* Approvals normalize to one `ApprovalRequest{id, action}` event + a
 `respond(id, decision)` call, `decision` using ACP's `{allow_once, allow_always, reject_once,
 reject_always}` vocabulary — so the board's approval UI is provider-agnostic.
 
@@ -300,6 +309,15 @@ reject_always}` vocabulary — so the board's approval UI is provider-agnostic.
 The field converged on **queue-until-turn-boundary**, not mid-turn injection. So Orchestra's model is: a
 **durable per-card inbox**, drained at the agent's next natural boundary, where the **delivery mechanism is
 a capability** (`capabilities.steering`). The only synchronous path is approvals.
+
+> **Decision (2026-06-29) — one inbox for everything.** *All* input to a running agent rides this inbox: a
+> user-typed follow-up and a fork merge-back are the **same primitive** — a message queued for the card,
+> drained at the next turn boundary by the Stop-hook injector. Consequence: **Codex needs neither the
+> app-server nor fragile send-keys-into-a-busy-TUI for v1.** The only residual `send-keys` use is the
+> **idle-wake** — typing a queued message into an already-*ready* prompt to start a turn (reliable, not a
+> race). The single thing this defers is *true mid-turn interrupt* (a message lands at the next boundary,
+> not instantly) — the industry-standard behavior, and exactly where Codex `app-server turn/steer` would
+> slot in later if ever wanted. This unifies steering across Claude and Codex on one mechanism.
 
 ```mermaid
 sequenceDiagram
@@ -331,8 +349,10 @@ sequenceDiagram
   Claude lacks one, so Orchestra caps consecutive injects).
 - **MCP `check_inbox`/`await_inbox`** is the portable cross-agent layer (tools are the only MCP primitive
   both clients support today) — but it requires the agent to *choose* to call it.
-- **send-keys** is the fragile last resort. **Idle-parent gap:** Stop only fires when a turn *ends*, so an
-  idle parent needs one wake (Codex `notify` / Claude idle-signal → a single nudge).
+- **send-keys** is no longer a steering path for busy agents — it shrinks to the **idle-wake** only:
+  delivering a queued message to an *idle* agent at a ready prompt (Stop won't fire when no turn is
+  running, so detect idle via Codex `notify` / Claude idle-signal and type the message to start a turn).
+  This is the *safe* form of send-keys; the fragile busy-TUI race is eliminated by the inbox.
 - **Artifacts ride git, conclusions ride the inbox.** Every precedent keeps the durable result in a branch
   (+ a `parentCardId` pointer); the inbox carries only the lightweight "a fork concluded: …" — your maxim
   *handoff carries intent, artifacts carry facts*, confirmed by Omnigent/A2A/OpenHands/LangGraph.
@@ -350,9 +370,10 @@ flowchart TB
       C["Claude: interactive TUI in tmux + hooks-push"]
       X["Codex: TUI in tmux + rollout-tail"]
     end
-    subgraph Later["design-for, add later"]
-      ACP["ACP adapter — long-tail on-ramp<br/>(Gemini/opencode/…)"]
-      AS["Codex app-server — richer steering<br/>(turn/steer, inject_items)"]
+    subgraph Later["design-for, NOT built now"]
+      Local["local-model adapter — tracked future<br/>(Codex --oss / Ollama / thin adapter)"]
+      AS["Codex app-server — optional future<br/>(only for true mid-turn interrupt)"]
+      ACP["ACP — design reference only<br/>(NOT built — confirmed 2026-06-29)"]
     end
     Now --> Later
     classDef warn fill:#fee,stroke:#c33;
@@ -369,12 +390,15 @@ flowchart TB
 | Extract/reuse OAuth token | 🚫 bright-line ToS violation, enforced | 🚫 same |
 
 Implications:
-- **Native adapters are the core, and the *only* legal subscription path for Claude.** ACP is therefore an
-  **opt-in adapter for API-key users**, never the universal seam. (It also degrades Claude to 200K context
-  on Max.) **Prefer Claude's interactive TUI over `claude -p`** (a paused June-2026 billing split singled
+- **Native adapters are the core, and the *only* legal subscription path for Claude.** The **ACP adapter is
+  not built** (confirmed 2026-06-29) — it's kept only as a *design reference* (handshake / event taxonomy /
+  permission vocabulary); it would force API billing on Claude users and degrade Claude to 200K context on
+  Max anyway. **Prefer Claude's interactive TUI over `claude -p`** (a paused June-2026 billing split singled
   out headless `-p`; interactive is carved out as first-party).
-- **Codex's app-server is subscription-safe** — so the future steering upgrade (app-server `turn/steer` /
-  `inject_items`) does **not** cost subscription users anything. Good: the app-server path is open.
+- **Codex's app-server is subscription-safe but not needed for v1** — the inbox (§8) covers steering, so v1
+  runs the Codex **TUI in tmux + rollout-tail**. The app-server stays an *optional future* (only if you ever
+  want true mid-turn interrupt); auth doesn't constrain it, so the path is open without cost to subscription
+  users.
 - **D12 — carry `authMode ∈ {subscription, apiKey}`** so the UI can offer API-key mode (sidesteps the ToS
   gray zone + the shared rate pools) and **warn that heavy parallel fan-out on one subscription seat** is
   the exact pattern both providers' anti-automation clauses target (discretionary enforcement; shared
@@ -424,21 +448,22 @@ Implications:
 
 ## 12. Open questions to confirm or push back on
 
-1. **Read-only for no-OS-sandbox agents** — wrap in Orchestra's own sandbox, or ship `toolGatedOnly` with a
-   visible "weak RO" badge? (§7) *Doesn't block Claude/Codex, which both have native sandboxes.*
-2. **ACP adapter — build it at all?** It only serves API-key users (Claude) / is redundant with native
-   (Codex). Worth it solely as the Gemini/opencode/long-tail on-ramp — yes/no/later? (§9)
-3. **Codex steering — TUI+send-keys now, or jump straight to `app-server`?** App-server is subscription-safe
-   and gives clean `turn/steer`/`inject_items`, but it's no longer an attachable terminal. Recommend
-   TUI+rollout-tail for v1, app-server as a later capability. (§8–9)
+**Resolved 2026-06-29:**
+1. ~~Read-only for no-OS-sandbox agents~~ → **`toolGatedOnly` + visible "weak RO" badge** (not
+   Orchestra-wrapped). Moot for Claude/Codex (both `sandboxed`). (§7)
+2. ~~Build an ACP adapter?~~ → **No.** Kept as a design reference only. (§9)
+3. ~~Codex steering — TUI+send-keys vs app-server?~~ → **Neither — the inbox covers it.** v1 = Codex TUI +
+   rollout-tail; all input rides the inbox/Stop-hook; send-keys only for idle-wake; app-server deferred. (§8)
+
+**Still open:**
 4. **`authMode` UX** — how hard to warn/limit parallel fan-out on a subscription seat? Soft warning vs a
    configurable concurrency cap per auth mode. (§9)
-5. **Stop-hook loop cap** (Claude has no `stop_hook_active`) — what's the max consecutive auto-inject before
-   Orchestra forces a real stop? (§8)
+5. **Stop-hook loop cap** (Claude has no `stop_hook_active`) — max consecutive auto-inject before Orchestra
+   forces a real stop? (§8)
 6. **Model registry source** — models.dev vs LiteLLM vs both (fallback)? Vendor-at-build vs fetch-and-cache?
    (§6)
 7. **Normalized event schema** — adopt ACP `session/update` sub-types / AG-UI's 17 events verbatim, or a
-   thinner Orchestra-native set? (§4, §6)
+   thinner Orchestra-native set? *(You're reviewing this — left pending.)* (§4, §6)
 
 ---
 
