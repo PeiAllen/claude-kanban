@@ -166,16 +166,42 @@ private struct TerminalHeader: View {
             .background(theme.chip)
             .clipShape(RoundedRectangle(cornerRadius: 5))
 
-            Text(repoName)
-                .font(F.mono(10, .semibold))
+            if task.origin == .worktree {
+                Text(repoName)
+                    .font(F.mono(10, .semibold))
+                    .foregroundColor(theme.text2)
+                    .lineLimit(1)
+                    .padding(.vertical, 2).padding(.horizontal, 6)
+                    .frame(maxWidth: 140, alignment: .leading)
+                    .background(theme.chip)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                Text(task.branch).font(F.mono(11)).foregroundColor(theme.text2).lineLimit(1)
+            } else {
+                // Freeform (borrowed/scratch) card: no repo/branch — show the borrowed dir instead.
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down.doc").font(F.mono(9))
+                    Text((task.cwd as NSString).lastPathComponent).font(F.mono(10, .semibold)).lineLimit(1)
+                }
                 .foregroundColor(theme.text2)
-                .lineLimit(1)
                 .padding(.vertical, 2).padding(.horizontal, 6)
-                .frame(maxWidth: 140, alignment: .leading)
+                .frame(maxWidth: 200, alignment: .leading)
                 .background(theme.chip)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                .help(task.cwd)
+            }
 
-            Text(task.branch).font(F.mono(11)).foregroundColor(theme.text2).lineLimit(1)
+            if task.access == .readOnly {
+                HStack(spacing: 4) {
+                    Image(systemName: "eye").font(F.mono(9))
+                    Text("read-only").font(F.mono(10, .semibold))
+                }
+                .foregroundColor(theme.text2)
+                .padding(.vertical, 2).padding(.horizontal, 6)
+                .background(theme.chip)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .help("This agent cannot edit, write, or commit.")
+            }
 
             SharedWorktreeBadge(task: task)
 

@@ -115,11 +115,26 @@ struct CardView: View {
 
     private var footer: some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("\((task.repo as NSString).lastPathComponent) · \(task.branch)")
-                .font(F.mono(10.5))
-                .foregroundStyle(theme.text2)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if task.origin == .worktree {
+                Text("\((task.repo as NSString).lastPathComponent) · \(task.branch)")
+                    .font(F.mono(10.5))
+                    .foregroundStyle(theme.text2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                // Freeform card: it has no repo/branch — show the borrowed dir name instead.
+                Text((task.cwd as NSString).lastPathComponent)
+                    .font(F.mono(10.5))
+                    .foregroundStyle(theme.text2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if task.access == .readOnly {
+                Image(systemName: "eye")
+                    .font(F.ui(9))
+                    .foregroundStyle(theme.text3)
+                    .help("Read-only")
+            }
             worktreeBadge
             Spacer(minLength: 6)
             meta
