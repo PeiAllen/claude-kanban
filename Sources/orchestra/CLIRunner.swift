@@ -81,6 +81,14 @@ enum CLIRunner {
                 client.close()
                 attach(socket: cs.tmuxSocket, target: "\(cs.session):agent")
 
+            case "inspect":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let r = try await client.call("inspect", .object(["ref": .string(ref)]))
+                let session = r["session"]?.stringValue ?? ""
+                let window = r["window"]?.stringValue ?? ""
+                client.close()
+                attach(socket: Config.tmuxSocket, target: "\(session):\(window)")
+
             case "batch-spawn":
                 try await batchSpawn(client, flags)
 
