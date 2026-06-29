@@ -47,11 +47,26 @@ enum UDS {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, len) }
         }
         guard res == 0 else { close(fd); throw OrchestraError.io("connect() failed: \(errnoString())") }
+        suppressSIGPIPE(fd)
         return fd
     }
 
     static func accept(_ serverFd: Int32) -> Int32 {
-        Darwin.accept(serverFd, nil, nil)
+        let fd = Darwin.accept(serverFd, nil, nil)
+        if fd >= 0 { suppressSIGPIPE(fd) }
+        return fd
+    }
+
+    /// Set `SO_NOSIGPIPE` so a `write(2)` to a socket whose peer has gone away returns `EPIPE`
+    /// instead of raising `SIGPIPE` — whose default disposition would terminate the daemon. This is
+    /// the routine case: a client (app/CLI/agent MCP) disconnects while we're writing its response
+    /// or a pushed event. Without this, `archive`-ing a card from the agent running *inside* that
+    /// card's session kills the session (and its client), then the response write SIGPIPEs the
+    /// daemon — which launchd then relaunches. `writeAll` already turns the `EPIPE` into a clean
+    /// "connection broken" (drops the subscriber); this just stops the signal from firing first.
+    private static func suppressSIGPIPE(_ fd: Int32) {
+        var on: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
     }
 
     /// Write all bytes (handles partial writes / EINTR).
