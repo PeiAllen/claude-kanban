@@ -247,6 +247,16 @@ final class BoardModel: ObservableObject {
         }
     }
 
+    /// Open a read-only inspect shell for a card (read-only claude in its worktree) and track its
+    /// window like a normal shell tab.
+    func inspect(_ id: UUID) async {
+        guard let r = try? await client.call("inspect", .object(["ref": .string(id.uuidString)])),
+              let w = r["window"]?.stringValue else { return }
+        shellWindows[id, default: []].append(w)
+        selectedShell[id] = w
+        shellOpen.insert(id)
+    }
+
     /// Close one shell window, dropping it from the daemon and the per-card state. Selects a
     /// neighbouring tab if the closed one was active; hides the strip once the last shell is gone.
     func closeShell(_ id: UUID, _ window: String) async {
