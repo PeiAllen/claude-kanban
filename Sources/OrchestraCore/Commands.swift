@@ -43,6 +43,8 @@ public struct CommandRegistry: Sendable {
                         "cwd": strProp("Freeform: run in this existing directory — no worktree is cut and "
                             + "the path is trusted via the sandbox (not the allowlist). Omit repo/branch when set."),
                         "access": strProp("'readWrite' (default) or 'readOnly' (agent cannot edit/write/commit)."),
+                        "scratch": boolProp("Scratch: create a fresh throwaway ~/.orchestra/scratch/<id> dir, "
+                            + "run there, and rm -rf it on archive. Omit repo/branch/cwd when set."),
                         "model": strProp("Model id (from the adapter's list)"),
                         "col": colProp(startInOnly: true),
                     ], required: ["prompt"])) { svc, p, src in
@@ -52,7 +54,8 @@ public struct CommandRegistry: Sendable {
                     model: p.optString("model"),
                     startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
                     cwd: p.optString("cwd"),
-                    access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite)
+                    access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite,
+                    scratch: p["scratch"]?.boolValue ?? false)
                 let task = try await svc.spawn(input, source: src)
                 return try JSONValue(encodable: task)
             },
@@ -185,6 +188,9 @@ public struct CommandRegistry: Sendable {
     }
     static func intProp(_ desc: String) -> JSONValue {
         .object(["type": .string("integer"), "description": .string(desc)])
+    }
+    static func boolProp(_ desc: String) -> JSONValue {
+        .object(["type": .string("boolean"), "description": .string(desc)])
     }
     static func refProp() -> JSONValue {
         strProp("Card ref — UUID, shortId, or orchestra://task/<ref> URI")

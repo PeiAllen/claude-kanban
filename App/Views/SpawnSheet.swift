@@ -8,8 +8,9 @@ struct SpawnSheet: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
 
-    /// Worktree (repo + branch, the default) vs Freeform (run in an existing directory).
-    private enum Mode { case worktree, freeform }
+    /// Worktree (repo + branch, the default) vs Freeform (run in an existing directory) vs Scratch
+    /// (a fresh throwaway dir Orchestra makes and deletes on archive).
+    private enum Mode { case worktree, freeform, scratch }
     @State private var mode: Mode = .worktree
 
     @State private var prompt = ""
@@ -66,6 +67,7 @@ struct SpawnSheet: View {
         switch mode {
         case .worktree: return !repo.isEmpty && !branch.isEmpty
         case .freeform: return !cwd.isEmpty
+        case .scratch:  return true   // nothing to pick — Orchestra makes the dir
         }
     }
 
@@ -75,6 +77,8 @@ struct SpawnSheet: View {
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
         case .freeform:
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
+        case .scratch:
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --scratch"
         }
     }
 
@@ -115,19 +119,23 @@ struct SpawnSheet: View {
                     HStack(spacing: 2) {
                         modeButton("Worktree", .worktree)
                         modeButton("Freeform", .freeform)
+                        modeButton("Scratch", .scratch)
                     }
                     .padding(2)
                     .background(theme.chip)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
-                if mode == .worktree {
+                switch mode {
+                case .worktree:
                     HStack(spacing: 11) {
                         field("Repository") { repoPicker }
                         field("Branch") { branchPicker }
                     }
-                } else {
+                case .freeform:
                     field("Directory") { directoryPicker }
+                case .scratch:
+                    field("Directory") { scratchNote }
                 }
 
                 field("Model") {
@@ -170,7 +178,7 @@ struct SpawnSheet: View {
                         .background(theme.chip)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                } else {
+                } else if mode == .freeform {
                     Toggle(isOn: $readOnly) {
                         Text("Read-only (agent can read, search & run git, but cannot edit or write)")
                             .font(F.ui(12)).foregroundColor(theme.text2)
@@ -212,6 +220,9 @@ struct SpawnSheet: View {
                         case .freeform:
                             await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                               cwd: cwd, access: readOnly ? .readOnly : .readWrite)
+                        case .scratch:
+                            await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                                              scratch: true)
                         }
                         model.showSpawn = false
                     }
@@ -492,6 +503,20 @@ struct SpawnSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Scratch mode has nothing to pick — show the path Orchestra will create + the throwaway warning.
+    private var scratchNote: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles").font(.system(size: 11)).foregroundColor(theme.text2)
+            Text("~/.orchestra/scratch/<id> — created now, deleted when you archive the card.")
+                .font(F.mono(11.5)).foregroundColor(theme.text2)
+                .lineLimit(1).truncationMode(.head)
+            Spacer(minLength: 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).frame(height: 34)
+        .surface(theme.chip, corner: 8, hair: theme.hair)
     }
 
     private func startButton(_ label: String, _ value: StartIn) -> some View {
