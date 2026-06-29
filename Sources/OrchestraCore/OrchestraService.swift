@@ -198,22 +198,24 @@ public actor OrchestraService {
     public func inspect(_ id: UUID) async throws -> ShellTab {
         let t = try await require(id)
         let bin = (try? registry.get(t.agentId).bin) ?? "claude"
-        let name = (t.worktree as NSString).lastPathComponent
+        // cwd == worktree root for .worktree cards (the only origin spawn produces); its last path
+        // component is the worktree name used to locate the external git dir.
+        let name = (t.cwd as NSString).lastPathComponent
         let settings = ReadOnlyLaunch.settingsJSON(
-            cwd: t.worktree,
+            cwd: t.cwd,
             gitDir: ReadOnlyLaunch.gitDir(repo: t.repo, worktreeName: name))
         let settingsPath = "\(Config.dataDir)/readonly-\(t.shortId).json"
         try settings.write(toFile: settingsPath, atomically: true, encoding: .utf8)
 
         let session = sessions.sessionName(t.id)
         if try !sessions.isAlive(session) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
-        let win = try sessions.newShellWindow(session, cwd: t.worktree)
+        let win = try sessions.newShellWindow(session, cwd: t.cwd)
         let argv = ReadOnlyLaunch.argv(binary: bin, settingsPath: settingsPath)
         // Shell-quote each arg (single-quote, escaping embedded quotes) so the joined command is a
         // literal argv; sendKeys sends the line + Enter itself.
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
-        return ShellTab(window: win, label: win, pwd: t.worktree)
+        return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
