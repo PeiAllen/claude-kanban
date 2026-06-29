@@ -37,7 +37,14 @@ public struct ClaudeCodeAdapter: Adapter {
     /// is a fresh path Claude would otherwise re-prompt for). If the repo isn't trusted, we leave the
     /// worktree alone so Claude still asks — we don't silently grant trust the user never gave.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        ClaudeTrust.mirror(toWorktree: ctx.cwd, fromRepo: ctx.repo)
+        // A scratch dir is one Orchestra just created and owns, so there's no source repo to mirror
+        // trust from — pre-accept its trust dialog outright so the autonomous agent never blocks on it.
+        // Every other card mirrors trust from its source repo (only if the user trusted that repo).
+        if ctx.trustCwd {
+            ClaudeTrust.grant(ctx.cwd)
+        } else {
+            ClaudeTrust.mirror(toWorktree: ctx.cwd, fromRepo: ctx.repo)
+        }
         // A read-only card needs an OS-level write lock (the Bash escape hatch the --disallowedTools
         // flags can't reach). Write the per-card sandbox `denyWrite` settings file that start/resume
         // pass as an EXTRA --settings, alongside (not instead of) the hooks file — it's a tracked card.
@@ -191,5 +198,29 @@ enum ClaudeTrust {
 
     private static func isTrusted(_ path: String, in projects: [String: Any]) -> Bool {
         (projects[path] as? [String: Any])?["hasTrustDialogAccepted"] as? Bool == true
+    }
+
+    /// Unconditionally mark `path` trusted in `~/.claude.json` (merging into any existing entry, leaving
+    /// every other field untouched). For directories Orchestra itself creates and owns — a scratch dir —
+    /// where there's no source repo whose trust we could mirror. No-op when already trusted; bails
+    /// without writing if the file exists but can't be parsed (so a transient read can't clobber it).
+    static func grant(_ path: String, home: String = Config.home) {
+        let url = URL(fileURLWithPath: "\(home)/.claude.json")
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url) {
+            guard let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+            root = parsed                                                    // missing file → write fresh
+        }
+        var projects = root["projects"] as? [String: Any] ?? [:]
+        var project = projects[path] as? [String: Any] ?? [:]
+        if (project["hasTrustDialogAccepted"] as? Bool) == true { return }   // already trusted → no write
+
+        project["hasTrustDialogAccepted"] = true
+        projects[path] = project
+        root["projects"] = projects
+
+        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
+            try? out.write(to: url, options: .atomic)
+        }
     }
 }

@@ -119,7 +119,8 @@ public actor OrchestraService {
 
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
-                                 hooksPath: Config.hooksPath, access: input.access)
+                                 hooksPath: Config.hooksPath, access: input.access,
+                                 trustCwd: origin == .scratch)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 

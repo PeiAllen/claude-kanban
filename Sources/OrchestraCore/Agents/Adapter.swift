@@ -11,12 +11,14 @@ public struct AdapterContext: Sendable {
     public let name: String?        // card title -> `claude --name`
     public let hooksPath: String    // managed --settings file
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
+    public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
-                hooksPath: String = Config.hooksPath, access: CardAccess = .readWrite) {
+                hooksPath: String = Config.hooksPath, access: CardAccess = .readWrite,
+                trustCwd: Bool = false) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
-        self.access = access
+        self.access = access; self.trustCwd = trustCwd
     }
 }
 

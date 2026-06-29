@@ -60,7 +60,8 @@ extension OrchestraService {
 
         // Pre-check: must have a tracked id whose transcript still exists.
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
-                                 sessionId: task.agentSessionId, name: task.title, hooksPath: Config.hooksPath)
+                                 sessionId: task.agentSessionId, name: task.title, hooksPath: Config.hooksPath,
+                                 trustCwd: task.origin == .scratch)
         guard let sid = task.agentSessionId,
               let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
               let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp),
@@ -110,7 +111,8 @@ extension OrchestraService {
 
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  startIn: task.startIn, sessionId: freshId, prompt: nil,
-                                 name: task.title, hooksPath: Config.hooksPath)
+                                 name: task.title, hooksPath: Config.hooksPath,
+                                 trustCwd: task.origin == .scratch)
         let launchTask = task
         try? adapter.prepareToLaunch(ctx)
         try await offActor { [sessions] in
