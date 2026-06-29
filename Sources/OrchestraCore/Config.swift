@@ -61,7 +61,11 @@ public struct Config: Codable, Sendable, Equatable {
     public static var tasksPath: String { "\(dataDir)/tasks.json" }
     public static var logPath: String { "\(dataDir)/orchestrad.log" }
     public static var hooksPath: String { "\(dataDir)/claude-hooks.json" }
-    public static let tmuxSocket = "orchestra"
+    /// tmux server socket name (`tmux -L <name>`). Overridable via env so an isolated test instance
+    /// gets its OWN tmux server (no session collisions / claude launches on the user's live server).
+    public static var tmuxSocket: String {
+        ProcessInfo.processInfo.environment["ORCHESTRA_TMUX_SOCKET"] ?? "orchestra"
+    }
 
     /// The full set of allowed roots = reposRoot + worktreesRoot + explicit allowlist entries.
     public var allowedRoots: [String] {
