@@ -1,0 +1,116 @@
+# 8. Building & operations
+
+This chapter covers building and testing the package, building the macOS app bundle, the development
+scripts, runtime configuration, the macOS permissions agents need, and troubleshooting the
+known operational gotchas.
+
+## Building the package
+
+The package (`Package.swift`, swift-tools 6.0, macOS 14+) defines four products:
+
+- `OrchestraCore` (library), `orchestrad`, `orchestra`, `orchestra-mcp`.
+
+The core, daemon, and CLI are **dependency-free**. Only `orchestra-mcp` depends on the official MCP
+`swift-sdk`, scoped to that target — so the **first** `swift build` needs network to resolve
+`Package.resolved`; after that, builds are offline.
+
+```sh
+scripts/build.sh        # swift build
+scripts/test.sh         # swift test (adds swift-testing search paths — see below)
+```
+
+This repo targets a **Command Line Tools** (no full Xcode) environment for the package. CLT ships
+`swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the needed
+`-F`/`-rpath` flags for `Testing.framework` + `lib_TestingInterop.dylib` (XCTest is absent). The test
+suite is substantial — `OrchestraCoreTests` (service, task store/migration, adapters, read-only launch,
+recovery, report, scratch, control round-trip, UDS SIGPIPE regression) and `IntegrationTests` (E2E
+binary, launcher diff, worktree/session managers against real git/tmux).
+
+> **Sandbox note (for Claude Code / sandboxed shells).** `swift build`/`swift test` run their own
+> nested `sandbox-exec`, which can't nest inside another sandbox and whose `~/Library` caches aren't
+> writable there — run those commands unsandboxed.
+
+## Building the app bundle
+
+The SwiftUI app is intentionally **not** a SwiftPM target (so the package stays light and
+offline-green). It needs full Xcode + SwiftTerm and is built from a generated xcodeproj:
+
+```sh
+scripts/build-app.sh            # regenerate xcodeproj (xcodegen), build Release, install to /Applications/Orchestra.app
+scripts/build-app.sh --run      # …and launch it
+scripts/build-app.sh --debug    # Debug config
+scripts/typecheck-app.sh        # type-check App/*.swift against the CLT SDK without Xcode
+```
+
+`App/project.yml` drives `xcodegen`; the app uses Hardened Runtime, automatic signing, and a
+single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pulls a Metal toolchain
+(its shader needs it) — the first app build fails without it; install with
+`xcodebuild -downloadComponent MetalToolchain`. See `App/README.md` for details.
+
+## Development scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/build.sh` | `swift build` the package. |
+| `scripts/test.sh` | `swift test` with the CLT swift-testing flags. |
+| `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
+| `scripts/typecheck-app.sh` | Type-check the app sources without Xcode. |
+| `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |
+| `scripts/make-dev-cert.sh` | Create the "Orchestra Dev" self-signed signing cert. |
+| `scripts/orch-test.sh` | Run a disposable **isolated** daemon (own `HOME` + tmux socket) to verify daemon/command changes without touching the live app. |
+| `scripts/orch-ui-shot.sh` | Build the app isolated and screenshot it by window id (for UI work). |
+| `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
+| `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
+
+## Runtime configuration
+
+Configuration lives in `~/Library/Application Support/Orchestra/config.json` (editable in the app's
+Settings, or via `setConfig` over RPC). The keys and defaults are in
+[Data model](03-data-model.md#configuration-and-paths). The most commonly tuned ones:
+
+- **`reposRoot` / `allowlist`** — which directories worktree cards may touch.
+- **`defaultModel` / `defaultAgentId`** — the default agent and model for new cards.
+- **`statusLineMode`** — passthrough your global Claude status line, a custom command, or the minimal
+  Orchestra default.
+
+All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
+use `scripts/reset-state.sh`.
+
+## macOS permissions (TCC) for agents
+
+Orchestra's tmux-hosted agents can screenshot and control other apps, attributed to **Orchestra** (not
+Terminal). The two relevant permissions attribute to **different processes**, so grant both in System
+Settings → Privacy & Security:
+
+| Permission | Grant to |
+|------------|----------|
+| **Screen Recording** | `Orchestra.app` |
+| **Accessibility** | `orchestrad` (the daemon binary inside the bundle: `Orchestra.app/Contents/Resources/bin/orchestrad`; add it with `+` if absent) |
+
+Granting Accessibility to the daemon takes effect **live** — a long-running agent flips from untrusted
+to trusted with no restart. Note that these preflights return `false` inside an agent's bash sandbox and
+`true` unsandboxed, so screenshot/control commands must run unsandboxed.
+
+## Troubleshooting
+
+- **"orchestrad crashed" popup.** Almost never a real crash. `com.orchestra.daemon` is a `KeepAlive`
+  LaunchAgent; when the daemon exits, launchd *immediately* re-execs it, and the kernel kills that first
+  re-exec on the first validation of a **new code-signing hash** (a development artifact — every `swift
+  build` changes the hash). It relaunches successfully ~10 s later. The historical *cause* of the
+  daemon exiting was the SIGPIPE-on-self-close bug below; with that fixed, the daemon stops exiting and
+  the popup stops. The only full cross-rebuild fix is Developer ID + notarization. Crash reports:
+  `~/Library/Logs/DiagnosticReports/orchestrad-*.ips`.
+- **Daemon dies when an agent closes its own card (fixed).** When an agent ran `archive` on its own
+  card, killing the tmux session also killed the MCP client whose socket the request arrived on; the
+  daemon's reply write hit a closed peer and raised `SIGPIPE`, terminating it. The fix sets
+  `SO_NOSIGPIPE` on every control socket (per-socket, not a global `SIG_IGN`, so child git/tmux
+  processes are unaffected); the write now returns `EPIPE` and the dead connection is dropped cleanly.
+  Regression test: `Tests/OrchestraCoreTests/UDSSigPipeTests.swift`.
+- **Black rectangles / garbled glyphs in the terminal.** Caused by a missing UTF-8 locale (tmux and
+  Claude Code's renderer downconvert multibyte glyphs without it). `Proc` fills in `LC_CTYPE`/`LANG`
+  when unset; see `notes/designs/terminal-black-rectangles.md` for the full analysis.
+- **Tools not found by the daemon/app.** launchd/Finder give a minimal `PATH`; `Proc.augmentedPATH`
+  appends the common locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, …). If a tool
+  still isn't found, ensure it's in one of those or on the inherited `PATH`.
+- **Resetting everything.** `scripts/reset-state.sh` (add `--worktrees` to also wipe `~/.orchestra`,
+  which may contain uncommitted agent work).

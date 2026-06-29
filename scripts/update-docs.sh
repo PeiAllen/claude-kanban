@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# update-docs.sh — regenerate README.md + the docs/ reference manual from whatever just
+# landed on the main branch, using Claude Code headlessly, and commit the result.
+#
+# Installed as a git post-commit / post-merge hook by scripts/install-doc-hooks.sh, but also
+# safe to run by hand at any time. It is a no-op unless HEAD is on the main branch and the
+# triggering commit changed something other than the docs themselves.
+#
+# Behavior / guards:
+#   * Only runs on the main branch (configurable via ORCHESTRA_DOCS_BRANCH).
+#   * Recursion guard #1: skips if the triggering commit is itself a "[docs-sync]" commit.
+#   * Recursion guard #2: skips if the commit touched ONLY README.md / docs/.
+#   * Single-flight lock so overlapping commits don't launch concurrent runs.
+#   * Never fails the commit: every error path exits 0 and leaves the tree untouched.
+#
+# Environment overrides:
+#   ORCHESTRA_DOCS_BRANCH   branch to act on            (default: main)
+#   ORCHESTRA_CLAUDE_BIN    the Claude Code CLI binary  (default: claude)
+#   ORCHESTRA_DOCS_CLAUDE_FLAGS  flags passed to claude  (default: a safe doc-only set)
+#
+set -uo pipefail
+
+MAIN_BRANCH="${ORCHESTRA_DOCS_BRANCH:-main}"
+DOCS_MARKER="[docs-sync]"
+CLAUDE_BIN="${ORCHESTRA_CLAUDE_BIN:-claude}"
+
+# Default flags: auto-apply edits, and restrict to read/edit tools so the run can't wander
+# off into Bash/git. Override with ORCHESTRA_DOCS_CLAUDE_FLAGS if your CLI version differs.
+if [ -n "${ORCHESTRA_DOCS_CLAUDE_FLAGS:-}" ]; then
+  # shellcheck disable=SC2206
+  CLAUDE_FLAGS=( ${ORCHESTRA_DOCS_CLAUDE_FLAGS} )
+else
+  CLAUDE_FLAGS=( --permission-mode acceptEdits --allowedTools Read Edit Write Grep Glob )
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+
+# --- Guard: only the main branch -------------------------------------------------------------
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+[ "$branch" = "$MAIN_BRANCH" ] || exit 0
+
+# --- Guard: don't recurse on our own doc-sync commits ----------------------------------------
+last_msg="$(git log -1 --pretty=%B 2>/dev/null || true)"
+case "$last_msg" in
+  *"$DOCS_MARKER"*) exit 0 ;;
+esac
+
+# --- Figure out what the triggering commit changed -------------------------------------------
+if git rev-parse --quiet --verify HEAD~1 >/dev/null 2>&1; then
+  base="HEAD~1"
+else
+  base="$(git hash-object -t tree /dev/null)"   # empty tree, for the very first commit
+fi
+changed="$(git diff --name-only "$base" HEAD 2>/dev/null || true)"
+[ -n "$changed" ] || exit 0
+
+# --- Guard: skip commits that touched ONLY the docs ------------------------------------------
+non_doc="$(printf '%s\n' "$changed" | grep -vE '^(README\.md|docs/)' || true)"
+[ -n "$non_doc" ] || exit 0
+
+# --- Single-flight lock ----------------------------------------------------------------------
+lock="$repo_root/.git/orchestra-docs-sync.lock"
+log="$repo_root/.git/orchestra-docs-sync.log"
+mkdir "$lock" 2>/dev/null || exit 0
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+
+# --- Require the Claude CLI -------------------------------------------------------------------
+if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+  echo "[update-docs] '$CLAUDE_BIN' not found on PATH; skipping doc sync" >&2
+  exit 0
+fi
+
+head_short="$(git rev-parse --short HEAD)"
+recent_log="$(git log -8 --pretty='- %h %s' 2>/dev/null || true)"
+changed_list="$(printf '%s\n' "$changed" | sed 's/^/- /')"
+
+read -r -d '' PROMPT <<EOF
+You are maintaining the documentation for Orchestra, a local-only macOS app that orchestrates
+many coding agents from a Kanban board (a Swift package: OrchestraCore + orchestrad/orchestra/
+orchestra-mcp, plus a SwiftUI app under App/). A change just landed on the '$MAIN_BRANCH' branch
+and you must keep the docs accurate and complete.
+
+The triggering commit ($head_short) changed these files:
+$changed_list
+
+Recent commits for context:
+$recent_log
+
+Do this:
+1. Read the changed source files, and any new or modified files under notes/plans/ and
+   notes/designs/, to understand what actually changed.
+2. Update README.md and the reference manual under docs/ (docs/index.md and the numbered
+   chapters docs/01-*.md … docs/11-*.md) so that every feature, design decision, and future plan
+   stays accurately reflected. Cross-reference the relevant notes/plans/ and notes/designs/
+   documents where appropriate. Consult project memory for design intent if available.
+3. If a roadmap axis (docs/10-roadmap.md) has now shipped, move it into the shipped-feature
+   history in docs/09-design-decisions.md.
+4. Preserve the existing structure, tone, and chapter layout. Make surgical edits — do NOT
+   rewrite whole files unless the structure genuinely changed. If nothing needs updating, make
+   no edits at all.
+
+Only edit README.md and files under docs/. Do not modify source code, notes/, scripts, or
+anything else.
+EOF
+
+echo "[update-docs] $(date '+%Y-%m-%d %H:%M:%S') refreshing docs for $head_short" >>"$log"
+if ! "$CLAUDE_BIN" -p "$PROMPT" "${CLAUDE_FLAGS[@]}" >>"$log" 2>&1; then
+  echo "[update-docs] claude exited non-zero; leaving docs unchanged (see $log)" >&2
+  exit 0
+fi
+
+# --- Commit only the doc changes -------------------------------------------------------------
+git add -- README.md docs >/dev/null 2>&1 || true
+if git diff --cached --quiet -- README.md docs 2>/dev/null; then
+  echo "[update-docs] no documentation changes were needed" >&2
+  exit 0
+fi
+
+git commit -q -m "docs: auto-sync README + manual $DOCS_MARKER
+
+Regenerated from $head_short by scripts/update-docs.sh.
+
+Co-Authored-By: Claude <noreply@anthropic.com>" \
+  && echo "[update-docs] committed documentation sync for $head_short" >&2
+
+exit 0
