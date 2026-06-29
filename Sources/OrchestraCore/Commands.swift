@@ -107,6 +107,14 @@ public struct CommandRegistry: Sendable {
                 return .object(["session": .string(t.tmuxSession), "window": .string(tab.window)])
             },
 
+            Command(name: "inspect", summary: "Open a read-only claude in the card's worktree shell.",
+                    params: schema(["ref": refProp()], required: ["ref"])) { svc, p, src in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let tab = try await svc.inspect(t.id)
+                await svc.logCommand("inspect", ref: t, source: src)
+                return .object(["session": .string(t.tmuxSession), "window": .string(tab.window)])
+            },
+
             Command(name: "closeShell", summary: "Close a shell window opened via `shell`.",
                     params: schema(["ref": refProp(), "window": strProp("Shell window name, e.g. shell-1")],
                                    required: ["ref", "window"])) { svc, p, src in
