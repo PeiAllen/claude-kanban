@@ -1,51 +1,45 @@
 import Foundation
 
-/// Builds the launch recipe for a read-only `claude`. Three layers, because no single one is a
-/// complete barrier on its own:
-///   1. The edit tools are denied (removed from context): `--disallowedTools` + `permissions.deny`.
-///   2. The OS sandbox forbids writes to the inspected directory (`filesystem.denyWrite`), run in
-///      STRICT mode (`allowUnsandboxedCommands: false`) so the `dangerouslyDisableSandbox` Bash flag
-///      is a no-op — otherwise a command opts itself out of the sandbox and the write-block never
-///      applies. `failIfUnavailable: true` fails closed if the sandbox can't initialize.
-///   3. `permissions.deny` rules for git's WRITE subcommands. This is needed because commands on the
-///      user's global `sandbox.excludedCommands` list (e.g. `git`) run UNSANDBOXED — so layer 2 never
-///      sees them, and `git checkout .` / `git reset --hard` / `git stash` / `git restore .` would
-///      silently rewrite the working tree. `--settings` can only *add* to `excludedCommands` (arrays
-///      union, verified — it can't clear them), so we instead `deny` the writes; deny beats allow and
-///      is evaluated even for excluded commands. git *reads* (log/diff/show/status/blame) stay allowed.
+/// Builds the launch recipe for a read-only `claude`. Three independent layers, because no single one
+/// is a complete barrier:
+///   1. The edit TOOLS are denied (removed from context): `--disallowedTools` + `permissions.deny`.
+///   2. The OS sandbox forbids writes to the inspected dir (`filesystem.denyWrite`), run in STRICT
+///      mode (`allowUnsandboxedCommands: false`) so the `dangerouslyDisableSandbox` Bash flag is a
+///      no-op (otherwise a command opts out of the sandbox and the write-block never applies).
+///      `failIfUnavailable: true` fails closed if the sandbox can't initialize. This deterministically
+///      blocks every *sandboxable* Bash write — for free, at the kernel.
+///   3. A read-only POLICY handed to the auto-mode classifier via `autoMode.hard_deny`. The classifier
+///      reads these prose rules and denies anything that mutates state — and crucially it covers the
+///      commands layer 2 can't: those on the user's global `sandbox.excludedCommands` list (e.g.
+///      `git`) run UNSANDBOXED, so the classifier is the only thing standing between them and a write.
+///      We let the classifier *judge* mutation semantically instead of maintaining a deny-list of
+///      command strings (which is tied to the user's exact config, rots as the ecosystem changes, and
+///      is trivially prefix-evaded by `git -C`, env-prefixes, `sh -c`, …). git *reads* stay allowed.
+///      Verified: with this policy the classifier hard-blocks `git config`/`git tag`/`git checkout`
+///      while letting `git log` through.
 ///
-/// LIMITATION: layer 3 is command-string matching, which stops accidental + naive writes but NOT a
-/// determined agent (env-prefix like `GIT_WORK_TREE=x git …`, `sh -c "…"`, or a written script all
-/// evade any string rule). Only an OS-level jail wrapping the whole process is adversary-proof; that
-/// is deferred. Default permission mode (no `plan` framing) and NO Orchestra hooks here, so the
-/// session stays untracked and can't pollute the owner card's status.
+/// LIMITATIONS: layer 3 is the auto-mode classifier (an LLM judge) and only runs in auto mode — it is
+/// best-effort, not adversary-proof (a determined agent may still craft something it misjudges). Only
+/// an OS-level jail wrapping the whole process would be a hard guarantee; that is deferred. Default
+/// permission mode (no `plan` framing) and NO Orchestra hooks here, so the session stays untracked.
 enum ReadOnlyLaunch {
-    /// git subcommands that can mutate the working tree, index, refs, config, or object store.
-    /// Read-only subcommands (log/show/diff/status/blame/…) are deliberately absent so a read-only
-    /// card can still inspect history.
-    static let gitWriteSubcommands = [
-        "add", "am", "apply", "bisect", "branch", "checkout", "cherry-pick", "clean", "commit",
-        "commit-tree", "config", "fast-import", "fetch", "filter-branch", "gc", "hash-object",
-        "init", "maintenance", "merge", "mergetool", "mv", "notes", "pack-refs", "prune", "pull",
-        "push", "rebase", "reflog", "remote", "repack", "replace", "reset", "restore", "revert",
-        "rm", "sparse-checkout", "stash", "submodule", "switch", "symbolic-ref", "tag",
-        "update-index", "update-ref", "worktree", "write-tree",
-    ]
-
-    /// Deny rules that block git from writing: each mutating subcommand, plus the path/config
-    /// redirect flags (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`) that would otherwise
-    /// prefix-evade the per-subcommand rules (e.g. `git -C dir reset …`).
-    static var gitWriteDenies: [String] {
-        gitWriteSubcommands.map { "Bash(git \($0):*)" }
-            + ["Bash(git -C:*)", "Bash(git -c:*)", "Bash(git --git-dir:*)",
-               "Bash(git --work-tree:*)", "Bash(git --exec-path:*)"]
-    }
+    /// Prose policy fed to the auto-mode classifier (`autoMode.hard_deny`). The classifier generalizes
+    /// from it semantically, so it needs no per-command enumeration and no upkeep as tools change.
+    /// Ends with default-deny-on-ambiguity so it fails closed.
+    static let readOnlyPolicy =
+        "READ-ONLY SESSION — deny ANY command that modifies the filesystem or the git/repository/system "
+        + "state. This includes: creating, writing, deleting, moving, or truncating files; output "
+        + "redirection or appends to files (>, >>, tee); in-place edits (sed -i, perl -i); git mutations "
+        + "(checkout, switch, reset, restore, stash, clean, commit, add, rm, mv, branch, tag, config, "
+        + "merge, rebase, push, fetch, pull); package installs; and process/service/permission changes. "
+        + "Reading, searching, and inspection are allowed (e.g. cat, ls, grep, find, and read-only git "
+        + "such as log, diff, show, status, blame). Treat anything ambiguous as a mutation and deny it."
 
     static func settingsJSON(cwd: String, gitDir: String?) -> String {
         let denyWrite = [cwd] + (gitDir.map { [$0] } ?? [])
-        let deny = ["Edit", "Write", "MultiEdit", "NotebookEdit"] + gitWriteDenies
         let obj: [String: Any] = [
-            "permissions": ["deny": deny],
+            "permissions": ["deny": ["Edit", "Write", "MultiEdit", "NotebookEdit"]],
+            "autoMode": ["hard_deny": [readOnlyPolicy]],
             "sandbox": [
                 "enabled": true,
                 "allowUnsandboxedCommands": false,

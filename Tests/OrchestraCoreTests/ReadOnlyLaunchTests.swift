@@ -24,21 +24,20 @@ final class ReadOnlyLaunchTests: XCTestCase {
         XCTAssertEqual(sandbox["failIfUnavailable"] as? Bool, true)
     }
 
-    func test_settingsJSON_denies_git_write_subcommands_and_redirect_flags() throws {
-        // Excluded commands (git) run unsandboxed, so the write-block can't reach them — deny the
-        // mutating subcommands and the path-redirect flags that would prefix-evade them. Reads stay.
+    func test_settingsJSON_hands_readonly_policy_to_auto_mode_classifier() throws {
+        // Excluded commands (git) run unsandboxed, so the write-block can't reach them. Instead of a
+        // brittle per-command deny-list, hand the auto-mode classifier a read-only policy via
+        // `autoMode.hard_deny` — it judges mutation semantically (verified to block git config/tag/
+        // checkout while allowing git log).
         let json = ReadOnlyLaunch.settingsJSON(cwd: "/wt/foo", gitDir: nil)
         let obj = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
-        let deny = Set((obj["permissions"] as! [String: Any])["deny"] as! [String])
-        for w in ["checkout", "reset", "restore", "stash", "clean", "rm", "commit"] {
-            XCTAssertTrue(deny.contains("Bash(git \(w):*)"), "missing git \(w) deny")
-        }
-        XCTAssertTrue(deny.contains("Bash(git -C:*)"))
-        XCTAssertTrue(deny.contains("Bash(git -c:*)"))
-        // git reads are NOT denied.
-        for r in ["log", "diff", "show", "status", "blame"] {
-            XCTAssertFalse(deny.contains("Bash(git \(r):*)"), "git \(r) should stay allowed")
-        }
+        let hardDeny = (obj["autoMode"] as! [String: Any])["hard_deny"] as! [String]
+        XCTAssertEqual(hardDeny.count, 1)
+        XCTAssertTrue(hardDeny[0].contains("READ-ONLY SESSION"))
+        XCTAssertTrue(hardDeny[0].lowercased().contains("deny"))
+        // The brittle git command-string deny-list is gone — the policy replaces it.
+        let deny = (obj["permissions"] as! [String: Any])["deny"] as! [String]
+        XCTAssertFalse(deny.contains { $0.hasPrefix("Bash(git") })
     }
 
     func test_settingsJSON_omits_nil_gitDir() throws {
