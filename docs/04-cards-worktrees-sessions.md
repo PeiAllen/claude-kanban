@@ -60,7 +60,8 @@ Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md)). An adapt
 
 plus `newSessionId()`, `sessionInfo(...)`, and `prepareToLaunch(ctx)` (side-effecting prep). The
 `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
-the managed `hooksPath`, and the card's `access`. `AgentRegistry` holds the adapters (default:
+the managed `hooksPath`, the card's `access`, and `trustCwd` (set when Orchestra owns the cwd — see
+[trust](#the-claude-code-adapter) below). `AgentRegistry` holds the adapters (default:
 `[ClaudeCodeAdapter()]`) and looks one up by id.
 
 ### The Claude Code adapter
@@ -74,10 +75,19 @@ Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
 - **resume**: `claude --resume <sid> --settings <hooksPath> [--name] [--model] [read-only flags]` — no
   `--session-id`, no prompt re-handed.
 
-**Trust mirroring** (`prepareToLaunch`): Claude prompts for directory trust on first use of a path. To
-launch autonomously without that prompt, the adapter *mirrors* the user's existing trust decision from
-the source repo onto the worktree — but **never grants trust the user hasn't given** (it only mirrors
-when the repo is already trusted).
+**Trust mirroring & scratch trust** (`prepareToLaunch`): Claude prompts for directory trust on first
+use of a path, which would block an autonomous agent. How the adapter clears that prompt depends on who
+owns the cwd (the `trustCwd` flag, set when `origin == .scratch` at spawn/resume/restart):
+
+- **Worktree & borrowed/freeform cards** (`trustCwd == false`): the adapter `mirror`s the user's
+  *existing* trust decision from the source repo onto the worktree — but **never grants trust the user
+  hasn't given** (it only mirrors when the repo is already trusted). A borrowed dir with no source repo
+  is left alone, so Claude's own trust prompt still applies to a directory the user chose.
+- **Scratch cards** (`trustCwd == true`): a scratch dir is one Orchestra just created and *owns*, so
+  there's no source repo whose trust could be mirrored — `ClaudeTrust.grant(cwd)` pre-accepts the trust
+  dialog outright, merging `hasTrustDialogAccepted` into `~/.claude.json` (creating the file if absent,
+  preserving every other key, and bailing without writing if the file is present-but-corrupt so a
+  transient read can't clobber it). No-op when already trusted.
 
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
