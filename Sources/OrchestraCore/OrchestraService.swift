@@ -66,9 +66,20 @@ public actor OrchestraService {
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
         let adapter = try registry.get(input.agentId ?? config.defaultAgentId)
-        // Security: reject a non-allowlisted repo BEFORE creating anything.
-        let realRepo = try resolver.resolveRepo(input.repo)
-        let (wt, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+        // Freeform (borrowed) vs worktree. A borrowed spawn runs in a user-chosen dir: no worktree is
+        // cut and the allowlist gate is skipped — the OS sandbox is the trust boundary (the path may
+        // even be outside any repo). A normal spawn resolves+allowlists the repo and cuts the worktree.
+        let isBorrowed = input.cwd != nil
+        let realRepo: String
+        let cwd: String
+        if let borrowed = input.cwd {
+            cwd = borrowed
+            realRepo = input.repo            // optional context only; never resolved/allowlisted
+        } else {
+            // Security: reject a non-allowlisted repo BEFORE creating anything.
+            realRepo = try resolver.resolveRepo(input.repo)
+            (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+        }
         let sid = adapter.newSessionId()
         // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
         let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
@@ -86,16 +97,17 @@ public actor OrchestraService {
 
         let task = Task(
             title: title, titleProvisional: provisional, desc: "",
-            repo: realRepo, branch: input.branch, cwd: wt, origin: .worktree,
+            repo: realRepo, branch: input.branch, cwd: cwd,
+            origin: isBorrowed ? .borrowed : .worktree, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
             ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
         )
         let created = try await store.create(task)
 
-        let ctx = AdapterContext(cwd: wt, repo: realRepo, model: model.id, startIn: startIn,
+        let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
-                                 hooksPath: Config.hooksPath)
+                                 hooksPath: Config.hooksPath, access: input.access)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 
@@ -225,7 +237,9 @@ public actor OrchestraService {
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
         let t = try await require(id)
-        try resolver.assertAllowed(t.cwd)
+        // Only worktree cards are gated by the repo allowlist; borrowed/scratch cwds are trusted via
+        // the OS sandbox (the path may live outside any allowlisted repo).
+        if t.origin == .worktree { try resolver.assertAllowed(t.cwd) }
         let r = try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
         let cap = 256 * 1024
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)

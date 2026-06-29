@@ -488,9 +488,29 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     public var model: String?
     public var startIn: StartIn?
     public var agentId: String?   // which adapter to use; nil → Config.defaultAgentId
-    public init(prompt: String, repo: String, branch: String, model: String? = nil,
-                startIn: StartIn? = nil, agentId: String? = nil) {
+    /// Freeform (borrowed) spawn: a directory the card runs in WITHOUT cutting a worktree. When set,
+    /// spawn skips `worktrees.ensure`, sets `origin = .borrowed`, and trusts the path via the sandbox
+    /// (no allowlist gate). `repo`/`branch` may be empty. nil ⇒ the normal worktree spawn.
+    public var cwd: String?
+    /// Read-only vs read-write (defaults read-write). A `.readOnly` borrowed card launches locked down.
+    public var access: CardAccess
+    public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,
+                startIn: StartIn? = nil, agentId: String? = nil,
+                cwd: String? = nil, access: CardAccess = .readWrite) {
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
+        self.cwd = cwd; self.access = access
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.prompt = try c.decode(String.self, forKey: .prompt)
+        self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
+        self.model = try c.decodeIfPresent(String.self, forKey: .model)
+        self.startIn = try c.decodeIfPresent(StartIn.self, forKey: .startIn)
+        self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId)
+        self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
     }
 }
