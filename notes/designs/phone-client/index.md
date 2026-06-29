@@ -4,7 +4,7 @@ feature: phone-client
 type: design-index
 depth: 2
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 ---
 
 # Phone Client — Design Index
@@ -14,6 +14,20 @@ updated: 2026-06-26
 > concrete seams: a **`Transport` abstraction**, **reconnect** in `ControlClient`, **platform-bit
 > abstraction** so `OrchestraCore`/`BoardModel`/`Theme` are shared, and an **iOS terminal over SSH**.
 > Part of the [[extensibility-roadmap/index|extensibility roadmap]] (axis 9).
+
+## Status vs `main` (2026-06-29)
+
+- **Still essentially unbuilt and unchanged.** The `Transport` seam this axis is built on does **not** exist
+  yet — `Control/*` (`ControlClient`/`ControlServer`) is still raw-fd UDS only — so every goal here remains
+  accurate and forward-looking. Reconnect is likewise still missing.
+- **One shift to the shared surface:** the macOS board has grown since these docs, so the shared
+  `BoardModel`/views an iOS target would reuse are slightly larger — they now include the **freeform region**
+  (`FreeformRegionView`, `BoardModel.freeformTasks`, axis 4 shipped) and the **being-retired**
+  shared-worktree badges (`SharedWorktreeBadge`/footer count — retired per
+  [[stacked-branches-and-guardian-handoff]]'s enforced 1:1 worktree↔card). Net: the platform-split audit has
+  a touch more surface to cover, and a couple of those views will disappear rather than need an iOS impl.
+- **No conflict** with the two 2026-06-29 synthesis notes; they don't touch transport, reconnect, or the
+  shared-core split.
 
 ## Layers
 

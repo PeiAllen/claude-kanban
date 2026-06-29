@@ -5,8 +5,8 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]", "[[../context-passing-topologies]]"]
 ---
 
 # Layer 1 — Initial Design: Multiple Model Providers
@@ -93,7 +93,9 @@ abstraction is shaped so this concrete second provider fits — not just a hypot
 | `newSessionId()` | mint UUID → `--session-id` | **no seedable id** → return `nil`, discover post-launch | seam already allows `nil` |
 | `start(ctx)` | `claude … "<prompt>"` | `codex "<prompt>"` (or `codex exec`) | direct |
 | `resume(ctx)` | `claude --resume <id>` | `codex resume <id>` / `codex exec resume <id>` (inert) | direct |
-| `startInFlags` (plan/impl) | `--permission-mode plan` | `--sandbox read-only` (plan) / `workspace-write` (impl) | adapter-specific (already is) |
+| `startInFlags` (plan/impl) | `--permission-mode auto` (plan) | `--sandbox read-only` (plan) / `workspace-write` (impl) | adapter-specific (already is) |
+| **`access` (read-only card)** | 3-layer barrier (`--disallowedTools` + strict sandbox `denyWrite` + auto-mode `hard_deny` policy) | `--sandbox read-only` (native) | adapter-specific — see "read-only" note below |
+| **`trustCwd` (scratch pre-trust)** | `ClaudeTrust.grant(cwd)` in `prepareToLaunch` | `~/.codex/config.toml` `trust_level="trusted"` | adapter-specific (already is) |
 | reporting wiring | `--settings <hooks file>` + env | `-c hooks=…` / project `.codex/hooks.json` + `notify`; **requires trust** | generalize to {argv, env, files} |
 | `mapReport` desc | Pre/PostToolUse hooks | Pre/PostToolUse hooks (`tool_name`/`tool_input`) | direct (coverage caveat) |
 | `mapReport` status | Notification/Stop/UserPromptSubmit | UserPromptSubmit/Stop/PermissionRequest hooks; `notify` turn-complete | direct |
@@ -111,6 +113,29 @@ abstraction is shaped so this concrete second provider fits — not just a hypot
    capacity so Codex can turn token counts into a percentage. The gauge hides if even that's unavailable.
 3. **Reporting wiring ≠ one file** — it's {extra argv, env, worktree-local files} plus **trust as a
    prerequisite** (Codex won't run project hooks in an untrusted dir), so `prepareToLaunch` must run first.
+
+**Reconciliation — `AdapterContext` grew on `main` (2026-06-29).** When this was written `AdapterContext`
+carried `cwd/repo/model/startIn/sessionId/prompt/name/hooksPath` and nothing else. It now has **10 fields**
+(`Adapter.swift:4–23`), adding two that every provider must translate:
+
+- **`access: CardAccess` (read-only).** Read-only is no longer a two-part flag — Claude expresses it as a
+  **three-layer barrier** (`ReadOnlyLaunch.swift`): (1) `--disallowedTools Edit Write MultiEdit NotebookEdit`;
+  (2) a **strict** OS sandbox (`filesystem.denyWrite:[cwd,gitDir]`, `allowUnsandboxedCommands:false`,
+  `failIfUnavailable:true` — so `dangerouslyDisableSandbox` is a no-op); (3) an **auto-mode `hard_deny`
+  classifier policy** that semantically denies mutations (covering `excludedCommands` like `git` that run
+  unsandboxed). **Layer 3 is Claude-Code-specific** — a `CodexAdapter` expresses read-only natively via
+  `--sandbox read-only`, with no classifier-policy equivalent. So "how a provider expresses read-only" is
+  itself an adapter concern the seam must carry, distinct from the `startIn` plan/impl axis.
+- **`trustCwd: Bool` (scratch pre-trust).** When Orchestra owns the cwd (a scratch dir it created),
+  `prepareToLaunch` pre-trusts it outright (`ClaudeTrust.grant`) rather than mirroring repo trust. A
+  `CodexAdapter`'s trust step (`config.toml trust_level`) needs the same outright-vs-mirror branch.
+
+**Keystone carried through this seam — `additionalContext` (axis 3, still UNBUILT).** The single planned
+field `AdapterContext.additionalContext: String?` must be threaded through **every** adapter's `start` and
+`resume`, since handoff / fork / fan-out all reduce to "start or restart an agent with an authored context
+seed" ([[context-passing-topologies]]). Delivery is **per-adapter**: Claude injects it as `SessionStart`
+`additionalContext`; Codex has no equivalent, so its adapter delivers the seed as an initial prompt or a
+`--context` file. This axis must reserve that carry-through even though the field doesn't exist in code yet.
 
 ## Complexity & risks
 

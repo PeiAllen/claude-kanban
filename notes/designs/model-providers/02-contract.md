@@ -5,8 +5,8 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[01-design]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[01-design]]", "[[../context-passing-topologies]]"]
 ---
 
 # Layer 2 — Contractual Design: Multiple Model Providers
@@ -38,6 +38,26 @@ registration. The UI gains a provider picker driven by `registry.list()`.
 | `SpawnSheet` (change) | Provider picker when >1 enabled; then that adapter's `models()` | `BoardModel` |
 
 ## Function / method contracts
+
+### Baseline: the shipped `Adapter` protocol + `AdapterContext` (reconciled 2026-06-29)
+
+The seam this axis extends already exists on `main`. The shipped **`Adapter` protocol**
+(`Adapter.swift:26–42`) is: `id, name, icon, bin, enabled, models(), newSessionId(), start(_:),
+resume(_:), sessionInfo(_:current:prior:), prepareToLaunch(_:), env`. This axis **adds** `mapReport` and
+`reporting` (below); neither exists in code yet.
+
+**`AdapterContext` now carries 10 fields** (`Adapter.swift:4–23`), not the 8 this doc originally assumed:
+`cwd, repo, model, startIn, sessionId, prompt, name, hooksPath` **plus `access: CardAccess`** (read-only
+gating — Claude renders it as the 3-layer barrier in `ReadOnlyLaunch.swift`; a `CodexAdapter` renders it
+as `--sandbox read-only`) **and `trustCwd: Bool`** (scratch pre-trust — `prepareToLaunch` calls
+`ClaudeTrust.grant` instead of mirroring repo trust). Both are inputs every adapter's `start`/`resume`/
+`prepareToLaunch` must honour.
+
+**Planned keystone — `AdapterContext.additionalContext: String?`** (axis 3, **still UNBUILT**): a single
+authored context seed threaded through `start`/`resume`, delivered per-adapter (Claude: `SessionStart`
+`additionalContext`; Codex: seed prompt / `--context` file). It is the primitive behind handoff / fork /
+fan-out — see [[../agent-integration/02-contract]] and [[context-passing-topologies]]. This axis must
+keep every adapter's launch path ready to carry it.
 
 ### `Adapter.mapReport(kind: String, payload: JSONValue, model: AgentModel) -> StatusReport?`
 - **Does:** translate one of the provider's live-state events into the shared `StatusReport` (the same
@@ -136,13 +156,13 @@ What a `CodexAdapter` returns from each method — proof the contract above is s
 | Method | Returns |
 |--------|---------|
 | `newSessionId()` | `nil` (no seedable id) |
-| `start(ctx)` | `["codex", sandboxFlag(ctx.startIn), modelFlag, ctx.prompt?]` (`read-only` for plan, `workspace-write` for impl) |
-| `resume(ctx)` | `["codex", "resume", ctx.sessionId!]` (or `exec resume`) — needs the id discovered first |
+| `start(ctx)` | `["codex", sandboxFlag(ctx.startIn, ctx.access), modelFlag, seed(ctx)?]` — `sandboxFlag` folds in **both** axes: `read-only` for plan **or** `ctx.access == .readOnly` (Codex's native read-only; no auto-mode classifier layer to mirror), `workspace-write` otherwise. `seed(ctx)` = `ctx.prompt` ?? a prompt built from `ctx.additionalContext` (Codex's delivery for the planned seed) |
+| `resume(ctx)` | `["codex", "resume", ctx.sessionId!]` (or `exec resume`) — needs the id discovered first; an `additionalContext` seed (when set) is delivered as a follow-up turn / `--context` file rather than `SessionStart` |
 | `reporting` | `files: [(".codex/hooks.json", <hooks→orchestra _report>)]`, `extraArgv: ["-c","notify=…"]`, `env: ORCHESTRA_*` |
 | `mapReport("tool", p, m)` | `StatusReport(desc: toolDesc(p.tool_name,…), status: .running)` |
 | `mapReport("turn-complete", p, m)` | `StatusReport(status: .waiting, ctxPct: 100 * tokens(p) / m.contextWindow)` |
 | `sessionInfo(ctx,…)` | id from newest `~/.codex/sessions/**/rollout-*-<uuid>.jsonl`; transcript = that path |
-| `prepareToLaunch(ctx)` | set `~/.codex/config.toml [projects."<wt>"] trust_level="trusted"` (mirror), enabling hooks |
+| `prepareToLaunch(ctx)` | set `~/.codex/config.toml [projects."<wt>"] trust_level="trusted"`, enabling hooks — **outright** when `ctx.trustCwd` (scratch dir Orchestra owns), else **mirror** the source repo's trust |
 | session-end | (none) → relies on the poll's liveness reconcile to mark `.dead` |
 
 ## Traceability → Layer 1

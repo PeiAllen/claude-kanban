@@ -5,7 +5,7 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
 ---
 
@@ -30,8 +30,11 @@ ideally, mark the source item done when archived.
   it so re-delivery returns the existing card, never a duplicate.
 - A generic **`IntakeConnector` seam**: any source maps its item → `SpawnInput` (+ `externalRef`) and calls
   the control plane. **TickTick** is the reference connector.
-- **Mapping rules**: a source list/tag/label → repo/branch/model/column/kind. A task with no repo becomes a
-  **freeform card** ([[../non-git-cards-search/index|axis 4]]); a mapped one becomes a git card.
+- **Mapping rules**: a source list/tag/label → repo/branch/model/column + the spawn's
+  `cwd`/`access`/`scratch` fields. A task with no repo becomes a **freeform card** — concretely a
+  **scratch** card by default, or a **borrowed** (`cwd` into an existing dir) one — now that axis 4's
+  `CardOrigin`/`CardAccess` substrate is **shipped** ([[../non-git-cards-search/index|axis 4]],
+  `SpawnInput.cwd`/`access`/`scratch` at `Model.swift:484–520`); a mapped one becomes a worktree (git) card.
 - **Provenance**: the card records its `externalRef` (shown as "from TickTick", links back to the source item).
 - **Optional status write-back**: when a card is archived/done, the connector can mark the source item done.
 - **Daemon stays network-free**: the connector runs **external** by default (it talks to the source's API,

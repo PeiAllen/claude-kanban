@@ -5,8 +5,8 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]", "[[../context-passing-topologies|context-passing-topologies]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]"]
 ---
 
 # Layer 1 — Initial Design: Context-clearing Continuity
@@ -22,9 +22,18 @@ re-handed), so the fresh agent loses everything it learned. Allen wants the good
 handoff** (what it's doing, what's done, what's next, key files), and Orchestra **auto-launches a fresh
 agent seeded with that handoff** to continue — or to perform a derived task.
 
-The reverse-injection mechanism for this now exists (`AdapterContext.additionalContext` from
-[[../agent-integration/index|axis 3]]); ctxPct + `restart` are shipped. This axis adds the **handoff
-capture** + the **seeded restart/spawn** + the **trigger**.
+The reverse-injection keystone for this — `AdapterContext.additionalContext` from
+[[../agent-integration/index|axis 3]] — is **still unbuilt** (it is the chokepoint the whole
+handoff/fork/fan-out family unlocks from; see [[context-passing-topologies]]). ctxPct + `restart` *are*
+shipped, and **`restart` already is ~95% of continue-same-card handoff**
+(`OrchestraService+Recovery.swift:100–135`): fresh `agentSessionId` (old → `priorSessionIds`),
+**`cwd` kept**, `status → .waiting`, `titleProvisional`, and it **clears `desc`/`deadReason`** and passes
+`prompt: nil`. The *only* missing step is **seeding the fresh session** with the handoff. So this axis adds
+the **handoff capture**, the **seed** (the axis-3 field), the **seeded restart/spawn**, and the **trigger**.
+
+> Because `restart` **clears `desc`**, `desc` is **not** a durable carrier across a reset — the maxim is
+> *handoff carries intent, artifacts carry facts*: the seed carries navigation + next-steps, while
+> committed code, plan files, and the durable record live in the worktree (see [[context-passing-topologies]] §1).
 
 ## Goals / non-goals
 
@@ -88,6 +97,9 @@ unbounded auto-chaining.
 | Loop avoidance | A seeded restart that immediately fills context again must not auto-restart endlessly — cap consecutive auto-continues. |
 | Provider delivery | `additionalContext` is Claude's interactive field; Codex delivers via a seed prompt/file. Adapter decides (axes 2/3). |
 | Race with recovery | A handoff-restart and the dead/recovery paths must not collide — reuse the `recovering` guard. |
+| **Prereq bug — `require()` doesn't reject archived** | `require()`/`resolveRef`/`TaskRef.resolve` don't filter archived cards (`OrchestraService.swift:316`), so a seeded `restart`/`continue` can **resurrect an archived card**. The synthesis model assumes an `assertActive` guard that does not exist yet. *Noted as a known prerequisite — not fixed here.* See [[stacked-branches-and-guardian-handoff]] §7. |
+| **Prereq bug — concurrent `restart` not serialized** | The `recovering` set guards report-*attribution* but does **not** serialize the operation; two concurrent restarts race and the DB `agentSessionId` can diverge from the live tmux (ABA). A seeded handoff inherits this race. *Noted, not fixed here.* |
+| Merge-back is a separate model | A fork's conclusion must not be `send`-to-tmux (`send → sendKeys` throws the instant the session isn't alive). The durable inbox (`Task.pendingContext`, `Task.succeededBy`, orphan-promotion) is specified in [[context-passing-topologies]] §5 / [[stacked-branches-and-guardian-handoff]] §7 — cross-linked, not duplicated here. |
 
 Rough sizing: **medium** — a small artifact + two seeded launch variants + a trigger. The subtlety is the
 trigger/loop discipline and leaning on the agent (not scraping) for handoff quality.

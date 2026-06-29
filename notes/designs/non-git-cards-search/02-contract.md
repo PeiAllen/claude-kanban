@@ -5,13 +5,20 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[01-design]]"]
 ---
 
 # Layer 2 — Contractual Design: Non-git Cards + Searchability
 
 > The **interfaces**: `CardKind` + optional git fields, the freeform spawn path, and the search verbs.
+
+> **Reconcile (2026-06-29):** the model + spawn/archive interfaces below **shipped** under a richer shape
+> than specced here — read `CardKind`/`kind` as **`Task.origin: CardOrigin { worktree, scratch, borrowed }`**
+> (+ `Task.access: CardAccess`), and `worktree: String?` as **`cwd: String`** (the `worktree` string was
+> removed; `cwd` is total). `SpawnInput` shipped `cwd`, `scratch`, `access`. See
+> [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]]. **The search interfaces
+> (`TaskSearch`, `find`, `list?query`) are still unbuilt** and remain the live contract for this axis.
 
 ## Architecture overview
 
@@ -52,13 +59,20 @@ public enum CardKind: String, Codable, Sendable { case gitWorktree, freeform }
 `SpawnInput` gains `kind: CardKind = .gitWorktree` and `cwd: String?` (freeform only). For git cards
 `repo`/`branch` stay required; for freeform they're optional and `cwd` (or a scratch default) is used.
 
+> **Shipped delta:** the above landed as `origin: CardOrigin { worktree, scratch, borrowed }` (3-way, +
+> `access: CardAccess`), `worktree` was **removed** in favour of a total `cwd: String`, and `SpawnInput`
+> shipped `cwd` + `scratch: Bool` + `access` rather than a `kind`. Migration backfills `cwd = worktree`,
+> `origin = .worktree` for existing cards. See [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]] §2.
+
 ## Function / method contracts
 
-### `OrchestraService.spawn` (extended)
-- **Does:** for `.gitWorktree` → today's path. For `.freeform` → resolve cwd = `input.cwd` (assertAllowed)
-  or `dataDir/scratch/<id>` (created, under an allowlisted root); skip `WorktreeManager`; everything else
-  (session, report wiring, card) identical with `repo`/`branch` nil.
-- **Errors:** freeform cwd not allowlisted → `pathNotAllowed`; git path unchanged.
+### `OrchestraService.spawn` (extended) — *shipped, branches on `origin`*
+- **Does:** for `.worktree` → today's path. For `.borrowed`/`.scratch` → resolve cwd = `input.cwd` (a free
+  path; **no `assertAllowed`** — the OS sandbox is the trust boundary, `exec` relaxes `assertAllowed` for
+  non-`.worktree` cards) or `~/.orchestra/scratch/<id>` (created, scratch dirs auto-trusted); skip
+  `WorktreeManager`; everything else (session, report wiring, card) identical with `repo`/`branch` nil.
+- **Errors:** git path unchanged. (The originally-specced `pathNotAllowed` gate does **not** apply to
+  freeform — superseded by the sandbox-as-boundary decision, [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]] §4.1.)
 
 ### `OrchestraService.archive` (extended)
 - **Does:** for `.freeform`, skip `git worktree remove` entirely (no git); just kill the session + mark
@@ -77,10 +91,10 @@ public enum CardKind: String, Codable, Sendable { case gitWorktree, freeform }
 
 | Decision | Choice | Rationale | Alternatives considered |
 |----------|--------|-----------|-------------------------|
-| Card typing | A `CardKind` enum + optional git fields | One model, default keeps git cards unchanged | Separate freeform task type |
-| Freeform cwd | Allowlisted; scratch default under a root | Preserves `PathResolver` boundary | Arbitrary cwd |
-| Search | Pure ranked substring/fuzzy over fields | Right scale; no infra | SQLite FTS / index engine |
-| Freeform area | Board section keyed off `kind` (axis-1 lane) | Reuse columns; no second board | Bespoke board |
+| Card typing | A card-kind enum + optional git fields → **shipped as `origin` (3-way) + `access`** | One model, default keeps git cards unchanged | Separate freeform task type |
+| Freeform cwd | ~~Allowlisted; scratch default under a root~~ → **shipped as free-path; OS sandbox is the boundary (no allowlist)** | Friction-light; sandbox confines writes | Pre-registered allowlist |
+| Search | Pure ranked substring/fuzzy over fields *(still unbuilt — live scope)* | Right scale; no infra | SQLite FTS / index engine |
+| Freeform area | ~~Board section keyed off `kind` (axis-1 lane)~~ → **shipped as a standalone freeform region** | Freeform is a category, not a stage; no axis-1 coupling | An axis-1 lane (conflates the two) |
 
 ## Diagrams
 

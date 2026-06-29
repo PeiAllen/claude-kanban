@@ -4,7 +4,7 @@ feature: context-continuity
 type: design-index
 depth: 2
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 ---
 
 # Context-clearing Continuity — Design Index
@@ -14,6 +14,22 @@ updated: 2026-06-26
 > Part of the [[extensibility-roadmap/index|extensibility roadmap]] (axis 6). Builds on
 > [[../agent-integration/index|agent-integration]] (`additionalContext` injection) + the shipped
 > ctxPct / `restart` machinery.
+
+## Status vs `main` (2026-06-29)
+
+- This is **the HANDOFF axis**, now subsumed as one of four topologies under
+  [[context-passing-topologies]] — *continue-same-card handoff*. Its sibling — *new-card transfer* — and
+  the fork/fan-out cases are detailed there + in [[stacked-branches-and-guardian-handoff]].
+- **`restart` already IS ~95% of continue-same-card handoff** (`OrchestraService+Recovery.swift:100–135`):
+  it mints a fresh `agentSessionId` (old → `priorSessionIds`), **keeps `cwd`**, sets `status → .waiting` +
+  `titleProvisional`, **clears `desc`/`deadReason`**, passes `prompt: nil`. The *only* missing step is the
+  **seed** — the `additionalContext` keystone (axis 3, still unbuilt). This axis is mostly wiring once that lands.
+- **Load-bearing addition from the synthesis notes:** the merge-back / fork-safety / lineage model —
+  durable `Task.pendingContext` inbox, `Task.succeededBy` lineage pointer, orphan-promotion. Cross-linked,
+  not duplicated, below.
+- **Two prerequisite bugs** bear directly on seeded restart/handoff safety (noted, not fixed): `require()`
+  does not reject **archived** cards (no `assertActive` guard), and **concurrent `restart` is not
+  serialized** (the `recovering` set only guards report-attribution). See [[01-design]] risks.
 
 ## Layers
 

@@ -5,7 +5,7 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
 ---
 
@@ -40,8 +40,18 @@ authored by the user in Settings.
 - A **column-management surface** — no `add/remove/reorder` verbs and no Settings column editor *yet*
   (decided 2026-06-26). This axis makes columns **data** (seeded config the board derives from); editing
   them is a later, separate change. The data model is shaped so that surface drops in cleanly.
-- Per-column **automation** (spawn a review agent on entry) — that's [[../pr-review-phase/index|axis 5]].
-- Non-board **lanes / separate areas** for non-git cards — that's [[../non-git-cards-search/index|axis 4]].
+- Per-column **automation** (an `onEnter` policy — e.g. spawn/reset a review agent on entry) — that's
+  [[../pr-review-phase/index|axis 5]]. Per [[../context-passing-topologies|context-passing-topologies]]
+  §7, **column transitions are a *consumer* of existing mechanisms, not a new one**: a `move` is pure
+  data today (no `onEnter` hook); the `onEnter` column policy this axis would later add is what lets
+  plan→impl/review boundaries trigger an automatic context reset, and what the review-phase / guardian
+  shape ([[../stacked-branches-and-guardian-handoff|stacked-branches]] §3a) keys on.
+- Non-board **lanes / separate areas** for non-git cards. The **freeform region shipped standalone**
+  (a `FreeformRegionView` for non-`.worktree` cards), deliberately **independent** of this axis — see
+  [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]] §4.4. This axis's columns are the
+  worktree-category lifecycle stages only; promoting a freeform card into the workflow is a *new card*,
+  not a column move. (Earlier [[../non-git-cards-search/index|axis 4]] text proposed a freeform lane via
+  this axis — that coupling was dropped.)
 - Intra-column drag **reordering** of cards (separate, smaller change).
 
 ## Scope

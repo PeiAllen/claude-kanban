@@ -5,8 +5,8 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[01-design]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[01-design]]", "[[../context-passing-topologies|context-passing-topologies]]"]
 ---
 
 # Layer 2 — Contractual Design: Deeper Agent Integration
@@ -34,7 +34,7 @@ scoped to the caller's own card by default.
 | `ProgressItem` (new, `Model.swift`) | One node: `id`, `parentId?`, `kind`, `label`, `state`, `detail?` | `Task`, inspector |
 | `Task` (extend) | `progress: [ProgressItem]` (bounded, upsert-by-id) | `TaskStore` |
 | `OrchestraService` (extend) | `progress`/`describe`/`note`/`link`; emit on progress transitions | `store` |
-| `AdapterContext` (extend) | `additionalContext: String?` for the reverse injection | adapters |
+| `AdapterContext` (extend) | `additionalContext: String?` — the **keystone** seed (the 11th field) | adapters |
 | `InspectorView` (extend) | Render the `Task.progress` tree (indented, state-colored) | `BoardModel` |
 
 ## Data model
@@ -76,6 +76,9 @@ the `StatusReport` snapshot path).
 - **note:** append a freeform annotation (bounded) — context an agent leaves for itself/others.
 - **link:** record a typed relation between two cards (`rel` ∈ parent/child/related) — e.g. a plan card to
   the cards it spawned; powers a future "promote a progress item to a card" + axis-4 discoverability.
+  Relates to **fork lineage** in [[context-passing-topologies]]: a fork/fan-out child carries
+  `Task.parentCardId` (a new card field, distinct from `origin`'s directory-kind), and `link` is the
+  agent-facing verb that records that parent↔child relation on the board.
 
 ### `CommandRegistry` (refactor) + generic CLI
 - Each `Command` already carries a JSON-schema `params`. A generic CLI driver maps `--key value` →
@@ -83,10 +86,18 @@ the `StatusReport` snapshot path).
   (exit-code passthrough), `batch-spawn` (stdin) remain explicit overrides. `models`/`archivedList`/
   `openInZed` become registry commands (so MCP/agents can call them).
 
-### `AdapterContext.additionalContext: String?`
+### `AdapterContext.additionalContext: String?` — the keystone
 - Carried into `start`/`resume` so a provider that supports context injection (Claude `SessionStart`
   `additionalContext`) re-teaches a session its task without a re-handed prompt. Adapters that can't use
   it ignore it. Consumed by [[../context-continuity/index|axis 6]].
+- **Status (2026-06-29):** still unbuilt. In `main`, `AdapterContext` already carries **10 fields**
+  (`cwd, repo, model, startIn, sessionId, prompt, name, hooksPath, access, trustCwd` — `Adapter.swift:4–23`,
+  not the 8 the early text implied); `additionalContext` is the one field still missing and would be the
+  11th. Pair it with `SpawnInput.additionalContext` (`Model.swift:484–520`) + `restart(_:withContext:)`.
+- Per [[context-passing-topologies]] (§1, §8) this is **the chokepoint**: handoff, fork, fan-out, and
+  Claude subagents are one primitive that all unlock from this seed — **build it first; the rest is
+  topology.** It also carries the fork **merge-back inbox** safely (the inbox injects as
+  `additionalContext` on the card's next live turn).
 
 ## Library / framework decisions
 
