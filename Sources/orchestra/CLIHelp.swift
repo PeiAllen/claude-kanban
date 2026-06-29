@@ -8,6 +8,8 @@ enum CLIHelp {
     COMMANDS
       list [--col plan|impl|review]              List cards
       spawn --prompt <p> --repo <r> --branch <b> [--model <m>] [--col plan|impl]
+            spawn --prompt <p> --cwd <dir> [--read-only]   (freeform: run in an existing dir)
+            spawn --prompt <p> --scratch                   (throwaway ~/.orchestra/scratch dir)
                                                  Spawn a new agent (prints its ref)
       move <ref> --col <plan|impl|review>        Move a card
       send <ref> <message...>                    Message the agent
