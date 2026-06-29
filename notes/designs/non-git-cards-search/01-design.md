@@ -5,7 +5,7 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
 ---
 
@@ -14,33 +14,51 @@ links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
 > The **what**: let an agent exist without a git worktree, give those cards their own area, and make all
 > cards findable (search + debug handles).
 
+> **Reconcile (2026-06-29): the non-git-cards half SHIPPED.** Freeform/borrowed/scratch cards are real
+> board citizens via [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]]: `Task.cwd` +
+> `Task.origin: CardOrigin { worktree, scratch, borrowed }` + `Task.access`, `SpawnInput.cwd/scratch/access`,
+> a standalone freeform region, and origin-guarded archive cleanup. So this doc's `CardKind`/`kind` is the
+> shipped **`origin`** enum (3-way, not 2-way), the freeform area is **standalone** (not an axis-1 lane),
+> and the run-dir is `cwd` (the `Task.worktree` string was removed). **Searchability is the part still
+> unbuilt** — treat the search goals below as the live scope.
+
 ## Purpose & problem
 
 Two gaps, grouped because they share the same model change (loosening the git-centric `Task`):
 
-1. **Everything is git-bound.** `Task.repo`/`branch`/`worktree` are required; `spawn` always runs
-   `git worktree add`. There's no way to run a quick/scratch agent, or an agent in an existing dir, or a
-   chat-only agent — every card *must* be a worktree on a branch.
+1. **Everything is git-bound.** *(Now addressed — shipped.)* When written, `Task.repo`/`branch`/`worktree`
+   were required and `spawn` always ran `git worktree add`. Freeform/borrowed/scratch cards
+   ([[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]]) removed that constraint:
+   `origin` distinguishes `.worktree`/`.scratch`/`.borrowed`, `repo`/`branch` are optional, and the agent
+   runs in `cwd`. Quick/scratch agents and agents in an existing dir now exist.
 2. **No search.** As cards accumulate (live + archived), there's no text search/filter. `sessions` gives
    excellent *debug* handles for a known card, but no way to *find* a card by what it's about.
 
 ## Goals / non-goals
 
-**Goals**
-- A **`CardKind`**: `gitWorktree` (today's behaviour) or `freeform` (no worktree; agent runs in a chosen
-  or scratch cwd). `repo`/`branch`/`worktree` become **optional** for freeform cards.
-- **Spawn handles both**: git cards go through `WorktreeManager`; freeform cards skip it and run in an
-  allowlisted cwd (a scratch dir by default).
-- A **separate viewing area** for freeform cards so they don't clutter the git board (realized as a
-  column/lane via [[../configurable-columns/index|axis 1]], or a distinct list).
-- **Search**: `list` gains a `query`; a new `find` verb returns matching refs; the app gets a search field
-  (over title/desc/repo/branch/initialPrompt, optionally archived + notes/progress).
-- **Debugging stays first-class**: `sessions` (existing) + `describe` (axis 3) work for freeform cards too.
+**Goals** (✓ = now shipped via [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]])
+- ✓ A **card-kind axis** — shipped as **`Task.origin: CardOrigin { worktree, scratch, borrowed }`**
+  (richer than the 2-way `CardKind { gitWorktree, freeform }` sketched here) plus `Task.access`.
+  `repo`/`branch` are **optional**; the run-dir is `cwd` (the `worktree` string was removed).
+- ✓ **Spawn handles both**: git cards go through `WorktreeManager`; freeform cards (`SpawnInput.cwd`/
+  `scratch`) skip it and run in `cwd` — a borrowed dir (sandbox is the trust boundary, **no allowlist**)
+  or an auto scratch dir (`~/.orchestra/scratch/<id>`).
+- ✓ A **separate viewing area** for freeform cards — shipped as a **standalone `FreeformRegionView`**,
+  deliberately *not* a [[../configurable-columns/index|axis 1]] column/lane (a card *category*, not a
+  workflow stage; see [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]] §4.4).
+- **Search** *(still unbuilt — the live scope of this axis)*: `list` gains a `query`; a new `find` verb
+  returns matching refs; the app gets a search field (over title/desc/repo/branch/initialPrompt,
+  optionally archived + notes/progress).
+- ✓ **Debugging stays first-class**: `sessions` + `inspect`/`describe` work for freeform cards too
+  (a card with no worktree just has `cwd` = its scratch/borrowed dir).
 
 **Non-goals (this axis)**
 - A full-text **index engine** — a simple substring/fuzzy scan over `tasks.json` fields suffices at this scale.
 - Multiple boards / workspaces.
-- Re-homing a freeform card into git later (note as future; `link` from axis 3 can relate them).
+- Re-homing a freeform card into git later. Per [[../context-passing-topologies|context-passing-topologies]]
+  §7 this is a **promotion** (spawn a new `.worktree` card seeded from the freeform card, + optional
+  `git diff` patch), **not** an in-place mutation — `origin` is per-card and immutable. The
+  [[../agent-integration/index|axis 3]] `link` verb can relate the two cards.
 
 ## Scope
 
@@ -59,11 +77,12 @@ migration.
 
 ## Expected behaviour
 
-- **Freeform spawn:** `kind: freeform` (+ optional `cwd`) → no `git worktree add`; the agent runs in the
-  given allowlisted cwd, or an auto scratch dir (`dataDir/scratch/<id>`). All else (tmux session, report
-  channel, recovery) is identical; `worktree` is just the cwd.
-- **Separate area:** freeform cards render in their own section/lane, not mixed into the git columns. With
-  axis 1 this is a column whose `semantic` (or a `CardKind` filter) scopes it.
+- **Freeform spawn:** *(shipped)* `origin == .borrowed`/`.scratch` (+ optional `cwd`) → no `git worktree
+  add`; the agent runs in the chosen `cwd` (sandbox is the trust boundary, **no allowlist** — the doc's
+  later "allowlisted cwd" wording is superseded) or an auto scratch dir (`~/.orchestra/scratch/<id>`). All
+  else (tmux session, report channel, recovery) is identical; `cwd` is the run-dir.
+- **Separate area:** *(shipped)* freeform cards render in a **standalone `FreeformRegionView`**, filtered
+  by `origin != .worktree` — *not* an axis-1 column whose `semantic` scopes it (that coupling was dropped).
 - **Search:** typing in the app search field filters cards (and archived) live; an agent calls `find` to
   discover cards by topic (e.g. "find my auth cards"). Matches rank title > desc > prompt.
 - **Debug:** `sessions`/`describe` return handles for freeform cards (tmux target + transcript if the
@@ -118,9 +137,9 @@ flowchart TD
 
 | Decision | Why | Rejected |
 |----------|-----|----------|
-| `CardKind` (git / freeform); git fields optional | One model serves both; defaults keep git cards unchanged | Two separate task types |
-| Freeform cwd = allowlisted (scratch by default) | Keeps the `PathResolver` security boundary | Arbitrary cwd (escape risk) |
-| Separate area via axis-1 column/lane | Reuse configurable columns; no parallel board concept | A bespoke second board |
+| Card-kind axis; git fields optional | One model serves both; defaults keep git cards unchanged | Two separate task types |
+| ~~Freeform cwd = allowlisted (scratch by default)~~ → **shipped as free-path; sandbox is the trust boundary (no allowlist)** | Friction-light; sandbox already confines writes everywhere (see [[../freeform-and-borrowed-cards/index\|freeform-and-borrowed-cards]] §4.1) | Pre-registered allowlist (too rigid) |
+| ~~Separate area via axis-1 column/lane~~ → **shipped as a standalone freeform region** | Freeform is a card *category*, not a workflow stage; avoids chaining to the larger axis-1 feature | An axis-1 column/lane (conflates the two) |
 | Search = simple ranked substring scan | Right scale for a personal tool | A full-text index engine |
 | Debug handles unchanged | `sessions`/`describe` already general | Special freeform debug path |
 

@@ -4,7 +4,7 @@ feature: extensibility-roadmap
 type: design-index
 depth: 2
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 ---
 
 # Orchestra — Extensibility Roadmap
@@ -13,6 +13,19 @@ updated: 2026-06-26
 > own design-only layered plan (Layer 1 *what* + Layer 2 *interfaces*, no implementation yet) in its
 > own folder. Deepen an axis to Layer 3 + tests and implement when it's picked up. Anchored by the
 > shipped architecture in [[kanban-board/index|kanban-board]].
+
+> **Status vs `main` (2026-06-29).** Two things moved since the 2026-06-26 design pass:
+> 1. **Some substrate shipped.** Four feature PRs landed (read-only inspect, `Task.cwd`/`origin`,
+>    freeform/borrowed cards + `access`, scratch cards) — so axis 4's *non-git cards* are now partly
+>    real and axis 1's *freeform region* exists as a standalone docked panel. See
+>    [[../freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]] and `docs/09-design-decisions.md`.
+> 2. **Two cross-cutting decisions were added** and now constrain several axes:
+>    - **Enforced 1:1 worktree↔card** ([[../stacked-branches-and-guardian-handoff|stacked-branches & guardian hand-off]]) —
+>      retires the shipped refcount/`SharedWorktreeBadge` machinery; adds spawn-`base` + `parentBranch`/
+>      `parentCardId`. Touches axes 1, 5, 7.
+>    - **One seed, four topologies** ([[../context-passing-topologies|context-passing topologies]]) —
+>      `AdapterContext.additionalContext` is the **keystone** (still unbuilt); handoff/fork/fan-out all
+>      unlock from it. Elevates axis 3, reshapes axis 6, and folds in a lineage/merge-back model.
 
 ## Why these, now
 
@@ -63,10 +76,14 @@ flowchart TD
     A7[7 code review on board]
 ```
 
-## Status — design-only pass complete (2026-06-26)
+## Status — design-only pass complete (2026-06-26); reconciled to shipped `main` (2026-06-29)
 
-All 9 axes have an **approved L1 (design) + L2 (contract)**. None are implemented yet — each is a
-design-only plan; deepen an axis to **L3 (implementation) + L4 (tests)** and build when it's picked up.
+All 9 axes have an **approved L1 (design) + L2 (contract)**. The axes themselves are still design-only —
+deepen to **L3 (implementation) + L4 (tests)** when picked up — but note that **feature work landed
+underneath them**: the [[../freeform-and-borrowed-cards/index|freeform/borrowed/scratch + read-only]] PRs
+(PR1–PR4) shipped the `cwd`/`origin`/`access` schema and the freeform region, which partly realize axis 4
+and provide axis 1's freeform lane. The **`additionalContext` seed** (axis 3) is now the elevated keystone
+the topology family depends on — build it first.
 
 **Sequencing notes from the gates:**
 - **Foundational, do first:** the `CommandRegistry` single-source refactor (in axis 3) — it unblocks axes

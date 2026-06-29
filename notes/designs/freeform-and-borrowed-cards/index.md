@@ -3,11 +3,13 @@ project: claude-kanban
 feature: freeform-and-borrowed-cards
 type: design-spec
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 related:
   - "[[../non-git-cards-search/index|non-git-cards-search (axis 4)]]"
   - "[[../configurable-columns/index|configurable-columns (axis 1)]]"
   - "[[../code-review-on-board/index|code-review-on-board (axis 7)]]"
+  - "[[../stacked-branches-and-guardian-handoff|stacked-branches & guardian hand-off]]"
+  - "[[../context-passing-topologies|context-passing topologies]]"
 ---
 
 # Freeform, Borrowed & Read-only Cards — Design Spec
@@ -17,6 +19,16 @@ related:
 > in an existing card's shell. Deepens axis-4 ([[../non-git-cards-search/index|non-git-cards-search]])
 > to implementation, and replaces the dangerous "two writers sharing one worktree" framing with a
 > clean ownership model.
+
+> **Status vs `main` (2026-06-29) — SHIPPED.** All four PRs landed (PR1 read-only inspect, PR2 `cwd`/
+> `origin` schema, PR3 freeform/borrowed + `access`, PR4 scratch). This doc is now a *record* of a
+> shipped feature, not a forward plan. **One section is now reversed:** §6 ("keep the refcount + badge,
+> rescoped") was superseded on 2026-06-29 by the **enforced-1:1** decision in
+> [[../stacked-branches-and-guardian-handoff|stacked-branches & guardian hand-off]] §1 — the refcount
+> guard + `worktreeSiblings` + `SharedWorktreeBadge` + footer badge are now slated to be **retired**,
+> not kept. The "future alternative (not now)" at the end of §6 became the chosen direction. The
+> read-only recipe (§3) also shipped as **three** layers, not two (see the note in §3). Line numbers
+> below are pre-PR and now stale; the authoritative current map lives in `docs/04-cards-worktrees-sessions.md`.
 
 ## 1. Why — the two real use cases
 
@@ -98,6 +110,13 @@ claude --session-id <id> \
   "sandbox":     { "filesystem": { "denyWrite": ["<worktree>", "<repo>/.git/worktrees/<name>"] } } }
 ```
 
+> **Shipped as THREE layers (2026-06-29), not two.** `ReadOnlyLaunch.swift` hardened this into defense
+> in depth: (1) the tool denies below; (2) a **strict** sandbox — `denyWrite` *plus*
+> `allowUnsandboxedCommands:false` + `failIfUnavailable:true`, so `dangerouslyDisableSandbox` is a no-op;
+> (3) an **auto-mode classifier policy** (`autoMode.hard_deny:[<prose "deny any mutation" rule>]`) — a
+> semantic mutation detector chosen over a brittle Bash deny-list. The two-lock framing below is the
+> original design; the third (classifier) layer was added in commits `98c685d`/`5614c6d`.
+
 - **Two independent locks.** `--disallowedTools` removes the edit tools from context (the model can't
   call what it doesn't have). The OS sandbox `denyWrite` blocks the Bash escape hatch (`sed -i`, `tee`,
   `>`, `python -c 'open(...,"w")'`) at the kernel — string-matching Bash deny patterns is whack-a-mole.
@@ -155,7 +174,7 @@ reorderable/collapsible *exactly* like columns — not worth it now.)
 
 ## 5. Archive / ownership logic (the one real behavior change)
 
-Generalize the current `archive` block (`OrchestraService.swift:153-167`, today an unconditional
+Generalize the current `archive` block (shipped at `OrchestraService.swift:194-229`, was an unconditional
 `worktrees.remove`) into a switch on `origin`:
 
 ```swift
@@ -178,24 +197,37 @@ if removeWorktree {                              // existing param now gates ALL
 }
 ```
 
-## 6. Multi-card-per-worktree refcount + badge — keep, rescoped
+## 6. Multi-card-per-worktree refcount + badge — ~~keep, rescoped~~ **NOW SLATED TO RETIRE (2026-06-29)**
 
-Already shipped (refcount guard + `worktreeSiblings` + `SharedWorktreeBadge` + footer count badge).
-Decision: **keep both**, because the system still *permits* two `.worktree` cards on one tree
-incidentally (`worktrees.ensure` is idempotent on `repo+branch`), and removing the guard re-opens the
-original "archive pulls the dir out from under a live sibling" data-loss bug.
+> **Superseded.** This section's original conclusion — *keep* the refcount guard + `SharedWorktreeBadge`,
+> rescoped to `.worktree` — was reversed on 2026-06-29 by the **enforced-1:1** decision in
+> [[../stacked-branches-and-guardian-handoff|stacked-branches & guardian hand-off]] §1. The "future
+> alternative (not now)" at the bottom of this section became the chosen direction. Kept below for the
+> decision trail; the current target is the *retire* path.
 
-- **Refcount guard** → folds into §5's `.ownedWorktree` branch (compare among `.worktree`-origin cards).
-- **Badge** → meaning shifts from "feature indicator" to **collision warning** ("another agent is on
-  this exact tree"); **scope it to `origin == .worktree`** so it does *not* fire for freeform cards that
-  intentionally share a borrowed `cwd` (e.g. several agents in `~`, which is fine).
-- **Unrelated, keep regardless:** the no-prompt lifecycle fixes that rode in with that plan (spawn
-  `.waiting`; restart-fresh recovery) have nothing to do with worktree sharing.
-- **Future alternative (not now):** make worktree↔card strictly 1:1 (spawn refuses / auto-branches a
-  second card on the same `repo+branch`), which would retire both the guard and the badge. Separate
-  decision; costs more and changes behavior.
+What shipped (refcount guard + `worktreeSiblings`/`worktreeSiblingsHelp` + `SharedWorktreeBadge` +
+`SharedWorktreeList` + footer count badge) was the *make-N:1-safe* machinery. The reversal's reasoning:
+**git forbids the same branch in two worktrees**, so every N:1 case is two writers on one branch — a
+footgun with no safe form. The safe co-location patterns we actually want (read-only Inspect §3,
+freeform/borrowed §4) **don't share a worktree at all**, so once spawn enforces 1:1 (refuse-and-jump, or
+auto-branch — open) the entire refcount/badge layer has nothing left to babysit and should be removed.
 
-## 7. Call-site reroute (the `worktree` → `cwd` plumbing, PR2)
+- **Refcount guard** (`OrchestraService.swift:200-210`) → **retire**; with 1:1 enforced, a `.worktree`
+  card is always the sole owner, so archive removes its tree unconditionally (still dirty-guarded).
+- **Badge + siblings helpers** (`BoardModel.swift:72-83`, `InspectorView.swift:251-313`,
+  `CardView.swift:148-158`) → **retire**; there are no co-located worktree cards to surface.
+- **Keep regardless (unrelated to worktree sharing):** the no-prompt lifecycle fixes that rode in with
+  the same plan — spawn `.waiting` for provisional cards; restart-fresh recovery for never-prompted
+  cards (`Recovery.swift:22-25`). These stay.
+
+**Original (now-superseded) conclusion**, for the record: *keep both, rescoped to `.worktree`, because
+the system still permits incidental N:1 via the idempotent `worktrees.ensure`.* The 1:1-enforcement
+decision closes that incidental path at spawn, which is what makes retirement safe.
+
+## 7. Call-site reroute (the `worktree` → `cwd` plumbing, PR2) — ✅ shipped
+
+> Completed in PR2; the line numbers below are the pre-PR map and are now stale. Every run-dir read
+> routes through `Task.cwd` in current `main`.
 
 Run-dir reads → `t.cwd`:
 - `OrchestraService.openShell` `:180` (`newShellWindow(cwd:)`), `:181`
@@ -210,7 +242,10 @@ Worktree-specific (also `cwd`, since `cwd` == worktree root for `.worktree` card
 
 Migration: `init(from:)` backfills `cwd = worktree`, `origin = .worktree` for existing persisted cards.
 
-## 8. PR / branching plan
+## 8. PR / branching plan — ✅ all four shipped
+
+> PR1–PR4 all landed on `main` (2026-06-29). The stack below is the historical build order; see
+> `docs/09-design-decisions.md` for the shipped-PR summary table.
 
 ```
 main ─┬─ PR1  read-only-inspect        (independent; no schema change)
@@ -233,8 +268,10 @@ off `main` after PR3. Merge-then-branch keeps diffs small. (Stack `PR2 ← PR3 �
 ## 9. Non-goals / open items
 
 - **No coordination/locking** between agents sharing a dir — stays the user's responsibility (sandbox
-  confines writes; that's the only guarantee).
+  confines writes; that's the only guarantee). *(Note: under enforced 1:1, the only `cwd`-sharing left
+  is borrowed/scratch cards intentionally co-located in a free dir — never two `.worktree` cards.)*
 - **No axis-1 (configurable columns) work** here; freeform region is standalone.
-- **Open:** exact placement/visual of the freeform region (lane vs collapsible section); whether the
-  read-only Inspect button also offers a writable "Shell here" variant; final glyphs for the
-  freeform/borrowed/read-only card states.
+- **Resolved (shipped):** the freeform region landed as a **resizable, collapsible docked bottom panel**
+  (`BoardView.FreeformRegionView`), full board width, adaptive card grid.
+- **Still open:** whether the read-only Inspect button also offers a writable "Shell here" variant;
+  final glyphs for the freeform/borrowed/read-only card states.

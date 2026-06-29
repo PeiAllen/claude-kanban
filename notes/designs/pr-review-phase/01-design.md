@@ -5,8 +5,8 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]", "[[../context-continuity/index|context-continuity]]"]
 ---
 
 # Layer 1 — Initial Design: Automated PR-Review Phase
@@ -24,6 +24,14 @@ genuinely needs a human), so human attention is reserved for judgment, not chore
 The pieces exist: each card already has a worktree on a branch (→ a PR), an agent + adapter, and (with
 axes 1 + 3) configurable columns + progress reporting + context injection. This axis adds **PR awareness**
 and a **column-entry automation policy** that drives a review agent.
+
+> **The review agent is a lifecycle *phase* of the one card, not a second card co-tenant on its worktree.**
+> Worktree↔card stays **1:1** throughout ([[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]
+> §3). Two shapes: **(a)** the *same* card (same worktree, same or steered agent) continues into a review
+> column — the default this axis describes; or **(b)** a **fresh-context successor** card via handoff
+> ([[../context-continuity/index|context-continuity]] new-linked-card mode) — a baton pass where the
+> successor inherits the worktree by **ownership transfer** (not sharing) and the predecessor retires, so
+> there is **exactly one live owner at every instant**. Neither shape is N:1.
 
 ## Goals / non-goals
 
@@ -86,6 +94,8 @@ and a **column-entry automation policy** that drives a review agent.
 | "Needs human" detection | Distinguish "addressed" from "can't / shouldn't" — rely on the agent declaring done/blocked (axis-3 progress states) + a cycle cap. |
 | Forge coupling | Keep PR access behind `ForgeProvider` so GitHub specifics don't leak into the controller. |
 | Comment-resolution fidelity | Marking a GitHub review thread resolved vs just replying — decide what "resolved" means for the loop. |
+| Keystone dependency (`additionalContext`) | The PR-context feed rides the **`AdapterContext.additionalContext` seed** — the one keystone field shared by handoff/fork/fan-out, still **unbuilt** in `main` ([[../context-passing-topologies]] §1). Until it lands, the context can only be re-handed via a fresh prompt. |
+| Handoff-shape prerequisites (bugs) | The fresh-context successor shape (b) leans on `restart`/`require`, which today have two known gaps: `require()` doesn't reject **archived** cards (can resurrect a retired predecessor), and concurrent `restart` is **not serialized** (DB `agentSessionId` can diverge from the live tmux). Note only — not fixed here. |
 
 Rough sizing: **large** — a stateful controller + a forge integration + agent orchestration. The riskiest
 new surface is the loop/escalation logic and the auto-push safety posture.

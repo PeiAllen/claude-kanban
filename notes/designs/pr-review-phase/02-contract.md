@@ -5,8 +5,8 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[01-design]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[01-design]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]", "[[../context-passing-topologies]]"]
 ---
 
 # Layer 2 — Contractual Design: Automated PR-Review Phase
@@ -56,6 +56,16 @@ public struct CheckSummary: Codable, Sendable, Equatable { public var passing, f
 
 `ReviewThread`/`CheckRun`/`PRInfo` are transient (fetched, not persisted); only the summarized `PRState`
 lives on the card.
+
+> **`onEnter` carrier (open):** whether the review column reuses the existing `Column.review` case or a new
+> configurable-columns column with an `onEnter` policy is still open — see
+> [[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §8. Either way the
+> controller is started **on the one card** (the review *phase*), not a co-tenant on its worktree (1:1).
+>
+> **Keystone (unbuilt):** the PR-context feed (below) rides `AdapterContext.additionalContext` — the single
+> keystone seed field shared by handoff/fork/fan-out, **still absent from `main`**
+> ([[../context-passing-topologies]] §1). The fresh-context-successor variant of the review phase is a
+> *handoff* in that family's terms; building the seed first unblocks both.
 
 ## Function / method contracts
 

@@ -5,7 +5,7 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[01-design]]"]
 ---
 
@@ -52,6 +52,16 @@ public enum ColumnSemantic: String, Codable, Sendable {
     case backlog, active, review, other   // e.g. axis 5 keys automation on .review
 }
 ```
+
+> **`semantic` is the hook for an `onEnter` column policy — the one new mechanism this axis would add.**
+> Per [[../context-passing-topologies|context-passing-topologies]] §7, a `move` is *pure data* today
+> (`TaskStore.swift:93`, no `onEnter` hook), so column transitions are otherwise a **consumer** of
+> existing primitives: a context reset at a plan↔impl↔review boundary is opt-in (`restart + seed`) until
+> an `onEnter` policy keyed on `semantic == .review` lands here. That policy is what
+> [[../pr-review-phase/index|axis 5]] and the guardian/review-phase shape
+> ([[../stacked-branches-and-guardian-handoff|stacked-branches]] §3a) consume. A *cross-category*
+> transition (freeform → workflow) is **not** a `move` at all — it is a **promotion** that spawns a new
+> `.worktree` card; these columns cover only the worktree category.
 
 Default seed (preserves today's board exactly):
 

@@ -5,8 +5,8 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]"]
 ---
 
 # Layer 1 — Initial Design: View/Review Code on the Board
@@ -33,10 +33,16 @@ a structured diff in the inspector for a quick read. Editing stays Zed's job (an
 - An **in-app diff view** in the inspector: a files list + expandable hunks (difftastic-rendered when
   available), read-only, monospaced.
 - A **baseline choice**: working changes (vs `HEAD`) and/or branch changes (vs the base branch — the "PR
-  diff"); the latter is the default when resolvable.
+  diff"); the latter is the default when resolvable. **For stacked branches the base is the *parent
+  branch*, not `main`** — a `parentBranch`/`parentCardId` card field (new, unbuilt) supplies it
+  ([[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2), making
+  parent-relative a third baseline alongside working/branch.
 - **Event-driven refresh**: re-diff a card on events that actually change it (agent commit/push/edit/pull)
   + on selection — not a blanket time poll.
-- **Guarded for non-git cards**: a freeform card ([[../non-git-cards-search/index|axis 4]]) has no diff.
+- **Guarded for non-git cards**: the guard now keys on the **shipped `Task.origin`** (PR2/PR3/PR4) — a
+  `.scratch` or `.borrowed` card runs in a dir that may not be a git worktree (`cwd != .worktree`), so it
+  has no diff baseline. Degrade cleanly (no stat, no diff view) for any non-`.worktree` origin, exactly as
+  for a non-repo dir.
 
 **Non-goals (this axis)**
 - **Editing** in Orchestra — Zed remains the editor (original design non-goal).
@@ -65,12 +71,14 @@ toggle; the non-git guard. **Out of scope:** editing, inline comments/approvals,
   selection). Zero changes → no stat. Freeform cards → no stat.
 - **Inspector diff:** selecting a card offers a **Diff** view — a list of changed files (status: added/
   modified/deleted/renamed) with expandable hunks, add/remove colored, monospaced. A **baseline toggle**
-  switches between *working changes* (vs `HEAD`) and *branch changes* (vs the base branch).
+  switches between *working changes* (vs `HEAD`) and *branch changes* (vs the base branch — the **parent
+  branch** for a stacked card, else `main`/merge-base).
 - **Agent/PR-review use:** the same `diff` verb returns the structured payload over MCP, so the PR-review
   agent (axis 5) or any agent can read the diff programmatically.
 - **Big diffs:** cap rendered size (truncate huge files / collapse by default) so a massive diff doesn't
   freeze the UI; offer "open in Zed" for the full thing.
-- **Degrade:** `git` missing / not a repo / freeform card → no diff view, no stat (never fabricated).
+- **Degrade:** `git` missing / not a repo / non-`.worktree` origin (`.scratch`/`.borrowed`, which may have
+  no git baseline) → no diff view, no stat (never fabricated).
 
 ## Complexity & risks
 
@@ -79,10 +87,10 @@ toggle; the non-git guard. **Out of scope:** editing, inline comments/approvals,
 | Diff parsing | Parse `git diff` porcelain into files+hunks reliably (renames, binary files, mode changes). Use `--numstat` for the stat + a porcelain diff for hunks. |
 | Two backends, two purposes | difftastic gives the best **display** but is not cleanly machine-parseable; git gives the **structured** payload for agents/MCP. Use git for `[FileDiff]`/stat, difftastic for inspector rendering when `difft` is on PATH. |
 | difftastic availability | `difft` may be absent → fall back to git's own diff rendering. Detect like other tools (`Proc.toolExists`). |
-| Baseline = base branch | Determining the "base branch" (merge-base) for branch-diff isn't always obvious; default to branch when resolvable, else `HEAD`. |
+| Baseline = base branch | Determining the "base branch" (merge-base) for branch-diff isn't always obvious; default to branch when resolvable, else `HEAD`. For a **stacked** card, the base is its **parent branch** (`parentBranch`/`parentCardId`, new + unbuilt), not `main` ([[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2). |
 | Large diffs | Must cap/stream so the UI stays responsive; truncate + "open in Zed". |
 | Event-driven refresh | Re-diff on change events (commit/push/edit/pull from the report stream) + on selection, not every tick — keeps it cheap with many cards. |
-| Non-git guard | Skip cleanly for freeform cards (axis 4). |
+| Non-git guard | Skip cleanly for any non-`.worktree` origin (`.scratch`/`.borrowed`, shipped PR3/PR4) — keyed on `Task.origin`, not a `kind` field. |
 
 Rough sizing: **medium** — a focused git-diff parser + a SwiftUI diff view. The parser edge cases
 (renames/binary/large) are the main care; the rest is additive.
@@ -124,7 +132,7 @@ flowchart TD
 | Structured `diff` **verb** (not UI-only) | Agent + PR-review (axis 5) read it too | App-only diff |
 | Diffstat on the card | Fills the existing footer placeholder; at-a-glance | No stat |
 | Read-only view; editing stays Zed | Honors the original non-goal | In-app editing |
-| Baseline default = **branch** (else working) | Reviewers want the branch (PR) diff | Working-tree default |
+| Baseline default = **branch** (else working); **parent branch** for stacked cards | Reviewers want the branch (PR) diff; stacked diffs must exclude the parent's changes | Working-tree default; always-vs-`main` |
 | **Event-driven** refresh (+ on selection) | Re-diff only when something changed it | Time poll all cards |
 | Cap large diffs + "open in Zed" | Keep the UI responsive | Render everything |
 
@@ -134,3 +142,8 @@ _All resolved at the 2026-06-26 gate:_ `DiffProvider` is **generic with difftast
 backend (git fallback; git for the structured payload) · default baseline = **branch when resolvable, else
 working** · refresh is **event-driven** (commit/push/edit/pull) **+ on selection** · **read-only** this
 axis (inline comments deferred to axis 5).
+
+_Opened by the 2026-06-29 synthesis:_ add a **parent-relative** `DiffBase` for stacked branches (vs
+`parentBranch`/`parentCardId`, not `main`;
+[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2) · the non-git guard
+keys on shipped `Task.origin` so `.scratch`/`.borrowed` cards degrade cleanly.

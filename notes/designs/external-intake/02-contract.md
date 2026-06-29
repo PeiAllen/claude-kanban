@@ -5,7 +5,7 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[01-design]]"]
 ---
 
@@ -15,6 +15,11 @@ links: ["[[index]]", "[[01-design]]"]
 > TickTick reference connector.
 
 ## Architecture overview
+
+> Note (2026-06-29): `SpawnInput` has since **grown** independently of this axis — it now carries
+> `cwd`, `access`, and `scratch` (`Model.swift:484–520`), with `additionalContext`/`base` planned. So the
+> only *new* field this axis adds is `externalRef`; the no-repo path reuses those shipped fields rather
+> than a bespoke `kind`.
 
 The daemon side is small: `SpawnInput`/`Task` gain an `externalRef`, and `spawn` dedupes by it (a persisted
 external→task map) so re-delivery returns the existing card; the card carries provenance. Everything else
@@ -50,14 +55,16 @@ public struct ExternalRef: Codable, Sendable, Equatable {
 
 `SpawnInput.externalRef` + `Task.externalRef` (nil for normal spawns). The daemon keeps a persisted
 `externalIndex: [String: UUID]` keyed by `"\(source):\(id)"`. `IntakeMapping` (connector-side) maps a
-source selector (list/tag/label) to spawn defaults — including `kind: .freeform` when no repo is mapped.
+source selector (list/tag/label) to spawn defaults — including `scratch: true` (→ `origin == .scratch`) or
+a borrowed `cwd` (→ `origin == .borrowed`) when no repo is mapped, reusing axis 4's shipped fields.
 
 ## Function / method contracts
 
 ### `OrchestraService.spawn(_ input:)` (extend)
 - **Does:** if `input.externalRef` is set and already in `externalIndex` → return the existing `Task` (no
   duplicate; optionally update title/desc per policy). Else spawn as today, record `externalRef` on the
-  card + in `externalIndex` (persisted). Honors `kind` (freeform when no repo).
+  card + in `externalIndex` (persisted). Honors the spawn's `cwd`/`access`/`scratch` (a scratch/borrowed
+  card when no repo is mapped).
 - **Inputs:** `SpawnInput` (+ `externalRef`). **Outputs:** `Task`. **Side-effects:** persist the index.
 - **Idempotent** by `externalRef`.
 
@@ -69,8 +76,9 @@ source selector (list/tag/label) to spawn defaults — including `kind: .freefor
   `spawn`/`batch-spawn` over MCP/CLI; `subscribe`s for archive events to drive `onCardDone`.
 
 ### `IntakeMapping`
-- A list of rules `{ match: SourceSelector, repo?, branch?, model?, column?, kind }`. First match wins;
-  no `repo` → `kind: .freeform`. Keeps "what becomes a git card vs freeform" explicit + declarative.
+- A list of rules `{ match: SourceSelector, repo?, branch?, model?, column?, cwd?, access?, scratch? }`.
+  First match wins; no `repo` → `scratch: true` (or a borrowed `cwd`). Keeps "what becomes a worktree card
+  vs a freeform (scratch/borrowed) one" explicit + declarative.
 
 ## Library / framework decisions
 
@@ -131,7 +139,7 @@ classDiagram
 |---------|-----------|
 | Idempotent spawn | `externalRef` + persisted `externalIndex` + `spawn` dedupe |
 | Generic intake seam | `IntakeConnector`/`IntakeMapping` (connector-side) |
-| Mapping rules incl. no-repo | `IntakeMapping` → `SpawnInput` (`kind: .freeform` when no repo) |
+| Mapping rules incl. no-repo | `IntakeMapping` → `SpawnInput` (`scratch`/borrowed `cwd` when no repo) |
 | Provenance + link-back | `Task.externalRef` + `CardView`/inspector |
 | Optional done write-back | `IntakeConnector.onCardDone` via `subscribe` |
 | Daemon network-free | connector external; daemon only sees `spawn` |

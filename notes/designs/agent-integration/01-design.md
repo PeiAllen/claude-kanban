@@ -5,7 +5,7 @@ layer: 1
 title: Initial Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-06-29
 links: ["[[index]]", "[[../extensibility-roadmap/index|extensibility-roadmap]]"]
 ---
 
@@ -38,8 +38,11 @@ back state) through a broader, consistent command set.
   (subagents, plan layers, steps) that Orchestra stores on the card and renders as a **sub-status tree**.
 - **Richer agent-facing verbs**: `describe` (read full card state back), `progress` (push a progress
   item), `note` (attach freeform context), `link` (relate cards). All via the registry → CLI + MCP.
-- **Orchestra → agent injection**: land the deferred `SessionStart additionalContext` reverse path so a
-  card's task/context can be (re)injected programmatically (ties to [[../context-continuity/index|axis 6]]).
+- **Orchestra → agent injection (the keystone)**: land the deferred `SessionStart additionalContext`
+  reverse path so a card's task/context can be (re)injected programmatically (ties to
+  [[../context-continuity/index|axis 6]]). Per [[context-passing-topologies]] this single field —
+  `AdapterContext.additionalContext: String?` (+ `SpawnInput.additionalContext` + `restart(_:withContext:)`)
+  — is **the chokepoint** for the whole handoff/fork/fan-out family; build it first, the rest is wiring.
 - **Worked example: layered-plan.** The skill reports each layer (building/in-review/approved) + its
   Explore/Plan subagents as progress items; the card shows the ladder live.
 

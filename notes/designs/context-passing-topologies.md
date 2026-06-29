@@ -22,12 +22,13 @@ related:
 
 ## 1. The keystone: an `additionalContext` seed (the one missing field)
 
-`restart` (`OrchestraService+Recovery.swift:99–133`) **already is** continue-same-card handoff —
+`restart` (`OrchestraService+Recovery.swift:100–135`) **already is** continue-same-card handoff —
 almost. It mints a fresh `agentSessionId` (old → `priorSessionIds`), **keeps `cwd` + the worktree**,
 sets `status → .waiting`, clears `desc`, and relaunches in the same tmux. The *only* missing step is
 **seeding the fresh session**: it passes `prompt: nil`, and there is **no context-seed field anywhere**
-— `AdapterContext` (`Adapter.swift:3–19`) carries `cwd/repo/model/startIn/sessionId/prompt/name/
-hooksPath` and nothing else; `SpawnInput` (`Model.swift:474–486`) has no seed/parent field either.
+— `AdapterContext` (`Adapter.swift:4–23`) carries `cwd/repo/model/startIn/sessionId/prompt/name/
+hooksPath/access/trustCwd` but **no context-seed field**; `SpawnInput` (`Model.swift:484–520`) has no
+seed/parent field either.
 
 So the entire family reduces to **one field**:
 
@@ -66,7 +67,7 @@ unit?* → card (fork/handoff/fan-out). *throwaway helper that returns a summary
   plan→impl context reset.
 - **New-card transfer (only for a distinct card identity — role change / clean board history):**
   `spawn` Y inheriting `{repo, branch, cwd, origin:.worktree, model, column}`, seed Y, then
-  `archive(X, removeWorktree: false)` (`OrchestraService.swift:153` — the param exists). Keeps the
+  `archive(X, removeWorktree: false)` (`OrchestraService.swift:194` — the param exists). Keeps the
   **entire working tree** (tracked + untracked + ignored — build state survives), unlike a re-checkout
   respawn. Strictly 1:1; no refcount needed (the caller knows ownership moved).
 

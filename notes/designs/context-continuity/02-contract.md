@@ -5,8 +5,8 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[01-design]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[01-design]]", "[[../context-passing-topologies|context-passing-topologies]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]"]
 ---
 
 # Layer 2 — Contractual Design: Context-clearing Continuity
@@ -63,13 +63,30 @@ loops). Delivery: the adapter renders `Handoff` into `additionalContext` text (C
 - **Inputs:** card ref (defaults to `$ORCHESTRA_TASK_ID`), the `Handoff`. **Side-effects:** persist; bounded size.
 
 ### `OrchestraService.restart(_ id:, withContext: Handoff?, source:) -> Task` (extend)
-- **Does:** as today (fresh id, same worktree, `titleProvisional`), but when `withContext` is non-nil,
-  set `AdapterContext.additionalContext` from it so the fresh session is **seeded**, not blank.
-- **Errors:** unchanged; reuses the `recovering` guard.
+- **Does:** as today (`OrchestraService+Recovery.swift:100–135`: fresh `agentSessionId`, old →
+  `priorSessionIds`, **`cwd` kept**, `status → .waiting`, `titleProvisional`, **clears `desc`/`deadReason`**,
+  `trustCwd: origin == .scratch`), but when `withContext` is non-nil, set `AdapterContext.additionalContext`
+  from it so the fresh session is **seeded**, not blank (`prompt:` stays `nil`). The seed is the keystone
+  field still missing in `main` (axis 3).
+- **Note — `desc` is cleared**, so the handoff must ride the **seed** (`additionalContext`), not `desc`,
+  which is not a durable carrier across a reset.
+- **Errors / prereq bugs:** reuses the `recovering` guard, but that guard **only attributes reports — it
+  does not serialize the operation**, so concurrent restarts race (DB `agentSessionId` vs live tmux). And
+  `require()` does **not reject archived cards** (`OrchestraService.swift:316`), so a seeded restart can
+  resurrect an archived card. Both are **known prerequisites** (the synthesis model assumes an
+  `assertActive` guard + per-card serialization that don't exist yet) — *noted, not fixed here.* See
+  [[stacked-branches-and-guardian-handoff]] §7.
 
 ### `OrchestraService.spawn(_ input:, withContext: Handoff?) -> Task` (extend)
 - **Does:** normal spawn, plus seed `additionalContext` from the handoff and `link` the new card to the
   source — a derived "perform a task" handoff.
+- **Topology note:** in [[context-passing-topologies]] this is the *new-card transfer* handoff — `spawn`
+  inheriting `{repo, branch, cwd, origin:.worktree, model, column}` + seed, then
+  `archive(source, removeWorktree: false)` to keep the whole working tree (1:1, no refcount). The same
+  primitive, with a live parent + `Task.parentCardId`, is a **fork**; with `batch-spawn` + per-slice seed,
+  a **fan-out**. The fork's conclusion returns via the durable **merge-back inbox** (`Task.pendingContext`,
+  rerouted by `Task.succeededBy`) — *not* `send` — injected as `additionalContext` on the card's next live
+  turn (see [[context-passing-topologies]] §5).
 
 ### `continue` verb (registry — CLI + MCP) → `ContinuityController.continue(ref, mode:)`
 - **Does:** trigger continuity for a card — if no current handoff, `send` a "write a handoff" prompt, await

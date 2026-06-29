@@ -5,8 +5,8 @@ layer: 2
 title: Contractual Design
 status: approved
 created: 2026-06-26
-updated: 2026-06-26
-links: ["[[index]]", "[[01-design]]"]
+updated: 2026-06-29
+links: ["[[index]]", "[[01-design]]", "[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]]"]
 ---
 
 # Layer 2 — Contractual Design: View/Review Code on the Board
@@ -22,7 +22,9 @@ A generic **`DiffProvider` protocol** computes diffs for a card's worktree. Two 
 fallback. A `diff` registry verb (axis-3 single source) exposes the structured diff to app/CLI/MCP. `Task`
 carries a small `diffStat`, refreshed **event-driven** (on agent commit/push/edit/pull, detected via the
 report stream) + on selection — filling the `CardView` footer placeholder. The inspector gains a read-only
-**Diff** view with a working/branch baseline toggle (default branch). Everything guards on `card.kind`.
+**Diff** view with a working/branch baseline toggle (default branch; **parent-relative** for stacked cards
+— see below). Everything guards on the **shipped `Task.origin`** (`.scratch`/`.borrowed` cards may have no
+git baseline), not a `kind` field.
 
 ## Major classes / modules
 
@@ -48,6 +50,10 @@ public struct DiffStat: Codable, Sendable, Equatable {
 }
 
 public enum FileStatus: String, Codable, Sendable { case added, modified, deleted, renamed }
+
+// vs HEAD; vs the base branch (merge-base); vs the *parent* branch for a stacked card
+// (parentBranch/parentCardId — new, unbuilt; see stacked-branches-and-guardian-handoff §2)
+public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
 
 public struct FileDiff: Codable, Sendable, Equatable {
     public var path: String
@@ -75,14 +81,17 @@ persisted).
 ## Function / method contracts
 
 ### `DiffProvider.stat(worktree:) -> DiffStat?` / `diff(worktree:, base: DiffBase) -> [FileDiff]`
-- **Does:** `git -C worktree diff --numstat [<range>]` → `DiffStat`; porcelain `git diff` parsed into
-  `[FileDiff]`. `base` ∈ `.working` (vs `HEAD`) or `.branch` (vs `merge-base(baseBranch, HEAD)`).
+- **Does:** `git diff --numstat [<range>]` in `worktree` → `DiffStat`; porcelain `git diff` parsed into
+  `[FileDiff]`. `base` ∈ `.working` (vs `HEAD`), `.branch` (vs `merge-base(baseBranch, HEAD)`), or
+  **`.parent`** (vs the card's **parent branch** for a stacked card — `merge-base(parentBranch, HEAD)`,
+  not `main`; [[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2). The
+  parent branch comes from a new `Task.parentBranch`/`parentCardId` field (unbuilt).
 - **Inputs:** worktree path (assertAllowed), baseline. **Outputs:** stat / file diffs. **Side-effects:** none
   (read-only git). **Errors:** not a repo / `git` missing → nil/empty (degrade).
 
 ### `OrchestraService.diff(_ ref:, base: DiffBase = .branch) -> [FileDiff]`
-- **Does:** resolve the card; if `kind == .freeform` return `[]`; else `DiffProvider.diff`, capping large
-  files (`truncated = true`). Read-only.
+- **Does:** resolve the card; if `origin != .worktree` (`.scratch`/`.borrowed`, possibly no git baseline)
+  return `[]`; else `DiffProvider.diff`, capping large files (`truncated = true`). Read-only.
 - **Errors:** unknown card → typed error.
 
 ### Diffstat refresh (event-driven)
@@ -101,7 +110,7 @@ persisted).
 | Diff abstraction | Generic `DiffProvider`; **difftastic default** display, **git** structured/fallback | Best rendering, no hard dep; git stays machine-parseable | git-only |
 | Structured payload source | **git** porcelain (not difftastic) | difftastic output isn't cleanly machine-parseable | Parse difftastic |
 | Stat vs full diff | `--numstat` for the card; porcelain/difft on demand | Cheap stat; heavy diff only when viewed | Always full diff |
-| Baseline | `.working` / `.branch` (merge-base) toggle, **default branch** | Branch diff = the reviewable one | Working-only |
+| Baseline | `.working` / `.branch` (merge-base) / **`.parent`** toggle, **default branch** | Branch diff = the reviewable one; parent-relative for stacked branches | Working-only; always-vs-`main` |
 | Refresh | **Event-driven** (commit/push/edit/pull) + on selection | Re-diff only on real changes | Poll all cards |
 | Large diffs | Cap + `truncated` flag + "open in Zed" | UI responsiveness | Render everything |
 | Persistence | `DiffStat` on the card; `[FileDiff]` transient | Small `tasks.json` | Persist full diffs |
@@ -154,9 +163,9 @@ classDiagram
 | Structured diff from the daemon | `GitDiffProvider` + `FileDiff`/`Hunk` + `diff` verb |
 | Event-driven diffstat refresh | report-stream change events + on-selection → `stat` |
 | In-app inspector diff view | `InspectorView` Diff view (read-only) |
-| Baseline choice | `DiffBase` (working / branch merge-base) toggle |
+| Baseline choice | `DiffBase` (working / branch merge-base / **parent** for stacked) toggle |
 | Agent/PR-review readable | `diff` verb on CLI + MCP |
-| Non-git guard | `diff` returns `[]` for `kind == .freeform` |
+| Non-git guard | `diff` returns `[]` for `origin != .worktree` (`.scratch`/`.borrowed`) |
 
 ## Decisions made
 
@@ -172,3 +181,8 @@ classDiagram
 _All resolved at the 2026-06-26 gate:_ generic `DiffProvider`, **difftastic default** + git fallback (git
 for the structured payload) · default baseline **branch (else working)** · refresh **event-driven** +
 on-selection · **read-only** this axis (inline comments deferred to axis 5).
+
+_Opened by the 2026-06-29 synthesis:_ add a **`.parent`** `DiffBase` for stacked branches (diff vs
+`parentBranch`/`parentCardId`, not `main`;
+[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2) · the non-git guard
+keys on the shipped `Task.origin` (`.scratch`/`.borrowed` cards may have no git baseline).
