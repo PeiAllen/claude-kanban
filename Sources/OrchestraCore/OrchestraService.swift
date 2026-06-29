@@ -181,6 +181,30 @@ public actor OrchestraService {
         return ShellTab(window: win, label: win, pwd: t.worktree)
     }
 
+    /// Open a shell tab in the card's worktree and launch a READ-ONLY claude in it (default mode,
+    /// edit tools denied, sandbox denyWrite on the tree + its git dir, NO orchestra hooks → untracked).
+    /// For "look at this worktree without touching it" without spawning a sibling card.
+    public func inspect(_ id: UUID) async throws -> ShellTab {
+        let t = try await require(id)
+        let bin = (try? registry.get(t.agentId).bin) ?? "claude"
+        let name = (t.worktree as NSString).lastPathComponent
+        let settings = ReadOnlyLaunch.settingsJSON(
+            cwd: t.worktree,
+            gitDir: ReadOnlyLaunch.gitDir(repo: t.repo, worktreeName: name))
+        let settingsPath = "\(Config.dataDir)/readonly-\(t.shortId).json"
+        try settings.write(toFile: settingsPath, atomically: true, encoding: .utf8)
+
+        let session = sessions.sessionName(t.id)
+        if try !sessions.isAlive(session) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
+        let win = try sessions.newShellWindow(session, cwd: t.worktree)
+        let argv = ReadOnlyLaunch.argv(binary: bin, settingsPath: settingsPath)
+        // Shell-quote each arg (single-quote, escaping embedded quotes) so the joined command is a
+        // literal argv; sendKeys sends the line + Enter itself.
+        let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
+        try sessions.sendKeys(session, text: cmd, window: win)
+        return ShellTab(window: win, label: win, pwd: t.worktree)
+    }
+
     public func closeShell(_ id: UUID, window: String) async throws {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
