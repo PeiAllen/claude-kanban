@@ -22,10 +22,15 @@ enum CLIRunner {
                 renderTasks(result)
 
             case "spawn":
+                // Scratch: `--scratch` runs in a fresh throwaway ~/.orchestra/scratch/<id> dir Orchestra
+                // makes and deletes on archive (no repo/branch/cwd).
                 // Freeform: `--cwd <dir>` runs in an existing directory (no worktree, sandbox-trusted),
                 // optionally `--read-only`. Otherwise repo + branch are required (the worktree path).
                 var fields: [String: JSONValue] = ["prompt": .string(flags.require("prompt"))]
-                if let cwd = flags.value("cwd") {
+                if flags.has("scratch") {
+                    fields["scratch"] = .bool(true)
+                    if let r = flags.value("repo") { fields["repo"] = .string(r) }       // optional context
+                } else if let cwd = flags.value("cwd") {
                     fields["cwd"] = .string(cwd)
                     if flags.has("read-only") { fields["access"] = .string(CardAccess.readOnly.rawValue) }
                     if let r = flags.value("repo") { fields["repo"] = .string(r) }       // optional context
