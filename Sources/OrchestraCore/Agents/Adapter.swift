@@ -10,11 +10,13 @@ public struct AdapterContext: Sendable {
     public let prompt: String?      // initial prompt (launch positional arg); nil on restart/resume
     public let name: String?        // card title -> `claude --name`
     public let hooksPath: String    // managed --settings file
+    public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
-                hooksPath: String = Config.hooksPath) {
+                hooksPath: String = Config.hooksPath, access: CardAccess = .readWrite) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
+        self.access = access
     }
 }
 

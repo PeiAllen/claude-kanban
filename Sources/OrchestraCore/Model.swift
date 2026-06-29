@@ -96,6 +96,11 @@ public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
 /// made": `.worktree` + `.scratch`) and board placement (`.worktree` ⇒ workflow column).
 public enum CardOrigin: String, Codable, Sendable { case worktree, scratch, borrowed }
 
+/// Whether the agent may edit the directory it runs in. `.readOnly` cards launch with the edit tools
+/// denied + a sandbox `denyWrite` (the [[ReadOnlyLaunch]] recipe), but — unlike Mechanism A's
+/// untracked shell — KEEP the Orchestra hooks, because a freeform read-only card is a tracked citizen.
+public enum CardAccess: String, Codable, Sendable { case readWrite, readOnly }
+
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 
@@ -112,6 +117,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var branch: String      // working branch
     public var cwd: String         // the ONE path: where the agent + shells run (== worktree root for .worktree)
     public var origin: CardOrigin  // worktree | scratch | borrowed
+    public var access: CardAccess  // readWrite | readOnly — read-only borrowed cards launch locked-down
     public var agentId: String     // -> AgentRegistry (default "claude-code")
     public var model: AgentModel   // selected model (launch id + display label, from the adapter)
     public var startIn: StartIn    // where the agent began
@@ -137,6 +143,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         branch: String,
         cwd: String,
         origin: CardOrigin = .worktree,
+        access: CardAccess = .readWrite,
         agentId: String = "claude-code",
         model: AgentModel,
         startIn: StartIn,
@@ -161,6 +168,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.branch = branch
         self.cwd = cwd
         self.origin = origin
+        self.access = access
         self.agentId = agentId
         self.model = model
         self.startIn = startIn
@@ -190,6 +198,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         let legacyWorktree = try c.decodeIfPresent(String.self, forKey: .worktree)
         self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? legacyWorktree ?? ""
         self.origin = try c.decodeIfPresent(CardOrigin.self, forKey: .origin) ?? .worktree
+        self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
         self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
         self.model = try c.decode(AgentModel.self, forKey: .model)
         self.startIn = try c.decode(StartIn.self, forKey: .startIn)
@@ -220,6 +229,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(branch, forKey: .branch)
         try c.encode(cwd, forKey: .cwd)
         try c.encode(origin, forKey: .origin)
+        try c.encode(access, forKey: .access)
         try c.encode(agentId, forKey: .agentId)
         try c.encode(model, forKey: .model)
         try c.encode(startIn, forKey: .startIn)
@@ -238,7 +248,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, titleProvisional, desc, repo, branch, cwd, worktree, origin, agentId, model,
+        case id, title, titleProvisional, desc, repo, branch, cwd, worktree, origin, access, agentId, model,
              startIn, column, order, status, deadReason, deadDetail, ctxPct, agentSessionId,
              priorSessionIds, initialPrompt, archived, createdAt, updatedAt
     }

@@ -38,11 +38,43 @@ public struct ClaudeCodeAdapter: Adapter {
     /// worktree alone so Claude still asks — we don't silently grant trust the user never gave.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
         ClaudeTrust.mirror(toWorktree: ctx.cwd, fromRepo: ctx.repo)
+        // A read-only card needs an OS-level write lock (the Bash escape hatch the --disallowedTools
+        // flags can't reach). Write the per-card sandbox `denyWrite` settings file that start/resume
+        // pass as an EXTRA --settings, alongside (not instead of) the hooks file — it's a tracked card.
+        if ctx.access == .readOnly {
+            let json = ReadOnlyLaunch.settingsJSON(cwd: ctx.cwd, gitDir: nil)
+            try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
+            try? json.write(toFile: readOnlySettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
+        }
     }
 
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
         return ["--model", m]
+    }
+
+    /// Edit-tool denials for a read-only card — removes Edit/Write/MultiEdit/NotebookEdit from the
+    /// model's context (reuses [[ReadOnlyLaunch]]'s tool list). The sandbox half rides in via the
+    /// extra --settings file (see `accessSettingsFlags`).
+    private func accessFlags(_ access: CardAccess) -> [String] {
+        access == .readOnly
+            ? ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit"]
+            : []
+    }
+
+    /// Extra `--settings <readonly.json>` for a read-only card — the sandbox `denyWrite` half. Layered
+    /// ON TOP of the hooks --settings (Claude merges multiple --settings; deny rules win regardless).
+    private func accessSettingsFlags(_ ctx: AdapterContext) -> [String] {
+        ctx.access == .readOnly ? ["--settings", readOnlySettingsPath(ctx.cwd)] : []
+    }
+
+    /// Deterministic per-cwd path for the read-only settings file, so `prepareToLaunch` writes the
+    /// same file `start`/`resume` reference. Hashed (not the raw cwd-slug) to stay under the 255-char
+    /// filename cap for deeply-nested directories.
+    private func readOnlySettingsPath(_ cwd: String) -> String {
+        var h: UInt64 = 5381
+        for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
+        return "\(Config.dataDir)/readonly-card-\(String(h, radix: 16)).json"
     }
 
     /// In the plan column we hand `--permission-mode auto` so planning workflows (e.g. `/layered-plan`)
@@ -56,8 +88,10 @@ public struct ClaudeCodeAdapter: Adapter {
         var argv = [binary]
         argv += modelFlag(ctx.model)
         argv += startInFlags(ctx.startIn)
+        argv += accessFlags(ctx.access)
         if let sid = ctx.sessionId { argv += ["--session-id", sid] }
         argv += ["--settings", ctx.hooksPath]
+        argv += accessSettingsFlags(ctx)
         let nameValue = ctx.name ?? (ctx.prompt.map { titleSeed(from: $0) } ?? "")
         if !nameValue.isEmpty { argv += ["--name", nameValue] }
         if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
@@ -69,6 +103,8 @@ public struct ClaudeCodeAdapter: Adapter {
         var argv = [binary, "--resume", sid, "--settings", ctx.hooksPath]
         if let n = ctx.name, !n.isEmpty { argv += ["--name", n] }
         argv += modelFlag(ctx.model)
+        argv += accessFlags(ctx.access)
+        argv += accessSettingsFlags(ctx)
         return argv   // no --session-id, no prompt — history holds the task
     }
 
@@ -80,7 +116,7 @@ public struct ClaudeCodeAdapter: Adapter {
                                     resumeCmd: nil)
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
-                                       name: ctx.name, hooksPath: ctx.hooksPath)
+                                       name: ctx.name, hooksPath: ctx.hooksPath, access: ctx.access)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,
