@@ -3,8 +3,11 @@
 Orchestra is built to grow along **nine extensibility axes**. Each one has an approved *design-only*
 layered plan (L1 design + L2 contract) under `notes/designs/<slug>/`, indexed by
 [`notes/designs/extensibility-roadmap/index.md`](../notes/designs/extensibility-roadmap/index.md). None
-are implemented yet — each is deepened to L3 + tests and built when picked up. The principle is to
-design every change *toward* these axes, never away from them.
+of the axes is fully built yet — each is deepened to L3 + tests and built when picked up — but **feature
+work has already landed underneath them**: the freeform/borrowed/scratch/read-only PRs (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)) shipped the non-git card substrate, which
+realizes axis 4's *non-git cards* half and provides the standalone freeform region, leaving **search** as
+axis 4's live remainder. The principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -13,7 +16,7 @@ design every change *toward* these axes, never away from them.
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
 | 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code (e.g. Codex CLI) a matter of writing one `Adapter`. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection. |
-| 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (already seeded by freeform) plus text search/discovery over cards. |
+| 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
 | 7 | **View/review code on the board** | `code-review-on-board` | A diffstat on the card and an in-inspector structured diff, instead of only "View changes → Zed". |
@@ -28,7 +31,7 @@ the build order:
 ```
 CommandRegistry single source (in axis 3) ─→ axes 2, 3, 5, 8
 Adapter provider abstraction              ─→ axes 2, 3, 6
-Columns as data (not enum, axis 1)        ─→ axes 1, 4, 5
+Columns as data (not enum, axis 1)        ─→ axes 1, 5
 Transport abstraction                     ─→ axes 8, 9
 report hook channel                       ─→ axes 3, 5, 6
 ```
@@ -47,8 +50,14 @@ Sequencing guidance from the design gates:
    report), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
    new `AgentModel.contextWindow`), and report wiring is `{files, env, argv}` + trust, not one
    `--settings` file. Report mapping resolves **server-side** from the card's `agentId`.
-4. **Dependency chains:** axis 1 enables 4 (freeform lane) + 5 (a review column); axis 2 → 3 → 5/6;
-   axis 4 is used by 8; axis 7 feeds 5.
+4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
+   field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
+   whole handoff/fork/fan-out/subagent family — *one primitive at four topologies* (see
+   [chapter 9](09-design-decisions.md#one-seed-four-topologies) and
+   `notes/designs/context-passing-topologies.md`). Still unbuilt; the rest of that family is wiring.
+5. **Dependency chains:** axis 1 enables 5 (a review column); axis 2 → 3 → 5/6; axis 4 is used by 8;
+   axis 7 feeds 5. The **freeform region shipped standalone**, *not* as an axis-1 lane, so axis 4 no
+   longer depends on axis 1 (`notes/designs/configurable-columns/index.md` §status).
 
 ## Where Claude-specifics live today
 
@@ -66,9 +75,10 @@ notes call these out explicitly so they aren't deepened by accident:
 
 A few decisions are explicitly deferred until the relevant axis is built:
 
-- **Spawn 1:1 enforcement** — when you try to spawn on an already-checked-out `repo+branch`: refuse +
-  jump to the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-
-  handoff.md` §1.)
+- **Spawn 1:1 enforcement *mechanism*** — enforcing 1:1 worktree↔card (retiring the refcount/shared-
+  worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
+  what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
+  the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-handoff.md` §1.)
 - **Context seed delivery** — inject the seed as a first message, or via `--append-system-prompt`, and
   with what precedence vs the hooks `--settings`? (`context-passing-topologies.md` §9.)
 - **Merge-back timing** — inject a fork's conclusion on the parent's next turn, or interrupt the live
