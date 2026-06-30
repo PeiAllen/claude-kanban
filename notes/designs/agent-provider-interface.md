@@ -55,7 +55,7 @@ the login token.**
 | D6 | Telemetry | **Structured-stream parse** where available (Claude hooks-push, Codex rollout-tail), **PTY-scrape** fallback; turn-done detected **out-of-band** | Recommend |
 | D7 | Context window / cost | **Vendor a model registry** (models.dev / LiteLLM JSON) → `contextWindow` + capability flags | Recommend |
 | D8 | Permissions | **3 orthogonal layers** (tool-gating · approval-policy · OS-sandbox); read-only is a **preset** | **Confirmed** — no-sandbox agents → `toolGatedOnly` + a visible **weak-RO badge** |
-| D9 | Steering / merge-back | **All input to a running agent — user follow-ups AND merge-back — rides the durable inbox**, drained at the turn boundary by the capability-keyed injector; `send-keys` only for the idle-wake | **Confirmed** |
+| D9 | Live delivery / merge-back | **Three core functions:** F1 resume-in-card (a *start* action), F2 wake (capability `wakeTransport` — Claude native re-invoke / Codex send-keys + detect-and-defer), F3 push-inbox (Stop-hook drain). Goals (handoff/fork/fan-out/send/queue) compose them; blocking-`await` pull **dropped** | **Confirmed** — see §8 |
 | D10 | Transport | **Native Claude (TUI+hooks) + native Codex (TUI+rollout-tail) only.** ACP adapter **not built** (design reference only); Codex `app-server` **not needed for v1** (the inbox covers steering) | **Confirmed** |
 | D11 | Auth invariant | **Drive the binary, never the token/API client** | **Hard constraint** |
 | D12 | Auth modes | Carry `authMode ∈ {subscription, apiKey}`; warn on heavy parallel subscription use | Recommend |
@@ -156,7 +156,8 @@ classDiagram
       +sessionId  seeded_or_discovered
       +telemetry  hooksPush_fileTail_ptyScrape
       +contextUsage  percent_tokens_none
-      +steering  stopHook_resumeSeed_mcpInbox_sendKeys
+      +wakeTransport  nativeReinvoke_controlChannel_sendKeys_relaunch
+      +inboxDrain  stopHook_sessionSeed_none
       +readOnlyEnforcement  sandboxed_toolGated_orchestraSandboxed
       +authMode  subscription_or_apiKey
     }
@@ -541,61 +542,143 @@ mode, and that degrade is itself per-adapter). So:
 
 ---
 
-## 8. Steering & merge-back (D9)
+## 8. Live delivery — feeding & waking a running agent (D9)
 
-The field converged on **queue-until-turn-boundary**, not mid-turn injection. So Orchestra's model is: a
-**durable per-card inbox**, drained at the agent's next natural boundary, where the **delivery mechanism is
-a capability** (`capabilities.steering`). The only synchronous path is approvals.
+Start actions (§4.1) bring a process *up*; this is the live side — getting authored context into an
+**already-running** agent (a user follow-up, a fork's conclusion, a handoff). The field converged on
+**queue-until-boundary**, never mid-turn injection. All of it reduces to **three core functions** — and the
+heaviest one is actually a *start* action. (The only synchronous path remains approvals, §7.)
 
-> **Decision (2026-06-29) — one inbox for everything.** *All* input to a running agent rides this inbox: a
-> user-typed follow-up and a fork merge-back are the **same primitive** — a message queued for the card,
-> drained at the next turn boundary by the Stop-hook injector. Consequence: **Codex needs neither the
-> app-server nor fragile send-keys-into-a-busy-TUI for v1.** The only residual `send-keys` use is the
-> **idle-wake** — typing a queued message into an already-*ready* prompt to start a turn (reliable, not a
-> race). The single thing this defers is *true mid-turn interrupt* (a message lands at the next boundary,
-> not instantly) — the industry-standard behavior, and exactly where Codex `app-server turn/steer` would
-> slot in later if ever wanted. This unifies steering across Claude and Codex on one mechanism.
+### 8.1 The three core functions
+
+| | Function | Kind | Claude | Codex (v1) |
+|---|---|---|---|---|
+| **F1** | **Resume-in-card** — kill the agent, relaunch it in the same card seeded with context + inbox | **start action** (§4.1) | `claude --resume <id>` + `SessionStart additionalContext` | `codex exec resume <id> "…"` |
+| **F2** | **Wake** — trigger a turn on an *idle* agent so it drains its inbox | live | **native re-invoke** (agent backgrounds a watcher → harness wakes it) | **send-keys nudge** + detect-and-defer |
+| **F3** | **Push-inbox** — enqueue a durable message; the agent reads it at its next turn-end via an Orchestra hook | live | Stop hook `decision:block` + `additionalContext` (10k) | Stop hook `decision:block` + `reason` |
+
+**F1 — resume-in-card (a *start* action).** Killing the agent and relaunching it in the same card is — by
+the §4.1 taxonomy — a *start*: a new process is born. It's `LaunchRequest{resume, seed}` on the existing
+cwd, with the handoff context / pending inbox materialized as the **seed** (resume-seed). It's the **heavy**
+path (fresh process, reloads the session), reserved for *deliberate replacement* — handoff-to-clean-context,
+posture change (posture is exec-bound, §4.1), or a fallback wake where no lighter transport exists; **not**
+for routine waking. (Use `resume`, never a blank `restart` — restart drops the session, resume keeps it.)
+
+**F2 — wake (live).** When the agent is **idle** (no turn running) and unattended, nothing reaches a Stop
+boundary on its own, so F3 can't fire — we must *trigger a turn*. F2 only **triggers**; the actual content
+still rides F3 (the inbox via the hook), so a wake **never carries the conclusion through keystrokes**. The
+transport is the capability `wakeTransport`:
+
+- **Claude — `nativeReinvoke`.** The orchestrator agent backgrounds `orchestra wait <cards>`; when that task
+  completes, **Claude's harness re-invokes the agent in the same session** (the proven merge-watch
+  workflow). No keystrokes; stays interactive between wakes.
+- **Codex — `sendKeys`.** Codex has no completion-wake (background exec is model-pull) and the plain TUI has
+  no control channel — so Orchestra owns the watcher (its merge-watch) and nudges the idle TUI with
+  `send-keys` to start a turn. **Gated by detect-and-defer** (below). Keeps the persistent, chattable TUI.
+- **`controlChannel`** (future) — app-server `turn/start` / ACP / HTTP wakes an idle session cleanly, but
+  needs that run-mode (Codex app-server drops the native TUI → an Orchestra-built viewer; §9).
+  **`relaunch`** = F1, the universal fallback.
+
+> **Detect-and-defer (the safety guard for `sendKeys` wake).** A wake is **not time-critical** — the
+> conclusion is durable in the inbox — so Orchestra defers the nudge until it's safe. Gate: **idle AND
+> composer-empty** (Orchestra reads the composer via `capture-pane`; an unsent draft → *hold* the wake until
+> you submit/clear). **Focus is *not* a gate** — sitting on an idle orchestrator *watching it wait is the
+> normal path*: composer empty → the wake fires → you see the next PR kick off. The only residual is the
+> watching-then-suddenly-typing TOCTOU (a ~ms window) — and since you're present, a rare collision is
+> *visible and self-correctable* (Ctrl-C, retype); the unattended case has no draft to collide with. So the
+> dangerous quadrant — silent corruption — doesn't exist.
+
+**F3 — push-inbox (live, uniform).** A **durable per-card inbox**; Orchestra installs a **Stop-hook** at
+launch (`prepareToLaunch`, §4.1) that drains it at the agent's next turn-end and forces continuation
+(`decision:block` + `additionalContext` (Claude) / `reason` (Codex)) — **no restart, no keystrokes,
+receiver-transparent** (the agent reads the message as injected context; it never sees the hook). Both
+agents expose `stop_hook_active` but **neither auto-enforces it** → Orchestra caps consecutive injects
+(resolves q5). Payload stays small (Claude caps `additionalContext` at 10k): **conclusions ride the inbox,
+artifacts ride git** (a branch + `parentCardId`).
+
+**How they combine.** Busy agent → **F3** alone (a boundary comes naturally). Idle agent → **F2** triggers +
+**F3** delivers. Fresh process needed (handoff/posture) → **F1**.
+
+### 8.2 Two usage patterns over the three functions
+
+- **A — reactive orchestration (self-wake).** The agent backgrounds a watcher; on a child's completion,
+  **F2** wakes it and **F3** feeds it the conclusion; it reacts (spawns the next stacked PR). Claude:
+  agent-owned watcher → native re-invoke. Codex: Orchestra-owned merge-watch → send-keys wake. The
+  orchestrator **stays chattable** throughout. → UC1 (parallel discussions), UC2 (stacked-PR DAG).
+- **B — push.** Something *else* (a human, another card) enqueues to **F3**; delivered at the agent's next
+  boundary (**F2** if idle). → `send`, queue-a-command, handoff-in, fork-come-back to a *passive* parent.
 
 ```mermaid
 sequenceDiagram
-    participant Fork as Fork (child card)
-    participant D as orchestrad (inbox)
-    participant Inj as Boundary-injector (capability-keyed)
-    participant Parent as Parent agent (live)
-    Fork->>D: concludes → push {summary, artifacts-in-git} to parent.inbox
-    Note over Parent: busy (mid-turn) — nothing forced
-    Parent->>Parent: turn ends (natural boundary)
-    alt capabilities.steering == stopHook
-        Parent->>Inj: Stop hook fires
-        Inj->>D: drain inbox
-        Inj-->>Parent: decision:block + additionalContext (Claude) / reason (Codex) → CONTINUE
-    else resumeSeed
-        D-->>Parent: inject inbox as additionalContext on next resume/follow-up
-    else mcpInbox
-        Parent->>D: agent calls check_inbox()/await_inbox() (it was told to)
-        D-->>Parent: returns pending results
-    else sendKeys (fallback)
-        Inj-->>Parent: type at detected-idle boundary (fragile)
+    participant Ag as Orchestrator agent
+    participant O as orchestrad (merge-watch + inbox)
+    participant Ch as Child card / PR
+    Ag->>O: spawn stack head (MCP) + background `orchestra wait`
+    Note over Ag: turn ends — stays chattable
+    Ch->>O: concludes (merged to main)
+    O->>O: detect via real card state (not git ancestry → no 0-commit false positive)
+    alt wakeTransport == nativeReinvoke (Claude)
+        O-->>Ag: `orchestra wait` exits → harness re-invokes in-session
+    else sendKeys (Codex)
+        O->>O: idle? composer-empty? (detect-and-defer)
+        O-->>Ag: send-keys nudge → turn starts
     end
-    Note over Parent,D: idle parent (no turn ending) → one wake (notify/idle-signal → single nudge)
+    Ag->>O: Stop-hook drains inbox (F3) → "PR A1 done"
+    Ag->>O: spawn next-in-stack (A2 off A1's branch)
 ```
 
-- **Stop-hook drain is the primary for Claude+Codex** — at the turn boundary an Orchestra hook drains the
-  inbox and **forces continuation with no steering and no restart** (Claude via `decision:block` +
-  `additionalContext`; Codex via `decision:block` + `reason`, which *has* a `stop_hook_active` loop guard;
-  Claude lacks one, so Orchestra caps consecutive injects).
-- **MCP `check_inbox`/`await_inbox`** is the portable cross-agent layer (tools are the only MCP primitive
-  both clients support today) — but it requires the agent to *choose* to call it.
-- **send-keys** is no longer a steering path for busy agents — it shrinks to the **idle-wake** only:
-  delivering a queued message to an *idle* agent at a ready prompt (Stop won't fire when no turn is
-  running, so detect idle via Codex `notify` / Claude idle-signal and type the message to start a turn).
-  This is the *safe* form of send-keys; the fragile busy-TUI race is eliminated by the inbox.
-- **Artifacts ride git, conclusions ride the inbox.** Every precedent keeps the durable result in a branch
-  (+ a `parentCardId` pointer); the inbox carries only the lightweight "a fork concluded: …" — your maxim
-  *handoff carries intent, artifacts carry facts*, confirmed by Omnigent/A2A/OpenHands/LangGraph.
+### 8.3 The desired goals, built from F1 · F2 · F3
 
-This **unifies** the steering seam with [[context-passing-topologies]]'s `pendingContext` inbox: the inbox
-is provider-agnostic; the injector is capability-keyed.
+| Goal | Forward | Come-back / delivery |
+|---|---|---|
+| **Handoff → new card** | spawn (start, seed) | — |
+| **Handoff → clean context (same card)** | **F1** (resume-in-card, handoff = seed) | — |
+| **Fork-out** | spawn (start, seed = parent slice) | — |
+| **Fork come-back** | — | parent active → **F3**; parent idle → **F2 + F3** |
+| **Fan-out** | batch-spawn (start) | — |
+| **Fan-out DAG step** (reactive) | agent spawns next-in-stack | watcher concludes → **F2 + F3** → react (pattern A) |
+| **Send** (human/agent → card) | — | **F3** (+ **F2** if idle) |
+| **Queue a command** | — | **F3** (drained at next stop) |
+| **Handoff-in** (into a running receiver) | — | **F3** (+ **F2** if idle) |
+
+Native subagents are **kept** (Claude `Task`, Codex `MultiAgentV2`) for **ephemeral in-context helpers**; the
+skill draws the line — *branch-worthy* work (own worktree/board card) → `orchestra.spawn`; a throwaway
+sub-step → native subagent.
+
+### 8.4 Exposure & integration — how agents use these, how goals reach agents and users
+
+Three surfaces over one shared F1/F2/F3 substrate:
+
+- **Agent-facing (MCP tools + a skill).** Tools: `spawn`/`batch_spawn` (delegation), `wait` (background
+  watcher for self-wake), `handoff`, `send`. The inbox read is **automatic** (the Stop-hook) — no tool. A
+  **skill (Claude) / AGENTS.md block (Codex)** teaches the patterns: the card-vs-native-subagent line; the
+  spawn→wait→react loop (*Claude*: background `orchestra wait`; *Codex*: spawn and end your turn, Orchestra
+  wakes you); the stacked-PR DAG idiom (spawn head → wait → spawn next off its branch). This is the "agent
+  does it automatically" path — its native fan-out competence, redirected onto real cards.
+- **Orchestra-internal (invisible to both).** Stop-hook install; the send-keys wake + detect-and-defer
+  guard; F1 kill+resume; the **merge-watch** event detection (reads real card/merge state, fixing the
+  0-commit-ancestor false-positive seen in the proven session); the capability-keyed `wakeTransport`.
+- **Human-facing (board UI / CLI).** The *same goals* as explicit actions: **Handoff** a card (→ F1),
+  **Fork** a card to discuss (→ spawn + auto-wired come-back), **Send**/queue a message to a card (→ F3),
+  kick off a **Fan-out**, and **watch the board**.
+
+**Dual-surface principle.** Each goal lives on **both** surfaces — an agent can drive it (MCP + skill) *or* a
+human can (UI/CLI) — because both compile to the same F1/F2/F3. Most goals (handoff, fork, send, queue) are
+first-class on both; **fan-out** is *agent-executed* (it decomposes and sequences) but *human-kicked-off*
+("fan this out into a stacked PR") and *board-viewed*. So: handoff/fork/send/queue → card actions in the UI
+**and** MCP tools; fan-out → a UI kickoff + the board, executed via the agent's skill; the inbox drain and
+the wake are **never** user-facing (Orchestra plumbing).
+
+### 8.5 Per-agent provision (consolidated)
+
+| | Claude | Codex (v1) | upgrade ladder |
+|---|---|---|---|
+| **F1 resume-in-card** | `claude --resume` + SessionStart `additionalContext` | `codex exec resume <id> "…"` | — |
+| **F2 wake** | **`nativeReinvoke`** (background `orchestra wait` → harness re-invoke) | **`sendKeys`** nudge + detect-and-defer (persistent TUI kept) | → app-server `turn/start` (`controlChannel`, needs viewer) → native monitor (#29922 / #28144) |
+| **F3 push-inbox** | Stop hook `decision:block` + `additionalContext` (10k) | Stop hook `decision:block` + `reason` (`stop_hook_active`) | — |
+
+This **unifies** with [[context-passing-topologies]]'s `pendingContext` channel: the inbox is
+provider-agnostic; only `wakeTransport` (F2) is capability-keyed.
 
 ---
 
@@ -609,7 +692,7 @@ flowchart TB
     end
     subgraph Later["design-for, NOT built now"]
       Local["local-model adapter — tracked future<br/>(Codex --oss / Ollama / thin adapter)"]
-      AS["Codex app-server — optional future<br/>(only for true mid-turn interrupt)"]
+      AS["Codex app-server — tracked future<br/>(clean idle-wake F2 via turn/start — Symphony pattern;<br/>also mid-turn interrupt; needs an Orchestra-built viewer)"]
       ACP["ACP — design reference only<br/>(NOT built — confirmed 2026-06-29)"]
     end
     Now --> Later
@@ -657,7 +740,8 @@ Implications:
 | Read-only | L1+L1.5+L3 (`disallowedTools` + classifier + `denyWrite`) | `--sandbox read-only -a never` |
 | Trust | `~/.claude.json hasTrustDialogAccepted` | `-c projects."<cwd>".trust_level="trusted"` / isolated `CODEX_HOME` |
 | Config isolation | per-card `--settings` | per-card `CODEX_HOME=<card-dir>` + `--ignore-user-config` |
-| Steering / merge-back | `.stopHook` (`decision:block`+`additionalContext`) | `.stopHook` (`decision:block`+`reason`, has loop guard) |
+| Live delivery (F3 inbox) | `.stopHook` (`decision:block`+`additionalContext`, 10k) | `.stopHook` (`decision:block`+`reason`, `stop_hook_active`) |
+| Wake idle (F2) | `nativeReinvoke` (bg `orchestra wait` → harness re-invoke) | `sendKeys` nudge + detect-and-defer (→ app-server later) |
 | Resume | `claude --resume <id>` (fresh proc) | `codex resume <id>` / `codex exec resume` (fresh proc) |
 
 ---
@@ -669,9 +753,9 @@ Implications:
 - **[[agent-integration/index|axis 3]]** — `additionalContext` stays the keystone; the **report path
   generalizes** to the normalized-event seam (mapping resolved by `agentId`, push *or* tail). The
   `progress`/`note`/`link` verbs ride the same normalized bus.
-- **[[context-passing-topologies]]** — the steering/merge-back model is **materially refined** here:
-  queue-until-boundary + capability-keyed injector + the idle-wake gap. §5/§9 of that note should reference
-  §8 here.
+- **[[context-passing-topologies]]** — the steering/merge-back model is **materially refined** here into
+  **three core functions** (F1 resume-in-card / F2 wake / F3 push-inbox) with the goals (handoff/fork/fan-out/
+  send/queue) composed from them. §5/§9 of that note should reference §8 here.
 - **[[context-continuity/index|axis 6]]** — handoff delivery = the boundary-injector; the durable inbox is
   the `pendingContext` channel.
 - **[[freeform-and-borrowed-cards/index|PR1/freeform]]** — the read-only barrier generalizes to the
@@ -689,8 +773,16 @@ Implications:
 1. ~~Read-only for no-OS-sandbox agents~~ → **`toolGatedOnly` + visible "weak RO" badge** (not
    Orchestra-wrapped). Moot for Claude/Codex (both `sandboxed`). (§7)
 2. ~~Build an ACP adapter?~~ → **No.** Kept as a design reference only. (§9)
-3. ~~Codex steering — TUI+send-keys vs app-server?~~ → **Neither — the inbox covers it.** v1 = Codex TUI +
-   rollout-tail; all input rides the inbox/Stop-hook; send-keys only for idle-wake; app-server deferred. (§8)
+3. ~~Codex steering — TUI+send-keys vs app-server?~~ → **Refined into the three-function model (§8).** v1 =
+   Codex TUI + rollout-tail; F3 push-inbox via Stop-hook; F2 wake via send-keys + detect-and-defer;
+   app-server is the upgrade for a `controlChannel` wake. (§8)
+5. ~~Stop-hook loop cap~~ → **Both agents expose `stop_hook_active`, neither auto-enforces it** (earlier note
+   that Claude lacked it was wrong) → **Orchestra caps consecutive auto-injects** on both. (§8 F3)
+9. ~~Replicate the Claude self-wake on Codex — send-keys vs kill+resume?~~ → **send-keys + F3, gated by
+   detect-and-defer** (smaller race window than F1 relaunch, content always inbox-protected, keeps the
+   persistent TUI). F1 (kill+resume) is reserved for *handoff*, not routine waking. The blocking-MCP `await`
+   pull is **dropped** (source-verified: holds the turn, non-interactive, non-durable — fails "stay
+   chattable"). (§8)
 8. ~~Normalized event schema — ACP/AG-UI verbatim or native?~~ → **Thin Orchestra-native, *two-tier*.**
    `ControlEvent` (reliable: lifecycle + usage + approvals + session id) vs `ContentEvent` (best-effort:
    text/thinking/tool/plan + `raw` passthrough). Borrow ACP's tool-call-lifecycle + permission vocabulary
@@ -702,10 +794,12 @@ Implications:
 **Still open:**
 4. **`authMode` UX** — how hard to warn/limit parallel fan-out on a subscription seat? Soft warning vs a
    configurable concurrency cap per auth mode. (§9)
-5. **Stop-hook loop cap** (Claude has no `stop_hook_active`) — max consecutive auto-inject before Orchestra
-   forces a real stop? (§8)
 6. **Model registry source** — models.dev vs LiteLLM vs both (fallback)? Vendor-at-build vs fetch-and-cache?
    (§6)
+10. **Codex `controlChannel` wake** — when (if) to run Codex cards under `codex app-server` for a clean
+    idle-wake (F2) + the Orchestra-built viewer it requires, vs staying on send-keys. Watch upstream
+    **#29922** (agent-callable `monitor` tool) and **#28144** (durable `waiting`/wake) — either merging gives
+    Codex a *native* self-wake and closes the gap without app-server. (§8.5, §9)
 
 ---
 
