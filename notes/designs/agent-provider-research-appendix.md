@@ -57,7 +57,7 @@ related:
 ### Claude Code — agent-pull
 - **Stop hook (A):** `decision:"block"` (or exit 2) prevents stop + can inject `additionalContext` and force continuation; **no documented loop guard** (`stop_hook_active` not present) → Orchestra must cap. `SubagentStop` too.
 - **SessionStart/UserPromptSubmit (B):** inject `additionalContext`; fire every resume / every prompt.
-- **MCP pull (C):** tool calls work; **tool-exec timeout undocumented** (`MCP_TOOL_TIMEOUT`; default reportedly ~28h); progress-keepalive best-effort (open bugs). **Elicitation/sampling/subscriptions (D): NOT implemented** in Claude Code.
+- **MCP pull (C):** tool calls work; **tool-exec timeout undocumented** (`MCP_TOOL_TIMEOUT`; default reportedly ~28h); progress-keepalive best-effort (open bugs). **Elicitation (D): SUPPORTED** (corrected 2026-06-30 vs code.claude.com/docs/en/hooks) — Claude-as-host handles MCP-server elicitation, with dedicated `Elicitation`/`ElicitationResult` hooks (`action: accept|decline|cancel` + `content`) to intercept/auto-answer, plus `PreToolUse permissionDecision:"ask"` to escalate to the user. **Sampling/subscriptions: still NOT implemented.**
 - Ranked: **#1 Stop-hook + orchestrator block-limit** · #2 UserPromptSubmit · #3 Channels (experimental).
 - Sources: code.claude.com/docs/en/{hooks,hooks-guide,mcp,channels-reference,agent-sdk/*}.
 
@@ -69,7 +69,7 @@ related:
 
 ### MCP as the cross-agent channel
 - **Current finalized spec `2025-11-25`**; `2026-07-28` is an RC that reworks elicitation/sampling into "Multi-Round-Trip" and moves Tasks to an extension — **expect churn**.
-- **The only primitive both Claude Code AND Codex support today is `tools/call` (+ resource read).** Elicitation = Codex-only; sampling = neither; resource-subscriptions auto-act = neither; Tasks = neither.
+- **`tools/call` (+ resource read) is supported by both; elicitation is now ALSO supported by both** (Claude via `Elicitation`/`ElicitationResult` hooks, corrected 2026-06-30; Codex v0.120.0 during-tool-flow). Sampling = neither; resource-subscriptions auto-act = neither; Tasks = neither. So a server-initiated **elicitation** (e.g. Orchestra's MCP eliciting a human trust approval) is a viable cross-agent path — though it reaches the *agent's* human host, not Orchestra's board.
 - Best cross-agent pattern: **blocking/long-poll `check_inbox`/`await_inbox` tool + server-side queue**, the agent instructed to call it. Timeouts: Claude `MCP_TOOL_TIMEOUT` (huge default), Codex `tool_timeout_sec` 60s (raise + progress keepalive best-effort).
 - **MCP's inherent limit:** it can deliver context but **cannot force the agent to consume it** — always depends on the agent calling the tool. (Stop-hook *can* force consumption → why it ranks above MCP.)
 - Sources: modelcontextprotocol.io/specification/2025-11-25 (tools, elicitation, sampling, resources, progress, cancellation, tasks); apify/mcp-client-capabilities (2026-02-02); Claude #2799/#470/#424; Codex PR #17043, #4929.
