@@ -74,6 +74,15 @@ enum CLIRunner {
                     print("concluded: \(ref) (\(kind))")
                 } else { printJSON(r) }
 
+            case "handoff":
+                // Clean-context handoff of THIS card: resume in place, seeded with the given context.
+                // `orchestra handoff <ref> <context...>` (context may also be `--context <text>`).
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let context = flags.value("context") ?? flags.positionalsFrom(1).joined(separator: " ")
+                guard !context.isEmpty else { die("handoff needs context text: orchestra handoff <ref> <context...>") }
+                let task = try await client.call("handoff", .object(["ref": .string(ref), "context": .string(context)]))
+                printRef(task)
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))

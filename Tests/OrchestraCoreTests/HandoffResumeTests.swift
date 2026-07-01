@@ -171,3 +171,41 @@ struct ResumeInCardTests {
         #expect(argv.count == nameIdx + 2)
     }
 }
+
+@Suite("D1 · handoff Command — dispatches to resumeInCard")
+struct HandoffCommandTests {
+
+    /// Spawn a dead-but-resumable card with a transcript on disk (mirrors ResumeInCardTests).
+    private func makeResumable(
+        _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
+        branch: String) async throws -> Task {
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))
+        await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
+        env.adapter.writeTranscript(for: t.agentSessionId!)
+        return t
+    }
+
+    @Test("handoff Command resumes the card with the context seed and keeps the session id")
+    func dispatchesToResumeInCard() async throws {
+        let env = TestEnv.make(grace: 2)
+        let t = try await makeResumable(env, branch: "b")
+        let oldId = t.agentSessionId
+        let cmd = try #require(CommandRegistry().command("handoff"))
+
+        async let done = cmd.run(
+            env.svc,
+            .object(["ref": .string(t.id.uuidString), "context": .string("HANDOFF-CTX")]),
+            .agent)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
+        let result = try await done
+
+        // returns the updated Task (same id — resume, not a blank restart)
+        #expect(try result.decode(Task.self).agentSessionId == oldId)
+        // the resume argv carried the handoff context as its opening turn
+        let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
+        #expect(argv.contains("--resume"))
+        #expect(argv.last == "HANDOFF-CTX")
+    }
+}
