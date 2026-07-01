@@ -107,10 +107,13 @@ a `send`-to-tmux (which throws if the session died), and orphaned forks are prom
 rather than cascade-killed. The guiding maxim: **handoff carries intent, artifacts carry facts** — the
 seed is for navigation and next steps, while committed code, plan files, and the card description carry
 the durable record, so successive handoffs don't degrade into a telephone game. The **live-delivery
-substrate** these topologies compose from is now specified as three functions — **F1** resume-in-card,
+substrate** these topologies compose from is specified as three functions — **F1** resume-in-card,
 **F2** wake an idle card, **F3** the durable per-card **inbox** (merge-back drains at the next turn-end) —
-in the [agent-provider interface](../notes/designs/agent-provider-interface/index.md) L3 design.
-(`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
+in the [agent-provider interface](../notes/designs/agent-provider-interface/index.md) L3 design. **F3 has
+now landed** (PR C1, below): `send` routes through a durable [inbox store](03-data-model.md#the-inbox-store-f3),
+and the Claude Stop hook drains it into the agent at its turn-end. `send`-to-tmux is retired exactly as the
+maxim demanded — a queued conclusion no longer throws if the session died, and coalesces with other returns
+until the next turn. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
 
@@ -164,6 +167,25 @@ daemon-side rollout tailer that feeds it — the same `adapter.parse` seam from 
 with the Codex adapter (PR B2). Like A1 and E2, this is a single forest PR of plumbing, not a whole axis,
 so it stays here as history rather than migrating a roadmap row. (As-built symbols are recorded in
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1.)
+
+A fourth landed PR is **C1 — the durable inbox + F3 Stop-drain**
+(`notes/plans/2026-07-01-c1-inbox-stopdrain.md`). It builds the first of the design's three live-delivery
+functions (see [One seed, four topologies](#one-seed-four-topologies)): a durable per-card **`Inbox`**
+store (sibling to `TaskStore`, actor-over-JSON, FIFO-per-card, restart-durable — see
+[the inbox store](03-data-model.md#the-inbox-store-f3)), with `send` **rerouted through it** instead of
+typing into tmux, and a `StopDrain` helper that composes the pending messages into a 10 000-char-bounded
+payload. The delivery reuses — rather than adds to — the existing Claude Stop hook: the same
+`_report --event notify` command, on detecting `hook_event_name == "Stop"`, calls a new Orchestra-internal
+[`drain` RPC](05-command-reference.md#server-only-built-in-methods) and prints a `{"decision":"block",
+"reason":…}` continuation so the model reads the queued messages and keeps working. Two decisions shape it:
+the merge-back is **turn-end, never mid-turn** — a queued `send` waits for the agent's natural stop rather
+than interrupting it — and because `stop_hook_active` is only *informational* on the agent, Orchestra
+enforces its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine
+`UserPromptSubmit`) to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. The
+change is deliberately additive: `HooksRenderer`/`claude-hooks.json` are untouched, and the Stop hook's
+existing notify→`waiting` report is preserved byte-for-byte. Waking an *idle* card so it takes a turn to
+drain (F2) is the next increment. Like the forest PRs above, C1 is one live-delivery function, not a whole
+axis, so it stays here as history while the roadmap's context-continuity row remains open.
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

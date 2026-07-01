@@ -15,7 +15,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
 | `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool) | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
-| `send` | `ref` (required), `message` (required) | Send text to the agent (typed into its tmux window). |
+| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
 | `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
@@ -36,6 +36,11 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   is deleted.
 - **`exec` vs `shell`.** `exec` is a one-shot non-interactive command with a captured result; `shell`
   opens an interactive window you attach a terminal to. `inspect` is `shell` + a read-only agent.
+- **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent
+  [inbox](03-data-model.md#the-inbox-store-f3) rather than typing into the agent's tmux window. The
+  message is drained into the agent at its next turn-end (the Claude Stop hook), survives a daemon
+  restart, and coalesces with other queued messages. Waking an *idle* card so it takes a turn to drain is
+  a later increment (F2). (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
 
 ## Server-only built-in methods
 
@@ -53,6 +58,7 @@ visible to the app but not auto-exposed as MCP tools — unifying this is part o
 | `archivedList` | The archived (Done) cards, newest first. |
 | `openInZed` | Open a card's worktree in Zed, with a branch-vs-base multi-file diff. |
 | `report` | The internal endpoint the agent's `_report` helper POSTs `StatusReport`s to. |
+| `drain` | Internal F3 plumbing (**not user-facing**): the Claude Stop hook fetches the card's pending [inbox](03-data-model.md#the-inbox-store-f3) payload here. Resolves `ref`, calls `drainForStop`, and returns `{reason: <payload-or-null>}`. Deliberately not a registry command, so it is invisible to the CLI/MCP. |
 
 ## The wire protocol
 

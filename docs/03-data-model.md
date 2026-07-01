@@ -3,7 +3,7 @@
 This chapter is the reference for Orchestra's persisted state: the `Task` (card) schema, the enums that
 classify it, how it is stored and migrated, the configuration and on-disk paths, and the error and
 event types. The types live in `Sources/OrchestraCore/Model.swift`, `Config.swift`, `TaskStore.swift`,
-and `Errors.swift`.
+`Inbox.swift`, and `Errors.swift`.
 
 ## The `Task` (card)
 
@@ -88,6 +88,21 @@ load cleanly:
 This is why a board created before borrowed/scratch cards existed still opens: every new field has a
 default, and the only pre-existing cards are `.worktree`.
 
+## The inbox store (F3)
+
+Alongside `tasks.json`, the daemon keeps a second durable store — the **`Inbox`** (`Inbox.swift`), a
+sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, atomic write, malformed →
+`.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage` (`{id, cardId, text, createdAt}`)
+at `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
+filter on `cardId`. `enqueue` appends, `peek` reads without removing, and `drain` returns + removes all of
+a card's pending messages. Messages persist until drained, so they survive a daemon restart.
+
+This is the durable merge-back channel for **F3** (see [Design decisions](09-design-decisions.md#one-seed-four-topologies)):
+`send` enqueues here instead of typing into tmux, and the Claude Stop hook drains it into the agent at its
+next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-reference.md#server-only-built-in-methods),
+and the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
+[`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).
+
 ## Configuration and paths
 
 `Config` (`Config.swift`) is loaded/saved by `ConfigStore` at `config.json` with the same atomic-write,
@@ -113,6 +128,7 @@ Derived paths (all keyed off `$HOME`, so state follows the user, not the bundle)
 | Socket | `…/orchestrad.sock` |
 | Config | `…/config.json` |
 | Tasks | `…/tasks.json` |
+| Inbox | `…/inbox.json` |
 | Log | `…/orchestrad.log` |
 | Rendered hooks | `…/claude-hooks.json` |
 | Worktrees | `~/.orchestra/worktrees/<repo>/<branch>` |

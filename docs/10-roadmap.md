@@ -24,10 +24,16 @@ telemetry-source seam** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-se
 too: it relocated the raw→`StatusReport` parse out of the `orchestra` CLI into the adapter behind a new
 defaulted `Adapter.parse(_ raw: RawTelemetry)`, establishing the transport/parse boundary the design calls
 for while keeping Claude telemetry byte-identical (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not
-whole axes, so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the
-daemon-side rollout-tail transport, live delivery) stays design-only until those PRs land. The principle is
-to design every change *toward* these axes, never away from them.
+[chapter 9](09-design-decisions.md#shipped-feature-history)). A fourth forest PR, **C1 —
+the durable inbox + F3 Stop-drain** ([plan](../notes/plans/2026-07-01-c1-inbox-stopdrain.md)), has landed
+too: it builds the **first of the design's three live-delivery functions** — a durable per-card
+[inbox](03-data-model.md#the-inbox-store-f3) that `send` now routes through, drained into the agent at its
+turn-end by the (unchanged) Claude Stop hook via a `decision:block` continuation, with a consecutive-inject
+loop guard (see [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs,
+not whole axes, so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the
+daemon-side rollout-tail transport, and the remaining live-delivery functions — **F1** resume-in-card and
+**F2** wake-an-idle-card) stays design-only until those PRs land. The principle is to design every change
+*toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -112,10 +118,12 @@ A few decisions are explicitly deferred until the relevant axis is built:
   open is the **per-agent injection mechanism** — first message vs `--append-system-prompt` / `AGENTS.md`,
   and its precedence vs the hooks `--settings` — scoped to PR C3, which reads `ctx.seed`.
   (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
-- **Merge-back timing** — **resolved** (agent-provider L3): a fork's conclusion rides the durable
-  **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
-  non-goal); if the parent is idle, **wake (F2)** triggers a turn first, then F3 delivers. Concurrent
-  returns coalesce in the inbox and drain together. (`agent-provider-interface/01-design.md` §4.)
+- **Merge-back timing** — **resolved and now shipped for the active-card case** (PR C1): a fork's
+  conclusion rides the durable **inbox (F3)** and drains at the parent's **next turn-end** — never a
+  mid-turn interrupt (an explicit non-goal); concurrent returns coalesce in the inbox and drain together.
+  The [durable inbox + Stop-drain has landed](09-design-decisions.md#shipped-feature-history); the
+  remaining piece is the idle-card path — if the parent is idle, **wake (F2)** must trigger a turn first,
+  then F3 delivers. (`agent-provider-interface/01-design.md` §4.)
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?
   (`stacked-branches-and-guardian-handoff.md` §7.1.)
 

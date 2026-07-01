@@ -106,6 +106,17 @@ behavior, in order:
 3. **Parse the event** into a `StatusReport` (see [Data model](03-data-model.md#the-report-types)) and
    send it to the daemon's `report` method under a tight time budget (~50 ms for statusline, ~2 s for
    hooks), closing the connection on budget/ack so a "budget trip" never blocks the agent.
+4. **On the Stop hook, drain the inbox (F3).** The `Stop` and `Notification` events share the same
+   `_report --event notify` command, distinguished at runtime by the stdin `hook_event_name`. When it is
+   `"Stop"`, `_report` additionally calls the daemon's [`drain` RPC](05-command-reference.md#server-only-built-in-methods)
+   for the card and, if the card's [durable inbox](03-data-model.md#the-inbox-store-f3) has anything
+   pending, prints a `{"decision":"block","reason":<payload>}` object to stdout — the documented Claude
+   Stop-hook continuation channel, which hands the queued messages back to the model so it keeps working
+   instead of stopping. The payload is the drained messages joined and capped at 10 000 characters
+   (`StopDrain`). This step is purely **additive** — the notify→`waiting` report of step 3 is unchanged,
+   and non-`Stop` events never reach it. A per-card **consecutive-inject loop guard** in the daemon
+   (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
+   Stop→inject→Stop cycle by leaving messages queued once the cap is hit. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
 
 The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
 **`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
@@ -121,5 +132,7 @@ unconditionally and ordered — e.g. `SessionEnd`→`dead`, session-id rollover 
 prompt text → auto-title + `running`) and its seq-gated **snapshot half** (`ctxPct`, `desc`, model,
 status), emitting a `taskUpserted` event and an activity entry only when something actually changed.
 
-This is the same machinery that, extended with an `additionalContext` seed, becomes the Orchestra →
-agent direction in the [roadmap](10-roadmap.md).
+This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
+(step 4 above) injects the durable inbox back into the agent at its turn-end. Extended further with an
+`additionalContext` seed on spawn/restart, it becomes the handoff/fork/fan-out delivery in the
+[roadmap](10-roadmap.md).
