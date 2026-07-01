@@ -24,66 +24,17 @@ enum ReportHelper {
         guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty else { return }
         let sock = env["ORCHESTRA_SOCK"] ?? Config.socketPath
 
-        guard let report = map(kind: kind, payload: payload) else { return }  // dropped (e.g. transition SessionEnd)
+        // Parse is the ADAPTER's (agent-dependent, D3). This `_report` process IS the Claude hooksPush
+        // transport; it supplies raw bytes and lets the adapter normalize them. Daemon-side transports
+        // (Codex rollout tail, next PR) call the same `adapter.parse` seam.
+        guard let report = ClaudeCodeAdapter().parse(.hooksPush(kind: kind, payload: payload))
+        else { return }  // dropped (e.g. transition SessionEnd, unknown kind)
 
         let params = JSONValue.object(["ref": .string(taskId),
                                        "report": (try? JSONValue(encodable: report)) ?? .object([:])])
         // Bounded send: statusLine ~50ms (snapshot self-heals), hooks ~2s (Claude waits for them).
         let budgetMs = kind == "statusline" ? 50 : 2000
         await boundedSend(sock: sock, params: params, budgetMs: budgetMs)
-    }
-
-    // MARK: mapping
-
-    static func map(kind: String, payload p: JSONValue) -> StatusReport? {
-        switch kind {
-        case "statusline":
-            let seq = DispatchTime.now().uptimeNanoseconds
-            return StatusReport(
-                seq: seq,
-                sessionId: p["session_id"]?.stringValue,
-                transcriptPath: p["transcript_path"]?.stringValue,
-                ctxPct: p["context_window"]?["used_percentage"]?.doubleValue,
-                modelId: p["model"]?["id"]?.stringValue,            // launch id (for resume/restart)
-                modelDisplay: p["model"]?["display_name"]?.stringValue,  // UI label only
-                sessionName: p["session_name"]?.stringValue)
-        case "session":
-            return StatusReport(
-                sessionId: p["session_id"]?.stringValue,
-                transcriptPath: p["transcript_path"]?.stringValue,
-                sessionSource: p["source"]?.stringValue)
-        case "prompt":
-            return StatusReport(status: .running, promptText: p["prompt"]?.stringValue)
-        case "tool":
-            let tool = p["tool_name"]?.stringValue ?? "tool"
-            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), status: .running)
-        case "notify":
-            return StatusReport(desc: p["message"]?.stringValue, status: .waiting)
-        case "sessionend":
-            let reason = p["reason"]?.stringValue ?? "other"
-            // Transition reasons are ignored (the matching SessionStart handles them).
-            if ["clear", "resume", "compact"].contains(reason) { return nil }
-            return StatusReport(endReason: reason)
-        default:
-            return nil
-        }
-    }
-
-    static func toolDesc(tool: String, input: JSONValue?) -> String {
-        switch tool {
-        case "Edit", "Write", "MultiEdit":
-            if let f = input?["file_path"]?.stringValue { return "Editing \((f as NSString).lastPathComponent)" }
-            return "Editing"
-        case "Bash":
-            if let c = input?["command"]?.stringValue { return "Running: \(String(c.prefix(40)))" }
-            return "Running a command"
-        case "Read":
-            if let f = input?["file_path"]?.stringValue { return "Reading \((f as NSString).lastPathComponent)" }
-            return "Reading"
-        case "WebSearch": return "Web search"
-        case "Grep", "Glob": return "Searching"
-        default: return tool
-        }
     }
 
     // MARK: statusLine display
