@@ -101,3 +101,52 @@ struct AdapterTests {
         return argv[i + 1] == value
     }
 }
+
+@Suite("ClaudeCodeAdapter — delegation skill materialization")
+struct ClaudeDelegationTests {
+    private func tmpCwd() -> String {
+        let d = NSTemporaryDirectory() + "claude-deleg-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        return d
+    }
+    private func skillPath(_ cwd: String) -> String {
+        "\(cwd)/.claude/skills/orchestra-delegation/SKILL.md"
+    }
+
+    @Test("prepareToLaunch writes the Claude skill variant under .claude/skills")
+    func materializesSkill() throws {
+        let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
+        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
+        let text = try String(contentsOfFile: skillPath(cwd), encoding: .utf8)
+        #expect(text == DelegationDocs.load(.claudeSkill))       // the Claude variant, not Codex
+        #expect(text.contains("name: orchestra-delegation"))
+    }
+
+    @Test("materialization is idempotent across launches (no throw, same content)")
+    func idempotent() throws {
+        let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
+        let a = ClaudeCodeAdapter()
+        try a.prepareToLaunch(AdapterContext(cwd: cwd))
+        try a.prepareToLaunch(AdapterContext(cwd: cwd))
+        #expect(try String(contentsOfFile: skillPath(cwd), encoding: .utf8) == DelegationDocs.load(.claudeSkill))
+    }
+
+    @Test("prepareToLaunch degrades gracefully (no throw) when cwd is unwritable")
+    func gracefulOnBadCwd() {
+        #expect(throws: Never.self) {
+            try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: "/System/nope-\(UUID().uuidString)"))
+        }
+    }
+
+    @Test("start(ctx) argv + env are unchanged by the added materialization")
+    func argvUnchanged() throws {
+        let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
+        let a = ClaudeCodeAdapter()
+        let ctx = AdapterContext(cwd: cwd, model: "claude-sonnet-4-6", startIn: .plan,
+                                 sessionId: "sid", prompt: "do it", name: nil, hooksPath: "/hooks.json")
+        let before = a.start(ctx)
+        try a.prepareToLaunch(ctx)
+        #expect(a.start(ctx) == before)                          // byte-identical argv
+        #expect(a.env.isEmpty)                                   // Claude adds no env
+    }
+}

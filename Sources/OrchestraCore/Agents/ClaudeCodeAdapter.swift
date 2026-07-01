@@ -114,6 +114,12 @@ public struct ClaudeCodeAdapter: Adapter {
             try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
             try? json.write(toFile: readOnlySettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
         }
+        // Standing delegation guidance for EVERY card (independent of ctx.seed): deliver the Claude skill
+        // variant to the per-card project-skill location Claude Code discovers (`.claude/skills/<name>/`).
+        // `.claude/` is gitignore-conventional, so this doesn't dirty the tracked worktree — and it needs
+        // no global ~/.claude install. Best-effort (never throws); content is keyed via forAgent(id), so
+        // there's no `if claude` here.
+        DelegationDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-delegation/SKILL.md")
     }
 
     private func modelFlag(_ model: String?) -> [String] {
