@@ -141,10 +141,11 @@ public actor OrchestraService {
         )
         let created = try await store.create(task)
 
+        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
                                  hooksPath: Config.hooksPath, access: input.access,
-                                 trustCwd: origin == .scratch)
+                                 trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 

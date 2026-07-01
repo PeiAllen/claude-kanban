@@ -101,3 +101,27 @@ struct ResolveTrustTests {
         #expect(await env.svc.resolveTrust(origin: .borrowed, cwd: notInLedger, repo: nil) == .needsGrant)
     }
 }
+
+@Suite("spawn — trust routed through resolveTrust")
+struct SpawnTrustRoutingTests {
+    @Test("scratch spawn records its cwd in the ledger (trust resolved, not hardcoded)")
+    func scratchSpawnRecordsLedger() async throws {
+        try await withScratchLock {
+            let env = TestEnv.make()
+            let t = try await env.svc.spawn(SpawnInput(prompt: "scratch work", scratch: true))
+            #expect(t.origin == .scratch)
+            #expect(await env.trust.isTrusted(t.cwd) == true)   // resolveTrust recorded it during spawn
+            try? FileManager.default.removeItem(atPath: t.cwd)
+        }
+    }
+
+    @Test("borrowed spawn of an un-ledgered dir does NOT record it (needsGrant → untrusted)")
+    func borrowedSpawnNoAutoTrust() async throws {
+        let env = TestEnv.make()
+        let dir = env.base + "/borrowed-here"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "peek", cwd: dir, access: .readWrite))
+        #expect(t.origin == .borrowed)
+        #expect(await env.trust.isTrusted(dir) == false)   // no auto-trust for borrowed
+    }
+}
