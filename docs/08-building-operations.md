@@ -81,6 +81,10 @@ unattended, without stepping on each other or on the live app:
 - **GUI concurrency cap.** An `mkdir`-based counting semaphore (`UX_E2E_GUI_SLOTS`, default 2) bounds how
   many app windows fight the single macOS window server at once, reclaiming a slot whose holder PID has
   died. `scripts/orch-ux-e2e-concurrency-test.sh` verifies all of the above.
+- **Floats the demo window under a tiling WM.** If AeroSpace (or another tiling WM with a CLI) is running,
+  the harness matches the demo window by its app-pid and marks it floating, so it isn't folded into the
+  user's live tiling layout — which would squish both the live app and the capture into a narrow
+  1/2- or 1/3-width slice. A no-op when aerospace isn't installed or its server is down.
 
 This makes the harness a building block for the overnight staged-PR fan-out pattern, where each PR runs
 as its own Orchestra agent card.
