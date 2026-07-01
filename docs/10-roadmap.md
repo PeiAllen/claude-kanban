@@ -51,9 +51,13 @@ send-keys wake** ([plan](../notes/plans/2026-07-01-c4-codex-sendkeys-wake.md)), 
 the `.sendKeys` `wakeTransport` C2 left as a no-op, so an idle Codex card (no `nativeReinvoke` push, no Stop
 hook) is woken by a fixed content-free TUI nudge, detect-and-defer gated on an idle, empty composer (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped **across both
-providers**, the rest of the forest is the handoff/fork/fan-out **Commands + UI** (D1/D3) that will *call*
-this F1 seam — still design-only until those PRs land. The principle is to design every change *toward*
-these axes, never away from them.
+providers**, the **first surface that *calls* this seam has now landed too — PR D1, the `handoff`
+delegation tool** ([plan](../notes/plans/2026-07-01-d1-mcp-delegation-tools.md)): a thin registry `Command`
+(auto-surfaced as an MCP tool) plus an `orchestra handoff` CLI verb that delegates to C3's `resumeInCard`,
+wiring the F1 *same-card* handoff topology into a callable tool (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). The remainder of the forest is then the
+*new-card* handoff/fork/fan-out **UI + start-actions** (D3) — still design-only until that PR lands. The
+principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 

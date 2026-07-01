@@ -67,8 +67,10 @@ now rides `resume` as the session's opening positional turn (see the resume argv
 [the Claude Code adapter](#the-claude-code-adapter), below), and **PR C4**
 ([plan](../notes/plans/2026-07-01-c4-codex-sendkeys-wake.md)) has landed the **Codex send-keys wake** (the
 `.sendKeys` `wakeTransport`; see [the Codex adapter](#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)), leaving only the handoff/fork Commands + UI
-(D1/D3) design-only. An
+[chapter 9](09-design-decisions.md#shipped-feature-history)); **PR D1**
+([plan](../notes/plans/2026-07-01-d1-mcp-delegation-tools.md)) has since surfaced that F1 seam as the
+[`handoff` Command](05-command-reference.md#registry-commands) (MCP tool + CLI verb), leaving only the
+new-card fork/fan-out UI (D3) design-only. An
 adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
@@ -137,7 +139,8 @@ the inbox in FIFO order, bounded to the 10 000-char live-delivery limit), and th
 defaulted `seed:` param of `resume` → `ctx.seed`, which the adapter appends as the positional turn above.
 Draining before resume matters most for a `.sessionSeed` agent (Codex has no Stop hook) whose queued
 messages can *only* ride the seed; for Claude it also prevents a later Stop-drain double-delivering them.
-`resumeInCard` is the seam the future handoff/fork Commands + UI (D1/D3) will call. (See
+`resumeInCard` is the seam the [`handoff` Command](05-command-reference.md#registry-commands) now calls
+(PR D1); the new-card fork/fan-out UI (D3) will call it too. (See
 [One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
 
 **Trust mirroring & scratch trust** (`prepareToLaunch`): Claude prompts for directory trust on first
@@ -308,7 +311,8 @@ The daemon makes a card's run survive crashes and reboots (`OrchestraService+Rec
   the transcript carries forward. It drains the inbox, folds it with the authored handoff/fork context
   (`HandoffSeed.fold`), and calls `resume(seed:)` with the result. This — not `restart` — is the shipped
   basis for context-clearing handoff (see [the resume argv & seed](#the-claude-code-adapter) above); it is
-  the seam the future handoff/fork Commands + UI (D1/D3) will call.
+  the seam the [`handoff` Command](05-command-reference.md#registry-commands) now calls (PR D1), and the
+  new-card fork/fan-out UI (D3) will call too.
 - **`restart(id)`.** Launches a fresh blank session in the *same* worktree with a new `agentSessionId`,
   rolling the old id into `priorSessionIds`. Sets `titleProvisional=true`, `status=.waiting`, clears
   `desc`. Never touches worktree contents. This is the "Start new session" button in the Recovery

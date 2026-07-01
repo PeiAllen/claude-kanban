@@ -30,6 +30,7 @@ orchestra list --col review          # one column
 orchestra status <ref>               # JSON status for one card
 orchestra send <ref> "use a token bucket"
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
+orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card, seeded (F1)
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
 orchestra sessions <ref> --json      # debug handles
@@ -147,5 +148,6 @@ status), emitting a `taskUpserted` event and an activity entry only when somethi
 This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
 (step 4 above) injects the durable inbox back into the agent at its turn-end. The **F1 resume seed** (PR C3)
 adds a second injection path — an authored handoff/fork context folded with that same inbox, delivered as a
-resumed session's opening positional turn (argv, not this settings channel); a future `additionalContext`
+resumed session's opening positional turn (argv, not this settings channel) — now callable end-to-end via
+the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1); a future `additionalContext`
 seed on *spawn* would complete the handoff/fork/fan-out delivery in the [roadmap](10-roadmap.md).

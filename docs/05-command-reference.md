@@ -17,6 +17,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. |
 | `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
+| `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
 | `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
@@ -52,6 +53,15 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also
   routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what
   the reactive fan-out / stacked-PR DAG composes from. (`notes/plans/2026-07-01-c2-wake-mergewatch.md`;
+  `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
+- **`handoff` is the F1 seam's first surface.** As of D1, `handoff` is a thin `Command` that resolves the
+  ref and delegates to `OrchestraService.resumeInCard(seed:)` (shipped by C3) — it does **not** start a
+  new card. The named card is killed and resumed in a fresh, clean-context process that keeps its session
+  id (so the vendor transcript carries forward), with `context` folded ahead of the card's drained pending
+  inbox as the resumed session's opening turn. It auto-surfaces as an MCP tool (registry↔MCP parity stays
+  green with no test edit); the CLI verb is the one hand-wired surface (`orchestra handoff <ref>
+  <context...>`). This is the *same-card* (replace-the-thread) topology; the new-card handoff/fork/fan-out
+  **UI + start-actions** are D3, still design-only. (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
 
 ## Server-only built-in methods

@@ -119,8 +119,9 @@ block until a watched child concludes, with each conclusion coalescing into the 
 it — the reactive fan-out. **F1 resume-in-card has now landed too** (PR C3, below): a card resumes into a
 fresh process with clean context, seeded with an authored handoff/fork context folded together with its
 pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. The
-Codex **send-keys wake (C4)** has since landed too (below), so only the handoff/fork/fan-out **Commands +
-UI** (D1/D3) that call these functions remain.
+Codex **send-keys wake (C4)** has since landed too (below), and the **`handoff` Command (D1)** that *calls*
+the F1 seam is now the first of the topology surfaces to ship (below) — so only the new-card handoff/fork/
+fan-out **UI + start-actions** (D3) remain.
 (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
@@ -286,10 +287,10 @@ Two invariants make it safe: the **`Adapter.resume(ctx) -> [String]?` protocol s
 seed rides the already-frozen context field, resolving the roadmap's
 [open injection question](10-roadmap.md#open-design-questions) in favor of an opening-turn positional over
 `--append-system-prompt` / `AGENTS.md`), and the change is fully additive/defaulted. `resumeInCard` is the
-seam D1's `handoff` Command and the Handoff/Fork UI (D3) will *call* — C3 only wires the seed *through*
-resume, adding no Command or UI itself. Like the forest PRs above it is one live-delivery function, not a
-whole axis, so it stays here as history while the model-providers / context-continuity roadmap rows remain
-open for the handoff/fork surfaces (D1/D3). (As-built symbols:
+seam D1's `handoff` Command now *calls* (shipped below) and the Handoff/Fork UI (D3) will call too — C3 only
+wires the seed *through* resume, adding no Command or UI itself. Like the forest PRs above it is one
+live-delivery function, not a whole axis, so it stays here as history while the model-providers /
+context-continuity roadmap rows remain open for the remaining handoff/fork surfaces (D3). (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The ninth landed PR is **C4 — the Codex send-keys wake**
@@ -323,7 +324,37 @@ scrape is explicitly a stopgap: v1 stays on send-keys while watching upstream Co
 eventually replace it with a real `controlChannel` `wakeTransport` (the already-frozen enum variant), so the
 fragile pane read is a contained, swappable seam. Like the forest PRs
 above, C4 is one live-delivery function, not a whole axis, so it stays here as history while the
-model-providers / context-continuity rows keep the handoff/fork surfaces (D1/D3) open.
+model-providers / context-continuity rows keep the handoff/fork surfaces (D1/D3) open. (The `handoff`
+Command — D1 — has since landed too; see the next entry.)
+
+The tenth landed PR is **D1 — the handoff delegation tool (MCP Command + CLI verb)**
+(`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`). It is the **first agent-facing surface that
+*calls*** the three shipped live-delivery functions rather than adding another — a thin `handoff` Command
+on the [`CommandRegistry`](05-command-reference.md#registry-commands) that resolves a card ref and
+delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-card* (replace-the-thread)
+[handoff topology](#one-seed-four-topologies) into a callable tool. Three properties keep it thin:
+
+- **No new mechanism — pure delegation.** The Command adds only a schema (`ref` + `context`) and a
+  two-line handler (`resolveRef` → `resumeInCard(seed:)`); all the load-bearing logic (drain the inbox
+  first, `HandoffSeed.fold`, kill + `--resume` the same session id, the seed as the opening positional
+  turn) already shipped in C3. `SpawnInput`/`spawn` are untouched — stacked (`repo`/`branch`) and
+  cross-agent (`agentId`) delegation were already covered by existing spawn params, and the *new-card*
+  handoff/fork/fan-out start-actions are D3, not D1.
+- **MCP is auto; the CLI is the one manual surface.** Because `orchestra-mcp` maps `registry.commands`,
+  adding the Command auto-surfaces it as an MCP tool and keeps the E2E registry↔MCP parity assertion
+  (`tools/list == CommandRegistry().names`) green with **no** test edit. The CLI is a hand-written
+  `CLIRunner` switch (not auto-derived), so the verb is added by hand — one `case "handoff"` plus a
+  `CLIHelp` line — the same one-Command-plus-one-CLI-case shape the [foundational registry-single-source
+  refactor](10-roadmap.md) will eventually collapse.
+- **The C2 full-set guard is honored.** Every `Command` added to the registry must also be registered in
+  `CommandsTests`'s `expected` set or `main` reddens (the lesson C2 paid for); D1 adds `"handoff"` there,
+  plus a round-trip test proving the Command dispatches to `resumeInCard`, carries the seed, and keeps the
+  session id, and a CLI-surface smoke proving `orchestra handoff` *routes* (not "unknown command").
+
+Like the forest PRs above, D1 is a single Command surface, not a whole axis, so it stays here as history
+while the context-continuity row keeps the remaining new-card handoff/fork/fan-out **UI + start-actions**
+(D3) open. (As-built symbols:
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
