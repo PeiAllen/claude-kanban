@@ -221,6 +221,20 @@ card = {"id": cid, "title": "UX e2e card", "titleProvisional": False, "desc": ""
 json.dump([card], open(tasks, "w"), indent=2)
 PY
 
+# Seed config.json so the isolated daemon ALLOWLISTS the throwaway repo — without it, an RPC `spawn`
+# throws (repo not under any allowed root) and the UC replay can't create cards. reposRoot=$ROOT makes
+# $ROOT/repo a valid repo; worktrees land under $ROOT/worktrees. defaultAgentId stays claude-code (the
+# fake-agent `claude` on PATH). All non-optional Config keys are present so it decodes (else the daemon
+# silently falls back to HOME-rooted defaults with an empty allowlist).
+python3 - "$DATA/config.json" "$ROOT" <<'PY'
+import json, sys
+cfg_path, root = sys.argv[1:3]
+cfg = {"reposRoot": root, "worktreesRoot": root + "/worktrees", "defaultAgentId": "claude-code",
+       "allowlist": [root], "maxConcurrentRevivals": 4, "revivalGraceSeconds": 15,
+       "statusLineMode": "orchestraDefault"}
+json.dump(cfg, open(cfg_path, "w"), indent=2)
+PY
+
 # --- 3. spawn the daemon DIRECTLY under the isolated $HOME (never launchctl) ---
 echo "▶ starting isolated daemon (direct spawn, not launchctl)…"
 HOME="$ISO_HOME" ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET" PATH="$RUN_PATH" \
@@ -321,15 +335,20 @@ REPO="$ROOT/repo"
 
 echo "▶ UC1–UC8 replay (fake-agent on PATH; USE_REAL_CLAUDE unset)"
 
-# UC6 · Fan-out — batch-spawn N, assert N cards created.
-if rpc batch-spawn "{\"tasks\":[
-  {\"prompt\":\"fan A\",\"repo\":\"$REPO\",\"branch\":\"fan-a\"},
-  {\"prompt\":\"fan B\",\"repo\":\"$REPO\",\"branch\":\"fan-b\"}]}" | grep -q '"spawned"'; then
-  uc_ok "UC6 fan-out (batch-spawn N)"; else uc_warn "UC6 fan-out"; fi
+# The whole UC replay is ADVISORY (O6): disable `set -e` inside it so no single RPC miss can abort the
+# run before the (documented-advisory) screenshot step. Re-enabled right after.
+set +e
 
-# UC4/UC5 · Fork / handoff→new — spawn --seed, assert the seed rode into the card's initialPrompt.
+# UC4/UC5 · Fork / handoff→new — spawn --seed, assert the seed rode into the new card (its ref echoes).
 FORK="$(rpc spawn "{\"prompt\":\"fork task\",\"repo\":\"$REPO\",\"branch\":\"fork-1\",\"seed\":\"PARENT-SLICE\"}")"
 echo "$FORK" | grep -q "PARENT-SLICE" && uc_ok "UC4/UC5 fork (spawn --seed)" || uc_warn "UC4/UC5 fork seed"
+
+# UC6 · Fan-out — batch-spawn N, assert the cards were actually created (their branches echo back;
+# `spawned:[]` on an allowlist miss would NOT contain the branch, so this can't false-positive).
+FAN="$(rpc batch-spawn "{\"tasks\":[
+  {\"prompt\":\"fan A\",\"repo\":\"$REPO\",\"branch\":\"fan-a\"},
+  {\"prompt\":\"fan B\",\"repo\":\"$REPO\",\"branch\":\"fan-b\"}]}")"
+echo "$FAN" | grep -q 'fan-a' && uc_ok "UC6 fan-out (batch-spawn N)" || uc_warn "UC6 fan-out"
 
 # UC7 · Send / queue — enqueue to the seeded card's durable inbox (F3).
 rpc send "{\"ref\":\"aaaaaa\",\"message\":\"queued via UX-e2e\"}" >/dev/null 2>&1 \
@@ -343,12 +362,12 @@ rpc handoff "{\"ref\":\"aaaaaa\",\"context\":\"handoff summary\"}" >/dev/null 2>
 # assert `wait` returns the conclusion (merge-watch off REAL card state, F2).
 CHILD="$(rpc spawn "{\"prompt\":\"child\",\"repo\":\"$REPO\",\"branch\":\"child-1\"}" | jget id)"
 if [ -n "$CHILD" ]; then
-  rpc archive "{\"ref\":\"$CHILD\"}" >/dev/null 2>&1 || true
+  rpc archive "{\"ref\":\"$CHILD\"}" >/dev/null 2>&1
   rpc wait "{\"refs\":[\"$CHILD\"]}" | grep -q '"kind"' \
     && uc_ok "UC1/UC2 wait→conclude (real card state)" || uc_warn "UC1/UC2 wait"
-fi
+else uc_warn "UC1/UC2 wait (child spawn)"; fi
 
-# UC8 · cross-agent — spawn a Codex-adapter card with a seed (registry.get(\"codex\"); no `if claude`).
+# UC8 · cross-agent — spawn a Codex-adapter card with a seed (registry.get("codex"); no `if claude`).
 # The `spawn` Command has no agentId param today, so this is advisory: a miss just means UC8's cross-
 # agent path is exercised in the unit e2e (e2e_uc8_cross_agent_handoff), not here.
 rpc spawn "{\"prompt\":\"codex fork\",\"repo\":\"$REPO\",\"branch\":\"cx-1\",\"agentId\":\"codex\",\"seed\":\"X\"}" \
@@ -357,6 +376,8 @@ rpc spawn "{\"prompt\":\"codex fork\",\"repo\":\"$REPO\",\"branch\":\"cx-1\",\"a
 # SpawnSheet trust indicator — the read-only trustState query, over the isolated daemon.
 rpc trustState "{\"path\":\"$REPO\"}" | grep -q '"trusted"' \
   && uc_ok "trustState query (SpawnSheet trust wiring)" || uc_warn "trustState"
+
+set -e   # end of advisory UC replay
 
 # --- 6. screenshot the real UI by window id (never foregrounds / whole-screen) ---
 sleep 1.0   # settle board layout
