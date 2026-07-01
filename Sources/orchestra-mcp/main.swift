@@ -41,6 +41,28 @@ _ = await server.withMethodHandler(CallTool.self) { params in
             isError: true)
     }
     defer { client.close() }
+    // The `trust` tool is the ONE human-gated command: elicit a decision from the agent's own MCP
+    // client (a human answers there — the agent can only trigger it) and relay to the daemon only on
+    // accept. `requestElicitation` throws if the client never advertised `elicitation`; both v1
+    // targets (Claude Code, Codex) do, so there is no fallback here (design §4.1).
+    if params.name == "trust" {
+        let path = argsToJSON(params.arguments).optString("path") ?? "this directory"
+        do {
+            let elicit = try await server.requestElicitation(
+                message: "An agent is requesting write-trust for \(path). Approve so agents may run "
+                    + "there with write access?",
+                requestedSchema: .init())
+            guard elicit.action == .accept else {
+                return CallTool.Result(
+                    content: [.text(text: "trust declined by the human", annotations: nil, _meta: nil)],
+                    isError: true)
+            }
+        } catch {
+            return CallTool.Result(
+                content: [.text(text: "trust elicitation failed: \(error)", annotations: nil, _meta: nil)],
+                isError: true)
+        }
+    }
     do {
         let result = try await client.call(params.name, argsToJSON(params.arguments))
         let text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
