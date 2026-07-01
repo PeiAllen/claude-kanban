@@ -113,7 +113,10 @@ in the [agent-provider interface](../notes/designs/agent-provider-interface/inde
 now landed** (PR C1, below): `send` routes through a durable [inbox store](03-data-model.md#the-inbox-store-f3),
 and the Claude Stop hook drains it into the agent at its turn-end. `send`-to-tmux is retired exactly as the
 maxim demanded — a queued conclusion no longer throws if the session died, and coalesces with other returns
-until the next turn. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
+until the next turn. **F2 wake + the conclusion-watch have now landed too** (PR C2, below): the
+[`wait` command / `MergeWatch`](05-command-reference.md#notes-on-key-commands) let an orchestrator card
+block until a watched child concludes, with each conclusion coalescing into the parent's inbox and waking
+it — the reactive fan-out. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
 
@@ -186,6 +189,40 @@ change is deliberately additive: `HooksRenderer`/`claude-hooks.json` are untouch
 existing notify→`waiting` report is preserved byte-for-byte. Waking an *idle* card so it takes a turn to
 drain (F2) is the next increment. Like the forest PRs above, C1 is one live-delivery function, not a whole
 axis, so it stays here as history while the roadmap's context-continuity row remains open.
+
+A fifth landed PR is **C2 — F2 wake + the merge-watch conclusion-watch**
+(`notes/plans/2026-07-01-c2-wake-mergewatch.md`). It builds the second of the three live-delivery functions
+and the reactive fan-out on top of C1's inbox: an orchestrator card can watch its spawned children and be
+woken as each concludes. Two symbols carry it — a `MergeWatch` actor and a `Conclusion` value
+(`{cardId, ref, kind ∈ {done, exited}}`), surfaced as the [`wait` command](05-command-reference.md#notes-on-key-commands)
+(auto-exposed as an MCP tool; registry↔MCP parity stays green) plus an `orchestra wait <ref…>` CLI verb.
+Three decisions shape it:
+
+- **Conclusion is read from real card state, never git.** The prior fan-out bug was calling `git merge-base`
+  to decide "merged" — which false-positives a branch with **zero commits ahead of main** as already merged.
+  C2 keys conclusion on `OrchestraService`'s own derived card state (`isConcluded`: archived/Done, or dead
+  with `deadReason == .agentExited`), the state it already adjudicates. A dedicated regression test pins the
+  0-commit case as *not* concluded.
+- **The service is the single authority; `MergeWatch` only subscribes.** `MergeWatch` owns **no** detection —
+  no git poll, no file stat, no per-card watcher. It parks a `CheckedContinuation` keyed on the watch set (the
+  existing `awaitResume`/`resolveResume` pattern) and is resolved when the service — the one writer that marks
+  terminal state — calls `concludeCard`. That call fires from exactly two places: `archive` (→ `.done`) and
+  the `report` clean-exit branch (agent-exited, guarded so a *recovering* card never counts → `.exited`). A
+  transient crash (`sessionVanished`) that may still be revived is deliberately **not** a conclusion —
+  "process ended" ≠ "card concluded."
+- **Fan-out coalesces; wake is only a trigger.** Watching N children yields **one conclusion per child, as
+  each concludes** — not a barrier on all N. `concludeCard` routes each into every registered watcher's
+  durable inbox (F3 coalesce) and calls `wake`; several children concluding while the parent is mid-turn all
+  enqueue and drain together at its next turn-end, so no return is lost or needs its own wake. `wake` dispatches
+  on the adapter's `wakeTransport`: Claude's `nativeReinvoke` is a no-op *push* — the wake instead rides the
+  background `orchestra wait` process exiting (which the harness re-invokes on), and Codex send-keys is deferred
+  to a later PR (C4). `wait` also short-circuits on an already-concluded child so the re-issue race can't lose a
+  conclusion.
+
+Like the forest PRs above, C2 is one live-delivery function, not a whole axis, so it stays here as history;
+the remaining live-delivery function — **F1** resume-in-card — and the Codex send-keys wake keep the roadmap's
+model-providers / context-continuity rows open. (As-built symbols are recorded in
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

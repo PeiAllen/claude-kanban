@@ -85,9 +85,13 @@ sessionSeed, none}`, `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchest
 adapter exercises yet, so later PRs implement behavior behind a shape that can't drift. Claude advertises
 `seeded / hooksPush / percent / nativeReinvoke / stopHook / sandboxed / subscription` — the
 `subscription` `authMode` is now read by the [authMode soft-warn](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)
-to advise (never cap) on heavy fan-out, and the `stopHook` `inboxDrain` is now *realized* by the C1
+to advise (never cap) on heavy fan-out, the `stopHook` `inboxDrain` is now *realized* by the C1
 [F3 Stop-drain](09-design-decisions.md#shipped-feature-history) (the Claude Stop hook drains the durable
-[inbox](03-data-model.md#the-inbox-store-f3) into the agent at its turn-end). Core reads this
+[inbox](03-data-model.md#the-inbox-store-f3) into the agent at its turn-end), and the `nativeReinvoke`
+`wakeTransport` is now read by the C2 [F2 wake / merge-watch](09-design-decisions.md#shipped-feature-history):
+for Claude, waking a card is a no-op *push* — the wake instead rides the card's background
+[`orchestra wait`](05-command-reference.md#notes-on-key-commands) process exiting, which the harness
+re-invokes on. Core reads this
 descriptor instead of branching on `agentId`: session-seeding switches on `capabilities.sessionId` (a
 `.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
 unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's

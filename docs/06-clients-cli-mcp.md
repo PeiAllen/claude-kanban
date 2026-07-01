@@ -29,6 +29,7 @@ orchestra list                       # all cards
 orchestra list --col review          # one column
 orchestra status <ref>               # JSON status for one card
 orchestra send <ref> "use a token bucket"
+orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
 orchestra sessions <ref> --json      # debug handles
@@ -42,6 +43,15 @@ orchestra ping
 handles, close the client, and then `tmux attach` **in-process** so your terminal lands directly in the
 card's shell (or a read-only agent, for `inspect`). `batch-spawn` reads a JSON array on stdin (or one
 prompt per line with `--repo`/`--branch`).
+
+`orchestra wait <ref…>` is how an orchestrator agent drives the reactive fan-out. It blocks until one of
+the watched cards concludes, prints that conclusion, and **exits** — which, for a card launched by
+Orchestra, is the wake: Claude's `nativeReinvoke` `wakeTransport` re-invokes the caller in-session when its
+background `orchestra wait` process ends, so the orchestrator wakes, reads the durable inbox, and re-issues
+`orchestra wait` on the cards that remain. It reads `$ORCHESTRA_TASK_ID` (set at launch) as the `watcher`,
+so conclusions coalesce into the caller's own inbox. (See
+[merge-watch / `wait`](05-command-reference.md#notes-on-key-commands) and
+[chapter 9](09-design-decisions.md#shipped-feature-history).)
 
 ### Daemon lifecycle
 

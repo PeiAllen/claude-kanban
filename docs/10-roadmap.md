@@ -29,11 +29,16 @@ the durable inbox + F3 Stop-drain** ([plan](../notes/plans/2026-07-01-c1-inbox-s
 too: it builds the **first of the design's three live-delivery functions** — a durable per-card
 [inbox](03-data-model.md#the-inbox-store-f3) that `send` now routes through, drained into the agent at its
 turn-end by the (unchanged) Claude Stop hook via a `decision:block` continuation, with a consecutive-inject
-loop guard (see [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs,
-not whole axes, so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the
-daemon-side rollout-tail transport, and the remaining live-delivery functions — **F1** resume-in-card and
-**F2** wake-an-idle-card) stays design-only until those PRs land. The principle is to design every change
-*toward* these axes, never away from them.
+loop guard (see [chapter 9](09-design-decisions.md#shipped-feature-history)). A fifth forest PR, **C2 —
+F2 wake + the merge-watch conclusion-watch** ([plan](../notes/plans/2026-07-01-c2-wake-mergewatch.md)), has
+now landed on top of C1: the **second live-delivery function**, plus the [`wait` command / `MergeWatch`](05-command-reference.md#notes-on-key-commands)
+that lets an orchestrator card block until a watched child concludes (read from **real card state, never
+`git merge-base`**) and be woken as each conclusion coalesces into its inbox — the reactive fan-out (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
+so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the daemon-side
+rollout-tail transport, the Codex send-keys wake, and the remaining live-delivery function — **F1**
+resume-in-card) stays design-only until those PRs land. The principle is to design every change *toward*
+these axes, never away from them.
 
 ## The nine axes
 
@@ -118,12 +123,16 @@ A few decisions are explicitly deferred until the relevant axis is built:
   open is the **per-agent injection mechanism** — first message vs `--append-system-prompt` / `AGENTS.md`,
   and its precedence vs the hooks `--settings` — scoped to PR C3, which reads `ctx.seed`.
   (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
-- **Merge-back timing** — **resolved and now shipped for the active-card case** (PR C1): a fork's
-  conclusion rides the durable **inbox (F3)** and drains at the parent's **next turn-end** — never a
-  mid-turn interrupt (an explicit non-goal); concurrent returns coalesce in the inbox and drain together.
-  The [durable inbox + Stop-drain has landed](09-design-decisions.md#shipped-feature-history); the
-  remaining piece is the idle-card path — if the parent is idle, **wake (F2)** must trigger a turn first,
-  then F3 delivers. (`agent-provider-interface/01-design.md` §4.)
+- **Merge-back timing** — **resolved and shipped** (PR C1 then C2): a fork's conclusion rides the durable
+  **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
+  non-goal); concurrent returns coalesce in the inbox and drain together. The
+  [durable inbox + Stop-drain (C1)](09-design-decisions.md#shipped-feature-history) and the
+  [F2 wake + merge-watch (C2)](09-design-decisions.md#shipped-feature-history) have both landed: an
+  orchestrator card `wait`s on its children, each conclusion coalesces into its inbox and wakes it. The
+  Claude wake is `nativeReinvoke` (the background `orchestra wait` process exiting is the wake); the
+  Codex **send-keys** wake for an idle non-native card is the last remaining piece (PR C4). Conclusion is
+  read from real card state, never `git merge-base`. (`agent-provider-interface/01-design.md` §4;
+  `02-contract.md` §Area 4.)
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?
   (`stacked-branches-and-guardian-handoff.md` §7.1.)
 

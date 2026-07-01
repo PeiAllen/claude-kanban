@@ -16,6 +16,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool) | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. |
+| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
 | `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
@@ -39,8 +40,19 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 - **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent
   [inbox](03-data-model.md#the-inbox-store-f3) rather than typing into the agent's tmux window. The
   message is drained into the agent at its next turn-end (the Claude Stop hook), survives a daemon
-  restart, and coalesces with other queued messages. Waking an *idle* card so it takes a turn to drain is
-  a later increment (F2). (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
+  restart, and coalesces with other queued messages. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
+- **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
+  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, or a clean agent
+  exit — and returns that `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A transient crash that is
+  later revived is deliberately **not** a conclusion, and conclusion is read from real card state, never
+  `git merge-base` (which false-positives a 0-commit branch as "merged"). `OrchestraService` is the single
+  authority that marks a card concluded (from `archive`→Done and the clean-exit report branch); `MergeWatch`
+  is a **subscriber** it feeds — no polling, no file/git watching. `wait` is single-shot on purpose: when
+  one child concludes it returns, and the caller (an orchestrator card) re-issues on the cards that remain,
+  so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also
+  routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what
+  the reactive fan-out / stacked-PR DAG composes from. (`notes/plans/2026-07-01-c2-wake-mergewatch.md`;
+  `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
 
 ## Server-only built-in methods
 
