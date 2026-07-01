@@ -48,6 +48,7 @@ extension OrchestraService {
 
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
+                resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
                 if task.titleProvisional {
                     task.title = titleSeed(from: prompt)
                     task.titleProvisional = false
