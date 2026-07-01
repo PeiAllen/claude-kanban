@@ -68,3 +68,28 @@ struct GrantTrustTests {
         #expect(resolver.asked.isEmpty)
     }
 }
+
+@Suite("trust Command — registry dispatch")
+struct TrustCommandTests {
+    @Test("trust command records via grantTrust when the (surface) source approves")
+    func commandGrants() async throws {
+        let env = TestEnv.make(grantResolver: StubGrantResolver(.approved))
+        let dir = env.base + "/cmd-grant"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let cmd = try #require(CommandRegistry().command("trust"))
+        let out = try await cmd.run(env.svc, .object(["path": .string(dir)]), .cli)
+        #expect(try out.decode(TrustGrantResult.self).granted)
+        #expect(await env.trust.isTrusted(dir) == true)
+    }
+
+    @Test("trust command surfaces trustDenied when the agent source can't self-grant")
+    func commandDenies() async throws {
+        let env = TestEnv.make(grantResolver: StubGrantResolver(.denied))
+        let dir = env.base + "/cmd-deny"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let cmd = try #require(CommandRegistry().command("trust"))
+        await #expect(throws: OrchestraError.self) {
+            _ = try await cmd.run(env.svc, .object(["path": .string(dir)]), .agent)
+        }
+    }
+}

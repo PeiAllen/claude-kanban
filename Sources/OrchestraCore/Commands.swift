@@ -211,6 +211,16 @@ public struct CommandRegistry: Sendable {
                 let result = await svc.batchSpawn(inputs, source: src)
                 return try JSONValue(encodable: result)
             },
+
+            Command(name: "trust",
+                    summary: "Grant a human's trust for a directory so agents may run there with write "
+                        + "access. Requires a human to approve (MCP elicitation / interactive CLI); an "
+                        + "agent can only trigger it, never self-grant.",
+                    params: schema(["path": strProp("Directory to trust (the card's cwd / repo root)")],
+                                   required: ["path"])) { svc, p, src in
+                let res = try await svc.grantTrust(try p.string("path"), source: src)
+                return try JSONValue(encodable: res)
+            },
         ]
     }
 
