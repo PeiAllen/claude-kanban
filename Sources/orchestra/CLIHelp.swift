@@ -15,6 +15,7 @@ enum CLIHelp {
       send <ref> <message...>                    Message the agent
       wait <ref...>                              Block until a watched card concludes (fan-out)
       handoff <ref> <context...>                 Clean-context handoff: resume the card seeded with context
+      trust <path>                               Grant a human's write-trust for a dir (interactive only)
       status <ref>                               Show a card's state (JSON)
       archive <ref>                              Archive a card
       restart <ref>                              New blank session, same worktree

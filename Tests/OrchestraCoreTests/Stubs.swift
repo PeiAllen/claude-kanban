@@ -181,9 +181,23 @@ func withScratchLock<T>(_ body: () async throws -> T) async rethrows -> T {
     return try await body()
 }
 
+/// Stub human-grant resolver: returns a fixed outcome and records what it was asked (drives the
+/// approve / deny grant tests without a live MCP client or tty — O7).
+final class StubGrantResolver: TrustGrantResolver, @unchecked Sendable {
+    let outcome: TrustGrantOutcome
+    private let lock = NSLock()
+    private(set) var asked: [(path: String, source: ActivitySource)] = []
+    init(_ outcome: TrustGrantOutcome) { self.outcome = outcome }
+    func requestGrant(path: String, reason: String, source: ActivitySource) async -> TrustGrantOutcome {
+        lock.withLock { asked.append((path, source)) }
+        return outcome
+    }
+}
+
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
-    static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .claudeCode)
+    static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .claudeCode,
+                     grantResolver: any TrustGrantResolver = SurfaceGrantResolver())
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
@@ -199,7 +213,8 @@ enum TestEnv {
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox)
+                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox,
+                                   grantResolver: grantResolver)
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
