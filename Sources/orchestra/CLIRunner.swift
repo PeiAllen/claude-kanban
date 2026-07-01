@@ -83,6 +83,21 @@ enum CLIRunner {
                 let task = try await client.call("handoff", .object(["ref": .string(ref), "context": .string(context)]))
                 printRef(task)
 
+            case "trust":
+                // Human-only grant. There is NO --trust flag: trust is a decision a human makes at a
+                // tty (or via the MCP elicitation dialog), never a switch an agent can pass.
+                let rawPath = flags.positional(0) ?? flags.require("path")
+                let path = PathResolver.canonical(rawPath)
+                guard isatty(FileHandle.standardInput.fileDescriptor) != 0 else {
+                    die(TrustPrompt.nonInteractiveHelp(path))   // exits 1
+                }
+                FileHandle.standardError.write(Data("Grant agents write trust for \(path)? [y/N] ".utf8))
+                guard TrustPrompt.isAffirmative(readLine()) else {
+                    die("trust: declined — \(path) stays untrusted")
+                }
+                let r = try await client.call("trust", .object(["path": .string(path)]))
+                if try r.decode(TrustGrantResult.self).granted { print("trusted \(path)") }
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))
