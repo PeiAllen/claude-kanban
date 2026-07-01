@@ -37,15 +37,8 @@ private struct HeaderBar: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
-    // Live-delivery card actions (D3). Each opens a small popover with a text field + confirm.
-    @State private var showSend = false
-    @State private var showHandoff = false
-    @State private var showFork = false
-    @State private var sendText = ""
-    @State private var handoffText = ""
-    @State private var forkPrompt = ""
-    @State private var forkContext = ""
-    @State private var forkBranch = ""
+    // Inbox editor popover state.
+    @State private var showInbox = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -64,9 +57,7 @@ private struct HeaderBar: View {
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.status != .dead {
-                sendAction
-                handoffAction
-                forkAction
+                inboxAction
 
                 Button {
                     _Concurrency.Task { await model.archive(task.id) }
@@ -102,51 +93,12 @@ private struct HeaderBar: View {
 
     // MARK: - Card actions
 
-    /// Send (F3): queue a message to the card's inbox (drained at its next turn-end).
-    private var sendAction: some View {
-        actionButton("Send", systemImage: "paperplane", isOn: $showSend) {
-            actionPopover(title: "Send to inbox",
-                          hint: "Queued (F3) — delivered at the agent's next turn-end.",
-                          text: $sendText, confirm: "Send", canConfirm: !sendText.trimmed.isEmpty) {
-                let msg = sendText; sendText = ""; showSend = false
-                _Concurrency.Task { await model.send(task.id, msg) }
-            }
-        }
-    }
-
-    /// Handoff (F1): clean-context resume of THIS card, seeded with the given context.
-    private var handoffAction: some View {
-        actionButton("Handoff", systemImage: "arrow.uturn.forward", isOn: $showHandoff) {
-            actionPopover(title: "Handoff — clean context",
-                          hint: "Resume THIS card in a fresh process (same session), seeded with this context.",
-                          text: $handoffText, confirm: "Hand off", canConfirm: !handoffText.trimmed.isEmpty) {
-                let ctx = handoffText; handoffText = ""; showHandoff = false
-                _Concurrency.Task { await model.handoff(task.id, context: ctx) }
-            }
-        }
-    }
-
-    /// Fork: spawn a NEW worktree card off this repo, seeded with the parent slice.
-    private var forkAction: some View {
-        actionButton("Fork", systemImage: "arrow.triangle.branch", isOn: $showFork) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Fork — new card from this one").font(F.ui(12, .semibold)).foregroundColor(theme.text)
-                Text("Spawns a new worktree off \((task.repo as NSString).lastPathComponent), seeded with the context below.")
-                    .font(F.ui(11)).foregroundColor(theme.text2)
-                popoverField("New branch", text: $forkBranch, mono: true)
-                popoverField("Task prompt", text: $forkPrompt, mono: false)
-                popoverEditor("Fork context (seed)", text: $forkContext)
-                HStack {
-                    Spacer()
-                    confirmButton("Fork", enabled: !forkBranch.trimmed.isEmpty && !forkPrompt.trimmed.isEmpty) {
-                        let parent = task, prompt = forkPrompt, branch = forkBranch, ctx = forkContext
-                        forkPrompt = ""; forkContext = ""; forkBranch = ""; showFork = false
-                        _Concurrency.Task { await model.fork(from: parent, prompt: prompt, branch: branch, context: ctx) }
-                    }
-                }
-            }
-            .padding(12).frame(width: 300)
-            .onAppear { if forkBranch.isEmpty { forkBranch = "\(task.branch)-fork" } }
+    /// Inbox (F3): view/reorder/edit/remove/append the card's durable queued messages.
+    private var inboxAction: some View {
+        actionButton("Inbox", systemImage: "tray.full", isOn: $showInbox) {
+            InboxEditorView(task: task)
+                .environmentObject(model)
+                .environment(\.theme, theme)
         }
     }
 
@@ -168,62 +120,121 @@ private struct HeaderBar: View {
             popover().environment(\.theme, theme)
         }
     }
-
-    private func actionPopover(title: String, hint: String, text: Binding<String>,
-                               confirm: String, canConfirm: Bool,
-                               action: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(F.ui(12, .semibold)).foregroundColor(theme.text)
-            Text(hint).font(F.ui(11)).foregroundColor(theme.text2)
-            popoverEditor(nil, text: text)
-            HStack {
-                Spacer()
-                confirmButton(confirm, enabled: canConfirm, action: action)
-            }
-        }
-        .padding(12).frame(width: 300)
-    }
-
-    private func popoverField(_ label: String, text: Binding<String>, mono: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(F.ui(10.5, .semibold)).foregroundColor(theme.text2)
-            TextField("", text: text)
-                .textFieldStyle(.plain)
-                .font(mono ? F.mono(12) : F.ui(12.5)).foregroundColor(theme.text)
-                .padding(.horizontal, 9).frame(height: 30)
-                .background(theme.field)
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-        }
-    }
-
-    private func popoverEditor(_ label: String?, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let label { Text(label).font(F.ui(10.5, .semibold)).foregroundColor(theme.text2) }
-            TextEditor(text: text)
-                .font(F.ui(12.5)).foregroundColor(theme.text)
-                .scrollContentBackground(.hidden)
-                .padding(.horizontal, 5).padding(.vertical, 6).frame(height: 84)
-                .background(theme.field)
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-        }
-    }
-
-    private func confirmButton(_ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label).font(F.ui(12, .semibold)).foregroundColor(.white)
-                .padding(.horizontal, 14).frame(height: 28)
-                .background(theme.accent.opacity(enabled ? 1 : 0.4))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-    }
 }
 
 private extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+// MARK: - Inbox editor
+
+/// The inbox editor popover: list the card's durable queued messages with per-row reorder
+/// (up/down), inline edit, and delete, plus an append field. All ops round-trip to the daemon
+/// and reload. Loaded fresh each time the popover opens.
+private struct InboxEditorView: View {
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) var theme: Theme
+    let task: Task
+
+    @State private var messages: [InboxMessage] = []
+    @State private var appendText = ""
+    @State private var editingId: UUID?
+    @State private var editText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Inbox — \(messages.count) queued").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+            Text("Delivered at the agent's next turn-end (F3).").font(F.ui(11)).foregroundColor(theme.text2)
+
+            if messages.isEmpty {
+                Text("No queued messages.").font(F.ui(11.5)).foregroundColor(theme.text3)
+                    .padding(.vertical, 6)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) { ForEach(messages, id: \.id) { row($0) } }
+                }
+                .frame(maxHeight: 220)
+            }
+
+            HStack(spacing: 6) {
+                TextField("Append a message…", text: $appendText)
+                    .textFieldStyle(.plain)
+                    .font(F.ui(12.5)).foregroundColor(theme.text)
+                    .padding(.horizontal, 9).frame(height: 30)
+                    .background(theme.field)
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                Button {
+                    let text = appendText.trimmed; guard !text.isEmpty else { return }
+                    appendText = ""
+                    _Concurrency.Task { await model.send(task.id, text); await reload() }
+                } label: {
+                    Text("Add").font(F.ui(12, .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 14).frame(height: 28)
+                        .background(theme.accent.opacity(appendText.trimmed.isEmpty ? 0.4 : 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .disabled(appendText.trimmed.isEmpty)
+            }
+        }
+        .padding(12).frame(width: 360)
+        .task { await reload() }
+    }
+
+    private func row(_ m: InboxMessage) -> some View {
+        HStack(spacing: 6) {
+            VStack(spacing: 1) {
+                chevron("chevron.up") { _Concurrency.Task { await move(m, by: -1) } }
+                chevron("chevron.down") { _Concurrency.Task { await move(m, by: 1) } }
+            }
+            if editingId == m.id {
+                TextField("", text: $editText, onCommit: { _Concurrency.Task { await commitEdit(m) } })
+                    .textFieldStyle(.plain)
+                    .font(F.ui(12)).foregroundColor(theme.text)
+            } else {
+                Text(m.text).font(F.ui(12)).foregroundColor(theme.text).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { editingId = m.id; editText = m.text }
+            }
+            Button { _Concurrency.Task { await remove(m) } } label: {
+                Image(systemName: "trash").font(F.ui(10)).foregroundColor(theme.text2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(theme.field)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func chevron(_ name: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name).font(F.ui(8, .semibold)).foregroundColor(theme.text2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func reload() async { messages = await model.inboxPeek(task.id) }
+
+    private func remove(_ m: InboxMessage) async {
+        await model.inboxRemove(task.id, messageId: m.id); await reload()
+    }
+
+    private func commitEdit(_ m: InboxMessage) async {
+        let text = editText.trimmed
+        editingId = nil
+        if !text.isEmpty && text != m.text { await model.inboxEdit(task.id, messageId: m.id, text: text) }
+        await reload()
+    }
+
+    private func move(_ m: InboxMessage, by delta: Int) async {
+        guard let i = messages.firstIndex(where: { $0.id == m.id }) else { return }
+        let j = i + delta
+        guard j >= 0, j < messages.count else { return }
+        var ids = messages.map(\.id); ids.swapAt(i, j)
+        await model.inboxReorder(task.id, orderedIds: ids); await reload()
+    }
 }
 
 // MARK: - Agent chrome (terminal)

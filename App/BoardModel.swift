@@ -241,28 +241,25 @@ final class BoardModel: ObservableObject {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
 
-    /// Clean-context handoff (F1): resume THIS card seeded with `context` (folded with its inbox).
-    func handoff(_ id: UUID, context: String) async {
-        do {
-            let t = try await client.call("handoff",
-                .object(["ref": .string(id.uuidString), "context": .string(context)])).decode(Task.self)
-            apply(.taskUpserted(t))
-            toast("Handed off “\(t.title)”", sub: "clean context")
-        } catch { toast("Handoff failed", sub: "\(error)", color: .red) }
+    /// Inbox editor: list a card's pending messages (empty on any error).
+    func inboxPeek(_ id: UUID) async -> [InboxMessage] {
+        (try? await client.call("inbox", .object(["ref": .string(id.uuidString)]))
+            .decode([InboxMessage].self)) ?? []
     }
-
-    /// Fork: spawn a NEW worktree card seeded with `context` (the parent slice) — `spawn --seed`.
-    func fork(from parent: Task, prompt: String, branch: String, context: String) async {
-        var p: [String: JSONValue] = [
-            "prompt": .string(prompt), "repo": .string(parent.repo), "branch": .string(branch),
-            "seed": .string(context), "col": .string(StartIn.impl.rawValue),
-        ]
-        if !parent.model.id.isEmpty { p["model"] = .string(parent.model.id) }
-        do {
-            let t = try await client.call("spawn", .object(p)).decode(Task.self)
-            apply(.taskUpserted(t)); selectedId = t.id
-            toast("Forked “\(t.title)”", sub: "\((parent.repo as NSString).lastPathComponent) · \(branch)")
-        } catch { toast("Fork failed", sub: "\(error)", color: .red) }
+    /// Inbox editor: edit one queued message's text.
+    func inboxEdit(_ id: UUID, messageId: UUID, text: String) async {
+        _ = try? await client.call("inbox-edit", .object(["ref": .string(id.uuidString),
+            "id": .string(messageId.uuidString), "text": .string(text)]))
+    }
+    /// Inbox editor: remove one queued message.
+    func inboxRemove(_ id: UUID, messageId: UUID) async {
+        _ = try? await client.call("inbox-remove", .object(["ref": .string(id.uuidString),
+            "id": .string(messageId.uuidString)]))
+    }
+    /// Inbox editor: reorder a card's queued messages (full new order).
+    func inboxReorder(_ id: UUID, orderedIds: [UUID]) async {
+        _ = try? await client.call("inbox-reorder", .object(["ref": .string(id.uuidString),
+            "ids": .array(orderedIds.map { .string($0.uuidString) })]))
     }
 
     /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).
