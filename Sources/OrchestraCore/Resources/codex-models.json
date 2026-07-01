@@ -1,0 +1,8 @@
+[
+  { "id": "gpt-5-codex", "displayName": "GPT-5 Codex", "family": "gpt", "contextWindow": 272000,
+    "flags": { "toolCall": true, "reasoning": true, "vision": false } },
+  { "id": "gpt-5", "displayName": "GPT-5", "family": "gpt", "contextWindow": 272000,
+    "flags": { "toolCall": true, "reasoning": true, "vision": true } },
+  { "id": "o3", "displayName": "o3", "family": "gpt", "contextWindow": 200000,
+    "flags": { "toolCall": true, "reasoning": true, "vision": false } }
+]
