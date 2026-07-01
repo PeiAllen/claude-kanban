@@ -79,6 +79,34 @@ public struct CommandRegistry: Sendable {
                 return .ok()
             },
 
+            Command(name: "wait",
+                    summary: "Block until one of the watched cards concludes (Done or clean exit). "
+                        + "For the reactive fan-out — the caller re-issues on the cards that remain.",
+                    params: schema([
+                        "refs": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("Card refs to watch — UUID/shortId/orchestra:// URI"),
+                        ]),
+                        "watcher": strProp("The watching card's ref; its inbox coalesces each conclusion "
+                            + "and it is woken (F2/F3). Omit for a bare block-and-return."),
+                    ], required: ["refs"])) { svc, p, src in
+                guard let arr = p["refs"]?.arrayValue, !arr.isEmpty else {
+                    throw OrchestraError.invalidParams("refs must be a non-empty array")
+                }
+                var ids: [UUID] = []
+                for r in arr {
+                    guard let raw = r.stringValue else { throw OrchestraError.invalidParams("each ref must be a string") }
+                    ids.append(try await svc.resolveRef(raw).id)
+                }
+                var watcher: UUID? = nil
+                if let w = p.optString("watcher") { watcher = try await svc.resolveRef(w).id }
+                guard let conc = await svc.wait(watcher: watcher, refs: ids) else {
+                    return .object(["cancelled": .bool(true)])
+                }
+                return try JSONValue(encodable: conc)
+            },
+
             Command(name: "status", summary: "Current state of a card (incl. derived running).",
                     params: schema(["ref": refProp()], required: ["ref"])) { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))

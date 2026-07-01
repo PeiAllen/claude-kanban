@@ -122,6 +122,24 @@ struct WakeMergeWatchTests {
         #expect(await inbox.peek(parent.id).isEmpty)             // one drain cleared them
     }
 
+    // extra · the `wait` command is registered (MCP parity) and round-trips a conclusion.
+    @Test("the `wait` command is registered and round-trips a conclusion")
+    func waitCommandRoundtrips() async throws {
+        #expect(CommandRegistry().names.contains("wait"))
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let cmd = try #require(CommandRegistry().command("wait"))
+        let waiting = _Concurrency.Task {
+            try await cmd.run(env.svc, .object(["refs": .array([.string(child.id.uuidString)])]), .agent)
+        }
+        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await env.svc.archive(child.id)
+        let result = try await waiting.value
+        #expect(result["cardId"]?.stringValue?.lowercased() == child.id.uuidString.lowercased())
+        #expect(result["kind"]?.stringValue == "done")
+    }
+
     // extra · wait short-circuits on an already-concluded child (re-issue race).
     @Test("wait returns immediately if a watched child already concluded")
     func alreadyConcluded() async throws {

@@ -56,6 +56,24 @@ enum CLIRunner {
                 _ = try await client.call("send", .object(["ref": .string(ref), "message": .string(msg)]))
                 print("sent")
 
+            case "wait":
+                // Watch one or more child cards; block until one concludes, print it, and EXIT — the
+                // Claude harness re-invokes the caller in-session (nativeReinvoke wake). The caller
+                // re-issues `orchestra wait` on the cards that remain.
+                let refs = flags.value("refs").map { $0.split(separator: ",").map(String.init) }
+                    ?? flags.positionalsFrom(0)
+                guard !refs.isEmpty else { die("wait needs at least one card ref") }
+                var waitParams: [String: JSONValue] = ["refs": .array(refs.map { .string($0) })]
+                // The watching (parent) card is this session's own id, if launched by Orchestra.
+                if let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !selfId.isEmpty {
+                    waitParams["watcher"] = .string(selfId)
+                }
+                let r = try await client.call("wait", .object(waitParams))
+                if r["cancelled"]?.boolValue == true { print("wait cancelled") }
+                else if let ref = r["ref"]?.stringValue, let kind = r["kind"]?.stringValue {
+                    print("concluded: \(ref) (\(kind))")
+                } else { printJSON(r) }
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))
