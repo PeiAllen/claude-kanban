@@ -500,5 +500,29 @@ stay in [chapter 10](10-roadmap.md). (As-built symbols:
 [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md)
 "As-built (D3, shipped)".)
 
+Landing after the forest closed is **enable-codex — making Codex startable** (commit `cf83921`, branch
+`enable-codex`). The whole Codex backend — `CodexAdapter`, its models, rollout-tail telemetry, trust, and
+resume/wake — had shipped (B1/B2/C4) but was **unreachable from any client**: the model list surfaced only
+the default agent's catalog and `spawn` never received an agent (`SpawnInput.agentId` was never parsed).
+This change is pure **reachability wiring**, no new launch behavior:
+
+- **Model→adapter routing — Codex startable from a model-only pick.** `spawn` now resolves its adapter in
+  three steps: an explicit **`agentId`** wins → else the adapter that **owns the chosen model**
+  (new `AgentRegistry.adapter(forModel:)`, catalog-driven) → else the **configured default**. So the app's
+  flat model picker, which sends only a model id, lands a `gpt-5-codex` selection on the Codex adapter.
+- **Two surfaces for the picker.** `OrchestraService.models(nil)` now returns the **union** across every
+  enabled adapter (default agent first), keeping the flat/default-model surfaces (e.g. Settings) working;
+  a new `agents()` + `AgentInfo` + [`agents` RPC](05-command-reference.md#server-only-built-in-methods)
+  expose the **per-agent grouping** (`id`/`name`/`icon` + each one's catalog) the
+  [Spawn sheet's agent picker](07-app-ui.md#the-spawn-sheet) needs. The `spawn` Command gains an explicit
+  **`agent`** param; the app's `SpawnSheet` gains an Agent segmented control that scopes the Model picker,
+  and `BoardModel` fetches `agents` and threads `agent` through spawn (`ORCH_SHOW=spawn` seeds a mock agent
+  catalog for the headless screenshot).
+- **Read-only-first still holds.** Codex is now *launchable* but still ships **read-only only** — B1 clamps
+  every Codex launch to `-s read-only -a never`. Write access + approvals remain the model-providers axis's
+  live remainder ([chapter 10](10-roadmap.md)). New tests (`CodexAdapterTests`) pin `adapter(forModel:)`,
+  the union `models()`, `agents()`, a model-only spawn landing on Codex, the default preserved, and an
+  explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
+
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

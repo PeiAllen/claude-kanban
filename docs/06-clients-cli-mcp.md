@@ -101,7 +101,7 @@ a set of tools.
 Register it with your MCP host (e.g. Claude Code) as a stdio server running the `orchestra-mcp` binary;
 it logs readiness (and the socket path) to stderr.
 
-> Today, the server-only built-ins (`models`, `archivedList`, `openInZed`, `getConfig`, …) are *not*
+> Today, the server-only built-ins (`models`, `agents`, `archivedList`, `openInZed`, `getConfig`, …) are *not*
 > in the registry, so they aren't exposed as MCP tools yet. Folding the CLI and these built-ins onto the
 > registry as the single source is [Roadmap axis 3](10-roadmap.md)'s foundational refactor.
 

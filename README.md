@@ -17,8 +17,9 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
 
 ## What it does
 
-- **One board, many agents.** Each card is one autonomous agent session. Spawn it with a prompt; it
-  works on its own; you watch and steer from the inspector's embedded terminal.
+- **One board, many agents.** Each card is one autonomous agent session — pick its backend at spawn
+  (**Claude Code** or **Codex**). Spawn it with a prompt; it works on its own; you watch and steer from
+  the inspector's embedded terminal.
 - **Isolation by default.** Every worktree card gets a dedicated git worktree (`repo` + `branch` →
   `~/.orchestra/worktrees/<repo>/<branch>`), so parallel agents never collide on the working tree.
 - **Four card modes.** **Worktree** (isolated git branch), **Borrowed/Freeform** (run in any existing

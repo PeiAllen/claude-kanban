@@ -13,7 +13,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | Command | Parameters | What it does |
 |---------|------------|--------------|
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
-| `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
+| `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. |
 | `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
@@ -96,7 +96,8 @@ visible to the app but not auto-exposed as MCP tools — unifying this is part o
 | `version` | Daemon version. |
 | `subscribe` | Register the connection for the event stream; replays the recent-activity ring buffer. |
 | `getConfig` / `setConfig` | Read / patch the daemon `Config` (re-derives the resolver + worktree manager). |
-| `models` | List available models for an agent. |
+| `models` | The selectable models. With an `agentId` param, just that adapter's catalog; without, the **union across every enabled adapter** (default agent's models first) so a flat picker can list Claude + Codex together. |
+| `agents` | The selectable **agents** for the Spawn sheet's agent picker: each enabled adapter's `{id, name, icon, models}` (default agent first) — the per-agent grouping of the flat `models` union. |
 | `archivedList` | The archived (Done) cards, newest first. |
 | `openInZed` | Open a card's worktree in Zed, with a branch-vs-base multi-file diff. |
 | `report` | The internal endpoint the agent's `_report` helper POSTs `StatusReport`s to. |

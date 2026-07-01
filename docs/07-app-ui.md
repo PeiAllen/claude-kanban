@@ -64,10 +64,17 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
   (trust · read-only · cancel) — so an agent can't be spawned with write access into a dir no human has
   granted. Granting stays the human-only [`trust`](05-command-reference.md#registry-commands) act.
 - **Scratch mode** — just informational text (Orchestra makes and later `rm -rf`s the dir).
-- **Model selector** — a button row of the agent's `AgentModel`s, brand-colored (claude → burnt orange,
-  gpt → teal, gemini → blue).
+- **Agent selector** — a segmented control (**Claude Code** / **Codex**, each an adapter's icon + name)
+  that appears only when the daemon's [`agents`](05-command-reference.md#server-only-built-in-methods) RPC
+  returns more than one wired-up adapter. Picking an agent **re-scopes the Model selector** below it to
+  that agent's catalog and resets the model to the agent's default (the configured default when it belongs
+  to this agent, else its first model). Defaults to `config.defaultAgentId`. This is what makes Codex
+  startable from the app — see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).
+- **Model selector** — a button row of the *selected agent's* `AgentModel`s, brand-colored (claude → burnt
+  orange, gpt → teal, gemini → blue).
 - **CLI preview** — a live display of the equivalent `orchestra spawn …` command, reinforcing that the
-  GUI and CLI are the same surface.
+  GUI and CLI are the same surface. It gains `--agent <id>` only when a **non-default** agent is picked,
+  keeping the common Claude preview clean.
 
 Spawning shows a toast on success or failure and closes the sheet on success.
 

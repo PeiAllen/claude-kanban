@@ -89,7 +89,21 @@ the managed `hooksPath`, the card's `access`, `trustCwd` (the core's `resolveTru
 *injection* has now shipped (PR C3): each adapter appends `ctx.seed` as the resumed session's opening
 positional turn (see the resume argv under [the Claude Code adapter](#the-claude-code-adapter) below).
 `AgentRegistry`
-holds the adapters (default: `[ClaudeCodeAdapter(), CodexAdapter()]`) and looks one up by id.
+holds the adapters (default: `[ClaudeCodeAdapter(), CodexAdapter()]`) and looks one up by id — or by
+model: **`adapter(forModel:)`** returns the enabled adapter whose catalog contains a given model id
+(catalog-driven, never sniffing the id string; first match wins since ids don't overlap).
+
+**Making Codex startable — model→adapter routing.** The Codex backend (adapter, models, telemetry, trust,
+resume/wake) shipped in B1–B2, but was for a while unreachable from the UI: the model list surfaced only
+the default agent's catalog and `spawn` never received an agent. The [enable-codex](09-design-decisions.md#shipped-feature-history)
+change wired the reachability. `OrchestraService.models(nil)` now returns the **union** of every enabled
+adapter's models (default agent first), a new `agents()` exposes the per-agent grouping
+(`AgentInfo` = `id`/`name`/`icon` + catalog) behind the [`agents` RPC](05-command-reference.md#server-only-built-in-methods),
+and `spawn` resolves its adapter in three steps: an explicit **`agentId`** wins → else the adapter that
+**owns the chosen model** (`adapter(forModel:)`, so the app's flat model-only pick lands on Codex) → else
+the **configured default agent**. The [Spawn sheet](07-app-ui.md#the-spawn-sheet)'s agent picker and the
+`orchestra spawn --agent` param (parsing the previously-unwired `SpawnInput.agentId`) are the surfaces
+this backs.
 
 **Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply a frozen
 **`AgentCapabilities`** value (a required protocol member with *no* default, so a new adapter can't
