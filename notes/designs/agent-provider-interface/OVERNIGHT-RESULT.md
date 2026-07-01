@@ -89,22 +89,33 @@ PR scope:
 
 ## Human follow-ups
 
-1. **MANUAL trust-dialog acceptance (O7) — the one thing the autonomous run could not do.** T2's automated
-   tests exercised trust **only via the stub grant resolver** (approve/deny/timeout). The single path where
-   a **human approves the live MCP `requestElicitation` / `SpawnSheet` dialog** is a one-time manual
-   acceptance (~2 min): spawn a `borrowed`/foreign-repo card (or a scratch card that clones a foreign
-   repo), confirm the elicitation dialog appears at your MCP client / the `SpawnSheet` trust control, and
-   approve it — verifying the native flag is written and the card proceeds trusted. (O1 guaranteed no live
-   grant fired during the forest, so this was never on the critical path.)
+1. **MANUAL trust-dialog acceptance (O7) — ✅ DONE (2026-07-01, human-approved).** Verified end-to-end
+   against a **disposable isolated daemon** (live board untouched), driving the real interactive CLI grant
+   (`orchestra trust`, the same human gate the MCP `requestElicitation` dialog / `SpawnSheet` control feed
+   — not the stub resolver):
+   - borrowed dir baseline → `untrusted`;
+   - **non-interactive grant (no TTY) → refused, exit 1** with the actionable message (fail-closed; there is
+     no `--trust` flag), ledger unchanged;
+   - **human typed `y` at the `[y/N]` prompt → `trusted`**; ledger recorded
+     `{"grantedBy": "human", "grantedAt": "2026-07-01T18:48:15Z"}` (a real human grant, not auto);
+   - **persisted across a daemon restart** → still `trusted` (durable ledger).
+   Isolated instance torn down afterward. (O1 guaranteed no live grant fired during the forest, so this was
+   never on the critical path — it was the one path that inherently needed a human click.)
 2. **Address the parallel-test flake** (see caveat 1) — bump the `SessionStart` grace or serialize those
    suites so CI's default parallel run is green.
 3. **Verify the `docs/` auto-sync landed** the as-built definitions for each PR (the git hook ran on every
    merge — 12 auto-sync commits — but per its own caveat it is "good but not infallible"). Spot-check the
    per-PR chapter map in `03-implementation.md`'s "Definition of Done" against `docs/` chapters 02–11, and
    confirm the roadmap axis-2/axis-3 migration into `09` happened.
-4. **Optional:** run the full **UC1–UC8 UX-e2e** on a logged-in/unlocked Mac (P2) as a final acceptance
-   pass now that D3's fake-agent fixture + RPC drivers are in — to exercise the screenshot path the
-   headless run skipped.
+4. **UC1–UC8 UX-e2e on an unlocked Mac (P2) — ✅ DONE (2026-07-01).** Ran `orch-ux-e2e.sh --run-id
+   ucfinal` against an isolated daemon+app: UC1/UC2, UC4/UC5, UC6, UC7, UC8 and the `trustState` wiring
+   all passed at the daemon-state layer; the **screenshot step now succeeds** (the prior
+   `could not create image from window` is resolved — `board.png`, a fully-rendered board, captured by
+   owner PID). The only advisory `⚠` is **UC3 handoff**: the shell harness's `fake-agent` idles and never
+   writes a resumable transcript, so `resumeInCard` correctly fails closed (`"transcript gone"`); the real
+   F1 resume-in-card path is covered by the `HandoffResumeTests` unit suite (resume-not-restart, seed
+   carried, same session id). Optional harness nicety: have `scripts/fixtures/fake-agent` write a stub
+   transcript so UC3 goes green in the shell replay too.
 
 ## Stats
 
