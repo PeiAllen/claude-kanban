@@ -221,7 +221,10 @@ enforces its **own consecutive-inject loop guard** (`drainForStop`, cap 25, rese
 `UserPromptSubmit`) to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. The
 change is deliberately additive: `HooksRenderer`/`claude-hooks.json` are untouched, and the Stop hook's
 existing notify→`waiting` report is preserved byte-for-byte. Waking an *idle* card so it takes a turn to
-drain (F2) is the next increment. Like the forest PRs above, C1 is one live-delivery function, not a whole
+drain (F2) landed next (C2/C4, below), and `send` was subsequently wired to call that same `wake` right
+after it enqueues — so a message to an idle card now triggers a turn immediately (content still rides the
+inbox; the wake no-ops when the card is busy/drafting or a `nativeReinvoke` idle) instead of sitting durable
+until the agent's next unprompted turn. Like the forest PRs above, C1 is one live-delivery function, not a whole
 axis, so it stays here as history while the roadmap's context-continuity row remains open.
 
 A fifth landed PR is **C2 — F2 wake + the merge-watch conclusion-watch**

@@ -102,8 +102,9 @@ other cards' interleaving is untouched) — back the app's [inbox editor](07-app
 the [`inbox*` commands](05-command-reference.md#registry-commands).
 
 This is the durable merge-back channel for **F3** (see [Design decisions](09-design-decisions.md#one-seed-four-topologies)):
-`send` enqueues here instead of typing into tmux, and the Claude Stop hook drains it into the agent at its
-next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-reference.md#server-only-built-in-methods),
+`send` enqueues here instead of typing into tmux (then [wakes the card](09-design-decisions.md#shipped-feature-history)
+so an idle agent drains promptly rather than at its next unprompted turn), and the Claude Stop hook drains it
+into the agent at its next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-reference.md#server-only-built-in-methods),
 and the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
 [`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).
 
