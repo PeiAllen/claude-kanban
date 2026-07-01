@@ -106,6 +106,12 @@ public actor OrchestraService {
         }
     }
 
+    /// Pure trust query for a prospective borrowed cwd (the SpawnSheet's trust indicator). Unlike
+    /// `resolveTrust`, this NEVER records — it only reads the ledger. The grant surface is T2.
+    public func isPathTrusted(_ path: String) async -> Bool {
+        await trust.isTrusted(path)
+    }
+
     // MARK: - telemetry (fileTail transport)
 
     /// One tick of the daemon-side rollout tail. For every live `fileTail` card (Codex), read the lines

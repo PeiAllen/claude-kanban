@@ -10,7 +10,7 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let expected = ["list", "spawn", "move", "send", "status", "archive",
                         "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions", "batch-spawn",
-                        "wait", "handoff"]
+                        "wait", "handoff", "trustState"]
         #expect(Set(reg.names) == Set(expected))
         for c in reg.commands {
             // every command has an object JSON schema for params

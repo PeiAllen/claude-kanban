@@ -25,6 +25,7 @@ final class BoardModel: ObservableObject {
 
     // Sheet / popover UI state.
     @Published var showSpawn = false
+    @Published var showFanout = false
     @Published var showDone = false
     @Published var showActivity = false
     @Published var showOnboarding = false
@@ -239,6 +240,52 @@ final class BoardModel: ObservableObject {
     }
     func send(_ id: UUID, _ message: String) async {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
+    }
+
+    /// Clean-context handoff (F1): resume THIS card seeded with `context` (folded with its inbox).
+    func handoff(_ id: UUID, context: String) async {
+        do {
+            let t = try await client.call("handoff",
+                .object(["ref": .string(id.uuidString), "context": .string(context)])).decode(Task.self)
+            apply(.taskUpserted(t))
+            toast("Handed off “\(t.title)”", sub: "clean context")
+        } catch { toast("Handoff failed", sub: "\(error)", color: .red) }
+    }
+
+    /// Fork: spawn a NEW worktree card seeded with `context` (the parent slice) — `spawn --seed`.
+    func fork(from parent: Task, prompt: String, branch: String, context: String) async {
+        var p: [String: JSONValue] = [
+            "prompt": .string(prompt), "repo": .string(parent.repo), "branch": .string(branch),
+            "seed": .string(context), "col": .string(StartIn.impl.rawValue),
+        ]
+        if !parent.model.id.isEmpty { p["model"] = .string(parent.model.id) }
+        do {
+            let t = try await client.call("spawn", .object(p)).decode(Task.self)
+            apply(.taskUpserted(t)); selectedId = t.id
+            toast("Forked “\(t.title)”", sub: "\((parent.repo as NSString).lastPathComponent) · \(branch)")
+        } catch { toast("Fork failed", sub: "\(error)", color: .red) }
+    }
+
+    /// Fan-out: batch-spawn one worktree card per prompt line, off a shared repo + base branch.
+    func fanout(prompts: [String], repo: String, branch: String) async {
+        let tasks = prompts.enumerated().map { i, prompt in
+            JSONValue.object(["prompt": .string(prompt), "repo": .string(repo),
+                              "branch": .string("\(branch)-\(i + 1)")])
+        }
+        do {
+            let res = try await client.call("batch-spawn", .object(["tasks": .array(tasks)]))
+                .decode(BatchSpawnResult.self)
+            for t in res.spawned { apply(.taskUpserted(t)) }
+            toast("Fanned out \(res.spawned.count) card(s)",
+                  sub: res.failed.isEmpty ? nil : "\(res.failed.count) failed",
+                  color: res.failed.isEmpty ? .green : .red)
+        } catch { toast("Fan-out failed", sub: "\(error)", color: .red) }
+    }
+
+    /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).
+    func trustState(path: String) async -> Bool {
+        guard let r = try? await client.call("trustState", .object(["path": .string(path)])) else { return false }
+        return r["trusted"]?.boolValue ?? false
     }
     func restart(_ id: UUID) async {
         do {

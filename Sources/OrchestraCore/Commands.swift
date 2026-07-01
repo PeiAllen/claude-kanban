@@ -196,6 +196,15 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: cs)
             },
 
+            Command(name: "trustState",
+                    summary: "Is a directory already trusted? Read-only ledger query for the spawn "
+                        + "sheet's trust indicator — never grants (granting is a human-only surface).",
+                    params: schema(["path": strProp("Absolute directory path to check")],
+                                   required: ["path"])) { svc, p, _ in
+                let trusted = await svc.isPathTrusted(try p.string("path"))
+                return .object(["trusted": .bool(trusted)])
+            },
+
             Command(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
                     params: schema(["tasks": .object([
                         "type": .string("array"),

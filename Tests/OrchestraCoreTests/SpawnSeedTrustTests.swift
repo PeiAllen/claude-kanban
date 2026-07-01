@@ -56,3 +56,30 @@ struct SpawnSeedTests {
         #expect(try #require(argv.last).contains("FORK-SEED"))
     }
 }
+
+@Suite("D3 · trustState query (read-only)")
+struct TrustStateTests {
+
+    @Test("registry includes trustState")
+    func inRegistry() {
+        #expect(CommandRegistry().command("trustState") != nil)
+    }
+
+    @Test("untrusted path → trusted:false; recorded path → trusted:true; query has no side effect")
+    func trustStateQuery() async throws {
+        let env = TestEnv.make()
+        let reg = CommandRegistry()
+        let cmd = try #require(reg.command("trustState"))
+        let dir = env.base + "/borrowed-dir"
+
+        let before = try await cmd.run(env.svc, .object(["path": .string(dir)]), .app)
+        #expect(before["trusted"]?.boolValue == false)
+        // Querying must NOT record — a second query is still false.
+        let again = try await cmd.run(env.svc, .object(["path": .string(dir)]), .app)
+        #expect(again["trusted"]?.boolValue == false)
+
+        try await env.trust.record(dir, grantedBy: .human)
+        let after = try await cmd.run(env.svc, .object(["path": .string(dir)]), .app)
+        #expect(after["trusted"]?.boolValue == true)
+    }
+}

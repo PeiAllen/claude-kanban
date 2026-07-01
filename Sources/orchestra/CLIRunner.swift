@@ -130,6 +130,12 @@ enum CLIRunner {
                 client.close()
                 attach(socket: Config.tmuxSocket, target: "\(session):\(window)")
 
+            case "trustState":
+                // Read-only trust query (the SpawnSheet's indicator, from the CLI). Never grants.
+                let path = flags.positional(0) ?? flags.require("path")
+                let r = try await client.call("trustState", .object(["path": .string(path)]))
+                print(r["trusted"]?.boolValue == true ? "trusted" : "untrusted")
+
             case "batch-spawn":
                 try await batchSpawn(client, flags)
 
