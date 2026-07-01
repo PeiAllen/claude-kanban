@@ -37,14 +37,10 @@ public struct ClaudeCodeAdapter: Adapter {
     /// is a fresh path Claude would otherwise re-prompt for). If the repo isn't trusted, we leave the
     /// worktree alone so Claude still asks — we don't silently grant trust the user never gave.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        // A scratch dir is one Orchestra just created and owns, so there's no source repo to mirror
-        // trust from — pre-accept its trust dialog outright so the autonomous agent never blocks on it.
-        // Every other card mirrors trust from its source repo (only if the user trusted that repo).
-        if ctx.trustCwd {
-            ClaudeTrust.grant(ctx.cwd)
-        } else {
-            ClaudeTrust.mirror(toWorktree: ctx.cwd, fromRepo: ctx.repo)
-        }
+        // Apply the CORE's trust decision (resolved into ctx.trustCwd by OrchestraService.resolveTrust).
+        // The adapter only *mirrors* that decision into Claude's native per-directory trust — it never
+        // reads the TrustLedger itself. When untrusted, leave Claude to prompt / the card to clamp.
+        ClaudeTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd)
         // A read-only card needs an OS-level write lock (the Bash escape hatch the --disallowedTools
         // flags can't reach). Write the per-card sandbox `denyWrite` settings file that start/resume
         // pass as an EXTRA --settings, alongside (not instead of) the hooks file — it's a tracked card.
@@ -169,35 +165,17 @@ public struct ClaudeCodeAdapter: Adapter {
 }
 
 /// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under
-/// `projects.<path>`, flagged via `hasTrustDialogAccepted`). We only ever *mirror* trust the user has
-/// already granted to a repo onto that repo's worktrees — never grant trust they haven't given.
+/// `projects.<path>`, flagged via `hasTrustDialogAccepted`). The adapter only ever *applies* the core's
+/// already-resolved trust decision (`ctx.trustCwd`) into this native flag — it never consults the
+/// Orchestra `TrustLedger` (core owns resolution; see `OrchestraService.resolveTrust`).
 enum ClaudeTrust {
-    /// If `repo` is trusted in `~/.claude.json`, mark `worktree` trusted too (merging into any existing
-    /// entry, leaving every other field untouched). No-op when the repo is untrusted/unknown, the
-    /// worktree is already trusted, or the config can't be read.
-    static func mirror(toWorktree worktree: String, fromRepo repo: String?, home: String = Config.home) {
-        guard let repo else { return }
-        let url = URL(fileURLWithPath: "\(home)/.claude.json")
-
-        guard let data = try? Data(contentsOf: url),
-              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
-        var projects = root["projects"] as? [String: Any] ?? [:]
-
-        guard isTrusted(repo, in: projects) else { return }                 // repo not trusted → don't grant
-        var project = projects[worktree] as? [String: Any] ?? [:]
-        if (project["hasTrustDialogAccepted"] as? Bool) == true { return }   // already trusted → no write
-
-        project["hasTrustDialogAccepted"] = true
-        projects[worktree] = project
-        root["projects"] = projects
-
-        if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) {
-            try? out.write(to: url, options: .atomic)
-        }
-    }
-
-    private static func isTrusted(_ path: String, in projects: [String: Any]) -> Bool {
-        (projects[path] as? [String: Any])?["hasTrustDialogAccepted"] as? Bool == true
+    /// Apply the core's already-resolved trust decision to Claude's native per-directory trust. Writes
+    /// `hasTrustDialogAccepted` for `cwd` iff `trusted`; otherwise a no-op (Claude will prompt / the
+    /// card clamps to sandbox). This is the ONLY trust entry point the adapter uses — it consumes
+    /// `ctx.trustCwd`, never the `TrustLedger`.
+    static func apply(trusted: Bool, cwd: String, home: String = Config.home) {
+        guard trusted else { return }
+        grant(cwd, home: home)
     }
 
     /// Unconditionally mark `path` trusted in `~/.claude.json` (merging into any existing entry, leaving

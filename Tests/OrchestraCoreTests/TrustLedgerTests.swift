@@ -125,3 +125,45 @@ struct SpawnTrustRoutingTests {
         #expect(await env.trust.isTrusted(dir) == false)   // no auto-trust for borrowed
     }
 }
+
+@Suite("Claude trust mirror — applies ctx.trustCwd, never reads the ledger")
+struct ClaudeApplyTrustTests {
+    // Injected temp HOME so we never touch the real ~/.claude.json.
+    private func tmpHome() -> String {
+        let h = NSTemporaryDirectory() + "home-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: h, withIntermediateDirectories: true)
+        return h
+    }
+    private func accepted(_ home: String, _ cwd: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(home)/.claude.json")),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let projects = root["projects"] as? [String: Any],
+              let project = projects[cwd] as? [String: Any] else { return false }
+        return project["hasTrustDialogAccepted"] as? Bool == true
+    }
+
+    @Test("trusted=true writes the native hasTrustDialogAccepted flag for cwd")
+    func appliesWhenTrusted() {
+        let home = tmpHome()
+        let cwd = "/wt/app/feat"
+        ClaudeTrust.apply(trusted: true, cwd: cwd, home: home)
+        #expect(accepted(home, cwd) == true)
+    }
+
+    @Test("trusted=false leaves the native flag unwritten")
+    func skipsWhenUntrusted() {
+        let home = tmpHome()
+        let cwd = "/wt/app/feat"
+        ClaudeTrust.apply(trusted: false, cwd: cwd, home: home)
+        #expect(accepted(home, cwd) == false)
+    }
+
+    @Test("prepareToLaunch is a trust no-op when ctx.trustCwd is false")
+    func prepareToLaunchRoutesOnTrustCwd() throws {
+        // With trustCwd=false the adapter must not attempt any native grant. (The native write itself
+        // is covered above with a temp HOME.) This must not throw.
+        let a = ClaudeCodeAdapter()
+        let ctx = AdapterContext(cwd: "/nonexistent/\(UUID().uuidString)", access: .readWrite, trustCwd: false)
+        try a.prepareToLaunch(ctx)
+    }
+}
