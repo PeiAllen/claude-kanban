@@ -3,6 +3,7 @@
 # (The .app bundle itself needs full Xcode + SwiftTerm — see App/README.md.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/toolchain.sh
 swift build --target OrchestraCore >/dev/null
 MOD=".build/$(uname -m)-apple-macosx/debug/Modules"
 exec swiftc -typecheck \
