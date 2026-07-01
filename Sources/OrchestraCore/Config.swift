@@ -66,6 +66,8 @@ public struct Config: Codable, Sendable, Equatable {
     public static var configPath: String { "\(dataDir)/config.json" }
     public static var tasksPath: String { "\(dataDir)/tasks.json" }
     public static var trustLedgerPath: String { "\(dataDir)/trust-ledger.json" }
+    /// Durable per-card message inbox (F3), sibling to `tasksPath`.
+    public static var inboxPath: String { "\(dataDir)/inbox.json" }
     public static var logPath: String { "\(dataDir)/orchestrad.log" }
     public static var hooksPath: String { "\(dataDir)/claude-hooks.json" }
     /// tmux server socket name (`tmux -L <name>`). Overridable via env so an isolated test instance
