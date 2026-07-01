@@ -175,9 +175,10 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json")
         let trust = TrustLedger(path: base + "/trust-ledger.json")
+        let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: worktrees, sessions: sessions, trust: trust)
+                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox)
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 

@@ -70,7 +70,7 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: updated)
             },
 
-            Command(name: "send", summary: "Send a message to the agent (write to its tmux window).",
+            Command(name: "send", summary: "Queue a message to the agent's inbox (drained at its next turn-end).",
                     params: schema(["ref": refProp(), "message": strProp("Text to send")],
                                    required: ["ref", "message"])) { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))

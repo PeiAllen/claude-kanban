@@ -14,6 +14,13 @@ public actor OrchestraService {
     var resolver: PathResolver
     /// Per-adapter subscription rate state for the authMode soft-warn (E2 / q4 — advisory only, no cap).
     let authRate = AuthRateMonitor()
+    /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
+    let inbox: Inbox
+    /// Consecutive auto-injects per card since the last genuine user prompt — the F3 loop guard.
+    /// `stop_hook_active` is informational on both agents, so Orchestra enforces the cap itself.
+    var injectCounts: [UUID: Int] = [:]
+    /// Break a runaway Stop→inject→Stop loop after this many consecutive auto-injects (reset by a real prompt).
+    public let maxConsecutiveInjects = 25
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
@@ -31,12 +38,14 @@ public actor OrchestraService {
                 sessions: (any SessionManaging)? = nil,
                 launcher: Launcher? = nil,
                 resolver: PathResolver? = nil,
-                trust: TrustLedger? = nil) {
+                trust: TrustLedger? = nil,
+                inbox: Inbox? = nil) {
         self.config = config
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
+        self.inbox = inbox ?? Inbox()
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
@@ -200,10 +209,31 @@ public actor OrchestraService {
 
     // MARK: - steer / move / status / list
 
+    /// Enqueue a message to the card's durable inbox (F3). Delivered at the agent's next turn-end via the
+    /// Stop-hook drain — no keystrokes, receiver-transparent. (Waking an *idle* card to drain is F2 / C2.)
     public func send(_ id: UUID, _ message: String) async throws {
         let t = try await require(id)
-        try sessions.sendKeys(sessions.sessionName(t.id), text: message, window: "agent")
+        try await inbox.enqueue(t.id, message)
     }
+
+    // MARK: - inbox / F3 (Stop-drain)
+
+    /// Drain the card's inbox into the payload the Stop hook injects (`decision:block` + `reason`), applying
+    /// the consecutive-inject loop guard. Returns `nil` when there is nothing to inject OR the guard tripped
+    /// (in which case pending messages are left durable for the next genuine turn / wake). Does not require a
+    /// task in the store — it is pure inbox + counter, safe to call from the transport.
+    public func drainForStop(_ cardId: UUID) async -> String? {
+        let pending = await inbox.peek(cardId)
+        if pending.isEmpty { injectCounts[cardId] = 0; return nil }   // natural end → reset
+        let count = injectCounts[cardId] ?? 0
+        if count >= maxConsecutiveInjects { return nil }              // loop guard tripped; keep counter high
+        let drained = (try? await inbox.drain(cardId)) ?? []
+        injectCounts[cardId] = count + 1
+        return StopDrain.compose(drained)
+    }
+
+    /// Reset a card's consecutive-inject guard — called on a genuine user prompt (UserPromptSubmit).
+    func resetInjectCount(_ cardId: UUID) { injectCounts[cardId] = 0 }
 
     @discardableResult
     public func move(_ id: UUID, to column: Column, source: ActivitySource = .daemon) async throws -> Task {
