@@ -116,7 +116,11 @@ maxim demanded — a queued conclusion no longer throws if the session died, and
 until the next turn. **F2 wake + the conclusion-watch have now landed too** (PR C2, below): the
 [`wait` command / `MergeWatch`](05-command-reference.md#notes-on-key-commands) let an orchestrator card
 block until a watched child concludes, with each conclusion coalescing into the parent's inbox and waking
-it — the reactive fan-out. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
+it — the reactive fan-out. **F1 resume-in-card has now landed too** (PR C3, below): a card resumes into a
+fresh process with clean context, seeded with an authored handoff/fork context folded together with its
+pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**, and
+only the handoff/fork/fan-out **Commands + UI** (D1/D3) that call them, plus the Codex send-keys wake (C4),
+remain. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
 
@@ -220,8 +224,9 @@ Three decisions shape it:
   conclusion.
 
 Like the forest PRs above, C2 is one live-delivery function, not a whole axis, so it stays here as history;
-the remaining live-delivery function — **F1** resume-in-card — and the Codex send-keys wake keep the roadmap's
-model-providers / context-continuity rows open. (As-built symbols are recorded in
+the remaining live-delivery function — **F1** resume-in-card — has since landed too (**C3**, below), so only
+the Codex send-keys wake and the handoff/fork Commands + UI keep the roadmap's model-providers /
+context-continuity rows open. (As-built symbols are recorded in
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its rollout-tail telemetry**
@@ -255,6 +260,36 @@ Like the forest PRs above, B1/B2 are a single provider conformer, not the whole 
 Codex **send-keys wake** (C4) and write/approval access remain deferred — so the row stays in the roadmap
 as history is recorded here. (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1 & §Area 3.)
+
+The eighth landed PR is **C3 — F1 resume-in-card with a seed**
+(`notes/plans/2026-07-01-c3-f1-handoff-resume.md`). It builds the **third and last** of the design's three
+live-delivery functions (see [One seed, four topologies](#one-seed-four-topologies)) on top of C1's inbox:
+**resume-in-card**, which reloads a card into a fresh process with clean context while **keeping its session
+id** — a *resume, not a blank restart*, so the vendor transcript carries forward and the seed only adds the
+new instruction. Three symbols carry it:
+
+- **`HandoffSeed.fold(handoff:inbox:)`** — a pure helper that folds an authored handoff/fork context (first,
+  trimmed, dropped if empty) and the card's drained pending inbox (FIFO) into **one** seed string, bounded to
+  the same 10 000-char live-delivery limit (`StopDrain.maxPayloadChars`) with a `[…truncated]` prefix on
+  overflow; `nil` when there is nothing to deliver.
+- **`OrchestraService.resumeInCard(_:seed:…)`** — the F1 entry point. It **drains the inbox first**, folds it
+  into the seed, then delegates to `resume`. Draining before resume is the load-bearing ordering decision: a
+  `.sessionSeed` agent (Codex has no Stop hook) would otherwise never receive its queued messages, and a
+  later Claude Stop-drain must not double-deliver them.
+- A defaulted **`seed:` parameter on the service `resume`**, threaded onto the frozen `AdapterContext.seed`
+  (A1). Each adapter then **reads** `ctx.seed` and appends it as the resumed session's **trailing positional
+  turn** (Claude after `--resume`, Codex after `resume <sid>`, and `StubAdapter` mirrors it); with no seed the
+  argv is byte-identical, so every existing recovery/`Commands`/test caller is unchanged.
+
+Two invariants make it safe: the **`Adapter.resume(ctx) -> [String]?` protocol signature is unchanged** (the
+seed rides the already-frozen context field, resolving the roadmap's
+[open injection question](10-roadmap.md#open-design-questions) in favor of an opening-turn positional over
+`--append-system-prompt` / `AGENTS.md`), and the change is fully additive/defaulted. `resumeInCard` is the
+seam D1's `handoff` Command and the Handoff/Fork UI (D3) will *call* — C3 only wires the seed *through*
+resume, adding no Command or UI itself. Like the forest PRs above it is one live-delivery function, not a
+whole axis, so it stays here as history while the model-providers / context-continuity roadmap rows remain
+open for the send-keys wake (C4) and the handoff/fork surfaces (D1/D3). (As-built symbols:
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

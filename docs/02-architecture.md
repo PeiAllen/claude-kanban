@@ -120,9 +120,11 @@ to the daemon's internal `report` method over the same control socket:
 | `Notification` / `Stop` | `notify` | `desc`; status → `waiting` |
 | `SessionEnd` | `sessionend` | exit reason → may flip status to `dead` |
 
-This is a **two-way** channel: agent → Orchestra carries live fields, and the same managed-settings
-mechanism is the planned path for Orchestra → agent context injection (the `additionalContext` seed;
-see [Roadmap](10-roadmap.md)).
+This is a **two-way** channel: agent → Orchestra carries live fields, and the Orchestra → agent direction
+is now **realized** — the F3 Stop-drain injects the durable inbox back at turn-end via the Stop hook, and
+the F1 resume seed (PR C3) rides a resumed session's opening turn (as an argv positional, not this settings
+file). The still-unbuilt `additionalContext` seed on *spawn* is the remaining piece (see
+[Roadmap](10-roadmap.md)).
 
 Two robustness rules matter:
 

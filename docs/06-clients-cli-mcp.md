@@ -145,6 +145,7 @@ prompt text → auto-title + `running`) and its seq-gated **snapshot half** (`ct
 status), emitting a `taskUpserted` event and an activity entry only when something actually changed.
 
 This same channel now carries the **first realized Orchestra → agent direction**: the F3 Stop-drain
-(step 4 above) injects the durable inbox back into the agent at its turn-end. Extended further with an
-`additionalContext` seed on spawn/restart, it becomes the handoff/fork/fan-out delivery in the
-[roadmap](10-roadmap.md).
+(step 4 above) injects the durable inbox back into the agent at its turn-end. The **F1 resume seed** (PR C3)
+adds a second injection path — an authored handoff/fork context folded with that same inbox, delivered as a
+resumed session's opening positional turn (argv, not this settings channel); a future `additionalContext`
+seed on *spawn* would complete the handoff/fork/fan-out delivery in the [roadmap](10-roadmap.md).

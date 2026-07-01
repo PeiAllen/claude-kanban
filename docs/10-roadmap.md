@@ -41,9 +41,15 @@ read-only-first with a discovered session id and an isolated `CODEX_HOME`, its l
 derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
 vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
-so their rows stay in the roadmap below. The rest of the forest (the Codex **send-keys wake** — C4 — and
-the remaining live-delivery function — **F1** resume-in-card) stays design-only until those PRs land. The
-principle is to design every change *toward* these axes, never away from them.
+so their rows stay in the roadmap below. An eighth forest PR, **C3 — F1 resume-in-card with a seed**
+([plan](../notes/plans/2026-07-01-c3-f1-handoff-resume.md)), has now landed too: the **third and final
+live-delivery function**, which resumes a card into a fresh process with clean context — keeping its
+session id (a *resume, not a blank restart*) — seeded with an authored handoff/fork context folded
+together with its pending inbox, delivered as the resumed session's opening turn (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped, the rest of the
+forest is the Codex **send-keys wake** (C4) plus the handoff/fork/fan-out **Commands + UI** (D1/D3) that
+will *call* this F1 seam — all still design-only until those PRs land. The principle is to design every
+change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -123,11 +129,15 @@ A few decisions are explicitly deferred until the relevant axis is built:
   worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
   what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
   the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-handoff.md` §1.)
-- **Context seed delivery** — the **carrier has now landed**: a defaulted `AdapterContext.seed` field,
-  frozen on the seam contract by PR A1 (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). What remains
-  open is the **per-agent injection mechanism** — first message vs `--append-system-prompt` / `AGENTS.md`,
-  and its precedence vs the hooks `--settings` — scoped to PR C3, which reads `ctx.seed`.
-  (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
+- **Context seed delivery** — **resolved and shipped** (carrier by PR A1, injection by PR C3). The
+  **carrier** is a defaulted `AdapterContext.seed` field, frozen on the seam contract by A1
+  (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). The **per-agent injection mechanism** is now
+  decided: the seed rides as the resumed session's **opening positional turn** — each adapter appends
+  `ctx.seed` as the trailing argv positional (Claude after `--resume`, Codex after `resume <sid>`) — *not*
+  `--append-system-prompt` / `AGENTS.md`, and it composes with (never replaces) the hooks `--settings`.
+  PR C3 wired it through `OrchestraService.resumeInCard` (see
+  [chapter 9](09-design-decisions.md#shipped-feature-history)). (`agent-provider-interface/02-contract.md` §2;
+  `context-passing-topologies.md` §9.)
 - **Merge-back timing** — **resolved and shipped** (PR C1 then C2): a fork's conclusion rides the durable
   **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
   non-goal); concurrent returns coalesce in the inbox and drain together. The

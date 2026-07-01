@@ -61,8 +61,11 @@ and moved core onto it, **PR A2** ([plan](../notes/plans/2026-07-01-a2-telemetry
 added the adapter's own **`parse`** (below), and **PRs B1–B2** have since landed the **Codex adapter**
 as the second conformer — its launch/session/trust ([plan](../notes/plans/2026-07-01-b1-codex-adapter.md))
 and its rollout-tail telemetry ([plan](../notes/plans/2026-07-01-b2-codex-rollout-tail.md); see
-[the Codex adapter](#the-codex-adapter), below) — while the remaining
-forest (the F1 resume-in-card live-delivery function and the Codex send-keys wake) stays design-only. An
+[the Codex adapter](#the-codex-adapter), below) — and **PR C3**
+([plan](../notes/plans/2026-07-01-c3-f1-handoff-resume.md)) has landed **F1 resume-in-card**: the `seed`
+now rides `resume` as the session's opening positional turn (see the resume argv under
+[the Claude Code adapter](#the-claude-code-adapter), below), leaving only the Codex send-keys wake (C4)
+and the handoff/fork Commands + UI (D1/D3) design-only. An
 adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
@@ -75,8 +78,10 @@ plus `newSessionId()`, `sessionInfo(...)`, `prepareToLaunch(ctx)` (side-effectin
 The `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
 the managed `hooksPath`, the card's `access`, `trustCwd` (set when Orchestra owns the cwd — see
 [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
-`additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) but whose per-agent
-*injection* is deferred to a later PR (see [Roadmap](10-roadmap.md#open-design-questions)). `AgentRegistry`
+`additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) and whose per-agent
+*injection* has now shipped (PR C3): each adapter appends `ctx.seed` as the resumed session's opening
+positional turn (see the resume argv under [the Claude Code adapter](#the-claude-code-adapter) below).
+`AgentRegistry`
 holds the adapters (default: `[ClaudeCodeAdapter(), CodexAdapter()]`) and looks one up by id.
 
 **Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply a frozen
@@ -114,8 +119,20 @@ Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
   <uuid>] --settings <hooksPath> [read-only --settings] [--name <title>] [<prompt>]`. The session id is
   *seeded* at spawn so Orchestra knows it before the agent reports.
-- **resume**: `claude --resume <sid> --settings <hooksPath> [--name] [--model] [read-only flags]` — no
-  `--session-id`, no prompt re-handed.
+- **resume**: `claude --resume <sid> --settings <hooksPath> [--name] [--model] [read-only flags] [<seed>]`
+  — no `--session-id`, no prompt re-handed; when a handoff/fork **seed** is present (F1, PR C3) it rides as
+  the trailing positional opening turn, otherwise nothing follows and the argv is byte-identical to before.
+
+**F1 resume-in-card & the seed** (PR C3): `OrchestraService.resumeInCard(_:seed:)` reloads a card into a
+fresh process with **clean context while keeping its session id** — a *resume, not a blank `restart`*, so the
+transcript carries forward and the seed only adds the new instruction. It **drains the card's inbox first**,
+folds it with the authored handoff/fork context via `HandoffSeed.fold(handoff:inbox:)` (handoff first, then
+the inbox in FIFO order, bounded to the 10 000-char live-delivery limit), and threads the result onto a
+defaulted `seed:` param of `resume` → `ctx.seed`, which the adapter appends as the positional turn above.
+Draining before resume matters most for a `.sessionSeed` agent (Codex has no Stop hook) whose queued
+messages can *only* ride the seed; for Claude it also prevents a later Stop-drain double-delivering them.
+`resumeInCard` is the seam the future handoff/fork Commands + UI (D1/D3) will call. (See
+[One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
 
 **Trust mirroring & scratch trust** (`prepareToLaunch`): Claude prompts for directory trust on first
 use of a path, which would block an autonomous agent. How the adapter clears that prompt depends on who
@@ -153,7 +170,11 @@ core handles the difference purely through the descriptor:
 
 - **Read-only-first launch.** `start`/`resume` always emit `-s read-only -a never` regardless of the
   card's `access` — B1 ships read-only only; write access and the approval round-trip are deferred. `-s
-  read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals.
+  read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals. `resume`
+  (`codex resume <sid> -s read-only -a never [-m <model>] [<seed>]`) also appends the F1 `seed` as a
+  trailing positional turn when present (PR C3) — and because Codex has **no Stop hook**
+  (`inboxDrain == .sessionSeed`), this folded seed is the *only* channel its queued inbox messages ride
+  (see [the resume argv](#the-claude-code-adapter) above).
 - **Discovered session id + rollout path.** Codex can't be handed a session id, so `newSessionId()`
   returns `nil` (`.discovered`, not Claude's `.seeded --session-id`); `sessionInfo`/`discover()` instead
   read the id back by finding the newest `$CODEX_HOME/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is
@@ -256,14 +277,22 @@ The daemon makes a card's run survive crashes and reboots (`OrchestraService+Rec
   - if it was never prompted / freshly restarted → relaunch a **blank** session via `restart()`;
   - otherwise → mark it **`dead`** with reason `rebootUnrevived`.
   It is idempotent: a card whose session is still alive (daemon-only crash) is left untouched.
-- **`resume(id, graceSeconds)`.** Revives an existing session and waits up to the grace window (default
-  15 s) for the `SessionStart(resume)` callback. Success → `waiting`, `deadReason` cleared, `recovered`
-  activity. Failure → `dead` with reason `resumeFailed` and a `deadDetail`. Guarded against stale
-  `SessionEnd` events via a `recovering` set.
+- **`resume(id, graceSeconds, seed:)`.** Revives an existing session and waits up to the grace window
+  (default 15 s) for the `SessionStart(resume)` callback. Success → `waiting`, `deadReason` cleared,
+  `recovered` activity. Failure → `dead` with reason `resumeFailed` and a `deadDetail`. Guarded against
+  stale `SessionEnd` events via a `recovering` set. The defaulted `seed:` (PR C3) is threaded onto
+  `ctx.seed` for the adapter to deliver as the opening turn; every recovery caller passes none, so the
+  crash-recovery argv is byte-identical.
+- **`resumeInCard(id, seed:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh
+  process with **clean context while keeping its `agentSessionId`** — a *resume, not a blank restart*, so
+  the transcript carries forward. It drains the inbox, folds it with the authored handoff/fork context
+  (`HandoffSeed.fold`), and calls `resume(seed:)` with the result. This — not `restart` — is the shipped
+  basis for context-clearing handoff (see [the resume argv & seed](#the-claude-code-adapter) above); it is
+  the seam the future handoff/fork Commands + UI (D1/D3) will call.
 - **`restart(id)`.** Launches a fresh blank session in the *same* worktree with a new `agentSessionId`,
   rolling the old id into `priorSessionIds`. Sets `titleProvisional=true`, `status=.waiting`, clears
   `desc`. Never touches worktree contents. This is the "Start new session" button in the Recovery
-  panel, and (with a future `additionalContext` seed) the basis for context-clearing handoff.
+  panel — a genuinely blank restart, distinct from the seeded, id-preserving `resumeInCard` above.
 - **`reconcileLiveness()`.** The 2-second poll loop's safety net: for every non-archived, non-terminal
   card it checks whether the tmux session vanished and flips it to `dead` (`sessionVanished`) if so —
   catching deaths that didn't fire a `SessionEnd` hook. Cards mid-resume/restart are skipped.
