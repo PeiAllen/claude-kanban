@@ -1,0 +1,7 @@
+#\!/usr/bin/env bash
+# Fake coding-agent for the D3 UX-e2e. Accepts (and ignores) claude/codex-style flags + a trailing
+# positional turn, then idles so its tmux pane stays alive. NEVER contacts a vendor / bills — it is
+# selected via a `claude`/`codex` symlink prepended to PATH while USE_REAL_CLAUDE is unset. UC state
+# is asserted at the DAEMON layer (store/inbox/conclusion), not via real agent telemetry.
+echo "[fake-agent] launched: $*" >&2
+while :; do sleep 3600; done
