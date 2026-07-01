@@ -12,6 +12,9 @@ different agent. This skill is about **when** to reach for that, and when NOT to
 ## The delegation surface (the tools)
 
 - **`spawn` / `batch-spawn`** — start a new card (or N) with a **seed** (the task + any handoff context).
+  A spawn either cuts a git **worktree** (`repo` + `branch`) *or* runs **freeform** in an existing
+  directory (`cwd`, no worktree) — optionally **read-only** (`access: readOnly`: the agent can
+  read/search/git but not edit/write/commit).
 - **`handoff <ref> <context…>`** — F1 clean-context resume: kill + `--resume` the SAME session seeded with
   `context` (folded together with the card's pending inbox). Same worktree, same branch, fresh context
   window. Hand off to a *new* card instead by spawning with the context as the seed.
@@ -34,9 +37,13 @@ tightly-coupled work.
     same worktree/branch. Write a tight summary as the seed.
   - *New card* (spawn with the summary as seed): when the continuation is distinct work, a different agent,
     or should run while THIS card stays alive.
-- **Fork** — *you want an independent exploration of a slice, and you'll want the result back.* Spawn with
-  the slice as the seed; the fork concludes and comes back to you via a wake + your inbox. Good for
-  "try approach A vs. B" and parallel discussions.
+- **Fork** — *you want an independent exploration or side-discussion of a slice, and you'll want the
+  result back.* Default to a **lightweight read-only freeform card in the same directory**: `spawn` with
+  `cwd` = your working dir, `access: readOnly`, and the slice as the `seed` — no worktree, no branch,
+  nothing to clean up. It explores and reports back via a wake + your inbox. Ideal for *"while planning,
+  go over components A, B, and C separately without clogging this context, then pull their conclusions
+  back."* Only cut a **worktree fork** (`spawn` with `repo` + `branch`) when the fork will change files
+  and you want its own branch/PR.
 - **Fan-out** — *N independent pieces of work to run in parallel*, each in its own worktree. `batch-spawn`
   them. There's no come-back wiring unless you also `wait`. Good for a stacked-PR forest or N independent
   tasks.

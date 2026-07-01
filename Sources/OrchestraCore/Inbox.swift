@@ -62,6 +62,40 @@ public actor Inbox {
         return pending
     }
 
+    /// Remove one message by id (no-op if absent). Used by the inbox editor.
+    public func remove(_ id: UUID) throws {
+        ensureLoaded()
+        messages.removeAll { $0.id == id }
+        try persist()
+    }
+
+    /// Replace a message's text in place; id / cardId / createdAt are preserved.
+    public func update(_ id: UUID, text: String) throws {
+        ensureLoaded()
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            throw OrchestraError.invalidParams("no inbox message with id \(id)")
+        }
+        let old = messages[idx]
+        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text, createdAt: old.createdAt)
+        try persist()
+    }
+
+    /// Reorder a single card's pending messages. `orderedIds` must be a permutation of that card's
+    /// current message ids. Because all cards share one append-ordered array, this refills exactly the
+    /// array slots the card already occupies (in the new order), leaving other cards' interleaving intact.
+    public func reorder(_ cardId: UUID, orderedIds: [UUID]) throws {
+        ensureLoaded()
+        let slots = messages.enumerated().filter { $0.element.cardId == cardId }
+        let current = slots.map(\.element)
+        guard Set(orderedIds) == Set(current.map(\.id)) else {
+            throw OrchestraError.invalidParams("orderedIds must be a permutation of the card's pending message ids")
+        }
+        let byId = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        let reordered = orderedIds.map { byId[$0]! }
+        for (slot, msg) in zip(slots.map(\.offset), reordered) { messages[slot] = msg }
+        try persist()
+    }
+
     private func persist() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

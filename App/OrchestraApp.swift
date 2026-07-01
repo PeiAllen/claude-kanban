@@ -101,17 +101,6 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            // Fan-out sheet overlay (board action — batch-spawn N cards)
-            if model.showFanout {
-                Color.black.opacity(0.28).ignoresSafeArea()
-                    .onTapGesture { model.showFanout = false }
-                FanoutSheet()
-                    .frame(width: 470)
-                    .padding(.top, 62)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             // The Done / Activity popovers are anchored to their toolbar buttons via SwiftUI's
             // `.popover` (see ControlsRow) — they're no longer free-floating overlays here.
 
@@ -130,7 +119,6 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
-        .animation(.easeOut(duration: 0.18), value: model.showFanout)
         .modifier(DebugLaunchHook())
     }
 }
@@ -225,6 +213,31 @@ private struct DebugLaunchHook: ViewModifier {
             .environmentObject(model)
             .environment(\.theme, theme)
             .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
+    /// Render the populated Inbox editor popover straight to a PNG via `ImageRenderer` — headless,
+    /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_INBOX=/path.png` for UI review.
+    /// Renders the REAL `InboxEditorView` (via its `preview:` seed), so the screenshot can't drift
+    /// from the shipping row layout.
+    static func snapshotInbox(to path: String, model: BoardModel) {
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        let card = Task(title: "Inbox demo", repo: "/Users/allen/code/orchestra", branch: "demo",
+                        cwd: "/Users/allen/code/orchestra/.worktrees/demo",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, status: .running, initialPrompt: "demo")
+        let seed = ["charlie", "BRAVO (edited)", "review the auth refactor before merging"]
+            .map { InboxMessage(cardId: card.id, text: $0) }
+        let view = InboxEditorView(task: card, preview: seed)
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .background(theme.panelOpaque)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
+    /// Shared ImageRenderer → PNG writer for the snapshot hooks.
+    static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
         guard let img = renderer.nsImage,
@@ -240,6 +253,10 @@ private struct DebugLaunchHook: ViewModifier {
         content.task {
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DONE"] {
                 DebugLaunchHook.snapshotDone(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_INBOX"] {
+                DebugLaunchHook.snapshotInbox(to: path, model: model)
                 exit(0)
             }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {

@@ -10,7 +10,8 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let expected = ["list", "spawn", "move", "send", "status", "archive",
                         "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions", "batch-spawn",
-                        "wait", "handoff", "trust", "trustState"]
+                        "wait", "handoff", "trust", "trustState",
+                        "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
         #expect(Set(reg.names) == Set(expected))
         for c in reg.commands {
             // every command has an object JSON schema for params
@@ -101,6 +102,57 @@ struct CommandsTests {
         let status = try #require(reg.command("status"))
         await #expect(throws: OrchestraError.self) {
             _ = try await status.run(env.svc, .object(["ref": .string("zzzzzz")]), .cli)
+        }
+    }
+
+    @Test("inbox lists, inbox-edit rewrites, inbox-remove drops, inbox-reorder permutes")
+    func inboxCrud() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let reg = CommandRegistry()
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        try await env.svc.send(t.id, "one")
+        try await env.svc.send(t.id, "two")
+
+        // inbox (list)
+        let list = try #require(reg.command("inbox"))
+        let msgs = try await list.run(env.svc, .object(["ref": .string(t.shortId)]), .mcp)
+            .decode([InboxMessage].self)
+        #expect(msgs.map(\.text) == ["one", "two"])
+
+        // inbox-edit
+        let edit = try #require(reg.command("inbox-edit"))
+        _ = try await edit.run(env.svc, .object(["ref": .string(t.shortId),
+            "id": .string(msgs[0].id.uuidString), "text": .string("ONE")]), .mcp)
+
+        // inbox-reorder → [two, one]
+        let reorder = try #require(reg.command("inbox-reorder"))
+        _ = try await reorder.run(env.svc, .object(["ref": .string(t.shortId),
+            "ids": .array([.string(msgs[1].id.uuidString), .string(msgs[0].id.uuidString)])]), .mcp)
+
+        let afterEdit = try await list.run(env.svc, .object(["ref": .string(t.shortId)]), .mcp)
+            .decode([InboxMessage].self)
+        #expect(afterEdit.map(\.text) == ["two", "ONE"])
+
+        // inbox-remove
+        let remove = try #require(reg.command("inbox-remove"))
+        _ = try await remove.run(env.svc, .object(["ref": .string(t.shortId),
+            "id": .string(msgs[1].id.uuidString)]), .mcp)
+        let final = try await list.run(env.svc, .object(["ref": .string(t.shortId)]), .mcp)
+            .decode([InboxMessage].self)
+        #expect(final.map(\.text) == ["ONE"])
+    }
+
+    @Test("inbox-edit rejects a non-UUID id")
+    func inboxBadId() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let reg = CommandRegistry()
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let edit = try #require(reg.command("inbox-edit"))
+        await #expect(throws: OrchestraError.self) {
+            _ = try await edit.run(env.svc, .object(["ref": .string(t.shortId),
+                "id": .string("not-a-uuid"), "text": .string("z")]), .mcp)
         }
     }
 

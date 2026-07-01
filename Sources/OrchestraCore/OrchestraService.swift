@@ -325,6 +325,30 @@ public actor OrchestraService {
         try await inbox.enqueue(t.id, message)
     }
 
+    /// Inbox editor (UI + MCP): list a card's pending messages. Non-destructive.
+    public func inboxPeek(_ id: UUID) async throws -> [InboxMessage] {
+        let t = try await require(id)
+        return await inbox.peek(t.id)
+    }
+
+    /// Inbox editor: remove one queued message by its id.
+    public func inboxRemove(_ id: UUID, messageId: UUID) async throws {
+        _ = try await require(id)
+        try await inbox.remove(messageId)
+    }
+
+    /// Inbox editor: edit the text of one queued message.
+    public func inboxUpdate(_ id: UUID, messageId: UUID, text: String) async throws {
+        _ = try await require(id)
+        try await inbox.update(messageId, text: text)
+    }
+
+    /// Inbox editor: reorder a card's queued messages (ids = full new order).
+    public func inboxReorder(_ id: UUID, orderedIds: [UUID]) async throws {
+        let t = try await require(id)
+        try await inbox.reorder(t.id, orderedIds: orderedIds)
+    }
+
     // MARK: - inbox / F3 (Stop-drain)
 
     /// Drain the card's inbox into the payload the Stop hook injects (`decision:block` + `reason`), applying
