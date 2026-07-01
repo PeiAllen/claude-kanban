@@ -104,7 +104,12 @@ extension OrchestraService {
         recovering.insert(id)
         defer { recovering.remove(id) }
 
-        let freshId = adapter.newSessionId()
+        // Same capability gate as spawn: only a `.seeded` agent mints a fresh id on restart.
+        let freshId: String?
+        switch adapter.capabilities.sessionId {
+        case .seeded:     freshId = adapter.newSessionId()
+        case .discovered: freshId = nil
+        }
         // Build the new task state first so the launch uses the new id.
         var prior = task.priorSessionIds
         if let old = task.agentSessionId, !old.isEmpty { prior.append(old) }
@@ -151,13 +156,20 @@ extension OrchestraService {
 
     // MARK: - helpers
 
+    /// Whether a card can be resumed. Capability-gated (design §5): resumability is an adapter answer
+    /// keyed on `capabilities.sessionId` + `sessionInfo`, NOT a hardcoded `~/.claude` transcript stat in
+    /// core. Both current variants require a stored session id and the adapter's own state path to be
+    /// present on disk; a discovered agent with no id short-circuits.
     func isResumable(_ t: Task) -> Bool {
-        guard let sid = t.agentSessionId, !sid.isEmpty else { return false }
-        let adapter = (try? registry.get(t.agentId))
-        let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, hooksPath: Config.hooksPath)
-        guard let tp = adapter?.sessionInfo(ctx, current: sid, prior: t.priorSessionIds)?.transcriptPath
-        else { return false }
-        return FileManager.default.fileExists(atPath: tp)
+        guard let adapter = try? registry.get(t.agentId) else { return false }
+        switch adapter.capabilities.sessionId {
+        case .seeded, .discovered:
+            guard let sid = t.agentSessionId, !sid.isEmpty else { return false }
+            let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, hooksPath: Config.hooksPath)
+            guard let statePath = adapter.sessionInfo(ctx, current: sid, prior: t.priorSessionIds)?.transcriptPath
+            else { return false }
+            return FileManager.default.fileExists(atPath: statePath)
+        }
     }
 
     @discardableResult

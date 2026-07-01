@@ -91,7 +91,14 @@ public actor OrchestraService {
             (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
             origin = .worktree
         }
-        let sid = adapter.newSessionId()
+        // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
+        // (Claude) gets its id minted pre-launch; a `.discovered` agent is left nil and reads its id
+        // back from its own output post-launch (design §5, D5).
+        let sid: String?
+        switch adapter.capabilities.sessionId {
+        case .seeded:     sid = adapter.newSessionId()
+        case .discovered: sid = nil
+        }
         // Resolve the chosen launch id (explicit / config default / adapter's first) to a full model.
         let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
         let model = adapter.model(for: modelId)
