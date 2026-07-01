@@ -12,6 +12,8 @@ public actor OrchestraService {
     var sessions: any SessionManaging
     let launcher: Launcher
     var resolver: PathResolver
+    /// Per-adapter subscription rate state for the authMode soft-warn (E2 / q4 — advisory only, no cap).
+    let authRate = AuthRateMonitor()
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
@@ -158,6 +160,13 @@ public actor OrchestraService {
 
         emit(.taskUpserted(created))
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
+
+        // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
+        // for this adapter (the just-created card is already in the store) and warn past the threshold.
+        let active = await store.all().filter { !$0.archived && $0.status != .dead }
+        if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
+            emitActivity(.warning, created, source, warn.message)
+        }
         return created
     }
 
