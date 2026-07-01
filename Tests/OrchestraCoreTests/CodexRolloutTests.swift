@@ -104,3 +104,79 @@ struct CodexRolloutParseTests {
         #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#) == nil)
     }
 }
+
+@Suite("RolloutTailer — per-card byte-offset transport")
+struct RolloutTailerTests {
+    private func tmpFile() -> String {
+        NSTemporaryDirectory() + "rollout-\(UUID().uuidString).jsonl"
+    }
+    private func append(_ path: String, _ text: String) {
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile(); fh.write(Data(text.utf8)); try? fh.close()
+        } else {
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
+    @Test("first read returns all complete lines")
+    func firstRead() async {
+        let path = tmpFile(); let id = UUID()
+        append(path, "a\nb\nc\n")
+        let t = RolloutTailer()
+        #expect(await t.newLines(cardId: id, path: path) == ["a", "b", "c"])
+    }
+
+    @Test("second read returns only newly-appended lines")
+    func incremental() async {
+        let path = tmpFile(); let id = UUID()
+        append(path, "a\nb\n")
+        let t = RolloutTailer()
+        _ = await t.newLines(cardId: id, path: path)
+        append(path, "c\nd\n")
+        #expect(await t.newLines(cardId: id, path: path) == ["c", "d"])
+    }
+
+    @Test("a trailing partial line is held until it is completed")
+    func partialHeld() async {
+        let path = tmpFile(); let id = UUID()
+        append(path, "a\nb")                 // "b" has no newline yet
+        let t = RolloutTailer()
+        #expect(await t.newLines(cardId: id, path: path) == ["a"])
+        append(path, "bb\n")                 // completes -> "bbb"
+        #expect(await t.newLines(cardId: id, path: path) == ["bbb"])
+    }
+
+    @Test("no new bytes → empty")
+    func nothingNew() async {
+        let path = tmpFile(); let id = UUID()
+        append(path, "a\n")
+        let t = RolloutTailer()
+        _ = await t.newLines(cardId: id, path: path)
+        #expect(await t.newLines(cardId: id, path: path) == [])
+    }
+
+    @Test("missing file → empty, no crash")
+    func missingFile() async {
+        let t = RolloutTailer()
+        #expect(await t.newLines(cardId: UUID(), path: "/no/such/rollout.jsonl") == [])
+    }
+
+    @Test("truncation/rotation below offset resets to 0")
+    func truncationResets() async {
+        let path = tmpFile(); let id = UUID()
+        append(path, "x\ny\nz\n")
+        let t = RolloutTailer()
+        _ = await t.newLines(cardId: id, path: path)
+        try? "n\n".write(toFile: path, atomically: true, encoding: .utf8)   // shorter file
+        #expect(await t.newLines(cardId: id, path: path) == ["n"])
+    }
+
+    @Test("offsets are independent per card")
+    func perCard() async {
+        let path = tmpFile(); let a = UUID(); let b = UUID()
+        append(path, "1\n2\n")
+        let t = RolloutTailer()
+        _ = await t.newLines(cardId: a, path: path)
+        #expect(await t.newLines(cardId: b, path: path) == ["1", "2"])   // b starts fresh
+    }
+}
