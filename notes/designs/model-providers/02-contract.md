@@ -13,6 +13,13 @@ links: ["[[index]]", "[[01-design]]", "[[../context-passing-topologies]]"]
 
 > The **interfaces**: what to add to `Adapter`, how `report` resolves a provider, and registry changes.
 
+> **Authoritative deepening: [[agent-provider-interface]].** The contract below stays the L2 record, but
+> two interface choices are sharpened there: (1) `mapReport` is one face of a **normalized-event** seam —
+> every adapter `parse()`s into a single `NormalizedEvent` type (§4 D3), with variation carried by an
+> explicit **capability descriptor** (`AdapterCapabilities`, §4 D4) rather than ad-hoc booleans; and
+> (2) `AgentModel.contextWindow` should be **fed from a vendored models.dev/LiteLLM registry** (§6 D7).
+> Section pointers inline below mark what each contract item reconciles to.
+
 ## Architecture overview
 
 Three additions to the existing `Adapter` protocol carry all the provider-specific behaviour that's
@@ -51,15 +58,25 @@ resume(_:), sessionInfo(_:current:prior:), prepareToLaunch(_:), env`. This axis 
 gating — Claude renders it as the 3-layer barrier in `ReadOnlyLaunch.swift`; a `CodexAdapter` renders it
 as `--sandbox read-only`) **and `trustCwd: Bool`** (scratch pre-trust — `prepareToLaunch` calls
 `ClaudeTrust.grant` instead of mirroring repo trust). Both are inputs every adapter's `start`/`resume`/
-`prepareToLaunch` must honour.
+`prepareToLaunch` must honour. ([[agent-provider-interface]] §7 generalizes `access` into the
+**tool-gating · approval-policy · OS-sandbox** layers with a `readOnlyEnforcement` capability; the shipped
+Claude barrier is its `sandboxed` case.)
 
 **Planned keystone — `AdapterContext.additionalContext: String?`** (axis 3, **still UNBUILT**): a single
 authored context seed threaded through `start`/`resume`, delivered per-adapter (Claude: `SessionStart`
 `additionalContext`; Codex: seed prompt / `--context` file). It is the primitive behind handoff / fork /
 fan-out — see [[../agent-integration/02-contract]] and [[context-passing-topologies]]. This axis must
-keep every adapter's launch path ready to carry it.
+keep every adapter's launch path ready to carry it. ([[agent-provider-interface]] §8 adds the
+*into-a-live-agent* path: a durable per-card inbox drained by a **capability-keyed boundary-injector**
+(`capabilities.steering`), so delivery into a running turn is a capability, not a per-adapter `if`.)
 
 ### `Adapter.mapReport(kind: String, payload: JSONValue, model: AgentModel) -> StatusReport?`
+> **Reconciled to [[agent-provider-interface]] §4 (D3) / §6:** `mapReport` is the report-side face of the
+> adapter's `parse() -> NormalizedEvent[]` core. The deepening normalizes the *event* (`assistantText |
+> toolUse{status} | tokenUsage | turnEnded | needsApproval | sessionId{discovered}`) and treats `ctxPct`
+> derivation (`tokens ÷ contextWindow`) as one mapping over that stream, with the window from the vendored
+> registry. The telemetry **transport** also generalizes beyond Claude's hooks-push to Codex rollout-tail
+> and a PTY-scrape fallback (§6 D6).
 - **Does:** translate one of the provider's live-state events into the shared `StatusReport` (the same
   snapshot/event split `OrchestraService.report` already merges). May **derive** fields — Codex computes
   `ctxPct` from the payload's token counts ÷ `model.contextWindow`. `nil` = nothing / unknown kind.
@@ -83,6 +100,10 @@ keep every adapter's launch path ready to carry it.
   and the first report (SessionStart / a discovered rollout id) fills it via the existing rollover logic.
   Recovery (`isResumable`), `sessions`, and `resume` must all tolerate the nil window (an unresumable card
   with no id + no transcript is just marked `.dead`, exactly as today).
+- **Reconciled to [[agent-provider-interface]] §5 (D5):** discover-and-store is the **default** model
+  (Claude's seedable id is the optimization), and the `isResumable`/transcript-stat coupling is replaced by
+  an adapter `resumeHandle(task)` — so Codex's `~/.codex/sessions/.../rollout-*.jsonl` answers resumability
+  without a Claude-structural `~/.claude` path.
 
 ### `OrchestraService.report(_ id:, kind: String, payload: JSONValue)`
 - **Does:** resolve `task.agentId` → adapter → `adapter.mapReport(kind, payload)`; if non-nil, merge via

@@ -82,6 +82,15 @@ reverse path. **Out of scope:** child-card hierarchy, graph UI, the concrete ski
   session re-learns its task without a re-handed prompt.
 - **Degrade:** an agent that reports no progress items just shows today's flat status — nothing regresses.
 
+> **Normalized-event seam (per [[agent-provider-interface]] §6).** The inbound report/telemetry path is
+> no longer Claude-specific: each adapter's `parse()` collapses its agent's output — Claude hooks-push,
+> Codex rollout-tail, or the PTY-scrape fallback — into **one normalized event type**, with the mapping
+> resolved server-side by `agentId` and the board rendered from a **snapshot + JSON-Patch deltas**. The
+> `progress`/`note`/`link` verbs here ride that **same normalized bus** (they are provider-agnostic
+> because a skill/tool calls the verb, not a model hook), and `additionalContext` (the keystone) is
+> **delivered per-adapter** (Claude `SessionStart`/`--append-system-prompt`; Codex `AGENTS.md`/seed). See
+> the seam note; not duplicated here.
+
 ## Complexity & risks
 
 | Risk | Note |

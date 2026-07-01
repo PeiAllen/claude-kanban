@@ -7,7 +7,12 @@ of the axes is fully built yet — each is deepened to L3 + tests and built when
 work has already landed underneath them**: the freeform/borrowed/scratch/read-only PRs (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)) shipped the non-git card substrate, which
 realizes axis 4's *non-git cards* half and provides the standalone freeform region, leaving **search** as
-axis 4's live remainder. The principle is to design every change *toward* these axes, never away from them.
+axis 4's live remainder. Axes **2, 3, and 6's handoff delivery** have since been **consolidated and
+deepened to a single implementable L3 + tests design** — the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
+vault (an agent-agnostic adapter seam with a per-agent **capability descriptor**, a **Codex** adapter, and
+the **F1/F2/F3 live-delivery** functions that handoff/fork/fan-out compose from), with a defined **PR
+forest** and every open question resolved (2026-07-01); it stays design-only until those PRs land. The
+principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -48,8 +53,14 @@ Sequencing guidance from the design gates:
    mapping seam lands. Studying Codex CLI forced three design points now baked into the model-providers
    design: session ids are **two-mode** (Claude seeds an id; Codex can't, so it's discovered from the
    report), `ctxPct` is **adapter-derived** where the agent doesn't report it (compute from tokens ÷ a
-   new `AgentModel.contextWindow`), and report wiring is `{files, env, argv}` + trust, not one
-   `--settings` file. Report mapping resolves **server-side** from the card's `agentId`.
+   new `AgentModel.contextWindow`, from a per-adapter **offline model table**), and report wiring is
+   `{files, env, argv}` + trust, not one `--settings` file. The L3 design refines report handling further:
+   the daemon owns only the **telemetry transport** (push / rollout-tail / pty-scrape, keyed by the
+   capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
+   (agent-dependent) — so `ReportHelper.map` relocates out of the CLI target into the adapter. The whole
+   build is sequenced as a **stacked-PR forest** (A1 capability-descriptor freeze → A2 telemetry seam →
+   B1/B2 Codex adapter + rollout-tail, in parallel with the trust-ledger and live-delivery tracks) in
+   [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
 4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
    field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
    whole handoff/fork/fan-out/subagent family — *one primitive at four topologies* (see
@@ -79,10 +90,14 @@ A few decisions are explicitly deferred until the relevant axis is built:
   worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
   what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
   the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-handoff.md` §1.)
-- **Context seed delivery** — inject the seed as a first message, or via `--append-system-prompt`, and
-  with what precedence vs the hooks `--settings`? (`context-passing-topologies.md` §9.)
-- **Merge-back timing** — inject a fork's conclusion on the parent's next turn, or interrupt the live
-  agent immediately? (`context-passing-topologies.md` §9.)
+- **Context seed delivery** — the **carrier is now decided**: a defaulted `AdapterContext.seed` field,
+  frozen in the seam contract (PR A1). What remains open is the **per-agent injection mechanism** — first
+  message vs `--append-system-prompt` / `AGENTS.md`, and its precedence vs the hooks `--settings` — scoped
+  to PR C3. (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
+- **Merge-back timing** — **resolved** (agent-provider L3): a fork's conclusion rides the durable
+  **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
+  non-goal); if the parent is idle, **wake (F2)** triggers a turn first, then F3 delivers. Concurrent
+  returns coalesce in the inbox and drain together. (`agent-provider-interface/01-design.md` §4.)
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?
   (`stacked-branches-and-guardian-handoff.md` §7.1.)
 

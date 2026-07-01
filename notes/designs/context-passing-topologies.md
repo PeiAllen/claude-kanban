@@ -10,6 +10,7 @@ related:
   - "[[agent-integration/index|agent-integration (axis 3)]]"
   - "[[configurable-columns/index|configurable-columns (axis 1)]]"
   - "[[freeform-and-borrowed-cards/index|freeform-and-borrowed-cards]]"
+  - "[[agent-provider-interface|agent-provider interface]]"
 ---
 
 # Context-Passing Topologies — Handoff / Fork / Fan-out on One Seed
@@ -105,6 +106,15 @@ ctx-overflow — unpreventable, must be tolerated: persisted inbox + terminal su
 item + orphan-promotion). Full matrix in [[stacked-branches-and-guardian-handoff|the stacked-branches
 note §7]].
 
+> **Delivery is now concretely specified — see [[agent-provider-interface]] §8.** The `pendingContext`
+> inbox here is the provider-agnostic half; the *injector* that drains it is capability-keyed. The model
+> is a **durable inbox + capability-keyed boundary-injector** that queues until the agent's next natural
+> **turn boundary** (the universal industry pattern — never mid-turn preemption). Concretely: a **Stop-hook
+> drain** is primary on Claude+Codex (it forces consumption with no steering and no restart —
+> `decision:block` + `additionalContext`/`reason`); an **MCP `check_inbox`** tool is the portable-but-
+> cooperation-required fallback; an **idle parent** (no turn ending) needs exactly one wake. Don't
+> duplicate that mechanism here — §8 there owns it.
+
 ## 6. Subagents — Orchestra needs nothing to enable
 
 Subagents (Claude Agent/Task tool) run **inside** a card's one `claude` process — Orchestra sees one
@@ -144,6 +154,9 @@ and the rest is topology.**
 ## 9. Open items
 
 - Seed delivery: seeded first message vs `--append-system-prompt` (precedence vs the hooks `--settings`).
-- Merge-back timing: inject on the card's **next turn** vs interrupt the live agent immediately.
+- Merge-back timing: **resolved → next-boundary via the inbox** (queue until the agent's next turn
+  boundary; never interrupt the live agent mid-turn). Mechanism per [[agent-provider-interface]] §8
+  (Stop-hook drain primary; one wake for an idle parent). The live/synchronous path is reserved for
+  approvals only.
 - `parentCardId` board affordance: ephemeral child popover vs full board citizen (link verb, axis 3).
 - Fan-out: does the plan card persist as an epic or archive after spawning? (lineage/grouping UI.)

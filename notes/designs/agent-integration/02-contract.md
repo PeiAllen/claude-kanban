@@ -98,6 +98,17 @@ the `StatusReport` snapshot path).
   Claude subagents are one primitive that all unlock from this seed — **build it first; the rest is
   topology.** It also carries the fork **merge-back inbox** safely (the inbox injects as
   `additionalContext` on the card's next live turn).
+- **Per-adapter delivery (per [[agent-provider-interface]] §6).** `additionalContext` stays the keystone,
+  but how it reaches the session is an **adapter responsibility** — Claude via `SessionStart`
+  `additionalContext` / `--append-system-prompt`, Codex via an `AGENTS.md` write / `-c
+  model_instructions_file` / seed; adapters that can't use it ignore it. Don't branch on provider here.
+
+> **Report/telemetry path = the normalized-event seam ([[agent-provider-interface]] §6).** The inbound
+> channel that carries `progress`/`note`/`link` and status is now provider-generalized: each adapter
+> `parse()`s its agent's output (hooks-push / rollout-tail / PTY-scrape) into **one `NormalizedEvent`
+> type**, the mapping resolved server-side by `agentId`, and the board renders from a **snapshot +
+> JSON-Patch deltas**. These verbs ride that **same normalized bus**, so nothing in this contract is
+> Claude-structural. Cross-linked, not duplicated.
 
 ## Library / framework decisions
 

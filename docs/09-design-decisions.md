@@ -82,7 +82,10 @@ path. The decision rule: *return to the thread?* → fork or subagent; *replace 
 a `send`-to-tmux (which throws if the session died), and orphaned forks are promoted to standalone cards
 rather than cascade-killed. The guiding maxim: **handoff carries intent, artifacts carry facts** — the
 seed is for navigation and next steps, while committed code, plan files, and the card description carry
-the durable record, so successive handoffs don't degrade into a telephone game.
+the durable record, so successive handoffs don't degrade into a telephone game. The **live-delivery
+substrate** these topologies compose from is now specified as three functions — **F1** resume-in-card,
+**F2** wake an idle card, **F3** the durable per-card **inbox** (merge-back drains at the next turn-end) —
+in the [agent-provider interface](../notes/designs/agent-provider-interface/index.md) L3 design.
 (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
