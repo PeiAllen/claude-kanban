@@ -16,6 +16,7 @@ struct SpawnSheet: View {
     @State private var prompt = ""
     @State private var repo = ""
     @State private var branch = ""
+    @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
 
@@ -38,10 +39,29 @@ struct SpawnSheet: View {
     @State private var repoQuery = ""
     @FocusState private var repoSearchFocused: Bool
 
-    /// The agents the daemon actually supports. Falls back to the Claude Code adapter's own catalog
-    /// when the daemon hasn't answered yet — never invents providers that aren't wired up.
-    private var modelOptions: [AgentModel] {
-        model.models.isEmpty ? ClaudeCodeAdapter().models() : model.models
+    /// The agents the daemon actually supports (each with its own model catalog). Falls back to the
+    /// Claude Code adapter alone when the daemon hasn't answered yet — never invents providers that
+    /// aren't wired up.
+    private var agentOptions: [AgentInfo] {
+        if !model.agents.isEmpty { return model.agents }
+        let a = ClaudeCodeAdapter()
+        return [AgentInfo(id: a.id, name: a.name, icon: a.icon, models: a.models())]
+    }
+
+    /// The currently-selected agent (falls back to the first available).
+    private var selectedAgent: AgentInfo? {
+        agentOptions.first { $0.id == agentSel } ?? agentOptions.first
+    }
+
+    /// The selected agent's models — the Model picker's options.
+    private var modelOptions: [AgentModel] { selectedAgent?.models ?? [] }
+
+    /// The default model for the selected agent: the configured default when it belongs to this agent,
+    /// else the agent's first model. Used on appear and whenever the agent changes.
+    private func defaultModelForAgent() -> String {
+        let models = modelOptions
+        if let d = model.config.defaultModel, models.contains(where: { $0.id == d }) { return d }
+        return models.first?.id ?? ""
     }
 
     /// Absolute paths of the git repositories under the configured repos root. The daemon only allows
@@ -76,14 +96,20 @@ struct SpawnSheet: View {
         }
     }
 
+    /// `--agent <id>` only when a non-default agent is picked (keeps the common Claude preview clean).
+    private var agentFlag: String {
+        guard !agentSel.isEmpty, agentSel != model.config.defaultAgentId else { return "" }
+        return " --agent \(agentSel)"
+    }
+
     private var cliPreview: String {
         switch mode {
         case .worktree:
-            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
         case .freeform:
-            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
         case .scratch:
-            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\" --scratch"
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --scratch"
         }
     }
 
@@ -141,6 +167,17 @@ struct SpawnSheet: View {
                     field("Directory") { directoryPicker }
                 case .scratch:
                     field("Directory") { scratchNote }
+                }
+
+                if agentOptions.count > 1 {
+                    field("Agent") {
+                        HStack(spacing: 2) {
+                            ForEach(agentOptions) { a in agentButton(a) }
+                        }
+                        .padding(2)
+                        .background(theme.chip)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 }
 
                 field("Model") {
@@ -222,16 +259,18 @@ struct SpawnSheet: View {
 
                 Button {
                     let m = modelSel.isEmpty ? nil : modelSel
+                    let a = agentSel.isEmpty ? nil : agentSel
                     _Concurrency.Task {
                         switch mode {
                         case .worktree:
-                            await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn)
+                            await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
+                                              agent: a)
                         case .freeform:
                             await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                              cwd: cwd, access: readOnly ? .readOnly : .readWrite)
+                                              agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
                         case .scratch:
                             await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                              scratch: true)
+                                              agent: a, scratch: true)
                         }
                         model.showSpawn = false
                     }
@@ -251,10 +290,15 @@ struct SpawnSheet: View {
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.4), radius: 35, x: 0, y: 28)
         .onAppear {
             if repo.isEmpty { repo = repoCandidates.first ?? "" }
-            if modelSel.isEmpty { modelSel = model.config.defaultModel ?? modelOptions.first?.id ?? "" }
+            if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
+            // Guard against a stale/unknown default agent id (adapter disabled, etc.).
+            if !agentOptions.contains(where: { $0.id == agentSel }) { agentSel = agentOptions.first?.id ?? "" }
+            if modelSel.isEmpty { modelSel = defaultModelForAgent() }
             startIn = model.spawnDefaultColumn == .plan ? .plan : .impl
             branches = gitBranches(in: repo)
         }
+        // Switching agent re-scopes the Model picker: reset to this agent's default/first model.
+        .onChange(of: agentSel) { modelSel = defaultModelForAgent() }
         .onChange(of: repo) {
             branches = gitBranches(in: repo)
             if branch.isEmpty || !branches.contains(branch) { branch = "" }
@@ -516,6 +560,24 @@ struct SpawnSheet: View {
             .background(theme.field)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// One segment of the Agent picker — an adapter's icon + name. Selecting it re-scopes the Model
+    /// picker to that agent's catalog (via `.onChange(of: agentSel)`).
+    private func agentButton(_ info: AgentInfo) -> some View {
+        let active = agentSel == info.id
+        return Button { agentSel = info.id } label: {
+            HStack(spacing: 5) {
+                Image(systemName: info.icon).font(.system(size: 11, weight: .semibold))
+                Text(info.name).font(F.ui(12, .semibold))
+            }
+            .foregroundColor(active ? theme.text : theme.text2)
+            .padding(.horizontal, 12).frame(maxWidth: .infinity).frame(height: 28)
+            .background(active ? theme.card : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func modeButton(_ label: String, _ value: Mode) -> some View {

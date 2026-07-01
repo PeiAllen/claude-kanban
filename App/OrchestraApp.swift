@@ -160,6 +160,14 @@ private struct DebugLaunchHook: ViewModifier {
                branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-4-6", ago: 7200),
         ]
     }
+    /// The agent catalog for the headless Spawn-sheet screenshot (`ORCH_SHOW=spawn`) — the built-in
+    /// adapters mapped to `AgentInfo`, same shape the live `agents` RPC returns. Explicitly typed as
+    /// `[any Adapter]` so the heterogeneous literal doesn't stall type inference.
+    static var mockAgents: [AgentInfo] {
+        let adapters: [any Adapter] = [ClaudeCodeAdapter(), CodexAdapter()]
+        return adapters.map { AgentInfo(id: $0.id, name: $0.name, icon: $0.icon, models: $0.models()) }
+    }
+
     /// Visual-check harness for the inspector's shell strip (scripts/orch-ui-shot.sh). Injects one
     /// mock *running* card (so AgentChrome renders, not Recovery) and selects it — no daemon needed,
     /// so it never touches the live app/daemon. `ORCH_SHELLS_N` (default 2) sets how many shell tabs
@@ -235,7 +243,15 @@ private struct DebugLaunchHook: ViewModifier {
                 exit(0)
             }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {
-            case "spawn": model.showSpawn = true
+            case "spawn":
+                // Seed the agent catalog (no daemon in this hook) so the Spawn sheet's agent picker
+                // renders — mirrors what the `agents` RPC would return from the live registry.
+                model.agents = DebugLaunchHook.mockAgents
+                // ORCH_SPAWN_AGENT preselects an agent (screenshots the per-agent model list).
+                if let a = ProcessInfo.processInfo.environment["ORCH_SPAWN_AGENT"] {
+                    model.config.defaultAgentId = a
+                }
+                model.showSpawn = true
             case "settings": openSettings()
             case "done":
                 model.archived = DebugLaunchHook.mockArchived

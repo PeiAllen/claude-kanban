@@ -82,4 +82,11 @@ public struct AgentRegistry: Sendable {
     public func list() -> [any Adapter] {
         adapters.values.filter(\.enabled).sorted { $0.id < $1.id }
     }
+
+    /// The enabled adapter that catalogs `modelId`, if any. Routes a spawn that names a model but not an
+    /// agent (the app's flat model picker sends only the model id) to the adapter that owns it. Catalog-
+    /// driven — never sniffs the id string. First match wins (model ids don't overlap across adapters).
+    public func adapter(forModel modelId: String) -> (any Adapter)? {
+        list().first { a in a.models().contains { $0.id == modelId } }
+    }
 }

@@ -19,6 +19,7 @@ final class BoardModel: ObservableObject {
     @Published var selectedId: UUID?
     @Published var config = Config()
     @Published var models: [AgentModel] = []
+    @Published var agents: [AgentInfo] = []
     @Published var connected = false
     @Published var connecting = false
     @Published var toasts: [Toast] = []
@@ -176,6 +177,7 @@ final class BoardModel: ObservableObject {
         if let arch = try? await client.call("archivedList").decode([Task].self) { archived = arch }
         if let cfg = try? await client.call("getConfig").decode(Config.self) { config = cfg }
         if let ms = try? await client.call("models").decode([AgentModel].self) { models = ms }
+        if let ag = try? await client.call("agents").decode([AgentInfo].self) { agents = ag }
     }
 
     private func apply(_ event: Event) {
@@ -209,12 +211,14 @@ final class BoardModel: ObservableObject {
     // MARK: actions
 
     func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
+               agent: String? = nil,
                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
         ]
         if let model { p["model"] = .string(model) }
+        if let agent { p["agent"] = .string(agent) }
         // Freeform card: a borrowed cwd (and its access mode) instead of a worktree.
         if let cwd { p["cwd"] = .string(cwd); p["access"] = .string(access.rawValue) }
         // Scratch card: a fresh throwaway dir the daemon mkdir's (and rm -rf's on archive).

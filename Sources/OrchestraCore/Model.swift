@@ -116,6 +116,19 @@ public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     }
 }
 
+/// A selectable agent adapter surfaced to clients (the app's Spawn sheet agent picker). Carries the
+/// adapter's identity + its own model catalog so the UI can offer "which agent, then which of its
+/// models" without a second round-trip. Built from the registry — never invents agents that aren't wired up.
+public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
+    public let id: String            // adapter id (-> spawn `agent` param)
+    public let name: String          // human label
+    public let icon: String          // SF Symbol name
+    public let models: [AgentModel]  // this agent's selectable models
+    public init(id: String, name: String, icon: String, models: [AgentModel]) {
+        self.id = id; self.name = name; self.icon = icon; self.models = models
+    }
+}
+
 // MARK: - Task (the card)
 
 /// What kind of directory a card runs in. Drives archive cleanup ("Orchestra deletes only dirs it

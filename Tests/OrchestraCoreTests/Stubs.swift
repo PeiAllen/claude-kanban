@@ -197,7 +197,8 @@ final class StubGrantResolver: TrustGrantResolver, @unchecked Sendable {
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
     static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .claudeCode,
-                     grantResolver: any TrustGrantResolver = SurfaceGrantResolver())
+                     grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
+                     registry: AgentRegistry? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
@@ -212,7 +213,7 @@ enum TestEnv {
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
-                                   registry: AgentRegistry(adapters: [adapter]),
+                                   registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver)
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
