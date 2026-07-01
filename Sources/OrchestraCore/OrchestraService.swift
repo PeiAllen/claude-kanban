@@ -178,7 +178,13 @@ public actor OrchestraService {
     // MARK: - spawn
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
-        let adapter = try registry.get(input.agentId ?? config.defaultAgentId)
+        // Route to the adapter: an explicit `agentId` wins; else the adapter that owns the chosen model
+        // (the app's flat picker sends only a model id — this is what makes Codex startable from a
+        // model-only selection); else the configured default.
+        let resolvedAgentId = input.agentId
+            ?? input.model.flatMap { registry.adapter(forModel: $0)?.id }
+            ?? config.defaultAgentId
+        let adapter = try registry.get(resolvedAgentId)
         // The card id is generated up front so a scratch spawn can name its dir after the card.
         let id = UUID()
         // Scratch vs freeform (borrowed) vs worktree. A scratch spawn mkdir's a fresh throwaway
@@ -501,8 +507,26 @@ public actor OrchestraService {
 
     // (column display names live on `Column.displayName`)
 
+    /// The selectable models. With `agentId`, just that adapter's catalog. Without, the UNION across
+    /// every enabled adapter — so the app's flat "Model" picker lists Claude + Codex together — with the
+    /// DEFAULT agent's models first (the picker's first entry stays a default-agent model).
     public func models(agentId: String? = nil) -> [AgentModel] {
-        (try? registry.get(agentId ?? config.defaultAgentId).models()) ?? []
+        if let agentId { return (try? registry.get(agentId).models()) ?? [] }
+        return orderedAdapters().flatMap { $0.models() }
+    }
+
+    /// The selectable AGENTS (adapter id/name/icon + each one's model catalog) for the Spawn sheet's
+    /// agent picker, DEFAULT agent first. The union `models()` above stays for the flat/default-model
+    /// surfaces (e.g. Settings); this is the per-agent grouping.
+    public func agents() -> [AgentInfo] {
+        orderedAdapters().map { AgentInfo(id: $0.id, name: $0.name, icon: $0.icon, models: $0.models()) }
+    }
+
+    /// Enabled adapters with the configured default agent first (shared ordering for `models()`/`agents()`).
+    private func orderedAdapters() -> [any Adapter] {
+        let adapters = registry.list()
+        return adapters.filter { $0.id == config.defaultAgentId }
+             + adapters.filter { $0.id != config.defaultAgentId }
     }
 
     /// Emit a generic `.command` activity for a public verb arriving over CLI/MCP that doesn't already

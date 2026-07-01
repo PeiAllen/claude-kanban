@@ -233,3 +233,86 @@ struct CodexAdapterTrustTests {
         #expect(toml.components(separatedBy: "[projects.\"/wt\"]").count == 2)  // exactly one section
     }
 }
+
+/// The model→agent ROUTING that makes Codex startable from the app's flat "Model" picker: the daemon
+/// unions every enabled adapter's models into one list, and a spawn that names only a model resolves to
+/// the adapter that owns it (no explicit agentId needed).
+@Suite("Codex model routing — union list + model-only spawn")
+struct CodexModelRoutingTests {
+
+    @Test("adapter(forModel:) routes a model id to its owning adapter (catalog-driven)")
+    func routesModelToOwningAdapter() {
+        let reg = AgentRegistry()                                   // Claude + Codex, both enabled
+        #expect(reg.adapter(forModel: "gpt-5-codex")?.id == "codex")
+        let claudeModel = try! reg.get("claude-code").models().first!.id
+        #expect(reg.adapter(forModel: claudeModel)?.id == "claude-code")
+        #expect(reg.adapter(forModel: "no-such-model") == nil)     // unknown → nil (never fabricates)
+    }
+
+    @Test("models() unions every enabled adapter, default agent first")
+    func modelsUnionAllAdapters() async {
+        let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
+        let ids = await env.svc.models().map(\.id)
+        #expect(ids.contains("gpt-5-codex"))                        // Codex now surfaced in the picker
+        #expect(ids.contains { $0.contains("claude") })            // Claude still there
+        // Default agent (claude-code) lists first, so the picker's default entry stays a Claude model.
+        #expect(AgentRegistry().adapter(forModel: ids.first!)?.id == "claude-code")
+    }
+
+    /// A registry with a side-effect-free default agent (a Stub keyed "claude-code", so the real
+    /// ClaudeTrust write to ~/.claude.json never fires) alongside an ISOLATED Codex (fake bin + a
+    /// CODEX_HOME under the scratch base). Distinct model catalogs (m1/m2 vs gpt-*) so routing is
+    /// unambiguous.
+    private func isolatedRegistry(_ base: String) -> AgentRegistry {
+        let stub = StubAdapter(transcriptDir: base + "/tx", id: "claude-code", name: "Stub")
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
+        return AgentRegistry(adapters: [stub, codex])
+    }
+
+    @Test("agents() lists every enabled adapter (id/name/icon + its models), default first")
+    func agentsListsAdapters() async {
+        let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
+        let agents = await env.svc.agents()
+        #expect(agents.map(\.id) == ["claude-code", "codex"])      // default agent first
+        let codex = try! #require(agents.first { $0.id == "codex" })
+        #expect(codex.name == "Codex")
+        #expect(!codex.icon.isEmpty)
+        #expect(codex.models.contains { $0.id == "gpt-5-codex" })  // carries its own catalog
+    }
+
+    @Test("spawn with a Codex model (no agentId) lands on the Codex adapter")
+    func spawnCodexModelRoutesToCodex() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base))
+        let repo = TestEnv.repo(env.base)
+        // Model only — the way the app's flat picker sends it — no agentId.
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5-codex"))
+        #expect(t.agentId == "codex")                               // routed to Codex, not the default
+        #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
+        let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
+        #expect(argv.first == "fake-codex")                         // launched the Codex adapter's argv
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("spawn with no model still uses the default agent")
+    func spawnNoModelUsesDefault() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base))
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        #expect(t.agentId == "claude-code")                        // default (config.defaultAgentId) preserved
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("explicit agentId wins over the model's owning adapter")
+    func explicitAgentIdWins() async throws {
+        let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
+        let env = TestEnv.make(registry: isolatedRegistry(base))
+        let repo = TestEnv.repo(env.base)
+        // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
+        let t = try await env.svc.spawn(
+            SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5-codex", agentId: "claude-code"))
+        #expect(t.agentId == "claude-code")
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}

@@ -46,6 +46,8 @@ public struct CommandRegistry: Sendable {
                         "scratch": boolProp("Scratch: create a fresh throwaway ~/.orchestra/scratch/<id> dir, "
                             + "run there, and rm -rf it on archive. Omit repo/branch/cwd when set."),
                         "model": strProp("Model id (from the adapter's list)"),
+                        "agent": strProp("Agent adapter to run: 'claude-code' (default) or 'codex'. Omit to "
+                            + "infer from `model`, else use the configured default agent."),
                         "col": colProp(startInOnly: true),
                         "seed": strProp("Fork/fan-out context (the parent slice / handoff summary) the "
                             + "fresh card opens on — folded ahead of `prompt` into the launch turn."),
@@ -55,6 +57,7 @@ public struct CommandRegistry: Sendable {
                     repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
                     model: p.optString("model"),
                     startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
+                    agentId: p.optString("agent"),
                     cwd: p.optString("cwd"),
                     access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite,
                     scratch: p["scratch"]?.boolValue ?? false,

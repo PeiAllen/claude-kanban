@@ -131,6 +131,8 @@ public final class ControlServer: @unchecked Sendable {
             return try JSONValue(encodable: newConfig)
         case "models":
             return try JSONValue(encodable: await service.models(agentId: req.params?.optString("agentId")))
+        case "agents":
+            return try JSONValue(encodable: await service.agents())
         case "archivedList":
             return try JSONValue(encodable: await service.archivedTasks())
         case "openInZed":
