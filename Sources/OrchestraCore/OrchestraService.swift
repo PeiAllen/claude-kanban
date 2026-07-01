@@ -165,7 +165,7 @@ public actor OrchestraService {
                                  hooksPath: Config.hooksPath, access: input.access,
                                  trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
-        try sessions.ensure(created, argv: adapter.start(ctx))
+        try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
 
         emit(.taskUpserted(created))
         emitActivity(.spawned, created, source, "Spawned “\(title)”")

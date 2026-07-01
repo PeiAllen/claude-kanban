@@ -48,13 +48,16 @@ public struct SessionManager: Sendable {
     /// Ensure a session exists for the task, running `argv` (adapter start OR resume) in the agent
     /// window with ORCHESTRA_TASK_ID/ORCHESTRA_SOCK exported. Idempotent. Returns (name, created).
     @discardableResult
-    public func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {
+    public func ensure(_ task: Task, argv: [String], env: [String: String] = [:]) throws -> (name: String, created: Bool) {
         let name = sessionName(task.id)
         if try isAlive(name) { return (name, false) }
 
         var args = ["new-session", "-d", "-s", name, "-n", "agent", "-c", task.cwd,
                     "-e", "ORCHESTRA_TASK_ID=\(task.id.uuidString.lowercased())",
                     "-e", "ORCHESTRA_SOCK=\(sockEnvPath)"]
+        // Per-agent environment (e.g. Codex's pinned CODEX_HOME). Sorted for deterministic argv;
+        // Claude passes none, so its launch command stays byte-identical.
+        for (k, v) in env.sorted(by: { $0.key < $1.key }) { args += ["-e", "\(k)=\(v)"] }
         args.append("--")
         args += argv
         let r = try tmux(args)

@@ -12,7 +12,7 @@ public protocol WorktreeManaging: Sendable {
 public protocol SessionManaging: Sendable {
     func sessionName(_ id: UUID) -> String
     @discardableResult
-    func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool)
+    func ensure(_ task: Task, argv: [String], env: [String: String]) throws -> (name: String, created: Bool)
     func isAlive(_ name: String) throws -> Bool
     @discardableResult
     func newShellWindow(_ name: String, cwd: String) throws -> String
@@ -27,6 +27,11 @@ public protocol SessionManaging: Sendable {
 public extension SessionManaging {
     // Default so test stubs needn't implement it; the real `SessionManager` overrides.
     func closeShellWindow(_ name: String, window: String) throws {}
+    /// Convenience: launch with no extra environment (keep-alive shells + existing callers/tests).
+    @discardableResult
+    func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {
+        try ensure(task, argv: argv, env: [:])
+    }
 }
 
 extension WorktreeManager: WorktreeManaging {}
