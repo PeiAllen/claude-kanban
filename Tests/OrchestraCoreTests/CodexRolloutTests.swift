@@ -180,3 +180,84 @@ struct RolloutTailerTests {
         #expect(await t.newLines(cardId: b, path: path) == ["1", "2"])   // b starts fresh
     }
 }
+
+@Suite("Codex telemetry e2e — tail → parse → report → board")
+struct CodexTelemetryE2ETests {
+
+    /// Spawn a codex card with an isolated CODEX_HOME + StubSessions, and return the pieces.
+    private func makeEnv() async throws -> (svc: OrchestraService, card: Task, rollout: String) {
+        let base = NSTemporaryDirectory() + "codex-tel-\(UUID().uuidString)"
+        let work = base + "/work"
+        let codexHome = base + "/codexhome"
+        let day = codexHome + "/sessions/2026/07/01"
+        try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+        let sid = UUID().uuidString.lowercased()
+        let rollout = "\(day)/rollout-2026-07-01T10-00-00-\(sid).jsonl"
+        FileManager.default.createFile(atPath: rollout, contents: nil)
+
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)])
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
+        let svc = OrchestraService(config: config,
+                                   store: TaskStore(path: base + "/tasks.json"),
+                                   registry: AgentRegistry(adapters: [codex]),
+                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   sessions: StubSessions(),
+                                   trust: TrustLedger(path: base + "/trust.json"))
+        let card = try await svc.spawn(SpawnInput(prompt: "look", model: "gpt-5-codex",
+                                                  agentId: "codex",
+                                                  cwd: PathResolver.canonical(work)))
+        return (svc, card, rollout)
+    }
+
+    private func append(_ path: String, _ line: String) {
+        let fh = FileHandle(forWritingAtPath: path)!
+        fh.seekToEndOfFile(); fh.write(Data((line + "\n").utf8)); try? fh.close()
+    }
+
+    @Test("pollTelemetry tails a Codex rollout and updates the card's ctxPct + status")
+    func tailUpdatesBoard() async throws {
+        let (svc, card, rollout) = try await makeEnv()
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5-codex","total_token_usage":{"total_tokens":68000}}}}"#)
+        await svc.pollTelemetry()
+
+        let after = try #require(await svc.list().first { $0.id == card.id })
+        #expect(after.ctxPct == 25.0)
+        #expect(after.status == .running)
+    }
+
+    @Test("idle signal reaches the board: TurnComplete → waiting")
+    func idleReachesBoard() async throws {
+        let (svc, card, rollout) = try await makeEnv()
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#)
+        await svc.pollTelemetry()
+        let after = try #require(await svc.list().first { $0.id == card.id })
+        #expect(after.status == .waiting)
+    }
+
+    @Test("seq-gate holds end-to-end: a stale (earlier-timestamp) ctx line can't overwrite a fresher one")
+    func seqGateHoldsE2E() async throws {
+        let (svc, card, rollout) = try await makeEnv()
+        // Fresh ctx first (later ts, 50%), then a STALE ctx (earlier ts, 10%) appended after.
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5-codex","total_token_usage":{"total_tokens":136000}}}}"#)
+        await svc.pollTelemetry()
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5-codex","total_token_usage":{"total_tokens":27200}}}}"#)
+        await svc.pollTelemetry()
+
+        let after = try #require(await svc.list().first { $0.id == card.id })
+        #expect(after.ctxPct == 50.0)   // the stale 10% snapshot was dropped by the seq-gate
+    }
+
+    @Test("a Claude (hooksPush) card is NOT tailed by pollTelemetry")
+    func claudeNotTailed() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        await env.svc.pollTelemetry()   // must be a no-op for hooksPush; no crash, no change
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == t.status)
+    }
+}

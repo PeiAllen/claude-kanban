@@ -14,6 +14,9 @@ public actor OrchestraService {
     var resolver: PathResolver
     /// Per-adapter subscription rate state for the authMode soft-warn (E2 / q4 — advisory only, no cap).
     let authRate = AuthRateMonitor()
+    /// Daemon-side rollout TRANSPORT for `fileTail` agents (Codex). Tracks a per-card byte offset; the
+    /// poll loop hands its lines to `adapter.parse`. Claude (`hooksPush`) never touches it.
+    let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
     /// Consecutive auto-injects per card since the last genuine user prompt — the F3 loop guard.
@@ -94,6 +97,32 @@ public actor OrchestraService {
             return .trusted
         case .borrowed:
             return await trust.isTrusted(cwd) ? .trusted : .needsGrant
+        }
+    }
+
+    // MARK: - telemetry (fileTail transport)
+
+    /// One tick of the daemon-side rollout tail. For every live `fileTail` card (Codex), read the lines
+    /// appended to its rollout file since last tick and merge each through the adapter's own `parse`
+    /// (agent-dependent, D3) via `report` (seq-gated). Push agents (Claude `hooksPush`) are skipped —
+    /// their telemetry arrives out-of-band via the `_report` endpoint, so this stays Claude-inert.
+    /// Driven by the daemon's 2s poll loop, alongside `reconcileLiveness`.
+    public func pollTelemetry() async {
+        let tasks = await store.all()
+        for t in tasks where !t.archived && t.status != .dead {
+            guard let adapter = try? registry.get(t.agentId),
+                  adapter.capabilities.telemetry == .fileTail else { continue }
+            // Resolve the rollout path from the adapter (uses the tracked id, else discovers the newest).
+            let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
+                                     name: t.title, access: t.access)
+            guard let path = adapter.sessionInfo(ctx, current: t.agentSessionId,
+                                                 prior: t.priorSessionIds)?.transcriptPath,
+                  FileManager.default.fileExists(atPath: path) else { continue }
+            for line in await tailer.newLines(cardId: t.id, path: path) {
+                if let patch = adapter.parse(.fileTail(line: line)) {
+                    try? await report(t.id, patch)
+                }
+            }
         }
     }
 

@@ -41,6 +41,7 @@ _Concurrency.Task {
     while true {
         try? await _Concurrency.Task.sleep(for: .seconds(2))
         await service.reconcileLiveness()
+        await service.pollTelemetry()   // tail fileTail (Codex) rollouts → parse → report
     }
 }
 
