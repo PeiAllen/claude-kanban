@@ -166,8 +166,8 @@ carrying the former CLI logic **verbatim**; the hidden `orchestra _report` helpe
 push transport — calls `ClaudeCodeAdapter().parse(.hooksPush(...))` instead of a local `map`. The daemon's
 `report` endpoint and the `OrchestraService.report` seq-gate merge are **untouched**, so Claude telemetry
 is byte-identical (the pre-existing `ReportTests` stayed green unchanged). The `fileTail` parse and the
-daemon-side rollout tailer that feeds it — the same `adapter.parse` seam from a different transport — land
-with the Codex adapter (PR B2). Like A1 and E2, this is a single forest PR of plumbing, not a whole axis,
+daemon-side rollout tailer that feeds it — the same `adapter.parse` seam from a different transport — have
+since landed with the Codex adapter (PRs B1/B2, below). Like A1 and E2, this is a single forest PR of plumbing, not a whole axis,
 so it stays here as history rather than migrating a roadmap row. (As-built symbols are recorded in
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1.)
 
@@ -223,6 +223,38 @@ Like the forest PRs above, C2 is one live-delivery function, not a whole axis, s
 the remaining live-delivery function — **F1** resume-in-card — and the Codex send-keys wake keep the roadmap's
 model-providers / context-continuity rows open. (As-built symbols are recorded in
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+
+The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its rollout-tail telemetry**
+(`notes/plans/2026-07-01-b2-codex-rollout-tail.md`). Together they add the **second `Adapter` conformer**
+— the first proof the provider seam is agent-agnostic — registered in the default `AgentRegistry`
+alongside Claude (`[ClaudeCodeAdapter(), CodexAdapter()]`). **B1** builds the launch/session/trust half:
+`CodexAdapter` (`id = "codex"`) launches **read-only-first** (`-s read-only -a never`, write/approvals
+deferred), uses a **discovered** session id (it can't be seeded, so `sessionInfo` reads the newest
+`$CODEX_HOME/sessions/**/rollout-*.jsonl` back), isolates its home via `env["CODEX_HOME"]` (B1 also wired
+`Adapter.env` into the tmux launch — Claude byte-identical), and mirrors the core's trust decision into
+`config.toml`'s `[projects."<cwd>"].trust_level` (never reading the `TrustLedger`). **B2** makes its
+telemetry live end-to-end, and its two decisions are the interesting part:
+
+- **The daemon owns the transport; the adapter owns the parse.** Codex's TUI pushes no hook events but
+  appends a JSONL **rollout** file, so telemetry is `fileTail`: a daemon-side `RolloutTailer` actor (a
+  per-card byte offset that returns only complete, newline-terminated lines and holds a trailing partial)
+  hands each line to `CodexAdapter.parse(.fileTail(line:))`, driven by `OrchestraService.pollTelemetry()`
+  in the existing 2-second poll loop. This reuses A2's `adapter.parse` seam from a *different* transport
+  and stays strictly split — the tailer never inspects JSON, the parse never touches files. Claude
+  (`hooksPush`) is never tailed, so its push path is byte-identical.
+- **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
+  Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
+  **vendored** `Resources/codex-models.json` (`gpt-5-codex` = 272 000), never the rollout's own reported
+  window — keeping the app fully offline (the same per-adapter offline-model-table decision the
+  [roadmap](10-roadmap.md) records for the model-providers axis). And because the rollout schema drifts, the parse
+  normalizes the line's `type` fields (lower-cased, `_`-stripped, substring-matched) so `TaskComplete` /
+  `TurnComplete` both mean idle and nested/flat token fields both parse; `seq` is the line timestamp (µs)
+  so the [report seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel) keeps the freshest snapshot.
+
+Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis — the
+Codex **send-keys wake** (C4) and write/approval access remain deferred — so the row stays in the roadmap
+as history is recorded here. (As-built symbols:
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1 & §Area 3.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

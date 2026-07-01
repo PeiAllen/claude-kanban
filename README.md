@@ -24,8 +24,9 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
 - **Four card modes.** **Worktree** (isolated git branch), **Borrowed/Freeform** (run in any existing
   directory you point at), **Scratch** (a fresh throwaway dir Orchestra makes and deletes), and a
   **Read-only** access mode that lets an agent read/search/`git` but physically cannot write.
-- **Live, pushed state.** Cards show context-window %, current activity, model, and status — pushed by
-  the agent through a Claude Code hooks channel, not screen-scraped.
+- **Live state, never screen-scraped.** Cards show context-window %, current activity, model, and
+  status — sourced per agent through a normalized telemetry seam: Claude Code **pushes** via a hooks
+  channel, while Codex is **tailed** from its rollout JSONL by the daemon. Never screen-scraped.
 - **Crash & reboot recovery.** The daemon tracks each agent's native session id and eagerly resumes
   sessions after a crash or reboot; unrecoverable cards surface a Recovery panel.
 - **Three control surfaces, one state.** Anything you can do in the app you can do from the `orchestra`
@@ -45,7 +46,7 @@ MCP  ─ ControlClient ─┘                    (orchestrad daemon)            
 ```
 
 - **`OrchestraCore`** — the shared library: all business logic (`OrchestraService`, `TaskStore`,
-  `WorktreeManager`, `SessionManager`, `AgentRegistry`/`ClaudeCodeAdapter`, `PathResolver`,
+  `WorktreeManager`, `SessionManager`, `AgentRegistry`/`ClaudeCodeAdapter` + `CodexAdapter`, `PathResolver`,
   `CommandRegistry`, the control server/client). Fully unit-tested.
 - **`orchestrad`** — the background daemon (launchd LaunchAgent). Owns all state; recovers sessions.
 - **`orchestra`** — the CLI client (also hosts the hidden `_report` status-channel helper).

@@ -57,9 +57,13 @@ Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), deepened 
 **capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). The
 **seam-contract root of that design has landed** — PR A1
 ([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)) froze the complete capability descriptor
-and moved core onto it, and **PR A2** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-seam.md))
-has since added the adapter's own **`parse`** (below) — while the rest of the forest (the Codex adapter,
-live delivery) stays design-only. An adapter declares its `id`,
+and moved core onto it, **PR A2** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-seam.md))
+added the adapter's own **`parse`** (below), and **PRs B1–B2** have since landed the **Codex adapter**
+as the second conformer — its launch/session/trust ([plan](../notes/plans/2026-07-01-b1-codex-adapter.md))
+and its rollout-tail telemetry ([plan](../notes/plans/2026-07-01-b2-codex-rollout-tail.md); see
+[the Codex adapter](#the-codex-adapter), below) — while the remaining
+forest (the F1 resume-in-card live-delivery function and the Codex send-keys wake) stays design-only. An
+adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
@@ -73,7 +77,7 @@ the managed `hooksPath`, the card's `access`, `trustCwd` (set when Orchestra own
 [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
 `additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) but whose per-agent
 *injection* is deferred to a later PR (see [Roadmap](10-roadmap.md#open-design-questions)). `AgentRegistry`
-holds the adapters (default: `[ClaudeCodeAdapter()]`) and looks one up by id.
+holds the adapters (default: `[ClaudeCodeAdapter(), CodexAdapter()]`) and looks one up by id.
 
 **Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply a frozen
 **`AgentCapabilities`** value (a required protocol member with *no* default, so a new adapter can't
@@ -96,7 +100,11 @@ descriptor instead of branching on `agentId`: session-seeding switches on `capab
 `.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
 unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's
 `sessionInfo` for a state path keyed on that capability rather than assuming a `~/.claude` transcript
-exists. Claude's behavior is byte-for-byte unchanged by this gating.
+exists. Claude's behavior is byte-for-byte unchanged by this gating. The now-shipped
+[Codex adapter](#the-codex-adapter) advertises a different frozen set — `discovered / fileTail / tokens /
+sendKeys / sessionSeed / sandboxed / subscription` — and core routes on those flags alone: `.discovered`
+leaves its session unseeded, `.fileTail` puts it on the rollout-tail transport (never the push endpoint),
+and `tokens` `contextUsage` drives the compute-ctxPct-from-a-model-table path below.
 
 ### The Claude Code adapter
 
@@ -135,6 +143,60 @@ logic was **relocated verbatim** out of the `orchestra` CLI target by [PR A2](#a
 transport/parse boundary is per-adapter, while Claude telemetry stays byte-identical. A non-`hooksPush`
 raw (e.g. a `fileTail` line) returns `nil` — Claude has no tail transport. See
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
+
+### The Codex adapter
+
+`CodexAdapter` (`id = "codex"`, `bin = "codex"`) is the **second conformer** — the first proof the seam is
+provider-agnostic — registered in the default `AgentRegistry` alongside Claude (PRs **B1–B2**;
+`notes/plans/2026-07-01-b2-codex-rollout-tail.md`). It differs from Claude on every capability axis, and
+core handles the difference purely through the descriptor:
+
+- **Read-only-first launch.** `start`/`resume` always emit `-s read-only -a never` regardless of the
+  card's `access` — B1 ships read-only only; write access and the approval round-trip are deferred. `-s
+  read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals.
+- **Discovered session id + rollout path.** Codex can't be handed a session id, so `newSessionId()`
+  returns `nil` (`.discovered`, not Claude's `.seeded --session-id`); `sessionInfo`/`discover()` instead
+  read the id back by finding the newest `$CODEX_HOME/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is
+  the filename tail). That rollout file is both the session identity and the telemetry source below.
+- **`CODEX_HOME` isolation + trust.** The home is pinned via the adapter's `env["CODEX_HOME"]` (B1 also
+  wired `Adapter.env` into the tmux launch — one `-e KEY=VALUE` per entry; Claude stays byte-identical);
+  `prepareToLaunch` creates it and then applies the core's trust decision by appending
+  `[projects."<cwd>"].trust_level = "trusted"` to `config.toml` (idempotent, non-clobbering). Like Claude,
+  the adapter **applies** `ctx.trustCwd` and never reads the `TrustLedger` itself.
+- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5-codex` /
+  `gpt-5` = 272 000-token window, `o3` = 200 000), `.copy`-bundled so the app stays fully offline. This
+  table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
+  (tokens ÷ window), because the Codex TUI reports no percentage of its own.
+
+**Telemetry parse + the rollout tailer** (`parse(_:)` + `RolloutTailer` + `pollTelemetry`, PR **B2**).
+Codex's telemetry capability is `fileTail`, not `hooksPush`: the agent's TUI emits no push events, but it
+appends a JSONL **rollout** file, so the *daemon tails the file* and the *adapter parses each line* —
+the same `adapter.parse` seam A2 drew, reached from a different transport. The two halves stay strictly
+separated (the tailer never inspects JSON; the parse never touches files):
+
+- **Transport — `RolloutTailer`** (`RolloutTailer.swift`, a `public actor`): tracks a **per-card byte
+  offset** into the rollout file and, on each poll, returns only the **newline-terminated** lines appended
+  since the last tick. A trailing partial line (a poll landing mid-write) is held until completed; a file
+  shorter than the stored offset (rotation/truncation) resets the cursor to 0; `forget(cardId)` drops a
+  cursor on death/archive. It owns nothing Codex-specific — the only things crossing the seam are a
+  `String` line in and a `StatusReport?` out.
+- **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
+  and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
+  `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
+  `turn_complete` / `TurnComplete` all mean *idle* (`status: .waiting`), and token totals read from a
+  nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
+  yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)
+  plus `modelId`; a turn/task start or a mid-turn `function_call` → `.running` (with a coarse
+  `desc: "Running <name>"`); anything unrecognized (including `session_meta`) or non-JSON → `nil`
+  (dropped). `seq` is the line's RFC3339 `timestamp` in microseconds since epoch (monotonic in file
+  order), so a duplicate or out-of-order line loses to the freshest snapshot at
+  [`report`'s seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel).
+- **Driver — `OrchestraService.pollTelemetry()`**: one tick per card, called from the daemon's existing
+  **2-second poll loop** next to `reconcileLiveness`. For every live card whose
+  `capabilities.telemetry == .fileTail` it resolves the rollout path via `sessionInfo`, feeds each new
+  line through `adapter.parse` into the seq-gated `report`, and merges the result onto the card — so a
+  Codex card shows live context %, running/idle status, and model, fully offline. Claude (`hooksPush`) is
+  never tailed, so its push path stays byte-identical.
 
 ## The read-only barrier
 

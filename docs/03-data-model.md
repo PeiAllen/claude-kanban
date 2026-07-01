@@ -28,7 +28,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `status` | `AgentStatus` | `waiting` \| `running` \| `done` \| `dead`. |
 | `deadReason` | `DeadReason?` | Set together with `status = .dead`. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`). |
-| `ctxPct` | `Double` | Context-window usage, 0–100, pushed by the statusLine. |
+| `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |

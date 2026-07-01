@@ -32,7 +32,9 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
 4. **Runs recovery** asynchronously without blocking startup: sweeps orphaned scratch dirs, then
    revives sessions for cards whose tmux session died (see [Recovery](04-cards-worktrees-sessions.md#recovery-resume-and-restart)).
 5. **Starts a 2-second poll loop** that reconciles liveness (a safety net that flips a card to `dead`
-   if its tmux session vanished without a `SessionEnd` hook).
+   if its tmux session vanished without a `SessionEnd` hook) and, alongside it, drives
+   [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter) — the rollout-tail tick that
+   pulls live state for `fileTail` agents (Codex) that don't push it.
 6. Parks on `dispatchMain()`.
 
 ### Why a daemon, and why tmux

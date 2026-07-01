@@ -132,8 +132,10 @@ The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_repo
 **`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
 to the adapter's `ClaudeCodeAdapter.parse(_:)` — the parse is **agent-dependent**, so it belongs to the
 adapter, not the CLI. This is the transport/parse boundary PR A2 established (relocating the former
-`ReportHelper.map`/`toolDesc` verbatim into the adapter, keeping Claude telemetry byte-identical); a
-future daemon-side rollout-tail transport for another agent will call the *same* `adapter.parse` seam. See
+`ReportHelper.map`/`toolDesc` verbatim into the adapter, keeping Claude telemetry byte-identical). The
+daemon-side **rollout-tail** transport for another agent — Codex — has since landed (PR B2): its
+`RolloutTailer` + `OrchestraService.pollTelemetry()` call the *same* `adapter.parse` seam from a file tail
+instead of a push endpoint (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter)). See
 [the adapter's telemetry parse](04-cards-worktrees-sessions.md#the-claude-code-adapter) and the
 [agent-provider interface](../notes/designs/agent-provider-interface/02-contract.md) contract.
 

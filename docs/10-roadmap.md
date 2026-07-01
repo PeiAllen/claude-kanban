@@ -34,18 +34,23 @@ F2 wake + the merge-watch conclusion-watch** ([plan](../notes/plans/2026-07-01-c
 now landed on top of C1: the **second live-delivery function**, plus the [`wait` command / `MergeWatch`](05-command-reference.md#notes-on-key-commands)
 that lets an orchestrator card block until a watched child concludes (read from **real card state, never
 `git merge-base`**) and be woken as each conclusion coalesces into its inbox — the reactive fan-out (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). Two more forest PRs, **B1 and B2 — the
+Codex adapter + its rollout-tail telemetry** ([plan](../notes/plans/2026-07-01-b2-codex-rollout-tail.md)),
+have now landed too: the **second `Adapter` conformer** (registered alongside Claude), launching
+read-only-first with a discovered session id and an isolated `CODEX_HOME`, its live context %/status
+derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
+vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
-so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the daemon-side
-rollout-tail transport, the Codex send-keys wake, and the remaining live-delivery function — **F1**
-resume-in-card) stays design-only until those PRs land. The principle is to design every change *toward*
-these axes, never away from them.
+so their rows stay in the roadmap below. The rest of the forest (the Codex **send-keys wake** — C4 — and
+the remaining live-delivery function — **F1** resume-in-card) stays design-only until those PRs land. The
+principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code (e.g. Codex CLI) a matter of writing one `Adapter`. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9); write access, approvals, and the send-keys wake are the live remainder. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
@@ -85,8 +90,8 @@ Sequencing guidance from the design gates:
    capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
    (agent-dependent) — so `ReportHelper.map` relocated out of the CLI target into `ClaudeCodeAdapter.parse`
    (✅ **landed** as A2). The whole build is sequenced as a **stacked-PR forest** (A1 capability-descriptor
-   freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail, in parallel
-   with the trust-ledger and live-delivery tracks) in
+   freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail ✅ **landed**,
+   in parallel with the trust-ledger and live-delivery tracks) in
    [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
 4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
    field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
