@@ -102,5 +102,17 @@ recovery + activity feed + sessions debug handles) is documented in the
 | **PR3** — freeform & borrowed cards | Cards that run in an existing directory the user doesn't own (`.borrowed`), in a standalone freeform region, plus the `.readOnly` access mode for tracked read-only cards. | Sandbox-as-boundary (no allowlist gate); rescoped the shared-worktree badge/refcount to worktree cards only. |
 | **PR4** — scratch cards | A scratch spawn mode (board, CLI `--scratch`, MCP) that makes a fresh `~/.orchestra/scratch/<id>` dir and `rm -rf`s it on archive; startup sweep of orphaned scratch dirs; auto-trusts the dir so the autonomous agent never blocks on Claude's trust dialog. | Double-gated delete (origin check + path-under-scratch-root check); no dirty-guard (the user moves out anything worth keeping first). Trust is *granted* (not mirrored) because Orchestra owns the dir — there's no source repo to mirror from — while borrowed dirs are left to Claude's own prompt. |
 
+Beyond those four feature PRs, the first **foundational** PR of the agent-provider forest has also landed —
+**A1, the seam-contract freeze** (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). It froze the
+complete **`AgentCapabilities`** descriptor (seven enum-typed flags, *every* variant spelling — including
+cases no adapter exercises yet — locked now so later PRs can't drift the shape) and the defaulted
+**`AdapterContext.seed`** carrier, and moved core to gate session-seeding and resumability on the
+capability rather than on adapter identity or a nil-return implication. It ships **no** user-visible
+change — Claude behavior is byte-for-byte unchanged — because it is deliberately just the drift-proof
+shape the Codex adapter, telemetry seam, and live-delivery PRs will build behind (see
+[the adapter capability descriptor](04-cards-worktrees-sessions.md#agent-adapters)). Unlike a full axis
+shipping, this is plumbing, not a feature — so it stays here as history rather than migrating a roadmap
+row.
+
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

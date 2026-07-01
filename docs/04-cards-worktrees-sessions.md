@@ -52,20 +52,40 @@ window; also kills the window's view session), `capture` (`capture-pane`, the st
 ## Agent adapters
 
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
-Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), now deepened into the
+Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), deepened into the
 [agent-provider interface](../notes/designs/agent-provider-interface/index.md) design — a per-agent
-**capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). An adapter
-declares its `id`,
-`name`, `icon`, `bin`, and `models()`, and builds argv for two operations:
+**capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). The
+**seam-contract root of that design has landed** — PR A1
+([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)) froze the complete capability descriptor
+and moved core onto it — while the rest of the forest (the Codex adapter, the telemetry seam, live
+delivery) stays design-only. An adapter declares its `id`,
+`name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
 - **`resume(ctx)`** — argv to reattach an existing session (or `nil` if unsupported),
 
 plus `newSessionId()`, `sessionInfo(...)`, and `prepareToLaunch(ctx)` (side-effecting prep). The
 `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
-the managed `hooksPath`, the card's `access`, and `trustCwd` (set when Orchestra owns the cwd — see
-[trust](#the-claude-code-adapter) below). `AgentRegistry` holds the adapters (default:
-`[ClaudeCodeAdapter()]`) and looks one up by id.
+the managed `hooksPath`, the card's `access`, `trustCwd` (set when Orchestra owns the cwd — see
+[trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
+`additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) but whose per-agent
+*injection* is deferred to a later PR (see [Roadmap](10-roadmap.md#open-design-questions)). `AgentRegistry`
+holds the adapters (default: `[ClaudeCodeAdapter()]`) and looks one up by id.
+
+**Capabilities — core degrades on the descriptor, never on identity.** Every adapter must supply a frozen
+**`AgentCapabilities`** value (a required protocol member with *no* default, so a new adapter can't
+silently inherit Claude's shape). It is seven enum-typed flags — `sessionId ∈ {seeded, discovered}`,
+`telemetry ∈ {hooksPush, fileTail, ptyScrape}`, `contextUsage ∈ {percent, tokens, none}`,
+`wakeTransport ∈ {nativeReinvoke, controlChannel, sendKeys, relaunch}`, `inboxDrain ∈ {stopHook,
+sessionSeed, none}`, `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`, and
+`authMode ∈ {subscription, apiKey}` — with **every variant spelling frozen now** (A1), including cases no
+adapter exercises yet, so later PRs implement behavior behind a shape that can't drift. Claude advertises
+`seeded / hooksPush / percent / nativeReinvoke / stopHook / sandboxed / subscription`. Core reads this
+descriptor instead of branching on `agentId`: session-seeding switches on `capabilities.sessionId` (a
+`.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
+unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's
+`sessionInfo` for a state path keyed on that capability rather than assuming a `~/.claude` transcript
+exists. Claude's behavior is byte-for-byte unchanged by this gating.
 
 ### The Claude Code adapter
 
@@ -123,7 +143,8 @@ freeform card keeps its hooks and is a tracked citizen of the board.
 
 This three-layer recipe is Claude-Code-specific; the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
 design (Roadmap axis 2) generalizes it into a provider-agnostic **`readOnlyEnforcement` capability**
-(`∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`), of which this Claude barrier is the fully-enforced
+(`∈ {sandboxed, toolGatedOnly, orchestraSandboxed}` — the enum spelling is now frozen on the shipped seam
+contract by A1, though core doesn't yet branch on it), of which this Claude barrier is the fully-enforced
 `sandboxed` case — so Orchestra never advertises a read-only card an adapter can't actually enforce
 (e.g. Codex maps to its native `--sandbox read-only -a never`).
 

@@ -11,8 +11,13 @@ axis 4's live remainder. Axes **2, 3, and 6's handoff delivery** have since been
 deepened to a single implementable L3 + tests design** — the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
 vault (an agent-agnostic adapter seam with a per-agent **capability descriptor**, a **Codex** adapter, and
 the **F1/F2/F3 live-delivery** functions that handoff/fork/fan-out compose from), with a defined **PR
-forest** and every open question resolved (2026-07-01); it stays design-only until those PRs land. The
-principle is to design every change *toward* these axes, never away from them.
+forest** and every open question resolved (2026-07-01). The forest's **seam-contract root — PR A1 — has
+now landed** ([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)): it froze the complete
+`AgentCapabilities` descriptor and the defaulted `AdapterContext.seed`, and moved core to gate
+session-seeding and resumability on the capability (never on adapter identity), with Claude behavior
+byte-for-byte unchanged — see [chapter 9](09-design-decisions.md#shipped-feature-history). The rest of
+the forest (the A2 telemetry seam, the Codex adapter, live delivery) stays design-only until those PRs
+land. The principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -58,8 +63,9 @@ Sequencing guidance from the design gates:
    the daemon owns only the **telemetry transport** (push / rollout-tail / pty-scrape, keyed by the
    capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
    (agent-dependent) — so `ReportHelper.map` relocates out of the CLI target into the adapter. The whole
-   build is sequenced as a **stacked-PR forest** (A1 capability-descriptor freeze → A2 telemetry seam →
-   B1/B2 Codex adapter + rollout-tail, in parallel with the trust-ledger and live-delivery tracks) in
+   build is sequenced as a **stacked-PR forest** (A1 capability-descriptor freeze ✅ **landed** → A2
+   telemetry seam → B1/B2 Codex adapter + rollout-tail, in parallel with the trust-ledger and
+   live-delivery tracks) in
    [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
 4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
    field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
@@ -90,10 +96,11 @@ A few decisions are explicitly deferred until the relevant axis is built:
   worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
   what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
   the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-handoff.md` §1.)
-- **Context seed delivery** — the **carrier is now decided**: a defaulted `AdapterContext.seed` field,
-  frozen in the seam contract (PR A1). What remains open is the **per-agent injection mechanism** — first
-  message vs `--append-system-prompt` / `AGENTS.md`, and its precedence vs the hooks `--settings` — scoped
-  to PR C3. (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
+- **Context seed delivery** — the **carrier has now landed**: a defaulted `AdapterContext.seed` field,
+  frozen on the seam contract by PR A1 (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). What remains
+  open is the **per-agent injection mechanism** — first message vs `--append-system-prompt` / `AGENTS.md`,
+  and its precedence vs the hooks `--settings` — scoped to PR C3, which reads `ctx.seed`.
+  (`agent-provider-interface/02-contract.md` §2; `context-passing-topologies.md` §9.)
 - **Merge-back timing** — **resolved** (agent-provider L3): a fork's conclusion rides the durable
   **inbox (F3)** and drains at the parent's **next turn-end** — never a mid-turn interrupt (an explicit
   non-goal); if the parent is idle, **wake (F2)** triggers a turn first, then F3 delivers. Concurrent
