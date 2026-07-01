@@ -107,6 +107,19 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: conc)
             },
 
+            Command(name: "handoff",
+                    summary: "Clean-context handoff (F1): kill + resume THIS card in a fresh process, "
+                        + "same session id, seeded with `context` folded together with its pending inbox.",
+                    params: schema([
+                        "ref": refProp(),
+                        "context": strProp("Handoff context — the summary/instructions the resumed, "
+                            + "clean-context session opens on (folded ahead of any queued inbox messages)."),
+                    ], required: ["ref", "context"])) { svc, p, src in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let updated = try await svc.resumeInCard(t.id, seed: try p.string("context"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
             Command(name: "status", summary: "Current state of a card (incl. derived running).",
                     params: schema(["ref": refProp()], required: ["ref"])) { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))

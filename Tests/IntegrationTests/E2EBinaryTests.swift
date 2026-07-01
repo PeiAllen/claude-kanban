@@ -87,6 +87,16 @@ final class E2EBinaryTests {
         #expect(sessions.stdout.contains(":agent"))
     }
 
+    @Test("CLI: handoff is a routed verb (not an unknown command)")
+    func cliHandoffRouted() throws {
+        // No ref/context → the handoff case runs and dies on the missing ref; it must NOT reach the
+        // `default:` unknown-command branch. Proves the CLI switch surfaces the new verb.
+        let r = try cli(["handoff"])
+        #expect(r.exitCode != 0)
+        #expect(!r.stdout.contains("unknown command"))
+        #expect(!r.stderr.contains("unknown command"))
+    }
+
     @Test("MCP: initialize + tools/list parity with the registry; tools/call spawn creates a card")
     func mcpSmoke() throws {
         let mcp = binary("orchestra-mcp")
