@@ -101,17 +101,6 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            // Fan-out sheet overlay (board action — batch-spawn N cards)
-            if model.showFanout {
-                Color.black.opacity(0.28).ignoresSafeArea()
-                    .onTapGesture { model.showFanout = false }
-                FanoutSheet()
-                    .frame(width: 470)
-                    .padding(.top, 62)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             // The Done / Activity popovers are anchored to their toolbar buttons via SwiftUI's
             // `.popover` (see ControlsRow) — they're no longer free-floating overlays here.
 
@@ -130,7 +119,6 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
-        .animation(.easeOut(duration: 0.18), value: model.showFanout)
         .modifier(DebugLaunchHook())
     }
 }

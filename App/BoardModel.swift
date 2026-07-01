@@ -25,7 +25,6 @@ final class BoardModel: ObservableObject {
 
     // Sheet / popover UI state.
     @Published var showSpawn = false
-    @Published var showFanout = false
     @Published var showDone = false
     @Published var showActivity = false
     @Published var showOnboarding = false
@@ -264,22 +263,6 @@ final class BoardModel: ObservableObject {
             apply(.taskUpserted(t)); selectedId = t.id
             toast("Forked “\(t.title)”", sub: "\((parent.repo as NSString).lastPathComponent) · \(branch)")
         } catch { toast("Fork failed", sub: "\(error)", color: .red) }
-    }
-
-    /// Fan-out: batch-spawn one worktree card per prompt line, off a shared repo + base branch.
-    func fanout(prompts: [String], repo: String, branch: String) async {
-        let tasks = prompts.enumerated().map { i, prompt in
-            JSONValue.object(["prompt": .string(prompt), "repo": .string(repo),
-                              "branch": .string("\(branch)-\(i + 1)")])
-        }
-        do {
-            let res = try await client.call("batch-spawn", .object(["tasks": .array(tasks)]))
-                .decode(BatchSpawnResult.self)
-            for t in res.spawned { apply(.taskUpserted(t)) }
-            toast("Fanned out \(res.spawned.count) card(s)",
-                  sub: res.failed.isEmpty ? nil : "\(res.failed.count) failed",
-                  color: res.failed.isEmpty ? .green : .red)
-        } catch { toast("Fan-out failed", sub: "\(error)", color: .red) }
     }
 
     /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).
