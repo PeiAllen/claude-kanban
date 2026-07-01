@@ -203,7 +203,7 @@ sequenceDiagram
 | `resumeInCard` (F1) | C3 |
 | `wait`/`handoff` Commands | D1 |
 | `TrustLedger` + `resolveTrust` | T1 (Claude mirror; Codex mirror in B1) |
-| `trust` Command + human-grant gate | T2 (app dialog in D3) |
+| `trust` Command + human-grant gate | **T2 — shipped** (`TrustGrantResolver`/`SurfaceGrantResolver`/`TrustGrantOutcome`, `OrchestraService.grantTrust`, `TrustGrantResult`, `TrustPrompt`, `OrchestraError.trustDenied`, `trust` Command + `orchestra trust` isatty verb + MCP `requestElicitation` gate, scratch→borrowed demotion; app `SpawnSheet` dialog still D3) |
 
 ## Concerns / decisions for review
 
