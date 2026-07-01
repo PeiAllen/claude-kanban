@@ -46,17 +46,21 @@ so their rows stay in the roadmap below. An eighth forest PR, **C3 — F1 resume
 live-delivery function**, which resumes a card into a fresh process with clean context — keeping its
 session id (a *resume, not a blank restart*) — seeded with an authored handoff/fork context folded
 together with its pending inbox, delivered as the resumed session's opening turn (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped, the rest of the
-forest is the Codex **send-keys wake** (C4) plus the handoff/fork/fan-out **Commands + UI** (D1/D3) that
-will *call* this F1 seam — all still design-only until those PRs land. The principle is to design every
-change *toward* these axes, never away from them.
+[chapter 9](09-design-decisions.md#shipped-feature-history)). A ninth forest PR, **C4 — the Codex
+send-keys wake** ([plan](../notes/plans/2026-07-01-c4-codex-sendkeys-wake.md)), has now landed too:
+the `.sendKeys` `wakeTransport` C2 left as a no-op, so an idle Codex card (no `nativeReinvoke` push, no Stop
+hook) is woken by a fixed content-free TUI nudge, detect-and-defer gated on an idle, empty composer (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). With F1/F2/F3 all shipped **across both
+providers**, the rest of the forest is the handoff/fork/fan-out **Commands + UI** (D1/D3) that will *call*
+this F1 seam — still design-only until those PRs land. The principle is to design every change *toward*
+these axes, never away from them.
 
 ## The nine axes
 
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9); write access, approvals, and the send-keys wake are the live remainder. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9); write access and approvals are the live remainder. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
@@ -145,7 +149,8 @@ A few decisions are explicitly deferred until the relevant axis is built:
   [F2 wake + merge-watch (C2)](09-design-decisions.md#shipped-feature-history) have both landed: an
   orchestrator card `wait`s on its children, each conclusion coalesces into its inbox and wakes it. The
   Claude wake is `nativeReinvoke` (the background `orchestra wait` process exiting is the wake); the
-  Codex **send-keys** wake for an idle non-native card is the last remaining piece (PR C4). Conclusion is
+  Codex **send-keys** wake for an idle non-native card has since landed too (PR C4, ch. 9) — a fixed
+  content-free TUI nudge, detect-and-defer gated on an idle, empty composer. Conclusion is
   read from real card state, never `git merge-base`. (`agent-provider-interface/01-design.md` §4;
   `02-contract.md` §Area 4.)
 - **Archiving a parent with live forks** — hard-block + override, or warn-and-proceed?

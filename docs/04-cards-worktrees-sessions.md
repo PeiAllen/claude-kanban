@@ -64,8 +64,11 @@ and its rollout-tail telemetry ([plan](../notes/plans/2026-07-01-b2-codex-rollou
 [the Codex adapter](#the-codex-adapter), below) — and **PR C3**
 ([plan](../notes/plans/2026-07-01-c3-f1-handoff-resume.md)) has landed **F1 resume-in-card**: the `seed`
 now rides `resume` as the session's opening positional turn (see the resume argv under
-[the Claude Code adapter](#the-claude-code-adapter), below), leaving only the Codex send-keys wake (C4)
-and the handoff/fork Commands + UI (D1/D3) design-only. An
+[the Claude Code adapter](#the-claude-code-adapter), below), and **PR C4**
+([plan](../notes/plans/2026-07-01-c4-codex-sendkeys-wake.md)) has landed the **Codex send-keys wake** (the
+`.sendKeys` `wakeTransport`; see [the Codex adapter](#the-codex-adapter) and
+[chapter 9](09-design-decisions.md#shipped-feature-history)), leaving only the handoff/fork Commands + UI
+(D1/D3) design-only. An
 adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
@@ -109,7 +112,10 @@ exists. Claude's behavior is byte-for-byte unchanged by this gating. The now-shi
 [Codex adapter](#the-codex-adapter) advertises a different frozen set — `discovered / fileTail / tokens /
 sendKeys / sessionSeed / sandboxed / subscription` — and core routes on those flags alone: `.discovered`
 leaves its session unseeded, `.fileTail` puts it on the rollout-tail transport (never the push endpoint),
-and `tokens` `contextUsage` drives the compute-ctxPct-from-a-model-table path below.
+`tokens` `contextUsage` drives the compute-ctxPct-from-a-model-table path below, and the `sendKeys`
+`wakeTransport` is now realized by the C4 [detect-and-defer wake](09-design-decisions.md#shipped-feature-history)
+(an idle Codex card is woken by a fixed content-free TUI nudge, gated on an idle, empty composer read
+just-in-time from `capture-pane`).
 
 ### The Claude Code adapter
 
@@ -218,6 +224,20 @@ separated (the tailer never inspects JSON; the parse never touches files):
   line through `adapter.parse` into the seq-gated `report`, and merges the result onto the card — so a
   Codex card shows live context %, running/idle status, and model, fully offline. Claude (`hooksPush`) is
   never tailed, so its push path stays byte-identical.
+
+**Send-keys wake** (`CodexComposer` + `OrchestraService.sendKeysWake`, PR **C4**;
+`notes/plans/2026-07-01-c4-codex-sendkeys-wake.md`). Because Codex advertises `wakeTransport == .sendKeys`
+(no `nativeReinvoke` push, no Stop hook), [F2 wake](09-design-decisions.md#shipped-feature-history) can't
+just ride a background process exiting — an idle Codex card is instead woken by a **fixed, content-free TUI
+nudge** (`sendKeysWakeNudge`, `"Please continue."`) typed into its composer. The nudge only *starts a turn*;
+the inbox payload never rides the keystroke — it arrives via the `.sessionSeed` drain on resume (F3/C3). It
+is **detect-and-defer**: `sendKeysWake` reads the agent pane just-in-time via `capture` (`capture-pane`) and
+fires only when the pure `CodexComposer` heuristic reports the TUI **idle and composer-empty**; a draft, an
+in-flight turn, an unparseable pane, or a dead session all *defer* (drop the nudge, leave the inbox durable
+for a later event-driven wake). No retry timer (that would risk the F3 inject cap); focus is not a gate.
+`CodexComposer` is a pure, isolated heuristic — its prompt markers, empty-composer placeholders, and
+"working" cues are the only Codex-specific knobs and the documented place to tune when the TUI drifts. It is
+keyed on the `.sendKeys` transport, never `agentId`; see [chapter 9](09-design-decisions.md#shipped-feature-history).
 
 ## The read-only barrier
 

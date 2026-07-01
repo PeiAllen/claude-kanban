@@ -118,9 +118,10 @@ until the next turn. **F2 wake + the conclusion-watch have now landed too** (PR 
 block until a watched child concludes, with each conclusion coalescing into the parent's inbox and waking
 it — the reactive fan-out. **F1 resume-in-card has now landed too** (PR C3, below): a card resumes into a
 fresh process with clean context, seeded with an authored handoff/fork context folded together with its
-pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**, and
-only the handoff/fork/fan-out **Commands + UI** (D1/D3) that call them, plus the Codex send-keys wake (C4),
-remain. (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
+pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. The
+Codex **send-keys wake (C4)** has since landed too (below), so only the handoff/fork/fan-out **Commands +
+UI** (D1/D3) that call these functions remain.
+(`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
 
@@ -219,14 +220,14 @@ Three decisions shape it:
   durable inbox (F3 coalesce) and calls `wake`; several children concluding while the parent is mid-turn all
   enqueue and drain together at its next turn-end, so no return is lost or needs its own wake. `wake` dispatches
   on the adapter's `wakeTransport`: Claude's `nativeReinvoke` is a no-op *push* — the wake instead rides the
-  background `orchestra wait` process exiting (which the harness re-invokes on), and Codex send-keys is deferred
-  to a later PR (C4). `wait` also short-circuits on an already-concluded child so the re-issue race can't lose a
-  conclusion.
+  background `orchestra wait` process exiting (which the harness re-invokes on), and Codex's `sendKeys` wake
+  landed later (C4, below). `wait` also short-circuits on an already-concluded child so the re-issue race can't
+  lose a conclusion.
 
 Like the forest PRs above, C2 is one live-delivery function, not a whole axis, so it stays here as history;
-the remaining live-delivery function — **F1** resume-in-card — has since landed too (**C3**, below), so only
-the Codex send-keys wake and the handoff/fork Commands + UI keep the roadmap's model-providers /
-context-continuity rows open. (As-built symbols are recorded in
+the remaining live-delivery function — **F1** resume-in-card — has since landed too (**C3**, below), and the
+Codex send-keys wake landed after it (**C4**, below), so only the handoff/fork Commands + UI keep the
+roadmap's model-providers / context-continuity rows open. (As-built symbols are recorded in
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its rollout-tail telemetry**
@@ -257,8 +258,8 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   so the [report seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel) keeps the freshest snapshot.
 
 Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis — the
-Codex **send-keys wake** (C4) and write/approval access remain deferred — so the row stays in the roadmap
-as history is recorded here. (As-built symbols:
+Codex **send-keys wake** has since landed (C4, below) but write/approval access remains deferred — so the row
+stays in the roadmap as history is recorded here. (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1 & §Area 3.)
 
 The eighth landed PR is **C3 — F1 resume-in-card with a seed**
@@ -288,8 +289,41 @@ seed rides the already-frozen context field, resolving the roadmap's
 seam D1's `handoff` Command and the Handoff/Fork UI (D3) will *call* — C3 only wires the seed *through*
 resume, adding no Command or UI itself. Like the forest PRs above it is one live-delivery function, not a
 whole axis, so it stays here as history while the model-providers / context-continuity roadmap rows remain
-open for the send-keys wake (C4) and the handoff/fork surfaces (D1/D3). (As-built symbols:
+open for the handoff/fork surfaces (D1/D3). (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+
+The ninth landed PR is **C4 — the Codex send-keys wake**
+(`notes/plans/2026-07-01-c4-codex-sendkeys-wake.md`). It fills the `.sendKeys` `wakeTransport` case that C2
+left as a no-op, so an idle **non-native** card (Codex, whose TUI has no `nativeReinvoke` push and no Stop
+hook) is actually woken by [F2 wake / merge-watch](#shipped-feature-history) — completing the reactive
+fan-out across *both* providers. Two decisions shape it, and both keep the fragile part contained:
+
+- **Nudge-only — content never rides the keystroke.** The wake sends a *fixed, content-free* nudge
+  (`OrchestraService.sendKeysWakeNudge`, `"Please continue."`) whose only job is to start a turn on an idle
+  composer. The inbox payload is **never** delivered by keystroke — it rides F3 (the durable inbox drained
+  by the [session seed on resume](#one-seed-four-topologies), the `.sessionSeed` `inboxDrain` Codex
+  advertises), so the nudge stays a constant. This mirrors the same content/transport split as B2 (the
+  daemon owns the transport, the adapter owns the payload).
+- **Detect-and-defer — wake only when idle *and* the composer is empty.** `sendKeysWake` reads the agent
+  pane *just-in-time* via `capture-pane` (this single capture **is** the re-check right before the nudge)
+  and asks a pure heuristic — `CodexComposer` — whether the TUI is idle-and-composer-empty. Only then does
+  it fire. A user draft in the composer, an in-flight turn, an unparseable pane, or a dead session all
+  **defer**: the nudge is dropped and the inbox stays durable for a later event-driven wake (a subsequent
+  conclusion or turn-end). There is **no retry timer** — a poll loop would risk the F3 inject cap
+  (`maxConsecutiveInjects`), which is Orchestra's to enforce (C1), not C4's to duplicate. **Focus is not a
+  gate.**
+
+`CodexComposer` is a **pure** heuristic (`String` in, no I/O, no service deps) deliberately isolated so its
+fragility is contained and unit-testable: it scans the pane bottom-up for the composer's prompt marker
+(`› ❯ ▌ ▶`), treats known greyed placeholders (`"Send a message"`, …) as empty rather than a draft, and reads
+`workingCues` (`"esc to interrupt"`, `"thinking"`, …) to tell a streaming turn from an idle one — the only
+Codex-specific knobs, and the documented place to tune when the TUI drifts. It is keyed on the `.sendKeys`
+`wakeTransport`, **never** on `agentId` (send-keys is Codex's transport in v1, not its identity). This TUI
+scrape is explicitly a stopgap: v1 stays on send-keys while watching upstream Codex app-server work to
+eventually replace it with a real `controlChannel` `wakeTransport` (the already-frozen enum variant), so the
+fragile pane read is a contained, swappable seam. Like the forest PRs
+above, C4 is one live-delivery function, not a whole axis, so it stays here as history while the
+model-providers / context-continuity rows keep the handoff/fork surfaces (D1/D3) open.
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
