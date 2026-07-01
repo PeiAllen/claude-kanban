@@ -121,6 +121,12 @@ powers the [`inspect` command](05-command-reference.md) — a throwaway read-onl
 worktree — except `inspect` runs *without* Orchestra hooks so it stays untracked, whereas a read-only
 freeform card keeps its hooks and is a tracked citizen of the board.
 
+This three-layer recipe is Claude-Code-specific; the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
+design (Roadmap axis 2) generalizes it into a provider-agnostic **`readOnlyEnforcement` capability**
+(`∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`), of which this Claude barrier is the fully-enforced
+`sandboxed` case — so Orchestra never advertises a read-only card an adapter can't actually enforce
+(e.g. Codex maps to its native `--sandbox read-only -a never`).
+
 ## Process and path safety
 
 - **`Proc`** runs every subprocess from an **argv array**, never an interpolated shell string. It
