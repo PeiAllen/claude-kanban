@@ -60,9 +60,12 @@ been authored too — **PR D2** ([plan](../notes/plans/2026-07-01-d2-delegation-
 resources (a Claude **skill** + a Codex **AGENTS.md** — same heuristics, different packaging) plus a
 `DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off / fork / fan-out /
 wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in addition to*,
-never *instead of*). It is content + an **unwired** loader — even now that the D3 start-actions have shipped
-the seed-injection path it would ride, auto-selecting and delivering a variant on launch is still the one
-outstanding wire (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
+never *instead of*). D2 shipped content + an unwired loader, but **that last wire has since landed too —
+skill-injection** ([plan](../notes/plans/2026-07-01-delegation-skill-injection.md)): each adapter's
+`prepareToLaunch` now auto-materializes the per-agent variant into its native discovery location (Claude a
+`.claude/skills/orchestra-delegation/SKILL.md` project skill, Codex an `AGENTS.md` in its isolated
+`CODEX_HOME`) — best-effort, idempotent, argv byte-identical — so the guidance reaches every launched card
+(see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
 landed — PRs T1 and T2** ([plan](../notes/plans/2026-07-01-t2-trust-grant-surfaces.md)): **T1** made
 "which directories may agents write in" a durable, provider-agnostic decision — a
 [trust ledger](03-data-model.md#the-trust-ledger-t1) + `OrchestraService.resolveTrust` (origin →
@@ -79,9 +82,9 @@ read-only `trustState` query) — so **all 15 forest PRs are merged** (see
 [the overnight build result](../notes/designs/agent-provider-interface/OVERNIGHT-RESULT.md) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). What the forest did **not** ship — and what
 keeps axes 2 and 3 as roadmap rows below — is Codex **write access + approvals** (axis 2's live remainder)
-and the richer agent-integration surfaces (axis 3's structured sub-status, more agent-facing commands, and
-auto-injecting the vendored delegation guidance on launch). The principle is to design every change
-*toward* these axes, never away from them.
+and the richer agent-integration surfaces (axis 3's structured sub-status and more agent-facing commands —
+though *auto-injecting the vendored delegation guidance on launch* has since shipped, skill-injection above).
+The principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -89,7 +92,7 @@ auto-injecting the vendored delegation guidance on launch). The principle is to 
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
 | 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); write access and approvals are the live remainder. |
-| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads (a Claude skill + a Codex AGENTS.md) has **shipped** as vendored resources + a `DelegationDocs` loader (D2, ch. 9), still unwired into the seed. |
+| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads (a Claude skill + a Codex AGENTS.md) has **shipped** as vendored resources + a `DelegationDocs` loader (D2, ch. 9) and is now **auto-materialized on every launch** via each adapter's `prepareToLaunch` (skill-injection, ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
@@ -137,8 +140,9 @@ Sequencing guidance from the design gates:
    `notes/designs/context-passing-topologies.md`). As-built it is **two** defaulted carriers, both frozen
    on the seam contract by A1: `AdapterContext.seed` (the *resume-only* carrier, injected by C3's
    `resumeInCard` as the opening turn) and `SpawnInput.seed` (the *new-card* carrier, folded ahead of the
-   prompt by D3's `spawn`/`batch-spawn`). With F1/F2/F3 and both seed carriers landed, the family is wired —
-   only the *guidance auto-injection* on launch remains (the `DelegationDocs` loader, D2, is still unbound).
+   prompt by D3's `spawn`/`batch-spawn`). With F1/F2/F3 and both seed carriers landed, the family is wired,
+   and the *guidance auto-injection* on launch has since landed too — the `DelegationDocs` loader (D2) is now
+   bound to each adapter's `prepareToLaunch` (skill-injection, ch. 9), independent of the seed carriers.
 5. **Dependency chains:** axis 1 enables 5 (a review column); axis 2 → 3 → 5/6; axis 4 is used by 8;
    axis 7 feeds 5. The **freeform region shipped standalone**, *not* as an axis-1 lane, so axis 4 no
    longer depends on axis 1 (`notes/designs/configurable-columns/index.md` §status).

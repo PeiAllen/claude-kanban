@@ -181,6 +181,17 @@ native per-directory trust and **never reads the `TrustLedger`**:
   agent. The Codex adapter applies the same `ctx.trustCwd` into its own `config.toml` `trust_level`
   identically (see [the Codex adapter](#the-codex-adapter)).
 
+**Delegation guidance — materialize the skill** (`prepareToLaunch`, also): as a second best-effort side
+effect (after trust and any read-only settings), the adapter writes the vendored Claude **delegation skill**
+to `<cwd>/.claude/skills/orchestra-delegation/SKILL.md` — the per-card project-skill location Claude Code
+discovers — via `DelegationDocs.install(agentId: id, at:)`. This delivers the *when to hand off / fork /
+fan-out / wait* guidance ([PR D2](09-design-decisions.md#shipped-feature-history)) to **every** launched
+card (independent of `ctx.seed`), with **no `~/.claude` global install**; `.claude/` is gitignore-conventional
+so the tracked worktree stays clean. The step is keyed on the adapter's own `id` (so there is no `if claude`
+branch — Codex writes its own variant to a different path), **never throws** into the launch path (absent
+resource or any FS failure → no-op), and is **idempotent** — a re-launch atomically overwrites the same
+managed file. It changes no `start`/`resume` argv (skill-injection PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
 with a newest-matching-`.jsonl` fallback used only when no id was tracked.
@@ -217,6 +228,14 @@ core handles the difference purely through the descriptor:
   `prepareToLaunch` creates it and then applies the core's trust decision by appending
   `[projects."<cwd>"].trust_level = "trusted"` to `config.toml` (idempotent, non-clobbering). Like Claude,
   the adapter **applies** `ctx.trustCwd` and never reads the `TrustLedger` itself.
+- **Delegation guidance — materialize `AGENTS.md`.** As a third best-effort step, `prepareToLaunch` writes
+  the vendored Codex **delegation `AGENTS.md`** variant to `<CODEX_HOME>/AGENTS.md` via the same
+  `DelegationDocs.install(agentId: id, at:)` the Claude adapter uses (keyed on `id`, so no `if codex`
+  branch). Because the isolated `CODEX_HOME` is the **global (top) level** of Codex's `AGENTS.md`
+  precedence — merged *above* any project `AGENTS.md` — and Orchestra owns it, this delivers the guidance
+  to every Codex card **without clobbering the user's own project `AGENTS.md`** (one file per directory) and
+  **without touching the worktree** cwd. Best-effort (never throws), idempotent, and argv/`env`-preserving
+  (skill-injection PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
 - **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5-codex` /
   `gpt-5` = 272 000-token window, `o3` = 200 000), `.copy`-bundled so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*

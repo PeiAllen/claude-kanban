@@ -66,8 +66,10 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   start-actions (a `spawn`/`batch-spawn` with a `SpawnInput.seed`) plus the Handoff/Send **card actions**
   have since landed as PR D3 (see [chapter 9](09-design-decisions.md#shipped-feature-history) and the app
   [inspector](07-app-ui.md#the-inspector)). The *when-to-use* guidance for `spawn`/`handoff`/`wait`
-  across all four topologies — and the card-vs-native-subagent line — is now vendored as a per-agent
-  delegation skill / AGENTS.md (PR D2, see [chapter 9](09-design-decisions.md#shipped-feature-history)).
+  across all four topologies — and the card-vs-native-subagent line — is vendored as a per-agent
+  delegation skill / AGENTS.md (PR D2) and now **auto-materialized into every launched card** by each
+  adapter's `prepareToLaunch` (skill-injection; Claude a `.claude/skills` project skill, Codex an
+  `AGENTS.md` in its isolated `CODEX_HOME`), see [chapter 9](09-design-decisions.md#shipped-feature-history).
   (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
 - **`trust` is human-only — an agent can never self-grant.** As of T2, `trust` records a *human* grant

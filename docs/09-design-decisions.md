@@ -143,8 +143,10 @@ start-actions + the Handoff/Send card actions** have now landed as well (**D3**,
 authored `SpawnInput.seed` ahead of a new card's prompt — so **all four topologies are now driveable from
 the board and CLI**. The **guidance** an agent reads to *choose* among these topologies — delegate vs.
 continue, and card vs. native subagent (keep both) — has been authored and vendored too (**D2**, below);
-auto-selecting and injecting that per-agent variant on launch is the one remaining wire (the
-`DelegationDocs` loader is additive but still unbound to a launch path).
+and **that last wire has since landed** (**skill-injection**, below): each adapter's `prepareToLaunch` now
+auto-materializes the per-agent variant into the location its agent discovers (Claude a project skill, Codex
+its isolated `CODEX_HOME` `AGENTS.md`), so the guidance reaches every launched card with no `~/.claude`
+install and no launch-argv change.
 (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
@@ -402,12 +404,12 @@ ephemeral in-context read/search fan-out you fold back immediately — reach for
 never *instead of*, subagents; and the **reactive orchestration loop** (spawn stack head → background
 `wait` → woken on conclusion → drain inbox → spawn next-in-stack). Two properties keep it contained:
 
-- **Unwired by design.** The `DelegationDocs` loader is additive resource plumbing — the `ModelCatalog`
-  precedent — and is called from **no** launch path in D2. Selecting a variant and delivering it (Claude as
-  a skill, Codex as its `AGENTS.md`) would ride the seed-injection path the *new-card* start-actions
-  landed (D3, below) — but D3 wired only an *authored* `SpawnInput.seed`, so binding the loader to that path
-  is still outstanding; D2 itself touches no `prepareToLaunch`/seed behavior, so Claude and Codex launches
-  are byte-for-byte unchanged.
+- **Unwired *in D2* — since bound by skill-injection (below).** The `DelegationDocs` loader is additive
+  resource plumbing — the `ModelCatalog` precedent — and is called from **no** launch path *in D2 itself*,
+  which touches no `prepareToLaunch`/seed behavior, so its own launches are byte-for-byte unchanged. The
+  binding turned out **not** to ride the D3 `SpawnInput.seed` (a per-*task* carrier) but each adapter's
+  `prepareToLaunch` — a standing, seed-independent materialization added in the **skill-injection** PR
+  (below), which keeps `start`/`resume` argv byte-identical.
 - **Content is the test contract.** Because the heuristics are the deliverable, `DelegationDocsTests`
   asserts both variants load offline from a local file URL, that the skill carries YAML frontmatter
   (`name: orchestra-delegation`) while the AGENTS.md does not, that `forAgent` selects the right variant,
@@ -418,7 +420,8 @@ never *instead of*, subagents; and the **reactive orchestration loop** (spawn st
 Like the forest PRs above, D2 is content + a loader, not a whole axis — it deepens axis 3's *richer
 Orchestra→agent context injection* — so it stays here as history while the context-continuity row keeps its
 remainder open; the new-card handoff/fork/fan-out **UI + start-actions** (D3) have since landed (below),
-though auto-injecting this vendored guidance on launch is still the one unbound wire.
+and auto-injecting this vendored guidance on launch — the one wire D2 left open — has since landed too
+(**skill-injection**, below).
 (`notes/designs/context-passing-topologies.md`;
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
@@ -523,6 +526,42 @@ This change is pure **reachability wiring**, no new launch behavior:
   live remainder ([chapter 10](10-roadmap.md)). New tests (`CodexAdapterTests`) pin `adapter(forModel:)`,
   the union `models()`, `agents()`, a model-only spawn landing on Codex, the default preserved, and an
   explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
+
+Landing after Codex became startable is **skill-injection — wiring `DelegationDocs` into the launch path**
+(commit `7490e5e`, branch `deleg/04-skill-injection`;
+`notes/plans/2026-07-01-delegation-skill-injection.md`). D2 had authored and vendored the delegation
+guidance but left it inert — a loader bound to **no** launch path (the one open wire flagged repeatedly
+above). This change binds it: every newly-launched card now receives its per-agent guidance. The decisions
+that keep it safe:
+
+- **`prepareToLaunch`, not the seed — a standing side effect keyed on the agent.** The materialization is a
+  best-effort step each adapter adds to its existing `prepareToLaunch` (already the home of trust + Claude's
+  read-only settings), *independent of `ctx.seed`* — so it reaches **every** card, not just handoff/fork
+  ones. Content is chosen by `DelegationDocs.forAgent(id)` (keyed on the adapter's **own** `id`), so there is
+  **no `if claude` / `if codex` branch in core**; the destination path is each adapter's own packaging
+  knowledge, exactly as `ClaudeTrust` vs `CodexTrust` split. A shared
+  `DelegationDocs.install(agentId:at:)` DRYs the load-and-write.
+- **Each agent's native discovery location — no global install, no clobber, no dirty worktree.** Claude
+  writes the **skill** to `<cwd>/.claude/skills/orchestra-delegation/SKILL.md` — the per-card project-skill
+  location Claude Code discovers, under the gitignore-conventional `.claude/`, so the tracked worktree stays
+  clean and **no `~/.claude` global install** is needed. Codex writes the **`AGENTS.md`** to the Orchestra-owned
+  isolated `CODEX_HOME` — the **global (top) level** of Codex's `AGENTS.md` precedence, merged *above* any
+  project `AGENTS.md` — so it never clobbers the user's own project `AGENTS.md` (one file per directory) nor
+  touches the worktree.
+- **Additive and behavior-preserving.** The delegation step **never throws** into the launch path
+  (`install` mirrors the loader's nil/error tolerance: absent resource or any FS failure → no-op, returns
+  `false`), and it is **idempotent** — a re-launch atomically overwrites Orchestra's own managed file with
+  the same bytes. Crucially, `start`/`resume` argv and `env` stay **byte-identical**; the only new effect is
+  the written file. Tests pin all of it: `DelegationDocsTests` covers `install` (writes the right variant,
+  creates parent dirs, idempotent, graceful on an unwritable path); `AdapterTests`/`CodexAdapterTests` pin
+  that Claude gets the skill variant and Codex the `AGENTS.md` variant, that Codex never writes into the
+  worktree cwd, that it coexists with the trust `config.toml` write, and that argv/env are unchanged.
+
+With this the [context-continuity](../notes/designs/context-passing-topologies.md) / agent-integration
+delegation stack is fully wired end-to-end: the tools (D1), the surfaces that drive them (D3), the guidance
+that says *when* to reach for them (D2), and now its automatic delivery on every launch. As with the entries
+above it deepens axis 3's *richer Orchestra→agent context injection* rather than closing a whole axis, so
+that row keeps its structured-sub-status remainder open ([chapter 10](10-roadmap.md)).
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
