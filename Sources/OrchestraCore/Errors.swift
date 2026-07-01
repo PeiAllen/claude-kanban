@@ -13,6 +13,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case zedMissing
     case invalidParams(String)
     case io(String)
+    case trustDenied(String)
 
     public var description: String {
         switch self {
@@ -27,6 +28,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .zedMissing:           return "Zed not found"
         case .invalidParams(let m): return "invalid params: \(m)"
         case .io(let m):            return "io error: \(m)"
+        case .trustDenied(let m):   return "trust not granted: \(m)"
         }
     }
 
@@ -44,6 +46,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .resumeFailed:     return 1008
         case .zedMissing:       return 1009
         case .io:               return 1010
+        case .trustDenied:      return 1011
         }
     }
 }

@@ -19,6 +19,9 @@ public actor OrchestraService {
     let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
+    /// The human-grant resolver (T2). Consulted by `grantTrust`; the production `SurfaceGrantResolver`
+    /// only approves interactive surfaces and denies agent/daemon (autonomy-exemption + no self-grant).
+    let grantResolver: any TrustGrantResolver
     /// Conclusion-watch for the reactive fan-out (F2). A subscriber to this service's terminal
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
@@ -48,13 +51,15 @@ public actor OrchestraService {
                 launcher: Launcher? = nil,
                 resolver: PathResolver? = nil,
                 trust: TrustLedger? = nil,
-                inbox: Inbox? = nil) {
+                inbox: Inbox? = nil,
+                grantResolver: any TrustGrantResolver = SurfaceGrantResolver()) {
         self.config = config
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
         self.inbox = inbox ?? Inbox()
+        self.grantResolver = grantResolver
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
@@ -104,6 +109,26 @@ public actor OrchestraService {
         case .borrowed:
             return await trust.isTrusted(cwd) ? .trusted : .needsGrant
         }
+    }
+
+    /// The `trust` Command's service method (T2). Records a HUMAN grant for `path` into the ledger —
+    /// but only after the resolver (standing in for a human at a surface) approves. The agent may only
+    /// trigger this; a human answers. Fail-closed: a `.denied` outcome records nothing and throws.
+    @discardableResult
+    public func grantTrust(_ path: String, source: ActivitySource) async throws -> TrustGrantResult {
+        let canon = PathResolver.canonical(path)
+        if await trust.isTrusted(canon) {
+            return TrustGrantResult(path: canon, granted: true, alreadyTrusted: true)
+        }
+        let outcome = await grantResolver.requestGrant(
+            path: canon, reason: "grant agents write access to \(canon)", source: source)
+        guard outcome == .approved else {
+            throw OrchestraError.trustDenied(
+                "no human approved trust for \(canon) (agents cannot self-grant)")
+        }
+        _ = try await trust.record(canon, grantedBy: .human)
+        emitActivity(.warning, nil, source, "Trusted \(canon) (human grant)")
+        return TrustGrantResult(path: canon, granted: true, alreadyTrusted: false)
     }
 
     // MARK: - telemetry (fileTail transport)
