@@ -100,6 +100,7 @@ merge-watch marks conclusions; `EventCollector` observes the bus.
 - Unknown model id → registry fallback, telemetry still emits.
 - Untrusted borrowed spawn, non-interactive, no `--read-only` → actionable failure (no `--trust` path).
 - Trust-grant gate times out (no human) → deny → card clamps to sandboxed, not trusted.
+- **Real trust-dialog acceptance is MANUAL / out-of-scope for the autonomous run.** The automated suite covers trust only via the **stub grant resolver** (approve/deny/timeout); the single path where a human approves the live MCP `requestElicitation` / `SpawnSheet` dialog is a one-time manual acceptance run separately (see [[03-implementation]] rule **O7**). Rule **O1** ensures no live grant ever fires during the forest.
 
 ## Fixtures / mocks / test data
 
