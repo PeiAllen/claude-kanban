@@ -19,12 +19,26 @@ scripts/build.sh        # swift build
 scripts/test.sh         # swift test (adds swift-testing search paths — see below)
 ```
 
-This repo targets a **Command Line Tools** (no full Xcode) environment for the package. CLT ships
-`swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the needed
-`-F`/`-rpath` flags for `Testing.framework` + `lib_TestingInterop.dylib` (XCTest is absent). The test
+This repo builds the package against the **Command Line Tools** (CLT) SDK — no full Xcode required. CLT
+ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the
+needed `-F`/`-rpath` flags for `Testing.framework` + `lib_TestingInterop.dylib`. The test
 suite is substantial — `OrchestraCoreTests` (service, task store/migration, adapters, read-only launch,
 recovery, report, scratch, control round-trip, UDS SIGPIPE regression) and `IntegrationTests` (E2E
 binary, launcher diff, worktree/session managers against real git/tmux).
+
+**Two toolchains, kept SDK-consistent.** The machine's *ambient* toolchain is typically Xcode
+(`xcode-select -p` → `Xcode.app`), and the CLT and Xcode SDKs produce incompatible `OrchestraCore`
+modules in `.build`. The scripts keep each self-consistent rather than sharing one module:
+
+- `scripts/test.sh` runs `swift test` under the **ambient (Xcode)** toolchain — some suites `import
+  XCTest`, which CLT does not expose on its search path (it still adds the CLT swift-testing flags for
+  `Testing.framework`).
+- `scripts/typecheck-app.sh` sources `scripts/toolchain.sh` to pin `DEVELOPER_DIR` to **CLT**, then
+  rebuilds the module with `swift build --target OrchestraCore` so it matches the CLT SDK its `swiftc
+  -sdk .../CommandLineTools/...` typecheck targets.
+
+Without the CLT pin the two disagree and the app typecheck fails to import the module ("module compiled
+with a different SDK") — see [Troubleshooting](#troubleshooting).
 
 > **Sandbox note (for Claude Code / sandboxed shells).** `swift build`/`swift test` run their own
 > nested `sandbox-exec`, which can't nest inside another sandbox and whose `~/Library` caches aren't
@@ -54,7 +68,7 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/build.sh` | `swift build` the package. |
 | `scripts/test.sh` | `swift test` with the CLT swift-testing flags. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
-| `scripts/typecheck-app.sh` | Type-check the app sources without Xcode. |
+| `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |
 | `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |
 | `scripts/make-dev-cert.sh` | Create the "Orchestra Dev" self-signed signing cert. |
 | `scripts/orch-test.sh` | Run a disposable **isolated** daemon (own `HOME` + tmux socket) to verify daemon/command changes without touching the live app. |
@@ -63,6 +77,7 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/orch-ux-e2e-concurrency-test.sh` | Proof harness: launches N (default 3) `orch-ux-e2e.sh` runs concurrently and asserts they stay isolated (distinct `$HOME`/socket/tmux/screenshot), all complete (none reaped by a sibling's teardown), and the live daemon is untouched. |
 | `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
 | `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
+| `scripts/toolchain.sh` | Sourced by `typecheck-app.sh` to pin `DEVELOPER_DIR` to CLT (when present) so the rebuilt `OrchestraCore` module matches the CLT SDK the typecheck targets. Not sourced by `test.sh` — tests need XCTest, which only the Xcode toolchain provides. |
 
 ### Concurrency-safe UX e2e (overnight PR fan-out)
 
@@ -133,6 +148,13 @@ to trusted with no restart. Note that these preflights return `false` inside an 
   `SO_NOSIGPIPE` on every control socket (per-socket, not a global `SIG_IGN`, so child git/tmux
   processes are unaffected); the write now returns `EPIPE` and the dead connection is dropped cleanly.
   Regression test: `Tests/OrchestraCoreTests/UDSSigPipeTests.swift`.
+- **"module compiled with a different SDK" during the app typecheck.** The ambient toolchain (Xcode)
+  and the CLT SDK that `typecheck-app.sh` targets produce incompatible `OrchestraCore` modules; if
+  `.build` holds an Xcode-SDK module, the CLT `swiftc -sdk .../CommandLineTools/...` refuses to import
+  it. `scripts/typecheck-app.sh` sources `scripts/toolchain.sh`, which pins `DEVELOPER_DIR` to CLT and
+  rebuilds the module under the matching SDK, so the mismatch can't arise. (Before the pin, the only
+  recovery was clearing a global SwiftPM module cache under `~/Library` — outside the sandbox-writable
+  set, so it triggered a human-approval prompt that broke unattended runs.)
 - **Black rectangles / garbled glyphs in the terminal.** Caused by a missing UTF-8 locale (tmux and
   Claude Code's renderer downconvert multibyte glyphs without it). `Proc` fills in `LC_CTYPE`/`LANG`
   when unset; see `notes/designs/terminal-black-rectangles.md` for the full analysis.
