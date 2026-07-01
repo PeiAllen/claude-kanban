@@ -82,6 +82,62 @@ public struct CommandRegistry: Sendable {
                 return .ok()
             },
 
+            Command(name: "inbox",
+                    summary: "List a card's pending inbox messages (id, text, createdAt) in FIFO order.",
+                    params: schema(["ref": refProp()], required: ["ref"])) { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                return try JSONValue(encodable: await svc.inboxPeek(t.id))
+            },
+
+            Command(name: "inbox-edit", summary: "Edit the text of a queued inbox message.",
+                    params: schema(["ref": refProp(),
+                                    "id": strProp("Inbox message id (a UUID from `inbox`)"),
+                                    "text": strProp("New message text")],
+                                   required: ["ref", "id", "text"])) { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                guard let mid = UUID(uuidString: try p.string("id")) else {
+                    throw OrchestraError.invalidParams("id must be a message UUID")
+                }
+                try await svc.inboxUpdate(t.id, messageId: mid, text: try p.string("text"))
+                return .ok()
+            },
+
+            Command(name: "inbox-remove", summary: "Remove a queued inbox message by id.",
+                    params: schema(["ref": refProp(),
+                                    "id": strProp("Inbox message id (a UUID from `inbox`)")],
+                                   required: ["ref", "id"])) { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                guard let mid = UUID(uuidString: try p.string("id")) else {
+                    throw OrchestraError.invalidParams("id must be a message UUID")
+                }
+                try await svc.inboxRemove(t.id, messageId: mid)
+                return .ok()
+            },
+
+            Command(name: "inbox-reorder",
+                    summary: "Reorder a card's pending inbox messages (`ids` = the full new order).",
+                    params: schema(["ref": refProp(),
+                                    "ids": .object([
+                                        "type": .string("array"),
+                                        "items": .object(["type": .string("string")]),
+                                        "description": .string("The card's message ids in the desired new order"),
+                                    ])],
+                                   required: ["ref", "ids"])) { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                guard let arr = p["ids"]?.arrayValue else {
+                    throw OrchestraError.invalidParams("ids must be an array")
+                }
+                var ordered: [UUID] = []
+                for e in arr {
+                    guard let s = e.stringValue, let u = UUID(uuidString: s) else {
+                        throw OrchestraError.invalidParams("each id must be a UUID string")
+                    }
+                    ordered.append(u)
+                }
+                try await svc.inboxReorder(t.id, orderedIds: ordered)
+                return .ok()
+            },
+
             Command(name: "wait",
                     summary: "Block until one of the watched cards concludes (Done or clean exit). "
                         + "For the reactive fan-out — the caller re-issues on the cards that remain.",
