@@ -37,6 +37,16 @@ private struct HeaderBar: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
+    // Live-delivery card actions (D3). Each opens a small popover with a text field + confirm.
+    @State private var showSend = false
+    @State private var showHandoff = false
+    @State private var showFork = false
+    @State private var sendText = ""
+    @State private var handoffText = ""
+    @State private var forkPrompt = ""
+    @State private var forkContext = ""
+    @State private var forkBranch = ""
+
     var body: some View {
         HStack(spacing: 6) {
             Button {
@@ -52,8 +62,12 @@ private struct HeaderBar: View {
             }
             .buttonStyle(.plain)
 
-            // The recovery panel owns Archive when the card is dead, so we don't duplicate it here.
+            // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.status != .dead {
+                sendAction
+                handoffAction
+                forkAction
+
                 Button {
                     _Concurrency.Task { await model.archive(task.id) }
                 } label: {
@@ -85,6 +99,131 @@ private struct HeaderBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
+
+    // MARK: - Card actions
+
+    /// Send (F3): queue a message to the card's inbox (drained at its next turn-end).
+    private var sendAction: some View {
+        actionButton("Send", systemImage: "paperplane", isOn: $showSend) {
+            actionPopover(title: "Send to inbox",
+                          hint: "Queued (F3) — delivered at the agent's next turn-end.",
+                          text: $sendText, confirm: "Send", canConfirm: !sendText.trimmed.isEmpty) {
+                let msg = sendText; sendText = ""; showSend = false
+                _Concurrency.Task { await model.send(task.id, msg) }
+            }
+        }
+    }
+
+    /// Handoff (F1): clean-context resume of THIS card, seeded with the given context.
+    private var handoffAction: some View {
+        actionButton("Handoff", systemImage: "arrow.uturn.forward", isOn: $showHandoff) {
+            actionPopover(title: "Handoff — clean context",
+                          hint: "Resume THIS card in a fresh process (same session), seeded with this context.",
+                          text: $handoffText, confirm: "Hand off", canConfirm: !handoffText.trimmed.isEmpty) {
+                let ctx = handoffText; handoffText = ""; showHandoff = false
+                _Concurrency.Task { await model.handoff(task.id, context: ctx) }
+            }
+        }
+    }
+
+    /// Fork: spawn a NEW worktree card off this repo, seeded with the parent slice.
+    private var forkAction: some View {
+        actionButton("Fork", systemImage: "arrow.triangle.branch", isOn: $showFork) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Fork — new card from this one").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                Text("Spawns a new worktree off \((task.repo as NSString).lastPathComponent), seeded with the context below.")
+                    .font(F.ui(11)).foregroundColor(theme.text2)
+                popoverField("New branch", text: $forkBranch, mono: true)
+                popoverField("Task prompt", text: $forkPrompt, mono: false)
+                popoverEditor("Fork context (seed)", text: $forkContext)
+                HStack {
+                    Spacer()
+                    confirmButton("Fork", enabled: !forkBranch.trimmed.isEmpty && !forkPrompt.trimmed.isEmpty) {
+                        let parent = task, prompt = forkPrompt, branch = forkBranch, ctx = forkContext
+                        forkPrompt = ""; forkContext = ""; forkBranch = ""; showFork = false
+                        _Concurrency.Task { await model.fork(from: parent, prompt: prompt, branch: branch, context: ctx) }
+                    }
+                }
+            }
+            .padding(12).frame(width: 300)
+            .onAppear { if forkBranch.isEmpty { forkBranch = "\(task.branch)-fork" } }
+        }
+    }
+
+    private func actionButton<Content: View>(_ label: String, systemImage: String,
+                                             isOn: Binding<Bool>,
+                                             @ViewBuilder _ popover: @escaping () -> Content) -> some View {
+        Button { isOn.wrappedValue.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage).font(F.ui(10, .semibold))
+                Text(label).font(F.ui(12, .medium))
+            }
+            .foregroundColor(theme.text2)
+            .padding(.horizontal, 10)
+            .frame(height: 29)
+            .surface(theme.card, corner: 8, hair: theme.hair)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: isOn, arrowEdge: .bottom) {
+            popover().environment(\.theme, theme)
+        }
+    }
+
+    private func actionPopover(title: String, hint: String, text: Binding<String>,
+                               confirm: String, canConfirm: Bool,
+                               action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(F.ui(12, .semibold)).foregroundColor(theme.text)
+            Text(hint).font(F.ui(11)).foregroundColor(theme.text2)
+            popoverEditor(nil, text: text)
+            HStack {
+                Spacer()
+                confirmButton(confirm, enabled: canConfirm, action: action)
+            }
+        }
+        .padding(12).frame(width: 300)
+    }
+
+    private func popoverField(_ label: String, text: Binding<String>, mono: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(F.ui(10.5, .semibold)).foregroundColor(theme.text2)
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .font(mono ? F.mono(12) : F.ui(12.5)).foregroundColor(theme.text)
+                .padding(.horizontal, 9).frame(height: 30)
+                .background(theme.field)
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+    }
+
+    private func popoverEditor(_ label: String?, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let label { Text(label).font(F.ui(10.5, .semibold)).foregroundColor(theme.text2) }
+            TextEditor(text: text)
+                .font(F.ui(12.5)).foregroundColor(theme.text)
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 5).padding(.vertical, 6).frame(height: 84)
+                .background(theme.field)
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+    }
+
+    private func confirmButton(_ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(F.ui(12, .semibold)).foregroundColor(.white)
+                .padding(.horizontal, 14).frame(height: 28)
+                .background(theme.accent.opacity(enabled ? 1 : 0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
 // MARK: - Agent chrome (terminal)

@@ -88,9 +88,32 @@ struct ControlsRow: View {
             mcpChip
             doneButton
             activityButton
+            fanoutButton
             themeToggle
             newAgentButton
         }
+    }
+
+    // MARK: - Fan-out (board action: batch-spawn N cards)
+
+    private var fanoutButton: some View {
+        Button {
+            model.showFanout = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 9, weight: .semibold))
+                Text("Fan-out")
+                    .font(F.ui(11, .medium))
+            }
+            .foregroundStyle(theme.text)
+            .padding(.horizontal, 9)
+            .frame(height: Self.ctl)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(theme.chip))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Fan-out — batch-spawn several agents at once")
     }
 
     // MARK: - MCP chip
