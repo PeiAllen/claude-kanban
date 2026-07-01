@@ -59,6 +59,7 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/make-dev-cert.sh` | Create the "Orchestra Dev" self-signed signing cert. |
 | `scripts/orch-test.sh` | Run a disposable **isolated** daemon (own `HOME` + tmux socket) to verify daemon/command changes without touching the live app. |
 | `scripts/orch-ui-shot.sh` | Build the app isolated and screenshot it by window id (for UI work). |
+| `scripts/orch-ux-e2e.sh` | Full **app + daemon** UX e2e on a disposable, isolated instance — combines the two half-harnesses above (the demo app is launched against a *real* isolated daemon, so board actions and workflows drive through the actual UI). Isolates via `$HOME` alone; spawns `orchestrad` directly (never `launchctl` — the fixed `com.orchestra.daemon` label would collide with live) + an isolated `ORCHESTRA_TMUX_SOCKET`. |
 | `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
 | `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
 

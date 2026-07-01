@@ -52,7 +52,10 @@ window; also kills the window's view session), `capture` (`capture-pane`, the st
 ## Agent adapters
 
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
-Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md)). An adapter declares its `id`,
+Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), now deepened into the
+[agent-provider interface](../notes/designs/agent-provider-interface/index.md) design — a per-agent
+**capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). An adapter
+declares its `id`,
 `name`, `icon`, `bin`, and `models()`, and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
