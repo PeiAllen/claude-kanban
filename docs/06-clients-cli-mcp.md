@@ -25,6 +25,9 @@ orchestra spawn --prompt "Audit the auth flow" --cwd ~/Documents/Projects/api --
 # spawn a throwaway scratch card
 orchestra spawn --prompt "Prototype a CSV parser" --scratch
 
+# fork: a new card seeded with the parent's slice (PR D3)
+orchestra spawn --prompt "Explore the caching angle" --repo ~/Documents/Projects/api --branch feat/cache --seed "context from the parent card…"
+
 orchestra list                       # all cards
 orchestra list --col review          # one column
 orchestra status <ref>               # JSON status for one card
@@ -166,5 +169,7 @@ This same channel now carries the **first realized Orchestra → agent direction
 (step 4 above) injects the durable inbox back into the agent at its turn-end. The **F1 resume seed** (PR C3)
 adds a second injection path — an authored handoff/fork context folded with that same inbox, delivered as a
 resumed session's opening positional turn (argv, not this settings channel) — now callable end-to-end via
-the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1); a future `additionalContext`
-seed on *spawn* would complete the handoff/fork/fan-out delivery in the [roadmap](10-roadmap.md).
+the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1). The **new-card** counterpart
+has since landed too (PR D3): a defaulted `SpawnInput.seed` on `spawn`/`batch-spawn` folds authored context
+ahead of a fresh card's prompt, completing the handoff/fork/fan-out delivery the
+[roadmap](10-roadmap.md) called for.

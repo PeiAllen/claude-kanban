@@ -60,9 +60,9 @@ been authored too — **PR D2** ([plan](../notes/plans/2026-07-01-d2-delegation-
 resources (a Claude **skill** + a Codex **AGENTS.md** — same heuristics, different packaging) plus a
 `DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off / fork / fan-out /
 wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in addition to*,
-never *instead of*). It is content + an **unwired** loader — selecting and delivering a variant rides the
-same seed-injection path as the D3 start-actions (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
+never *instead of*). It is content + an **unwired** loader — even now that the D3 start-actions have shipped
+the seed-injection path it would ride, auto-selecting and delivering a variant on launch is still the one
+outstanding wire (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
 landed — PRs T1 and T2** ([plan](../notes/plans/2026-07-01-t2-trust-grant-surfaces.md)): **T1** made
 "which directories may agents write in" a durable, provider-agnostic decision — a
 [trust ledger](03-data-model.md#the-trust-ledger-t1) + `OrchestraService.resolveTrust` (origin →
@@ -71,10 +71,17 @@ and **T2** added the **human-grant surfaces**: a `trust` Command (auto-surfaced 
 interactive-only `orchestra trust` CLI verb, the MCP `requestElicitation` grant dialog, and an actionable
 warning when an untrusted card spawns sandboxed — under the rule that an agent can only *trigger* a grant,
 **never self-grant** (see [Trust boundaries](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
-and [chapter 9](09-design-decisions.md#shipped-feature-history)). Its remaining surface is the app
-`SpawnSheet` trust control (D3). The remainder of the forest is then the *new-card* handoff/fork/fan-out
-**UI + start-actions** (D3) — still design-only until that PR lands. The principle is to design every
-change *toward* these axes, never away from them.
+and [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **final PR, D3, has now
+landed too** ([plan](../notes/plans/2026-07-01-d3-ui-cli-actions.md)): the *new-card* handoff/fork/fan-out
+**UI + start-actions** (board/CLI **Fork**/**Fan-out** over a new defaulted `SpawnInput.seed`, plus the
+Handoff/Send card actions) **and** the app `SpawnSheet` trust control T2 deferred to it (backed by a new
+read-only `trustState` query) — so **all 15 forest PRs are merged** (see
+[the overnight build result](../notes/designs/agent-provider-interface/OVERNIGHT-RESULT.md) and
+[chapter 9](09-design-decisions.md#shipped-feature-history)). What the forest did **not** ship — and what
+keeps axes 2 and 3 as roadmap rows below — is Codex **write access + approvals** (axis 2's live remainder)
+and the richer agent-integration surfaces (axis 3's structured sub-status, more agent-facing commands, and
+auto-injecting the vendored delegation guidance on launch). The principle is to design every change
+*toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -124,11 +131,14 @@ Sequencing guidance from the design gates:
    freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail ✅ **landed**,
    in parallel with the trust-ledger (✅ **landed** as T1/T2) and live-delivery tracks) in
    [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
-4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
-   field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
-   whole handoff/fork/fan-out/subagent family — *one primitive at four topologies* (see
+4. **Keystone — now shipped:** the **context seed** (the design's `additionalContext`) is the chokepoint
+   for the whole handoff/fork/fan-out/subagent family — *one primitive at four topologies* (see
    [chapter 9](09-design-decisions.md#one-seed-four-topologies) and
-   `notes/designs/context-passing-topologies.md`). Still unbuilt; the rest of that family is wiring.
+   `notes/designs/context-passing-topologies.md`). As-built it is **two** defaulted carriers, both frozen
+   on the seam contract by A1: `AdapterContext.seed` (the *resume-only* carrier, injected by C3's
+   `resumeInCard` as the opening turn) and `SpawnInput.seed` (the *new-card* carrier, folded ahead of the
+   prompt by D3's `spawn`/`batch-spawn`). With F1/F2/F3 and both seed carriers landed, the family is wired —
+   only the *guidance auto-injection* on launch remains (the `DelegationDocs` loader, D2, is still unbound).
 5. **Dependency chains:** axis 1 enables 5 (a review column); axis 2 → 3 → 5/6; axis 4 is used by 8;
    axis 7 feeds 5. The **freeform region shipped standalone**, *not* as an axis-1 lane, so axis 4 no
    longer depends on axis 1 (`notes/designs/configurable-columns/index.md` §status).
@@ -154,13 +164,15 @@ A few decisions are explicitly deferred until the relevant axis is built:
   worktree machinery) is now **decided** (see [chapter 9](09-design-decisions.md#11-worktree--card-ownership));
   what's still open is *how* a spawn on an already-checked-out `repo+branch` is handled: refuse + jump to
   the owning card, or auto-branch a suffixed branch? (`stacked-branches-and-guardian-handoff.md` §1.)
-- **Context seed delivery** — **resolved and shipped** (carrier by PR A1, injection by PR C3). The
+- **Context seed delivery** — **resolved and shipped** (carriers by PRs A1/D3, injection by PRs C3/D3). The
   **carrier** is a defaulted `AdapterContext.seed` field, frozen on the seam contract by A1
   (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). The **per-agent injection mechanism** is now
-  decided: the seed rides as the resumed session's **opening positional turn** — each adapter appends
-  `ctx.seed` as the trailing argv positional (Claude after `--resume`, Codex after `resume <sid>`) — *not*
-  `--append-system-prompt` / `AGENTS.md`, and it composes with (never replaces) the hooks `--settings`.
-  PR C3 wired it through `OrchestraService.resumeInCard` (see
+  decided: on a *resume* the seed rides as the resumed session's **opening positional turn** — each adapter
+  appends `ctx.seed` as the trailing argv positional (Claude after `--resume`, Codex after `resume <sid>`) —
+  *not* `--append-system-prompt` / `AGENTS.md`, and it composes with (never replaces) the hooks
+  `--settings`. PR C3 wired the resume path through `OrchestraService.resumeInCard`, and PR D3 added the
+  parallel **new-card** carrier — a defaulted `SpawnInput.seed` folded ahead of the prompt by
+  `spawn`/`batch-spawn` — so Fork and Fan-out seed a fresh card the same way (see
   [chapter 9](09-design-decisions.md#shipped-feature-history)). (`agent-provider-interface/02-contract.md` §2;
   `context-passing-topologies.md` §9.)
 - **Merge-back timing** — **resolved and shipped** (PR C1 then C2): a fork's conclusion rides the durable

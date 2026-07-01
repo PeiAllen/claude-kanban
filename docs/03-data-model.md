@@ -121,7 +121,10 @@ Only the **core** reads it — in `OrchestraService.resolveTrust(origin:cwd:repo
 native trust flag (see [Cards, worktrees & sessions](04-cards-worktrees-sessions.md#the-claude-code-adapter)
 and [Design decisions](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)).
 The ledger + resolver landed as **PR T1**; the human-grant surfaces that fill a `needsGrant` as **PR T2**
-(both in [chapter 9](09-design-decisions.md#shipped-feature-history)).
+(both in [chapter 9](09-design-decisions.md#shipped-feature-history)). A later read-only path — PR D3's
+`OrchestraService.isPathTrusted`, surfaced as the [`trustState`](05-command-reference.md#registry-commands)
+query — lets a client (the app [`SpawnSheet`](07-app-ui.md#the-spawn-sheet)) *check* trust without
+recording anything; granting still only happens through the human `trust` surfaces.
 
 ## Configuration and paths
 

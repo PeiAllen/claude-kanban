@@ -18,7 +18,7 @@ decision, the chapters here link into the layered design vault under
 3. [**Data model**](03-data-model.md) — The `Task` (card) schema field by field, statuses and dead
    reasons, persistence and schema migration, configuration, on-disk paths, errors, and events.
 4. [**Cards, worktrees & sessions**](04-cards-worktrees-sessions.md) — The internals: git worktree
-   management, tmux session topology, the agent adapter protocol, the Claude Code adapter, the
+   management, tmux session topology, the agent adapter protocol, the Claude Code and Codex adapters, the
    three-layer read-only barrier, and crash/reboot recovery.
 5. [**Command reference**](05-command-reference.md) — Every command in the `CommandRegistry` (the single
    surface shared by the CLI, the MCP bridge, and the app), the server-only built-in methods, and the

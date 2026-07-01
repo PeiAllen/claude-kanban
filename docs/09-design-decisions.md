@@ -137,11 +137,14 @@ block until a watched child concludes, with each conclusion coalescing into the 
 it — the reactive fan-out. **F1 resume-in-card has now landed too** (PR C3, below): a card resumes into a
 fresh process with clean context, seeded with an authored handoff/fork context folded together with its
 pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. The
-Codex **send-keys wake (C4)** has since landed too (below), and the **`handoff` Command (D1)** that *calls*
-the F1 seam is now the first of the topology surfaces to ship (below) — so only the new-card handoff/fork/
-fan-out **UI + start-actions** (D3) remain. The **guidance** an agent reads to *choose* among these
-topologies — delegate vs. continue, and card vs. native subagent (keep both) — has since been authored and
-vendored too (**D2**, below), though wiring it into the seed is D3-adjacent.
+Codex **send-keys wake (C4)** has since landed too (below), the **`handoff` Command (D1)** that *calls*
+the F1 seam shipped the first of the topology surfaces (below), and the new-card **fork / fan-out
+start-actions + the Handoff/Send card actions** have now landed as well (**D3**, below) — folding an
+authored `SpawnInput.seed` ahead of a new card's prompt — so **all four topologies are now driveable from
+the board and CLI**. The **guidance** an agent reads to *choose* among these topologies — delegate vs.
+continue, and card vs. native subagent (keep both) — has been authored and vendored too (**D2**, below);
+auto-selecting and injecting that per-agent variant on launch is the one remaining wire (the
+`DelegationDocs` loader is additive but still unbound to a launch path).
 (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
@@ -272,8 +275,10 @@ telemetry live end-to-end, and its two decisions are the interesting part:
 - **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
   Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
   **vendored** `Resources/codex-models.json` (`gpt-5-codex` = 272 000), never the rollout's own reported
-  window — keeping the app fully offline (the same per-adapter offline-model-table decision the
-  [roadmap](10-roadmap.md) records for the model-providers axis). And because the rollout schema drifts, the parse
+  window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
+  (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
+  PR — **E1** (`notes/plans/e1-model-table.md`), a root off `main` — which B2 consumes here; it is the
+  same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse
   normalizes the line's `type` fields (lower-cased, `_`-stripped, substring-matched) so `TaskComplete` /
   `TurnComplete` both mean idle and nested/flat token fields both parse; `seq` is the line timestamp (µs)
   so the [report seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel) keeps the freshest snapshot.
@@ -307,10 +312,10 @@ Two invariants make it safe: the **`Adapter.resume(ctx) -> [String]?` protocol s
 seed rides the already-frozen context field, resolving the roadmap's
 [open injection question](10-roadmap.md#open-design-questions) in favor of an opening-turn positional over
 `--append-system-prompt` / `AGENTS.md`), and the change is fully additive/defaulted. `resumeInCard` is the
-seam D1's `handoff` Command now *calls* (shipped below) and the Handoff/Fork UI (D3) will call too — C3 only
+seam D1's `handoff` Command *calls* (shipped below) and the Handoff/Fork UI (D3, below) now calls too — C3 only
 wires the seed *through* resume, adding no Command or UI itself. Like the forest PRs above it is one
 live-delivery function, not a whole axis, so it stays here as history while the model-providers /
-context-continuity roadmap rows remain open for the remaining handoff/fork surfaces (D3). (As-built symbols:
+context-continuity roadmap rows stay open for their non-forest remainders. (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The ninth landed PR is **C4 — the Codex send-keys wake**
@@ -344,8 +349,8 @@ scrape is explicitly a stopgap: v1 stays on send-keys while watching upstream Co
 eventually replace it with a real `controlChannel` `wakeTransport` (the already-frozen enum variant), so the
 fragile pane read is a contained, swappable seam. Like the forest PRs
 above, C4 is one live-delivery function, not a whole axis, so it stays here as history while the
-model-providers / context-continuity rows keep the handoff/fork surfaces (D1/D3) open. (The `handoff`
-Command — D1 — has since landed too; see the next entry.)
+model-providers / context-continuity rows keep their non-forest remainders open. (The `handoff`
+Command — D1 — and the fork/fan-out surfaces — D3 — have since landed too; see the entries below.)
 
 The tenth landed PR is **D1 — the handoff delegation tool (MCP Command + CLI verb)**
 (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`). It is the **first agent-facing surface that
@@ -372,8 +377,8 @@ delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-ca
   session id, and a CLI-surface smoke proving `orchestra handoff` *routes* (not "unknown command").
 
 Like the forest PRs above, D1 is a single Command surface, not a whole axis, so it stays here as history
-while the context-continuity row keeps the remaining new-card handoff/fork/fan-out **UI + start-actions**
-(D3) open. (As-built symbols:
+while the context-continuity row keeps its remainder open; the new-card handoff/fork/fan-out **UI +
+start-actions** it left for D3 have since landed too (below). (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The eleventh landed PR is **D2 — the delegation guidance skill + AGENTS.md**
@@ -399,8 +404,9 @@ never *instead of*, subagents; and the **reactive orchestration loop** (spawn st
 
 - **Unwired by design.** The `DelegationDocs` loader is additive resource plumbing — the `ModelCatalog`
   precedent — and is called from **no** launch path in D2. Selecting a variant and delivering it (Claude as
-  a skill, Codex as its `AGENTS.md`) rides the seed-injection path that lands with the *new-card*
-  start-actions (D3-adjacent); D2 touches no `prepareToLaunch`/seed behavior, so Claude and Codex launches
+  a skill, Codex as its `AGENTS.md`) would ride the seed-injection path the *new-card* start-actions
+  landed (D3, below) — but D3 wired only an *authored* `SpawnInput.seed`, so binding the loader to that path
+  is still outstanding; D2 itself touches no `prepareToLaunch`/seed behavior, so Claude and Codex launches
   are byte-for-byte unchanged.
 - **Content is the test contract.** Because the heuristics are the deliverable, `DelegationDocsTests`
   asserts both variants load offline from a local file URL, that the skill carries YAML frontmatter
@@ -410,8 +416,10 @@ never *instead of*, subagents; and the **reactive orchestration loop** (spawn st
   are present in each.
 
 Like the forest PRs above, D2 is content + a loader, not a whole axis — it deepens axis 3's *richer
-Orchestra→agent context injection* — so it stays here as history while the context-continuity row keeps the
-new-card handoff/fork/fan-out **UI + start-actions** (D3) open. (`notes/designs/context-passing-topologies.md`;
+Orchestra→agent context injection* — so it stays here as history while the context-continuity row keeps its
+remainder open; the new-card handoff/fork/fan-out **UI + start-actions** (D3) have since landed (below),
+though auto-injecting this vendored guidance on launch is still the one unbound wire.
+(`notes/designs/context-passing-topologies.md`;
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The twelfth and thirteenth landed PRs are **T1 and T2 — the trust ledger and its human-grant surfaces**
@@ -447,10 +455,50 @@ part:
 
 Automated coverage uses a **`StubGrantResolver`** only (approve/deny fixtures) — the live
 `requestElicitation` dialog is a manual, out-of-scope acceptance (design rule O7), and **T2 adds no app
-UI**: the `SpawnSheet` trust·read-only·cancel control is **D3**, still design-only. Like the forest PRs
-above, T1/T2 are the permissioning track, not a whole axis, so they stay here as history. (As-built
+UI**: the `SpawnSheet` trust·read-only·cancel control is **D3** (which has since shipped it — below). Like
+the forest PRs above, T1/T2 are the permissioning track, not a whole axis, so they stay here as history.
+(As-built
 symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 3.)
+
+The final landed PR is **D3 — the delegation UI + new-card start-actions**
+(`notes/plans/2026-07-01-d3-ui-cli-actions.md`). It is the **first surface set that *drives*** the three
+shipped live-delivery seams from the board and CLI rather than adding another, closing out the
+agent-provider forest — **all 15 PRs merged** (see
+[the overnight build result](../notes/designs/agent-provider-interface/OVERNIGHT-RESULT.md)). It maps the
+four [handoff/fork/fan-out topologies](#one-seed-four-topologies) to concrete actions:
+
+- **Card actions** (act on the selected card, in the [inspector](07-app-ui.md#the-inspector) header):
+  **Send** (the existing `send`, F3), **Handoff** (the existing `handoff`, F1 same-card resume), and
+  **Fork** — a *new-card* `spawn` carrying a **seed** (the parent's authored slice).
+- **Board action** (no card selected, board toolbar → `FanoutSheet`): **Fan-out** — a `batch-spawn` of one
+  card per prompt line, each on a suffixed `<branch>-<n>`.
+
+Two small backend primitives carry it:
+
+- **`SpawnInput.seed`** — a defaulted seed on the **`spawn`** and **`batch-spawn`** Commands (and the CLI's
+  `spawn --seed`) that `OrchestraService.spawn` folds **ahead of the prompt** into the single launch
+  positional, bounded by the same `StopDrain.maxPayloadChars` live-delivery cap. This is the *new-card*
+  seed the Fork / Fan-out start-actions needed, and it is **distinct** from F1's resume-only `ctx.seed` —
+  the adapters' `start`/`resume` argv are byte-identical, so Claude and Codex launches are unchanged.
+- **`trustState`** — one new **read-only** Command (`{path}` → `{trusted}`) backed by
+  `OrchestraService.isPathTrusted`, a pure `TrustLedger.isTrusted` query that **records nothing** (granting
+  stays a human act, T2). The [`SpawnSheet`](07-app-ui.md#the-spawn-sheet) freeform mode queries it on every
+  cwd change and, when the dir is untrusted, **forces read-only and shows the amber trust · read-only ·
+  cancel notice** — the app trust control T2 deferred to D3. `BoardModel` gains
+  `handoff`/`fork`/`fanout`/`trustState` wrappers.
+
+Command discipline holds: only `trustState` is new, so it is added to `CommandsTests`'s `expected` set (the
+C2 full-set guard) plus a hand-wired `CLIRunner` case, while MCP parity auto-derives; `SpawnSeedTrustTests`
+pins the seed-fold order and the query's no-side-effect. D3 also lands the **app+daemon UX-e2e** harness
+(`scripts/orch-ux-e2e.sh` with a `fixtures/fake-agent` symlink on `PATH` — no real vendor agent,
+`USE_REAL_CLAUDE` unset — and an RPC-driven UC1–UC8 replay; the `screencapture` step is advisory per design
+rule O6 and expected to fail on a headless window server). With D3 merged the **whole agent-provider forest
+is shipped**; but as with every entry above it is a set of surfaces, not a whole axis — the model-providers
+axis still owes Codex write access + approvals, and agent-integration its richer sub-status — so those rows
+stay in [chapter 10](10-roadmap.md). (As-built symbols:
+[agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md)
+"As-built (D3, shipped)".)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

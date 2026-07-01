@@ -18,6 +18,11 @@ column shows a "No agents here" placeholder.
 **Drag-and-drop** moves cards between columns: a card is `.draggable` by its UUID, columns are
 `.dropDestination`s that highlight when targeted, and a drop calls `move(id, to:)`.
 
+A board-level **Fan-out** action (PR D3, toolbar → `FanoutSheet`, no card needed) spawns **many** cards
+at once: one card per prompt line, each on a suffixed `<branch>-<n>`, over the
+[`batch-spawn`](05-command-reference.md#registry-commands) command (`BoardModel.fanout`). Unlike the
+per-card Fork/Handoff/Send in the [inspector](#the-inspector), Fan-out acts on no selected card.
+
 ### The freeform region
 
 Below the columns sits the **Freeform region** — a full-width, collapsible, resizable **dock** for
@@ -53,7 +58,11 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
   for `.git` dirs), a **branch** combo box (existing branches sorted by recency, or type a new name to
   create one), a read-only **worktree path preview**, and a **Start-in** segmented control (Plan /
   Implementation).
-- **Freeform mode** — an `NSOpenPanel` directory picker plus a **read-only** toggle.
+- **Freeform mode** — an `NSOpenPanel` directory picker plus a **read-only** toggle. On every directory
+  change the sheet queries the [`trustState`](05-command-reference.md#registry-commands) command (PR D3);
+  when the chosen dir is **untrusted** it **forces the read-only toggle on and shows an amber notice**
+  (trust · read-only · cancel) — so an agent can't be spawned with write access into a dir no human has
+  granted. Granting stays the human-only [`trust`](05-command-reference.md#registry-commands) act.
 - **Scratch mode** — just informational text (Orchestra makes and later `rm -rf`s the dir).
 - **Model selector** — a button row of the agent's `AgentModel`s, brand-colored (claude → burnt orange,
   gpt → teal, gemini → blue).
@@ -69,7 +78,14 @@ persisted; drag the left edge to resize). A **live** card shows the agent chrome
 the [Recovery panel](#recovery-panel) instead.
 
 The **header bar** has **View changes** (opens the worktree in Zed with a branch-vs-base diff),
-**Archive** (non-dead cards only), and a **close** (X).
+**Archive** (non-dead cards only), and a **close** (X). It also carries the **card actions** wired by
+PR D3 (`BoardModel` `send`/`handoff`/`fork` wrappers over the shipped live-delivery seams — see
+[chapter 9](09-design-decisions.md#shipped-feature-history)):
+
+- **Send** — queue a message into the card's durable inbox (`send`, F3), delivered at its next turn-end.
+- **Handoff** — a clean-context, **same-card** resume seeded with an authored summary (`handoff`, F1).
+- **Fork** — spawn a **new** card seeded with a slice of this one's context (a `spawn` carrying a
+  `SpawnInput.seed`), so the parent keeps working while the fork explores.
 
 The **agent chrome** stacks, top to bottom:
 
