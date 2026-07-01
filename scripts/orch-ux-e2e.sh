@@ -254,6 +254,25 @@ wid=""
 for _ in $(seq 1 50); do sleep 0.4; wid="$(window_id || true)"; [[ -n "$wid" ]] && break; done
 [[ -n "$wid" ]] || fail "app window never appeared"
 
+# --- AeroSpace (or any tiling WM via its CLI): FLOAT the demo window so it isn't folded into the
+#     user's live workspace — which would squish the live app and yield a narrow 1/2- or 1/3-width
+#     screenshot. Match strictly by APP_PID so we ONLY ever touch the demo window, never the live
+#     "Orchestra" app (same app-id/title). No-op if aerospace isn't installed or its server is down.
+if command -v aerospace >/dev/null 2>&1 && aerospace list-windows --all >/dev/null 2>&1; then
+  awid=""
+  for _ in $(seq 1 10); do   # the brand-new window may take a moment to register with the WM
+    awid="$(aerospace list-windows --all --format '%{window-id}|%{app-pid}' 2>/dev/null \
+              | awk -F'|' -v p="$APP_PID" '{a=$1;b=$2;gsub(/[^0-9]/,"",a);gsub(/[^0-9]/,"",b)} b==p{print a;exit}')"
+    [[ -n "$awid" ]] && break
+    sleep 0.3
+  done
+  if [[ -n "$awid" ]]; then
+    aerospace layout --window-id "$awid" floating >/dev/null 2>&1 || true
+    echo "  ✓ floated demo window in AeroSpace (id $awid) — off the live tiling, full-size capture"
+    sleep 0.4   # let the float settle before capture
+  fi
+fi
+
 # --- 5. PROVE isolation: the app can ONLY reach the isolated daemon, and it did connect ---
 # (a) By construction: the app's $HOME is the isolated one, so Config.socketPath can only ever
 #     resolve to the isolated socket — reaching the live daemon is impossible.
