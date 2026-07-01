@@ -80,4 +80,17 @@ struct CodexWakeTests {
         #expect(sent == [OrchestraService.sendKeysWakeNudge])
         #expect(sent.allSatisfy { !$0.contains(marker) })   // content did NOT ride the keystroke
     }
+
+    @Test("send wakes an idle card after enqueueing inbox content")
+    func sendWakesIdleCard() async throws {
+        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        env.sessions.setCapture(card.id, "● Done.\n\n›\n")
+
+        try await env.svc.send(card.id, "queued wake")
+
+        #expect(await Inbox(path: env.base + "/inbox.json").peek(card.id).map(\.text) == ["queued wake"])
+        #expect(env.sessions.keysSent(to: card.id) == [OrchestraService.sendKeysWakeNudge])
+    }
 }
