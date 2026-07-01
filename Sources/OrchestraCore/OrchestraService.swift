@@ -101,6 +101,13 @@ public actor OrchestraService {
     public func resolveTrust(origin: CardOrigin, cwd: String, repo: String?) async -> TrustDecision {
         switch origin {
         case .scratch:
+            // External-intake guard: a scratch dir Orchestra made empty auto-trusts, but if foreign
+            // code has since landed in it (a repo cloned in → a `.git`), it is no longer Orchestra's
+            // empty dir — demote to BORROWED semantics (re-enter the grant path) rather than auto-
+            // trusting someone else's code.
+            if Self.scratchHasForeignCode(cwd) {
+                return await trust.isTrusted(cwd) ? .trusted : .needsGrant
+            }
             _ = try? await trust.record(cwd, grantedBy: .orchestra)
             return .trusted
         case .worktree:
@@ -109,6 +116,11 @@ public actor OrchestraService {
         case .borrowed:
             return await trust.isTrusted(cwd) ? .trusted : .needsGrant
         }
+    }
+
+    /// A scratch dir that contains a `.git` holds a cloned/foreign repo — treat it as borrowed.
+    static func scratchHasForeignCode(_ cwd: String) -> Bool {
+        FileManager.default.fileExists(atPath: (cwd as NSString).appendingPathComponent(".git"))
     }
 
     /// The `trust` Command's service method (T2). Records a HUMAN grant for `path` into the ledger —

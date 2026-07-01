@@ -69,6 +69,28 @@ struct GrantTrustTests {
     }
 }
 
+@Suite("resolveTrust — scratch external-intake demotion")
+struct ScratchDemotionTests {
+    @Test("an empty scratch dir still auto-trusts (unchanged)")
+    func emptyScratchAutoTrusts() async throws {
+        let env = TestEnv.make()
+        let cwd = env.base + "/scratch-empty"
+        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        #expect(await env.svc.resolveTrust(origin: .scratch, cwd: cwd, repo: nil) == .trusted)
+    }
+
+    @Test("a scratch dir that has become a foreign repo (.git present) demotes to borrowed → needsGrant")
+    func clonedScratchDemotes() async throws {
+        let env = TestEnv.make()
+        let cwd = env.base + "/scratch-cloned"
+        try FileManager.default.createDirectory(atPath: cwd + "/.git", withIntermediateDirectories: true)
+        #expect(await env.svc.resolveTrust(origin: .scratch, cwd: cwd, repo: nil) == .needsGrant)
+        // ...and once a human grants it, it's trusted (re-entered the grant path, didn't auto-trust)
+        try await env.trust.record(cwd, grantedBy: .human)
+        #expect(await env.svc.resolveTrust(origin: .scratch, cwd: cwd, repo: nil) == .trusted)
+    }
+}
+
 @Suite("trust Command — registry dispatch")
 struct TrustCommandTests {
     @Test("trust command records via grantTrust when the (surface) source approves")
