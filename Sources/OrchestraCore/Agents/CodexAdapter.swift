@@ -76,7 +76,10 @@ public struct CodexAdapter: Adapter {
         var argv = [binary, "resume", sid]
         argv += readOnlyFlags
         argv += modelFlag(ctx.model)
-        return argv   // no prompt — the rollout holds the task
+        // F1 (C3): Codex has no Stop hook (`inboxDrain == .sessionSeed`), so the folded seed (handoff
+        // ctx + pending inbox) rides the resume as its opening positional turn.
+        if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
+        return argv   // no prompt beyond the optional seed — the rollout holds prior task history
     }
 
     /// Prep runs isolation FIRST (ensure the pinned CODEX_HOME exists), THEN mirrors the core's trust

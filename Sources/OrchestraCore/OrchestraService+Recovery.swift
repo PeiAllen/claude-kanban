@@ -47,7 +47,8 @@ extension OrchestraService {
     /// Confirmed by the SessionStart(resume) hook calling `report` within the grace window. On success
     /// → `.waiting` + deadReason cleared. On failure → `.dead` (resumeFailed) + throw.
     @discardableResult
-    public func resume(_ id: UUID, graceSeconds: Int? = nil, source: ActivitySource = .daemon) async throws -> Task {
+    public func resume(_ id: UUID, graceSeconds: Int? = nil, seed: String? = nil,
+                       source: ActivitySource = .daemon) async throws -> Task {
         let task = try await require(id)
         let adapter = try registry.get(task.agentId)
         let grace = graceSeconds ?? config.revivalGraceSeconds
@@ -62,7 +63,7 @@ extension OrchestraService {
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  sessionId: task.agentSessionId, name: task.title, hooksPath: Config.hooksPath,
-                                 trustCwd: trustDecision == .trusted)
+                                 trustCwd: trustDecision == .trusted, seed: seed)
         guard let sid = task.agentSessionId,
               let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
               let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp),
@@ -94,6 +95,21 @@ extension OrchestraService {
         emit(.taskUpserted(updated))
         emitActivity(.recovered, updated, source, "resumed “\(updated.title)”")
         return updated
+    }
+
+    /// F1 (C3) — resume THIS card into a fresh process with CLEAN context, seeded with the handoff/fork
+    /// context AND its pending inbox (folded into one seed delivered as the resumed session's opening
+    /// turn). This is **resume, not a blank restart**: `agentSessionId` is KEPT, so the vendor transcript
+    /// carries forward and the seed adds new context to a continued session. The inbox "folds into the
+    /// seed" (design §8 F1) — drained BEFORE resume so a `.sessionSeed` agent (Codex, no Stop hook) still
+    /// receives its queued messages, and they are not double-delivered by a later Claude Stop-drain.
+    /// Backs D1's `handoff` Command.
+    @discardableResult
+    public func resumeInCard(_ id: UUID, seed: String? = nil, graceSeconds: Int? = nil,
+                             source: ActivitySource = .daemon) async throws -> Task {
+        let drained = (try? await inbox.drain(id)) ?? []
+        let folded = HandoffSeed.fold(handoff: seed, inbox: drained)
+        return try await resume(id, graceSeconds: graceSeconds, seed: folded, source: source)
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt

@@ -173,7 +173,10 @@ public struct ClaudeCodeAdapter: Adapter {
         argv += modelFlag(ctx.model)
         argv += accessFlags(ctx.access)
         argv += accessSettingsFlags(ctx)
-        return argv   // no --session-id, no prompt — history holds the task
+        // F1 (C3): a handoff/fork seed (authored ctx + folded inbox) rides as the resumed session's
+        // opening positional turn — history holds the task, the seed adds the new instruction.
+        if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
+        return argv   // no --session-id; no prompt beyond the optional seed — history holds the task
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
