@@ -58,3 +58,46 @@ struct TrustLedgerTests {
         #expect(FileManager.default.fileExists(atPath: path + ".bak"))
     }
 }
+
+@Suite("resolveTrust — origin → decision")
+struct ResolveTrustTests {
+    @Test("scratch auto-trusts and records the cwd in the ledger")
+    func scratchAutoTrusts() async throws {
+        let env = TestEnv.make()
+        let cwd = env.base + "/scratch-xyz"
+        let d = await env.svc.resolveTrust(origin: .scratch, cwd: cwd, repo: nil)
+        #expect(d == .trusted)
+        #expect(await env.trust.isTrusted(cwd) == true)   // recorded
+    }
+
+    @Test("worktree inherits the source-repo entry (trusted; repo recorded)")
+    func worktreeInheritsRepo() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base, "app")
+        // A repo already registered in the ledger → its worktree inherits trust.
+        try await env.trust.record(repo, grantedBy: .repoRegistration)
+        let wt = env.base + "/worktrees/app/feat"
+        let d = await env.svc.resolveTrust(origin: .worktree, cwd: wt, repo: repo)
+        #expect(d == .trusted)
+    }
+
+    @Test("worktree with an unregistered repo records it then trusts (registration IS the trust act)")
+    func worktreeRecordsRepo() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base, "fresh")
+        #expect(await env.trust.isTrusted(repo) == false)
+        let d = await env.svc.resolveTrust(origin: .worktree, cwd: env.base + "/worktrees/fresh/x", repo: repo)
+        #expect(d == .trusted)
+        #expect(await env.trust.isTrusted(repo) == true)   // now registered
+    }
+
+    @Test("borrowed in the ledger = trusted; else = needsGrant")
+    func borrowedConditional() async throws {
+        let env = TestEnv.make()
+        let inLedger = env.base + "/borrowed-trusted"
+        let notInLedger = env.base + "/borrowed-unknown"
+        try await env.trust.record(inLedger, grantedBy: .human)
+        #expect(await env.svc.resolveTrust(origin: .borrowed, cwd: inLedger, repo: nil) == .trusted)
+        #expect(await env.svc.resolveTrust(origin: .borrowed, cwd: notInLedger, repo: nil) == .needsGrant)
+    }
+}

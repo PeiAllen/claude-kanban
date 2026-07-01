@@ -11,7 +11,7 @@ struct ReportTests {
         let t = try await env.svc.spawn(SpawnInput(prompt: "Initial task", repo: repo, branch: "b"))
         return (env, t)
     }
-    typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, base: String)
+    typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
 
     @Test("merges only present fields; ctxPct/desc/model update in place")
     func mergeFields() async throws {

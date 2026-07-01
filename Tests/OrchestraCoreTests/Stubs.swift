@@ -150,7 +150,7 @@ func withScratchLock<T>(_ body: () async throws -> T) async rethrows -> T {
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
     static func make(maxRevivals: Int = 4, grace: Int = 1)
-        -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, base: String) {
+        -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
@@ -161,10 +161,11 @@ enum TestEnv {
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let adapter = StubAdapter(transcriptDir: base + "/transcripts")
         let store = TaskStore(path: base + "/tasks.json")
+        let trust = TrustLedger(path: base + "/trust-ledger.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: worktrees, sessions: sessions)
-        return (svc, sessions, worktrees, adapter, PathResolver.canonical(base))
+                                   worktrees: worktrees, sessions: sessions, trust: trust)
+        return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
     /// Make a repo dir under reposRoot and return its path.
