@@ -47,6 +47,8 @@ public struct CommandRegistry: Sendable {
                             + "run there, and rm -rf it on archive. Omit repo/branch/cwd when set."),
                         "model": strProp("Model id (from the adapter's list)"),
                         "col": colProp(startInOnly: true),
+                        "seed": strProp("Fork/fan-out context (the parent slice / handoff summary) the "
+                            + "fresh card opens on — folded ahead of `prompt` into the launch turn."),
                     ], required: ["prompt"])) { svc, p, src in
                 let input = SpawnInput(
                     prompt: try p.string("prompt"),
@@ -55,7 +57,8 @@ public struct CommandRegistry: Sendable {
                     startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
                     cwd: p.optString("cwd"),
                     access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite,
-                    scratch: p["scratch"]?.boolValue ?? false)
+                    scratch: p["scratch"]?.boolValue ?? false,
+                    seed: p.optString("seed"))
                 let task = try await svc.spawn(input, source: src)
                 return try JSONValue(encodable: task)
             },
@@ -206,7 +209,8 @@ public struct CommandRegistry: Sendable {
                     inputs.append(SpawnInput(
                         prompt: try item.string("prompt"), repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
-                        startIn: item.optString("col").flatMap(StartIn.init(rawValue:))))
+                        startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),
+                        seed: item.optString("seed")))
                 }
                 let result = await svc.batchSpawn(inputs, source: src)
                 return try JSONValue(encodable: result)

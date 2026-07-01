@@ -173,15 +173,31 @@ public actor OrchestraService {
         let modelId = input.model ?? config.defaultModel ?? adapter.models().first?.id ?? ""
         let model = adapter.model(for: modelId)
         let startIn = input.startIn ?? .plan
-        // No initial prompt → the card is named off the first prompt the user types (titleProvisional),
-        // showing the branch as a placeholder until then. A real prompt seeds the title immediately.
-        let provisional = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Fork / fan-out: an authored seed (parent slice / handoff context) is delivered to a FRESH card
+        // by folding it AHEAD of the prompt into the single launch positional (Claude/Codex take one
+        // positional). Bounded like the F3 drain so a huge slice can't blow the argv. (F1's `ctx.seed`
+        // is the resume-only carrier; a fresh start delivers the seed as the initial prompt.)
+        let seedText = input.seed?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptText = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folded: String? = {
+            let s = (seedText?.isEmpty == false) ? seedText : nil
+            let p = promptText.isEmpty ? nil : input.prompt
+            switch (s, p) {
+            case let (s?, p?): return String((s + "\n\n" + p).prefix(StopDrain.maxPayloadChars))
+            case let (s?, nil): return String(s.prefix(StopDrain.maxPayloadChars))
+            case let (nil, p?): return p
+            case (nil, nil):    return nil
+            }
+        }()
+        // No prompt AND no seed → the card is named off the first prompt the user types (titleProvisional),
+        // showing the branch as a placeholder until then. A prompt or seed seeds the title immediately.
+        let provisional = folded == nil
         let title = provisional ? (input.branch.isEmpty ? "New agent" : input.branch)
-                                 : titleSeed(from: input.prompt)
+                                 : titleSeed(from: folded ?? input.prompt)
         // A provisional card is idle awaiting the user's first prompt, so it starts `.waiting`; a real
-        // prompt means the agent is working immediately, so `.running`. The launch gets no positional
-        // prompt when provisional (a whitespace-only prompt must not be submitted to the agent).
-        let launchPrompt: String? = provisional ? nil : input.prompt
+        // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
+        // when provisional (a whitespace-only prompt must not be submitted to the agent).
+        let launchPrompt: String? = folded
 
         let task = Task(
             id: id,
@@ -190,7 +206,7 @@ public actor OrchestraService {
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
-            ctxPct: 0, agentSessionId: sid, initialPrompt: input.prompt
+            ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt
         )
         let created = try await store.create(task)
 

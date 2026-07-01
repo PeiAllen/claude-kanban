@@ -40,7 +40,8 @@ enum CLIRunner {
                 }
                 let p = JSONValue.object(fields
                     .merging(optional("model", flags.value("model"))) { a, _ in a }
-                    .merging(optional("col", flags.value("col"))) { a, _ in a })
+                    .merging(optional("col", flags.value("col"))) { a, _ in a }
+                    .merging(optional("seed", flags.value("seed"))) { a, _ in a })
                 let task = try await client.call("spawn", p)
                 printRef(task)
 
