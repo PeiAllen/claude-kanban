@@ -452,7 +452,7 @@ public enum ActivitySource: String, Codable, Sendable {
 }
 
 public enum ActivityKind: String, Codable, Sendable {
-    case spawned, moved, archived, statusChanged, dead, recovered, command
+    case spawned, moved, archived, statusChanged, dead, recovered, command, warning
 }
 
 /// One entry in the Activity feed's Live tab: a discrete, human-readable record of a notable event.

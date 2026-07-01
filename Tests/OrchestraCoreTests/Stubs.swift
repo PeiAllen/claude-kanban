@@ -65,16 +65,19 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is
 /// fully controllable. Registered with id "claude-code" so `spawn` finds it.
 final class StubAdapter: Adapter, @unchecked Sendable {
-    let id = "claude-code"
-    let name = "Stub"
+    let id: String
+    let name: String
     let icon = "sparkle"
     let bin = "fake-agent"
     let enabled = true
     let capabilities: AgentCapabilities
     let transcriptDir: String
-    init(transcriptDir: String, capabilities: AgentCapabilities = .claudeCode) {
+    init(transcriptDir: String, capabilities: AgentCapabilities = .claudeCode,
+         id: String = "claude-code", name: String = "Stub") {
         self.transcriptDir = transcriptDir
         self.capabilities = capabilities
+        self.id = id
+        self.name = name
     }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1"), AgentModel(id: "m2")] }
