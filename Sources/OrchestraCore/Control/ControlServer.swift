@@ -148,6 +148,15 @@ public final class ControlServer: @unchecked Sendable {
             let patch = try (p["report"] ?? p).decode(StatusReport.self)
             try await service.report(task.id, patch)
             return .object(["ok": .bool(true)])
+        case "drain":
+            // F3 Stop-drain: the Stop hook pulls the card's durable inbox as the `decision:block` payload.
+            // Orchestra-internal plumbing — NOT a Command (not user-facing), so it never touches the registry.
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("drain needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            let reason = await service.drainForStop(task.id)
+            return .object(["reason": reason.map(JSONValue.string) ?? .null])
         default:
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")

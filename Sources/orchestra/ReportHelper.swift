@@ -35,6 +35,18 @@ enum ReportHelper {
         // Bounded send: statusLine ~50ms (snapshot self-heals), hooks ~2s (Claude waits for them).
         let budgetMs = kind == "statusline" ? 50 : 2000
         await boundedSend(sock: sock, params: params, budgetMs: budgetMs)
+
+        // F3 Stop-drain: on the Stop hook (same `_report --event notify` command — distinguished by the
+        // stdin `hook_event_name`), pull the card's durable inbox and, if non-empty, print the
+        // `decision:block` continuation so Claude reads the queued messages as context. Additive: the
+        // notify→waiting report sent above is unchanged, and non-Stop events never reach here.
+        if payload["hook_event_name"]?.stringValue == "Stop" {
+            let drainParams = JSONValue.object(["ref": .string(taskId)])
+            if let resp = await boundedCall(sock: sock, method: "drain", params: drainParams, budgetMs: 2000),
+               let reason = resp["reason"]?.stringValue, !reason.isEmpty {
+                FileHandle.standardOutput.write(Data(StopDrain.blockJSON(reason: reason).utf8))
+            }
+        }
     }
 
     // MARK: statusLine display
@@ -89,6 +101,21 @@ enum ReportHelper {
             await group.next()   // first to finish: send completed, or budget tripped
             client.close()       // unblock the send if the budget tripped; idempotent if it acked
             group.cancelAll()
+        }
+    }
+
+    /// Like `boundedSend`, but returns the daemon's `result` (or nil on timeout/error). Used by the Stop
+    /// drain, which needs the response payload. Same close-to-unblock discipline as `boundedSend`.
+    static func boundedCall(sock: String, method: String, params: JSONValue, budgetMs: Int) async -> JSONValue? {
+        let client = ControlClient(socketPath: sock, source: .agent)
+        do { try client.connect() } catch { return nil }
+        return await withTaskGroup(of: JSONValue?.self) { group in
+            group.addTask { try? await client.call(method, params) }
+            group.addTask { try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs)); return nil }
+            let first = await group.next() ?? nil   // whichever finished first: the response, or nil on timeout
+            client.close()                           // unblock the call if the budget tripped; idempotent
+            group.cancelAll()
+            return first
         }
     }
 }

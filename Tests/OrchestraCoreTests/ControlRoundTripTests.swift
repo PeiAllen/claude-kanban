@@ -84,6 +84,30 @@ struct ControlRoundTripTests {
         #expect(acts.contains { $0.kind == .spawned && $0.text.contains("Earlier card") })
     }
 
+    @Test("drain RPC returns the composed inbox payload for a card")
+    func drainRPC() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = ControlClient(socketPath: path, source: .agent)
+        try client.connect(); defer { client.close() }
+
+        let spawnRes = try await client.call("spawn", .object([
+            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")]))
+        let task = try spawnRes.decode(Task.self)
+
+        // empty inbox → reason is null
+        let empty = try await client.call("drain", .object(["ref": .string(task.shortId)]))
+        #expect(empty["reason"]?.stringValue == nil)
+
+        // enqueue via send, then drain returns the payload
+        try await env.svc.send(task.id, "queued work")
+        let got = try await client.call("drain", .object(["ref": .string(task.shortId)]))
+        #expect(got["reason"]?.stringValue?.contains("queued work") == true)
+    }
+
     @Test("ping / version / getConfig over the socket")
     func meta() async throws {
         let env = TestEnv.make()
