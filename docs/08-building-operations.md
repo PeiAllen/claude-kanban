@@ -59,9 +59,31 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/make-dev-cert.sh` | Create the "Orchestra Dev" self-signed signing cert. |
 | `scripts/orch-test.sh` | Run a disposable **isolated** daemon (own `HOME` + tmux socket) to verify daemon/command changes without touching the live app. |
 | `scripts/orch-ui-shot.sh` | Build the app isolated and screenshot it by window id (for UI work). |
-| `scripts/orch-ux-e2e.sh` | Full **app + daemon** UX e2e on a disposable, isolated instance — combines the two half-harnesses above (the demo app is launched against a *real* isolated daemon, so board actions and workflows drive through the actual UI). Isolates via `$HOME` alone; spawns `orchestrad` directly (never `launchctl` — the fixed `com.orchestra.daemon` label would collide with live) + an isolated `ORCHESTRA_TMUX_SOCKET`. |
+| `scripts/orch-ux-e2e.sh` | Full **app + daemon** UX e2e on a disposable, isolated instance — combines the two half-harnesses above (the demo app is launched against a *real* isolated daemon, so board actions and workflows drive through the actual UI). Isolates via `$HOME` alone; spawns `orchestrad` directly (never `launchctl` — the fixed `com.orchestra.daemon` label would collide with live) + an isolated `ORCHESTRA_TMUX_SOCKET`. **Concurrency-safe** so many PR cards can run it at once overnight (see below): flags `--run-id ID` (namespace all per-run state; also `RUN_ID` env, default this PID), `--build-only` (prebuild the shared bundle then exit), `--rebuild` (force), `--no-build` (reuse). |
+| `scripts/orch-ux-e2e-concurrency-test.sh` | Proof harness: launches N (default 3) `orch-ux-e2e.sh` runs concurrently and asserts they stay isolated (distinct `$HOME`/socket/tmux/screenshot), all complete (none reaped by a sibling's teardown), and the live daemon is untouched. |
 | `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
 | `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
+
+### Concurrency-safe UX e2e (overnight PR fan-out)
+
+`orch-ux-e2e.sh` is designed so a whole board of PR cards can each screenshot the built UI at once,
+unattended, without stepping on each other or on the live app:
+
+- **Per-run namespacing.** Every mutable resource is keyed off `RUN_ID` (default the PID; a card passes
+  its shortId via `--run-id`): the isolated `$HOME`/socket root (`/tmp/orch-ux-e2e-<RUN_ID>`), the tmux
+  server, and the screenshot dir. Two runs with different `RUN_ID`s share nothing mutable.
+- **PID-scoped teardown.** Cleanup kills only the `APP_PID`/`DAEMON_PID` *this* run spawned and removes
+  only its own tmux socket + root. There is no global `pkill`/`kill-server` — so a run can never reap a
+  sibling's daemon (the earlier cross-run-kill regression).
+- **Build once, share read-only.** The app binary is immutable at launch, so N runs reuse one prebuilt
+  bundle in a shared DerivedData dir, guarded by an `mkdir`-based build mutex (`flock` is absent on
+  macOS). `--build-only` warms it up first; runs then pass `--no-build`.
+- **GUI concurrency cap.** An `mkdir`-based counting semaphore (`UX_E2E_GUI_SLOTS`, default 2) bounds how
+  many app windows fight the single macOS window server at once, reclaiming a slot whose holder PID has
+  died. `scripts/orch-ux-e2e-concurrency-test.sh` verifies all of the above.
+
+This makes the harness a building block for the overnight staged-PR fan-out pattern, where each PR runs
+as its own Orchestra agent card.
 
 ## Runtime configuration
 
