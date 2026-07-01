@@ -6,6 +6,7 @@ import Foundation
 public actor OrchestraService {
     public private(set) var config: Config
     let store: TaskStore
+    let trust: TrustLedger
     let registry: AgentRegistry
     var worktrees: any WorktreeManaging
     var sessions: any SessionManaging
@@ -27,11 +28,13 @@ public actor OrchestraService {
                 worktrees: (any WorktreeManaging)? = nil,
                 sessions: (any SessionManaging)? = nil,
                 launcher: Launcher? = nil,
-                resolver: PathResolver? = nil) {
+                resolver: PathResolver? = nil,
+                trust: TrustLedger? = nil) {
         self.config = config
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
+        self.trust = trust ?? TrustLedger()
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
@@ -60,6 +63,27 @@ public actor OrchestraService {
     func emitActivity(_ kind: ActivityKind, _ task: Task?, _ source: ActivitySource, _ text: String) {
         let item = ActivityItem(taskId: task?.id, ref: task?.ref(), source: source, kind: kind, text: text)
         emit(.activity(item))
+    }
+
+    // MARK: - trust
+
+    /// Resolve trust for a launch from the card's origin (provider-agnostic). The result rides on
+    /// `AdapterContext.trustCwd`; the adapter *applies* it and never reads the ledger.
+    /// - `scratch`  → auto-trust (Orchestra made it empty) + record.
+    /// - `worktree` → inherit the source repo's trust; registering a repo to run agents IS the trust
+    ///   act, so record the repo (idempotent) and trust the worktree.
+    /// - `borrowed` → trusted iff the cwd is already in the ledger; else `needsGrant` (human grant is T2).
+    public func resolveTrust(origin: CardOrigin, cwd: String, repo: String?) async -> TrustDecision {
+        switch origin {
+        case .scratch:
+            _ = try? await trust.record(cwd, grantedBy: .orchestra)
+            return .trusted
+        case .worktree:
+            if let repo { _ = try? await trust.record(repo, grantedBy: .repoRegistration) }
+            return .trusted
+        case .borrowed:
+            return await trust.isTrusted(cwd) ? .trusted : .needsGrant
+        }
     }
 
     // MARK: - spawn
@@ -124,10 +148,11 @@ public actor OrchestraService {
         )
         let created = try await store.create(task)
 
+        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
                                  hooksPath: Config.hooksPath, access: input.access,
-                                 trustCwd: origin == .scratch)
+                                 trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx))
 
