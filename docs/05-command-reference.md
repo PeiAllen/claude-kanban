@@ -15,7 +15,11 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
 | `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
-| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. |
+| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3); it is delivered at the agent's next turn-end via the Stop-hook drain, not typed into tmux. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
+| `inbox` | `ref` (required) | List a card's pending [inbox](03-data-model.md#the-inbox-store-f3) messages (`{id, text, createdAt}`) in FIFO order. Read-only (`Inbox.peek`); backs the [inbox editor](07-app-ui.md#the-inspector)'s list. |
+| `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`createdAt` are preserved. |
+| `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
+| `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder a card's queued messages (`Inbox.reorder`); `ids` is the full new order and must be a permutation of the card's pending message ids. Refills exactly that card's array slots, so other cards' interleaving is preserved. |
 | `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
 | `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
@@ -27,7 +31,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `closeShell` | `ref` (required), `window` (required, e.g. `shell-1`) | Close a shell window opened via `shell`. |
 | `exec` | `ref` (required), `cmd` (required), `timeout?` (seconds) | Run one shell command in the card's `cwd` via `/bin/sh -c`; returns stdout/stderr/exit. Worktree cards are allowlist-gated; borrowed/scratch are sandbox-trusted. Default timeout 120 s. |
 | `sessions` | `ref` (required) | Debug handles: every tmux target (socket/session/windows with attach lines), the agent-native session id, transcript path, prior ids, and the resume argv. |
-| `batch-spawn` | `tasks` (required: array of `{prompt, repo, branch, model?, col?, seed?}`) | Spawn many agents at once; failed entries are reported, the rest still spawn. Backs the board **Fan-out** action (PR D3): one card per prompt line, each on a suffixed `<branch>-<n>`, each optionally seeded. |
+| `batch-spawn` | `tasks` (required: array of `{prompt, repo, branch, model?, col?, seed?}`) | Spawn many agents at once; failed entries are reported, the rest still spawn. The **fan-out** primitive: one card per prompt line, each on a suffixed `<branch>-<n>`, each optionally seeded. Reachable from the CLI/MCP only — the board **Fan-out** button D3 shipped was [later removed](09-design-decisions.md#shipped-feature-history). |
 | `trust` | `path` (required) | Grant a **human's** write-trust for a directory (record it in the [trust ledger](03-data-model.md#the-trust-ledger-t1)) so agents may run there with write access. A human must approve — the MCP tool elicits a decision from the agent's own client; the CLI verb gates on an interactive terminal. An agent can only *trigger* it, **never self-grant** (`.agent`/`.daemon` sources are denied → `trustDenied`). |
 | `trustState` | `path` (required) | **Read-only** query (PR D3): returns `{trusted}` for a directory — a pure [trust ledger](03-data-model.md#the-trust-ledger-t1) lookup (`OrchestraService.isPathTrusted`) that **records nothing**. The app [`SpawnSheet`](07-app-ui.md#the-spawn-sheet) uses it to warn and force read-only on an untrusted freeform dir; granting stays the human-only `trust` above. |
 
@@ -64,8 +68,10 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   green with no test edit); the CLI verb is the one hand-wired surface (`orchestra handoff <ref>
   <context...>`). This is the *same-card* (replace-the-thread) topology; the new-card **Fork/Fan-out**
   start-actions (a `spawn`/`batch-spawn` with a `SpawnInput.seed`) plus the Handoff/Send **card actions**
-  have since landed as PR D3 (see [chapter 9](09-design-decisions.md#shipped-feature-history) and the app
-  [inspector](07-app-ui.md#the-inspector)). The *when-to-use* guidance for `spawn`/`handoff`/`wait`
+  landed as PR D3 (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The dedicated
+  Handoff/Fork/Fan-out **buttons have since been removed** — those moves stay reachable via the
+  natural-language → MCP path — and the per-card Send button became an
+  [inbox editor](07-app-ui.md#the-inspector) (the *agent-buttons simplification*, ch. 9). The *when-to-use* guidance for `spawn`/`handoff`/`wait`
   across all four topologies — and the card-vs-native-subagent line — is vendored as a per-agent
   delegation skill / AGENTS.md (PR D2) and now **auto-materialized into every launched card** by each
   adapter's `prepareToLaunch` (skill-injection; Claude a `.claude/skills` project skill, Codex an

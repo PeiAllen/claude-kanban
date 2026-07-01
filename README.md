@@ -33,7 +33,8 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
 - **Agents orchestrate agents.** A card can **hand off** to a clean-context resume, **fork** a slice into
   a new card, **fan out** across many, or **send** into another card's durable inbox — and an orchestrator
   card can `wait` on its children and wake as each concludes. All four compose from one live-delivery seam
-  (F1 resume · F2 wake · F3 inbox), driven from the board, CLI, or MCP.
+  (F1 resume · F2 wake · F3 inbox), driven from the CLI or MCP (the app surfaces the inbox as an editor —
+  list/reorder/edit/append/remove — while handoff/fork/fan-out are agent/CLI moves).
 - **Three control surfaces, one state.** Anything you can do in the app you can do from the `orchestra`
   CLI or an MCP tool, because all three speak to the same `CommandRegistry`.
 

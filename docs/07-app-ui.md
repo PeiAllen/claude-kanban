@@ -18,10 +18,12 @@ column shows a "No agents here" placeholder.
 **Drag-and-drop** moves cards between columns: a card is `.draggable` by its UUID, columns are
 `.dropDestination`s that highlight when targeted, and a drop calls `move(id, to:)`.
 
-A board-level **Fan-out** action (PR D3, toolbar → `FanoutSheet`, no card needed) spawns **many** cards
-at once: one card per prompt line, each on a suffixed `<branch>-<n>`, over the
-[`batch-spawn`](05-command-reference.md#registry-commands) command (`BoardModel.fanout`). Unlike the
-per-card Fork/Handoff/Send in the [inspector](#the-inspector), Fan-out acts on no selected card.
+Batch fan-out — spawning **many** cards at once (one card per prompt line, each on a suffixed
+`<branch>-<n>`) — is reachable from the CLI and MCP over the
+[`batch-spawn`](05-command-reference.md#registry-commands) command. There is **no board Fan-out button**:
+it was removed (along with the per-card Handoff and Fork buttons) so batch-spawn stays an agent/CLI move
+and the board chrome stays minimal (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)).
 
 ### The freeform region
 
@@ -84,15 +86,25 @@ Selecting a card opens the **inspector**, a resizable right-hand sidebar (defaul
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
 the [Recovery panel](#recovery-panel) instead.
 
-The **header bar** has **View changes** (opens the worktree in Zed with a branch-vs-base diff),
-**Archive** (non-dead cards only), and a **close** (X). It also carries the **card actions** wired by
-PR D3 (`BoardModel` `send`/`handoff`/`fork` wrappers over the shipped live-delivery seams — see
-[chapter 9](09-design-decisions.md#shipped-feature-history)):
+The **header bar** has **View changes** (opens the worktree in Zed with a branch-vs-base diff), an
+**Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). The per-card **Inbox** button
+(`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
+Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
+(see [chapter 9](09-design-decisions.md#shipped-feature-history)):
 
-- **Send** — queue a message into the card's durable inbox (`send`, F3), delivered at its next turn-end.
-- **Handoff** — a clean-context, **same-card** resume seeded with an authored summary (`handoff`, F1).
-- **Fork** — spawn a **new** card seeded with a slice of this one's context (a `spawn` carrying a
-  `SpawnInput.seed`), so the parent keeps working while the fork explores.
+- **Inbox** — opens a popover editor over the card's durable [inbox](03-data-model.md#the-inbox-store-f3)
+  (F3). It lists the queued messages (header `Inbox — N queued`), and per row lets you **reorder** (up/down
+  chevrons → `inbox-reorder`), **edit** the text inline (tap → commit → `inbox-edit`), and **delete**
+  (→ `inbox-remove`), with an **append** field at the bottom (→ `send`). Every op round-trips to the daemon
+  over the [`inbox*` commands](05-command-reference.md#registry-commands) and reloads; the list loads fresh
+  each time the popover opens. Messages are delivered at the agent's next turn-end.
+
+**Handoff**, **Fork**, and board **Fan-out** are no longer buttons — those moves are driven by talking to
+the agent (which calls the `handoff` / `spawn` / `batch-spawn` MCP tools), where an exploratory fork now
+defaults to a lightweight read-only freeform card in the same directory
+(`Sources/OrchestraCore/Resources/delegation-{skill,agents}.md`). This is the *agent-buttons
+simplification* — see [chapter 9](09-design-decisions.md#shipped-feature-history) and its
+[design note](../notes/designs/2026-07-01-agent-buttons-simplification-design.md).
 
 The **agent chrome** stacks, top to bottom:
 

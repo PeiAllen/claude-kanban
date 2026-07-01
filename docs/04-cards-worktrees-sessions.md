@@ -155,10 +155,11 @@ the inbox in FIFO order, bounded to the 10 000-char live-delivery limit), and th
 defaulted `seed:` param of `resume` → `ctx.seed`, which the adapter appends as the positional turn above.
 Draining before resume matters most for a `.sessionSeed` agent (Codex has no Stop hook) whose queued
 messages can *only* ride the seed; for Claude it also prevents a later Stop-drain double-delivering them.
-`resumeInCard` is the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1) and
-the D3 [Handoff card action](07-app-ui.md#the-inspector) call; the D3 **Fork/Fan-out** start-actions
-instead `spawn` a new card with a `SpawnInput.seed` (a *new-card* seed distinct from this resume-only
-`ctx.seed`; [chapter 9](09-design-decisions.md#shipped-feature-history)). (See
+`resumeInCard` is the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1, MCP
+tool + CLI verb) calls; forks instead `spawn` a new card with a `SpawnInput.seed` (a *new-card* seed
+distinct from this resume-only `ctx.seed`; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+The D3 Handoff/Fork buttons that also drove these seams were later removed (the *agent-buttons
+simplification*), leaving the natural-language → MCP path. (See
 [One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
 
 **Trust — apply the core's decision** (`prepareToLaunch`): Claude prompts for directory trust on first
@@ -354,10 +355,10 @@ The daemon makes a card's run survive crashes and reboots (`OrchestraService+Rec
   the transcript carries forward. It drains the inbox, folds it with the authored handoff/fork context
   (`HandoffSeed.fold`), and calls `resume(seed:)` with the result. This — not `restart` — is the shipped
   basis for context-clearing handoff (see [the resume argv & seed](#the-claude-code-adapter) above); it is
-  the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1) and the D3
-  [Handoff card action](07-app-ui.md#the-inspector) drive; D3's new-card **Fork/Fan-out** start-actions
-  instead `spawn`/`batch-spawn` a fresh card carrying a `SpawnInput.seed`
-  ([chapter 9](09-design-decisions.md#shipped-feature-history)).
+  the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1, MCP tool + CLI verb)
+  drives; forks instead `spawn`/`batch-spawn` a fresh card carrying a `SpawnInput.seed`
+  ([chapter 9](09-design-decisions.md#shipped-feature-history)). (The D3 Handoff/Fork buttons that once
+  drove these from the inspector were later removed — the *agent-buttons simplification*.)
 - **`restart(id)`.** Launches a fresh blank session in the *same* worktree with a new `agentSessionId`,
   rolling the old id into `priorSessionIds`. Sets `titleProvisional=true`, `status=.waiting`, clears
   `desc`. Never touches worktree contents. This is the "Start new session" button in the Recovery

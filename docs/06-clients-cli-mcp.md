@@ -32,6 +32,7 @@ orchestra list                       # all cards
 orchestra list --col review          # one column
 orchestra status <ref>               # JSON status for one card
 orchestra send <ref> "use a token bucket"
+orchestra inbox <ref>                # list a card's queued inbox messages (also inbox-edit/-remove/-reorder)
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card, seeded (F1)
 orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)

@@ -140,8 +140,11 @@ pending inbox — so **all three live-delivery functions the topologies compose 
 Codex **send-keys wake (C4)** has since landed too (below), the **`handoff` Command (D1)** that *calls*
 the F1 seam shipped the first of the topology surfaces (below), and the new-card **fork / fan-out
 start-actions + the Handoff/Send card actions** have now landed as well (**D3**, below) — folding an
-authored `SpawnInput.seed` ahead of a new card's prompt — so **all four topologies are now driveable from
-the board and CLI**. The **guidance** an agent reads to *choose* among these topologies — delegate vs.
+authored `SpawnInput.seed` ahead of a new card's prompt — so **all four topologies are driveable from the
+CLI, MCP, and (at the time) the board**. The board surface was subsequently pared back: the
+Handoff/Fork/Fan-out buttons were removed in favor of the natural-language → MCP path, and the per-card
+Send button became a full **inbox editor** (the *agent-buttons simplification*, in the
+[shipped history](#shipped-feature-history) below). The **guidance** an agent reads to *choose* among these topologies — delegate vs.
 continue, and card vs. native subagent (keep both) — has been authored and vendored too (**D2**, below);
 and **that last wire has since landed** (**skill-injection**, below): each adapter's `prepareToLaunch` now
 auto-materializes the per-agent variant into the location its agent discovers (Claude a project skill, Codex
@@ -477,6 +480,9 @@ four [handoff/fork/fan-out topologies](#one-seed-four-topologies) to concrete ac
 - **Board action** (no card selected, board toolbar → `FanoutSheet`): **Fan-out** — a `batch-spawn` of one
   card per prompt line, each on a suffixed `<branch>-<n>`.
 
+(The **Handoff / Fork / Fan-out buttons here were later removed** and **Send became an inbox editor** — see
+the *agent-buttons simplification* at the end of this history; the tools they called are unchanged.)
+
 Two small backend primitives carry it:
 
 - **`SpawnInput.seed`** — a defaulted seed on the **`spawn`** and **`batch-spawn`** Commands (and the CLI's
@@ -562,6 +568,39 @@ delegation stack is fully wired end-to-end: the tools (D1), the surfaces that dr
 that says *when* to reach for them (D2), and now its automatic delivery on every launch. As with the entries
 above it deepens axis 3's *richer Orchestra→agent context injection* rather than closing a whole axis, so
 that row keeps its structured-sub-status remainder open ([chapter 10](10-roadmap.md)).
+
+Landing after the forest is the **agent-buttons simplification + inbox editor**
+(`notes/plans/2026-07-01-agent-buttons-simplification.md`;
+[design](../notes/designs/2026-07-01-agent-buttons-simplification-design.md)). D3 had shipped a board
+**Fan-out** button and per-card **Send / Handoff / Fork** buttons; this change prunes that surface back to
+what the user actually reaches for, on the principle that the natural-language → MCP path already covers
+the delegation moves and the board chrome should stay minimal. Three moves:
+
+- **The Handoff, Fork, and board Fan-out buttons are removed** (`FanoutSheet.swift` deleted; the
+  `BoardModel.handoff`/`fork`/`fanout` wrappers and `showFanout` state dropped). The underlying tools are
+  **untouched** — `handoff`, `spawn`, and `batch-spawn` still work over MCP/CLI — so *reset the context*
+  (handoff) and *explore a slice, then get data back* (fork) are served by just talking to the agent. The
+  per-card header now shows only **Inbox** + **Archive** (plus View-changes / close).
+- **Send → a durable [inbox](03-data-model.md#the-inbox-store-f3) editor.** The one-shot Send composer
+  becomes an **Inbox** popover that manages the whole queue: list, **reorder** (up/down chevrons), inline
+  **edit**, **delete**, and **append**. The `Inbox` actor gains `remove`/`update`/`reorder`, exposed as
+  four registry commands — [`inbox` / `inbox-edit` / `inbox-remove` / `inbox-reorder`](05-command-reference.md#registry-commands)
+  — which therefore surface as MCP tools and CLI verbs for free (the same registry-single-source property
+  every command has). `reorder` refills only the target card's slots in the shared append-ordered array,
+  so other cards' interleaving is preserved; a non-permutation of the card's ids is rejected, not silently
+  dropped.
+- **The delegation docs steer the removed Fork's use case.** Both bundled guidance files
+  (`delegation-skill.md` / `delegation-agents.md`) now surface `spawn`'s `cwd` + `access: readOnly` + `seed`
+  options and default an **exploratory/planning fork to a lightweight read-only freeform card in the same
+  directory** (no worktree, nothing to clean up) that reports back via `wait` + inbox drain — so the
+  natural-language path reliably reproduces what the Fork button did. Worktree-fork (`spawn` with
+  `repo` + `branch`) stays documented for when the fork will change files and wants its own branch/PR.
+
+Deliberate scope cuts: **no live count badge** on the Inbox button (the count shows inside the popover
+header, `Inbox — N queued` — a live badge would need a new per-card subscription), and reorder uses
+up/down **chevrons**, not drag-and-drop (more robust inside a themed popover; the `inbox-reorder` backend
+is gesture-agnostic, so drag can be added later with no server change). Like the entries above this is a
+UI/surface change, not a whole axis, so it stays here as history.
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

@@ -95,7 +95,11 @@ sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, ato
 `.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage` (`{id, cardId, text, createdAt}`)
 at `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
 filter on `cardId`. `enqueue` appends, `peek` reads without removing, and `drain` returns + removes all of
-a card's pending messages. Messages persist until drained, so they survive a daemon restart.
+a card's pending messages. Messages persist until drained, so they survive a daemon restart. Three
+editor mutators — `remove(id)`, `update(id, text:)` (text only; id/cardId/createdAt preserved), and
+`reorder(cardId, orderedIds:)` (a permutation of that card's ids, refilling only its own array slots so
+other cards' interleaving is untouched) — back the app's [inbox editor](07-app-ui.md#the-inspector) and
+the [`inbox*` commands](05-command-reference.md#registry-commands).
 
 This is the durable merge-back channel for **F3** (see [Design decisions](09-design-decisions.md#one-seed-four-topologies)):
 `send` enqueues here instead of typing into tmux, and the Claude Stop hook drains it into the agent at its
