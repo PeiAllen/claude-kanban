@@ -97,6 +97,37 @@ final class E2EBinaryTests {
         #expect(!r.stderr.contains("unknown command"))
     }
 
+    @Test("CLI: trust is a routed verb (not an unknown command)")
+    func cliTrustRouted() throws {
+        // No path → the trust case runs and dies on the missing path; it must NOT reach the
+        // `default:` unknown-command branch. Proves the CLI switch surfaces the new verb.
+        let r = try cli(["trust"])
+        #expect(r.exitCode != 0)
+        #expect(!r.stdout.contains("unknown command"))
+        #expect(!r.stderr.contains("unknown command"))
+    }
+
+    @Test("CLI: `orchestra trust <path>` with a non-tty stdin fails closed with actionable text")
+    func cliTrustNonInteractiveFails() throws {
+        // Run the binary directly with an explicit non-tty stdin (/dev/null) so isatty is
+        // deterministically false — the verb must refuse BEFORE any daemon call (so no daemon is even
+        // needed here). Exit non-zero, message names the path and never a `--trust` flag.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = [binary("orchestra"), "trust", "/tmp/some-untrusted-dir"]
+        p.environment = ProcessInfo.processInfo.environment.merging(["ORCHESTRA_SOCK": ctlSock]) { _, b in b }
+        p.standardInput = FileHandle.nullDevice          // non-tty → isatty == 0
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out; p.standardError = err
+        try p.run()
+        p.waitUntilExit()
+        let errText = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(p.terminationStatus != 0)
+        #expect(errText.contains("some-untrusted-dir"))
+        #expect(errText.contains("interactive terminal"))
+        #expect(!errText.contains("--trust"))
+    }
+
     @Test("MCP: initialize + tools/list parity with the registry; tools/call spawn creates a card")
     func mcpSmoke() throws {
         let mcp = binary("orchestra-mcp")
