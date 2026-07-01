@@ -41,18 +41,34 @@ public enum StartIn: String, Codable, Sendable {
 /// bucket used for accenting. Adapters catalog their own models; the heuristics here only fill gaps
 /// for ids an adapter doesn't know (and for legacy persisted data).
 ///
+/// Per-model capability flags from the offline model table (models.dev-shaped). All default false
+/// so an absent/partial table entry is safe.
+public struct ModelFlags: Codable, Sendable, Equatable, Hashable {
+    public var toolCall: Bool
+    public var reasoning: Bool
+    public var vision: Bool
+    public init(toolCall: Bool = false, reasoning: Bool = false, vision: Bool = false) {
+        self.toolCall = toolCall; self.reasoning = reasoning; self.vision = vision
+    }
+}
+
 /// Decodes from EITHER the structured object OR a bare `"<id>"` string, so existing `tasks.json`
 /// files (which stored `model` as a plain string) migrate transparently on first read.
 public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     public let id: String          // launch id, passed to the adapter
     public var displayName: String // human label
     public var family: String      // "claude" | "gpt" | "gemini" | "other"
+    public var contextWindow: Int? // max context tokens (offline table); nil = unknown → gauge hidden
+    public var flags: ModelFlags?  // capability flags (offline table); nil = unknown
 
-    public init(id: String, displayName: String, family: String) {
+    public init(id: String, displayName: String, family: String,
+                contextWindow: Int? = nil, flags: ModelFlags? = nil) {
         self.id = id; self.displayName = displayName; self.family = family
+        self.contextWindow = contextWindow; self.flags = flags
     }
 
     /// Derive a sensible label + family from a bare id (used for un-cataloged ids + legacy data).
+    /// This is the UNKNOWN-MODEL FALLBACK: no contextWindow, no flags.
     public init(id: String) {
         self.init(id: id, displayName: AgentModel.humanize(id), family: AgentModel.detectFamily(id))
     }
@@ -71,6 +87,16 @@ public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
         self.id = id
         self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? AgentModel.humanize(id)
         self.family = try c.decodeIfPresent(String.self, forKey: .family) ?? AgentModel.detectFamily(id)
+        self.contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow)
+        self.flags = try c.decodeIfPresent(ModelFlags.self, forKey: .flags)
+    }
+
+    /// Context-window usage percent (0…100) for a token count, using this model's OFFLINE
+    /// `contextWindow` as the denominator (the token-reporting agents' ctxPct path — D7/§6).
+    /// nil when the window is unknown so the caller hides the gauge rather than dividing by a guess.
+    public func ctxPct(usedTokens: Int) -> Double? {
+        guard let cw = contextWindow, cw > 0 else { return nil }
+        return min(100, max(0, Double(usedTokens) / Double(cw) * 100))
     }
 
     /// Coarse provider family from an id — the one place this string-sniffing lives.

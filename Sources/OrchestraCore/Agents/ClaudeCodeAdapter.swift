@@ -19,16 +19,20 @@ public struct ClaudeCodeAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
+    /// Claude Code's selectable models + their OFFLINE context windows / capability flags, from the
+    /// vendored `Resources/claude-code-models.json` (PR-updated, no network). The hardcoded list is a
+    /// last-resort fallback so `models()` is never empty if the resource fails to bundle.
     public func models() -> [AgentModel] {
-        // Claude Code's selectable models. Not hardcoded into business logic — just this adapter's
-        // catalog (launch id + display label). The `family` is fixed for this provider.
-        [
-            AgentModel(id: "claude-opus-4-8", displayName: "Opus 4.8", family: "claude"),
-            AgentModel(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6", family: "claude"),
-            AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
-            AgentModel(id: "claude-opus-4-7", displayName: "Opus 4.7", family: "claude"),
-        ]
+        let table = ModelCatalog.load("claude-code-models")
+        return table.isEmpty ? Self.fallbackModels : table
     }
+
+    private static let fallbackModels: [AgentModel] = [
+        AgentModel(id: "claude-opus-4-8", displayName: "Opus 4.8", family: "claude"),
+        AgentModel(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6", family: "claude"),
+        AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
+        AgentModel(id: "claude-opus-4-7", displayName: "Opus 4.7", family: "claude"),
+    ]
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
 
