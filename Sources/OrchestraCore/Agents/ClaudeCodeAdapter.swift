@@ -35,6 +35,64 @@ public struct ClaudeCodeAdapter: Adapter {
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }
 
+    // MARK: telemetry parse (hooksPush) — relocated from the `orchestra` CLI `ReportHelper.map`.
+
+    /// Claude telemetry is `hooksPush`: the `_report` transport pushes each hook event (kind + JSON
+    /// payload); this converts it to a normalized two-tier `StatusReport`. Byte-identical to the former
+    /// CLI `ReportHelper.map` so `ReportTests` and live Claude reporting are unchanged. Claude has no
+    /// `fileTail` transport, so any non-`hooksPush` raw returns nil.
+    public func parse(_ raw: RawTelemetry) -> StatusReport? {
+        guard case let .hooksPush(kind, p) = raw else { return nil }
+        switch kind {
+        case "statusline":
+            let seq = DispatchTime.now().uptimeNanoseconds
+            return StatusReport(
+                seq: seq,
+                sessionId: p["session_id"]?.stringValue,
+                transcriptPath: p["transcript_path"]?.stringValue,
+                ctxPct: p["context_window"]?["used_percentage"]?.doubleValue,
+                modelId: p["model"]?["id"]?.stringValue,            // launch id (for resume/restart)
+                modelDisplay: p["model"]?["display_name"]?.stringValue,  // UI label only
+                sessionName: p["session_name"]?.stringValue)
+        case "session":
+            return StatusReport(
+                sessionId: p["session_id"]?.stringValue,
+                transcriptPath: p["transcript_path"]?.stringValue,
+                sessionSource: p["source"]?.stringValue)
+        case "prompt":
+            return StatusReport(status: .running, promptText: p["prompt"]?.stringValue)
+        case "tool":
+            let tool = p["tool_name"]?.stringValue ?? "tool"
+            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), status: .running)
+        case "notify":
+            return StatusReport(desc: p["message"]?.stringValue, status: .waiting)
+        case "sessionend":
+            let reason = p["reason"]?.stringValue ?? "other"
+            // Transition reasons are ignored (the matching SessionStart handles them).
+            if ["clear", "resume", "compact"].contains(reason) { return nil }
+            return StatusReport(endReason: reason)
+        default:
+            return nil
+        }
+    }
+
+    private func toolDesc(tool: String, input: JSONValue?) -> String {
+        switch tool {
+        case "Edit", "Write", "MultiEdit":
+            if let f = input?["file_path"]?.stringValue { return "Editing \((f as NSString).lastPathComponent)" }
+            return "Editing"
+        case "Bash":
+            if let c = input?["command"]?.stringValue { return "Running: \(String(c.prefix(40)))" }
+            return "Running a command"
+        case "Read":
+            if let f = input?["file_path"]?.stringValue { return "Reading \((f as NSString).lastPathComponent)" }
+            return "Reading"
+        case "WebSearch": return "Web search"
+        case "Grep", "Glob": return "Searching"
+        default: return tool
+        }
+    }
+
     /// Mirror the source repo's trust onto the worktree: only when the user has already trusted the
     /// main project folder in Claude Code do we pre-accept the worktree's trust dialog (each worktree
     /// is a fresh path Claude would otherwise re-prompt for). If the repo isn't trusted, we leave the

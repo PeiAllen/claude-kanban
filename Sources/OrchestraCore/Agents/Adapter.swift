@@ -38,6 +38,12 @@ public protocol Adapter: Sendable {
     func newSessionId() -> String?
     func start(_ ctx: AdapterContext) -> [String]
     func resume(_ ctx: AdapterContext) -> [String]?
+    /// Convert one unit of raw transport telemetry into a normalized `StatusReport` (the D3 parse core).
+    /// AGENT-DEPENDENT: each adapter owns its own mapping. The Orchestra transport (push endpoint /
+    /// tailer / scrape, keyed by `capabilities.telemetry`) supplies only the raw bytes and merges the
+    /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
+    /// adapter opts in per transport it actually receives.
+    func parse(_ raw: RawTelemetry) -> StatusReport?
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo?
     /// Side-effecting prep run just before launch (default no-op). Claude uses it to pre-accept the
     /// worktree's directory-trust dialog so an autonomous agent never blocks on the "trust this
@@ -49,6 +55,7 @@ public protocol Adapter: Sendable {
 public extension Adapter {
     var env: [String: String] { [:] }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
+    func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
 
     /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic
     /// handle derived from the id. Keeps callers from ever fabricating a bad launch model.
