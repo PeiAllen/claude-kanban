@@ -38,6 +38,67 @@ struct InboxStoreTests {
     }
 }
 
+@Suite("Inbox edit / remove / reorder")
+struct InboxEditTests {
+    static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
+
+    @Test("remove drops one message by id, leaves the rest")
+    func removeOne() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let c = UUID()
+        try await inbox.enqueue(c, "a"); try await inbox.enqueue(c, "b")
+        let ids = await inbox.peek(c).map(\.id)
+        try await inbox.remove(ids[0])
+        #expect(await inbox.peek(c).map(\.text) == ["b"])
+    }
+
+    @Test("update replaces text only, preserving id/createdAt")
+    func updateText() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let c = UUID()
+        try await inbox.enqueue(c, "old")
+        let m = try #require(await inbox.peek(c).first)
+        try await inbox.update(m.id, text: "new")
+        let after = try #require(await inbox.peek(c).first)
+        #expect(after.text == "new")
+        #expect(after.id == m.id)
+        #expect(after.createdAt == m.createdAt)
+    }
+
+    @Test("update throws for an unknown message id")
+    func updateUnknown() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path)
+        await #expect(throws: OrchestraError.self) {
+            try await inbox.update(UUID(), text: "x")
+        }
+    }
+
+    @Test("reorder permutes a card's messages and preserves other cards' interleaving")
+    func reorderPreservesInterleave() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let a = UUID(); let b = UUID()
+        // array order: a1, b1, a2, a3
+        try await inbox.enqueue(a, "a1"); try await inbox.enqueue(b, "b1")
+        try await inbox.enqueue(a, "a2"); try await inbox.enqueue(a, "a3")
+        let aIds = await inbox.peek(a).map(\.id)          // [a1, a2, a3]
+        // new order for a: a3, a1, a2
+        try await inbox.reorder(a, orderedIds: [aIds[2], aIds[0], aIds[1]])
+        #expect(await inbox.peek(a).map(\.text) == ["a3", "a1", "a2"])
+        #expect(await inbox.peek(b).map(\.text) == ["b1"])  // b untouched
+    }
+
+    @Test("reorder rejects a non-permutation of the card's ids")
+    func reorderRejectsBadIds() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let c = UUID()
+        try await inbox.enqueue(c, "a"); try await inbox.enqueue(c, "b")
+        await #expect(throws: OrchestraError.self) {
+            try await inbox.reorder(c, orderedIds: [UUID()])   // wrong ids
+        }
+    }
+}
+
 @Suite("C1 · StopDrain payload")
 struct StopDrainTests {
     func msg(_ t: String) -> InboxMessage { InboxMessage(cardId: UUID(), text: t) }
