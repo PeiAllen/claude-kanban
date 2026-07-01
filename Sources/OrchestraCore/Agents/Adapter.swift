@@ -68,7 +68,7 @@ public extension Adapter {
 public struct AgentRegistry: Sendable {
     private var adapters: [String: any Adapter]
 
-    public init(adapters: [any Adapter] = [ClaudeCodeAdapter()]) {
+    public init(adapters: [any Adapter] = [ClaudeCodeAdapter(), CodexAdapter()]) {
         var dict: [String: any Adapter] = [:]
         for a in adapters { dict[a.id] = a }
         self.adapters = dict
