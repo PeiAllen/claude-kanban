@@ -121,7 +121,9 @@ fresh process with clean context, seeded with an authored handoff/fork context f
 pending inbox — so **all three live-delivery functions the topologies compose from are now shipped**. The
 Codex **send-keys wake (C4)** has since landed too (below), and the **`handoff` Command (D1)** that *calls*
 the F1 seam is now the first of the topology surfaces to ship (below) — so only the new-card handoff/fork/
-fan-out **UI + start-actions** (D3) remain.
+fan-out **UI + start-actions** (D3) remain. The **guidance** an agent reads to *choose* among these
+topologies — delegate vs. continue, and card vs. native subagent (keep both) — has since been authored and
+vendored too (**D2**, below), though wiring it into the seed is D3-adjacent.
 (`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
@@ -354,6 +356,44 @@ delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-ca
 Like the forest PRs above, D1 is a single Command surface, not a whole axis, so it stays here as history
 while the context-continuity row keeps the remaining new-card handoff/fork/fan-out **UI + start-actions**
 (D3) open. (As-built symbols:
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+
+The eleventh landed PR is **D2 — the delegation guidance skill + AGENTS.md**
+(`notes/plans/2026-07-01-d2-delegation-skill.md`). Where D1 shipped a delegation *tool*, D2 ships the
+**guidance an agent reads to decide when to reach for it** — a **prose/resource PR** with no new `Command`
+and no launch-behavior change. It vendors two markdown resources under `Sources/OrchestraCore/Resources/`,
+`.copy`-bundled into `Bundle.module` exactly like the offline Codex model table: `delegation-skill.md`
+(a Claude **skill** — `name:`/`description:` frontmatter + body) and `delegation-agents.md` (a Codex
+**AGENTS.md** — plain markdown, no frontmatter, read from the cwd). The heuristics are **identical** across
+both variants; only the packaging and a couple of per-agent tool-surface notes differ (the Codex file notes
+its send-keys nudge may take a beat to surface a conclusion). A minimal `enum DelegationDocs` (mirroring
+`ModelCatalog`) loads a variant by name — `load(_:)` returns the raw text or `nil`, never throwing into a
+launch path — and `forAgent(_:)` maps an agent id to its variant (`codex` → AGENTS.md, every other id incl.
+Claude → the skill, so an unknown future agent still gets correct guidance). The guidance itself teaches
+four things: **delegate vs. just continue** (pay the card + worktree + wake round-trip only for isolation /
+parallelism / durability / a different agent / its own PR-branch; otherwise do it inline); **the four moves**
+— handoff (same-card resume vs. new-card), fork, fan-out, wait — mapped to when each fits; **cards vs.
+native subagents** — keep *both*, they are complementary: a **card** for durable · parallel · cross-agent ·
+isolated work that outlives your turn and can land a PR, a **native subagent** (Claude's `Task` tool) for
+ephemeral in-context read/search fan-out you fold back immediately — reach for a card *in addition to*,
+never *instead of*, subagents; and the **reactive orchestration loop** (spawn stack head → background
+`wait` → woken on conclusion → drain inbox → spawn next-in-stack). Two properties keep it contained:
+
+- **Unwired by design.** The `DelegationDocs` loader is additive resource plumbing — the `ModelCatalog`
+  precedent — and is called from **no** launch path in D2. Selecting a variant and delivering it (Claude as
+  a skill, Codex as its `AGENTS.md`) rides the seed-injection path that lands with the *new-card*
+  start-actions (D3-adjacent); D2 touches no `prepareToLaunch`/seed behavior, so Claude and Codex launches
+  are byte-for-byte unchanged.
+- **Content is the test contract.** Because the heuristics are the deliverable, `DelegationDocsTests`
+  asserts both variants load offline from a local file URL, that the skill carries YAML frontmatter
+  (`name: orchestra-delegation`) while the AGENTS.md does not, that `forAgent` selects the right variant,
+  and that the required anchors (`handoff`/`fork`/`fan-out`/`wait`/`spawn`/`card`/`in-context`/`durable`,
+  the "*in addition to* … never *instead of*" keep-both line, and the Claude skill naming the `Task` tool)
+  are present in each.
+
+Like the forest PRs above, D2 is content + a loader, not a whole axis — it deepens axis 3's *richer
+Orchestra→agent context injection* — so it stays here as history while the context-continuity row keeps the
+new-card handoff/fork/fan-out **UI + start-actions** (D3) open. (`notes/designs/context-passing-topologies.md`;
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is

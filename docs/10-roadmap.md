@@ -55,6 +55,13 @@ providers**, the **first surface that *calls* this seam has now landed too — P
 delegation tool** ([plan](../notes/plans/2026-07-01-d1-mcp-delegation-tools.md)): a thin registry `Command`
 (auto-surfaced as an MCP tool) plus an `orchestra handoff` CLI verb that delegates to C3's `resumeInCard`,
 wiring the F1 *same-card* handoff topology into a callable tool (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). The delegation **guidance** itself has since
+been authored too — **PR D2** ([plan](../notes/plans/2026-07-01-d2-delegation-skill.md)): two vendored
+resources (a Claude **skill** + a Codex **AGENTS.md** — same heuristics, different packaging) plus a
+`DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off / fork / fan-out /
+wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in addition to*,
+never *instead of*). It is content + an **unwired** loader — selecting and delivering a variant rides the
+same seed-injection path as the D3 start-actions (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)). The remainder of the forest is then the
 *new-card* handoff/fork/fan-out **UI + start-actions** (D3) — still design-only until that PR lands. The
 principle is to design every change *toward* these axes, never away from them.
@@ -65,7 +72,7 @@ principle is to design every change *toward* these axes, never away from them.
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
 | 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9); write access and approvals are the live remainder. |
-| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection. |
+| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads (a Claude skill + a Codex AGENTS.md) has **shipped** as vendored resources + a `DelegationDocs` loader (D2, ch. 9), still unwired into the seed. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |

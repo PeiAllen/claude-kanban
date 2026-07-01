@@ -61,7 +61,10 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   inbox as the resumed session's opening turn. It auto-surfaces as an MCP tool (registry↔MCP parity stays
   green with no test edit); the CLI verb is the one hand-wired surface (`orchestra handoff <ref>
   <context...>`). This is the *same-card* (replace-the-thread) topology; the new-card handoff/fork/fan-out
-  **UI + start-actions** are D3, still design-only. (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
+  **UI + start-actions** are D3, still design-only. The *when-to-use* guidance for `spawn`/`handoff`/`wait`
+  across all four topologies — and the card-vs-native-subagent line — is now vendored as a per-agent
+  delegation skill / AGENTS.md (PR D2, see [chapter 9](09-design-decisions.md#shipped-feature-history)).
+  (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
 
 ## Server-only built-in methods
