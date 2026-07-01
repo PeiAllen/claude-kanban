@@ -57,15 +57,18 @@ Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), deepened 
 **capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). The
 **seam-contract root of that design has landed** — PR A1
 ([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)) froze the complete capability descriptor
-and moved core onto it — while the rest of the forest (the Codex adapter, the telemetry seam, live
-delivery) stays design-only. An adapter declares its `id`,
+and moved core onto it, and **PR A2** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-seam.md))
+has since added the adapter's own **`parse`** (below) — while the rest of the forest (the Codex adapter,
+live delivery) stays design-only. An adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
 - **`start(ctx)`** — argv for a fresh launch,
 - **`resume(ctx)`** — argv to reattach an existing session (or `nil` if unsupported),
 
-plus `newSessionId()`, `sessionInfo(...)`, and `prepareToLaunch(ctx)` (side-effecting prep). The
-`AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
+plus `newSessionId()`, `sessionInfo(...)`, `prepareToLaunch(ctx)` (side-effecting prep), and
+**`parse(_:)`** — the adapter's own conversion of one unit of raw telemetry into a `StatusReport`
+(relocated into the adapter by A2; see [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel)).
+The `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
 the managed `hooksPath`, the card's `access`, `trustCwd` (set when Orchestra owns the cwd — see
 [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
 `additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) but whose per-agent
@@ -117,6 +120,15 @@ owns the cwd (the `trustCwd` flag, set when `origin == .scratch` at spawn/resume
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
 with a newest-matching-`.jsonl` fallback used only when no id was tracked.
+
+**Telemetry parse** (`parse(_:)`): because Claude's telemetry is `hooksPush`, the adapter owns the
+conversion of each pushed hook event into a `StatusReport`. `ClaudeCodeAdapter.parse` takes a
+`RawTelemetry.hooksPush(kind:payload:)` and switches on the event kind (`statusline` / `session` /
+`prompt` / `tool` / `notify` / `sessionend`) exactly as the CLI's former `ReportHelper.map` did — this
+logic was **relocated verbatim** out of the `orchestra` CLI target by [PR A2](#agent-adapters) so the
+transport/parse boundary is per-adapter, while Claude telemetry stays byte-identical. A non-`hooksPush`
+raw (e.g. a `fileTail` line) returns `nil` — Claude has no tail transport. See
+[the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for where the transport calls it.
 
 ## The read-only barrier
 

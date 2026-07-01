@@ -19,10 +19,15 @@ byte-for-byte unchanged — see [chapter 9](09-design-decisions.md#shipped-featu
 PR, **E2 — the authMode soft-warn** ([plan](../notes/plans/e2-authmode-softwarn.md)), has also landed off
 A1: an `AuthRateMonitor` that emits an advisory activity-feed warning when a subscription-auth adapter
 fans out past a threshold, **advising but never capping** (see
-[chapter 9](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)). Both are single forest PRs, not
-whole axes, so their rows stay in the roadmap below. The rest of the forest (the A2 telemetry seam, the
-Codex adapter, live delivery) stays design-only until those PRs land. The principle is to design every
-change *toward* these axes, never away from them.
+[chapter 9](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)). A third forest PR, **A2 — the
+telemetry-source seam** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-seam.md)), has now landed
+too: it relocated the raw→`StatusReport` parse out of the `orchestra` CLI into the adapter behind a new
+defaulted `Adapter.parse(_ raw: RawTelemetry)`, establishing the transport/parse boundary the design calls
+for while keeping Claude telemetry byte-identical (see
+[chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not
+whole axes, so their rows stay in the roadmap below. The rest of the forest (the Codex adapter, the
+daemon-side rollout-tail transport, live delivery) stays design-only until those PRs land. The principle is
+to design every change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -67,10 +72,10 @@ Sequencing guidance from the design gates:
    `{files, env, argv}` + trust, not one `--settings` file. The L3 design refines report handling further:
    the daemon owns only the **telemetry transport** (push / rollout-tail / pty-scrape, keyed by the
    capability descriptor), while the **parse** into a `StatusReport` is the **adapter's** own
-   (agent-dependent) — so `ReportHelper.map` relocates out of the CLI target into the adapter. The whole
-   build is sequenced as a **stacked-PR forest** (A1 capability-descriptor freeze ✅ **landed** → A2
-   telemetry seam → B1/B2 Codex adapter + rollout-tail, in parallel with the trust-ledger and
-   live-delivery tracks) in
+   (agent-dependent) — so `ReportHelper.map` relocated out of the CLI target into `ClaudeCodeAdapter.parse`
+   (✅ **landed** as A2). The whole build is sequenced as a **stacked-PR forest** (A1 capability-descriptor
+   freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail, in parallel
+   with the trust-ledger and live-delivery tracks) in
    [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
 4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
    field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
@@ -86,8 +91,9 @@ Sequencing guidance from the design gates:
 Several seams are currently Claude-Code-shaped and must be generalized as axis 2/3 land — the design
 notes call these out explicitly so they aren't deepened by accident:
 
-- the report-ingestion path (`ReportHelper.map`, `claude-hooks.json`) and transcript/session discovery
-  in `ClaudeCodeAdapter` (keyed to `~/.claude/projects`),
+- the report **parse** (`ClaudeCodeAdapter.parse`, relocated from the CLI by A2) and the hooks wiring
+  (`claude-hooks.json`), plus transcript/session discovery in `ClaudeCodeAdapter` (keyed to
+  `~/.claude/projects`),
 - the control plane (`ControlServer`/`ControlClient`) is raw-fd UDS only, with no `Transport`
   abstraction yet (needed for the phone client),
 - `Column` is a fixed Swift enum baked into the model, board layout, `StartIn`, drag-drop, and the

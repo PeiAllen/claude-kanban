@@ -147,5 +147,23 @@ its rationale). Like A1 it is a single forest PR rather than a whole axis, so it
 and leaves the roadmap row for the model-providers/agent-integration axes in place until the full seam
 ships.
 
+A third forest PR has landed on top of A1 — **A2, the telemetry-source seam**
+(`notes/plans/2026-07-01-a2-telemetry-source-seam.md`). It draws the **transport/parse boundary** the
+agent-provider design (D3) calls for: the daemon-side **transport** obtains only *raw* bytes, while the
+raw→`StatusReport` **parse** is the **adapter's** own, because that conversion is agent-dependent. A2
+relocated the parse out of the `orchestra` CLI target (the former `ReportHelper.map`/`toolDesc`) into a new
+defaulted protocol method `Adapter.parse(_ raw: RawTelemetry) -> StatusReport?` (added with a `nil`-returning
+default in `extension Adapter`, so no conformer breaks) plus a `RawTelemetry` envelope
+(`hooksPush(kind:payload:)` for pushed hook events, `fileTail(line:)` reserved for a future rollout tailer;
+`ptyScrape` deferred — no v1 consumer). `ClaudeCodeAdapter.parse` now owns the `hooksPush` conversion,
+carrying the former CLI logic **verbatim**; the hidden `orchestra _report` helper — which *is* the Claude
+push transport — calls `ClaudeCodeAdapter().parse(.hooksPush(...))` instead of a local `map`. The daemon's
+`report` endpoint and the `OrchestraService.report` seq-gate merge are **untouched**, so Claude telemetry
+is byte-identical (the pre-existing `ReportTests` stayed green unchanged). The `fileTail` parse and the
+daemon-side rollout tailer that feeds it — the same `adapter.parse` seam from a different transport — land
+with the Codex adapter (PR B2). Like A1 and E2, this is a single forest PR of plumbing, not a whole axis,
+so it stays here as history rather than migrating a roadmap row. (As-built symbols are recorded in
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1.)
+
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

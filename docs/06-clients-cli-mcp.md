@@ -103,9 +103,18 @@ behavior, in order:
    Claude's status bar.
 2. **Guard on `$ORCHESTRA_TASK_ID`** (set by `SessionManager` at launch) — only Orchestra-spawned
    agents report; a plain `claude` you run yourself does nothing.
-3. **Map the event** to a `StatusReport` (see [Data model](03-data-model.md#the-report-types)) and send
-   it to the daemon's `report` method under a tight time budget (~50 ms for statusline, ~2 s for hooks),
-   closing the connection on budget/ack so a "budget trip" never blocks the agent.
+3. **Parse the event** into a `StatusReport` (see [Data model](03-data-model.md#the-report-types)) and
+   send it to the daemon's `report` method under a tight time budget (~50 ms for statusline, ~2 s for
+   hooks), closing the connection on budget/ack so a "budget trip" never blocks the agent.
+
+The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
+**`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
+to the adapter's `ClaudeCodeAdapter.parse(_:)` — the parse is **agent-dependent**, so it belongs to the
+adapter, not the CLI. This is the transport/parse boundary PR A2 established (relocating the former
+`ReportHelper.map`/`toolDesc` verbatim into the adapter, keeping Claude telemetry byte-identical); a
+future daemon-side rollout-tail transport for another agent will call the *same* `adapter.parse` seam. See
+[the adapter's telemetry parse](04-cards-worktrees-sessions.md#the-claude-code-adapter) and the
+[agent-provider interface](../notes/designs/agent-provider-interface/02-contract.md) contract.
 
 On the daemon side, `OrchestraService+Report.swift` merges the report's **event half** (applied
 unconditionally and ordered — e.g. `SessionEnd`→`dead`, session-id rollover into `priorSessionIds`,
