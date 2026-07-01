@@ -16,6 +16,12 @@ public actor OrchestraService {
     let authRate = AuthRateMonitor()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
+    /// Conclusion-watch for the reactive fan-out (F2). A subscriber to this service's terminal
+    /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
+    let mergeWatch = MergeWatch()
+    /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
+    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
+    var watchRegistry: [UUID: Set<UUID>] = [:]
     /// Consecutive auto-injects per card since the last genuine user prompt — the F3 loop guard.
     /// `stop_hook_active` is informational on both agents, so Orchestra enforces the cap itself.
     var injectCounts: [UUID: Int] = [:]
@@ -297,6 +303,7 @@ public actor OrchestraService {
         lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
         emit(.taskUpserted(updated))
         emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
+        await concludeCard(id, .done)   // moving to Done is a settled conclusion (F2 / merge-watch)
     }
 
     // MARK: - shells / exec / sessions
