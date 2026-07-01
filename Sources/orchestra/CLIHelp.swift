@@ -13,6 +13,7 @@ enum CLIHelp {
                                                  Spawn a new agent (prints its ref)
       move <ref> --col <plan|impl|review>        Move a card
       send <ref> <message...>                    Message the agent
+      wait <ref...>                              Block until a watched card concludes (fan-out)
       status <ref>                               Show a card's state (JSON)
       archive <ref>                              Archive a card
       restart <ref>                              New blank session, same worktree

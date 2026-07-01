@@ -112,5 +112,12 @@ extension OrchestraService {
                 emitActivity(.statusChanged, saved, .agent, "agent \(tr.to.rawValue)")
             }
         }
+
+        // A clean agent exit (SessionEnd exit/logout/other) is a SETTLED conclusion (.exited) — the
+        // agent quit, no auto-resume. A transient crash (sessionVanished) is NOT concluded here; it may
+        // still be revived (that path never sets `.agentExited`, and `recovering` guards a stale exit).
+        if let tr = statusTransition, tr.to == .dead, saved.deadReason == .agentExited, !recovering.contains(id) {
+            await concludeCard(id, .exited)
+        }
     }
 }
