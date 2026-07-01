@@ -72,10 +72,11 @@ extension OrchestraService {
 
         // Recreate the session off the actor so a mass revival overlaps (and report() stays serviced).
         try? adapter.prepareToLaunch(ctx)
+        let env = adapter.env
         do {
             try await offActor { [sessions] in
                 _ = try sessions.kill(sessions.sessionName(id))
-                _ = try sessions.ensure(task, argv: argv)
+                _ = try sessions.ensure(task, argv: argv, env: env)
             }
         } catch {
             return try await failResume(id, detail: "\(error)", source: source)
@@ -122,9 +123,11 @@ extension OrchestraService {
                                  trustCwd: trustDecision == .trusted)
         let launchTask = task
         try? adapter.prepareToLaunch(ctx)
+        let env = adapter.env
+        let startArgv = adapter.start(ctx)
         try await offActor { [sessions] in
             _ = try sessions.kill(sessions.sessionName(id))
-            _ = try sessions.ensure(launchTask, argv: adapter.start(ctx))
+            _ = try sessions.ensure(launchTask, argv: startArgv, env: env)
         }
 
         let updated = try await store.update(id) {

@@ -29,6 +29,7 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private let lock = NSLock()
     private var alive: Set<String> = []
     private(set) var ensureArgv: [String: [String]] = [:]
+    private(set) var ensureEnv: [String: [String: String]] = [:]
     private(set) var killed: [String] = []
     private(set) var ensureCount = 0
     private(set) var peakConcurrentEnsure = 0
@@ -42,11 +43,11 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
 
     func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
-    func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {
+    func ensure(_ task: Task, argv: [String], env: [String: String] = [:]) throws -> (name: String, created: Bool) {
         let name = sessionName(task.id)
         lock.lock(); curConcurrentEnsure += 1; peakConcurrentEnsure = max(peakConcurrentEnsure, curConcurrentEnsure); ensureCount += 1; lock.unlock()
         if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
-        lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); ensureArgv[name] = argv; lock.unlock()
+        lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()
         return (name, true)
     }
     func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }

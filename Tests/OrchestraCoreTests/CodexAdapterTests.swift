@@ -159,6 +159,38 @@ struct CodexAdapterDiscoveryTests {
     }
 }
 
+@Suite("CodexAdapter — spawn wires CODEX_HOME + read-only argv")
+struct CodexSpawnWiringTests {
+    @Test("spawn(agentId: codex) resolves the adapter, passes CODEX_HOME env + read-only argv to the session")
+    func spawnWiresHomeAndArgv() async throws {
+        let base = NSTemporaryDirectory() + "codex-spawn-\(UUID().uuidString)"
+        let work = base + "/work"
+        let codexHome = base + "/codexhome"
+        try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)])
+        let sessions = StubSessions()
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
+        let svc = OrchestraService(config: config,
+                                   store: TaskStore(path: base + "/tasks.json"),
+                                   registry: AgentRegistry(adapters: [codex]),
+                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   sessions: sessions,
+                                   trust: TrustLedger(path: base + "/trust.json"))
+        let t = try await svc.spawn(SpawnInput(prompt: "look around", agentId: "codex",
+                                               cwd: PathResolver.canonical(work)))
+        #expect(t.agentId == "codex")
+        let name = sessions.sessionName(t.id)
+        let argv = try #require(sessions.ensureArgv[name])
+        #expect(argv.first == "fake-codex")
+        #expect(argv.contains("read-only"))
+        #expect(argv.contains("never"))
+        // env wiring: the pinned CODEX_HOME reaches the launch.
+        #expect(sessions.ensureEnv[name]?["CODEX_HOME"] == codexHome)
+    }
+}
+
 @Suite("CodexAdapter — trust mirror + isolation")
 struct CodexAdapterTrustTests {
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
