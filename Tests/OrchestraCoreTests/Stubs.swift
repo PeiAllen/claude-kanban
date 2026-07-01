@@ -92,7 +92,9 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     }
     func resume(_ ctx: AdapterContext) -> [String]? {
         guard let s = ctx.sessionId else { return nil }
-        return [bin, "--resume", s, "--name", ctx.name ?? ""]
+        var a = [bin, "--resume", s, "--name", ctx.name ?? ""]
+        if let seed = ctx.seed, !seed.isEmpty { a.append(seed) }   // F1: deliver the seed like real adapters
+        return a
     }
     /// A recognizable, NON-Claude parse: turns a tailed line into a marker report, proving parse is
     /// per-adapter (a Claude adapter returns nil for the same `.fileTail` raw).

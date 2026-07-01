@@ -133,6 +133,20 @@ Grouped by Layer 1's four areas. `Adapter.capabilities` is cross-cutting (every 
 **`OrchestraService.resumeInCard(cardId, seed)`** **NEW** (F1)
 - **Does:** kill + resume same card, seeding handoff context + pending inbox. `LaunchRequest{resume, seed}`.
 - **Side-effects:** new process; same logical session (resume, not blank restart).
+- **As-built (C3, shipped):** `HandoffSeed.fold(handoff:inbox:) -> String?` (`HandoffSeed.swift`) folds the
+  authored handoff/fork context (first, trimmed) + the drained inbox (FIFO) into ONE seed, bounded to
+  `StopDrain.maxPayloadChars` (10k). `OrchestraService.resumeInCard(_:seed:graceSeconds:source:)`
+  (`+Recovery.swift`) drains the card's inbox, folds it into the seed, and delegates to
+  `resume(_:graceSeconds:seed:source:)` — a **defaulted `seed:` param added to the service `resume`**
+  (all recovery/`Commands`/test callers pass none → nil → argv byte-identical). The seed rides on the
+  **frozen `AdapterContext.seed` (A1)**; the **`Adapter.resume(ctx) -> [String]?` protocol signature is
+  UNCHANGED** — each adapter *reads* `ctx.seed` and appends it as the resumed session's trailing
+  positional turn (`ClaudeCodeAdapter`, `CodexAdapter`; `StubAdapter` mirrors it). Session id is KEPT
+  (resume, not `restart`); the inbox is drained BEFORE resume so `.sessionSeed` agents (Codex, no Stop
+  hook) still get their queued messages and Claude's Stop-drain never double-delivers them. Tests:
+  `HandoffResumeTests` (13: fold order/nil/blank/empty/clamp; Claude+Codex+stub seed-carries/no-seed;
+  `resume(seed:)` id-kept; `resumeInCard` seed+id-kept, inbox-folds-and-drains, no-seed pure resume).
+  D1's `handoff` Command will call `resumeInCard`; C3 only wires the seed THROUGH resume.
 
 **`wait(cardIds) -> conclusion` · `MergeWatch.awaitConclusion(cardIds)`** **NEW** (Command + service)
 - **Does:** resolve as soon as **any one** of `cardIds` reaches a terminal state (Done / merged / exited), read from **real card state** — never `git merge-base` (the 0-commit false positive). Backs `orchestra wait`.
