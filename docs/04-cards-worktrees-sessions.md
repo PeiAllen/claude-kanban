@@ -80,7 +80,9 @@ silently inherit Claude's shape). It is seven enum-typed flags — `sessionId �
 sessionSeed, none}`, `readOnlyEnforcement ∈ {sandboxed, toolGatedOnly, orchestraSandboxed}`, and
 `authMode ∈ {subscription, apiKey}` — with **every variant spelling frozen now** (A1), including cases no
 adapter exercises yet, so later PRs implement behavior behind a shape that can't drift. Claude advertises
-`seeded / hooksPush / percent / nativeReinvoke / stopHook / sandboxed / subscription`. Core reads this
+`seeded / hooksPush / percent / nativeReinvoke / stopHook / sandboxed / subscription` — and the
+`subscription` `authMode` is now read by the [authMode soft-warn](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)
+to advise (never cap) on heavy fan-out. Core reads this
 descriptor instead of branching on `agentId`: session-seeding switches on `capabilities.sessionId` (a
 `.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
 unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's

@@ -148,9 +148,12 @@ The daemon emits an `Event` after every meaningful mutation:
 - `activity(ActivityItem)` — a feed entry.
 
 An `ActivityItem` is a timestamped, task-linked record with a **source** (`app`/`cli`/`mcp`/`agent`/
-`daemon`) and a **kind** (`spawned`/`moved`/`archived`/`statusChanged`/`dead`/`recovered`/`command`).
-The app's Activity popover renders these; the daemon keeps the most recent 200 in a ring buffer that is
-replayed to new subscribers.
+`daemon`) and a **kind** (`spawned`/`moved`/`archived`/`statusChanged`/`dead`/`recovered`/`command`/
+`warning`). The `warning` kind is the surface for advisory notices — currently the **authMode soft-warn**
+emitted when a subscription-auth adapter fans out past its concurrency threshold (see
+[Design decisions](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)); it never blocks the
+action it warns about. The app's Activity popover renders these; the daemon keeps the most recent 200 in
+a ring buffer that is replayed to new subscribers.
 
 ### The report types
 

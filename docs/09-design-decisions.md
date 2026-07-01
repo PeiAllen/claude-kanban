@@ -65,6 +65,30 @@ command deny-list precisely because deny-lists rot and are trivially evaded. (Se
 [the read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier);
 `notes/plans/pr1-readonly-inspect-button.md`.)
 
+### authMode: advise on fan-out, never cap
+
+Fanning out many concurrent agents onto a **single subscription seat** (a Claude or Codex plan login,
+rather than a metered API key) is the "heavy parallel automation" pattern both providers' anti-automation
+terms target — so Orchestra notices it, but it **advises and never blocks**. When a card is brought up on
+an adapter whose `capabilities.authMode` is `.subscription`, `AuthRateMonitor` tallies the *live*
+subscription-auth cards for that same adapter and, past a threshold (default 3 → the 4th warns), emits an
+advisory `ActivityKind.warning` into the feed suggesting API-key mode for large fan-outs. The spawn always
+proceeds; there is **no concurrency cap, no queue, no rejection**. Three properties make this a decision
+rather than a knob:
+
+- **Warn-only, resolved deliberately.** Capping was considered and rejected — a hard limit on parallelism
+  would break the very fan-out topology Orchestra exists to enable. The monitor never throws or blocks.
+- **Rate state is per-adapter and derived, not held.** Each subscription is its own seat, so a Claude
+  fan-out never pushes a Codex adapter over, and vice versa; and the tally is computed from the current
+  card set (the SSOT) on every spawn rather than kept in a counter — so it can't drift and survives a
+  daemon restart with no reconciliation.
+- **It gates on the capability, never on identity.** The monitor reads `adapter.capabilities.authMode`,
+  so an API-key adapter (or a future subscription agent) is classified by its descriptor, never by an
+  `if agentId == "claude-code"` branch.
+
+(Agent-provider forest PR **E2**; `notes/plans/e2-authmode-softwarn.md`,
+`notes/designs/agent-provider-interface/03-implementation.md` D12 / §9 / q4.)
+
 ### 1:1 worktree ↔ card ownership
 
 The target model is **one card owns one branch's worktree** — enforced, not shared. Git forbids the
@@ -113,6 +137,15 @@ shape the Codex adapter, telemetry seam, and live-delivery PRs will build behind
 [the adapter capability descriptor](04-cards-worktrees-sessions.md#agent-adapters)). Unlike a full axis
 shipping, this is plumbing, not a feature — so it stays here as history rather than migrating a roadmap
 row.
+
+A second forest PR has since landed on top of A1 — **E2, the authMode soft-warn**
+(`notes/plans/e2-authmode-softwarn.md`). It adds a pure `AuthRateMonitor` value type and an `AuthWarning`
+result that watch for heavy parallel fan-out on a single subscription seat and emit an advisory
+`ActivityKind.warning` past a threshold — **advising, never capping** (see
+[authMode: advise on fan-out, never cap](#authmode-advise-on-fan-out-never-cap) above for the decision and
+its rationale). Like A1 it is a single forest PR rather than a whole axis, so it too stays here as history
+and leaves the roadmap row for the model-providers/agent-integration axes in place until the full seam
+ships.
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

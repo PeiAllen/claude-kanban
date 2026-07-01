@@ -15,9 +15,14 @@ forest** and every open question resolved (2026-07-01). The forest's **seam-cont
 now landed** ([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)): it froze the complete
 `AgentCapabilities` descriptor and the defaulted `AdapterContext.seed`, and moved core to gate
 session-seeding and resumability on the capability (never on adapter identity), with Claude behavior
-byte-for-byte unchanged — see [chapter 9](09-design-decisions.md#shipped-feature-history). The rest of
-the forest (the A2 telemetry seam, the Codex adapter, live delivery) stays design-only until those PRs
-land. The principle is to design every change *toward* these axes, never away from them.
+byte-for-byte unchanged — see [chapter 9](09-design-decisions.md#shipped-feature-history). A second forest
+PR, **E2 — the authMode soft-warn** ([plan](../notes/plans/e2-authmode-softwarn.md)), has also landed off
+A1: an `AuthRateMonitor` that emits an advisory activity-feed warning when a subscription-auth adapter
+fans out past a threshold, **advising but never capping** (see
+[chapter 9](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)). Both are single forest PRs, not
+whole axes, so their rows stay in the roadmap below. The rest of the forest (the A2 telemetry seam, the
+Codex adapter, live delivery) stays design-only until those PRs land. The principle is to design every
+change *toward* these axes, never away from them.
 
 ## The nine axes
 
