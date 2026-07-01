@@ -4,7 +4,7 @@ feature: agent-provider-interface
 type: design-note
 status: draft-for-review
 created: 2026-06-29
-updated: 2026-06-29
+updated: 2026-07-01
 related:
   - "[[model-providers/index|model-providers (axis 2)]]"
   - "[[agent-integration/index|agent-integration (axis 3)]]"
@@ -47,21 +47,21 @@ the login token.**
 
 | # | Decision | Recommendation | Status |
 |---|----------|----------------|--------|
-| D1 | Adapter shape | **Process-adapter over PTY/tmux** (not a server/HTTP adapter, not an in-proc SDK) | Recommend |
-| D2 | How a backend is added | **Runtime registry of ~5-method adapters** (not a recompiled enum) | Recommend |
-| D3 | Output handling | **One normalized event type** every adapter parses into | Recommend |
-| D4 | Variation handling | **Capability descriptor** (flags) + per-adapter native mapping | Recommend |
-| D5 | Session identity | **Discover-by-default** (store the id the backend emits); seeding is an optimization | Recommend |
-| D6 | Telemetry | **Structured-stream parse** where available (Claude hooks-push, Codex rollout-tail), **PTY-scrape** fallback; turn-done detected **out-of-band** | Recommend |
-| D7 | Context window / cost | **Vendor a model registry** (models.dev / LiteLLM JSON) → `contextWindow` + capability flags | Recommend |
+| D1 | Adapter shape | **Process-adapter over PTY/tmux** (not a server/HTTP adapter, not an in-proc SDK) | **Confirmed** (2026-07-01) |
+| D2 | How a backend is added | **Runtime registry of ~5-method adapters** (not a recompiled enum) | **Confirmed** (2026-07-01) |
+| D3 | Output handling | **One normalized event type** every adapter parses into | **Confirmed** (2026-07-01) |
+| D4 | Variation handling | **Capability descriptor** (flags) + per-adapter native mapping | **Confirmed** (2026-07-01) |
+| D5 | Session identity | **Discover-by-default** (store the id the backend emits); seeding is an optimization | **Confirmed** (2026-07-01) |
+| D6 | Telemetry | **Structured-stream parse** where available (Claude hooks-push, Codex rollout-tail), **PTY-scrape** fallback; turn-done detected **out-of-band**. Parse is the **adapter's** (`adapter.parse`); the daemon owns only the **transport** | **Confirmed** (2026-07-01) — parse-in-adapter |
+| D7 | Context window / cost | **Per-adapter offline model table** (extends `Adapter.models()`), vendored in-repo + PR-updated → `contextWindow` + capability flags. **No** models.dev/LiteLLM fetch — app stays offline | **Confirmed** (2026-07-01) — see §6 |
 | D8 | Permissions | **3 orthogonal layers** (tool-gating · approval-policy · OS-sandbox); read-only is a **preset** | **Confirmed** — no-sandbox agents → `toolGatedOnly` + a visible **weak-RO badge** |
 | D9 | Live delivery / merge-back | **Three core functions:** F1 resume-in-card (a *start* action), F2 wake (capability `wakeTransport` — Claude native re-invoke / Codex send-keys + detect-and-defer), F3 push-inbox (Stop-hook drain). Goals (handoff/fork/fan-out/send/queue) compose them; blocking-`await` pull **dropped** | **Confirmed** — see §8 |
 | D10 | Transport | **Native Claude (TUI+hooks) + native Codex (TUI+rollout-tail) only.** ACP adapter **not built** (design reference only); Codex `app-server` **not needed for v1** (the inbox covers steering) | **Confirmed** |
 | D11 | Auth invariant | **Drive the binary, never the token/API client** | **Hard constraint** |
-| D12 | Auth modes | Carry `authMode ∈ {subscription, apiKey}`; warn on heavy parallel subscription use | Recommend |
+| D12 | Auth modes | Carry `authMode ∈ {subscription, apiKey}`; **soft-warn only** on heavy parallel subscription use (no concurrency cap — q4 resolved) | **Confirmed** (2026-07-01) |
 
-The **only true constraint** is D11 (a ToS bright line); the rest are recommendations. Items confirmed
-2026-06-29 are marked **Confirmed**; remaining open items are in §12.
+The **only true constraint** is D11 (a ToS bright line); the rest began as recommendations. All D-rows are
+now **Confirmed** (D1–D5/D12 settled 2026-07-01, matching the layered plan); **no open questions remain** (§12).
 
 > **Scope (confirmed 2026-06-29).** The targets that matter are **Claude, Codex, and (eventually) a local
 > model.** The seam is built *agnostic* — the capability descriptor + normalized-event type mean any agent
@@ -134,6 +134,16 @@ provider API token into its own HTTP calls, or extract/reuse the user's login (O
 keeps subscription auth legal on both providers (token-lifting got OpenCode/Roo/Goose's subscription access
 blocked, Jan 2026) and it's what all precedent orchestrators do anyway. (Details + per-provider matrix: §9.)
 
+**OrchestraService — authoritative reducer, not a relay (added 2026-07-01).** The coordinator decomposes
+into four concerns: **action-ingress** (command handlers), **event-ingress** (`report()` + the seq-gate
+merge), **event-egress** (the `AsyncStream<Event>` the board subscribes to), and **live-delivery +
+recovery** (inbox · wake · MergeWatch · resume). Its authority splits by the D3 tier and is
+**state-authoritative, not event-sourced**: it is the single writer that *adjudicates* card **lifecycle**
+(ControlEvent) — rejecting stale snapshots via the seq-gate, deciding terminal-vs-revive via
+liveness-reconcile, persisting to `TaskStore` — but it **relays content** (ContentEvent), for which the
+**vendor transcript file is SSOT**. It is the authoritative *interpreter* of reality (process / transcript
+/ git), not its definer; a late subscriber gets a **snapshot**, never an event-log replay.
+
 ---
 
 ## 4. The adapter seam
@@ -146,19 +156,19 @@ responsibilities:
 classDiagram
     class Adapter {
       +id String
-      +capabilities AdapterCapabilities
+      +capabilities AgentCapabilities
       +buildLaunch(ctx) LaunchSpec
       +parse(source) NormalizedEvent_list
       +resumeHandle(task) Handle
       +prepareToLaunch(ctx) void
     }
-    class AdapterCapabilities {
+    class AgentCapabilities {
       +sessionId  seeded_or_discovered
       +telemetry  hooksPush_fileTail_ptyScrape
       +contextUsage  percent_tokens_none
       +wakeTransport  nativeReinvoke_controlChannel_sendKeys_relaunch
       +inboxDrain  stopHook_sessionSeed_none
-      +readOnlyEnforcement  sandboxed_toolGated_orchestraSandboxed
+      +readOnlyEnforcement  sandboxed_toolGatedOnly_orchestraSandboxed
       +authMode  subscription_or_apiKey
     }
     class ControlEvent {
@@ -185,7 +195,7 @@ classDiagram
       +env Map
       +files Map
     }
-    Adapter --> AdapterCapabilities
+    Adapter --> AgentCapabilities
     Adapter --> ControlEvent
     Adapter --> ContentEvent
     Adapter --> LaunchSpec
@@ -193,7 +203,7 @@ classDiagram
 
 > `buildLaunch` returns argv+env+files and covers start/resume/read-only/seed; `parse` is **the
 > normalization core**; `resumeHandle` returns the discovered id (resume = fresh process);
-> `prepareToLaunch` does trust-grant + isolated config home + the read-only recipe. `AdapterCapabilities`
+> `prepareToLaunch` does trust-grant + isolated config home + the read-only recipe. `AgentCapabilities`
 > values are enums (e.g. `sessionId ∈ {seeded, discovered}`); the normalized event is a **two-tier sum
 > type** — `ControlEvent` (reliable lifecycle) + `ContentEvent` (best-effort display) — detailed in D3.
 
@@ -210,6 +220,10 @@ detected *out-of-band* from content, §6):
   `usageUpdate{tokens, ctxPct}`. **Losing one is a bug** — a dropped `turnEnded` means the inbox never
   drains and a merge-back is silently lost. (`usageUpdate` lives here, not in content: it's low-volume and
   both agents emit it reliably — Claude `used_percentage`, Codex `turn.completed.usage`.)
+  > **Scope note (forest vs eventual):** the **typed** `turnEnded{reason}`, `approvalRequested`, and
+  > `approvalResolved` fields are **deferred out of this PR forest** (they land with the Codex approval
+  > round-trip, a later PR). In-forest, turn-end is detected via **status transitions + the Stop hook** and
+  > `EventReport` carries **no** typed turn/approval fields yet. A2 must not build them. (See [[03-implementation]] "Approvals deferred".)
 - **`ContentEvent` — higher-volume, lossy-OK.** Feeds the activity line and the detail view:
   `assistantMessage{text}`, `thinking{text}`, `toolCall{id, name, summary, status}`,
   `toolCallUpdate{id, status, result}`, `plan{items}`, `raw{kind, native}`. **The vendor's own transcript
@@ -335,7 +349,10 @@ a human**. In particular, an autonomy / auto-accept card (which auto-answers ord
 - **App new-agent dialog** → inline choice as you pick the cwd (*trust · read-only · cancel*).
 - **Agent via MCP** → an **elicitation** to the human running that agent — in their own client, or, for an
   Orchestra-spawned agent, natively in the card's pane. Same human, same machine, approved outside
-  Orchestra's app.
+  Orchestra's app. This is a server→client `requestElicitation` gated on the client's advertised
+  `elicitation` capability (MCP `initialize`) — **both v1 targets, Claude Code and Codex, support it**, so it
+  is the native grant path for both. *(A hypothetical agent whose client lacks elicitation would need a
+  fallback — a board-routed approval gate; not built, since neither target needs it.)*
 - **CLI** → the human/agent split rides the **TTY** (human calls are interactive; an agent's Bash call is
   not):
 
@@ -427,10 +444,12 @@ flowchart TB
   (Claude hooks, Codex rollout items), so streaming would require a different, billing-disfavored transport
   (§9). A live word-by-word feed, if ever wanted, is a *detail-view render path tailing the vendor file* —
   decoupled from the bus. (See D3 for the `ControlEvent`/`ContentEvent` split.)
-- **D7 — model registry.** Drop hand-maintained context windows; vendor `models.dev/api.json` (or
-  LiteLLM's `model_prices_and_context_window.json`). Use `limit.context` as the `ctxPct` denominator and
-  the `tool_call/reasoning/vision` booleans as per-model capability flags. (Replaces the absent
-  `AgentModel.contextWindow`.)
+- **D7 — model data (per-adapter, offline).** Drop hand-maintained context windows, but **keep the data
+  in the adapter**: extend the existing `Adapter.models()` with `contextWindow` + `tool_call/reasoning/
+  vision` flags, sourced from a **vendored in-repo table, PR-updated** — **no** models.dev/LiteLLM fetch, so
+  the app stays fully offline at build and runtime. `ctxPct` denominator = `adapter.model(for:).contextWindow`.
+  *(Confirmed 2026-07-01, resolving §12 q6 — a separate global `ModelRegistry` component was rejected as
+  redundant with `Adapter.models()` and as pulling toward an external source.)*
 
 ---
 
@@ -658,6 +677,12 @@ Three surfaces over one shared F1/F2/F3 substrate:
 - **Orchestra-internal (invisible to both).** Stop-hook install; the send-keys wake + detect-and-defer
   guard; F1 kill+resume; the **merge-watch** event detection (reads real card/merge state, fixing the
   0-commit-ancestor false-positive seen in the proven session); the capability-keyed `wakeTransport`.
+  **Merge-watch is a *subscriber*, not a detector (added 2026-07-01):** it consumes `OrchestraService`'s
+  lifecycle event bus + a continuation keyed on the watch set (the `awaitResume` pattern); the service is
+  the single authority that marks terminal state (telemetry `exited` / `reconcileLiveness` / `move`-to-Done).
+  It keys on the **settled** state, so a crash **revived** (≤ `maxRevivals`) is **not** a conclusion.
+  Multi fan-out: **one conclusion per child as each concludes** (not a barrier), and concurrent returns
+  **coalesce in the inbox** into one drain — wake triggers, content is durable (F3), none lost.
 - **Human-facing (board UI / CLI).** The *same goals* as explicit actions: **Handoff** a card (→ F1),
   **Fork** a card to discuss (→ spawn + auto-wired come-back), **Send**/queue a message to a card (→ F3),
   kick off a **Fan-out**, and **watch the board**.
@@ -735,7 +760,7 @@ Implications:
 | Auth | native OAuth subscription (or API key) | native ChatGPT login (or API key) |
 | Session id | `.seeded` (`--session-id`) — or discover | `.discovered` (read from rollout / first event) |
 | Telemetry | `.hooksPush` (managed `--settings` → `_report`) | `.fileTail` (daemon tails rollout JSONL) |
-| ctxPct | `.percent` (reported) | `.tokens` ÷ `model.contextWindow` (registry) |
+| ctxPct | `.percent` (reported) | `.tokens` ÷ `model.contextWindow` (offline model table) |
 | Seed (`additionalContext`) | `SessionStart` hook / `--append-system-prompt` | `AGENTS.md` write / `-c model_instructions_file` / hook |
 | Read-only | L1+L1.5+L3 (`disallowedTools` + classifier + `denyWrite`) | `--sandbox read-only -a never` |
 | Trust | `~/.claude.json hasTrustDialogAccepted` | `-c projects."<cwd>".trust_level="trusted"` / isolated `CODEX_HOME` |
@@ -791,15 +816,27 @@ Implications:
    streaming view is a later detail-view render feature. **Approvals deferred** in the first Codex cut
    (read-only `-s read-only -a never` sidesteps `approvalRequested`). (§4, §6)
 
-**Still open:**
-4. **`authMode` UX** — how hard to warn/limit parallel fan-out on a subscription seat? Soft warning vs a
-   configurable concurrency cap per auth mode. (§9)
-6. **Model registry source** — models.dev vs LiteLLM vs both (fallback)? Vendor-at-build vs fetch-and-cache?
-   (§6)
-10. **Codex `controlChannel` wake** — when (if) to run Codex cards under `codex app-server` for a clean
-    idle-wake (F2) + the Orchestra-built viewer it requires, vs staying on send-keys. Watch upstream
-    **#29922** (agent-callable `monitor` tool) and **#28144** (durable `waiting`/wake) — either merging gives
-    Codex a *native* self-wake and closes the gap without app-server. (§8.5, §9)
+**Resolved 2026-07-01 (layered-plan grounding pass):**
+6. ~~Model registry source~~ → **Per-adapter offline model table** (extends `Adapter.models()`), vendored
+   in-repo + PR-updated. **No** models.dev/LiteLLM fetch, no separate `ModelRegistry` component — the app
+   stays offline. (§6, D7)
+- **Telemetry parse ownership** → parse is the **adapter's** (`adapter.parse`); the daemon owns only the
+  transport (push/tail/scrape), keyed by `capabilities.telemetry`. (§6, D6)
+- **Conclusion detection (MergeWatch)** → MergeWatch is a **subscriber** of `OrchestraService`'s lifecycle
+  event bus (not a git-poller / per-card watcher); it keys on the **settled** terminal state (post
+  liveness-reconcile), so a revived crash is not a conclusion. (§8)
+- **Authority / SSOT split** → `OrchestraService` + `TaskStore` are authoritative for **lifecycle**
+  (ControlEvent — adjudicated via seq-gate + liveness, state-authoritative not event-sourced); the **vendor
+  transcript file** stays SSOT for **content** (ContentEvent). `OrchestraService` decomposes into
+  action-ingress / event-ingress / event-egress / live-delivery+recovery. (§3, §6)
+
+**All resolved (2026-07-01)** — no open questions remain:
+4. **`authMode` UX** → **soft-warn only** on subscription-seat fan-out; **no** concurrency cap (E2 ships
+   just the warning). (§9)
+10. **Codex `controlChannel` wake** → **send-keys + detect-and-defer for v1** (C4); `codex app-server` +
+    the Orchestra-built viewer it requires are **deferred** (drops the native TUI, a non-goal). Watch
+    upstream **#29922** (agent-callable `monitor` tool) and **#28144** (durable `waiting`/wake) — either
+    merging gives Codex a *native* self-wake; revisit then. (§8.5, §9)
 
 ---
 

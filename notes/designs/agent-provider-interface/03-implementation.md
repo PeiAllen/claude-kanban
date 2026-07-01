@@ -81,7 +81,7 @@ Area = the Layer 1 design area (1 retrieve · 2 startup · 3 permissioning · 4 
 
 | PR | Area | Branch | Base | Also-needs | Scope (one line) | Plan must cover |
 |---|---|---|---|---|---|---|
-| **A1** | X | `seam/01-contract` | `main` | — | **seam-contract freeze:** COMPLETE `AgentCapabilities` (all fields+variants) + `AdapterContext.seed` (defaulted `nil`) + gate core on caps; Claude unchanged | freeze every enum spelling incl. later-only variants (`wakeTransport: controlChannel` etc.); add `seed` **defaulted** so 0 of 9 `AdapterContext(...)` call sites break; audit nil-return sites; cap-parameterized `StubAdapter` |
+| **A1** | X | `seam/01-contract` | `main` | — | **seam-contract freeze:** COMPLETE `AgentCapabilities` (all fields+variants) + `AdapterContext.seed` (defaulted `nil`) + gate core on caps; Claude unchanged | freeze every enum spelling incl. later-only variants (`wakeTransport: controlChannel` etc.); add `seed` **defaulted** so 0 of 14 `AdapterContext(...)` call sites break (6 in `Sources/`, 8 in `Tests/`); audit nil-return sites; `capabilities` has **no meaningful protocol default** → every conformer (`ClaudeCodeAdapter` **and** `StubAdapter` in `Tests/OrchestraCoreTests/Stubs.swift`) must implement it in A1 or the PR won't compile |
 | **A2** | 1 | `seam/02-telemetry-source` | `A1` | — | telemetry **transport** (push/tail) + **`adapter.parse`** ownership; Claude=push | transport/parse boundary; tailer lifecycle; parse is per-adapter — **relocate `ReportHelper.map` from the `orchestra` CLI target into the adapter** (cross-target move, not just a signature); `parse` added **defaulted** (additive, not a mutation); `ReportTests` byte-identical |
 | **E1** | 1 | `seam/03-model-table` | `main` | — | per-adapter **offline** model table (context window + flags) on `Adapter.models()`; vendored JSON | offline (no fetch); PR-update path; unknown-model fallback |
 | **B1** | 2·3 | `codex/01-adapter-launch` | `A2` | `T1` | CodexAdapter argv/session/trust/RO; register | rollout session-id discovery; read-only-first; `trust_level` mirrors `ctx.trustCwd`; trust+isolation order |
@@ -92,7 +92,7 @@ Area = the Layer 1 design area (1 retrieve · 2 startup · 3 permissioning · 4 
 | **C4** | 4 | `live/04-codex-wake` | `C2` | `B1` | Codex send-keys wake + detect-and-defer | composer detection + fragility; defer-retry; nudge-only |
 | **D1** | X | `deleg/01-mcp-tools` | `C2` | `C3` | `wait`/`handoff` Commands; stacked-spawn args | tool schemas; add `CLIRunner` verb case (CLI not auto-derived); preserve registry↔MCP parity test |
 | **D2** | X | `deleg/02-skill` | `D1` | — | skill + AGENTS.md (card-vs-subagent line; loops) | heuristic wording; per-agent variant; keep native subagents |
-| **D3** | X | `deleg/03-ui-actions` | `D1` | `T1` | board/CLI Handoff/Fork/Send/Fan-out actions + `SpawnSheet` trust·read-only·cancel | which goals are card actions; fan-out kickoff UX; trust-dialog wiring; **app+daemon UX-e2e isolation** — isolated `$HOME` + `orchestrad` **spawned directly** (not launchctl; fixed label `com.orchestra.daemon` would collide with live) + `ORCHESTRA_TMUX_SOCKET`; replay UC1–UC8 |
+| **D3** | X | `deleg/03-ui-actions` | `D1` | `T1` | board/CLI Handoff/Fork/Send/Fan-out actions + `SpawnSheet` trust·read-only·cancel | which goals are card actions; fan-out kickoff UX; trust-dialog wiring; **app+daemon UX-e2e isolation** — isolated `$HOME` + `orchestrad` **spawned directly** (not launchctl; fixed label `com.orchestra.daemon` would collide with live) + `ORCHESTRA_TMUX_SOCKET`; replay UC1–UC8 — UC turns need a **fake-agent fixture** on `PATH` (`ClaudeCodeAdapter(binOverride:)`), else the replays are UI-only (no real `claude`; `USE_REAL_CLAUDE` stays unset) |
 | **E2** | 3 | `polish/01-authmode` | `A1` | — | authMode **soft-warn** (no cap) | soft-warn only — q4 resolved, **no** concurrency cap; rate state per adapter |
 | **T1** | 3 | `trust/01-ledger-resolve` | `main` | — | `TrustLedger` + core `resolveTrust(origin)` → `ctx.trustCwd`; Claude mirror reads **`ctx.trustCwd`** (not the ledger) | ledger schema/persistence; origin→decision table; keep worktree/scratch behavior; `trustCwd` resolved not hardcoded |
 | **T2** | 3 | `trust/02-grant-surfaces` | `T1` | `D1` | `trust` Command (MCP+CLI) + `orchestra trust` + untrusted-spawn human-grant | MCP `requestElicitation` gated on client `elicitation` (both targets have it); `isatty` CLI split; non-interactive fail; no `--trust`; autonomy-exempt |
@@ -216,6 +216,29 @@ sequenceDiagram
 - **Future — non-elicitation agent** — if an agent whose MCP client lacks `elicitation` is ever added, its grant path is a board approval gate (daemon `CheckedContinuation` via `resumeWaiters` + a `trustRequested` event). A note, not v1 code.
 - **Stop hook is not inert** — it emits `_report --event notify` → `waiting` today; C1's drain must *preserve* that report, not replace the hook wholesale.
 - **Claude read-only is composed** — it only reaches `sandboxed` if *both* hard tiers land: `permissions.deny` Edit/Write (tool vector) **and** the Bash-sandbox `denyWrite` (subprocess vector), with classifier `hard_deny` as the approval-policy backstop. Deny-only or classifier-only (no OS sandbox) is `toolGatedOnly` (weak); the adapter must emit all three.
+
+## Autonomous-run pre-flight & operational rules
+
+From the pre-implementation review ([[REVIEW]] — verdict **GO once P1 lands**). The design is ready; these
+are the rules the overnight **orchestrator** must follow so the forest runs with **zero human intervention**.
+
+**Pre-flight — before the forest starts:**
+
+| # | Rule | Why |
+|---|------|-----|
+| **P1** | **The plan vault must exist on the forest's base branch.** Merge `notes/designs/agent-provider-interface/` (+ the SSOT) to `main` (or base the whole forest off `design/agent-provider-interface`). | Each card cuts a worktree off `main`; if the layer docs aren't in that tree, the per-card planning step is blind. (REVIEW **M1**, the one hard blocker) |
+| **P2** | **Run on a logged-in / unlocked Mac with Screen Recording already granted.** | `orch-ux-e2e.sh` screenshots via `screencapture` — a locked/headless session has no window server. (REVIEW M2) |
+
+**Per-card rules — the orchestrator enforces:**
+
+| # | Rule | Why |
+|---|------|-----|
+| **O1** | **Every forest card is `worktree` origin on the already-trusted `claude-kanban` repo.** Never autonomously spawn a `borrowed` / foreign-repo card. | `resolveTrust` then returns `trusted` (inherit) → the **human-only** MCP `requestElicitation` grant **never fires**. A `borrowed` card would stall on a prompt no one answers. (REVIEW risk 4 — the true **NO-GO** if violated) |
+| **O2** | **Keep the repo on `main`; schedule by the DAG.** Don't spawn a PR until its `Base` + `also-needs` have **merged to `main`**. | `main` accumulates merged deps, so a card cut from `main` has the correct base. `Base` is a **scheduling constraint**, not a literal branch parent. |
+| **O3** | **`also-needs` = "merge that PR into this branch before spawning"** (B1←T1, B2←E1, C4←B1, D1←C3, D3←T1, T2←D1). | Else the PR can't compile/test in isolation. |
+| **O4** | **Serialize conflicting merges** — never merge two same-construct PRs concurrently; the second rebases on the new `main` first. Pairs: **D1→T2** (both add a `CLIRunner` case + a `Command`), **A2→C1** (Stop hook), **A2→E1** (both edit `ClaudeCodeAdapter`). **Land A1 first** as the seam root. | An unattended agent can't resolve a merge conflict. |
+| **O5** | **Tests never spawn a real vendor agent.** `USE_REAL_CLAUDE` stays unset; unit tests use `StubSessions`/`binOverride`; trust tests use the **stub grant resolver**. | No login / billing; no live elicitation. |
+| **O6** | **UX-e2e is advisory, not a merge gate.** Gate each PR on unit tests + `typecheck-app.sh`; run the full UC1–UC8 UX-e2e as a **final acceptance** pass. Keep UC drivers **state/RPC-based** (no synthetic input). | GUI e2e is the only piece that can't cleanly parallelize and is TCC-sensitive; state-driving avoids any Accessibility dependency. (REVIEW M2, S8) |
 
 ## Open questions — need your call
 

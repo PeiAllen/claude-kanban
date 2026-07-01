@@ -25,6 +25,12 @@ updated: 2026-07-01
 
 <!-- All presented together for a single review pass (per-layer gates waived). -->
 
+> **Pre-implementation review:** [[REVIEW]] — skeptical final pass for the unattended overnight build.
+> Verdict **GO once P1 lands** (merge the plan vault to the forest's base branch). The rules the
+> orchestrator must follow are in [[03-implementation#Autonomous-run pre-flight & operational rules]] —
+> chiefly **O1** (every card is `worktree` origin on the trusted repo, so the human-only trust grant never
+> fires) and **P1** (the vault must be on `main` so cards can read their own plan).
+
 > **Docs stay in sync (merge gate).** No PR is done until its **as-built** definitions + decisions are
 > recorded in (a) its layer doc's `Decisions made` table and (b) the reference SSOT
 > [[agent-provider-interface]] (flip the D-row status, resolve the `q#`, record real symbol names). See
