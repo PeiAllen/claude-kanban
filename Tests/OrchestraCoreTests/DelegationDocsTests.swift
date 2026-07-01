@@ -84,4 +84,36 @@ struct DelegationDocsTests {
         #expect(skill.lowercased().contains("subagent"))
         #expect(skill.contains("Task"))
     }
+
+    // MARK: install() — load + materialize to a destination path (the seed-injection launch step)
+
+    @Test("install writes the agent's variant to the destination, creating parent dirs")
+    func installWritesVariant() throws {
+        let base = NSTemporaryDirectory() + "deleg-install-\(UUID().uuidString)"
+        let claudePath = "\(base)/.claude/skills/orchestra-delegation/SKILL.md"
+        let codexPath = "\(base)/codexhome/AGENTS.md"
+        #expect(DelegationDocs.install(agentId: "claude-code", at: claudePath) == true)
+        #expect(DelegationDocs.install(agentId: "codex", at: codexPath) == true)
+        // agentId-keyed: each destination holds its OWN variant, byte-for-byte.
+        #expect(try String(contentsOfFile: claudePath, encoding: .utf8) == DelegationDocs.load(.claudeSkill))
+        #expect(try String(contentsOfFile: codexPath, encoding: .utf8) == DelegationDocs.load(.codexAgents))
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("install is idempotent — a second call rewrites the same content, still true")
+    func installIdempotent() throws {
+        let base = NSTemporaryDirectory() + "deleg-idem-\(UUID().uuidString)"
+        let path = "\(base)/.claude/skills/orchestra-delegation/SKILL.md"
+        #expect(DelegationDocs.install(agentId: "claude-code", at: path) == true)
+        #expect(DelegationDocs.install(agentId: "claude-code", at: path) == true)
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == DelegationDocs.load(.claudeSkill))
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
+    @Test("install degrades gracefully (returns false, no throw) when the dir can't be created")
+    func installGracefulOnUnwritable() {
+        // Parent creation under a non-writable root fails → no throw, returns false.
+        #expect(DelegationDocs.install(agentId: "claude-code",
+                                       at: "/System/nonexistent-\(UUID().uuidString)/SKILL.md") == false)
+    }
 }

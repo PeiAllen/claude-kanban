@@ -316,3 +316,51 @@ struct CodexModelRoutingTests {
         try? FileManager.default.removeItem(atPath: base)
     }
 }
+
+@Suite("CodexAdapter — delegation AGENTS.md materialization")
+struct CodexDelegationTests {
+    private func makeHome() -> (home: String, adapter: CodexAdapter) {
+        let home = NSTemporaryDirectory() + "codexhome-deleg-\(UUID().uuidString)"
+        return (home, CodexAdapter(codexHome: home))
+    }
+
+    @Test("prepareToLaunch writes the Codex AGENTS.md variant into the isolated CODEX_HOME")
+    func materializesAgents() throws {
+        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: false))
+        let text = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
+        #expect(text == DelegationDocs.load(.codexAgents))       // the Codex variant, not the skill
+        #expect(!text.hasPrefix("---\n"))                        // plain AGENTS.md, no frontmatter
+    }
+
+    @Test("materialization does not touch the worktree cwd (no leakage / no clobber)")
+    func noWorktreeWrite() throws {
+        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
+        let cwd = NSTemporaryDirectory() + "cwd-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: cwd) }
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, trustCwd: false))
+        #expect(!FileManager.default.fileExists(atPath: "\(cwd)/AGENTS.md"))   // never in the worktree
+    }
+
+    @Test("idempotent + coexists with the trust config write")
+    func idempotentWithTrust() throws {
+        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
+        let ctx = AdapterContext(cwd: "/wt", trustCwd: true)
+        try adapter.prepareToLaunch(ctx)
+        try adapter.prepareToLaunch(ctx)
+        #expect(try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8) == DelegationDocs.load(.codexAgents))
+        // the trust write (config.toml) is unaffected by the AGENTS.md materialization
+        #expect((try? String(contentsOfFile: "\(home)/config.toml", encoding: .utf8))?.contains("trust_level = \"trusted\"") == true)
+    }
+
+    @Test("start argv + env are unchanged by the added materialization")
+    func argvEnvUnchanged() throws {
+        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5-codex", prompt: "go")
+        let before = adapter.start(ctx)
+        try adapter.prepareToLaunch(ctx)
+        #expect(adapter.start(ctx) == before)                    // byte-identical argv
+        #expect(adapter.env["CODEX_HOME"] == home)               // env unchanged (still just CODEX_HOME)
+    }
+}

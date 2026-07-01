@@ -158,6 +158,12 @@ public struct CodexAdapter: Adapter {
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
         try? FileManager.default.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
         CodexTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd, codexHome: codexHome)
+        // Standing delegation guidance for EVERY Codex card (independent of ctx.seed): deliver the
+        // AGENTS.md variant to the ISOLATED CODEX_HOME — the global (top) level of Codex's AGENTS.md
+        // precedence, merged ABOVE any project AGENTS.md. Orchestra owns CODEX_HOME, so this never
+        // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
+        // content keyed via forAgent(id), so there's no `if codex` here.
+        DelegationDocs.install(agentId: id, at: "\(codexHome)/AGENTS.md")
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
