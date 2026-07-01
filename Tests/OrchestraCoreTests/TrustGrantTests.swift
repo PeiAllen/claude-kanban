@@ -69,6 +69,27 @@ struct GrantTrustTests {
     }
 }
 
+@Suite("spawn — untrusted (needsGrant) actionable context")
+struct UntrustedSpawnTests {
+    @Test("borrowed un-ledgered spawn proceeds sandboxed AND emits an actionable needsGrant activity")
+    func emitsActionableActivity() async throws {
+        let env = TestEnv.make()
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+        let dir = env.base + "/borrowed-needsgrant"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "peek", cwd: dir, access: .readWrite))
+        #expect(t.origin == .borrowed)
+        #expect(await env.trust.isTrusted(dir) == false)   // still untrusted (no auto-trust, no block)
+        // wait a tick for the async event fan-out, then assert an actionable warning was emitted
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        let acts = await collector.activities
+        let grant = acts.first { $0.text.contains("orchestra trust") }
+        #expect(grant != nil)
+        #expect(grant?.text.contains(dir) == true)
+    }
+}
+
 @Suite("resolveTrust — scratch external-intake demotion")
 struct ScratchDemotionTests {
     @Test("an empty scratch dir still auto-trusts (unchanged)")

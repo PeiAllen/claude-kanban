@@ -242,6 +242,15 @@ public actor OrchestraService {
         emit(.taskUpserted(created))
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
 
+        // T2: an untrusted cwd (needsGrant) spawns sandboxed (trustCwd=false above) but tells the
+        // human how to grant it. Autonomy-exempt: this never blocks the spawn — the card just runs
+        // read-only-ish until a human runs `orchestra trust`.
+        if trustDecision == .needsGrant {
+            emitActivity(.warning, created, source,
+                "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
+                + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
+        }
+
         // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
         // for this adapter (the just-created card is already in the store) and warn past the threshold.
         let active = await store.all().filter { !$0.archived && $0.status != .dead }
