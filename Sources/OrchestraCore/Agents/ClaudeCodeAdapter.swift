@@ -10,6 +10,9 @@ public struct ClaudeCodeAdapter: Adapter {
     public let bin = "claude"
     public let enabled = true
 
+    /// Claude Code's shipped seam behavior, frozen as the descriptor (A1). Behavior unchanged.
+    public var capabilities: AgentCapabilities { .claudeCode }
+
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
     let binOverride: String?
 

@@ -12,13 +12,15 @@ public struct AdapterContext: Sendable {
     public let hooksPath: String    // managed --settings file
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
     public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
+    public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
+                                    // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 hooksPath: String = Config.hooksPath, access: CardAccess = .readWrite,
-                trustCwd: Bool = false) {
+                trustCwd: Bool = false, seed: String? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
-        self.access = access; self.trustCwd = trustCwd
+        self.access = access; self.trustCwd = trustCwd; self.seed = seed
     }
 }
 
@@ -29,6 +31,9 @@ public protocol Adapter: Sendable {
     var icon: String { get }       // SF Symbol name
     var bin: String { get }
     var enabled: Bool { get }
+    /// The frozen capability descriptor core degrades on. NO protocol default — every conformer MUST
+    /// supply it (A1 seam-contract freeze), so a new adapter can't silently inherit Claude's shape.
+    var capabilities: AgentCapabilities { get }
     func models() -> [AgentModel]
     func newSessionId() -> String?
     func start(_ ctx: AdapterContext) -> [String]

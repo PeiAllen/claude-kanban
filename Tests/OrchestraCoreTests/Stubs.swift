@@ -70,8 +70,12 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     let icon = "sparkle"
     let bin = "fake-agent"
     let enabled = true
+    let capabilities: AgentCapabilities
     let transcriptDir: String
-    init(transcriptDir: String) { self.transcriptDir = transcriptDir }
+    init(transcriptDir: String, capabilities: AgentCapabilities = .claudeCode) {
+        self.transcriptDir = transcriptDir
+        self.capabilities = capabilities
+    }
 
     func models() -> [AgentModel] { [AgentModel(id: "m1"), AgentModel(id: "m2")] }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
@@ -149,7 +153,7 @@ func withScratchLock<T>(_ body: () async throws -> T) async rethrows -> T {
 
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
-    static func make(maxRevivals: Int = 4, grace: Int = 1)
+    static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .claudeCode)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
@@ -159,7 +163,7 @@ enum TestEnv {
                             maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
-        let adapter = StubAdapter(transcriptDir: base + "/transcripts")
+        let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
