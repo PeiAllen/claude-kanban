@@ -523,12 +523,17 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// Scratch spawn: create a fresh throwaway `~/.orchestra/scratch/<id>` dir, set `cwd` to it, and
     /// mark `origin = .scratch`. Takes precedence over `cwd`/worktree. nil/false ⇒ borrowed-or-worktree.
     public var scratch: Bool
+    /// Authored fork/fan-out context (the parent slice / handoff summary) for a FRESH spawn. Folded
+    /// ahead of `prompt` into the single launch positional in `OrchestraService.spawn` (F1's `ctx.seed`
+    /// is the resume-only carrier; a fresh start delivers the seed as the initial prompt). nil ⇒ no seed.
+    public var seed: String?
     public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,
                 startIn: StartIn? = nil, agentId: String? = nil,
-                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) {
+                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
+                seed: String? = nil) {
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
-        self.cwd = cwd; self.access = access; self.scratch = scratch
+        self.cwd = cwd; self.access = access; self.scratch = scratch; self.seed = seed
     }
 
     public init(from decoder: Decoder) throws {
@@ -542,5 +547,6 @@ public struct SpawnInput: Codable, Sendable, Equatable {
         self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
         self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
         self.scratch = try c.decodeIfPresent(Bool.self, forKey: .scratch) ?? false
+        self.seed = try c.decodeIfPresent(String.self, forKey: .seed)
     }
 }

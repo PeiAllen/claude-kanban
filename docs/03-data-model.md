@@ -103,6 +103,26 @@ next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-ref
 and the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
 [`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).
 
+## The trust ledger (T1)
+
+A third durable store — the **`TrustLedger`** (`Agents/TrustLedger.swift`) — is Orchestra's
+provider-agnostic source of truth for **which directories agents may *write* in**. It is the same
+actor-over-JSON pattern (lazy load, atomic temp+replace write, malformed → `.bak` + empty) at
+`~/Library/Application Support/Orchestra/trust-ledger.json`, a map of **canonicalized path → `Entry`
+(`{grantedBy, grantedAt}`)**. `isTrusted(path)` is a membership check; `record(path, grantedBy:)` adds
+an entry (idempotent — a no-op if already present). `grantedBy` (`TrustGrantor`) records *how* trust
+was acquired: **`repoRegistration`** (a worktree's source repo — registering a repo to run agents is
+the trust act), **`orchestra`** (auto-trust of a scratch dir Orchestra made empty and owns), or
+**`human`** (an explicit grant through the [`trust` surfaces](05-command-reference.md#registry-commands), PR T2).
+
+Only the **core** reads it — in `OrchestraService.resolveTrust(origin:cwd:repo:)`, which maps a card's
+`origin` to a `TrustDecision` (`.trusted` | `.needsGrant`) carried onto the launch as
+`AdapterContext.trustCwd`; **adapters never read the ledger**, they only *apply* that bool into their
+native trust flag (see [Cards, worktrees & sessions](04-cards-worktrees-sessions.md#the-claude-code-adapter)
+and [Design decisions](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)).
+The ledger + resolver landed as **PR T1**; the human-grant surfaces that fill a `needsGrant` as **PR T2**
+(both in [chapter 9](09-design-decisions.md#shipped-feature-history)).
+
 ## Configuration and paths
 
 `Config` (`Config.swift`) is loaded/saved by `ConfigStore` at `config.json` with the same atomic-write,
@@ -152,8 +172,9 @@ and worktree path against (see [the security boundary](04-cards-worktrees-sessio
 `OrchestraError` is the typed error surface returned over RPC:
 
 `unknownTask`, `ambiguousTask`, `unknownAgent`, `pathNotAllowed`, `branchInUse`, `toolMissing`
-(git/tmux/claude/zed not found), `worktreeDirty`, `resumeFailed`, `zedMissing`, `invalidParams`, and
-`io` (filesystem/subprocess failure).
+(git/tmux/claude/zed not found), `worktreeDirty`, `resumeFailed`, `zedMissing`, `invalidParams`,
+`io` (filesystem/subprocess failure), and `trustDenied` (code 1011 — a `needsGrant` directory's trust
+was not approved by a human; see [the `trust` command](05-command-reference.md#registry-commands)).
 
 ## Events and the activity feed
 

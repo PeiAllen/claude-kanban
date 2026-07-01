@@ -40,7 +40,8 @@ enum CLIRunner {
                 }
                 let p = JSONValue.object(fields
                     .merging(optional("model", flags.value("model"))) { a, _ in a }
-                    .merging(optional("col", flags.value("col"))) { a, _ in a })
+                    .merging(optional("col", flags.value("col"))) { a, _ in a }
+                    .merging(optional("seed", flags.value("seed"))) { a, _ in a })
                 let task = try await client.call("spawn", p)
                 printRef(task)
 
@@ -143,6 +144,12 @@ enum CLIRunner {
                 let window = r["window"]?.stringValue ?? ""
                 client.close()
                 attach(socket: Config.tmuxSocket, target: "\(session):\(window)")
+
+            case "trustState":
+                // Read-only trust query (the SpawnSheet's indicator, from the CLI). Never grants.
+                let path = flags.positional(0) ?? flags.require("path")
+                let r = try await client.call("trustState", .object(["path": .string(path)]))
+                print(r["trusted"]?.boolValue == true ? "trusted" : "untrusted")
 
             case "batch-spawn":
                 try await batchSpawn(client, flags)

@@ -7,15 +7,16 @@ enum CLIHelp {
 
     COMMANDS
       list [--col plan|impl|review]              List cards
-      spawn --prompt <p> --repo <r> --branch <b> [--model <m>] [--col plan|impl]
+      spawn --prompt <p> --repo <r> --branch <b> [--model <m>] [--col plan|impl] [--seed <ctx>]
             spawn --prompt <p> --cwd <dir> [--read-only]   (freeform: run in an existing dir)
             spawn --prompt <p> --scratch                   (throwaway ~/.orchestra/scratch dir)
-                                                 Spawn a new agent (prints its ref)
+                                                 Spawn a new agent (prints its ref). --seed = fork context.
       move <ref> --col <plan|impl|review>        Move a card
       send <ref> <message...>                    Message the agent
       wait <ref...>                              Block until a watched card concludes (fan-out)
       handoff <ref> <context...>                 Clean-context handoff: resume the card seeded with context
       trust <path>                               Grant a human's write-trust for a dir (interactive only)
+      trustState <path>                          Is a directory trusted? (read-only ledger query)
       status <ref>                               Show a card's state (JSON)
       archive <ref>                              Archive a card
       restart <ref>                              New blank session, same worktree

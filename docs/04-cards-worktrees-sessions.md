@@ -81,8 +81,8 @@ plus `newSessionId()`, `sessionInfo(...)`, `prepareToLaunch(ctx)` (side-effectin
 **`parse(_:)`** — the adapter's own conversion of one unit of raw telemetry into a `StatusReport`
 (relocated into the adapter by A2; see [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 The `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
-the managed `hooksPath`, the card's `access`, `trustCwd` (set when Orchestra owns the cwd — see
-[trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
+the managed `hooksPath`, the card's `access`, `trustCwd` (the core's `resolveTrust` decision, `.trusted`
+→ `true` — see [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
 `additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) and whose per-agent
 *injection* has now shipped (PR C3): each adapter appends `ctx.seed` as the resumed session's opening
 positional turn (see the resume argv under [the Claude Code adapter](#the-claude-code-adapter) below).
@@ -143,19 +143,25 @@ messages can *only* ride the seed; for Claude it also prevents a later Stop-drai
 (PR D1); the new-card fork/fan-out UI (D3) will call it too. (See
 [One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
 
-**Trust mirroring & scratch trust** (`prepareToLaunch`): Claude prompts for directory trust on first
-use of a path, which would block an autonomous agent. How the adapter clears that prompt depends on who
-owns the cwd (the `trustCwd` flag, set when `origin == .scratch` at spawn/resume/restart):
+**Trust — apply the core's decision** (`prepareToLaunch`): Claude prompts for directory trust on first
+use of a path, which would block an autonomous agent. **The adapter does not decide trust** — the core
+does, provider-agnostically, in [`OrchestraService.resolveTrust`](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
+(PR T1), and rides the `.trusted`/`.needsGrant` result onto the launch as the `AdapterContext.trustCwd`
+bool. `prepareToLaunch` only **applies** that flag (`ClaudeTrust.apply(trusted:cwd:)`) into Claude's
+native per-directory trust and **never reads the `TrustLedger`**:
 
-- **Worktree & borrowed/freeform cards** (`trustCwd == false`): the adapter `mirror`s the user's
-  *existing* trust decision from the source repo onto the worktree — but **never grants trust the user
-  hasn't given** (it only mirrors when the repo is already trusted). A borrowed dir with no source repo
-  is left alone, so Claude's own trust prompt still applies to a directory the user chose.
-- **Scratch cards** (`trustCwd == true`): a scratch dir is one Orchestra just created and *owns*, so
-  there's no source repo whose trust could be mirrored — `ClaudeTrust.grant(cwd)` pre-accepts the trust
-  dialog outright, merging `hasTrustDialogAccepted` into `~/.claude.json` (creating the file if absent,
-  preserving every other key, and bailing without writing if the file is present-but-corrupt so a
-  transient read can't clobber it). No-op when already trusted.
+- **`trustCwd == true`** — pre-accept the trust dialog by merging `hasTrustDialogAccepted` for the cwd
+  into `~/.claude.json` (creating the file if absent, preserving every other key, and bailing without
+  writing if the file is present-but-corrupt so a transient read can't clobber it; no-op when already
+  trusted). This covers a **worktree** (registering its repo to run agents *is* the trust act, so core
+  records the repo and trusts the tree), a **scratch** dir Orchestra made and owns, and a **borrowed**
+  dir a human has already granted.
+- **`trustCwd == false`** — a no-op: the card is left untrusted, runs **sandboxed** (writes blocked),
+  and Claude's own prompt still applies. This is a `needsGrant` borrowed dir (or a scratch dir a foreign
+  repo was cloned into — `resolveTrust` demotes it once a `.git` appears); the human fills the gap
+  through the [`trust` grant surfaces](05-command-reference.md#registry-commands) (PR T2), never the
+  agent. The Codex adapter applies the same `ctx.trustCwd` into its own `config.toml` `trust_level`
+  identically (see [the Codex adapter](#the-codex-adapter)).
 
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,

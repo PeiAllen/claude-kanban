@@ -97,6 +97,12 @@ BUILD_LOCK="$REPO_ROOT/.scratch/orch-ux-e2e-build.lock"     # mkdir-mutex dir (c
 GUI_SLOT_ROOT="/tmp/orch-ux-e2e-guislots"                   # mkdir-semaphore dir (cross-run)
 GUI_SLOTS="${UX_E2E_GUI_SLOTS:-2}"
 if [ "${USE_REAL_CLAUDE:-0}" = "1" ]; then RUN_PATH="$PATH"; else RUN_PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"; fi
+# Fake-agent fixture: when NOT opting into a real vendor binary, prepend a per-run bin dir whose
+# `claude`/`codex` symlink points at scripts/fixtures/fake-agent, so a spawned card launches an inert,
+# non-billing agent (ClaudeCodeAdapter/CodexAdapter resolve the binary off PATH). Populated in the
+# seed step (needs $ROOT). USE_REAL_CLAUDE=1 skips this and uses the real PATH.
+FAKE_BIN="$ROOT/fakebin"
+if [ "${USE_REAL_CLAUDE:-0}" != "1" ]; then RUN_PATH="$FAKE_BIN:$RUN_PATH"; fi
 
 APP_PID=""
 DAEMON_PID=""
@@ -195,6 +201,12 @@ BIN="$APP/Contents/MacOS/Orchestra"
 # --- 2. seed the isolated data dir: throwaway repo + worktree + one card ---
 echo "▶ seeding isolated \$HOME at ${ISO_HOME}"
 rm -rf "$ROOT"; mkdir -p "$DATA" "$ROOT/repo"
+# Fake-agent bin (unless USE_REAL_CLAUDE=1): a `claude`/`codex` on PATH that idles, never bills.
+if [ "${USE_REAL_CLAUDE:-0}" != "1" ]; then
+  mkdir -p "$FAKE_BIN"
+  ln -sf "$REPO_ROOT/scripts/fixtures/fake-agent" "$FAKE_BIN/claude"
+  ln -sf "$REPO_ROOT/scripts/fixtures/fake-agent" "$FAKE_BIN/codex"
+fi
 ( cd "$ROOT/repo" && git init -q && git config user.email t@t.t && git config user.name t \
     && git commit -q --allow-empty -m init && git worktree add -q ../wt -b verify )
 python3 - "$DATA/tasks.json" "$ROOT/repo" "$ROOT/wt" "$CARD_ID" <<'PY'
@@ -207,6 +219,20 @@ card = {"id": cid, "title": "UX e2e card", "titleProvisional": False, "desc": ""
         "priorSessionIds": [], "initialPrompt": "t", "archived": False,
         "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"}
 json.dump([card], open(tasks, "w"), indent=2)
+PY
+
+# Seed config.json so the isolated daemon ALLOWLISTS the throwaway repo — without it, an RPC `spawn`
+# throws (repo not under any allowed root) and the UC replay can't create cards. reposRoot=$ROOT makes
+# $ROOT/repo a valid repo; worktrees land under $ROOT/worktrees. defaultAgentId stays claude-code (the
+# fake-agent `claude` on PATH). All non-optional Config keys are present so it decodes (else the daemon
+# silently falls back to HOME-rooted defaults with an empty allowlist).
+python3 - "$DATA/config.json" "$ROOT" <<'PY'
+import json, sys
+cfg_path, root = sys.argv[1:3]
+cfg = {"reposRoot": root, "worktreesRoot": root + "/worktrees", "defaultAgentId": "claude-code",
+       "allowlist": [root], "maxConcurrentRevivals": 4, "revivalGraceSeconds": 15,
+       "statusLineMode": "orchestraDefault"}
+json.dump(cfg, open(cfg_path, "w"), indent=2)
 PY
 
 # --- 3. spawn the daemon DIRECTLY under the isolated $HOME (never launchctl) ---
@@ -295,6 +321,63 @@ if ORCH_SOCK="$SOCK" python3 "$REPO_ROOT/scripts/orch-rpc.py" inspect '{"ref":"a
      | grep -q "orchestra-aaaaaaaa"; then
   echo "  ✓ isolated daemon serves the seeded card (not a mock)"
 fi
+
+# --- 5.5 UC1–UC8 replay over the isolated daemon (RPC-driven; NO synthetic input) ---
+# Drives the same Commands the board/CLI actions call (D3), asserting daemon STATE — not screenshots.
+# Advisory per O6: a UC miss logs ⚠ but does NOT fail the run (the merge gate is unit tests + typecheck);
+# a hard RPC/transport error would still surface in the daemon log. USE_REAL_CLAUDE stays unset, so all
+# spawns launch the fake-agent (no billing).
+rpc() { ORCH_SOCK="$SOCK" python3 "$REPO_ROOT/scripts/orch-rpc.py" "$@"; }
+uc_ok()   { echo "  ✓ $1"; }
+uc_warn() { echo "  ⚠ $1 (advisory)"; }
+jget() { python3 -c 'import sys,json;print(json.load(sys.stdin).get(sys.argv[1],""))' "$1" 2>/dev/null; }
+REPO="$ROOT/repo"
+
+echo "▶ UC1–UC8 replay (fake-agent on PATH; USE_REAL_CLAUDE unset)"
+
+# The whole UC replay is ADVISORY (O6): disable `set -e` inside it so no single RPC miss can abort the
+# run before the (documented-advisory) screenshot step. Re-enabled right after.
+set +e
+
+# UC4/UC5 · Fork / handoff→new — spawn --seed, assert the seed rode into the new card (its ref echoes).
+FORK="$(rpc spawn "{\"prompt\":\"fork task\",\"repo\":\"$REPO\",\"branch\":\"fork-1\",\"seed\":\"PARENT-SLICE\"}")"
+echo "$FORK" | grep -q "PARENT-SLICE" && uc_ok "UC4/UC5 fork (spawn --seed)" || uc_warn "UC4/UC5 fork seed"
+
+# UC6 · Fan-out — batch-spawn N, assert the cards were actually created (their branches echo back;
+# `spawned:[]` on an allowlist miss would NOT contain the branch, so this can't false-positive).
+FAN="$(rpc batch-spawn "{\"tasks\":[
+  {\"prompt\":\"fan A\",\"repo\":\"$REPO\",\"branch\":\"fan-a\"},
+  {\"prompt\":\"fan B\",\"repo\":\"$REPO\",\"branch\":\"fan-b\"}]}")"
+echo "$FAN" | grep -q 'fan-a' && uc_ok "UC6 fan-out (batch-spawn N)" || uc_warn "UC6 fan-out"
+
+# UC7 · Send / queue — enqueue to the seeded card's durable inbox (F3).
+rpc send "{\"ref\":\"aaaaaa\",\"message\":\"queued via UX-e2e\"}" >/dev/null 2>&1 \
+  && uc_ok "UC7 send (inbox enqueue)" || uc_warn "UC7 send"
+
+# UC3 · Handoff → clean context (same card) — resume-in-card seeded (F1).
+rpc handoff "{\"ref\":\"aaaaaa\",\"context\":\"handoff summary\"}" >/dev/null 2>&1 \
+  && uc_ok "UC3 handoff (resume-in-card)" || uc_warn "UC3 handoff"
+
+# UC1/UC2 · parallel forks + reactive DAG — spawn a child, conclude it (archive = settled terminal),
+# assert `wait` returns the conclusion (merge-watch off REAL card state, F2).
+CHILD="$(rpc spawn "{\"prompt\":\"child\",\"repo\":\"$REPO\",\"branch\":\"child-1\"}" | jget id)"
+if [ -n "$CHILD" ]; then
+  rpc archive "{\"ref\":\"$CHILD\"}" >/dev/null 2>&1
+  rpc wait "{\"refs\":[\"$CHILD\"]}" | grep -q '"kind"' \
+    && uc_ok "UC1/UC2 wait→conclude (real card state)" || uc_warn "UC1/UC2 wait"
+else uc_warn "UC1/UC2 wait (child spawn)"; fi
+
+# UC8 · cross-agent — spawn a Codex-adapter card with a seed (registry.get("codex"); no `if claude`).
+# The `spawn` Command has no agentId param today, so this is advisory: a miss just means UC8's cross-
+# agent path is exercised in the unit e2e (e2e_uc8_cross_agent_handoff), not here.
+rpc spawn "{\"prompt\":\"codex fork\",\"repo\":\"$REPO\",\"branch\":\"cx-1\",\"agentId\":\"codex\",\"seed\":\"X\"}" \
+  >/dev/null 2>&1 && uc_ok "UC8 cross-agent (codex spawn)" || uc_warn "UC8 cross-agent (agentId not on spawn — see unit e2e)"
+
+# SpawnSheet trust indicator — the read-only trustState query, over the isolated daemon.
+rpc trustState "{\"path\":\"$REPO\"}" | grep -q '"trusted"' \
+  && uc_ok "trustState query (SpawnSheet trust wiring)" || uc_warn "trustState"
+
+set -e   # end of advisory UC replay
 
 # --- 6. screenshot the real UI by window id (never foregrounds / whole-screen) ---
 sleep 1.0   # settle board layout

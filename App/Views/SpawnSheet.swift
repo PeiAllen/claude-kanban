@@ -23,6 +23,11 @@ struct SpawnSheet: View {
     @State private var cwd = ""
     @State private var readOnly = false
 
+    /// T1 trust state for the freeform cwd (nil = unknown/unchecked). An untrusted borrowed dir can
+    /// only run read-only (sandboxed) — granting trust is a separate human surface (the `trust` tool /
+    /// `orchestra trust`), so here we surface the state and force the safe fallback.
+    @State private var cwdTrusted: Bool? = nil
+
     /// Existing local branches in the selected repo (most-recently-committed first), loaded on appear
     /// and whenever the repo changes. Used to power the branch combo's fuzzy search.
     @State private var branches: [String] = []
@@ -184,6 +189,10 @@ struct SpawnSheet: View {
                             .font(F.ui(12)).foregroundColor(theme.text2)
                     }
                     .toggleStyle(.checkbox)
+                    // An untrusted borrowed dir is forced read-only (can't be unchecked here).
+                    .disabled(cwdTrusted == false)
+
+                    trustNotice
                 }
             }
             .padding(.horizontal, 19).padding(.top, 12).padding(.bottom, 4)
@@ -250,9 +259,53 @@ struct SpawnSheet: View {
             branches = gitBranches(in: repo)
             if branch.isEmpty || !branches.contains(branch) { branch = "" }
         }
+        .onChange(of: cwd) { refreshTrust() }
+        .onChange(of: mode) { refreshTrust() }
     }
 
     // MARK: helpers
+
+    /// The freeform trust indicator (reads T1's ledger via the daemon). Three states:
+    ///   • cwd empty / unchecked → nothing;
+    ///   • trusted → a subtle "Trusted ✓";
+    ///   • untrusted → an amber notice; the card is forced read-only (sandboxed) here — granting trust
+    ///     is a separate human surface (the `trust` tool / `orchestra trust`).
+    @ViewBuilder private var trustNotice: some View {
+        if !cwd.isEmpty, let trusted = cwdTrusted {
+            if trusted {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.shield").font(.system(size: 10, weight: .semibold))
+                    Text("Trusted directory").font(F.ui(11)).foregroundColor(theme.text2)
+                }
+                .foregroundColor(theme.green.dot)
+            } else {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10)).foregroundColor(theme.amber.dot)
+                    Text("Not a trusted directory — it will run read-only (sandboxed). Grant trust from "
+                        + "the agent’s client or `orchestra trust` to enable read-write.")
+                        .font(F.ui(11)).foregroundColor(theme.text2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .surface(theme.chip, corner: 8, hair: theme.hair)
+            }
+        }
+    }
+
+    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted.
+    private func refreshTrust() {
+        guard mode == .freeform, !cwd.isEmpty else { cwdTrusted = nil; return }
+        let path = cwd
+        _Concurrency.Task {
+            let trusted = await model.trustState(path: path)
+            await MainActor.run {
+                guard path == cwd else { return }   // ignore a stale result after the dir changed
+                cwdTrusted = trusted
+                if !trusted { readOnly = true }
+            }
+        }
+    }
 
     /// A combo of real repos under the repos root: shows the chosen repo and opens a popover where you
     /// can fuzzy-search the candidates by name. Falls back to a free-text absolute-path field when none
