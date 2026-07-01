@@ -53,6 +53,77 @@ public struct CodexAdapter: Adapter {
     /// mints nothing pre-launch — unlike Claude's `.seeded` `--session-id`.
     public func newSessionId() -> String? { nil }
 
+    // MARK: telemetry parse (fileTail) — the daemon tails the rollout JSONL; THIS converts one line.
+
+    /// Codex telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one rollout JSONL line at a
+    /// time; this converts it to a normalized `StatusReport`. AGENT-DEPENDENT (D3) — the mapping lives
+    /// here, never in core. Rename-tolerant (Codex's rollout schema drifts: `TaskComplete`→`TurnComplete`,
+    /// nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE model table as the denominator
+    /// (E1), never the rollout's own window. `seq` is the line timestamp (µs) so out-of-order/duplicate
+    /// lines lose to the freshest via `report()`'s seq-gate. Any unrecognized line → nil (dropped).
+    public func parse(_ raw: RawTelemetry) -> StatusReport? {
+        guard case let .fileTail(line) = raw else { return nil }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let jv = try? JSONValue.parse(Data(trimmed.utf8)) else { return nil }
+        let payload = jv["payload"] ?? jv
+        let seq = Self.rolloutSeq(jv)
+        // Normalize BOTH the top-level and payload `type` (lower-cased, `_` stripped) for rename tolerance.
+        let kinds = [jv["type"]?.stringValue, payload["type"]?.stringValue]
+            .compactMap { $0 }.map(Self.norm)
+        func any(_ needles: String...) -> Bool { kinds.contains { k in needles.contains { k.contains($0) } } }
+
+        // Idle signal FIRST (a completed turn ends `.running`, rename-tolerant).
+        if any("turncomplete", "taskcomplete") {
+            return StatusReport(seq: seq, status: .waiting)
+        }
+        // Token usage → ctxPct (÷ offline model window) + modelId. No status (avoids churn vs turn edges).
+        if any("tokencount", "tokenusage") {
+            let info = payload["info"] ?? payload
+            let mid = (info["model"] ?? payload["model"])?.stringValue
+            let total = Self.tokenTotal(info)
+            let pct = (mid != nil && total != nil) ? model(for: mid!).ctxPct(usedTokens: total!) : nil
+            guard pct != nil || mid != nil else { return nil }
+            return StatusReport(seq: seq, ctxPct: pct, modelId: mid)
+        }
+        // Turn start → running.
+        if any("taskstarted", "turnstarted") {
+            return StatusReport(seq: seq, status: .running)
+        }
+        // A tool/function call mid-turn → running (+ a coarse desc).
+        if any("functioncall", "responseitem") {
+            if let name = payload["name"]?.stringValue, !name.isEmpty {
+                return StatusReport(seq: seq, desc: "Running \(name)", status: .running)
+            }
+            return StatusReport(seq: seq, status: .running)
+        }
+        return nil
+    }
+
+    /// Lower-case + drop underscores so `task_complete` / `TaskComplete` / `TurnComplete` normalize alike.
+    private static func norm(_ s: String) -> String {
+        s.lowercased().replacingOccurrences(of: "_", with: "")
+    }
+
+    /// Total tokens from a usage `info` object, tolerating the nested (`total_token_usage.total_tokens`)
+    /// and flat (`total_tokens` / `tokens`) shapes the rollout schema has used.
+    private static func tokenTotal(_ info: JSONValue) -> Int? {
+        info["total_token_usage"]?["total_tokens"]?.intValue
+            ?? info["total_tokens"]?.intValue
+            ?? info["tokens"]?.intValue
+    }
+
+    /// Monotonic seq from the line's RFC3339 `timestamp`, in microseconds since epoch. Absent/unparseable
+    /// → 0 (still applies: the tailer delivers lines in file order, so a 0-seq snapshot is never stale).
+    private static func rolloutSeq(_ jv: JSONValue) -> UInt64 {
+        guard let ts = jv["timestamp"]?.stringValue else { return 0 }
+        let withFrac = ISO8601DateFormatter()
+        withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        guard let d = withFrac.date(from: ts) ?? plain.date(from: ts) else { return 0 }
+        return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
+    }
+
     // Read-only-first: B1 ships read-only ONLY (approvals deferred), so EVERY launch clamps to these
     // flags regardless of `ctx.access`. `-s read-only` selects Codex's OS-sandboxed read-only mode;
     // `-a never` disables the approval round-trip (which B1 does not implement).
