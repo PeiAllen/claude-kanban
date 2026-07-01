@@ -35,6 +35,20 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private(set) var peakConcurrentEnsure = 0
     private var curConcurrentEnsure = 0
     var ensureSleepMs: UInt32 = 0
+    private var captureText: [String: String] = [:]
+    private(set) var sentKeys: [(name: String, text: String)] = []
+
+    /// Seed the pane text `capture(_:window:)` returns for this card (drives C4 detect-and-defer).
+    func setCapture(_ id: UUID, _ text: String) {
+        lock.lock(); captureText[sessionName(id)] = text; lock.unlock()
+    }
+
+    /// Nudges/keystrokes sent to a card's agent window, in order (drives C4 nudge-only assertions).
+    func keysSent(to id: UUID) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let n = sessionName(id)
+        return sentKeys.filter { $0.name == n }.map(\.text)
+    }
 
     /// Seed a session as alive without an ensure (for "still running" cards in recover tests).
     func setAlive(_ id: UUID, _ value: Bool) {
@@ -58,8 +72,12 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
                            target: "\(name):agent", attach: "tmux -L orchestra attach -t \(name):agent")]
     }
     func list() throws -> [SessionInfo] { lock.lock(); defer { lock.unlock() }; return alive.map { SessionInfo(name: $0, running: true) } }
-    func capture(_ name: String, window: String) throws -> String { "" }
-    func sendKeys(_ name: String, text: String, window: String) throws {}
+    func capture(_ name: String, window: String) throws -> String {
+        lock.lock(); defer { lock.unlock() }; return captureText[name] ?? ""
+    }
+    func sendKeys(_ name: String, text: String, window: String) throws {
+        lock.lock(); sentKeys.append((name, text)); lock.unlock()
+    }
     func kill(_ name: String) throws { lock.lock(); alive.remove(name); killed.append(name); lock.unlock() }
 }
 

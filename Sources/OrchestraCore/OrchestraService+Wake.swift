@@ -54,10 +54,29 @@ extension OrchestraService {
             // send. (An idle Claude card with no background wait stays inbox-durable until it next runs.)
             break
         case .sendKeys:
-            break   // Codex send-keys nudge + detect-and-defer — C4 (deferred; nudge only, no content).
+            await sendKeysWake(t)
         case .controlChannel, .relaunch:
             break   // future transports.
         }
+    }
+
+    /// The FIXED, content-free wake keystroke for send-keys agents (Codex TUI). Its ONLY job is to
+    /// start a turn on an idle composer. Inbox payloads NEVER ride this keystroke — content is delivered
+    /// by F3 (the durable inbox / session seed), so this stays a constant and carries no message content.
+    public static let sendKeysWakeNudge = "Please continue."
+
+    /// F2 wake for a send-keys agent (Codex TUI): NUDGE-ONLY + detect-and-defer.
+    /// Fire the fixed nudge ONLY when the card is idle AND its composer is empty, read just-in-time from
+    /// `capture-pane` (this single capture IS the "re-check right before the nudge"; focus is NOT a gate).
+    /// A draft, an in-flight turn, an unparseable pane, or a dead session all DEFER — we drop the nudge
+    /// and leave the inbox durable; a later event-driven wake / turn-end delivers it. No retry loop here
+    /// (that would risk the F3 inject cap). Content is never sent — only `sendKeysWakeNudge`.
+    func sendKeysWake(_ t: Task) async {
+        let name = sessions.sessionName(t.id)
+        guard (try? sessions.isAlive(name)) == true else { return }   // no live TUI → inbox stays durable
+        let pane = (try? sessions.capture(name, window: "agent")) ?? ""
+        guard CodexComposer.canNudge(pane) else { return }            // draft / busy / unknown → defer
+        try? sessions.sendKeys(name, text: Self.sendKeysWakeNudge, window: "agent")
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.
