@@ -131,15 +131,24 @@ private extension String {
 /// The inbox editor popover: list the card's durable queued messages with per-row reorder
 /// (up/down), inline edit, and delete, plus an append field. All ops round-trip to the daemon
 /// and reload. Loaded fresh each time the popover opens.
-private struct InboxEditorView: View {
+struct InboxEditorView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
+    /// Non-nil only for the DEBUG headless snapshot: seeds `messages` and skips the daemon load +
+    /// the ScrollView (which ImageRenderer can't lay out). Nil in the real app.
+    private let preview: [InboxMessage]?
 
     @State private var messages: [InboxMessage] = []
     @State private var appendText = ""
     @State private var editingId: UUID?
     @State private var editText = ""
+
+    init(task: Task, preview: [InboxMessage]? = nil) {
+        self.task = task
+        self.preview = preview
+        if let preview { _messages = State(initialValue: preview) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -149,6 +158,8 @@ private struct InboxEditorView: View {
             if messages.isEmpty {
                 Text("No queued messages.").font(F.ui(11.5)).foregroundColor(theme.text3)
                     .padding(.vertical, 6)
+            } else if preview != nil {
+                VStack(spacing: 4) { ForEach(messages, id: \.id) { row($0) } }
             } else {
                 ScrollView {
                     VStack(spacing: 4) { ForEach(messages, id: \.id) { row($0) } }
@@ -179,7 +190,7 @@ private struct InboxEditorView: View {
             }
         }
         .padding(12).frame(width: 360)
-        .task { await reload() }
+        .task { if preview == nil { await reload() } }
     }
 
     private func row(_ m: InboxMessage) -> some View {
