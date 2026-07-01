@@ -35,6 +35,8 @@ let package = Package(
                 .copy("Resources/claude-code-models.json"),
                 .copy("Resources/codex-models.json"),
                 .copy("Resources/com.orchestra.daemon.plist"),
+                .copy("Resources/delegation-skill.md"),
+                .copy("Resources/delegation-agents.md"),
             ]
         ),
         .executableTarget(name: "orchestrad", dependencies: ["OrchestraCore"]),
