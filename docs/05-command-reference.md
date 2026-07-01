@@ -28,6 +28,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `exec` | `ref` (required), `cmd` (required), `timeout?` (seconds) | Run one shell command in the card's `cwd` via `/bin/sh -c`; returns stdout/stderr/exit. Worktree cards are allowlist-gated; borrowed/scratch are sandbox-trusted. Default timeout 120 s. |
 | `sessions` | `ref` (required) | Debug handles: every tmux target (socket/session/windows with attach lines), the agent-native session id, transcript path, prior ids, and the resume argv. |
 | `batch-spawn` | `tasks` (required: array of `{prompt, repo, branch, model?, col?}`) | Spawn many agents at once; failed entries are reported, the rest still spawn. |
+| `trust` | `path` (required) | Grant a **human's** write-trust for a directory (record it in the [trust ledger](03-data-model.md#the-trust-ledger-t1)) so agents may run there with write access. A human must approve — the MCP tool elicits a decision from the agent's own client; the CLI verb gates on an interactive terminal. An agent can only *trigger* it, **never self-grant** (`.agent`/`.daemon` sources are denied → `trustDenied`). |
 
 ### Notes on key commands
 
@@ -66,6 +67,19 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   delegation skill / AGENTS.md (PR D2, see [chapter 9](09-design-decisions.md#shipped-feature-history)).
   (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
+- **`trust` is human-only — an agent can never self-grant.** As of T2, `trust` records a *human* grant
+  into the [trust ledger](03-data-model.md#the-trust-ledger-t1), filling the `needsGrant` gap the core's
+  `resolveTrust` (T1) leaves for a borrowed dir the user hasn't approved (see
+  [Trust boundaries](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)).
+  The record only happens after a human approves at an **interactive surface** — the MCP tool elicits a
+  decision from the agent's own client (`requestElicitation`), and the CLI verb `orchestra trust <path>`
+  gates on a tty and refuses non-interactively (there is **no `--trust` flag**). Core's
+  `SurfaceGrantResolver` is the gate of last resort: it approves `.cli`/`.mcp`/`.app` sources (a human
+  already answered) and **denies `.agent`/`.daemon`** (→ `trustDenied`, code 1011) — one rule that is
+  both the *autonomy-exemption* and the *no-self-grant* guarantee. Granting an already-trusted path is an
+  idempotent no-op. See [CLI & MCP](06-clients-cli-mcp.md#the-orchestra-cli) for the two surfaces.
+  (`notes/plans/2026-07-01-t2-trust-grant-surfaces.md`;
+  `notes/designs/agent-provider-interface/02-contract.md` §Area 3.)
 
 ## Server-only built-in methods
 

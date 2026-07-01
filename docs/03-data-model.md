@@ -149,6 +149,7 @@ Derived paths (all keyed off `$HOME`, so state follows the user, not the bundle)
 | Config | `…/config.json` |
 | Tasks | `…/tasks.json` |
 | Inbox | `…/inbox.json` |
+| Trust ledger | `…/trust-ledger.json` |
 | Log | `…/orchestrad.log` |
 | Rendered hooks | `…/claude-hooks.json` |
 | Worktrees | `~/.orchestra/worktrees/<repo>/<branch>` |
@@ -186,11 +187,13 @@ The daemon emits an `Event` after every meaningful mutation:
 
 An `ActivityItem` is a timestamped, task-linked record with a **source** (`app`/`cli`/`mcp`/`agent`/
 `daemon`) and a **kind** (`spawned`/`moved`/`archived`/`statusChanged`/`dead`/`recovered`/`command`/
-`warning`). The `warning` kind is the surface for advisory notices — currently the **authMode soft-warn**
-emitted when a subscription-auth adapter fans out past its concurrency threshold (see
-[Design decisions](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)); it never blocks the
-action it warns about. The app's Activity popover renders these; the daemon keeps the most recent 200 in
-a ring buffer that is replayed to new subscribers.
+`warning`). The `warning` kind is the surface for advisory notices — the **authMode soft-warn** emitted
+when a subscription-auth adapter fans out past its concurrency threshold (see
+[Design decisions](09-design-decisions.md#authmode-advise-on-fan-out-never-cap)), and the **trust**
+notices (PR T2): the actionable *"runs untrusted (sandboxed) … run `orchestra trust`"* emitted when a
+`needsGrant` card spawns, and the *"Trusted … (human grant)"* confirmation on an approved grant. None of
+them blocks the action it warns about. The app's Activity popover renders these; the daemon keeps the
+most recent 200 in a ring buffer that is replayed to new subscribers.
 
 ### The report types
 

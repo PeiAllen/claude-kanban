@@ -31,6 +31,7 @@ orchestra status <ref>               # JSON status for one card
 orchestra send <ref> "use a token bucket"
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card, seeded (F1)
+orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
 orchestra sessions <ref> --json      # debug handles
@@ -53,6 +54,14 @@ background `orchestra wait` process ends, so the orchestrator wakes, reads the d
 so conclusions coalesce into the caller's own inbox. (See
 [merge-watch / `wait`](05-command-reference.md#notes-on-key-commands) and
 [chapter 9](09-design-decisions.md#shipped-feature-history).)
+
+`orchestra trust <path>` is the **interactive-only** grant surface (PR T2). Because trust is a human
+decision, the verb gates on `isatty(STDIN)`: at a real terminal it prints a `[y/N]` confirmation and,
+only on `y`/`yes`, calls the daemon `trust` command; run non-interactively (a pipe, a script, another
+agent's shell) it **refuses** — printing actionable help that names the path and points back at running
+`orchestra trust` in a terminal, then exits non-zero. There is deliberately **no `--trust` flag**: a
+directory can only be trusted by a human answering, never by a switch an agent could pass. (See
+[the `trust` command](05-command-reference.md#notes-on-key-commands).)
 
 ### Daemon lifecycle
 
@@ -77,6 +86,14 @@ a set of tools.
 - **Relay.** On `CallTool`, it opens a `ControlClient(source:.mcp)` to the daemon socket
   (`$ORCHESTRA_SOCK` or default), forwards the call, and returns the daemon's result as text content.
   RPC errors come back as MCP `isError` results.
+- **The `trust` tool is the one human-gated special-case** (PR T2). Before relaying it, the bridge calls
+  `server.requestElicitation(...)` back over its **persistent MCP session** to the agent's *own* client
+  — so a **human** at that client approves or declines the write-trust request. It forwards the `trust`
+  call to the daemon **only on `.accept`**; a decline/cancel returns an `isError` without ever recording.
+  `requestElicitation` throws if the client never advertised the MCP `elicitation` capability — and both
+  v1 targets (Claude Code, Codex) do, so there is deliberately **no fallback** (the agent can only
+  *trigger* the grant; a human answers). This is the MCP surface of the [`trust`
+  command](05-command-reference.md#notes-on-key-commands); every other tool is a plain relay.
 
 Register it with your MCP host (e.g. Claude Code) as a stdio server running the `orchestra-mcp` binary;
 it logs readiness (and the socket path) to stderr.

@@ -57,6 +57,24 @@ Worktree cards validate their repo path against the allowlist (`PathResolver`, s
 OS sandbox confining writes to their directory — so freeform cards stay friction-light while the
 boundary still holds.
 
+Layered under that boundary is the **trust ledger** — the durable, human-owned record of which
+directories agents may *write* in (see [the trust ledger](03-data-model.md#the-trust-ledger-t1)). Core
+resolves trust from a card's `origin` in **`OrchestraService.resolveTrust`** → a `TrustDecision` of
+`.trusted` or `.needsGrant`, carried onto the launch as `AdapterContext.trustCwd` — and **adapters only
+*apply* that flag; they never read the ledger** (so the same "trusted once" fact carries across Claude,
+Codex, and every later agent through one core seam). The three origins resolve distinctly: a
+**worktree** trusts its source repo (registering a repo to run agents *is* the trust act — recorded
+`repoRegistration`), a **scratch** dir Orchestra made empty is auto-trusted (`orchestra`) but
+**demotes to `needsGrant` if a foreign repo is later cloned into it** (a `.git` appears — external code
+is no longer Orchestra's to auto-trust), and a **borrowed** dir is `.needsGrant` until a human grants it.
+Filling a `needsGrant` is a **human decision, never the agent's**: an untrusted card still spawns — but
+**sandboxed** (writes blocked), with an actionable activity telling the human how to grant — and the
+grant flows through a `TrustGrantResolver` seam whose production `SurfaceGrantResolver` approves only
+*interactive* surfaces (a CLI tty prompt, the MCP elicitation dialog) and **denies `.agent`/`.daemon`**.
+That single rule is both the **autonomy-exemption** and the "an agent can't self-grant" guarantee. (Trust
+ledger + resolver by **PR T1**; the grant surfaces — `trust` Command, `orchestra trust` verb, MCP
+elicitation — by **PR T2**, both in the [shipped history](#shipped-feature-history) below.)
+
 ### Read-only is defense in depth
 
 A read-only agent is constrained by three independent layers — edit tools removed, a kernel-level
@@ -395,6 +413,44 @@ Like the forest PRs above, D2 is content + a loader, not a whole axis — it dee
 Orchestra→agent context injection* — so it stays here as history while the context-continuity row keeps the
 new-card handoff/fork/fan-out **UI + start-actions** (D3) open. (`notes/designs/context-passing-topologies.md`;
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+
+The twelfth and thirteenth landed PRs are **T1 and T2 — the trust ledger and its human-grant surfaces**
+(`notes/plans/2026-07-01-t2-trust-grant-surfaces.md`), the agent-provider forest's **permissioning**
+track (design Area 3). Together they make "which directories may agents *write* in" a durable,
+provider-agnostic, **human-owned** decision — see the [Trust boundaries](#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
+principle above. **T1** built the foundation: a `TrustLedger` (actor-over-JSON, sibling to `TaskStore` —
+see [the trust ledger](03-data-model.md#the-trust-ledger-t1)) and `OrchestraService.resolveTrust(origin:cwd:repo:)`,
+which maps a card's origin to a `TrustDecision` (`.trusted`/`.needsGrant`) and rides it onto the launch as
+`AdapterContext.trustCwd` — moving trust resolution into the **core** so each adapter merely *applies* the
+bool (Claude's `hasTrustDialogAccepted`, Codex's `config.toml` `trust_level`) and never reads the ledger.
+**T2** then filled the `needsGrant` gap with the **grant surfaces**, and its decisions are the interesting
+part:
+
+- **The agent triggers; a human answers — core never self-grants.** The grant seam is a small
+  `TrustGrantResolver` protocol whose production `SurfaceGrantResolver` approves `.cli`/`.mcp`/`.app`
+  sources — where a human has *already* been gated at the surface — and **denies `.agent`/`.daemon`**.
+  That one rule is simultaneously the **autonomy-exemption** (an autonomy card never blocks on trust) and
+  the **no-self-grant** guarantee. `OrchestraService.grantTrust(_:source:)` (behind the new `trust`
+  Command) is idempotent on an already-trusted path, records `grantedBy: .human` on approval, and
+  **fail-closed throws `OrchestraError.trustDenied` (code 1011) on denial — recording nothing**.
+- **No `--trust` flag anywhere — the grant is a surface, not a switch.** The human gate lives at each
+  *surface* before the daemon `trust` command is ever relayed: the **CLI** `orchestra trust <path>` gates
+  on `isatty` (a `[y/N]` confirm; refuses non-interactively with actionable help), and the **MCP** bridge
+  special-cases the `trust` tool to `requestElicitation` back over its persistent session to the agent's
+  own client, relaying only on `.accept` (no fallback — both v1 targets advertise `elicitation`). The
+  `trust` Command auto-surfaces as an MCP tool (registry↔MCP parity stays green; `"trust"` was added to
+  `CommandsTests.expected`, the C2 full-set guard), and the CLI verb is the one hand-wired surface.
+- **Untrusted spawn is actionable, never blocking.** A `needsGrant` card still spawns — **sandboxed**
+  (`trustCwd == false`) — and emits a `.warning` activity naming the cwd and the exact `orchestra trust`
+  command to grant it. And `resolveTrust` **demotes a scratch dir that a foreign repo was cloned into**
+  (a `.git` present) to borrowed semantics, so external code is never silently auto-trusted.
+
+Automated coverage uses a **`StubGrantResolver`** only (approve/deny fixtures) — the live
+`requestElicitation` dialog is a manual, out-of-scope acceptance (design rule O7), and **T2 adds no app
+UI**: the `SpawnSheet` trust·read-only·cancel control is **D3**, still design-only. Like the forest PRs
+above, T1/T2 are the permissioning track, not a whole axis, so they stay here as history. (As-built
+symbols:
+[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 3.)
 
 The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

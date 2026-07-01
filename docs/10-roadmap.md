@@ -62,9 +62,19 @@ resources (a Claude **skill** + a Codex **AGENTS.md** — same heuristics, diffe
 wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in addition to*,
 never *instead of*). It is content + an **unwired** loader — selecting and delivering a variant rides the
 same seed-injection path as the D3 start-actions (see
-[chapter 9](09-design-decisions.md#shipped-feature-history)). The remainder of the forest is then the
-*new-card* handoff/fork/fan-out **UI + start-actions** (D3) — still design-only until that PR lands. The
-principle is to design every change *toward* these axes, never away from them.
+[chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
+landed — PRs T1 and T2** ([plan](../notes/plans/2026-07-01-t2-trust-grant-surfaces.md)): **T1** made
+"which directories may agents write in" a durable, provider-agnostic decision — a
+[trust ledger](03-data-model.md#the-trust-ledger-t1) + `OrchestraService.resolveTrust` (origin →
+`.trusted`/`.needsGrant`, carried as `AdapterContext.trustCwd`, which each adapter merely *applies*) —
+and **T2** added the **human-grant surfaces**: a `trust` Command (auto-surfaced as an MCP tool), an
+interactive-only `orchestra trust` CLI verb, the MCP `requestElicitation` grant dialog, and an actionable
+warning when an untrusted card spawns sandboxed — under the rule that an agent can only *trigger* a grant,
+**never self-grant** (see [Trust boundaries](09-design-decisions.md#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
+and [chapter 9](09-design-decisions.md#shipped-feature-history)). Its remaining surface is the app
+`SpawnSheet` trust control (D3). The remainder of the forest is then the *new-card* handoff/fork/fan-out
+**UI + start-actions** (D3) — still design-only until that PR lands. The principle is to design every
+change *toward* these axes, never away from them.
 
 ## The nine axes
 
@@ -112,7 +122,7 @@ Sequencing guidance from the design gates:
    (agent-dependent) — so `ReportHelper.map` relocated out of the CLI target into `ClaudeCodeAdapter.parse`
    (✅ **landed** as A2). The whole build is sequenced as a **stacked-PR forest** (A1 capability-descriptor
    freeze ✅ **landed** → A2 telemetry seam ✅ **landed** → B1/B2 Codex adapter + rollout-tail ✅ **landed**,
-   in parallel with the trust-ledger and live-delivery tracks) in
+   in parallel with the trust-ledger (✅ **landed** as T1/T2) and live-delivery tracks) in
    [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md).
 4. **Keystone — build it first:** the **`additionalContext` seed** (axis 3's 11th `AdapterContext`
    field, plus `SpawnInput.additionalContext` + `restart(_:withContext:)`) is the chokepoint for the
