@@ -6,6 +6,23 @@ public struct Launcher: Sendable {
 
     public init(resolver: PathResolver) { self.resolver = resolver }
 
+    /// "Open notes" — open the project's `notes/` folder as an Obsidian vault, using the exact same
+    /// `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes` Claude command runs (seed a default
+    /// config, register the vault, launch Obsidian on it — restarting a running Obsidian only when the
+    /// vault is new). `repo` is the project root; `<repo>/notes` is the vault — the ONE canonical
+    /// project vault, not the per-card worktree copy, so edits don't fragment across worktrees.
+    public func openNotes(_ repo: String) throws {
+        let notes = (repo as NSString).appendingPathComponent("notes")
+        try resolver.assertAllowed(notes)
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        let script = (home as NSString).appendingPathComponent(".claude/open-obsidian-vault.sh")
+        guard FileManager.default.fileExists(atPath: script) else { throw OrchestraError.toolMissing(script) }
+        // The script resolves jq/python3/osascript/open on PATH; augmentedPATH (applied by Proc.run)
+        // adds Homebrew + per-user bins so they're found under launchd's minimal PATH.
+        let r = try Proc.run(["bash", script, notes])
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "open-obsidian-vault.sh failed" : r.stderr) }
+    }
+
     public func openInZed(_ worktree: String) throws {
         try resolver.assertAllowed(worktree)
         guard Proc.toolExists("zed") else {

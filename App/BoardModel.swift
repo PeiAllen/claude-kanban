@@ -368,6 +368,15 @@ final class BoardModel: ObservableObject {
             toast("Couldn't open in Zed", sub: "\(error)", color: .red)
         }
     }
+    func openNotes(_ id: UUID) async {
+        let t = (tasks + archived).first { $0.id == id }
+        do {
+            _ = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
+            if let t { toast("Opening notes in Obsidian…", sub: "\((t.repo as NSString).lastPathComponent)/notes") }
+        } catch {
+            toast("Couldn't open notes", sub: "\(error)", color: .red)
+        }
+    }
     func saveConfig(_ cfg: Config) async {
         if let saved = try? await client.call("setConfig", JSONValue(encodable: cfg)).decode(Config.self) { config = saved }
     }
