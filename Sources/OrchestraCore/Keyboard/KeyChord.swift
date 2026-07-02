@@ -46,6 +46,7 @@ public enum KeyIntent: Equatable, Sendable {
     case newCard                    // Cmd-N — open the spawn sheet
     case archive                    // a — archive the selected card
     case openInZed                  // o — View changes in Zed
+    case openNotes                  // O — open the card's notes folder
     case toggleDiff                 // d — toggle Agent/Diff inspector view
     case openInbox                  // I — open the inbox editor
     case copy(CopyTarget)           // yc/yt/yp — yank

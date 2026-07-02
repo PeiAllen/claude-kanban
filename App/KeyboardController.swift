@@ -116,6 +116,7 @@ final class KeyboardController {
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true
         case .archive:              model.archiveSelected(); return true
         case .openInZed:            model.openZedSelected(); return true
+        case .openNotes:            model.openNotesSelected(); return true
         case .toggleDiff:           model.inspectorMode = (model.inspectorMode == .agent ? .diff : .agent); return true
         case .openInbox:            model.requestInboxOpen = true; return true
         case .copy(let t):          model.copySelected(t); return true
