@@ -1,0 +1,155 @@
+# Keyboard shortcuts — full keyboard navigability for a vim user
+
+**Status:** design (approved in brainstorm 2026-07-02) · **Scope:** the SwiftUI app under `App/`
+
+## Goal
+
+Make the Orchestra board **completely navigable by keyboard**, with a shortcut scheme designed
+for a **vim user** — bare-key motion, spatial pane movement, `g`-go-to sequences, `:`/`/`
+command-line, and a discoverability layer — while never fighting the live agent terminals the
+inspector embeds.
+
+## The central tension
+
+The inspector embeds live terminals (SwiftTerm — the agent terminal + shell tabs). Vim navigation
+keys (`hjkl`) collide head-on with terminal input: when a terminal is focused, every keystroke must
+reach the agent/shell untouched, not move the board selection. Every design decision below flows
+from resolving this.
+
+## Precedent (why this shape)
+
+Researched across three app families:
+
+- **Terminal multiplexers / TUIs** (tmux, Zellij, k9s, lazygit) — the two viable mechanisms are
+  *prefix* (tmux `C-b` — terminal keeps ~100% of keys, but every nav costs a chord) and *modal*
+  (Zellij — bare keys navigate, a self-rewriting bar shows the mode). Prefix taxes navigation;
+  a global mode adds a vigilance tax.
+- **Modal editors that embed terminals** (Neovim, VS Code, Zed) — the key precedent. Neovim's
+  terminal-mode forwards all keys to the pty and escapes via `<C-\><C-n>` (a sequence *no* TUI uses).
+  Universal lesson: **never use bare `Esc` to eject** — the agent (vim/fzf/Claude Code) needs `Esc`.
+  VS Code/Zed instead move focus with out-of-band commands guarded by a "terminal focused" predicate,
+  and Neovim users *fuse* escape+move into one directional chord (`<C-w>h`).
+- **Keyboard-first GUIs** (Linear, Superhuman, GitHub, Vimium) — standardized conventions a vim user
+  expects: `j/k` move, `g`+letter go-to, `/` search, `?` help, `x` select, and Vimium's `f`
+  link-hints as the scalable "reach any target" primitive.
+
+**The insight that makes this reliable for Orchestra:** tmux's seamless-nav plugin
+(vim-tmux-navigator) is fragile because it *guesses* what's running in a pane via `ps`. Orchestra
+**owns the focus state** — it knows exactly when SwiftTerm holds focus — so "focus *is* the mode"
+can be made rock-solid here in a way tmux never could.
+
+## Core model: focus *is* the mode
+
+No global NORMAL/INSERT mode to track blind. The active **context** is derived purely from what is
+focused — the same focus ring the user already tracks in any GUI:
+
+| Context | When | Keys do |
+|---|---|---|
+| **Board** | a card / column / dock has focus | navigate + act (bare keys) |
+| **Terminal** | a SwiftTerm view has focus | everything → agent/shell, untouched |
+| **Field** | a text input has focus (spawn, inbox, search) | you type; `Esc` exits the field to Board |
+| **Overlay** | a modal / popover is up (spawn, done, activity, settings, help, palette) | navigate that overlay |
+
+A small **context chip** in the inspector chrome / toolbar always shows the current context
+(`BOARD` · `● TERMINAL` · `HINT`), so "am I about to type into the agent?" is answered at a glance.
+
+## Layer 1 — Selection within a pane (bare `hjkl`)
+
+Bare keys move the **selection** inside whichever pane has focus; they never cross a pane boundary.
+
+- `h` / `l` — move selection across the columns (Plan ↔ Impl ↔ Review)
+- `j` / `k` — move selection down / up within the current column (or through the freeform grid)
+- `gg` / `G` — first / last card in the current column
+- `Enter` — open the inspector for the selected card (focus stays on the board — keep navigating)
+- `i` — **insert**: jump focus straight into the agent terminal to type (vim's `i`)
+- `Esc` — close the inspector / clear the selection
+
+## Layer 2 — Focus between panes (bare `Ctrl-hjkl`, spatial + edge-aware)
+
+No `Ctrl-w` prefix. Bare `Ctrl-hjkl` moves keyboard **focus between panes, by the real on-screen
+geometry**:
+
+```
+        ┌─────────┬─────────┬─────────┐   ┌──────────────┐
+        │  Plan   │  Impl   │ Review  │   │  agent term  │  ← Ctrl-l from board
+        │  cards  │  cards  │  cards  │   ├──────────────┤    reaches inspector
+        └─────────┴─────────┴─────────┘   │    shell     │
+   Ctrl-j ↓                      ↑ Ctrl-k └──────────────┘
+        ┌───────────────────────────────┐   Ctrl-j / Ctrl-k
+        │        Freeform dock          │   swaps term ↔ shell
+        └───────────────────────────────┘
+```
+
+- `Ctrl-j` columns → freeform dock; `Ctrl-k` freeform → columns
+- `Ctrl-l` board → inspector (agent terminal); `Ctrl-h` inspector → board
+- Inside the inspector: `Ctrl-j` / `Ctrl-k` swap the agent terminal ↔ shell panel
+- **`Ctrl-h` from a focused terminal doubles as the eject** — it's just "the board is to the left,"
+  so there is no separate eject key to learn.
+
+**Edge-aware interception (the key rule).** `Ctrl-hjkl` is intercepted for pane movement **only when
+a pane actually exists in that direction**; otherwise the keystroke **passes straight through to the
+terminal** as its literal control code. Consequences:
+
+- The inspector is the rightmost pane → `Ctrl-l` in the agent terminal or shell has nothing to its
+  right → falls through as a literal **clear-screen**. (The shells keep `Ctrl-l`.)
+- Agent terminal is the topmost sub-pane → `Ctrl-k` there falls through (kill-line).
+- Shell is the bottom-most sub-pane → `Ctrl-j` there falls through (newline).
+- The **only** control key a focused terminal genuinely gives up is `Ctrl-h` (the board is always to
+  the left). This is cheap: shells/agents receive the real Backspace key as `0x7f`, not `Ctrl-h`.
+
+## Layer 3 — Go-to a region (`g` + letter)
+
+A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
+
+`gp` Plan · `gi` Implementation · `gr` Review · `gf` Freeform dock · `ga` Activity · `gd` Done ·
+`gs` Settings
+
+## Layer 4 — Verbs on the selected card (single keys)
+
+- `c` — create / spawn a card (opens the spawn sheet)
+- `H` / `L` — **carry** the selected card one column left / right (shift = grab the card; mirrors `h`/`l`)
+- `a` — archive · `r` — reopen (on a Done card) · `o` — open worktree in Zed (View changes)
+- `Enter` — open inspector · `i` — focus agent terminal to type
+
+## Layer 5 — Command-line & search (vim keys, no `Cmd`)
+
+- `:` — command palette (fuzzy over every board action; each row shows its shortcut, so the palette
+  teaches the keymap)
+- `/` — search / filter cards; `n` / `N` next / prev match; `Esc` clears
+- No `Cmd`-based shortcuts anywhere — the scheme is entirely bare-key / `Ctrl` / `:` / `/`.
+
+## Layer 6 — Discoverability
+
+- `?` — help overlay **scoped to the current context** (only the keys valid right now)
+- **which-key popup** after `g` or `:` if the user pauses (never slows an expert; rescues a beginner)
+
+## Phase 2 (deferred — ship core nav first)
+
+- `f` — **link-hints**: overlay a short home-row label on every visible card & button; type the label
+  to jump/activate. The scalable "reach *anything*" primitive (Vimium `f`).
+- `x` — toggle multi-select; `Shift-J` / `Shift-K` extend the range; a verb (or `:`) then acts on the
+  whole set (e.g. move several cards to Review at once).
+
+## Overlays (spawn sheet, popovers)
+
+`Tab` / `j` / `k` between fields & rows · `Enter` confirm · `Esc` cancel / close. Text fields inside an
+overlay are the **Field** context (type freely, `Esc` steps out).
+
+## Design principles / non-goals
+
+- **`Esc` is sacred to the terminal.** It is never the ejector; it always reaches the agent when a
+  terminal is focused. Ejection is spatial (`Ctrl-h`).
+- **No global mode.** The context is always derived from focus, never a toggle the user must remember.
+- **Intercept the minimum.** When a terminal is focused, Orchestra intercepts only the `Ctrl-hjkl`
+  directions that lead to a real neighbor; everything else reaches the pty.
+- **Conventions over novelty.** `j/k`, `g`+letter, `/`, `?`, `x` follow Linear/GitHub/Vimium so a vim
+  user's existing muscle memory transfers.
+
+## Open questions for the implementation plan
+
+- Exact SwiftUI mechanism for global key capture ahead of SwiftTerm (`NSEvent` local monitor vs.
+  `.onKeyPress` / a first-responder key view) and how it reads/writes `BoardModel.selectedId` &
+  focus state.
+- How the freeform grid's 2-D selection maps to `hjkl` (row/column geometry of the adaptive grid).
+- Whether the context chip lives in the toolbar, the inspector chrome, or both.
+- Whether any of these bindings should be user-remappable (later).
