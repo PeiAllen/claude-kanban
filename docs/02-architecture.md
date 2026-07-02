@@ -20,7 +20,10 @@ MCP  ─ ControlClient ─┘                    (orchestrad daemon)            
 `orchestrad` is a **launchd LaunchAgent** (`com.orchestra.daemon`, installed at
 `~/Library/LaunchAgents/com.orchestra.daemon.plist`) configured `KeepAlive=true`, `RunAtLoad=true`,
 `ProcessType=Background`. It runs continuously, independent of whether any app window is open, and is
-restarted automatically by launchd if it ever exits.
+restarted automatically by launchd if it ever exits. The daemon also builds and runs on **Linux**, where
+a systemd **user** unit (`Restart=always` + `enable-linger`) plays launchd's keep-alive role — the
+deployment target for the [Mac ↔ remote-Linux-daemon](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+topology; the run loop itself is platform-neutral.
 
 On startup the daemon (`Sources/orchestrad/main.swift`):
 
@@ -64,7 +67,8 @@ orchestrad.sock`, overridable with `$ORCHESTRA_SOCK`) speaking **newline-delimit
   client that called `subscribe`.
 
 The socket is created user-only (mode `0600`), and every accepted/connected file descriptor has
-`SO_NOSIGPIPE` set. That last detail is load-bearing: when an agent archives *its own* card, killing
+`SO_NOSIGPIPE` set (on Linux the equivalent guard is a per-`send` `MSG_NOSIGNAL` flag — see the ported
+`UDSSocket`). That last detail is load-bearing: when an agent archives *its own* card, killing
 the tmux session also kills the MCP client whose socket the request arrived on; the daemon's reply
 write then hits a closed peer. Without `SO_NOSIGPIPE` that raised `SIGPIPE` and killed the daemon (and
 launchd relaunched it, surfacing a spurious "orchestrad crashed" popup). With it, the write returns
@@ -73,6 +77,23 @@ launchd relaunched it, surfacing a spurious "orchestrad crashed" popup). With it
 SIGPIPE twin: the agent's `orchestra _report` helper writing to its now-dead stdout pipe — handled with
 crash-safe POSIX stdio + a process-wide `SIGPIPE` ignore; see
 [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
+
+### The client transport seam and reconnect
+
+On the client side, `ControlClient` no longer holds a raw fd directly — it owns a **`Transport`** (a
+small `open`/`write`/`readLine`/`close` protocol), with `UDSTransport` the one concrete impl today (the
+current AF_UNIX behavior, extracted behind the seam). A future WebSocket/tailnet transport plugs in here
+without touching the client. On a dropped link the client no longer dies: it tears down, backs off
+(exponential, ~250 ms → 5 s cap with jitter), reconnects with a **fresh** transport, and **re-issues the
+subscription**, so a transient blip doesn't sever the event stream. It exposes an observable
+**`ConnectionState`** (`connecting | live | retrying | down`) the app binds to for its status chip.
+
+This seam is also what lets a client target a daemon that isn't on this Mac. The app can run its board
+against a **remote Linux `orchestrad`** over an app-managed SSH tunnel: the wire protocol is unchanged
+(the daemon grows *no* network listener), reachability is pure SSH forwarding, and the forwarded local
+socket is just another path the `UDSTransport` opens. See
+[Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the app chapter and the
+[remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md).
 
 ### Request flow, server-side
 
@@ -96,7 +117,9 @@ All three are `ControlClient`s differing only in their `source` tag and how they
 
 - **App** (`source: .app`) — connects on launch, subscribes to the event stream, and renders the board
   reactively. Terminals are *not* proxied through the daemon: SwiftTerm attaches to tmux **directly**
-  over the tmux socket. The control plane carries commands, state, and events — never PTY bytes.
+  over the tmux socket. The control plane carries commands, state, and events — never PTY bytes. Against
+  a remote connection the same terminals `ssh` into the box's tmux over the *shared* SSH control socket,
+  so no bytes flow through the JSON-RPC plane there either.
 - **CLI** (`source: .cli`) — `orchestra <verb> …` parses argv, calls the matching command, prints the
   result. A few verbs (`shell`, `inspect`) fetch session handles and then `exec` `tmux attach`
   in-process. See [CLI & MCP](06-clients-cli-mcp.md).

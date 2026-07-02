@@ -848,5 +848,78 @@ decisions:
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
 
+Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
+Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`;
+[plan](../notes/plans/2026-07-02-remote-daemon-connections.md),
+[design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)). This builds the **reusable
+client connection spine** the [phone client (axis 9)](10-roadmap.md#the-nine-axes) needs, proven on its
+own driving case: the Mac renders the board while the daemon — and therefore every agent, tmux session,
+git worktree, and repo — runs on a remote Linux box reached over SSH. The load-bearing constraint is that
+the **wire protocol is unchanged**: the daemon grows *no* network listener (no TCP/WebSocket), reachability
+is pure SSH forwarding, and every change is either the Linux *build* of the daemon or the *client* side.
+It landed as four workstreams on one spine:
+
+- **A — the Linux daemon port.** `OrchestraCore`/`orchestrad`/`orchestra`/`orchestra-mcp` now compile and
+  run on Linux (musl static or native), so the already-committed
+  [deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box) produce a working
+  binary. The Darwin-only seams moved behind portable shims: `UDSSocket` gained file-scope POSIX shims (in
+  `Platform.swift`) so `listen`/`connect`/`accept`/`read`/`close` resolve on Glibc/Musl/Darwin alike, and
+  the BSD `SO_NOSIGPIPE` per-socket guard (kept under `#if os(macOS)`) is replaced on Linux by a per-`send`
+  **`MSG_NOSIGNAL`** flag — the same self-close SIGPIPE protection, a different mechanism. `Config.dataDir`
+  became a **pure, unit-tested resolver** (`dataDir(isLinux:home:env:)`) that keeps macOS on
+  `~/Library/Application Support/Orchestra` but resolves Linux to `$XDG_DATA_HOME/orchestra`
+  (→ `~/.local/share/orchestra`), so the socket lands at an XDG-correct path; `reposRoot`/`worktreesRoot`/
+  `scratchRoot` stay `$HOME`-relative on both. `DaemonLifecycle`'s launchd bootstrap is gated to macOS (on
+  Linux the daemon is systemd-managed — `Restart=always` + `enable-linger` play launchd's keep-alive role,
+  while `isRunning`/`ensureRunning` stay cross-platform because they only ping the socket), and the
+  Zed/Obsidian launchers became guarded "macOS-only" no-ops so a remote Linux daemon answers those RPCs
+  honestly.
+- **B — the `Transport` seam + reconnect.** `ControlClient` no longer holds a raw fd; it owns a
+  **`Transport`** (`open`/`write`/`readLine`/`close`), with `UDSTransport` the one concrete impl (the
+  current AF_UNIX behavior, extracted behind the seam) and a future WebSocket/tailnet transport the swap
+  target. The refactor was deliberately behavior-preserving first (route all I/O through the transport,
+  full suite green), *then* added the new behavior: a dropped link now transitions **`live → retrying →
+  live`**, reconnecting with a **fresh** transport on exponential backoff (~250 ms → 5 s cap, jittered
+  without `Date`/random so it stays reproducible in the sandbox) and **re-issuing the subscription** rather
+  than dying — with in-flight calls failed so no awaiter hangs across the gap, and the event `AsyncStream`
+  finished only by an intentional `close()`, never a transient drop. An observable **`ConnectionState`**
+  (`connecting | live | retrying | down`) + an `onState` callback are the UI binding point. Two tests pin
+  it: a fake `Transport` that drops mid-stream (asserting the re-subscribe fires and the state cycles) and
+  an end-to-end server-restart-on-the-same-socket test. This is the same hardening the desktop app wanted
+  regardless of remoting — it was pulled ahead as the roadmap's near-term standalone fix.
+- **C — the `Connection` model + Connections settings pane.** A shared-core **`Connection`** value
+  (`{ id, name, kind: local | remote, sshTarget?, identityFile?, remoteSocketPath?, remoteTmuxSocket }`)
+  with a synthesized, always-present built-in **local** ("This Mac", stable id, never persisted), plus a
+  **`ConnectionStore`** that persists the *remote* list + the active id in **`UserDefaults`** — chosen
+  deliberately because *which* daemon to talk to is a **client** concern, never the daemon's own config
+  (the store resolves a stale/unknown active id back to local). The macOS Settings scene became a
+  `TabView` (**General** + **Connections**); the [Connections pane](07-app-ui.md#onboarding-settings-recovery-and-popovers)
+  lists/add-edit-deletes remotes, picks the active one, Connect/Disconnects, and shows a live status chip
+  driven by B's `ConnectionState`. `BoardModel` stopped hard-wiring `Config.socketPath` — it reads the
+  active connection at launch and on switch and rebuilds the `ControlClient` (a fresh transport per
+  connection) accordingly. The `Connection` value and store live in the core so iOS reuses them verbatim.
+- **D — the app-managed SSH master tunnel + remote terminals.** The argv is **pure and unit-tested** in
+  the core (`RemoteCommands.sshMasterArgs`/`sshExitArgs`/`remoteTmuxAttach` + a `socketPathFits` guard);
+  the app's `SSHMaster` owns only the `Process`. On Connect to a remote it spawns **one multiplexed master
+  `ssh`** (`ssh -M -S <ctrl> -N -L <local.sock>:<remoteSocketPath> …`, key-only `BatchMode=yes` with
+  keepalives and `ExitOnForwardFailure`), forwarding the box's daemon socket to a **short** local socket
+  (both paths kept under the ~104-byte `sun_path` cap) that the transport then opens. Auth happens **once**
+  on the master; embedded terminals `ssh` into the box's tmux over the *same* control socket
+  (`-S <ctrl> -tt … tmux -L <remoteTmuxSocket> attach`) via an `AgentTerminalView.TerminalHost` that is
+  `.remote(controlPath, sshTarget)` while a master is live — no extra forward, no re-auth. Because the app
+  holds the foreground master `Process`, an unexpected master death is an **exit callback** that trips B's
+  reconnect (respawn master → re-point the client). Pre-spawn cleanup unlinks a stale control/forwarded
+  socket left by a crash — the primary SSH-multiplexing risk the design flagged — and a bounded wait
+  guards against a master that forwards nothing.
+
+Two properties keep the whole thing honest. First, it is **client-only + a build port** — the daemon and
+its wire protocol are untouched, so a local board is byte-identical and the remote case is "just another
+socket path the `UDSTransport` opens." Second, SSH is **key-auth only** (no password/interactive auth
+inside the app; a Tailscale hostname works) — a documented prerequisite, not app-handled. Like the entries
+above, this ships the *connection spine* — a `Transport` seam, reconnect, a `Connection` model, and the
+Linux port — not the whole [phone-client axis](10-roadmap.md#the-nine-axes), which still owes the iOS app
+itself (it inherits this spine); so axis 9's row stays in [chapter 10](10-roadmap.md) as history is
+recorded here.
+
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

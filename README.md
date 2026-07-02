@@ -46,6 +46,11 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
   without being told and is nudged to move itself as the work changes phase, so the column stays honest.
 - **Three control surfaces, one state.** Anything you can do in the app you can do from the `orchestra`
   CLI or an MCP tool, because all three speak to the same `CommandRegistry`.
+- **Local or a remote Linux box.** Run the board against this Mac, or point it at a remote Linux
+  `orchestrad` over an app-managed SSH tunnel — the work box does the work (agents, worktrees, tmux) while
+  the Mac just renders. The wire protocol is unchanged (the daemon grows no network listener; reachability
+  is pure SSH forwarding), the client auto-reconnects across tunnel blips, and a Connections settings pane
+  picks the active daemon. The daemon, CLI, and MCP bridge cross-compile to a static Linux binary.
 - **Fully keyboard-driven.** The board is completely navigable by keyboard with a vim-flavored scheme —
   bare `hjkl` moves the selection, `⌃hjkl` moves focus spatially between panes, `g`+letter jumps to a
   region, single-key verbs act on the selected card, `/` searches, `f` link-hints jump to any card, a `:`

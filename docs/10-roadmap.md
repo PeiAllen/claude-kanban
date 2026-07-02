@@ -87,6 +87,11 @@ read-only `trustState` query) — so **all 15 forest PRs are merged** (see
 keeps axes 2 and 3 as roadmap rows below — is Codex **write access + approvals** (axis 2's live remainder)
 and the richer agent-integration surfaces (axis 3's structured sub-status and more agent-facing commands —
 though *auto-injecting the vendored delegation guidance on launch* has since shipped, skill-injection above).
+Separately from the forest, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam,
+the persisted `Connection` model + a Connections settings pane, the Linux daemon port, and the app-managed
+SSH tunnel that runs the Mac board against a remote Linux `orchestrad` — built once so the phone client
+inherits it, leaving only the iOS app itself (see [chapter 9](09-design-decisions.md#shipped-feature-history)
+and axis 9 below).
 The principle is to design every change *toward* these axes, never away from them.
 
 ## The nine axes
@@ -101,7 +106,7 @@ The principle is to design every change *toward* these axes, never away from the
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
 | 7 | **View/review code on the board** ✅ **shipped** | `code-review-on-board` | A diffstat on the card and a read-only in-inspector diff, instead of only "View changes → Zed" — **shipped** (see [chapter 9](09-design-decisions.md#shipped-feature-history)). Inline review comments/approvals remain axis 5. |
 | 8 | **Outside-source intake** | `external-intake` | Let external sources (a todo app, webhooks, email) create cards — just another control-plane client calling `spawn`. |
-| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. Its connection spine — a `Transport` seam, reconnect/backoff, and a persisted `Connection` model — is generalized by the approved [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md), whose driving case is a **Mac app ↔ remote Linux `orchestrad`** over SSH (ready-to-run Linux build/[deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box-forward-looking) already committed; design-only until the Linux socket port lands). |
+| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. Its **connection spine has now shipped** — a `Transport` seam + reconnect/backoff, a persisted `Connection`/`ConnectionStore` model + a Connections settings pane, the Linux daemon port, and the app-managed SSH tunnel — built once via the [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)'s driving case, a **Mac app ↔ remote Linux `orchestrad`** over SSH ([deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box) live; see [chapter 9](09-design-decisions.md#shipped-feature-history)). The iOS app itself is the remaining work, and it inherits that spine. |
 
 ## Shared seams and dependency order
 
@@ -122,11 +127,12 @@ Sequencing guidance from the design gates:
    Today the CLI is a hand-written switch in `CLIRunner.swift` (not generated from the registry), and
    `models`/`archivedList`/`openInZed`/`getConfig` are server-only — so they're invisible to MCP.
    Making the registry the one true source unblocks axes 3, 5, and 8.
-2. **Near-term standalone fix:** **`ControlClient` auto-reconnect** (pulled ahead from axis 9) hardens
-   the desktop app today — and is workstream **B** of the
+2. **Near-term standalone fix — ✅ shipped:** **`ControlClient` auto-reconnect** (pulled ahead from
+   axis 9) hardens the desktop app today — landed as workstream **B** of the
    [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md),
-   which specifies the reconnect/backoff/re-subscribe + `Transport` seam **once**, shared by the phone
-   client *and* the Mac↔remote-Linux-daemon connection (SSH-tunnel blips need it either way).
+   which specified the reconnect/backoff/re-subscribe + `Transport` seam **once**, now shared by the
+   phone client *and* the [Mac↔remote-Linux-daemon connection](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+   (SSH-tunnel blips need it either way); see [chapter 9](09-design-decisions.md#shipped-feature-history).
 3. **First multi-provider consumer:** build a **`CodexAdapter`** (axis 2) once the adapter report-
    mapping seam lands. Studying Codex CLI forced three design points now baked into the model-providers
    design: session ids are **two-mode** (Claude seeds an id; Codex can't, so it's discovered from the
@@ -161,11 +167,12 @@ notes call these out explicitly so they aren't deepened by accident:
 - the report **parse** (`ClaudeCodeAdapter.parse`, relocated from the CLI by A2) and the hooks wiring
   (`claude-hooks.json`), plus transcript/session discovery in `ClaudeCodeAdapter` (keyed to
   `~/.claude/projects`),
-- the control plane (`ControlServer`/`ControlClient`) is raw-fd UDS only, with no `Transport`
-  abstraction yet (needed for the phone client and the [Mac↔remote-Linux-daemon
-  connection](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)), and `UDSSocket` is
-  Darwin-only (`import Darwin`, BSD `SO_NOSIGPIPE`) — the design's workstream A ports it to Glibc/musl
-  with a `MSG_NOSIGNAL` send-flag and gates the data dir to XDG on Linux,
+- ~~the control plane is raw-fd UDS only with no `Transport` abstraction, and `UDSSocket` is
+  Darwin-only~~ — ✅ **resolved.** `ControlClient` now owns a `Transport` seam (reconnect/backoff + an
+  observable `ConnectionState`), and `UDSSocket`/`Config`/`DaemonLifecycle` are ported to Glibc/musl
+  (`MSG_NOSIGNAL` send-flag, XDG data dir, macOS-gated launchd) — the shared connection spine for the
+  phone client and the [Mac↔remote-Linux-daemon connection](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+  (see [chapter 9](09-design-decisions.md#shipped-feature-history)),
 - `Column` is a fixed Swift enum baked into the model, board layout, `StartIn`, drag-drop, and the
   CLI/MCP `col` schema (axis 1 turns it into data).
 

@@ -14,6 +14,12 @@ The core, daemon, and CLI are **dependency-free**. Only `orchestra-mcp` depends 
 `swift-sdk`, scoped to that target — so the **first** `swift build` needs network to resolve
 `Package.resolved`; after that, builds are offline.
 
+`OrchestraCore`, `orchestrad`, `orchestra`, and `orchestra-mcp` also compile and run on **Linux** (the
+`.macOS(.v14)` platform floor gates only the macOS deployment target, not the Linux build). Darwin-only
+symbols sit behind `#if canImport(Darwin)` with a Glibc/Musl path — see `Platform.swift`'s file-scope
+POSIX shims — so a musl static cross-build works from the Mac (see [Deploying `orchestrad` to a remote
+Linux box](#deploying-orchestrad-to-a-remote-linux-box)). Only the `App/` bundle stays macOS-only.
+
 ```sh
 scripts/build.sh        # swift build
 scripts/test.sh         # swift test (adds swift-testing search paths — see below)
@@ -23,7 +29,9 @@ This repo builds the package against the **Command Line Tools** (CLT) SDK — no
 ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the
 needed `-F`/`-rpath` flags for `Testing.framework` + `lib_TestingInterop.dylib`. The test
 suite is substantial — `OrchestraCoreTests` (service, task store/migration, adapters, read-only launch,
-recovery, report, scratch, control round-trip, UDS SIGPIPE regression) and `IntegrationTests` (E2E
+recovery, report, scratch, control round-trip, UDS SIGPIPE regression, the `Transport` reconnect/backoff +
+re-subscribe, the `Connection`/`ConnectionStore` round-trip, the pure SSH command builders, and the XDG
+data-dir resolver) and `IntegrationTests` (E2E
 binary, launcher diff, worktree/session managers against real git/tmux, `_report` broken-pipe/self-close
 regression).
 
@@ -108,7 +116,7 @@ unattended, without stepping on each other or on the live app:
 This makes the harness a building block for the overnight staged-PR fan-out pattern, where each PR runs
 as its own Orchestra agent card.
 
-## Deploying `orchestrad` to a remote Linux box (forward-looking)
+## Deploying `orchestrad` to a remote Linux box
 
 Two committed scripts set up the daemon on a remote Linux machine, so the Mac can run only the board UI
 while `orchestrad` — and therefore every agent, tmux session, git worktree, and repo — runs on the work
@@ -131,14 +139,21 @@ forwarding, and the daemon grows **no** network listener.
   key auth (a Tailscale hostname works) plus `git`, `tmux`, and the agent CLIs (`claude`, `codex`) must
   already be on the box — the daemon shells out to them and the agents run there.
 
-> **Forward-looking.** The scripts are committed as ready-to-run deployment tooling, but they produce a
-> *working* binary only after the Linux socket port (workstream **A** of the design — the Darwin-only
-> `UDSSocket`, the `Package.swift` platform gate, and the XDG data dir in `Config`) lands; until then
-> `swift build` for Linux fails on the Darwin-only socket code. The client half — a `Transport` seam +
-> [reconnect](10-roadmap.md#shared-seams-and-dependency-order), a persisted `Connection` model + a
-> Connections settings pane, and the app-managed SSH master tunnel that forwards the socket and rides
-> the same multiplexed connection for remote terminals — is likewise design-only. See
-> [chapter 10](10-roadmap.md) for where this sits on the roadmap.
+> **Shipped.** Both halves have now landed (merge `63bece4`; plan
+> [`2026-07-02-remote-daemon-connections`](../notes/plans/2026-07-02-remote-daemon-connections.md)). The
+> **Linux port** (workstream **A**) makes `swift build` for Linux green: `UDSSocket` is Glibc/musl-ported
+> with a `MSG_NOSIGNAL` send-flag (the Darwin `SO_NOSIGPIPE` path stays under `#if os(macOS)` — see the
+> file-scope POSIX shims in `Platform.swift`), the launchd lifecycle in `DaemonLifecycle` is gated to
+> macOS (Linux uses the systemd unit above), the Zed/Obsidian launchers become guarded no-ops, and
+> `Config.dataDir` resolves to `$XDG_DATA_HOME/orchestra` (→ `~/.local/share/orchestra`) on Linux — so
+> the deploy scripts now produce a working static binary. The **client half** shipped alongside it: a
+> [`Transport` seam + reconnect/backoff](02-architecture.md#the-control-plane) in the shared core, a
+> persisted [`Connection` model + a Connections settings pane](07-app-ui.md#onboarding-settings-recovery-and-popovers),
+> and the app-managed SSH master tunnel that forwards the socket and rides the same multiplexed connection
+> for [remote terminals](07-app-ui.md#terminals-and-shell-tabs). See
+> [chapter 9's shipped history](09-design-decisions.md#shipped-feature-history) and
+> [chapter 10](10-roadmap.md#the-nine-axes) for where this sits on the roadmap (the planned phone client
+> reuses the same spine).
 
 ## Runtime configuration
 
@@ -152,7 +167,9 @@ Settings, or via `setConfig` over RPC). The keys and defaults are in
   Orchestra default.
 
 All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
-use `scripts/reset-state.sh`.
+use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →
+`~/.local/share/orchestra`; `reposRoot`/`worktreesRoot`/`scratchRoot` stay `$HOME`-relative on both
+platforms.)
 
 ## macOS permissions (TCC) for agents
 

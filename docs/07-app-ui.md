@@ -150,6 +150,12 @@ locale and `TERM=xterm-256color`, and attaches via the grouped **view session** 
 never yanks the agent terminal. Mouse-wheel scrolling is forwarded to tmux on the alternate screen and
 falls back to SwiftTerm's native scrollback otherwise.
 
+The terminal's child process is chosen by a **`TerminalHost`**: `.local` runs `tmux -L <socket> attach`
+directly, while `.remote(controlPath, sshTarget)` — used when the active connection is a remote box —
+`ssh`es into the box's tmux over the *shared* SSH control socket (`ssh -S <ctrl> -tt … tmux -L <remote
+socket> attach`), so it rides the same multiplexed master the JSON-RPC transport uses and re-authenticates
+nowhere.
+
 `ShellTabsView` is the ribbon of `shell-N` tabs (each re-keyed to its own tmux window), with **+** to
 open a new shell and a chevron to collapse. The shell panel height is drag-resizable (the ribbon is the
 handle) and persisted.
@@ -240,9 +246,21 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   screen with an "Install & Start" button (which installs the LaunchAgent and connects) and "Quit".
   Once installed, the app marks itself onboarded and never shows it again; a returning user whose daemon
   is down sees an offline banner offering a one-click restart instead.
-- **Settings** (`SettingsView`) — three sections, auto-saved (debounced 500 ms): **Paths** (repos root,
-  worktrees root), **Agent** (default model, an allowlist text area for extra directories), and
-  **Status line** (mode: passthrough / Orchestra default / custom, with a command field for custom).
+- **Settings** — a two-tab `TabView`: **General** (`SettingsView`) and **Connections**
+  (`ConnectionsSettingsView`). **General** has three sections, auto-saved (debounced 500 ms): **Paths**
+  (repos root, worktrees root), **Agent** (default model, an allowlist text area for extra directories),
+  and **Status line** (mode: passthrough / Orchestra default / custom, with a command field for custom).
+- **Connections** (`ConnectionsSettingsView`) — pick which daemon the board runs against: the built-in
+  **This Mac** (local) connection plus any saved **remote** Linux boxes. Each row has a radio to make it
+  active (`switchConnection`), and remotes an edit/delete pair; **Add remote…** opens a `ConnectionEditor`
+  form (name, `user@host` SSH target, optional identity file, remote socket path, remote tmux socket). A
+  live **status chip** (Connected / Connecting… / Reconnecting… / Disconnected, driven by
+  `BoardModel.connectionState`) sits above a Connect/Disconnect toggle. Switching to a remote spins the
+  app-managed [SSH tunnel](#connection-persistence-and-sandboxing) and re-points the board at its
+  forwarded socket; key-based SSH auth to the host is a prerequisite (a Tailscale hostname works). The
+  connection list is the client-side `ConnectionStore`, persisted per-Mac in `UserDefaults` (choosing
+  *which* daemon is a client concern, never the daemon's own config) — the `Connection` model lives in the
+  shared core so the planned [phone client](10-roadmap.md#the-nine-axes) reuses it.
 - **Recovery panel** (`RecoveryView`) — fills the inspector for a `dead` card. It explains *why* (per
   `DeadReason`), surfaces the **preserved work** (repo/branch/path with View-changes / Reveal-in-Finder
   / Copy-path), shows the **original prompt**, and offers **Start new session** (`restart`), **Archive**,
@@ -267,12 +285,24 @@ reproduces the prototype's hairline-bordered, rounded-fill rendering exactly.
 
 ## Connection, persistence, and sandboxing
 
-`BoardModel` is the app's view-model. It connects a `ControlClient(source:.app)` to the daemon socket,
-subscribes once per connection to the event stream (re-subscribing on reconnect, since the stream ends
-when the daemon restarts), and applies `taskUpserted`/`taskRemoved`/`activity` events to its published
-state. `refresh()` pulls `list` + `archivedList` + `getConfig` + `models`. UI preferences (accent,
-density, dark mode, inspector width, shell/freeform panel heights, onboarded flag) persist via
-`@AppStorage`.
+`BoardModel` is the app's view-model. It connects a `ControlClient(source:.app)` to the **active
+connection's** socket, subscribes once per connection to the event stream (re-subscribing on reconnect,
+since the stream ends when the daemon restarts), and applies `taskUpserted`/`taskRemoved`/`activity`
+events to its published state. `refresh()` pulls `list` + `archivedList` + `getConfig` + `models`. UI
+preferences (accent, density, dark mode, inspector width, shell/freeform panel heights, onboarded flag)
+persist via `@AppStorage`.
+
+**Connections and the SSH tunnel.** The active target is resolved through a `ConnectionController`:
+`.local` returns `Config.socketPath` with no SSH, while `.remote` hands off to an `SSHMaster` that spawns
+one **multiplexed master `ssh`** (`ssh -M -S <ctrl> -N -L <local.sock>:<remoteSocketPath> …`, key-only
+`BatchMode=yes`), forwarding the box's daemon socket to a short local socket the transport then opens.
+The argv itself is built by the pure, unit-tested `RemoteCommands` in the shared core; the app owns only
+the process. `SSHMaster` cleans up any stale control/forwarded sockets before spawning, waits (bounded)
+for the local socket to appear, keeps every path under the ~104-byte `sun_path` cap, and — because it
+holds the `Process` in the foreground — gets an exit callback: an unexpected master death trips the
+client's reconnect (respawn master → re-point the client at the new socket). `activate(_:)` rebuilds the
+`ControlClient` per connection (a fresh transport each time) and preserves the local onboarding /
+daemon-install flow; `switchConnection(_:)` persists the choice and re-points the board.
 
 The app runs under the **default macOS App Sandbox** with an empty entitlements file and **Hardened
 Runtime** on. It registers the `orchestra://` URL scheme so deep links (and Raycast/CLI-printed refs)
