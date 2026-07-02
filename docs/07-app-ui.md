@@ -187,6 +187,14 @@ performs the AppKit first-responder moves (including agent↔shell and shell-tab
 terminal's `termWindow` tag), and the `g`-go-to and `y`-yank prefixes are small pending-state
 machines in the controller (kept out of the pure `KeyMap`).
 
+The pure logic is unit-tested (`swift test`), but the App-side wiring — the `NSEvent` monitor, focus
+moves, and overlays — isn't a SwiftPM target, so it's verified **end-to-end** by
+[`scripts/orch-key-demo.sh`](08-building-operations.md#development-scripts): it launches an isolated
+instance seeded with a mock multi-card board (`ORCH_SHOW=demo`, no daemon) and posts **real synthetic
+keystrokes** straight to its PID (`CGEvent.postToPid`, never foregrounding it), screenshotting each step —
+so `hjkl` selection, `g`-go-to, `f` link-hints, the `:` palette, `/` search, and `?` help are all proven
+to fire from actual key events, not just from the unit tests.
+
 The shipped bindings:
 
 | Keys | Action |
