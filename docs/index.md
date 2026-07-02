@@ -26,8 +26,8 @@ decision, the chapters here link into the layered design vault under
 6. [**CLI & MCP**](06-clients-cli-mcp.md) — Using the `orchestra` CLI, driving Orchestra from the MCP
    bridge, daemon lifecycle commands, and the hooks / `_report` status channel.
 7. [**App UI**](07-app-ui.md) — A tour of the SwiftUI app: the board, cards, the spawn sheet, the
-   inspector with its embedded terminals and in-app diff view, shell tabs, settings, onboarding, recovery,
-   and the theme.
+   inspector with its embedded terminals and in-app diff view, shell tabs, the vim-style keyboard
+   navigation, settings, onboarding, recovery, and the theme.
 8. [**Building & operations**](08-building-operations.md) — Building and testing the package, building
    the app bundle, the development scripts, status-line configuration, macOS (TCC) permissions, and
    troubleshooting.

@@ -772,5 +772,42 @@ axis 3's structured sub-status + more agent commands stay open ([chapter 10](10-
 foreshadows [axis 1's configurable columns](10-roadmap.md) and [axis 5's automated review phase](10-roadmap.md):
 once agents route on their own column, a phase-driven column becomes actionable.)
 
+Also landing after the forest is **vim-style keyboard navigation — a fully keyboard-driven board**
+(commit `1c9daed`, branch `shortcuts`;
+[design](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md),
+[plan](../notes/plans/2026-07-02-keyboard-shortcuts.md)). It makes the app
+[completely navigable by keyboard](07-app-ui.md#keyboard-navigation) with a scheme built for a vim user —
+bare `hjkl` selection, `⌃hjkl` spatial pane focus, `g`-go-to, single-key verbs, `?` help, and the standard
+`⌘N`/`⌘T`/`⌘W` accelerators. The central tension it resolves is that the inspector embeds **live agent
+terminals**, where every keystroke must reach the pty untouched, so vim's `hjkl` collides head-on with
+terminal input. Its decisions:
+
+- **Focus *is* the mode — no global toggle.** Rather than a stored NORMAL/INSERT flag (a vigilance tax) or
+  a tmux-style prefix (a per-navigation tax), the active **context** is derived every keystroke from the
+  first responder + model state — `board` / `terminal` / `field` / `overlay`. The insight is that Orchestra
+  **owns the focus state** (it knows exactly when SwiftTerm holds focus), so "focus is the mode" is
+  rock-solid here in a way tmux's `ps`-guessing seamless-nav never could be. `Esc` stays **sacred to the
+  terminal** — ejection is spatial (`⌃h`), never `Esc`.
+- **Intercept the minimum; edge-aware passthrough.** In terminal context Orchestra intercepts only the
+  `⌃hjkl` directions that lead to a **real neighboring pane** (plus `⌘` accelerators, which terminals
+  ignore); every other key — and every edge direction with no neighbor — passes straight through to the
+  pty. So `⌃h` (board is always to the left) is the *only* control key a focused terminal gives up, while
+  `⌃l`/`⌃j`/`⌃k` keep their clear-screen / newline / kill-line meanings.
+- **Pure, tested decision logic; one monitor to execute it.** The chord→intent table (`KeyMap`), the
+  selection movement (`BoardNavigator`), and the `KeyChord`/`KeyContext`/`KeyIntent` value types live in
+  **`OrchestraCore/Keyboard/`** — AppKit-free and unit-tested (`KeyMapTests`, `BoardNavigatorTests`) — while
+  the app installs a **single** `NSEvent` local monitor (`KeyboardController`, mirroring the existing shared
+  scroll monitor) that derives the context and executes the intent against `BoardModel`. This is the same
+  pure-core-plus-thin-app split the rest of the system uses, and it puts the keymap on the shared core the
+  [phone client (axis 9)](10-roadmap.md) will reuse. A `ContextChip` in the toolbar surfaces the live
+  context.
+
+This is a **core-nav-first** slice: `/` search (the `search` intent + `searchQuery` state exist, but the
+filter field is not built), shell-tab `⌃h`/`⌃l` switching, combo-box `⌃j`/`⌃k` in the spawn sheet,
+`⌃⇧hjkl` resize + `z` collapse, `f` link-hints, `x` multi-select, and the `:` command palette are
+explicitly **deferred** (design Phase 2 / plan *Deferred*). Whether any bindings become user-remappable is
+an open question left to a later pass. Like the entries above, this is an app-UX feature, not a whole
+extensibility axis, so it stays here as history rather than migrating a [roadmap](10-roadmap.md) row.
+
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

@@ -146,6 +146,64 @@ falls back to SwiftTerm's native scrollback otherwise.
 open a new shell and a chevron to collapse. The shell panel height is drag-resizable (the ribbon is the
 handle) and persisted.
 
+## Keyboard navigation
+
+The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
+selection, spatial pane focus, `g`-go-to sequences, single-key verbs, and standard `⌘` accelerators —
+designed so it never fights the live agent terminals the inspector embeds. The full rationale (the
+precedent survey and the "focus *is* the mode" model that resolves the terminal-vs-navigation key
+collision) is in the
+[design note](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md); the build is the
+[implementation plan](../notes/plans/2026-07-02-keyboard-shortcuts.md).
+
+**Focus is the mode.** There is no global NORMAL/INSERT toggle to track — the active **context** is
+derived on every keystroke from the window's first responder + model state, one of four: **Board** (a card
+has focus — bare keys navigate and act), **Terminal** (a SwiftTerm view has focus — everything reaches the
+agent/shell untouched), **Field** (a text input has focus — you type; only `⌃j`/`⌃k` move a form/dropdown),
+and **Overlay** (a sheet/popover is up — `Esc` closes it). A small **context chip** in the toolbar
+(`ContextChip`: `BOARD` / `INSPECTOR` / `TERMINAL` / `SHELL`, with an amber dot when a terminal owns the
+keyboard) answers "am I about to type into the agent?" at a glance.
+
+**Architecture.** The decision logic is **pure and unit-tested** in `OrchestraCore/Keyboard/`:
+`KeyChord` / `KeyContext` / `KeyIntent` value types, `KeyMap.intent(for:in:awaitingGoTo:)` (the chord →
+intent dispatch table), and `BoardNavigator` (selection movement over `[Task]`, e.g. `left`/`right` to the
+same-row card in the adjacent column). The app installs **one** `NSEvent` keyDown local monitor —
+`KeyboardController` (mirroring the shared scroll monitor in `AgentTerminalView`) — which derives the
+context, builds a `KeyChord`, asks `KeyMap`, and executes the resulting `KeyIntent` against `BoardModel`
+(the model gains `focusZone`, `inspectorMode`, `searchQuery`, `showHelp`, `requestInboxOpen` state plus
+`selectMove`/`carrySelected`/`goTo`/`closeFrontmost` methods). A consumed key is swallowed (the monitor
+returns `nil`); everything else passes through to SwiftTerm / fields / SwiftUI untouched. `FocusBridge`
+performs the AppKit first-responder moves, and the `g`-go-to and `y`-yank prefixes are small pending-state
+machines in the controller (kept out of the pure `KeyMap`).
+
+The shipped bindings:
+
+| Keys | Action |
+|---|---|
+| `h` `j` `k` `l` | Move the **selection** within the focused pane (columns ↔, cards ↕) — which opens the inspector for that card and auto-scrolls the column to keep it centered (a `ScrollViewReader` in `BoardView`) |
+| `g g` / `G` | First / last card in the column |
+| `Enter` | Move keyboard focus **into** the inspector (the selection already opened it) |
+| `i` | **Insert** — jump focus straight into the agent terminal to type |
+| `Esc` | Close / clear the frontmost thing |
+| `⌃h` `⌃j` `⌃k` `⌃l` | Move **focus between panes**, spatially and **edge-aware** — `⌃l` board → agent terminal, `⌃h` terminal → board (the eject), `⌃j` columns → freeform dock; a direction with **no neighbor passes straight through** to the pty (so `⌃l` in a terminal stays clear-screen, and `⌃h` is the only control key a focused terminal gives up) |
+| `g` then `p`/`i`/`r`/`f`/`a`/`d`/`s` | Go to Plan / Implementation / Review / Freeform / Activity / Done / Settings |
+| `c` | New card (opens the spawn sheet) |
+| `H` / `L` | **Carry** the selected card one column left / right (shift = grab the card) |
+| `a` · `o` · `d` · `I` · `t` | Archive · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
+| `y c` / `y t` / `y p` | Copy chat link / tmux target / cwd path |
+| `?` | Help overlay — `KeyboardHelpView`, a reference card grouped by surface (Navigate / Go to / Act / Standard) |
+| `⌘N` / `⌘T` / `⌘W` | New card / new shell / close-frontmost — the standard macOS accelerators (also on the menu bar via the scene's `.commands`). Because terminals ignore `⌘` these work **even while a terminal is focused**; `⌘W` peels the most-transient thing first (open modal → focused shell tab → inspector → otherwise **archive the selected card**), mirroring the progressive `Esc` |
+
+The verbs act on the **selected** card, so `a`/`o`/`d`/`I` archive, open, toggle, or edit the inbox of the
+card you've navigated to. Beyond `?`, the help overlay counts as an `Overlay` context (so `Esc` /
+click-away closes it through `BoardModel.closeFrontmost()`).
+
+**Deferred (intentionally not in this pass** — see the plan's *Deferred* list and the design's Phase 2):
+the `/` **search** filter UI (the `search` intent and `searchQuery` state exist, but the field is not built
+yet), shell-tab switching (`⌃h`/`⌃l` across tabs) + `x`-close from ribbon focus, combo-box `⌃j`/`⌃k`
+candidate movement and progressive `Esc` in the spawn sheet, `⌃⇧hjkl` pane resize + `z` collapse, `f`
+link-hints, `x` multi-select, the `:` command palette, and the which-key popup.
+
 ## Onboarding, settings, recovery, and popovers
 
 - **Onboarding** (`OnboardingView`) — shown on first run when the daemon isn't installed: a welcome

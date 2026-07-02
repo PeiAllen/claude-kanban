@@ -37,7 +37,9 @@ re-designing the daemon or control plane.
 | Board layout     | **Swipeable full-width column pager**                                           | Closest to the desktop board feel; preserves Plan·Impl·Review mental model                |
 | Card detail      | **Tabbed full-screen**                                                          | Terminal gets the whole screen when selected; dense inspector splits cleanly into tabs    |
 | Aesthetic        | **iOS-native reinterpretation**                                                 | Native nav/tab bars, materials/blur, haptics feel; keeps Orchestra palette + mono accents |
-| Global nav       | **Board · Activity · Settings** (bell/badge for notifications on Board nav bar) | Three tabs; notifications prominent but not a full tab                                    |
+| Global nav       | **Board · Needs You · Settings** (Needs You is a badged tab; Activity + Done are buttons on the Board nav) | Attention queue earns a permanent tab; Activity/Done are pushed screens within the Board tab |
+| Freeform         | **4th page in the Board pager** (Plan · Impl · Review · Freeform)                | Freeform cards are *active* agents (Borrowed/Scratch/Read-only), so they belong in the active work surface, shown distinctly (folder path, mode chip, read-only lock) |
+| Done             | **Archive button on the Board nav → pushed screen** (not a pager column)         | Mirrors the desktop's own call that Done is an archive, not a column                       |
 | Prototype target | **New Claude Design project** ("Orchestra Mobile")                              | Keeps mobile separate from the desktop prototype project                                  |
 
 ## Visual language
@@ -54,42 +56,62 @@ iOS-native reinterpretation that stays unmistakably Orchestra:
 ## Screens
 
 ### 1. Global structure
-- **Bottom tab bar:** Board · Activity · Settings.
-- **Board nav bar:** title *Orchestra · Personal*; a **bell** (badged notifications center) and a
-  **+** (spawn); a **Done/archive** entry point.
+- **Bottom tab bar:** Board · **Needs You** (badged with the attention count) · Settings.
+- **Board nav bar:** title *Orchestra*; an **Activity** button (waveform), a **Done** button
+  (archive), and a **+** (spawn). Activity and Done open pushed screens *within* the Board tab, so
+  the tab bar stays put and each gets a `‹ Board` back button.
+- **Dynamic Island** doubles as a live agent-status surface (e.g. *● 3 running · 2 done*).
 
 ### 2. Board tab (home)
-- **Swipeable full-width column pager:** Plan · Impl · Review; segmented indicator with per-column
-  counts up top.
+- **Swipeable full-width pager:** Plan · Impl · Review · **Freeform**; segmented indicator with
+  per-page counts up top.
 - **Card** contents: title, `repo/branch` (mono), status pill, model, context-window mini-gauge,
   live diffstat `+N −M / k files`, current activity line.
 - **Move a card:** tap-and-hold → swipe to an adjacent column, *and* a "Move to…" context-menu
   action (both, because a pure drag across a pager is fiddly).
-- **Done archive:** pushed screen listing Done cards, each with **Reopen**.
+
+### 2a. Freeform page (1st pager page — leftmost)
+Agents running in an **existing directory**, outside the Plan → Review worktree flow. Cards show a
+**mode chip** for the `CardOrigin` (**Borrowed · Scratch**), the **directory path** (mono) instead
+of a `repo/branch → worktree` breadcrumb, and — where the card is read-only — a **separate
+Read-only badge** (the `CardAccess` dimension, orthogonal to mode) with a "no writes" note. Scratch
+cards note "auto-deletes." The pager order is **Freeform · Plan · Impl · Review**; Freeform is a peer
+page but visually distinct so it doesn't read as part of the linear flow.
+
+### 2b. Done (archive, via the Board nav Done button)
+A pushed screen listing finished agents, each with **Reopen** (recreates the worktree + resumes).
+Deliberately *not* a pager column — matching the desktop's decision that Done is an archive.
 
 ### 3. Card detail — tabbed full-screen
 - Pushed from a card tap. **Pinned header:** title, status pill, model selector, context-window
   gauge, worktree breadcrumb (`repo/branch → path`), chat link.
-- **Tabs:**
-  - **Terminal** — full-width live terminal (SSH PTY per phone-client), a **key-accessory bar**
-    above the keyboard (esc / arrows / ctrl / tab), landscape support.
+- **Tabs:** **Agent · Terminal · Diff · Inbox · Info** — the desktop separates the agent session
+  from the worktree shells, so these are two distinct views:
+  - **Agent** — the live **agent session** (Claude/Codex conversation + tool calls), with a
+    "Message the agent" steer bar. SSH PTY per phone-client.
+  - **Terminal** — the worktree **shell(s)**: shell tabs + "＋", a raw command input, and a
+    **key-accessory bar** (esc / ctrl / arrows / tab). Distinct from the agent's own session.
   - **Diff** — read-only; working/branch baseline toggle; file list → per-file diff.
   - **Inbox** — durable inbox editor: list / reorder / edit / append / remove (matches desktop).
-  - **Info** — full metadata; card mode (worktree / borrowed / scratch / read-only); session id;
-    actions (archive, restart, reopen, handoff/fork).
-- **Persistent steer bar** at the bottom: send a prompt into the agent without opening Terminal.
+  - **Info** — metadata; **Mode** (`CardOrigin`: worktree / borrowed / scratch) + **Access**
+    (`CardAccess`: read-write / read-only); session id; **real app actions only** — Restart session,
+    View changes in Zed, Reveal in Finder, Archive. (Hand off / Fork / Fan-out are *not* here —
+    they were removed as app buttons; they're agent/CLI moves.)
 
 ### 4. Spawn (+) sheet
 Modal: prompt field, backend (Claude Code / Codex), model, repo picker, branch (new/existing) →
-**computed worktree path preview**, card mode. "Spawn" CTA. Mirrors desktop spawn.
+**computed worktree path preview**, then **Card mode** (`CardOrigin`: **Worktree · Borrowed ·
+Scratch** — three kinds) and a **separate Read-only toggle** (`CardAccess`, orthogonal to mode —
+not a 4th mode). "Spawn agent" CTA. Mirrors desktop spawn.
 
-### 5. Activity tab
-The Live/CLI feed as a chronological list with a Live/CLI filter; tap an entry → its card.
+### 5. Activity (via the Board nav Activity button)
+The Live/CLI feed as a chronological list with a Live/CLI filter; tap an entry → its card. A pushed
+screen within the Board tab (`‹ Board` back), not a tab of its own.
 
-### 6. Needs You — attention queue (bell)
-A dedicated screen listing **the cards that need human intervention**, opened from the Board nav
-bar's **bell** (badged with the count). Card-centric, not a stream of toasts: each row is a card
-that is blocked on *you*, sorted most-urgent-first.
+### 6. Needs You — attention queue (tab)
+A **bottom-tab** destination listing **the cards that need human intervention**, badged with the
+count. Card-centric, not a stream of toasts: each row is a card that is blocked on *you*, sorted
+most-urgent-first.
 
 - **Reasons surfaced per row** (the "why you're needed"): *waiting for input · blocked / error ·
   awaiting review approval · context near-full · needs a decision (permission/plan gate)*.
@@ -111,13 +133,14 @@ reconnect state; never fabricate data when offline.
 Screens to build in the Claude Design project, light + dark, interactive where the medium allows
 (tab switches, pager, sheet present/dismiss):
 
-1. Board — 3-column pager
-2. Card detail — all 4 tabs (Terminal, Diff, Inbox, Info)
-3. Spawn sheet
-4. Activity
+1. Board — 4-page pager (Freeform · Plan · Impl · Review)
+2. Freeform page — Borrowed / Scratch cards (+ Read-only badge) with folder paths + mode chips
+3. Card detail — all 5 tabs (Agent, Terminal, Diff, Inbox, Info)
+4. Spawn sheet
 5. Needs You — attention queue (blocked / waiting / awaiting review / context-full), with inline reply, approve-&-move, snooze
-6. Settings
-7. Done archive
+6. Activity — Live/CLI feed (pushed from Board)
+7. Settings
+8. Done archive (pushed from Board)
 
 ## Risks / open points
 
