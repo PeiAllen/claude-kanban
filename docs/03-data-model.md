@@ -40,7 +40,9 @@ A `Task` is the single persisted record behind every card. Its fields:
 ### Classifying enums
 
 - **`Column`** — `plan`, `impl`, `review` (display: Plan / Implementation / Review). There is no `done`
-  case; finishing sets `status = .done` + `archived = true`.
+  case; finishing sets `status = .done` + `archived = true`. [`reopen`](05-command-reference.md#registry-commands)
+  reverses it — `archived` back to `false`, `status` to `.waiting`, `deadReason`/`deadDetail` cleared —
+  while keeping the card's stored `col`, so it returns to the column it was archived from.
 - **`AgentStatus`** — `waiting`, `running`, `done`, `dead`.
 - **`DeadReason`** — why a card died:
   - `agentExited` — a `SessionEnd` with reason exit/logout (usually mid-life and resumable),

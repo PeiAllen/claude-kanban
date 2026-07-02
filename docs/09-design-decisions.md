@@ -660,5 +660,33 @@ review comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` f
 [`notes/designs/code-review-on-board/`](../notes/designs/code-review-on-board/index.md) (L1 design → L2
 contract → L3 implementation + L3 tests).
 
+Landing after the forest is **reopen — un-finishing a Done card**
+(commit `c13e718`, branch `reopen-done-cards`). Archived cards were **terminal and read-only** — the only
+actions on a Done row were copy-the-chat-link / copy-the-branch. This change makes archive reversible: a
+**Reopen** action recreates the run dir the archive reclaimed and brings the agent back live. Its
+decisions keep it small and provider-neutral:
+
+- **Recreate the run dir, then reuse the existing recovery primitives — no new revival path.**
+  `OrchestraService.reopen(_:source:)` first gives the card its cwd back per `origin` (the archive
+  removed it): `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
+  [archive keeps the branch](#ownership-orchestra-deletes-only-what-it-made) — a `mkdir` for `.scratch`,
+  and nothing for `.borrowed` (never removed). It then unarchives the card (`archived=false`,
+  `status=.waiting`, `deadReason`/`deadDetail` cleared) **keeping its stored column**, and revives the
+  agent by delegating straight to the shipped [`resume`/`restart`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)
+  seam — `resume` when `isResumable` (the transcript survived), else a blank `restart`. So reopen adds
+  *zero* revival mechanism; it is a thin composition over the crash-recovery code the daemon already runs.
+- **Agent-agnostic and idempotent.** Because it rides `resume`/`restart` — which every adapter already
+  implements — there is **no** Claude/Codex branch in `reopen`; a Codex card reopens through the same
+  call. A non-archived card is returned unchanged, so a double-fire is a no-op.
+- **One Command, surfaced everywhere; the app closes the loop.** A single `reopen` `Command`
+  (`{ref}` → the updated `Task`) is added to the [registry](05-command-reference.md#registry-commands),
+  so it auto-surfaces as an MCP tool and a CLI verb (the C2 full-set guard: `"reopen"` is added to
+  `CommandsTests.expected`, plus a dispatch test). In the app, `BoardModel.reopen(_:)` calls the RPC,
+  applies the returned card to move it **off the Done list onto the board**, selects it (opening the live
+  inspector), and closes the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers); the
+  popover row gains an accent **Reopen** pill. `ReopenTests` pins the resumable / non-resumable /
+  idempotent branches. Like the entries above, this is a lifecycle/surface change, not a whole axis, so it
+  stays here as history.
+
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

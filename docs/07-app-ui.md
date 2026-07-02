@@ -163,7 +163,11 @@ handle) and persisted.
   colored by source and clickable to select its card) and a **CLI** tab (a quick reference of the
   `orchestra` verbs).
 - **Done popover** (`DonePopover`) — the archived cards, each with copy-chat-link / copy-branch chips;
-  clicking a row selects that archived card.
+  clicking a row selects that archived card. Each row also carries an accent-pill **Reopen** button
+  (`arrow.uturn.left`): it calls `BoardModel.reopen(_:)` → the [`reopen` RPC](05-command-reference.md#registry-commands),
+  which recreates the card's worktree and resumes its agent; the card then jumps back onto the board, is
+  selected (opening the live inspector), and the popover closes. (There is no "Zed" action on an archived
+  row — archiving removed the worktree, so there are no changes to open until it is reopened.)
 
 ## Theme
 

@@ -21,7 +21,9 @@ path as `~/.orchestra/worktrees/<repoName>/<branch>` and creates it idempotently
 
 **Removal** (on archive) runs `git worktree remove`, but **guards a dirty tree**: it refuses unless
 forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work is never
-silently deleted. The **branch is kept** after removal so the work can be recovered.
+silently deleted. The **branch is kept** after removal so the work can be recovered — which is exactly
+what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that surviving
+branch and resumes the agent.
 
 Borrowed and scratch cards have **no worktree**: a borrowed card's `cwd` is the directory you chose; a
 scratch card's `cwd` is a freshly `mkdir`'d `~/.orchestra/scratch/<id>`.
@@ -378,6 +380,17 @@ The daemon makes a card's run survive crashes and reboots (`OrchestraService+Rec
   rolling the old id into `priorSessionIds`. Sets `titleProvisional=true`, `status=.waiting`, clears
   `desc`. Never touches worktree contents. This is the "Start new session" button in the Recovery
   panel — a genuinely blank restart, distinct from the seeded, id-preserving `resumeInCard` above.
+- **`reopen(id)` — un-finish a Done card.** Archive is not terminal: `reopen` brings an archived card
+  back onto the board and revives its agent. First it **recreates the run dir the archive reclaimed** —
+  `worktrees.ensure(repo:branch:)` for a `.worktree` card (the archive kept its branch, so the work
+  returns), a `mkdir` for a `.scratch` card, nothing for `.borrowed` (never removed). Then it unarchives
+  the card **keeping its original column**, resetting `status=.waiting` and clearing any stale
+  `deadReason`/`deadDetail`, and emits a `.recovered` activity. Finally it revives the agent through the
+  **same primitives above** — `resume` when the card `isResumable` (transcript survived), else a blank
+  `restart` in the recreated tree. It is **idempotent** (a non-archived card is returned unchanged) and
+  fully **agent-agnostic** — every adapter already implements `resume`/`restart`, so `reopen` adds no
+  adapter code. It backs the [`reopen` Command](05-command-reference.md#registry-commands) and the app's
+  [Done-popover Reopen button](07-app-ui.md#onboarding-settings-recovery-and-popovers).
 - **`reconcileLiveness()`.** The 2-second poll loop's safety net: for every non-archived, non-terminal
   card it checks whether the tmux session vanished and flips it to `dead` (`sessionVanished`) if so —
   catching deaths that didn't fire a `SessionEnd` hook. Cards mid-resume/restart are skipped.

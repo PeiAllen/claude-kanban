@@ -24,6 +24,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
+| `reopen` | `ref` (required) | Bring an archived (Done) card back onto the board: recreate the run dir the archive reclaimed, unarchive (keeping its column, clearing stale dead state), then `resume` its transcript when resumable else `restart` a fresh session. Idempotent on a non-archived card. Backs the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers)'s **Reopen** button. |
 | `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
 | `resume` | `ref` (required) | Re-attempt `claude --resume` of the card's existing session. |
 | `shell` | `ref` (required) | Open a shell window in the card's `cwd`; returns the tmux target to attach to. |
@@ -42,6 +43,11 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 - **`archive` cleans up by origin.** Worktree: `git worktree remove` (kept if dirty, and only if no
   other live worktree card shares it). Scratch: unconditional `rm -rf` (double-gated). Borrowed: nothing
   is deleted.
+- **`reopen` is the inverse — recreate the run dir, then revive.** Archive is no longer terminal:
+  `reopen` re-`ensure`s the worktree (the archive kept its branch) or re-`mkdir`s the scratch dir,
+  unarchives the card back to its original column, then reuses the existing `resume`/`restart`
+  recovery primitives — a *resume* when the transcript survived, else a blank *restart*. Agent-agnostic
+  (no adapter-specific code) and idempotent. See [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
 - **`exec` vs `shell`.** `exec` is a one-shot non-interactive command with a captured result; `shell`
   opens an interactive window you attach a terminal to. `inspect` is `shell` + a read-only agent.
 - **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent

@@ -33,7 +33,8 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
   colored diff otherwise; a working / branch baseline toggle) — so you can review an agent's changes
   without leaving Orchestra for Zed.
 - **Crash & reboot recovery.** The daemon tracks each agent's native session id and eagerly resumes
-  sessions after a crash or reboot; unrecoverable cards surface a Recovery panel.
+  sessions after a crash or reboot; unrecoverable cards surface a Recovery panel. Even a finished card
+  isn't terminal — **Reopen** a Done card and the daemon recreates its worktree and resumes the agent.
 - **Agents orchestrate agents.** A card can **hand off** to a clean-context resume, **fork** a slice into
   a new card, **fan out** across many, or **send** into another card's durable inbox — and an orchestrator
   card can `wait` on its children and wake as each concludes. All four compose from one live-delivery seam

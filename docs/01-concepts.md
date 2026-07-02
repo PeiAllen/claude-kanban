@@ -54,7 +54,10 @@ The board has **three columns**, which are the lifecycle stages of a card:
 
 There is deliberately **no `done` column.** Finishing a card archives it: its status becomes `done` and
 it leaves the board into the **Done popover** (an archive list). This keeps the board to the three
-*active* stages and avoids a perpetually-growing fourth column.
+*active* stages and avoids a perpetually-growing fourth column. Archiving is **not terminal**, though —
+a Done card can be **reopened** from the popover: the daemon recreates its worktree and resumes the
+agent, bringing the card back onto the board in its original column
+([`reopen`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)).
 
 A card also carries an independent **status** that reflects the agent's runtime state, distinct from
 which column it's in:
