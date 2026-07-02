@@ -17,6 +17,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `desc` | `String` | Live one-line blurb pushed by the agent's hooks (pane-parse fallback). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
+| `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **stub**: nil until stacked branches sets it. |
 | `cwd` | `String` | **The one directory** the agent and its shells run in. |
 | `origin` | `CardOrigin` | `worktree` \| `scratch` \| `borrowed` — how `cwd` came to be. |
 | `access` | `CardAccess` | `readWrite` \| `readOnly`. |
@@ -29,6 +30,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `deadReason` | `DeadReason?` | Set together with `status = .dead`. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
+| `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer (axis 7). Nil for a non-git / zero-change / not-yet-computed card. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |
@@ -48,6 +50,9 @@ A `Task` is the single persisted record behind every card. Its fields:
 - **`CardOrigin`** — `worktree`, `scratch`, `borrowed`.
 - **`CardAccess`** — `readWrite`, `readOnly`.
 - **`StartIn`** — `plan` or `impl`.
+- **`DiffBase`** — the baseline for a card's [code-review diff](09-design-decisions.md#shipped-feature-history)
+  (axis 7): `working` (vs `HEAD`), `branch` (vs the default-branch merge-base — the PR diff, the default),
+  or `parent` (vs the card's `parentBranch`, for a stacked card; falls back to `branch` while the stub is nil).
 
 ### Identity and references
 
@@ -83,7 +88,7 @@ load cleanly:
   [Design decisions](09-design-decisions.md)).
 - Optional fields decode with sane defaults: `titleProvisional=false`, `desc=""`, `origin=.worktree`,
   `access=.readWrite`, `agentId="claude-code"`, `status=.running`, `ctxPct=0`, `priorSessionIds=[]`,
-  `archived=false`.
+  `archived=false`, `diffStat=nil`, `parentBranch=nil`.
 
 This is why a board created before borrowed/scratch cards existed still opens: every new field has a
 default, and the only pre-existing cards are `.worktree`.

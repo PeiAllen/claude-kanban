@@ -114,6 +114,8 @@ visible to the app but not auto-exposed as MCP tools — unifying this is part o
 | `archivedList` | The archived (Done) cards, newest first. |
 | `openInZed` | Open a card's worktree in Zed, with a branch-vs-base multi-file diff. |
 | `report` | The internal endpoint the agent's `_report` helper POSTs `StatusReport`s to. |
+| `diffText` | Render a card's worktree diff as an ANSI string for the inspector's [Diff view](07-app-ui.md#the-inspector) (`{ref, base?}` → String, `base` one of `working`/`branch`/`parent`, default `branch`). **App-only** (axis 7): the `openInZed`-shape internal endpoint, deliberately **not** a registry command, so it never surfaces as an MCP/CLI tool — an agent reads a diff by running `git diff` in its own cwd. Non-`.worktree` cards return `""`; a huge render is capped (256 KB) with an "open in Zed" sentinel. |
+| `diffStat` | Recompute + return a card's footer diffstat (`{ref, base?}` → `{filesChanged, insertions, deletions}` or null). The on-selection refresh; the same **app-only** internal endpoint (also refreshed event-driven off the report funnel — see [chapter 9](09-design-decisions.md#shipped-feature-history)). |
 | `drain` | Internal F3 plumbing (**not user-facing**): the Claude Stop hook fetches the card's pending [inbox](03-data-model.md#the-inbox-store-f3) payload here. Resolves `ref`, calls `drainForStop`, and returns `{reason: <payload-or-null>}`. Deliberately not a registry command, so it is invisible to the CLI/MCP. |
 
 ## The wire protocol

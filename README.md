@@ -28,6 +28,10 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
 - **Live state, never screen-scraped.** Cards show context-window %, current activity, model, and
   status — sourced per agent through a normalized telemetry seam: Claude Code **pushes** via a hooks
   channel, while Codex is **tailed** from its rollout JSONL by the daemon. Never screen-scraped.
+- **See the diff on the board.** Each git card shows a live `+N −M / k files` diffstat in its footer,
+  and the inspector has a read-only **Diff** view (difftastic-rendered when `difft` is installed, git's
+  colored diff otherwise; a working / branch baseline toggle) — so you can review an agent's changes
+  without leaving Orchestra for Zed.
 - **Crash & reboot recovery.** The daemon tracks each agent's native session id and eagerly resumes
   sessions after a crash or reboot; unrecoverable cards surface a Recovery panel.
 - **Agents orchestrate agents.** A card can **hand off** to a clean-context resume, **fork** a slice into

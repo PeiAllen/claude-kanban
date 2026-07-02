@@ -42,7 +42,9 @@ view so the inspector overlay renders on top of it.
   ticking every second, e.g. "Running · 3m"), with a **breathing dot** for active statuses. Running
   cards also get a 2 px **shimmer bar** sweeping across the top.
 - The **footer** carries the repo · branch (worktree cards) or borrowed dir name (freeform), a
-  read-only **eye badge** for `.readOnly` cards, and the model name.
+  read-only **eye badge** for `.readOnly` cards, and — for a git card the daemon has diffed — a **branch
+  diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
+  there is no stat (non-git / zero-change / not-yet-computed).
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector.
 
@@ -86,8 +88,10 @@ Selecting a card opens the **inspector**, a resizable right-hand sidebar (defaul
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
 the [Recovery panel](#recovery-panel) instead.
 
-The **header bar** has **View changes** (opens the worktree in Zed with a branch-vs-base diff), an
-**Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). The per-card **Inbox** button
+The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
+between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
+**View changes** (opens the worktree in Zed with a branch-vs-base diff), an **Inbox** editor, **Archive**
+(non-dead cards only), and a **close** (X). The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
 Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
 (see [chapter 9](09-design-decisions.md#shipped-feature-history)):
@@ -105,6 +109,19 @@ defaults to a lightweight read-only freeform card in the same directory
 (`Sources/OrchestraCore/Resources/delegation-{skill,agents}.md`). This is the *agent-buttons
 simplification* — see [chapter 9](09-design-decisions.md#shipped-feature-history) and its
 [design note](../notes/designs/2026-07-01-agent-buttons-simplification-design.md).
+
+### The in-app diff view
+
+With the header's **Diff** mode selected, the body switches from the agent terminal to `DiffInspectorView`
+(axis 7 — code review on the board): a **read-only**, colored, monospaced render of the card's changes, so
+a quick review doesn't need "View changes → Zed". It has a **baseline toggle** — **Working** (vs `HEAD`) ·
+**Branch** (vs the default-branch merge-base, the default) · **Parent** (shown only once the card carries a
+`parentBranch`, for stacked cards) — and reloads on card selection and on baseline change. The diff text is
+fetched from the daemon's app-only [`diffText`](05-command-reference.md#server-only-built-in-methods)
+endpoint (difftastic-rendered when `difft` is installed, git's colored diff otherwise) and drawn by a small
+SGR→`AttributedString` parser (`ANSIText`) in a selectable scroll view; an **Open in Zed** button opens the
+full changes, and a huge diff is capped daemon-side. A non-git (`.scratch`/`.borrowed`) or zero-change card
+shows an empty state rather than a fabricated diff. Editing stays Zed's job (an explicit non-goal).
 
 The **agent chrome** stacks, top to bottom:
 

@@ -77,7 +77,8 @@ launchd relaunched it, surfacing a spurious "orchestrad crashed" popup). With it
 `RPCRequest` and dispatches:
 
 1. **Built-in methods** handled inline: `ping`, `version`, `subscribe`, `getConfig`, `setConfig`,
-   `models`, `agents`, `archivedList`, `openInZed`, `report`.
+   `models`, `agents`, `archivedList`, `openInZed`, `report`, and the app-only `diffText`/`diffStat`
+   (the [code-review diff](05-command-reference.md#server-only-built-in-methods), axis 7).
 2. **Registry commands** looked up in the `CommandRegistry` and run via
    `command.run(service, params, source)` against the `OrchestraService` actor.
 

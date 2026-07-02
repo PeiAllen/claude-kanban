@@ -1,10 +1,13 @@
 # 10. Roadmap
 
-Orchestra is built to grow along **nine extensibility axes**. Each one has an approved *design-only*
-layered plan (L1 design + L2 contract) under `notes/designs/<slug>/`, indexed by
-[`notes/designs/extensibility-roadmap/index.md`](../notes/designs/extensibility-roadmap/index.md). None
-of the axes is fully built yet — each is deepened to L3 + tests and built when picked up — but **feature
-work has already landed underneath them**: the freeform/borrowed/scratch/read-only PRs (see
+Orchestra is built to grow along **nine extensibility axes**. Each one has an approved layered plan (L1
+design + L2 contract, and L3 + tests once picked up) under `notes/designs/<slug>/`, indexed by
+[`notes/designs/extensibility-roadmap/index.md`](../notes/designs/extensibility-roadmap/index.md).
+**Axis 7 — view/review code on the board — has now fully shipped**, the first *whole* axis built end to
+end (footer diffstat + a read-only in-inspector diff; its row has migrated into
+[chapter 9's shipped history](09-design-decisions.md#shipped-feature-history)). The rest remain design-only
+until picked up — but **feature work has already landed underneath them**: the
+freeform/borrowed/scratch/read-only PRs (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)) shipped the non-git card substrate, which
 realizes axis 4's *non-git cards* half and provides the standalone freeform region, leaving **search** as
 axis 4's live remainder. Axes **2, 3, and 6's handoff delivery** have since been **consolidated and
@@ -96,7 +99,7 @@ The principle is to design every change *toward* these axes, never away from the
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
-| 7 | **View/review code on the board** | `code-review-on-board` | A diffstat on the card and an in-inspector structured diff, instead of only "View changes → Zed". |
+| 7 | **View/review code on the board** ✅ **shipped** | `code-review-on-board` | A diffstat on the card and a read-only in-inspector diff, instead of only "View changes → Zed" — **shipped** (see [chapter 9](09-design-decisions.md#shipped-feature-history)). Inline review comments/approvals remain axis 5. |
 | 8 | **Outside-source intake** | `external-intake` | Let external sources (a todo app, webhooks, email) create cards — just another control-plane client calling `spawn`. |
 | 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. |
 

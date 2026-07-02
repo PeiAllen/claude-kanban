@@ -605,5 +605,54 @@ up/down **chevrons**, not drag-and-drop (more robust inside a themed popover; th
 is gesture-agnostic, so drag can be added later with no server change). Like the entries above this is a
 UI/surface change, not a whole axis, so it stays here as history.
 
-The roadmap of what comes next — the nine extensibility axes the system is being designed toward — is
+Landing after the forest is **axis 7 — code review on the board** (commit `bf1c7c1`;
+`notes/designs/code-review-on-board/`), the **first whole extensibility axis built end to end** rather
+than a forest sub-PR — so its [roadmap row](10-roadmap.md) migrates here. It surfaces an agent's changes
+*inside* Orchestra — a diffstat on the card footer and a read-only rendered diff in the inspector — so a
+glance or quick review no longer requires "View changes → Zed". The build is deliberately **lean** (refined
+at the 2026-07-01 L3 gate): there is **no** structured/machine-readable diff payload and **no** MCP `diff`
+verb — an agent already has a shell in its cwd and runs `git diff` itself, so re-serving it would be dead
+weight. Its decisions:
+
+- **Generic `DiffProvider` seam — difftastic default, git fallback.** A `DiffProvider` protocol
+  (`Sources/OrchestraCore/Diff/`) has two read-only jobs, both from git: a cheap `DiffStat`
+  (`git diff --numstat`) for the footer, and a rendered **ANSI** diff string for the inspector — produced by
+  **difftastic** (`difft`, structural/syntax-aware, `DFT_DISPLAY=inline`) when it is on `PATH`, else git's
+  own colored diff (`-c color.ui=always`). Both emit ANSI, so one app-side SGR→`AttributedString` parser
+  (`ANSIText`) renders either; `difft` is **never a hard dependency** (`Proc.toolExists` gate). Both jobs key
+  off the same `git diff <range>`, so the footer stat and the inspector render never disagree (untracked,
+  never-added files show in neither until staged/committed — a documented limitation).
+- **App-only endpoints, not registry commands.** `diffText`/`diffStat` are **server-only built-in
+  `ControlServer` methods** (the `openInZed` shape) — the inspector is the only consumer, so they are
+  deliberately **not** `CommandRegistry` commands and therefore never surface as MCP or CLI tools (see
+  [server-only methods](05-command-reference.md#server-only-built-in-methods)). Everything guards on the
+  shipped `Task.origin`: a non-`.worktree` card (`.scratch`/`.borrowed`, which may have no git baseline)
+  degrades cleanly to no stat and an empty Diff view — never a fabricated stat. `diffText` caps a huge
+  render (256 KB) with an "open in Zed" sentinel so the pane stays responsive.
+- **Baseline toggle; parent-relative is a thin stub.** The diff is taken against one of `DiffBase` —
+  `.working` (vs `HEAD`), `.branch` (vs the default-branch merge-base — the PR diff, and the default), or
+  `.parent` (vs the card's parent branch, for a stacked card). `parentBranch` ships as a **nil-default
+  stub** on `Task` — `.parent` falls back to `.branch` until
+  [stacked branches](../notes/designs/stacked-branches-and-guardian-handoff.md) populates it — and the
+  inspector only offers the **Parent** segment once a card carries one. This makes axis 7 the seam
+  [axis 5](10-roadmap.md) (the automated PR-review phase) reviews through.
+- **Event-driven refresh off the normalized funnel — adapter-agnostic.** The footer diffstat recomputes on
+  real per-card activity, not a timer: `OrchestraService.report()` — the one normalized funnel every adapter
+  feeds (it sees a `StatusReport`, never a `tool_name`) — calls a per-card `scheduleDiffStat` debounce
+  (~750 ms) after it persists a delta, plus on card selection. `recomputeDiffStat` persists + emits
+  `taskUpserted` **only when the stat changed**, so the funnel → schedule → recompute → emit chain
+  self-terminates (no feedback loop). Because the trigger keys off *activity*, not which tool ran, Claude and
+  Codex refresh identically with **no adapter code touched** — the same adapter-agnostic principle A2's
+  telemetry seam established.
+
+The app side adds the **Agent | Diff** toggle to the [inspector header](07-app-ui.md#the-inspector), the
+`DiffInspectorView` ([in-app diff view](07-app-ui.md#the-in-app-diff-view): baseline toggle + ANSI-rendered
+read-only diff + "Open in Zed"), and the [card-footer diffstat](07-app-ui.md#cards) (`Nf +N −M`, green/red,
+replacing the model name when a stat exists). Editing stays Zed's job (an explicit non-goal), and **inline
+review comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
+[chapter 3](03-data-model.md#the-task-card). Layered design:
+[`notes/designs/code-review-on-board/`](../notes/designs/code-review-on-board/index.md) (L1 design → L2
+contract → L3 implementation + L3 tests).
+
+The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
