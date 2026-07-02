@@ -241,6 +241,17 @@ final class BoardModel: ObservableObject {
         if selectedId == id { selectedId = nil }
         toast("Archived", sub: nil)
     }
+    /// Reopen a Done card: the daemon recreates its worktree + resumes the agent; we bring the card back
+    /// onto the board, select it (so the live inspector opens), and close the Done popover.
+    func reopen(_ id: UUID) async {
+        do {
+            let t = try await client.call("reopen", .object(["ref": .string(id.uuidString)])).decode(Task.self)
+            apply(.taskUpserted(t))   // off the Done list onto the board immediately; the stream is idempotent
+            selectedId = t.id
+            showDone = false
+            toast("Reopened “\(t.title)”", sub: nil)
+        } catch { toast("Reopen failed", sub: "\(error)", color: .red) }
+    }
     func send(_ id: UUID, _ message: String) async {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
