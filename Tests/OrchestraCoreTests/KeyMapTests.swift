@@ -88,4 +88,24 @@ final class KeyMapTests: XCTestCase {
         XCTAssertEqual(map(KeyChord("\u{1B}"), .overlay), .closeOrClear)
         XCTAssertNil(map(KeyChord("j"), .overlay))
     }
+
+    func test_new_board_verbs() {
+        XCTAssertEqual(map(KeyChord("z"), .board), .toggleCollapse)
+        XCTAssertEqual(map(KeyChord("f"), .board), .hint)
+        XCTAssertEqual(map(KeyChord(":", .shift), .board), .palette)
+        XCTAssertEqual(map(KeyChord("n"), .board), .searchNext)
+        XCTAssertEqual(map(KeyChord("N", .shift), .board), .searchPrev)
+    }
+
+    func test_ctrl_shift_hjkl_resizes() {
+        XCTAssertEqual(map(KeyChord("H", [.control, .shift]), .board), .resize(.left))
+        XCTAssertEqual(map(KeyChord("L", [.control, .shift]), .board), .resize(.right))
+        XCTAssertEqual(map(KeyChord("K", [.control, .shift]), .terminal), .resize(.up))
+        XCTAssertEqual(map(KeyChord("J", [.control, .shift]), .terminal), .resize(.down))
+        XCTAssertNil(map(KeyChord("J", [.control, .shift]), .field))
+    }
+
+    func test_ctrl_hjkl_still_focuses_without_shift() {
+        XCTAssertEqual(map(KeyChord("l", .control), .board), .focusPane(.right))
+    }
 }
