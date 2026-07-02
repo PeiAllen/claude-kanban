@@ -7,23 +7,32 @@ struct HandoffSeedTests {
 
     private func msg(_ card: UUID, _ text: String) -> InboxMessage { InboxMessage(cardId: card, text: text) }
 
-    @Test("fold: handoff first, then inbox in FIFO order, joined by blank lines")
+    @Test("fold: handoff first, then the shared numbered inbox render, joined by blank lines")
     func order() {
         let c = UUID()
-        let s = HandoffSeed.fold(handoff: "HANDOFF", inbox: [msg(c, "one"), msg(c, "two")])
-        #expect(s == "HANDOFF\n\none\n\ntwo")
+        let inbox = [msg(c, "one"), msg(c, "two")]
+        let s = HandoffSeed.fold(handoff: "HANDOFF", inbox: inbox)
+        // Byte-identical to the Claude Stop-drain rendering (agent-agnostic): header + [k/N] numbering.
+        #expect(s == "HANDOFF\n\n" + StopDrain.renderMessages(inbox))
     }
 
-    @Test("fold: nil handoff falls back to inbox only")
+    @Test("fold: nil handoff falls back to the numbered inbox render")
     func handoffNil() {
         let c = UUID()
-        #expect(HandoffSeed.fold(handoff: nil, inbox: [msg(c, "only")]) == "only")
+        let inbox = [msg(c, "only")]
+        #expect(HandoffSeed.fold(handoff: nil, inbox: inbox) == StopDrain.renderMessages(inbox))
     }
 
-    @Test("fold: whitespace-only handoff is dropped")
+    @Test("fold: whitespace-only handoff is dropped, leaving the numbered inbox render")
     func handoffBlank() {
         let c = UUID()
-        #expect(HandoffSeed.fold(handoff: "   \n ", inbox: [msg(c, "x")]) == "x")
+        let inbox = [msg(c, "x")]
+        #expect(HandoffSeed.fold(handoff: "   \n ", inbox: inbox) == StopDrain.renderMessages(inbox))
+    }
+
+    @Test("fold: pure handoff with no inbox gets NO inbox header (header rides only the inbox portion)")
+    func handoffOnlyNoHeader() {
+        #expect(HandoffSeed.fold(handoff: "HANDOFF", inbox: []) == "HANDOFF")
     }
 
     @Test("fold: empty handoff + empty inbox → nil (no seed delivered)")

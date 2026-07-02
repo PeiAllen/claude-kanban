@@ -332,6 +332,14 @@ public actor OrchestraService {
     /// `orchestra wait`). See `wake` for the per-transport delivery (Codex nudge / Claude resume-seed).
     public func send(_ id: UUID, _ message: String) async throws {
         let t = try await require(id)
+        // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
+        // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
+        // message is guaranteed to reach the agent whole.
+        guard message.count <= StopDrain.maxMessageChars else {
+            throw OrchestraError.invalidParams(
+                "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars). "
+                + "Put large content in a file in the worktree and reference it instead.")
+        }
         try await inbox.enqueue(t.id, message)
         await wake(t.id)
     }
@@ -371,9 +379,12 @@ public actor OrchestraService {
         if pending.isEmpty { injectCounts[cardId] = 0; return nil }   // natural end → reset
         let count = injectCounts[cardId] ?? 0
         if count >= maxConsecutiveInjects { return nil }              // loop guard tripped; keep counter high
-        let drained = (try? await inbox.drain(cardId)) ?? []
+        // Whole-messages-to-fit: deliver only the messages that fit this turn's 10k budget and drain
+        // exactly those; any overflow stays durable and drains on the next turn-end (never sliced mid-text).
+        guard let (payload, consumed) = StopDrain.fit(pending) else { return nil }
+        _ = try? await inbox.drainFirst(cardId, consumed)
         injectCounts[cardId] = count + 1
-        return StopDrain.compose(drained)
+        return payload
     }
 
     /// Reset a card's consecutive-inject guard — called on a genuine user prompt (UserPromptSubmit).
