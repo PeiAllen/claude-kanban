@@ -1,6 +1,25 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+
+// Module-neutral POSIX shims. Defined at file scope, where the `UDS` enum's own static
+// `listen`/`connect`/`accept`/`read` methods do NOT shadow the C globals, so one set of calls works on
+// Darwin and Linux (glibc/musl) alike. `posixSend` carries the SIGPIPE guard: Darwin suppresses it
+// per-socket via SO_NOSIGPIPE (set in `suppressSIGPIPE`), while Linux passes MSG_NOSIGNAL on every send.
+@inline(__always) private func posixListen(_ fd: Int32, _ backlog: Int32) -> Int32 { listen(fd, backlog) }
+@inline(__always) private func posixConnect(_ fd: Int32, _ a: UnsafePointer<sockaddr>, _ l: socklen_t) -> Int32 { connect(fd, a, l) }
+@inline(__always) private func posixAccept(_ fd: Int32) -> Int32 { accept(fd, nil, nil) }
+@inline(__always) private func posixRead(_ fd: Int32, _ b: UnsafeMutableRawPointer, _ n: Int) -> Int { read(fd, b, n) }
+@inline(__always) @discardableResult private func posixClose(_ fd: Int32) -> Int32 { close(fd) }
+#if canImport(Darwin)
+@inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { write(fd, b, n) }
+#else
+@inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { send(fd, b, n, Int32(MSG_NOSIGNAL)) }
 #endif
 
 /// Low-level AF_UNIX (SOCK_STREAM) helpers. The control plane uses these directly so it has no
@@ -26,11 +45,11 @@ enum UDS {
         let bindRes = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
         }
-        guard bindRes == 0 else { close(fd); throw OrchestraError.io("bind() failed: \(errnoString())") }
+        guard bindRes == 0 else { posixClose(fd); throw OrchestraError.io("bind() failed: \(errnoString())") }
         chmod(path, 0o600)   // user-only
 
-        guard Darwin.listen(fd, backlog) == 0 else {
-            close(fd); throw OrchestraError.io("listen() failed: \(errnoString())")
+        guard posixListen(fd, backlog) == 0 else {
+            posixClose(fd); throw OrchestraError.io("listen() failed: \(errnoString())")
         }
         return fd
     }
@@ -44,15 +63,15 @@ enum UDS {
         try setPath(&addr, path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let res = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, len) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, len) }
         }
-        guard res == 0 else { close(fd); throw OrchestraError.io("connect() failed: \(errnoString())") }
+        guard res == 0 else { posixClose(fd); throw OrchestraError.io("connect() failed: \(errnoString())") }
         suppressSIGPIPE(fd)
         return fd
     }
 
     static func accept(_ serverFd: Int32) -> Int32 {
-        let fd = Darwin.accept(serverFd, nil, nil)
+        let fd = posixAccept(serverFd)
         if fd >= 0 { suppressSIGPIPE(fd) }
         return fd
     }
@@ -65,8 +84,11 @@ enum UDS {
     /// daemon — which launchd then relaunches. `writeAll` already turns the `EPIPE` into a clean
     /// "connection broken" (drops the subscriber); this just stops the signal from firing first.
     private static func suppressSIGPIPE(_ fd: Int32) {
+        #if canImport(Darwin)
         var on: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        #endif
+        // Linux has no per-socket SIGPIPE suppression; UDS.writeAll passes MSG_NOSIGNAL per send instead.
     }
 
     /// Write all bytes (handles partial writes / EINTR).
@@ -77,7 +99,7 @@ enum UDS {
             var off = 0
             let total = raw.count
             while off < total {
-                let n = Darwin.write(fd, base + off, total - off)
+                let n = posixSend(fd, base + off, total - off)
                 if n > 0 { off += n; continue }
                 if n < 0 && (errno == EINTR) { continue }
                 return false
@@ -88,7 +110,10 @@ enum UDS {
 
     /// Read available bytes into a buffer; returns nil on EOF/error.
     static func read(_ fd: Int32, into buf: inout [UInt8]) -> Int? {
-        let n = buf.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+        let n = buf.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return 0 }
+            return posixRead(fd, base, raw.count)
+        }
         if n > 0 { return n }
         if n == 0 { return nil }          // EOF
         if errno == EINTR { return 0 }    // retry

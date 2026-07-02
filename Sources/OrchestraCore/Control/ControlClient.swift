@@ -1,42 +1,72 @@
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#endif
 
 /// UDS JSON-RPC client shared by the app, CLI, and MCP bridge. Request/response by id; a background
-/// reader resolves pending calls and feeds the event stream.
+/// reader resolves pending calls and feeds the event stream. I/O goes through a `Transport` (default
+/// `UDSTransport`) so the same client drives a local socket, an SSH-forwarded socket, or a future
+/// WebSocket without change. A dropped transport triggers backoff → reconnect → re-subscribe rather
+/// than dying; `state`/`onState` surface the live connection state for the UI to bind.
 public final class ControlClient: @unchecked Sendable {
     public let source: ActivitySource
-    private let socketPath: String
-    private var fd: Int32 = -1
+    private let makeTransport: @Sendable () -> Transport
+    private var transport: Transport?
     private let writeLock = NSLock()
 
     private let stateLock = NSLock()
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var eventContinuation: AsyncStream<Event>.Continuation?
+    private var subscribed = false
+    private var stopping = false
 
-    public init(socketPath: String = Config.socketPath, source: ActivitySource = .app) {
-        self.socketPath = socketPath
+    public private(set) var state: ConnectionState = .down
+    /// Observed by the UI. Fired on every state change (off the caller's thread — hop to your actor).
+    public var onState: (@Sendable (ConnectionState) -> Void)?
+
+    /// Back-compat convenience: a UDS client by socket path.
+    public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app) {
+        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source)
+    }
+
+    /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
+    public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app) {
+        self.makeTransport = transport
         self.source = source
     }
 
+    private func setState(_ s: ConnectionState) {
+        stateLock.withLock { state = s }
+        onState?(s)
+    }
+
+    /// Connect + start the read/reconnect loop. The first connect is synchronous so callers still get an
+    /// immediate throw on a hard first failure; after that, drops are handled transparently by the loop.
     public func connect() throws {
-        fd = try UDS.connect(path: socketPath)
-        DispatchQueue.global().async { [weak self] in self?.readLoop() }
+        stateLock.withLock { stopping = false }
+        try openOnce()
+        DispatchQueue.global().async { [weak self] in self?.runLoop() }
+    }
+
+    /// One connection attempt: mint a fresh transport, open it, publish `.live`. Throws on failure.
+    private func openOnce() throws {
+        let t = makeTransport()
+        setState(.connecting)
+        try t.open()
+        writeLock.withLock { transport = t }
+        setState(.live)
     }
 
     public func close() {
-        // Guard `fd` with writeLock so we never close it out from under an in-flight `writeAll`
-        // (which would race the `fd = -1` store and risk writing to a reused fd).
-        writeLock.lock()
-        if fd >= 0 { Darwin.close(fd); fd = -1 }
-        writeLock.unlock()
+        stateLock.withLock { stopping = true }
+        // Guard `transport` with writeLock so we never tear it down under an in-flight `write`. Closing it
+        // also unblocks the reader (readLine → nil), so the loop can observe `stopping` and exit.
+        let t: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
+        t?.close()
         stateLock.withLock {
             for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }
             pending.removeAll()
             eventContinuation?.finish()
         }
+        setState(.down)
     }
 
     // MARK: - calls
@@ -48,9 +78,9 @@ public final class ControlClient: @unchecked Sendable {
         let line = try RPCCodec.line(req)
         return try await withCheckedThrowingContinuation { cont in
             stateLock.withLock { pending[id] = cont }
-            writeLock.lock(); let ok = UDS.writeAll(fd, line); writeLock.unlock()
+            let ok = writeLock.withLock { transport?.write(line) ?? false }
             if !ok {
-                // Resume ONLY if we still own the pending entry. If `close()` raced in and already
+                // Resume ONLY if we still own the pending entry. If `close()`/a drop raced in and already
                 // resumed+removed it, `removeValue` returns nil and we skip — never double-resume
                 // (which is a fatal continuation misuse).
                 if let c = stateLock.withLock({ pending.removeValue(forKey: id) }) {
@@ -67,7 +97,8 @@ public final class ControlClient: @unchecked Sendable {
     }
 
     /// Subscribe to the daemon's event stream (task upserts/removals + activity). Sends the subscribe
-    /// request and returns a live stream.
+    /// request and returns a live stream. The stream persists across reconnects — only `close()` ends it;
+    /// on reconnect the client re-issues the subscribe RPC so the same stream keeps receiving events.
     public func subscribe() -> AsyncStream<Event> {
         AsyncStream { cont in
             // Finish any prior stream before replacing it, so its consumer doesn't hang forever on a
@@ -75,16 +106,43 @@ public final class ControlClient: @unchecked Sendable {
             stateLock.withLock {
                 self.eventContinuation?.finish()
                 self.eventContinuation = cont
+                self.subscribed = true
             }
             _Concurrency.Task { try? await self.call("subscribe") }
         }
     }
 
-    // MARK: - reader
+    // MARK: - read / reconnect loop
 
-    private func readLoop() {
-        let reader = LineReader(fd: fd)
-        while let line = reader.next() {
+    private func runLoop() {
+        var attempt = 0
+        while true {
+            if stateLock.withLock({ stopping }) { return }
+            readUntilEOF()                                   // returns when the current transport hits EOF
+            failPending()
+            if stateLock.withLock({ stopping }) { return }   // close() already published .down
+            setState(.retrying)
+            // Backoff-reconnect until success or an explicit close().
+            while true {
+                if stateLock.withLock({ stopping }) { setState(.down); return }
+                let ms = Self.backoffMillis(attempt); attempt += 1
+                Thread.sleep(forTimeInterval: Double(ms) / 1000.0)
+                if stateLock.withLock({ stopping }) { setState(.down); return }
+                do {
+                    try openOnce()
+                    attempt = 0
+                    if stateLock.withLock({ subscribed }) { _Concurrency.Task { try? await self.call("subscribe") } }
+                    break
+                } catch { setState(.retrying); continue }
+            }
+        }
+    }
+
+    /// Read pump for the CURRENT transport; returns on EOF. Does NOT close the client or finish the event
+    /// stream — a transient drop must not end a live subscription.
+    private func readUntilEOF() {
+        let t = writeLock.withLock { transport }
+        while let line = t?.readLine() {
             guard !line.isEmpty,
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
             if msg.method == "event" {
@@ -98,6 +156,25 @@ public final class ControlClient: @unchecked Sendable {
                 }
             }
         }
-        close()
+        // EOF: drop the dead transport so the next openOnce() replaces it cleanly.
+        let dead: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
+        dead?.close()
+    }
+
+    /// Fail every in-flight call so awaiters don't hang across a reconnect.
+    private func failPending() {
+        let conts = stateLock.withLock { () -> [CheckedContinuation<JSONValue, Error>] in
+            let cs = Array(pending.values); pending.removeAll(); return cs
+        }
+        for c in conts { c.resume(throwing: OrchestraError.io("connection dropped")) }
+    }
+
+    /// Exponential backoff (250ms → 5s cap) with attempt-derived jitter — no Date/random (unavailable in
+    /// some sandboxes), so it stays deterministic and resume-safe.
+    static func backoffMillis(_ attempt: Int) -> Int {
+        let base = min(5000, 250 * (1 << min(attempt, 5)))       // 250,500,1000,2000,4000,5000…
+        let jitter = base / 5
+        let sign = attempt % 2 == 0 ? 1 : -1
+        return max(50, base + sign * (jitter * (attempt % 3)) / 3)
     }
 }

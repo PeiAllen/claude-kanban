@@ -42,8 +42,11 @@ case "$ARCH" in
   *) echo "error: --arch must be x86_64 or aarch64 (got '$ARCH')" >&2; exit 1 ;;
 esac
 
-# Find an installed musl static SDK. `swift sdk list` prints installed SDK ids one per line.
-if ! swift sdk list 2>/dev/null | grep -qi 'musl'; then
+# Find an installed static Linux (musl) SDK. `swift sdk list` prints installed SDK ids one per line;
+# depending on the release these are named `…_static-linux-<ver>` (the artifactbundle) rather than
+# containing the literal "musl", so match either — the destination triple `*-swift-linux-musl` is what
+# the build below selects regardless of the id's spelling.
+if ! swift sdk list 2>/dev/null | grep -qiE 'musl|static-linux'; then
   cat >&2 <<'EOF'
 error: no Swift Static Linux (musl) SDK is installed.
 
@@ -60,7 +63,7 @@ fi
 
 echo "Cross-compiling for $TRIPLE (static musl) → $OUT"
 for product in orchestrad orchestra orchestra-mcp; do
-  echo "  building $product…"
+  echo "  building ${product}..."
   swift build -c release --swift-sdk "$TRIPLE" --product "$product"
 done
 

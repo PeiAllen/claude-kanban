@@ -61,7 +61,24 @@ public struct Config: Codable, Sendable, Equatable {
 
     // MARK: Derived (not user-facing)
 
-    public static var dataDir: String { "\(home)/Library/Application Support/Orchestra" }
+    public static var dataDir: String {
+        #if os(Linux)
+        return dataDir(isLinux: true, home: home, env: ProcessInfo.processInfo.environment)
+        #else
+        return dataDir(isLinux: false, home: home, env: ProcessInfo.processInfo.environment)
+        #endif
+    }
+
+    /// Pure resolver for the data dir so both platform branches are unit-testable on either host.
+    /// macOS: `~/Library/Application Support/Orchestra` (unchanged). Linux: `$XDG_DATA_HOME/orchestra`
+    /// → `~/.local/share/orchestra`. `reposRoot`/`worktreesRoot`/`scratchRoot` stay $HOME-relative.
+    static func dataDir(isLinux: Bool, home: String, env: [String: String]) -> String {
+        if isLinux {
+            let xdg = env["XDG_DATA_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(home)/.local/share"
+            return "\(xdg)/orchestra"
+        }
+        return "\(home)/Library/Application Support/Orchestra"
+    }
     public static var socketPath: String { "\(dataDir)/orchestrad.sock" }
     public static var configPath: String { "\(dataDir)/config.json" }
     public static var tasksPath: String { "\(dataDir)/tasks.json" }

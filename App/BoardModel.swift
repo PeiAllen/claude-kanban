@@ -67,11 +67,38 @@ final class BoardModel: ObservableObject {
     var accent: Accent { Accent(rawValue: accentRaw) ?? .blue }
     var density: Density { Density(rawValue: densityRaw) ?? .comfortable }
 
-    let client: ControlClient
+    /// Client-local connection list + which one is active (local by default).
+    let connections = ConnectionStore()
+    /// Owns the SSH tunnel for a remote connection; publishes tunnel state.
+    let connectionController = ConnectionController()
+    /// Live link state, mirrored from the client for the Connections pane's status chip.
+    @Published var connectionState: ConnectionState = .down
+    /// Rebuilt whenever the active connection changes (a fresh transport per connection).
+    private(set) var client: ControlClient
 
-    init(socketPath: String = Config.socketPath) {
-        client = ControlClient(socketPath: socketPath, source: .app)
+    init() {
+        client = ControlClient(socketPath: Config.socketPath, source: .app)
+        wireState()
     }
+
+    /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`).
+    private func wireState() {
+        client.onState = { [weak self] s in
+            _Concurrency.Task { @MainActor in
+                self?.connectionState = s
+                switch s {
+                case .live: self?.connected = true
+                case .down: self?.connected = false
+                case .connecting, .retrying: break   // transient — don't flap the board offline
+                }
+            }
+        }
+    }
+
+    /// Terminal host for the active connection: local tmux, or the remote box over the SSH control socket.
+    var terminalHost: AgentTerminalView.TerminalHost { connectionController.terminalHost }
+    /// tmux `-L` socket name for the active connection (remote boxes may differ from the local default).
+    var terminalTmuxSocket: String { connections.active.remoteTmuxSocket }
 
     var selected: Task? { tasks.first { $0.id == selectedId } ?? archived.first { $0.id == selectedId } }
 
@@ -118,14 +145,45 @@ final class BoardModel: ObservableObject {
     ///   • first run, daemon not running → show the welcome / install screen
     ///   • returning user, daemon down   → stay offline; the banner offers a one-click restart
     func bootstrap() async {
-        if DaemonLifecycle().isRunning() {
-            onboarded = true
-            await start()
-        } else if !onboarded {
-            showOnboarding = true
-        } else {
-            connected = false
+        await activate(connections.active)
+    }
+
+    /// Point the board at a connection: resolve its local socket (spinning the SSH tunnel for a remote),
+    /// (re)build the client, then connect + stream. Preserves the local onboarding/daemon-install flow.
+    func activate(_ conn: Connection) async {
+        client.close()
+        connectionController.deactivate()
+        connectionController.onTunnelExit = { [weak self] in
+            // The tunnel dropped: respawn the master + reconnect the client to the new forwarded socket.
+            _Concurrency.Task { @MainActor in await self?.activate(conn) }
         }
+        do {
+            let sockPath = try await connectionController.localSocketPath(for: conn)
+            client = ControlClient(socketPath: sockPath, source: .app)
+            wireState()
+            streamStarted = false
+            if conn.isLocal {
+                if DaemonLifecycle().isRunning() { onboarded = true; await start() }
+                else if !onboarded { showOnboarding = true } else { connected = false }
+            } else {
+                await start()
+            }
+        } catch {
+            connected = false
+            toast("Couldn't connect", sub: "\(error)", color: .red)
+        }
+    }
+
+    /// Switch the active connection (persisted) and re-point the board at it.
+    func switchConnection(_ id: UUID) async {
+        connections.activeId = id
+        await activate(connections.active)
+    }
+
+    /// Connect/Disconnect toggle for the Connections pane.
+    func disconnect() {
+        client.close()
+        connectionController.deactivate()
     }
 
     /// Invoked from the onboarding screen's primary button. Installs + starts the daemon and, on

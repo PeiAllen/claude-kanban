@@ -30,10 +30,12 @@ struct ShellTabsView: View {
         VStack(spacing: 0) {
             ribbon
             if !minimized && !windows.isEmpty {
-                AgentTerminalView(session: task.tmuxSession, window: selectedWindow,
+                AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession,
+                                  window: selectedWindow, host: model.terminalHost,
                                   background: theme.termBg, foreground: theme.term)
-                    // Re-create the terminal per shell tab so each attaches to its own tmux window.
-                    .id("\(task.tmuxSession):\(selectedWindow)")
+                    // Re-create the terminal per shell tab (and per active connection) so each attaches to
+                    // its own tmux window against the right host.
+                    .id("\(model.connections.activeId)-\(task.tmuxSession):\(selectedWindow)")
                     .frame(height: panelHeight)
                     .background(theme.termBg)
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
