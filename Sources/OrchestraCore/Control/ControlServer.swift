@@ -177,6 +177,16 @@ public final class ControlServer: @unchecked Sendable {
             let task = try await service.resolveRef(ref)
             let reason = await service.drainForStop(task.id)
             return .object(["reason": reason.map(JSONValue.string) ?? .null])
+        case "sessionBrief":
+            // SessionStart orientation: the session hook fetches the card's live column + access + id to
+            // inject as `additionalContext`. Orchestra-internal plumbing — NOT a Command (not user-facing),
+            // so it never touches the registry (mirrors `drain`).
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("sessionBrief needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            let context = await service.sessionBrief(task.id)
+            return .object(["context": context.map(JSONValue.string) ?? .null])
         default:
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")

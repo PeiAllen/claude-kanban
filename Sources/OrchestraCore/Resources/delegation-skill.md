@@ -1,13 +1,37 @@
 ---
 name: orchestra-delegation
-description: Use when deciding whether to delegate work to another Orchestra card (spawn / handoff / fork / fan-out / wait) instead of doing it inline or with a native subagent. Covers the card-vs-subagent line and the delegation tools.
+description: Use when working as a card on an Orchestra board — knowing which column/mode you're in and keeping it honest as your work changes phase, and deciding whether to delegate work to another card (spawn / handoff / fork / fan-out / wait) instead of doing it inline or with a native subagent.
 ---
 
-# Orchestra delegation — when to hand off, fork, fan-out, or wait
+# Orchestra delegation — knowing your column, and when to hand off / fork / fan-out / wait
 
 You are one agent on an Orchestra board. Besides doing the work yourself, you can **delegate** to other
 **cards** — each a durable, board-visible unit of work in its own git worktree, possibly running a
 different agent. This skill is about **when** to reach for that, and when NOT to.
+
+## Your column is your phase — start on it, and keep it honest
+
+Your card lives in one of three columns, which are the lifecycle stages of the work:
+
+- **Plan** — you're scoping / figuring out what to do.
+- **Implementation** — you're actively building.
+- **Review** — the work is ready to be looked at (by a human, or a later automated pass).
+
+At **SessionStart** you're handed a one-line orientation naming your column, your access mode
+(read/write vs **read-only**), and your own card id. **Start on that footing without waiting to be
+told** — if you were opened in Plan, begin planning; in Implementation, begin building; in Review, begin
+reviewing; if you're read-only, read/search/analyze and report rather than editing.
+
+As the work changes phase, **move yourself** so the board keeps reflecting reality. This is a
+*suggestion*, not a leash — but a stale column misleads whoever is supervising the board:
+
+- **Plan → Implementation** once you stop scoping and start building.
+- **Implementation → Review** once the work is ready for someone to look at.
+- **→ Plan** if you fall back to figuring out what to do.
+
+Move with the `move` tool and your own card id (from your SessionStart orientation):
+`move <thisCard> --col plan|impl|review`. It's just a board update — no worktree, wake, or round-trip
+cost. Don't over-fuss it; move when you cross a real phase boundary, not on every small step.
 
 ## The delegation surface (the tools)
 

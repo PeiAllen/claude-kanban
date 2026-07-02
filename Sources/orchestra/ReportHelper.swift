@@ -27,6 +27,15 @@ enum ReportHelper {
         guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty else { return }
         let sock = env["ORCHESTRA_SOCK"] ?? Config.socketPath
 
+        // `orient` (Codex SessionStart hook): orientation ONLY — print the card's column/mode/self-id
+        // `additionalContext`, send NO telemetry (Codex telemetry is the daemon-side rollout tail). This
+        // is the agent-agnostic inbound channel; Claude folds the same brief onto its `session` event
+        // below. Returns early — no parse, no report.
+        if kind == "orient" {
+            await emitSessionBrief(taskId: taskId, sock: sock, source: payload["source"]?.stringValue)
+            return
+        }
+
         // Parse is the ADAPTER's (agent-dependent, D3). This `_report` process IS the Claude hooksPush
         // transport; it supplies raw bytes and lets the adapter normalize them. Daemon-side transports
         // (Codex rollout tail, next PR) call the same `adapter.parse` seam.
@@ -39,6 +48,14 @@ enum ReportHelper {
         let budgetMs = kind == "statusline" ? 50 : 2000
         await boundedSend(sock: sock, params: params, budgetMs: budgetMs)
 
+        // SessionStart orientation (Claude): on a fresh open / reopen / clear (NOT a mid-turn compact),
+        // print the card's live column/mode/self-id as the SessionStart hook's `additionalContext`, so the
+        // agent knows where it was opened and starts on that footing without being told. Additive: the
+        // session→(waiting/clear) report sent above is unchanged.
+        if kind == "session" {
+            await emitSessionBrief(taskId: taskId, sock: sock, source: payload["source"]?.stringValue)
+        }
+
         // F3 Stop-drain: on the Stop hook (same `_report --event notify` command — distinguished by the
         // stdin `hook_event_name`), pull the card's durable inbox and, if non-empty, print the
         // `decision:block` continuation so Claude reads the queued messages as context. Additive: the
@@ -49,6 +66,19 @@ enum ReportHelper {
                let reason = resp["reason"]?.stringValue, !reason.isEmpty {
                 writeStdout(Data(StopDrain.blockJSON(reason: reason).utf8))
             }
+        }
+    }
+
+    /// Fetch the card's live orientation (column + mode + self-id) from the daemon and print it as a
+    /// SessionStart hook `additionalContext` payload (byte-identical schema for Claude and Codex). Skips
+    /// a mid-turn `compact` so we don't re-announce where the agent already has its bearings. Best-effort
+    /// and bounded — a slow/absent daemon just prints nothing.
+    static func emitSessionBrief(taskId: String, sock: String, source: String?) async {
+        guard (source ?? "startup") != "compact" else { return }
+        let params = JSONValue.object(["ref": .string(taskId)])
+        if let resp = await boundedCall(sock: sock, method: "sessionBrief", params: params, budgetMs: 2000),
+           let context = resp["context"]?.stringValue, !context.isEmpty {
+            writeStdout(Data(SessionBrief.claudeSessionStartJSON(context).utf8))
         }
     }
 

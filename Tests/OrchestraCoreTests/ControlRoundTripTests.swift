@@ -108,6 +108,26 @@ struct ControlRoundTripTests {
         #expect(got["reason"]?.stringValue?.contains("queued work") == true)
     }
 
+    @Test("sessionBrief RPC returns the card's live column orientation over the socket")
+    func sessionBriefRPC() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = ControlClient(socketPath: path, source: .agent)
+        try client.connect(); defer { client.close() }
+
+        let task = try await client.call("spawn", .object([
+            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
+
+        _ = try await env.svc.move(task.id, to: .review)
+        let got = try await client.call("sessionBrief", .object(["ref": .string(task.shortId)]))
+        let ctx = try #require(got["context"]?.stringValue)
+        #expect(ctx.contains("Review"))
+        #expect(ctx.contains(task.shortId))
+    }
+
     @Test("diffText / diffStat endpoints route over the socket for a worktree card")
     func diffEndpoints() async throws {
         let env = TestEnv.make()

@@ -70,6 +70,8 @@ public struct Config: Codable, Sendable, Equatable {
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
     public static var logPath: String { "\(dataDir)/orchestrad.log" }
     public static var hooksPath: String { "\(dataDir)/claude-hooks.json" }
+    /// Rendered Codex hooks file (SessionStart→orient). CodexAdapter installs it into `$CODEX_HOME/hooks.json`.
+    public static var codexHooksPath: String { "\(dataDir)/codex-hooks.json" }
     /// tmux server socket name (`tmux -L <name>`). Overridable via env so an isolated test instance
     /// gets its OWN tmux server (no session collisions / claude launches on the user's live server).
     public static var tmuxSocket: String {

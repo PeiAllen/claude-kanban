@@ -14,11 +14,15 @@ let service = OrchestraService(config: config, store: TaskStore(path: Config.tas
 // Render the managed Claude Code --settings file so it points at the live `orchestra` binary.
 do { try HooksRenderer.render(orchestraBin: orchestraBin) }
 catch { log("warning: could not render hooks file: \(error)") }
+// Render the managed Codex hooks file (SessionStart→orient) — installed per-card into $CODEX_HOME.
+do { try HooksRenderer.renderCodex(orchestraBin: orchestraBin) }
+catch { log("warning: could not render codex hooks file: \(error)") }
 
 let server = ControlServer(service: service)
 server.onConfigChanged = { cfg in
     try? ConfigStore.save(cfg)
     try? HooksRenderer.render(orchestraBin: orchestraBin)
+    try? HooksRenderer.renderCodex(orchestraBin: orchestraBin)
 }
 
 do {
