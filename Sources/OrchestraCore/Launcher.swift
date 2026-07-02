@@ -12,6 +12,9 @@ public struct Launcher: Sendable {
     /// vault is new). `repo` is the project root; `<repo>/notes` is the vault — the ONE canonical
     /// project vault, not the per-card worktree copy, so edits don't fragment across worktrees.
     public func openNotes(_ repo: String) throws {
+        #if !os(macOS)
+        throw OrchestraError.io("opening notes in Obsidian is a macOS-only convenience")
+        #else
         let notes = (repo as NSString).appendingPathComponent("notes")
         try resolver.assertAllowed(notes)
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
@@ -21,9 +24,13 @@ public struct Launcher: Sendable {
         // adds Homebrew + per-user bins so they're found under launchd's minimal PATH.
         let r = try Proc.run(["bash", script, notes])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "open-obsidian-vault.sh failed" : r.stderr) }
+        #endif
     }
 
     public func openInZed(_ worktree: String) throws {
+        #if !os(macOS)
+        throw OrchestraError.io("opening in Zed is a macOS-only convenience")
+        #else
         try resolver.assertAllowed(worktree)
         guard Proc.toolExists("zed") else {
             // No CLI (Zed.app installed without running "Install CLI") — launch the bundle instead.
@@ -55,6 +62,7 @@ public struct Launcher: Sendable {
         argv.append(worktree)
         let r = try Proc.run(argv)
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "zed failed to open" : r.stderr) }
+        #endif
     }
 
     // MARK: - branch-vs-base diff

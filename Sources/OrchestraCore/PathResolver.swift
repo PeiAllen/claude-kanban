@@ -1,5 +1,7 @@
 import Foundation
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
 
@@ -27,7 +29,7 @@ public struct PathResolver: Sendable {
 
     private static func resolveExisting(_ path: String) -> String? {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
-        if Darwin.realpath(path, &buf) != nil {
+        if realpath(path, &buf) != nil {
             return String(validatingCString: buf) ?? String(cString: buf)
         }
         // Resolve the deepest existing ancestor, then re-append the missing tail — collapsing `.`/`..`

@@ -1,6 +1,8 @@
 import Foundation
 import OrchestraCore
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
 
@@ -98,7 +100,7 @@ enum ReportHelper {
             guard let base = buf.baseAddress else { return }
             var off = 0
             while off < buf.count {
-                let n = Darwin.write(1, base + off, buf.count - off)
+                let n = write(1, base + off, buf.count - off)
                 if n > 0 { off += n; continue }
                 if n < 0 && errno == EINTR { continue }
                 return   // EPIPE / any error: the reader is gone — drop it, never crash.
@@ -111,7 +113,7 @@ enum ReportHelper {
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let n = buf.withUnsafeMutableBytes { Darwin.read(0, $0.baseAddress, $0.count) }
+            let n = buf.withUnsafeMutableBytes { read(0, $0.baseAddress, $0.count) }
             if n > 0 { out.append(contentsOf: buf[0..<n]); continue }
             if n < 0 && errno == EINTR { continue }
             break   // EOF (0) or any error
