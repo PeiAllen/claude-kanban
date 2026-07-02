@@ -1,9 +1,11 @@
 import Foundation
 import OrchestraCore
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 /// The hidden `orchestra _report --event <kind>` helper, run by the agent's statusLine + hooks. Reads

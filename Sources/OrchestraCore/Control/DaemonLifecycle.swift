@@ -110,8 +110,10 @@ public struct DaemonLifecycle: Sendable {
     }
 }
 
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif

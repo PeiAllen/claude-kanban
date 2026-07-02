@@ -5,6 +5,8 @@
 # Swift / SwiftPM
 .build/
 .swiftpm/
+# Cross-compiled Linux daemon output (scripts/build-linux-daemon.sh)
+dist/
 *.xcodeproj
 DerivedData/
 Package.resolved

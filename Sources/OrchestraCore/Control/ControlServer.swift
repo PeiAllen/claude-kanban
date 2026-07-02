@@ -11,7 +11,7 @@ public final class ControlServer: @unchecked Sendable {
 
     private var serverFd: Int32 = -1
     private let lock = NSLock()
-    private var subscribers: [Int32: Connection] = [:]
+    private var subscribers: [Int32: PeerConnection] = [:]
     private var ring: [ActivityItem] = []
     private let ringCap = 200
     private let acceptQueue = DispatchQueue(label: "orchestra.accept")
@@ -38,7 +38,7 @@ public final class ControlServer: @unchecked Sendable {
         // Take and clear serverFd under the lock so acceptLoop never reads it concurrently with this
         // close (which would risk acting on a closed/reused fd).
         let fd = lock.withLock { let f = serverFd; serverFd = -1; return f }
-        if fd >= 0 { close(fd) }
+        if fd >= 0 { closeFD(fd) }
         unlink(socketPath)
     }
 
@@ -55,12 +55,12 @@ public final class ControlServer: @unchecked Sendable {
                 if lock.withLock({ serverFd }) < 0 { break }
                 continue
             }
-            let c = Connection(fd: conn)
+            let c = PeerConnection(fd: conn)
             DispatchQueue.global().async { [weak self] in self?.serve(c) }
         }
     }
 
-    private func serve(_ conn: Connection) {
+    private func serve(_ conn: PeerConnection) {
         let reader = LineReader(fd: conn.fd)
         while let line = reader.next() {
             guard !line.isEmpty else { continue }
@@ -77,7 +77,7 @@ public final class ControlServer: @unchecked Sendable {
 
     // MARK: - dispatch
 
-    private func handle(_ req: RPCRequest, _ conn: Connection) async {
+    private func handle(_ req: RPCRequest, _ conn: PeerConnection) async {
         let source = ActivitySource(rawValue: req.source ?? "app") ?? .app
         do {
             let result = try await dispatch(req, conn, source: source)
@@ -101,7 +101,7 @@ public final class ControlServer: @unchecked Sendable {
         }
     }
 
-    private func dispatch(_ req: RPCRequest, _ conn: Connection, source: ActivitySource) async throws -> JSONValue {
+    private func dispatch(_ req: RPCRequest, _ conn: PeerConnection, source: ActivitySource) async throws -> JSONValue {
         switch req.method {
         case "ping":    return .object(["ok": .bool(true)])
         case "version": return .object(["version": .string(OrchestraVersion.current)])
@@ -209,7 +209,7 @@ public final class ControlServer: @unchecked Sendable {
         // Append-to-ring and the subscriber snapshot happen under one lock so a concurrent
         // `subscribe` either fully replays this event from the ring (and never delivers it live too)
         // or registers in time to receive it live — never both, never out of order.
-        let conns: [Connection] = lock.withLock {
+        let conns: [PeerConnection] = lock.withLock {
             if case .activity(let item) = event {
                 ring.append(item)
                 if ring.count > ringCap { ring.removeFirst(ring.count - ringCap) }
@@ -226,13 +226,13 @@ public final class ControlServer: @unchecked Sendable {
         RPCNotification(method: "event", params: try? JSONValue(encodable: event))
     }
 
-    private func removeSubscriber(_ conn: Connection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
+    private func removeSubscriber(_ conn: PeerConnection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
 }
 
 /// A single client connection with a serial, non-blocking writer. All writes (responses + events)
 /// go through one per-connection serial queue, so frames stay ordered and a slow/stuck client only
 /// backs up its own queue — never the shared event pump.
-final class Connection: @unchecked Sendable {
+final class PeerConnection: @unchecked Sendable {
     let fd: Int32
     var isSubscriber = false
     /// Fired once, off the event pump, when a queued write fails — lets the server drop a dead
@@ -268,14 +268,7 @@ final class Connection: @unchecked Sendable {
 
     func close() {
         lock.lock(); defer { lock.unlock() }
-        if !closed {
-            #if canImport(Glibc)
-            _ = Glibc.close(fd)
-            #else
-            _ = Darwin.close(fd)
-            #endif
-            closed = true
-        }
+        if !closed { closeFD(fd); closed = true }
     }
 }
 
@@ -284,8 +277,10 @@ extension NSLock {
     func withLock<T>(_ body: () -> T) -> T { lock(); defer { unlock() }; return body() }
 }
 
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif

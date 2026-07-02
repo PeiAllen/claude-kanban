@@ -1,9 +1,4 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
-import Darwin
-#endif
 
 /// Observable link state the UI binds to. `connecting` = first attempt; `live` = connected + (re)subscribed;
 /// `retrying` = dropped, backing off; `down` = intentionally closed.
@@ -51,14 +46,7 @@ public final class UDSTransport: Transport, @unchecked Sendable {
 
     public func close() {
         lock.withLock {
-            if fd >= 0 {
-                #if canImport(Glibc)
-                _ = Glibc.close(fd)
-                #else
-                _ = Darwin.close(fd)
-                #endif
-                fd = -1
-            }
+            if fd >= 0 { closeFD(fd); fd = -1 }
             reader = nil
         }
     }

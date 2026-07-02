@@ -1,23 +1,25 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
 #endif
 
 // Module-neutral POSIX shims. Defined at file scope, where the `UDS` enum's own static
 // `listen`/`connect`/`accept`/`read` methods do NOT shadow the C globals, so one set of calls works on
-// Darwin and Glibc alike. `posixSend` carries the SIGPIPE guard: Darwin suppresses it per-socket via
-// SO_NOSIGPIPE (set in `suppressSIGPIPE`), while Linux passes MSG_NOSIGNAL on every send.
+// Darwin and Linux (glibc/musl) alike. `posixSend` carries the SIGPIPE guard: Darwin suppresses it
+// per-socket via SO_NOSIGPIPE (set in `suppressSIGPIPE`), while Linux passes MSG_NOSIGNAL on every send.
 @inline(__always) private func posixListen(_ fd: Int32, _ backlog: Int32) -> Int32 { listen(fd, backlog) }
 @inline(__always) private func posixConnect(_ fd: Int32, _ a: UnsafePointer<sockaddr>, _ l: socklen_t) -> Int32 { connect(fd, a, l) }
 @inline(__always) private func posixAccept(_ fd: Int32) -> Int32 { accept(fd, nil, nil) }
 @inline(__always) private func posixRead(_ fd: Int32, _ b: UnsafeMutableRawPointer, _ n: Int) -> Int { read(fd, b, n) }
 @inline(__always) @discardableResult private func posixClose(_ fd: Int32) -> Int32 { close(fd) }
-#if canImport(Glibc)
-@inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { send(fd, b, n, Int32(MSG_NOSIGNAL)) }
-#else
+#if canImport(Darwin)
 @inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { write(fd, b, n) }
+#else
+@inline(__always) private func posixSend(_ fd: Int32, _ b: UnsafeRawPointer, _ n: Int) -> Int { send(fd, b, n, Int32(MSG_NOSIGNAL)) }
 #endif
 
 /// Low-level AF_UNIX (SOCK_STREAM) helpers. The control plane uses these directly so it has no
