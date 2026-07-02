@@ -352,6 +352,20 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the `?` keyboard-help overlay to a PNG via `ImageRenderer` — headless, no daemon, no
+    /// Screen-Recording permission. Used by `ORCH_SNAPSHOT_HELP=/path.png` for UI review.
+    static func snapshotHelp(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        let view = KeyboardHelpView()
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .padding(40)
+            .background(theme.winBg)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Shared ImageRenderer → PNG writer for the snapshot hooks.
     static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -377,6 +391,10 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DIFF"] {
                 DebugLaunchHook.snapshotDiff(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_HELP"] {
+                DebugLaunchHook.snapshotHelp(to: path, model: model)
                 exit(0)
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_CARDS"] {
