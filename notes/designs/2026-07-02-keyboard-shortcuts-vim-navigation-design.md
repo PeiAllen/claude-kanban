@@ -117,6 +117,37 @@ A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
 - `a` — archive · `r` — reopen (on a Done card) · `o` — open worktree in Zed (View changes)
 - `Enter` — open inspector · `i` — focus agent terminal to type
 
+### Inspector chrome controls
+
+The inspector has ~10 chrome controls (Agent⇄Diff toggle, View-changes, Inbox, Archive, close, Copy
+chat link, Copy tmux target, Copy path, New terminal, Open read-only "Inspect" terminal). They are
+reachable three ways — the same three-tier pattern used across the app (dedicated verb → `f` hint →
+`:` palette / `Tab` ring):
+
+**Dedicated verbs** — active in Board context whenever a card is selected (no need to focus the
+inspector; if focus is inside the agent terminal, `Ctrl-h` out first). The three copies use a vim
+**`y` (yank) prefix**:
+
+| Control | Key |
+|---|---|
+| Agent ⇄ Diff toggle | `d` |
+| View changes → Zed | `o` |
+| Inbox editor | `I` (capital — `i` = type to agent) |
+| Archive | `a` |
+| Close inspector | `q` (or `Esc`) |
+| New terminal (shell tab) | `t` |
+| Open read-only Inspect terminal | `T` |
+| Copy chat link | `yc` |
+| Copy tmux target | `yt` |
+| Copy cwd / path | `yp` |
+
+**`f` link-hints (phase 2)** — label every visible chrome button; type the label to hit it. The
+catch-all so the low-frequency buttons need no dedicated key.
+
+**`:` palette · `Tab` ring · `?` help** — every button is a named command in the `:` palette (which
+shows its shortcut); with the inspector focused (`Ctrl-l`), `Tab` / `Ctrl-j` / `Ctrl-k` cycle the
+chrome as a plain focus ring and `Enter` activates; `?` lists this table when the inspector is open.
+
 ## Layer 5 — Command-line & search (vim keys, no `Cmd`)
 
 - `:` — command palette (fuzzy over every board action; each row shows its shortcut, so the palette
