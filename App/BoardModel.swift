@@ -45,6 +45,11 @@ final class BoardModel: ObservableObject {
     @Published var inspectorMode: InspectorMode = .agent
     /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
     @Published var requestInboxOpen = false
+    /// The `:` command palette overlay.
+    @Published var showPalette = false
+    /// `f` link-hint mode: labels overlaid on cards; typing a label jumps to it.
+    @Published var hintActive = false
+    @Published var hintLabels: [UUID: String] = [:]
 
     /// First-run flag: once the user has installed the daemon we skip the welcome screen.
     @AppStorage("orch_onboarded") var onboarded = false
@@ -426,7 +431,9 @@ final class BoardModel: ObservableObject {
 
     /// Cmd-W / Esc "close the frontmost thing," peeling most-transient-first.
     func closeFrontmost() {
+        if hintActive { endHint(); return }
         if showHelp { showHelp = false; return }
+        if showPalette { showPalette = false; return }
         if showSpawn { showSpawn = false; return }
         if showDone { showDone = false; return }
         if showActivity { showActivity = false; return }
@@ -440,6 +447,155 @@ final class BoardModel: ObservableObject {
             selectedId = nil; focusZone = .board; return
         }
         if let id = selectedId { _Concurrency.Task { await archive(id) } }
+    }
+
+    // MARK: search / hints / resize / collapse
+
+    /// Every visible card in navigation order: Plan → Impl → Review columns, then the freeform dock.
+    var orderedVisibleCards: [Task] {
+        BoardNavigator.columnCards(tasks, .plan)
+            + BoardNavigator.columnCards(tasks, .impl)
+            + BoardNavigator.columnCards(tasks, .review)
+            + freeformTasks
+    }
+
+    /// Ids of cards matching the active `/` query (title / branch / repo substring, case-insensitive).
+    var searchMatchIds: [UUID] {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces).lowercased(), !q.isEmpty else { return [] }
+        return orderedVisibleCards.filter {
+            $0.title.lowercased().contains(q) || $0.branch.lowercased().contains(q)
+                || (($0.repo as NSString).lastPathComponent).lowercased().contains(q)
+        }.map(\.id)
+    }
+    /// True when a search is active and this card matches (drives the dim of non-matches).
+    func isSearchMatch(_ t: Task) -> Bool {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
+        return searchMatchIds.contains(t.id)
+    }
+    /// A search filter is active (a non-empty committed query).
+    var searchActive: Bool {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces) else { return false }
+        return !q.isEmpty
+    }
+    func searchNext() { cycleMatch(+1) }
+    func searchPrev() { cycleMatch(-1) }
+    private func cycleMatch(_ step: Int) {
+        let ids = searchMatchIds
+        guard !ids.isEmpty else { return }
+        let cur = selectedId.flatMap { ids.firstIndex(of: $0) }
+        let next = cur.map { ($0 + step + ids.count) % ids.count } ?? 0
+        selectedId = ids[next]
+    }
+
+    // f link-hints: assign a short label to every visible card; the controller matches typed keys.
+    private static let hintAlphabet = Array("asdfghjklqwertyuiopzxcvbnm")
+    func beginHint() {
+        let cards = orderedVisibleCards
+        guard !cards.isEmpty else { return }
+        let a = Self.hintAlphabet
+        let width = cards.count <= a.count ? 1 : 2
+        var labels: [UUID: String] = [:]
+        for (i, c) in cards.enumerated() {
+            labels[c.id] = width == 1 ? String(a[i]) : "\(a[i / a.count])\(a[i % a.count])"
+        }
+        hintLabels = labels
+        hintActive = true
+    }
+    func endHint() { hintActive = false; hintLabels = [:] }
+    /// The card whose hint label exactly equals `typed`, if any.
+    func hintTarget(_ typed: String) -> UUID? { hintLabels.first { $0.value == typed }?.key }
+
+    /// Grow/shrink the focused pane's movable edge (Ctrl-Shift-hjkl), writing the same @AppStorage the
+    /// drag handles use so the views update live.
+    func resizeFocusedPane(_ dir: Direction) {
+        let d = UserDefaults.standard
+        func bump(_ key: String, _ fallback: Double, _ delta: Double, _ lo: Double, _ hi: Double) {
+            let cur = d.object(forKey: key) as? Double ?? fallback
+            d.set(min(hi, max(lo, cur + delta)), forKey: key)
+        }
+        switch dir {
+        case .left, .right:
+            guard selectedId != nil else { return }         // inspector must be open
+            bump("inspectorWidth", 392, dir == .left ? 40 : -40, 320, 1000)
+        case .up, .down:
+            let delta = dir == .up ? 30.0 : -30.0
+            if focusZone == .shell || focusZone == .terminal {
+                bump("shellPanelHeight", 220, delta, 80, 500)
+            } else if !freeformTasks.isEmpty {
+                bump("freeformPanelHeight", 208, delta, 140, 620)
+            }
+        }
+    }
+
+    /// Toggle the focused collapsible region (z): the shell panel when a terminal/shell is focused,
+    /// else the freeform dock. Writes the same @AppStorage the chevrons use.
+    func toggleCollapseFocused() {
+        let key = (focusZone == .shell || focusZone == .terminal) ? "shellMinimized" : "freeformCollapsed"
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
+    }
+
+    // MARK: command palette (:)
+
+    @Published var paletteQuery = ""
+    @Published var paletteIndex = 0
+
+    struct PaletteCommand: Identifiable { let id = UUID(); let title: String; let keys: String; let run: () -> Void }
+
+    func openPalette() { paletteQuery = ""; paletteIndex = 0; showPalette = true }
+
+    /// The full command catalogue (label · shortcut · action). Rebuilt each access; closures capture
+    /// `self` weakly-enough (transient values) to avoid a retained cycle.
+    func paletteCommands() -> [PaletteCommand] {
+        [
+            .init(title: "New card", keys: "c") { [self] in spawnDefaultColumn = .plan; showSpawn = true },
+            .init(title: "Search cards", keys: "/") { [self] in searchQuery = "" },
+            .init(title: "Toggle Agent / Diff view", keys: "d") { [self] in inspectorMode = inspectorMode == .agent ? .diff : .agent },
+            .init(title: "Archive card", keys: "a") { [self] in archiveSelected() },
+            .init(title: "View changes in Zed", keys: "o") { [self] in openZedSelected() },
+            .init(title: "Open inbox editor", keys: "I") { [self] in requestInboxOpen = true },
+            .init(title: "New shell tab", keys: "t") { [self] in if let id = selectedId { _Concurrency.Task { await newShell(id) } } },
+            .init(title: "Copy chat link", keys: "y c") { [self] in copySelected(.chatLink) },
+            .init(title: "Copy tmux target", keys: "y t") { [self] in copySelected(.tmux) },
+            .init(title: "Copy path", keys: "y p") { [self] in copySelected(.path) },
+            .init(title: "Go to Plan", keys: "g p") { [self] in goTo(.plan) },
+            .init(title: "Go to Implementation", keys: "g i") { [self] in goTo(.impl) },
+            .init(title: "Go to Review", keys: "g r") { [self] in goTo(.review) },
+            .init(title: "Go to Freeform", keys: "g f") { [self] in goTo(.freeform) },
+            .init(title: "Open Activity", keys: "g a") { [self] in showActivity = true },
+            .init(title: "Open Done", keys: "g d") { [self] in showDone = true },
+            .init(title: "Open Settings", keys: "g s") { [self] in goTo(.settings) },
+            .init(title: "Keyboard shortcuts", keys: "?") { [self] in showHelp = true },
+        ]
+    }
+
+    /// Commands whose title fuzzily matches the query (case-insensitive subsequence).
+    var filteredPaletteCommands: [PaletteCommand] {
+        let q = paletteQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return paletteCommands() }
+        return paletteCommands().filter { fuzzySubsequence(q, $0.title.lowercased()) }
+    }
+
+    func paletteMove(_ delta: Int) {
+        let n = filteredPaletteCommands.count
+        guard n > 0 else { paletteIndex = 0; return }
+        paletteIndex = (paletteIndex + delta + n) % n
+    }
+    func runPaletteSelection() {
+        let cmds = filteredPaletteCommands
+        guard paletteIndex >= 0, paletteIndex < cmds.count else { showPalette = false; return }
+        let cmd = cmds[paletteIndex]
+        showPalette = false
+        cmd.run()
+    }
+
+    private func fuzzySubsequence(_ needle: String, _ haystack: String) -> Bool {
+        var it = haystack.makeIterator()
+        for ch in needle {
+            var found = false
+            while let h = it.next() { if h == ch { found = true; break } }
+            if !found { return false }
+        }
+        return true
     }
 
     func toast(_ title: String, sub: String?, color: Toast.ToastColor = .green) {

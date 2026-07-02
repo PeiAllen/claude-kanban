@@ -34,6 +34,7 @@ struct AgentTerminalView: NSViewRepresentable {
         // white-box background — Claude Code's hover/expand previews — paints a solid black rectangle in
         // a light theme. Force the standard fixed xterm palette so indexed colours mean what apps expect.
         term.getTerminal().ansi256PaletteStrategy = .xterm
+        term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
@@ -47,6 +48,7 @@ struct AgentTerminalView: NSViewRepresentable {
         // Safety net: if SwiftUI reused this NSView for a different card (despite the `.id` upstream),
         // re-point it at the right tmux target instead of leaving it on the previous card's session.
         let target = "\(session):\(window)"
+        (nsView as? ScrollableTerminalView)?.termWindow = window
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             attach(nsView)
@@ -188,6 +190,10 @@ struct AgentTerminalView: NSViewRepresentable {
 /// normally, so nothing else regresses.
 final class ScrollableTerminalView: LocalProcessTerminalView {
     private static var monitorInstalled = false
+
+    /// Which tmux window this terminal is attached to ("agent" / "shell-N"). Read by FocusBridge (via
+    /// KVC) to move keyboard focus between the agent terminal and shell tabs. `@objc` for KVC.
+    @objc var termWindow: String = "agent"
 
     /// When set, the view grabs keyboard focus the moment it's mounted in a window. At `makeNSView`
     /// time the view has no window yet, and polling on a timer races the mount (the old approach drained

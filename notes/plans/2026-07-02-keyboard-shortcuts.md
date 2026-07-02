@@ -795,16 +795,17 @@ git commit -m "feat(app): ? keyboard-help overlay"
 
 ---
 
-## Deferred (documented, not implemented this plan)
+## Deferred — now implemented (follow-up batch, 2026-07-02)
 
-Tracked for a follow-up plan; each is additive and non-blocking:
+All of the below shipped except multi-select (per the user), as a second batch of commits:
 
-- **`/` search / filter** — a search field over cards, `n`/`N` to cycle matches (the intent + `searchQuery` state exist; the UI is deferred).
-- **Shell-tab switching** (`Ctrl-h/l` across tabs) + `x` close from ribbon focus, and agent↔shell `Ctrl-j/k` inside the inspector.
-- **Combo-box `Ctrl-j/k`** highlight movement in the spawn sheet (repo/branch) and progressive `Esc`.
-- **`Ctrl-Shift-hjkl` resize** + `z` collapse (drives the existing drag-handle @AppStorage values).
-- **`f` link-hints** and **`x` multi-select** — explicitly out of scope per the user.
-- **`:` command palette.**
+- **`/` search / filter + `n`/`N`** — ✅ `SearchBar` overlay, live filter, non-match dimming, match cycling.
+- **Shell-tab switching + agent↔shell focus** — ✅ terminals tagged by `termWindow`; `Ctrl-j/k` agent↔shell, `Ctrl-h/l` switch tabs (edge-aware); `Cmd-W` closes the focused tab.
+- **Combo-box `Ctrl-j/k`** — ✅ highlight + `Enter`-picks in the spawn sheet's repo/branch popovers.
+- **`Ctrl-Shift-hjkl` resize + `z` collapse** — ✅ drives the `@AppStorage` sizes / hoisted collapse flags.
+- **`f` link-hints** — ✅ label badges over cards, type-to-jump.
+- **`:` command palette** — ✅ fuzzy `CommandPalette`, `Ctrl-jk`/`Enter`/`Esc`, shortcuts shown inline.
+- **`x` multi-select** — still out of scope per the user.
 
 ---
 

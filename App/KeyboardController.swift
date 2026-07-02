@@ -13,6 +13,8 @@ final class KeyboardController {
     private var pendingG = false
     /// A `y` yank sequence is in flight (waiting for c/t/p).
     private var pendingY = false
+    /// Accumulated keystrokes while `f` hint mode is active (for 2-char labels).
+    private var hintBuffer = ""
 
     init(model: BoardModel) { self.model = model }
 
@@ -26,7 +28,7 @@ final class KeyboardController {
     // MARK: context
 
     private func context() -> KeyContext {
-        if model.showSpawn || model.showDone || model.showActivity || model.showHelp { return .overlay }
+        if model.showSpawn || model.showDone || model.showActivity || model.showHelp || model.showPalette { return .overlay }
         let fr = NSApp.keyWindow?.firstResponder
         var v = fr as? NSView
         while let cur = v {
@@ -53,6 +55,31 @@ final class KeyboardController {
     /// Returns true if the event was consumed (swallowed).
     private func handle(_ e: NSEvent) -> Bool {
         guard let ch = chord(from: e) else { return false }
+
+        // Command palette owns its navigation (letters still reach the search field → return false).
+        if model.showPalette {
+            if ch.key == "\r" || ch.key == "\n" { model.runPaletteSelection(); return true }
+            if ch.key == "\u{1B}" { model.showPalette = false; return true }
+            if ch.mods.contains(.control), ch.key.lowercased() == "j" { model.paletteMove(1); return true }
+            if ch.mods.contains(.control), ch.key.lowercased() == "k" { model.paletteMove(-1); return true }
+            return false
+        }
+
+        // f link-hint mode captures all keys until a label resolves, an invalid prefix aborts, or Esc.
+        if model.hintActive {
+            if ch.key == "\u{1B}" { hintBuffer = ""; model.endHint(); return true }
+            hintBuffer.append(Character(ch.key.lowercased()))
+            if let id = model.hintTarget(hintBuffer) {
+                model.selectedId = id; model.focusZone = .board
+                hintBuffer = ""; model.endHint(); return true
+            }
+            // Still a viable prefix of some label? keep buffering; else abort.
+            if !model.hintLabels.values.contains(where: { $0.hasPrefix(hintBuffer) }) {
+                hintBuffer = ""; model.endHint()
+            }
+            return true
+        }
+
         let ctx = context()
 
         // `y`-prefix yank state machine (board only) — kept out of KeyMap to avoid a second prefix arg.
@@ -98,6 +125,12 @@ final class KeyboardController {
         case .help:                 model.showHelp = true; return true
         case .newShell:             if let id = model.selectedId { _Concurrency.Task { await model.newShell(id) } }; return true
         case .closeFrontmost:       model.closeFrontmost(); return true
+        case .searchNext:           model.searchNext(); return true
+        case .searchPrev:           model.searchPrev(); return true
+        case .resize(let d):        model.resizeFocusedPane(d); return true
+        case .toggleCollapse:       model.toggleCollapseFocused(); return true
+        case .hint:                 model.beginHint(); return true
+        case .palette:              model.openPalette(); return true
         }
     }
 }
@@ -108,8 +141,12 @@ final class KeyboardController {
 @MainActor
 enum FocusBridge {
     /// Move keyboard focus into the agent terminal, if one is mounted.
-    static func enterTerminal() {
-        guard let root = NSApp.keyWindow?.contentView, let term = firstTerminal(in: root) else { return }
+    static func enterTerminal() { focusTerminal(window: "agent") }
+
+    /// Focus the mounted terminal view attached to `window` ("agent" / "shell-N").
+    static func focusTerminal(window: String) {
+        guard let root = NSApp.keyWindow?.contentView,
+              let term = terminal(in: root, window: window) else { return }
         term.window?.makeFirstResponder(term)
     }
 
@@ -119,9 +156,18 @@ enum FocusBridge {
         model.focusZone = .board
     }
 
-    /// Execute a spatial pane-focus move. Returns true if consumed. Edge-aware: from a terminal only
-    /// `.left` ejects (the board is to the left); other directions have no neighbour, so they return
-    /// false and the key passes through to the pty (e.g. Ctrl-l clear-screen in the shell).
+    /// The `window` of the terminal that currently holds first responder ("agent" / "shell-N" / nil).
+    static func focusedTerminalWindow() -> String? {
+        var v = NSApp.keyWindow?.firstResponder as? NSView
+        while let cur = v {
+            if isTerminal(cur) { return terminalWindow(cur) }
+            v = cur.superview
+        }
+        return nil
+    }
+
+    /// Execute a spatial pane-focus move. Returns true if consumed; false = pass the key through to
+    /// the pty (edge with no neighbour, e.g. Ctrl-l clear-screen in a shell).
     static func movePane(_ dir: Direction, model: BoardModel, from ctx: KeyContext) -> Bool {
         switch ctx {
         case .board:
@@ -136,16 +182,68 @@ enum FocusBridge {
                 return false
             }
         case .terminal:
-            if dir == .left { ejectToBoard(model); return true }
-            return false                    // up/down/right → no neighbour, pass through to pty
+            return moveWithinInspector(dir, model: model)
         default:
             return false
         }
     }
 
-    private static func firstTerminal(in view: NSView) -> NSView? {
-        if String(describing: type(of: view)).contains("ScrollableTerminalView") { return view }
-        for sub in view.subviews { if let t = firstTerminal(in: sub) { return t } }
+    /// Focus moves while a terminal owns the keyboard: agent ↕ shell, shell tabs ↔, eject to the board.
+    private static func moveWithinInspector(_ dir: Direction, model: BoardModel) -> Bool {
+        let cur = focusedTerminalWindow() ?? "agent"
+        guard let id = model.selectedId else {
+            if dir == .left { ejectToBoard(model); return true }
+            return false
+        }
+        let shells = model.shellWindows[id] ?? []
+        let shellOpen = model.shellOpen.contains(id) && !shells.isEmpty
+
+        if cur == "agent" {
+            switch dir {
+            case .left: ejectToBoard(model); return true                 // board is to the left
+            case .down:                                                  // into the shell panel
+                guard shellOpen else { return false }
+                let w = model.selectedShell[id] ?? shells.first!
+                model.selectedShell[id] = w; model.focusZone = .shell
+                focusTerminal(window: w); return true
+            default: return false                                        // up/right → passthrough
+            }
+        } else {
+            // A shell tab is focused. Tabs are horizontal; the agent terminal is above.
+            let idx = shells.firstIndex(of: cur) ?? 0
+            switch dir {
+            case .up:                                                    // back to the agent terminal
+                model.focusZone = .terminal; focusTerminal(window: "agent"); return true
+            case .left:
+                if idx > 0 { switchShell(model, id, shells[idx - 1]); return true }
+                ejectToBoard(model); return true                         // first tab → eject to board
+            case .right:
+                if idx < shells.count - 1 { switchShell(model, id, shells[idx + 1]); return true }
+                return false                                             // last tab → passthrough
+            case .down: return false                                     // bottom → passthrough
+            }
+        }
+    }
+
+    /// Switch the visible shell tab and refocus it once the new terminal has mounted.
+    private static func switchShell(_ model: BoardModel, _ id: UUID, _ window: String) {
+        model.selectedShell[id] = window
+        model.focusZone = .shell
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            focusTerminal(window: window)
+        }
+    }
+
+    private static func isTerminal(_ v: NSView) -> Bool {
+        String(describing: type(of: v)).contains("ScrollableTerminalView")
+    }
+    /// The `termWindow` tag set by AgentTerminalView, read via KVC to avoid importing SwiftTerm here.
+    private static func terminalWindow(_ v: NSView) -> String? {
+        v.value(forKey: "termWindow") as? String
+    }
+    private static func terminal(in view: NSView, window: String) -> NSView? {
+        if isTerminal(view), terminalWindow(view) == window { return view }
+        for sub in view.subviews { if let t = terminal(in: sub, window: window) { return t } }
         return nil
     }
 }

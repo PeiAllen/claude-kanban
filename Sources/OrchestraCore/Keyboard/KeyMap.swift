@@ -15,6 +15,10 @@ public enum KeyMap {
             default:  return nil
             }
         }
+        // Ctrl-Shift-hjkl: resize the focused pane's edge (board / terminal only).
+        if chord.mods.contains(.control), chord.mods.contains(.shift), let dir = direction(chord.key) {
+            return (ctx == .board || ctx == .terminal) ? .resize(dir) : nil
+        }
         // Ctrl-hjkl: pane focus on the board / in a terminal; only vertical (form/dropdown) in a field.
         if chord.mods.contains(.control), let dir = direction(chord.key) {
             switch ctx {
@@ -34,7 +38,8 @@ public enum KeyMap {
     }
 
     private static func direction(_ key: Character) -> Direction? {
-        switch key {
+        // Lowercase so Ctrl-Shift-H (which arrives as "H") still resolves.
+        switch Character(key.lowercased()) {
         case "h": return .left
         case "j": return .down
         case "k": return .up
@@ -67,6 +72,11 @@ public enum KeyMap {
         case "o": return .openInZed
         case "d": return .toggleDiff
         case "t": return .newShell
+        case "z": return .toggleCollapse
+        case "f": return .hint
+        case ":": return .palette
+        case "n": return .searchNext
+        case "N": return .searchPrev
         case "/": return .search
         case "?": return .help
         default:  return nil

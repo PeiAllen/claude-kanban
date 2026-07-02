@@ -52,7 +52,13 @@ public enum KeyIntent: Equatable, Sendable {
     case beginGoTo                  // g — begin a go-to sequence
     case goTo(GoTarget)             // g<letter> — jump to a region
     case search                     // / — search/filter cards
+    case searchNext                 // n — next search match
+    case searchPrev                 // N — previous search match
     case help                       // ? — help overlay
     case newShell                   // t / Cmd-T — new shell tab
     case closeFrontmost             // Cmd-W — close the frontmost thing
+    case resize(Direction)          // Ctrl-Shift-hjkl — grow/shrink the focused pane's edge
+    case toggleCollapse             // z — collapse/expand the focused dock/panel
+    case hint                       // f — link-hint overlay (jump to any card)
+    case palette                    // : — command palette
 }

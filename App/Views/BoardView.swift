@@ -176,7 +176,8 @@ private struct FreeformRegionView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
 
-    @State private var collapsed = false
+    // Persisted so the `z` keyboard verb (which writes this key) can collapse/expand the dock too.
+    @AppStorage("freeformCollapsed") private var collapsed = false
 
     // Dock height, persisted across launches; clamped 140–620. During a live drag we hold the
     // in-flight value in `dragHeight` and commit to @AppStorage only on release (a per-frame
