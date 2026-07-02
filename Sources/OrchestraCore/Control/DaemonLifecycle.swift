@@ -33,8 +33,11 @@ public struct DaemonLifecycle: Sendable {
         Bundle.module.path(forResource: "com.orchestra.daemon", ofType: "plist")
     }
 
-    /// Render + write the plist and bootstrap it into the user's GUI domain.
+    /// Render + write the plist and bootstrap it into the user's GUI domain. macOS-only: on Linux the
+    /// daemon is started by systemd (see scripts/deploy-linux-daemon.sh), so this throws rather than
+    /// silently succeeding.
     public func install(orchestradBin: String, logPath: String = Config.logPath) throws {
+        #if os(macOS)
         let template: String
         if let p = Self.templatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
             template = s
@@ -50,13 +53,18 @@ public struct DaemonLifecycle: Sendable {
                                                 withIntermediateDirectories: true)
         try rendered.write(toFile: plistPath, atomically: true, encoding: .utf8)
         load()
+        #else
+        throw OrchestraError.io("daemon auto-install is macOS-only; on Linux use systemctl --user")
+        #endif
     }
 
-    /// Bootstrap + enable (idempotent — ignores "already loaded").
+    /// Bootstrap + enable (idempotent — ignores "already loaded"). No-op off macOS.
     public func load() {
+        #if os(macOS)
         let uid = getuid()
         _ = try? launchctl.run(["bootstrap", "gui/\(uid)", plistPath])
         _ = try? launchctl.run(["enable", "gui/\(uid)/\(Self.label)"])
+        #endif
     }
 
     /// True if a daemon is answering on the control socket.
@@ -76,16 +84,14 @@ public struct DaemonLifecycle: Sendable {
     }
 
     public func uninstall() {
+        #if os(macOS)
         let uid = getuid()
         _ = try? launchctl.run(["bootout", "gui/\(uid)/\(Self.label)"])
         try? FileManager.default.removeItem(atPath: plistPath)
-    }
-
-    private func closeFd(_ fd: Int32) {
-        #if canImport(Darwin)
-        Darwin.close(fd)
         #endif
     }
+
+    private func closeFd(_ fd: Int32) { _ = close(fd) }
 
     private var fallbackPlist: String {
         """
@@ -104,6 +110,8 @@ public struct DaemonLifecycle: Sendable {
     }
 }
 
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
