@@ -35,9 +35,13 @@ enum ReadOnlyLaunch {
         + "Reading, searching, and inspection are allowed (e.g. cat, ls, grep, find, and read-only git "
         + "such as log, diff, show, status, blame). Treat anything ambiguous as a mutation and deny it."
 
-    static func settingsJSON(cwd: String, gitDir: String?) -> String {
+    /// The read-only enforcement settings as a dictionary (permissions/autoMode/sandbox). No `statusLine`
+    /// or `hooks` — those belong to the managed side-channel. For a tracked card this is handed to
+    /// `SettingsComposer` as an overlay on the hooks base (so the merged `--settings` keeps both); the
+    /// untracked `inspect` shell uses `settingsJSON` directly and intentionally omits the hooks side.
+    static func settingsObject(cwd: String, gitDir: String?) -> [String: Any] {
         let denyWrite = [cwd] + (gitDir.map { [$0] } ?? [])
-        let obj: [String: Any] = [
+        return [
             "permissions": ["deny": ["Edit", "Write", "MultiEdit", "NotebookEdit"]],
             "autoMode": ["hard_deny": [readOnlyPolicy]],
             "sandbox": [
@@ -47,7 +51,11 @@ enum ReadOnlyLaunch {
                 "filesystem": ["denyWrite": denyWrite],
             ],
         ]
-        let data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
+    }
+
+    static func settingsJSON(cwd: String, gitDir: String?) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: settingsObject(cwd: cwd, gitDir: gitDir),
+                                               options: [.sortedKeys])
         return String(decoding: data, as: UTF8.self)
     }
 }

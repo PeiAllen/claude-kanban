@@ -57,4 +57,5 @@ final class ReadOnlyLaunchTests: XCTestCase {
         XCTAssertEqual(ReadOnlyLaunch.gitDir(repo: "/r/app", worktreeName: "feature"),
                        "/r/app/.git/worktrees/feature")
     }
+
 }

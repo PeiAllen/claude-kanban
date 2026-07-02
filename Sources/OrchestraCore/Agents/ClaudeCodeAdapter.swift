@@ -106,13 +106,17 @@ public struct ClaudeCodeAdapter: Adapter {
         // The adapter only *mirrors* that decision into Claude's native per-directory trust — it never
         // reads the TrustLedger itself. When untrusted, leave Claude to prompt / the card to clamp.
         ClaudeTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd)
-        // A read-only card needs an OS-level write lock (the Bash escape hatch the --disallowedTools
-        // flags can't reach). Write the per-card sandbox `denyWrite` settings file that start/resume
-        // pass as an EXTRA --settings, alongside (not instead of) the hooks file — it's a tracked card.
-        if ctx.access == .readOnly {
-            let json = ReadOnlyLaunch.settingsJSON(cwd: ctx.cwd, gitDir: nil)
+        // If this card contributes any settings overlays (read-only enforcement today, anything future),
+        // fold them onto the managed hooks/statusLine base into ONE merged file that start/resume pass as
+        // the sole --settings. Claude Code's multiple --settings are last-file-wins (full replace), NOT
+        // deep-merged, so a second --settings would silently drop the managed statusLine + telemetry hooks
+        // — see SettingsComposer. Cards with no overlays just use the shared hooks file directly.
+        let overlays = settingsOverlays(ctx)
+        if !overlays.isEmpty {
+            let base = (try? String(contentsOfFile: ctx.hooksPath, encoding: .utf8)) ?? ""
+            let json = SettingsComposer.composeJSON(baseJSON: base, overlays: overlays)
             try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
-            try? json.write(toFile: readOnlySettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
+            try? json.write(toFile: cardSettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
         }
         // Standing delegation guidance for EVERY card (independent of ctx.seed): deliver the Claude skill
         // variant to the per-card project-skill location Claude Code discovers (`.claude/skills/<name>/`).
@@ -128,27 +132,40 @@ public struct ClaudeCodeAdapter: Adapter {
     }
 
     /// Edit-tool denials for a read-only card — removes Edit/Write/MultiEdit/NotebookEdit from the
-    /// model's context (reuses [[ReadOnlyLaunch]]'s tool list). The sandbox half rides in via the
-    /// extra --settings file (see `accessSettingsFlags`).
+    /// model's context (reuses [[ReadOnlyLaunch]]'s tool list). The sandbox half rides in as a settings
+    /// overlay (see `settingsOverlays`), which `prepareToLaunch` merges into the single `--settings` file.
     private func accessFlags(_ access: CardAccess) -> [String] {
         access == .readOnly
             ? ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit"]
             : []
     }
 
-    /// Extra `--settings <readonly.json>` for a read-only card — the sandbox `denyWrite` half. Layered
-    /// ON TOP of the hooks --settings (Claude merges multiple --settings; deny rules win regardless).
-    private func accessSettingsFlags(_ ctx: AdapterContext) -> [String] {
-        ctx.access == .readOnly ? ["--settings", readOnlySettingsPath(ctx.cwd)] : []
+    /// The per-card settings overlays to deep-merge onto the managed hooks/statusLine base, in order.
+    /// THIS IS THE SEAM for any future per-card settings: append a `[String: Any]` layer here and it is
+    /// automatically folded into the single merged `--settings` file — no new `--settings` flag, no risk
+    /// of clobbering the managed statusLine/hooks (Claude's multiple --settings are last-file-wins).
+    private func settingsOverlays(_ ctx: AdapterContext) -> [[String: Any]] {
+        var overlays: [[String: Any]] = []
+        if ctx.access == .readOnly {
+            overlays.append(ReadOnlyLaunch.settingsObject(cwd: ctx.cwd, gitDir: nil))
+        }
+        return overlays
     }
 
-    /// Deterministic per-cwd path for the read-only settings file, so `prepareToLaunch` writes the
+    /// The single `--settings` file for a card. With no overlays the shared managed hooks file is used
+    /// directly; with overlays, the per-card merged file `prepareToLaunch` wrote. Exactly one --settings,
+    /// always — Claude Code's multiple --settings are last-file-wins (full replace), not deep-merged.
+    private func settingsFlags(_ ctx: AdapterContext) -> [String] {
+        ["--settings", settingsOverlays(ctx).isEmpty ? ctx.hooksPath : cardSettingsPath(ctx.cwd)]
+    }
+
+    /// Deterministic per-cwd path for the merged per-card settings file, so `prepareToLaunch` writes the
     /// same file `start`/`resume` reference. Hashed (not the raw cwd-slug) to stay under the 255-char
     /// filename cap for deeply-nested directories.
-    private func readOnlySettingsPath(_ cwd: String) -> String {
+    private func cardSettingsPath(_ cwd: String) -> String {
         var h: UInt64 = 5381
         for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
-        return "\(Config.dataDir)/readonly-card-\(String(h, radix: 16)).json"
+        return "\(Config.dataDir)/card-settings-\(String(h, radix: 16)).json"
     }
 
     /// In the plan column we hand `--permission-mode auto` so planning workflows (e.g. `/layered-plan`)
@@ -164,8 +181,7 @@ public struct ClaudeCodeAdapter: Adapter {
         argv += startInFlags(ctx.startIn)
         argv += accessFlags(ctx.access)
         if let sid = ctx.sessionId { argv += ["--session-id", sid] }
-        argv += ["--settings", ctx.hooksPath]
-        argv += accessSettingsFlags(ctx)
+        argv += settingsFlags(ctx)
         let nameValue = ctx.name ?? (ctx.prompt.map { titleSeed(from: $0) } ?? "")
         if !nameValue.isEmpty { argv += ["--name", nameValue] }
         if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
@@ -174,11 +190,10 @@ public struct ClaudeCodeAdapter: Adapter {
 
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
-        var argv = [binary, "--resume", sid, "--settings", ctx.hooksPath]
+        var argv = [binary, "--resume", sid] + settingsFlags(ctx)
         if let n = ctx.name, !n.isEmpty { argv += ["--name", n] }
         argv += modelFlag(ctx.model)
         argv += accessFlags(ctx.access)
-        argv += accessSettingsFlags(ctx)
         // F1 (C3): a handoff/fork seed (authored ctx + folded inbox) rides as the resumed session's
         // opening positional turn — history holds the task, the seed adds the new instruction.
         if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
