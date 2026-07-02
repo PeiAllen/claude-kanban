@@ -98,7 +98,8 @@ between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff
 `~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
 plumbing. It deliberately targets the *canonical* project vault (`Task.repo/notes`), not the per-card
-worktree copy, so notes don't fragment across worktrees. The per-card **Inbox** button
+worktree copy, so notes don't fragment across worktrees. It is also bound to the bare
+[`o` keyboard shortcut](#keyboard-navigation) on the selected card. The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
 Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
 (see [chapter 9](09-design-decisions.md#shipped-feature-history)):
@@ -209,7 +210,7 @@ The shipped bindings:
 | `g` then `p`/`i`/`r`/`f`/`a`/`d`/`s` | Go to Plan / Implementation / Review / Freeform / Activity / Done / Settings |
 | `c` | New card (opens the spawn sheet) |
 | `H` / `L` | **Carry** the selected card one column left / right (shift = grab the card) |
-| `a` · `o` · `d` · `I` · `t` | Archive · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
+| `a` · `o` · `O` · `d` · `I` · `t` | Archive · open the card's **notes** (Obsidian vault) · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
 | `y c` / `y t` / `y p` | Copy chat link / tmux target / cwd path |
 | `/` · `n` / `N` | **Search / filter cards** — opens the `SearchBar` (matches title / branch / repo); typing dims non-matches and jumps to the first hit, `Enter` commits back to the board where `n`/`N` cycle matches, `Esc` clears |
 | `f` | **Link-hints** — overlay a short home-row label on every visible card; type the label to jump to it (`Esc` aborts) |
@@ -219,8 +220,9 @@ The shipped bindings:
 | `?` | Help overlay — `KeyboardHelpView`, a reference card grouped by surface (Navigate / Go to & find / Act / Panes & layout / Standard) |
 | `⌘N` / `⌘T` / `⌘W` | New card / new shell / close-frontmost — the standard macOS accelerators (also on the menu bar via the scene's `.commands`). Because terminals ignore `⌘` these work **even while a terminal is focused**; `⌘W` peels the most-transient thing first (open modal → focused shell tab → inspector → otherwise **archive the selected card**), mirroring the progressive `Esc` |
 
-The verbs act on the **selected** card, so `a`/`o`/`d`/`I` archive, open, toggle, or edit the inbox of the
-card you've navigated to. Beyond `?`, the search bar, command palette, and help overlay all count as an
+The verbs act on the **selected** card, so `a`/`o`/`O`/`d`/`I` archive, open its notes, view its changes,
+toggle, or edit the inbox of the card you've navigated to. (`o` → notes and `O` → Zed were swapped from the
+first cut once `n`/`N` were claimed by search — see [design note](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md).) Beyond `?`, the search bar, command palette, and help overlay all count as an
 `Overlay` context (so `Esc` / click-away closes them through `BoardModel.closeFrontmost()`); the `f` hint
 overlay is a transient capture handled directly by the controller.
 
