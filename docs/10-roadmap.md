@@ -101,7 +101,7 @@ The principle is to design every change *toward* these axes, never away from the
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
 | 7 | **View/review code on the board** ✅ **shipped** | `code-review-on-board` | A diffstat on the card and a read-only in-inspector diff, instead of only "View changes → Zed" — **shipped** (see [chapter 9](09-design-decisions.md#shipped-feature-history)). Inline review comments/approvals remain axis 5. |
 | 8 | **Outside-source intake** | `external-intake` | Let external sources (a todo app, webhooks, email) create cards — just another control-plane client calling `spawn`. |
-| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. |
+| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. Its connection spine — a `Transport` seam, reconnect/backoff, and a persisted `Connection` model — is generalized by the approved [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md), whose driving case is a **Mac app ↔ remote Linux `orchestrad`** over SSH (ready-to-run Linux build/[deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box-forward-looking) already committed; design-only until the Linux socket port lands). |
 
 ## Shared seams and dependency order
 
@@ -123,7 +123,10 @@ Sequencing guidance from the design gates:
    `models`/`archivedList`/`openInZed`/`getConfig` are server-only — so they're invisible to MCP.
    Making the registry the one true source unblocks axes 3, 5, and 8.
 2. **Near-term standalone fix:** **`ControlClient` auto-reconnect** (pulled ahead from axis 9) hardens
-   the desktop app today.
+   the desktop app today — and is workstream **B** of the
+   [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md),
+   which specifies the reconnect/backoff/re-subscribe + `Transport` seam **once**, shared by the phone
+   client *and* the Mac↔remote-Linux-daemon connection (SSH-tunnel blips need it either way).
 3. **First multi-provider consumer:** build a **`CodexAdapter`** (axis 2) once the adapter report-
    mapping seam lands. Studying Codex CLI forced three design points now baked into the model-providers
    design: session ids are **two-mode** (Claude seeds an id; Codex can't, so it's discovered from the
@@ -159,7 +162,10 @@ notes call these out explicitly so they aren't deepened by accident:
   (`claude-hooks.json`), plus transcript/session discovery in `ClaudeCodeAdapter` (keyed to
   `~/.claude/projects`),
 - the control plane (`ControlServer`/`ControlClient`) is raw-fd UDS only, with no `Transport`
-  abstraction yet (needed for the phone client),
+  abstraction yet (needed for the phone client and the [Mac↔remote-Linux-daemon
+  connection](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)), and `UDSSocket` is
+  Darwin-only (`import Darwin`, BSD `SO_NOSIGPIPE`) — the design's workstream A ports it to Glibc/musl
+  with a `MSG_NOSIGNAL` send-flag and gates the data dir to XDG on Linux,
 - `Column` is a fixed Swift enum baked into the model, board layout, `StartIn`, drag-drop, and the
   CLI/MCP `col` schema (axis 1 turns it into data).
 

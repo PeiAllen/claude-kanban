@@ -108,6 +108,38 @@ unattended, without stepping on each other or on the live app:
 This makes the harness a building block for the overnight staged-PR fan-out pattern, where each PR runs
 as its own Orchestra agent card.
 
+## Deploying `orchestrad` to a remote Linux box (forward-looking)
+
+Two committed scripts set up the daemon on a remote Linux machine, so the Mac can run only the board UI
+while `orchestrad` — and therefore every agent, tmux session, git worktree, and repo — runs on the work
+box, reached over SSH. This is the **Mac app ↔ remote Linux daemon** topology of the
+[remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md) (a
+generalization of the [phone-client axis](10-roadmap.md#the-nine-axes) onto one shared connection spine):
+the wire protocol is **unchanged** (UDS + newline-delimited JSON-RPC), reachability is pure SSH
+forwarding, and the daemon grows **no** network listener.
+
+- **`scripts/build-linux-daemon.sh [--arch x86_64|aarch64] [--out DIR]`** — cross-compiles
+  `orchestrad`/`orchestra`/`orchestra-mcp` as **zero-dependency static musl** binaries *from the Mac*
+  (via the Swift Static Linux SDK, so the box needs no Swift toolchain), alongside the
+  `Orchestra_OrchestraCore` resource bundle the daemon loads at runtime beside the binary. Output lands
+  in `dist/linux-<arch>/`. Requires the musl static SDK installed once (`swift sdk install …`); the
+  script checks for it and links the matching download if it's absent.
+- **`scripts/deploy-linux-daemon.sh <user@host> [--remote-dir ~/orchestra] [--arch x86_64]`** — rsyncs
+  the build to the box, installs a **systemd user unit** (`Restart=always`), enables **linger** (so the
+  daemon survives logout on a headless work box), starts the service, and prints the daemon's XDG socket
+  path (`~/.local/share/orchestra/orchestrad.sock`) to paste into the app's Connections settings. SSH
+  key auth (a Tailscale hostname works) plus `git`, `tmux`, and the agent CLIs (`claude`, `codex`) must
+  already be on the box — the daemon shells out to them and the agents run there.
+
+> **Forward-looking.** The scripts are committed as ready-to-run deployment tooling, but they produce a
+> *working* binary only after the Linux socket port (workstream **A** of the design — the Darwin-only
+> `UDSSocket`, the `Package.swift` platform gate, and the XDG data dir in `Config`) lands; until then
+> `swift build` for Linux fails on the Darwin-only socket code. The client half — a `Transport` seam +
+> [reconnect](10-roadmap.md#shared-seams-and-dependency-order), a persisted `Connection` model + a
+> Connections settings pane, and the app-managed SSH master tunnel that forwards the socket and rides
+> the same multiplexed connection for remote terminals — is likewise design-only. See
+> [chapter 10](10-roadmap.md) for where this sits on the roadmap.
+
 ## Runtime configuration
 
 Configuration lives in `~/Library/Application Support/Orchestra/config.json` (editable in the app's
