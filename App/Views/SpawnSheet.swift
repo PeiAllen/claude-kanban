@@ -39,6 +39,10 @@ struct SpawnSheet: View {
     @State private var repoQuery = ""
     @FocusState private var repoSearchFocused: Bool
 
+    // Keyboard highlight index into the filtered combo lists (Ctrl-j/k move it; Enter picks it).
+    @State private var repoHi = 0
+    @State private var branchHi = 0
+
     /// The agents the daemon actually supports (each with its own model catalog). Falls back to the
     /// Claude Code adapter alone when the daemon hasn't answered yet — never invents providers that
     /// aren't wired up.
@@ -396,7 +400,8 @@ struct SpawnSheet: View {
                     .textFieldStyle(.plain)
                     .font(F.mono(12.5)).foregroundColor(theme.text)
                     .focused($repoSearchFocused)
-                    .onSubmit { if let first = filteredRepos.first { pickRepo(first) } }
+                    .onSubmit { pickHighlightedRepo() }
+                    .onChange(of: repoQuery) { _, _ in repoHi = 0 }
             }
             .padding(.horizontal, 11).frame(height: 36)
 
@@ -404,9 +409,9 @@ struct SpawnSheet: View {
 
             ScrollView {
                 VStack(spacing: 1) {
-                    ForEach(filteredRepos, id: \.self) { path in
+                    ForEach(Array(filteredRepos.enumerated()), id: \.element) { idx, path in
                         ComboRow(label: (path as NSString).lastPathComponent, systemImage: "folder",
-                                 tint: theme.text2, selected: path == repo, theme: theme) { pickRepo(path) }
+                                 tint: theme.text2, selected: idx == repoHi, theme: theme) { pickRepo(path) }
                     }
                     if filteredRepos.isEmpty {
                         Text("No matches").font(F.ui(11.5)).foregroundColor(theme.text3)
@@ -418,7 +423,14 @@ struct SpawnSheet: View {
             .frame(maxHeight: 220)
         }
         .frame(width: 270)
-        .onAppear { repoSearchFocused = true }
+        .onAppear { repoSearchFocused = true; repoHi = 0 }
+        .onKeyPress(phases: .down) { press in comboMove(press, count: filteredRepos.count, hi: $repoHi) }
+    }
+
+    private func pickHighlightedRepo() {
+        let list = filteredRepos
+        guard !list.isEmpty else { return }
+        pickRepo(list[min(max(0, repoHi), list.count - 1)])
     }
 
     private func pickRepo(_ path: String) {
@@ -468,9 +480,15 @@ struct SpawnSheet: View {
                     .font(.system(size: 11)).foregroundColor(theme.text3)
                 BranchSearchField(text: $branchQuery, textColor: theme.text) { live in
                     // `live` is the field's own current content, read straight off the NSTextField at
-                    // Return time — unlike a SwiftUI binding it never lags the final keystroke.
+                    // Return time — unlike a SwiftUI binding it never lags the final keystroke. With
+                    // matches present, Enter commits the Ctrl-j/k-highlighted branch; otherwise it
+                    // creates the typed name.
                     let cur = live.trimmingCharacters(in: .whitespacesAndNewlines)
-                    commitBranch(cur.isEmpty ? (filteredBranches.first ?? "") : cur)
+                    if !filteredBranches.isEmpty {
+                        commitBranch(filteredBranches[min(max(0, branchHi), filteredBranches.count - 1)])
+                    } else {
+                        commitBranch(cur)
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -484,9 +502,9 @@ struct SpawnSheet: View {
                         ComboRow(label: "Create “\(q)”", systemImage: "plus.circle",
                                   tint: theme.accent, selected: false, theme: theme) { commitBranch(q) }
                     }
-                    ForEach(filteredBranches, id: \.self) { b in
+                    ForEach(Array(filteredBranches.enumerated()), id: \.element) { idx, b in
                         ComboRow(label: b, systemImage: "arrow.triangle.branch",
-                                  tint: theme.text2, selected: b == branch, theme: theme) { commitBranch(b) }
+                                  tint: theme.text2, selected: idx == branchHi, theme: theme) { commitBranch(b) }
                     }
                     if filteredBranches.isEmpty && (q.isEmpty || exactExists) {
                         Text(branches.isEmpty ? "No branches in this repo" : "No matches")
@@ -499,6 +517,20 @@ struct SpawnSheet: View {
             .frame(maxHeight: 220)
         }
         .frame(width: 270)
+        .onAppear { branchHi = 0 }
+        .onChange(of: branchQuery) { _, _ in branchHi = 0 }
+        .onKeyPress(phases: .down) { press in comboMove(press, count: filteredBranches.count, hi: $branchHi) }
+    }
+
+    /// Ctrl-j / Ctrl-k move a combo's highlight index (clamped). Returns `.handled` when it consumes a
+    /// key, `.ignored` otherwise (so typing still reaches the search field).
+    private func comboMove(_ press: KeyPress, count: Int, hi: Binding<Int>) -> KeyPress.Result {
+        guard press.modifiers.contains(.control), count > 0 else { return .ignored }
+        switch press.characters {
+        case "j": hi.wrappedValue = min(count - 1, hi.wrappedValue + 1); return .handled
+        case "k": hi.wrappedValue = max(0, hi.wrappedValue - 1); return .handled
+        default:  return .ignored
+        }
     }
 
     /// Commit a branch choice (existing or new) and close the popover.

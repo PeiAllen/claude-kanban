@@ -20,11 +20,13 @@ struct KeyboardHelpView: View {
             Row(keys: "⌃h  (in terminal)", desc: "Eject back to the board"),
             Row(keys: "Esc", desc: "Close / clear the frontmost thing"),
         ]),
-        Section(title: "Go to", rows: [
+        Section(title: "Go to & find", rows: [
             Row(keys: "g p / g i / g r", desc: "Plan / Implementation / Review"),
             Row(keys: "g f", desc: "Freeform dock"),
             Row(keys: "g a / g d / g s", desc: "Activity / Done / Settings"),
-            Row(keys: "/", desc: "Search / filter cards"),
+            Row(keys: "/  ·  n / N", desc: "Search cards · next / prev match"),
+            Row(keys: "f", desc: "Link-hints — jump to any card"),
+            Row(keys: ":", desc: "Command palette"),
         ]),
         Section(title: "Act on the card", rows: [
             Row(keys: "c", desc: "New card (spawn)"),
@@ -35,6 +37,12 @@ struct KeyboardHelpView: View {
             Row(keys: "I", desc: "Open the inbox editor"),
             Row(keys: "y c / y t / y p", desc: "Copy chat link / tmux target / path"),
             Row(keys: "t", desc: "New shell tab"),
+        ]),
+        Section(title: "Panes & layout", rows: [
+            Row(keys: "⌃j (in terminal)", desc: "Agent ↔ shell panel"),
+            Row(keys: "⌃h / ⌃l (shell)", desc: "Switch shell tabs"),
+            Row(keys: "⌃⇧h j k l", desc: "Resize the focused pane"),
+            Row(keys: "z", desc: "Collapse / expand the focused dock"),
         ]),
         Section(title: "Standard (⌘)", rows: [
             Row(keys: "⌘N", desc: "New card"),

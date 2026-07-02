@@ -46,9 +46,25 @@ struct CardView: View {
         .shadow(color: theme.shadowCard,
                 radius: isSelected ? 10 : 1,
                 x: 0, y: isSelected ? 8 : 1)
-        .opacity(isDead ? 0.72 : 1)
+        .opacity(dimmed ? 0.32 : (isDead ? 0.72 : 1))
+        .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onTapGesture { model.selectedId = task.id }
+    }
+
+    /// Dim when a `/` search is active and this card doesn't match.
+    private var dimmed: Bool { model.searchActive && !model.isSearchMatch(task) }
+
+    /// The `f` link-hint label badge, shown over each card while hint mode is active.
+    @ViewBuilder private var hintBadge: some View {
+        if model.hintActive, let label = model.hintLabels[task.id] {
+            Text(label.uppercased())
+                .font(F.mono(11, .heavy)).foregroundStyle(.white)
+                .padding(.horizontal, 6).frame(height: 20)
+                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(theme.accent))
+                .shadow(color: Color(r: 0, g: 0, b: 0, a: 0.3), radius: 3, y: 1)
+                .padding(6)
+        }
     }
 
     // MARK: - Running shimmer (2px top bar)

@@ -134,6 +134,24 @@ struct ContentView: View {
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
 
+            // `/` card search bar — floats near the top of the board.
+            if model.searchQuery != nil {
+                SearchBar()
+                    .padding(.top, 54)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            // `:` command palette.
+            if model.showPalette {
+                Color.black.opacity(0.28).ignoresSafeArea()
+                    .onTapGesture { model.showPalette = false }
+                CommandPalette()
+                    .padding(.top, 96)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .transition(.opacity)
+            }
+
             // Keyboard-shortcuts reference (?) — overlay like the spawn sheet.
             if model.showHelp {
                 Color.black.opacity(0.28).ignoresSafeArea()
@@ -366,6 +384,19 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the `:` command palette to a PNG via `ImageRenderer` — headless. `ORCH_SNAPSHOT_PALETTE`.
+    static func snapshotPalette(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        let view = CommandPalette()
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .padding(40)
+            .background(theme.winBg)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Shared ImageRenderer → PNG writer for the snapshot hooks.
     static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -395,6 +426,10 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_HELP"] {
                 DebugLaunchHook.snapshotHelp(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_PALETTE"] {
+                DebugLaunchHook.snapshotPalette(to: path, model: model)
                 exit(0)
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_CARDS"] {

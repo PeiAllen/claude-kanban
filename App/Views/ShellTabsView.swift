@@ -10,8 +10,8 @@ struct ShellTabsView: View {
     let task: Task
 
     // Shell windows + selection live on BoardModel (keyed by task id) so they survive deselect/
-    // reselect; only the minimize toggle is transient view state.
-    @State private var minimized = false
+    // reselect. Minimize is persisted so the `z` keyboard verb (which writes this key) can toggle it.
+    @AppStorage("shellMinimized") private var minimized = false
 
     // Shell-panel height, persisted across launches; clamped 80–500 (ui-spec §3.5). During a live
     // drag we hold the in-flight value in `dragHeight` and commit to @AppStorage only on release
