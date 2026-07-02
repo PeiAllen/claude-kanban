@@ -113,12 +113,56 @@ struct StopDrainTests {
         #expect(f != nil && s != nil && f!.lowerBound < s!.lowerBound)
     }
 
-    @Test("payload is bounded to 10k chars")
+    @Test("payload is bounded to 10k chars, header preserved even when body is truncated")
     func bound() {
         let big = String(repeating: "x", count: 25_000)
         let r = StopDrain.compose([msg(big)])
         #expect(r != nil)
         #expect(r!.count <= StopDrain.maxPayloadChars)
+        #expect(r!.hasPrefix("📥 Orchestra inbox"))   // provenance header survives truncation
+        #expect(r!.hasSuffix("[…truncated]"))
+    }
+
+    @Test("carries a channel-neutral provenance header naming Orchestra, pluralized by count")
+    func provenanceHeader() {
+        let one = StopDrain.compose([msg("do X")])
+        #expect(one?.contains("1 queued message") == true)
+        #expect(one?.contains("Orchestra") == true)
+        #expect(one?.contains("do X") == true)
+        // Channel-neutral: no Stop-hook-specific wording leaks in (shared with the Codex seed path).
+        #expect(one?.lowercased().contains("turn-end") == false)
+        #expect(one?.lowercased().contains("hook") == false)
+        let two = StopDrain.compose([msg("a"), msg("b")])
+        #expect(two?.contains("2 queued messages") == true)
+    }
+
+    @Test("multi-message batch is numbered [k/N]; a lone message is not")
+    func numbering() {
+        let three = StopDrain.compose([msg("a"), msg("b"), msg("c")])
+        #expect(three?.contains("[1/3] a") == true)
+        #expect(three?.contains("[2/3] b") == true)
+        #expect(three?.contains("[3/3] c") == true)
+        let one = StopDrain.compose([msg("solo")])
+        #expect(one?.contains("[1/1]") == false)   // no redundant index on a single message
+        #expect(one?.contains("solo") == true)
+    }
+
+    @Test("fit consumes only the whole messages that fit and reports the count")
+    func fitPartial() {
+        let big = String(repeating: "x", count: 4_000)
+        let r = StopDrain.fit([msg(big), msg(big), msg(big)])   // 3×4k + header > 10k
+        #expect(r != nil)
+        #expect(r!.payload.count <= StopDrain.maxPayloadChars)
+        #expect(r!.consumed >= 1 && r!.consumed < 3)             // at least one deferred, none sliced
+    }
+
+    @Test("fit always consumes at least one, truncating a lone oversized message")
+    func fitOversizedSingle() {
+        let huge = String(repeating: "y", count: 25_000)
+        let r = StopDrain.fit([msg(huge)])
+        #expect(r?.consumed == 1)
+        #expect(r!.payload.count <= StopDrain.maxPayloadChars)
+        #expect(r!.payload.hasSuffix("[…truncated]"))
     }
 
     @Test("blockJSON is valid decision:block with escaped reason")
@@ -162,6 +206,26 @@ struct DrainForStopTests {
         let card = UUID()
         #expect(await env.svc.drainForStop(card) == nil)  // nothing pending
     }
+
+    @Test("drains whole-messages-to-fit under the 10k bound and leaves the overflow for the next turn")
+    func drainToFit() async throws {
+        let env = TestEnv.make()
+        let inbox = await env.svc.inbox
+        let card = UUID()
+        let big = String(repeating: "x", count: 4_000)          // 3×4k + header overflows one 10k payload
+        for i in 0..<3 { try await inbox.enqueue(card, "\(i)-" + big) }
+
+        let first = await env.svc.drainForStop(card)
+        #expect(first != nil)
+        #expect(first!.count <= StopDrain.maxPayloadChars)       // bounded
+        let remaining = await inbox.peek(card)
+        #expect(!remaining.isEmpty)                              // overflow deferred, not lost
+        #expect(remaining.allSatisfy { $0.text.count == big.count + 2 })  // whole messages, never sliced
+
+        let second = await env.svc.drainForStop(card)
+        #expect(second != nil)
+        #expect(await inbox.peek(card).isEmpty)                  // remainder delivered on the next turn-end
+    }
 }
 
 @Suite("C1 · send routes through the inbox")
@@ -175,6 +239,32 @@ struct SendRoutingTests {
 
         let inbox = Inbox(path: env.base + "/inbox.json")
         #expect(await inbox.peek(task.id).map(\.text) == ["hello there"])
+    }
+
+    @Test("send rejects a message over the inbox cap and enqueues nothing")
+    func rejectsOverCap() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await env.svc.spawn(SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars + 1)
+
+        await #expect(throws: OrchestraError.self) { try await env.svc.send(task.id, tooBig) }
+        let inbox = Inbox(path: env.base + "/inbox.json")
+        #expect(await inbox.peek(task.id).isEmpty)   // nothing queued — rejected at the boundary
+    }
+
+    @Test("send accepts a message exactly at the cap, delivered whole (never truncated)")
+    func acceptsAtCap() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await env.svc.spawn(SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
+
+        try await env.svc.send(task.id, atLimit)
+        let payload = try #require(await env.svc.drainForStop(task.id))
+        #expect(payload.count <= StopDrain.maxPayloadChars)
+        #expect(payload.contains(atLimit))                 // whole message present
+        #expect(payload.hasSuffix("[…truncated]") == false)  // not clipped
     }
 }
 

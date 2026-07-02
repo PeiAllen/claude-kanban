@@ -62,6 +62,21 @@ public actor Inbox {
         return pending
     }
 
+    /// Remove + return the first `count` pending messages for a card, in order, leaving the rest queued.
+    /// Backs the Stop-hook's whole-messages-to-fit drain (`StopDrain.fit`): only the messages that fit the
+    /// payload budget this turn are removed; the overflow stays durable for the next turn-end.
+    @discardableResult
+    public func drainFirst(_ cardId: UUID, _ count: Int) throws -> [InboxMessage] {
+        ensureLoaded()
+        let pending = messages.filter { $0.cardId == cardId }
+        guard !pending.isEmpty, count > 0 else { return [] }
+        let take = Array(pending.prefix(count))
+        let takeIds = Set(take.map(\.id))
+        messages.removeAll { takeIds.contains($0.id) }
+        try persist()
+        return take
+    }
+
     /// Remove one message by id (no-op if absent). Used by the inbox editor.
     public func remove(_ id: UUID) throws {
         ensureLoaded()
