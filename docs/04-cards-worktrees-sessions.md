@@ -249,6 +249,15 @@ core handles the difference purely through the descriptor:
   to every Codex card **without clobbering the user's own project `AGENTS.md`** (one file per directory) and
   **without touching the worktree** cwd. Best-effort (never throws), idempotent, and argv/`env`-preserving
   (skill-injection PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+- **SessionStart orientation — install the parity hooks file.** As a fourth best-effort step,
+  `prepareToLaunch` installs the daemon-rendered Codex hooks file into `<CODEX_HOME>/hooks.json` via
+  `CodexHooks.install(to:)`, giving a Codex card a **Claude-parity SessionStart hook** that injects the
+  card's column/mode/self-id [orientation](06-clients-cli-mcp.md#the-hooks--_report-channel) (via
+  `_report --event orient`) — the inbound counterpart to Claude's SessionStart hook. It **never clobbers a
+  foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the file is absent or already
+  Orchestra's, keyed on the `orient` sentinel), is **orientation-only** (no telemetry — that stays the
+  rollout tail below), and is best-effort/argv-preserving
+  (column-aware-orientation PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
 - **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5-codex` /
   `gpt-5` = 272 000-token window, `o3` = 200 000), `.copy`-bundled so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*

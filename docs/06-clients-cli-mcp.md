@@ -155,6 +155,17 @@ behavior, in order:
    and non-`Stop` events never reach it. A per-card **consecutive-inject loop guard** in the daemon
    (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
    Stop→inject→Stop cycle by leaving messages queued once the cap is hit. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
+5. **On SessionStart, inject the card's orientation.** On the `session` event — a fresh open / reopen /
+   clear, but **not** a mid-turn `compact` — `_report` additionally fetches the card's **live** column,
+   access mode, and self-id from the daemon's [`sessionBrief` RPC](05-command-reference.md#server-only-built-in-methods)
+   and prints them as the SessionStart hook's `hookSpecificOutput.additionalContext`, which Claude folds
+   into the session's context. The one-sentence brief (`SessionBrief`) tells the agent which phase it was
+   opened in (Plan/Implementation/Review), whether it's read-only, and its own card id so it can `move`
+   itself as the work changes phase — column-honest orientation the board already knows, delivered without
+   an unsolicited turn (it rides the hook envelope, not tmux). Read live, so a reopened or dragged card gets
+   its current lane, not the launch-time `startIn`. This step is purely **additive** — the `session` report
+   of step 3 is unchanged — and **Codex reaches the same brief** through its own SessionStart hook
+   (`_report --event orient`, below).
 
 **Crash-safe, best-effort stdio.** `_report` is contractually best-effort — it always exits 0 and never
 fails the agent. Its statusLine + hook output goes to a stdout pipe that Claude captures, and that pipe
@@ -168,6 +179,16 @@ process-wide `signal(SIGPIPE, SIG_IGN)` in `main.swift` (set before any I/O, so 
 ([architecture](02-architecture.md#the-control-plane), [Troubleshooting](08-building-operations.md#troubleshooting)) —
 a *separate* bug: that one is the daemon's reply write to a dead peer, this one is the helper's own stdout.
 Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
+
+**Codex gets a parity SessionStart hook.** Codex ships a Claude-parity SessionStart hook whose stdout
+`additionalContext` is folded into the session, so the same orientation (step 5) reaches a Codex card too.
+`HooksRenderer.renderCodex` renders the bundled `codex-hooks.json` (SessionStart → `_report --event orient`)
+into `dataDir/codex-hooks.json` at daemon start — and again on config change — and each Codex card's
+`prepareToLaunch` installs it into the pinned `$CODEX_HOME/hooks.json`, **never clobbering a foreign user
+`hooks.json`** (`CodexHooks.installIfSafe` writes only when the destination is absent or already Orchestra's,
+identified by the `_report --event orient` sentinel). The `orient` event is **orientation-only**: it prints
+the brief and sends **no** telemetry — Codex telemetry stays the
+[daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter), not this push channel.
 
 The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
 **`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
@@ -192,4 +213,6 @@ resumed session's opening positional turn (argv, not this settings channel) — 
 the [`handoff` command](05-command-reference.md#notes-on-key-commands) (PR D1). The **new-card** counterpart
 has since landed too (PR D3): a defaulted `SpawnInput.seed` on `spawn`/`batch-spawn` folds authored context
 ahead of a fresh card's prompt, completing the handoff/fork/fan-out delivery the
-[roadmap](10-roadmap.md) called for.
+[roadmap](10-roadmap.md) called for. The **SessionStart orientation** (step 5) is a further Orchestra→agent
+path — but unlike the seeds it rides the hook's `additionalContext` envelope rather than an opening turn, and
+its brief is byte-identical across Claude and Codex ([chapter 9](09-design-decisions.md#shipped-feature-history)).

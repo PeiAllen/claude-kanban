@@ -74,6 +74,15 @@ Status, by contrast, is driven by the agent itself through the report channel (a
 flips it to `running`; a `Stop`/`Notification` hook flips it to `waiting`; a `SessionEnd` can flip it
 to `dead`). See [Architecture](02-architecture.md#the-report-channel) for how those signals arrive.
 
+An agent also **learns its own column at session start.** A SessionStart hook hands each Orchestra-spawned
+agent a one-line orientation naming its column (Plan/Implementation/Review), its access mode (read-write vs
+read-only), and its own card id — read **live** from the board, so a reopened or dragged card reflects its
+*current* lane rather than where it was launched. The agent is told to start on that footing without waiting
+to be asked, and nudged to **move itself** (`move <thisCard> --col …`) as the work crosses a phase boundary,
+so the column keeps reflecting reality. This is a suggestion, not a leash. See
+[the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel) for the mechanism and
+[Design decisions](09-design-decisions.md#shipped-feature-history) for the rationale.
+
 ## The four card modes
 
 A card's **origin** records how its working directory was created, and its **access** records whether

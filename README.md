@@ -40,6 +40,10 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
   card can `wait` on its children and wake as each concludes. All four compose from one live-delivery seam
   (F1 resume · F2 wake · F3 inbox), driven from the CLI or MCP (the app surfaces the inbox as an editor —
   list/reorder/edit/append/remove — while handoff/fork/fan-out are agent/CLI moves).
+- **Agents know their phase.** At session start each agent is handed a one-line orientation — its board
+  column (Plan/Implementation/Review), whether it's read-only, and its own card id — read live from the
+  board and delivered over the same hook channel for both Claude and Codex. It starts on that footing
+  without being told and is nudged to move itself as the work changes phase, so the column stays honest.
 - **Three control surfaces, one state.** Anything you can do in the app you can do from the `orchestra`
   CLI or an MCP tool, because all three speak to the same `CommandRegistry`.
 

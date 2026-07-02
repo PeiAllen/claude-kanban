@@ -118,17 +118,18 @@ to the daemon's internal `report` method over the same control socket:
 | Claude event | `_report --event` | What it updates on the card |
 |--------------|-------------------|------------------------------|
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
-| `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact) |
+| `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
 | `UserPromptSubmit` | `prompt` | the prompt text → auto-title; status → `running` |
 | `Pre/PostToolUse` | `tool` | `desc` (a live blurb of what the agent is doing) |
 | `Notification` / `Stop` | `notify` | `desc`; status → `waiting` |
 | `SessionEnd` | `sessionend` | exit reason → may flip status to `dead` |
 
 This is a **two-way** channel: agent → Orchestra carries live fields, and the Orchestra → agent direction
-is now **realized** — the F3 Stop-drain injects the durable inbox back at turn-end via the Stop hook, and
-the F1 resume seed (PR C3) rides a resumed session's opening turn (as an argv positional, not this settings
-file). The still-unbuilt `additionalContext` seed on *spawn* is the remaining piece (see
-[Roadmap](10-roadmap.md)).
+is now **realized** on several paths — the F3 Stop-drain injects the durable inbox back at turn-end via the
+Stop hook, the F1 resume seed (PR C3) and the new-card spawn seed (`SpawnInput.seed`, PR D3) ride a session's
+opening turn (as an argv positional, not this settings file), and the **SessionStart hook** now folds the
+card's live column/mode/self-id **orientation** into the session via its `additionalContext` envelope (see
+[the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 
 Two robustness rules matter:
 
