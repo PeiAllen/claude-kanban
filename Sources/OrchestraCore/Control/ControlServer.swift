@@ -142,6 +142,13 @@ public final class ControlServer: @unchecked Sendable {
             let task = try await service.resolveRef(ref)
             try await service.openInZed(task.id)
             return .object(["ok": .bool(true)])
+        case "openNotes":
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("openNotes needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            try await service.openNotes(task.id)
+            return .object(["ok": .bool(true)])
         case "report":
             guard let p = req.params, let ref = p.optString("ref") else {
                 throw OrchestraError.invalidParams("report needs ref")

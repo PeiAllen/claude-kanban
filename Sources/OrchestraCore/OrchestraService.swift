@@ -526,6 +526,11 @@ public actor OrchestraService {
         try launcher.openInZed(t.cwd)
     }
 
+    public func openNotes(_ id: UUID) async throws {
+        let t = try await require(id)
+        try launcher.openNotes(t.repo)
+    }
+
     // MARK: - config
 
     public func getConfig() -> Config { config }

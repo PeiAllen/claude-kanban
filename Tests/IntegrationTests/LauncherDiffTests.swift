@@ -87,4 +87,14 @@ struct LauncherDiffTests {
         let launcher = Launcher(resolver: PathResolver(config: config))
         #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt)) == nil)
     }
+
+    @Test("openNotes refuses a repo outside the allowlist before touching Obsidian")
+    func openNotesRejectsUnallowedRepo() throws {
+        // An empty allowlist means every path is out of bounds — the security gate must fire on the
+        // `<repo>/notes` target before the script is ever resolved or run.
+        let launcher = Launcher(resolver: PathResolver(allowedRoots: []))
+        #expect(throws: OrchestraError.pathNotAllowed("/not/allowed/repo/notes")) {
+            try launcher.openNotes("/not/allowed/repo")
+        }
+    }
 }

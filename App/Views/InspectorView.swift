@@ -73,6 +73,21 @@ private struct HeaderBar: View {
             }
             .buttonStyle(.plain)
 
+            // Open the project's notes/ folder as an Obsidian vault (mirrors the `/open-notes` command).
+            Button {
+                _Concurrency.Task { await model.openNotes(task.id) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "note.text").font(F.ui(13, .semibold)).foregroundColor(theme.text)
+                    Text("Open notes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                }
+                .padding(.horizontal, 11)
+                .frame(height: 29)
+                .surface(theme.card, corner: 8, hair: theme.hair)
+            }
+            .buttonStyle(.plain)
+            .help("Open this project's notes folder as an Obsidian vault")
+
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.status != .dead {
                 inboxAction
