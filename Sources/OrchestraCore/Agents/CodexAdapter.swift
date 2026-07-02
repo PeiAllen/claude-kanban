@@ -99,6 +99,11 @@ public struct CodexAdapter: Adapter {
         return nil
     }
 
+    /// send-keys wake gate (F2 / C4): defer unless the Codex TUI is idle with an empty composer. The
+    /// fragile pane parsing lives in `CodexComposer` — this adapter OWNS that Codex-specific knowledge so
+    /// core's generic send-keys wake never names a Codex type. See `CodexComposer` for the version-drift caveat.
+    public func canNudge(pane: String) -> Bool { CodexComposer.canNudge(pane) }
+
     /// Lower-case + drop underscores so `task_complete` / `TaskComplete` / `TurnComplete` normalize alike.
     private static func norm(_ s: String) -> String {
         s.lowercased().replacingOccurrences(of: "_", with: "")

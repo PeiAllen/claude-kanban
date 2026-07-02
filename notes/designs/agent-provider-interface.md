@@ -598,6 +598,27 @@ transport is the capability `wakeTransport`:
   needs that run-mode (Codex app-server drops the native TUI → an Orchestra-built viewer; §9).
   **`relaunch`** = F1, the universal fallback.
 
+> **As-built correction + REVISIT — generalize F2 wake across agents (2026-07-01).** The design above
+> assumed a Claude idle-wake is *always* covered by `nativeReinvoke` (the harness re-invokes when a
+> background `orchestra wait` exits). That's only true for **reactive orchestration** (pattern A): a plain
+> **`send`/queue to a genuinely idle Claude card has NO background wait**, so nothing reaches a turn and the
+> message sat inbox-durable until some unrelated future turn (bug: `send-wakes-idle-card`). As-built fix:
+> that one case now wakes via **resume-seed** — the `relaunch`/`resumeInCard` primitive (kill + `claude
+> --resume` with the inbox folded into the opening turn, the same engine as `handoff`), gated to fire only
+> when the card is `.waiting`, not `recovering`, resumable, and **not** a live watcher (`watchRegistry`
+> empty — else the wait-exit re-invoke handles it). So Claude now has **two** F2 mechanisms depending on
+> whether a wait is live: harness-reinvoke (has-wait) vs resume-seed relaunch (no-wait).
+>
+> This is a **stopgap on both sides** and should be revisited as one problem: Codex's `sendKeys` leans on a
+> **fragile TUI pane-scraper** (`CodexComposer.canNudge`, self-described "FRAGILE BY NATURE", drifts across
+> versions) and Claude's no-wait wake leans on a **heavy relaunch**. We deliberately did NOT build a
+> `ClaudeComposer` to sendKeys-nudge Claude — a second fragile scraper plus the hazard of a blind keystroke
+> into a permission/plan-mode prompt. The right generalization for **all** agents is **`controlChannel`** (a
+> real `turn/start` RPC — Codex app-server / ACP / a native Claude control surface), which retires *both*
+> the pane-scraper and relaunch-for-wake and makes "wake an idle card" one clean, agent-agnostic primitive.
+> Until then, F2 is: `sendKeys` (Codex, gated) · `nativeReinvoke`-or-`resume-seed` (Claude, by wait-state) ·
+> `controlChannel` (target). See `OrchestraService+Wake.swift` (`wake` / `resumeSeedWake`).
+
 > **Detect-and-defer (the safety guard for `sendKeys` wake).** A wake is **not time-critical** — the
 > conclusion is durable in the inbox — so Orchestra defers the nudge until it's safe. Gate: **idle AND
 > composer-empty** (Orchestra reads the composer via `capture-pane`; an unsent draft → *hold* the wake until

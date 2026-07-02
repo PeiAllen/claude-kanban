@@ -321,10 +321,11 @@ public actor OrchestraService {
 
     // MARK: - steer / move / status / list
 
-    /// Enqueue a message to the card's durable inbox (F3), then wake the card (F2) so an *idle* agent
+    /// Enqueue a message to the card's durable inbox (F3), then `wake` the card (F2) so an *idle* agent
     /// drains it now instead of waiting for its next unprompted turn. Content is delivered by the inbox
-    /// (Stop-hook drain / session seed) — `wake` only starts a turn; for send-keys agents it fires the
-    /// fixed content-free nudge, and it no-ops when the card is busy, drafting, or nativeReinvoke-idle.
+    /// (Stop-hook drain / resume seed) — `wake` only starts a turn, and is idempotent/non-intrusive: it
+    /// no-ops on a card that already has a turn coming (running, mid-relaunch, or blocked on a background
+    /// `orchestra wait`). See `wake` for the per-transport delivery (Codex nudge / Claude resume-seed).
     public func send(_ id: UUID, _ message: String) async throws {
         let t = try await require(id)
         try await inbox.enqueue(t.id, message)
