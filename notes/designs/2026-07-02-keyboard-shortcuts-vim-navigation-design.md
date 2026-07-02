@@ -47,7 +47,7 @@ focused — the same focus ring the user already tracks in any GUI:
 |---|---|---|
 | **Board** | a card / column / dock has focus | navigate + act (bare keys) |
 | **Terminal** | a SwiftTerm view has focus | everything → agent/shell, untouched |
-| **Field** | a text input has focus (spawn, inbox, search) | you type; `Ctrl-n`/`Ctrl-p` move a dropdown; `Esc` steps out |
+| **Field** | a text input has focus (spawn, inbox, search) | you type; `Ctrl-j`/`Ctrl-k` move a dropdown; `Esc` steps out |
 | **Overlay** | a modal / popover is up (spawn, done, activity, settings, help, palette) | navigate that overlay (`Tab`/`j`/`k`, `h`/`l` on selectors) |
 
 A small **context chip** in the inspector chrome / toolbar always shows the current context
@@ -85,6 +85,12 @@ geometry**:
 - Inside the inspector: `Ctrl-j` / `Ctrl-k` swap the agent terminal ↔ shell panel
 - **`Ctrl-h` from a focused terminal doubles as the eject** — it's just "the board is to the left,"
   so there is no separate eject key to learn.
+
+**`Ctrl-hjkl` is the one universal "move" chord, rescoped by context.** On the board it moves focus
+between panes (above). While a text field or modal owns the keyboard, bare `j`/`k` are busy typing, so
+the *same* `Ctrl-hjkl` moves *within* the modal instead — down/up a form or a dropdown, left/right
+across a selector (see Layer 7). Its meaning always follows the active context; the muscle memory is
+constant.
 
 **Edge-aware interception (the key rule).** `Ctrl-hjkl` is intercepted for pane movement **only when
 a pane actually exists in that direction**; otherwise the keystroke **passes straight through to the
@@ -135,7 +141,8 @@ A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
 Modals must be as keyboard-driven as the board. The rule set, by control type:
 
 **Modal-level flow (Overlay context)**
-- `Tab` / `Shift-Tab` — next / previous control (and `Ctrl-n` / `Ctrl-p` as vim-friendly synonyms)
+- `Tab` / `Shift-Tab` — next / previous control (and `Ctrl-j` / `Ctrl-k` as vim-friendly synonyms,
+  the same move chord used everywhere else)
 - `Enter` — trigger the modal's **primary action** (Spawn / Save) from anywhere it's unambiguous;
   a visible default button shows what `Enter` will do
 - **Progressive `Esc`** (layered, vim-style): `Esc` first closes an open dropdown → then steps out
@@ -150,8 +157,8 @@ Modals must be as keyboard-driven as the board. The rule set, by control type:
 **Text fields — multiline** (initial prompt, allowlist textarea)
 - `Enter` inserts a newline; **`Ctrl-Enter`** submits the modal (existing convention); `Esc` steps out
 
-**Combo boxes — fuzzy** (repo, branch) — *the `Ctrl-n`/`Ctrl-p` crux*
-- Type to filter; **`Ctrl-n` / `Ctrl-p`** move the highlighted candidate in the open dropdown
+**Combo boxes — fuzzy** (repo, branch) — *the `Ctrl-j`/`Ctrl-k` crux*
+- Type to filter; **`Ctrl-j` / `Ctrl-k`** move the highlighted candidate down / up the open dropdown
   (bare `j`/`k` can't be used — they'd type into the field), exactly like vim's completion popup
 - `Enter` accepts the highlight; `Tab` accepts-and-advances (readline style)
 - `Esc` closes the dropdown but keeps the field (progressive escape)
@@ -163,14 +170,15 @@ keys are safe*
 **Toggles** (read-only checkbox): `Space` toggles when focused.
 
 **Inbox editor popover** (list + append field)
-- `j` / `k` move rows (not editing); `Enter` edits the row inline (→ `inbox-edit`);
-  in-edit `Enter` commits, `Esc` cancels; `dd` (or `x`) deletes a row (→ `inbox-remove`);
-  `Ctrl-k` / `Ctrl-j` reorder the row up / down (→ `inbox-reorder`);
+- Browsing the rows is Overlay context (no text field owns the keys), so bare **`j` / `k` move the row
+  selection**; `Enter` edits the row inline (→ `inbox-edit`), in-edit `Enter` commits and `Esc` cancels;
+  `dd` (or `x`) deletes a row (→ `inbox-remove`); **`K` / `J` carry the selected row up / down**
+  (→ `inbox-reorder`) — shift = "grab it," mirroring the board's `H`/`L` carry;
   the append field at the bottom is a single-line Field (`Enter` → `send`).
 
-The unifying idea: **`Ctrl-n`/`Ctrl-p` are the "move a list while a text field owns the keyboard"
-primitive**, mirroring vim completion and readline history — so a fuzzy combo box never forces the
-hand to the arrow keys or the mouse.
+The unifying idea: **`Ctrl-j`/`Ctrl-k` are the "move a list while a text field owns the keyboard"
+primitive** — the same universal move chord, applied inside a modal — mirroring vim's completion popup,
+so a fuzzy combo box never forces the hand to the arrow keys or the mouse.
 
 ## Design principles / non-goals
 
