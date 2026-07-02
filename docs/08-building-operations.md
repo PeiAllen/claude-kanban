@@ -24,7 +24,8 @@ ships `swift-testing` as a framework but not on the default search path, so `scr
 needed `-F`/`-rpath` flags for `Testing.framework` + `lib_TestingInterop.dylib`. The test
 suite is substantial — `OrchestraCoreTests` (service, task store/migration, adapters, read-only launch,
 recovery, report, scratch, control round-trip, UDS SIGPIPE regression) and `IntegrationTests` (E2E
-binary, launcher diff, worktree/session managers against real git/tmux).
+binary, launcher diff, worktree/session managers against real git/tmux, `_report` broken-pipe/self-close
+regression).
 
 **Two toolchains, kept SDK-consistent.** The machine's *ambient* toolchain is typically Xcode
 (`xcode-select -p` → `Xcode.app`), and the CLT and Xcode SDKs produce incompatible `OrchestraCore`
@@ -148,6 +149,14 @@ to trusted with no restart. Note that these preflights return `false` inside an 
   `SO_NOSIGPIPE` on every control socket (per-socket, not a global `SIG_IGN`, so child git/tmux
   processes are unaffected); the write now returns `EPIPE` and the dead connection is dropped cleanly.
   Regression test: `Tests/OrchestraCoreTests/UDSSigPipeTests.swift`.
+- **"orchestra quit unexpectedly" popup when an agent closes its own card (fixed).** The client-side twin
+  of the daemon bug above, but a distinct process and crash. The agent's statusLine + hooks pipe their
+  output to `orchestra _report`, whose stdout Claude captures; a self-close (`archive`) kills the card's
+  tmux session — and that pipe — the instant the helper runs. `FileHandle.write` raised an uncatchable
+  ObjC `NSFileHandleOperationException` on the `EPIPE` → `SIGABRT` (a raw `write(2)` would instead die
+  with signal 13). The fix ignores `SIGPIPE` process-wide in `main.swift` and gives `ReportHelper` its own
+  POSIX `read`/`write` that swallow `EPIPE`, so the best-effort helper always exits 0. Regression test:
+  `Tests/IntegrationTests/ReportHelperPipeTests.swift`. (See [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
 - **"module compiled with a different SDK" during the app typecheck.** The ambient toolchain (Xcode)
   and the CLT SDK that `typecheck-app.sh` targets produce incompatible `OrchestraCore` modules; if
   `.build` holds an Xcode-SDK module, the CLT `swiftc -sdk .../CommandLineTools/...` refuses to import

@@ -150,6 +150,19 @@ behavior, in order:
    (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
    Stop→inject→Stop cycle by leaving messages queued once the cap is hit. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
 
+**Crash-safe, best-effort stdio.** `_report` is contractually best-effort — it always exits 0 and never
+fails the agent. Its statusLine + hook output goes to a stdout pipe that Claude captures, and that pipe
+breaks the instant a **self-close** (`archive`) kills the card's tmux session — often right while the
+helper is mid-write. `FileHandle`'s read/write would raise an *uncatchable* ObjC
+`NSFileHandleOperationException` on the resulting `EPIPE` (Swift `try?` can't catch it → `terminate()` →
+`SIGABRT` → an "orchestra quit unexpectedly" popup), and a raw `write(2)` would instead die with signal 13.
+So `ReportHelper` does its own POSIX `read`/`write` that swallow `EPIPE`/any error, paired with a
+process-wide `signal(SIGPIPE, SIG_IGN)` in `main.swift` (set before any I/O, so it also protects e.g.
+`orchestra list | head`). This is the client-side twin of the daemon's per-socket `SO_NOSIGPIPE` fix
+([architecture](02-architecture.md#the-control-plane), [Troubleshooting](08-building-operations.md#troubleshooting)) —
+a *separate* bug: that one is the daemon's reply write to a dead peer, this one is the helper's own stdout.
+Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
+
 The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
 **`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it
 to the adapter's `ClaudeCodeAdapter.parse(_:)` — the parse is **agent-dependent**, so it belongs to the

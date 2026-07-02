@@ -69,7 +69,10 @@ the tmux session also kills the MCP client whose socket the request arrived on; 
 write then hits a closed peer. Without `SO_NOSIGPIPE` that raised `SIGPIPE` and killed the daemon (and
 launchd relaunched it, surfacing a spurious "orchestrad crashed" popup). With it, the write returns
 `EPIPE`, the dead connection is dropped cleanly, and the daemon lives. See
-[Troubleshooting](08-building-operations.md#troubleshooting).
+[Troubleshooting](08-building-operations.md#troubleshooting). (Self-close has a *separate*, client-side
+SIGPIPE twin: the agent's `orchestra _report` helper writing to its now-dead stdout pipe — handled with
+crash-safe POSIX stdio + a process-wide `SIGPIPE` ignore; see
+[the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
 
 ### Request flow, server-side
 
