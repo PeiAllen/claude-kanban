@@ -85,6 +85,7 @@ struct ControlsRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            ContextChip()
             mcpChip
             doneButton
             activityButton

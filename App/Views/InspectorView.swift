@@ -10,7 +10,6 @@ enum InspectorMode { case agent, diff }
 struct InspectorView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
-    @State private var mode: InspectorMode = .agent
 
     var body: some View {
         if let t = model.selected {
@@ -20,8 +19,9 @@ struct InspectorView: View {
                     RecoveryView(task: t)
                 } else {
                     VStack(spacing: 0) {
-                        HeaderBar(task: t, mode: $mode)
-                        if mode == .diff {
+                        // Mode lives on the model so the `d` keyboard verb can toggle it from the board.
+                        HeaderBar(task: t, mode: $model.inspectorMode)
+                        if model.inspectorMode == .diff {
                             DiffInspectorView(task: t)
                         } else {
                             AgentChrome(task: t)
@@ -107,6 +107,10 @@ private struct HeaderBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        // The `I` keyboard verb pulses this to open the Inbox popover.
+        .onChange(of: model.requestInboxOpen) { _, open in
+            if open { showInbox = true; model.requestInboxOpen = false }
+        }
     }
 
     // MARK: - Card actions

@@ -1,5 +1,10 @@
 import SwiftUI
+import AppKit
 import OrchestraCore
+
+/// Which surface currently has keyboard focus, for the context chip + pane-focus moves. Distinct from
+/// `KeyContext` (which is derived per-event): this is the app's coarse notion of "where am I."
+enum FocusZone { case board, inspector, terminal, shell }
 
 struct Toast: Identifiable {
     let id = UUID()
@@ -30,6 +35,16 @@ final class BoardModel: ObservableObject {
     @Published var showActivity = false
     @Published var showOnboarding = false
     @Published var spawnDefaultColumn: Column = .plan
+
+    // Keyboard-navigation state (see notes/plans/2026-07-02-keyboard-shortcuts.md).
+    @Published var focusZone: FocusZone = .board
+    @Published var showHelp = false
+    /// Non-nil while the `/` card filter is active; the empty string means "field open, no query yet".
+    @Published var searchQuery: String? = nil
+    /// The inspector's Agent/Diff mode, hoisted here so the `d` verb can toggle it from the board.
+    @Published var inspectorMode: InspectorMode = .agent
+    /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
+    @Published var requestInboxOpen = false
 
     /// First-run flag: once the user has installed the daemon we skip the welcome screen.
     @AppStorage("orch_onboarded") var onboarded = false
@@ -356,6 +371,75 @@ final class BoardModel: ObservableObject {
     func select(ref: String) {
         let all = tasks + archived
         if let t = try? resolve(TaskRef(parsing: ref), in: all) { selectedId = t.id }
+    }
+
+    // MARK: keyboard-navigation intents
+    // Thin executors the KeyboardController calls; selection movement delegates to the pure
+    // BoardNavigator, everything else reuses the existing daemon-backed actions above.
+
+    func selectMove(_ dir: Direction) {
+        selectedId = BoardNavigator.move(tasks, selected: selectedId, dir)
+    }
+    func selectEnd(first: Bool) {
+        selectedId = BoardNavigator.end(tasks, selected: selectedId, first: first)
+    }
+
+    /// Carry the selected card one column left/right (Plan↔Impl↔Review).
+    func carrySelected(_ dir: Direction) {
+        guard let id = selectedId, let col = BoardNavigator.columnOf(tasks, id) else { return }
+        let order: [Column] = [.plan, .impl, .review]
+        guard let ci = order.firstIndex(of: col) else { return }
+        let ti = dir == .left ? ci - 1 : ci + 1
+        guard ti >= 0, ti < order.count else { return }
+        _Concurrency.Task { await move(id, to: order[ti]) }
+    }
+
+    func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
+    func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
+
+    /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path).
+    func copySelected(_ target: CopyTarget) {
+        guard let t = selected else { return }
+        let s: String
+        switch target {
+        case .chatLink: s = t.ref()
+        case .tmux:     s = "\(t.tmuxSession):agent"
+        case .path:     s = t.cwd
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        toast("Copied", sub: s)
+    }
+
+    /// Jump to a region: select the first card of a column / freeform, or open a popover / settings.
+    func goTo(_ target: GoTarget) {
+        switch target {
+        case .plan:     selectedId = BoardNavigator.columnCards(tasks, .plan).first?.id
+        case .impl:     selectedId = BoardNavigator.columnCards(tasks, .impl).first?.id
+        case .review:   selectedId = BoardNavigator.columnCards(tasks, .review).first?.id
+        case .freeform: selectedId = freeformTasks.first?.id; focusZone = .board
+        case .activity: showActivity = true
+        case .done:     showDone = true
+        case .settings: NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        }
+    }
+
+    /// Cmd-W / Esc "close the frontmost thing," peeling most-transient-first.
+    func closeFrontmost() {
+        if showHelp { showHelp = false; return }
+        if showSpawn { showSpawn = false; return }
+        if showDone { showDone = false; return }
+        if showActivity { showActivity = false; return }
+        if searchQuery != nil { searchQuery = nil; return }
+        // A focused shell tab closes; otherwise an open inspector closes; otherwise archive the card.
+        if focusZone == .shell, let id = selectedId, let w = selectedShell[id] {
+            _Concurrency.Task { await closeShell(id, w) }
+            return
+        }
+        if selectedId != nil && focusZone != .board {
+            selectedId = nil; focusZone = .board; return
+        }
+        if let id = selectedId { _Concurrency.Task { await archive(id) } }
     }
 
     func toast(_ title: String, sub: String?, color: Toast.ToastColor = .green) {
