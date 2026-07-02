@@ -197,7 +197,8 @@ horizontal sub-panes of the inspector:
 - `:` — command palette (fuzzy over every board action; each row shows its shortcut, so the palette
   teaches the keymap)
 - `/` — search / filter cards; `n` / `N` next / prev match; `Esc` clears
-- No `Cmd`-based shortcuts anywhere — the scheme is entirely bare-key / `Ctrl` / `:` / `/`.
+- The vim *command* layer uses no `Cmd` (hence `:` / `/`, not `Cmd-K`); standard macOS `Cmd`
+  accelerators live in their own complementary layer — see Layer 8.
 
 ## Layer 6 — Discoverability
 
@@ -254,6 +255,31 @@ keys are safe*
 The unifying idea: **`Ctrl-j`/`Ctrl-k` are the "move a list while a text field owns the keyboard"
 primitive** — the same universal move chord, applied inside a modal — mirroring vim's completion popup,
 so a fuzzy combo box never forces the hand to the arrow keys or the mouse.
+
+## Layer 8 — Standard macOS accelerators (`Cmd`)
+
+A complementary layer of familiar `Cmd` shortcuts, parallel to the vim keys. Because terminals ignore
+`Cmd`, these work **even while a terminal is focused** (no eject required), and they populate the
+**menu bar** for native discoverability. They're accelerators, not the primary scheme — every one has a
+vim-key twin.
+
+| Accelerator | Action | vim twin |
+|---|---|---|
+| `Cmd-N` | New card (opens the spawn sheet) | `c` |
+| `Cmd-T` | New shell tab in the selected card's inspector | `t` |
+| `Cmd-W` | Close the frontmost thing (see ordering below) | `Esc` / `q` / `a` |
+
+**`Cmd-W` peels the most-transient thing first** (a macOS-style close that mirrors the progressive
+`Esc`), so it's never surprisingly destructive:
+
+1. an open modal / popover → close it
+2. a focused shell tab → close that tab
+3. an open inspector → close the inspector
+4. otherwise, a selected card on the board → **archive it**
+
+So `Cmd-W` archives a card only when there's nothing lighter to close. A `File`/`Card` menu-bar menu
+should surface these (`New Card ⌘N`, `New Shell ⌘T`, `Close ⌘W`) so they're visible without reading
+this doc.
 
 ## Design principles / non-goals
 
