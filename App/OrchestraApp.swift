@@ -234,6 +234,34 @@ private struct DebugLaunchHook: ViewModifier {
         }
     }
 
+    /// A multi-card mock board (no daemon) that STAYS RUNNING, for driving keyboard-navigation tests:
+    /// `ORCH_SHOW=demo`. Cards span all three columns plus a freeform card, so hjkl / g-go-to / hints
+    /// have something to move through. The terminals render empty (no tmux behind a mock card).
+    static func showDemo(model: BoardModel) {
+        func mk(_ title: String, _ branch: String, _ col: Column, _ status: AgentStatus, _ order: Int,
+                origin: CardOrigin = .worktree) -> Task {
+            Task(title: title, repo: "/Users/allen/code/orchestra", branch: branch,
+                 cwd: origin == .worktree ? "/Users/allen/code/orchestra/.worktrees/\(branch)" : "/Users/allen/notes/\(branch)",
+                 origin: origin, model: AgentModel(id: "claude-opus-4-8"),
+                 startIn: col == .plan ? .plan : .impl, column: col, order: order,
+                 status: status, initialPrompt: title)
+        }
+        model.tasks = [
+            mk("Design the keyboard scheme", "feat/keys-design", .plan, .waiting, 0),
+            mk("Draft the spec document", "feat/spec", .plan, .running, 1),
+            mk("Wire the KeyboardController", "feat/controller", .impl, .running, 0),
+            mk("Add the command palette", "feat/palette", .impl, .running, 1),
+            mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .waiting, 2),
+            mk("Review the focus model", "feat/review", .review, .running, 0),
+            mk("Ship the context chip", "feat/chip", .review, .done, 1),
+            mk("Scratch: perf notes", "perf-notes", .plan, .running, 0, origin: .borrowed),
+        ]
+        model.selectedId = model.tasks.first?.id
+        // No daemon in this hook → suppress the first-run onboarding cover so the board is visible.
+        model.onboarded = true
+        model.showOnboarding = false
+    }
+
     /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
     /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
     static func snapshotDone(to path: String, model: BoardModel) {
@@ -451,6 +479,7 @@ private struct DebugLaunchHook: ViewModifier {
                 model.archived = DebugLaunchHook.mockArchived
                 model.showDone = true
             case "shells": DebugLaunchHook.showShells(model: model)
+            case "demo": DebugLaunchHook.showDemo(model: model)
             default: break
             }
         }
