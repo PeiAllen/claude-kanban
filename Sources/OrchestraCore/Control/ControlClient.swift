@@ -1,5 +1,7 @@
 import Foundation
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
 
@@ -30,7 +32,14 @@ public final class ControlClient: @unchecked Sendable {
         // Guard `fd` with writeLock so we never close it out from under an in-flight `writeAll`
         // (which would race the `fd = -1` store and risk writing to a reused fd).
         writeLock.lock()
-        if fd >= 0 { Darwin.close(fd); fd = -1 }
+        if fd >= 0 {
+            #if canImport(Glibc)
+            _ = Glibc.close(fd)
+            #else
+            _ = Darwin.close(fd)
+            #endif
+            fd = -1
+        }
         writeLock.unlock()
         stateLock.withLock {
             for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }

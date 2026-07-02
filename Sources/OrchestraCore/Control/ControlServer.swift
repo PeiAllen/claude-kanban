@@ -268,7 +268,14 @@ final class Connection: @unchecked Sendable {
 
     func close() {
         lock.lock(); defer { lock.unlock() }
-        if !closed { Darwin.close(fd); closed = true }
+        if !closed {
+            #if canImport(Glibc)
+            _ = Glibc.close(fd)
+            #else
+            _ = Darwin.close(fd)
+            #endif
+            closed = true
+        }
     }
 }
 
@@ -277,6 +284,8 @@ extension NSLock {
     func withLock<T>(_ body: () -> T) -> T { lock(); defer { unlock() }; return body() }
 }
 
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
