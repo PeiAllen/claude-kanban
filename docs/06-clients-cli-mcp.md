@@ -108,8 +108,8 @@ it logs readiness (and the socket path) to stderr.
 
 ## The hooks / `_report` channel
 
-When the daemon launches a Claude Code agent it hands it a **managed `--settings` file** rendered by
-`HooksRenderer` from the `claude-hooks.json` resource, with `__ORCHESTRA_BIN__` substituted for the
+When the daemon launches a Claude Code agent it hands it a **single managed `--settings` file** rendered
+by `HooksRenderer` from the `claude-hooks.json` resource, with `__ORCHESTRA_BIN__` substituted for the
 real `orchestra` path. That file wires Claude's statusLine and hooks to `orchestra _report --event
 <kind>`:
 
@@ -127,6 +127,12 @@ real `orchestra` path. That file wires Claude's statusLine and hooks to `orchest
   }
 }
 ```
+
+A card that also needs per-card settings (read-only enforcement today — see [the read-only
+barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second `--settings`;
+`SettingsComposer` deep-merges those overlays *onto* this base into one file. Claude Code applies multiple
+`--settings` as last-file-wins (full replacement, not deep-merge), so a second file would silently drop
+the statusLine + every telemetry hook above — merging into one is the fix (befad61).
 
 `orchestra _report` (in `ReportHelper.swift`) is the hidden helper these callbacks invoke. Its
 behavior, in order:

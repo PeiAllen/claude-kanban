@@ -141,11 +141,19 @@ just-in-time from `capture-pane`).
 Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
 
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
-  <uuid>] --settings <hooksPath> [read-only --settings] [--name <title>] [<prompt>]`. The session id is
+  <uuid>] --settings <one file> [--name <title>] [<prompt>]`. The session id is
   *seeded* at spawn so Orchestra knows it before the agent reports.
-- **resume**: `claude --resume <sid> --settings <hooksPath> [--name] [--model] [read-only flags] [<seed>]`
+- **resume**: `claude --resume <sid> --settings <one file> [--name] [--model] [read-only flags] [<seed>]`
   — no `--session-id`, no prompt re-handed; when a handoff/fork **seed** is present (F1, PR C3) it rides as
   the trailing positional opening turn, otherwise nothing follows and the argv is byte-identical to before.
+
+  Both paths emit **exactly one `--settings`**. A card with no settings overlays uses the shared managed
+  `hooksPath` directly; a card that contributes overlays (read-only enforcement today — see [the read-only
+  barrier](#the-read-only-barrier)) gets a per-card file that `SettingsComposer` deep-merges from the hooks
+  base plus those overlays. Claude Code applies multiple `--settings` as **last-file-wins (full replacement,
+  not deep-merge)**, so a *second* `--settings` would silently drop the managed statusLine + telemetry hooks
+  — the merge-into-one invariant is the fix (befad61), and `settingsOverlays(_:)` is the single seam any
+  future per-card setting appends to.
 
 **F1 resume-in-card & the seed** (PR C3): `OrchestraService.resumeInCard(_:seed:)` reloads a card into a
 fresh process with **clean context while keeping its session id** — a *resume, not a blank `restart`*, so the
@@ -293,10 +301,15 @@ one is airtight (`Agents/ReadOnlyLaunch.swift`):
 
 1. **Edit tools denied** — `--disallowedTools Edit Write MultiEdit NotebookEdit` removes the write tools
    from the agent's context entirely.
-2. **OS sandbox write-block** — an extra `--settings` file sets `sandbox.filesystem.denyWrite` on the
+2. **OS sandbox write-block** — a settings overlay sets `sandbox.filesystem.denyWrite` on the
    `cwd` (+ git dir), `allowUnsandboxedCommands:false` (so `dangerouslyDisableSandbox` is a no-op), and
    `failIfUnavailable:true` (fail closed if the sandbox is unavailable). This kills every *sandboxable*
-   Bash write — `sed -i`, `>`, `python -c 'open(...,"w")'` — at the kernel level.
+   Bash write — `sed -i`, `>`, `python -c 'open(...,"w")'` — at the kernel level. This overlay
+   (`ReadOnlyLaunch.settingsObject`, permissions/autoMode/sandbox only — no statusLine or hooks) is
+   **deep-merged onto the managed hooks base** by `SettingsComposer` into the single `--settings` file the
+   card launches with (see [the adapter's argv](#the-claude-code-adapter)); it is **not** passed as a
+   separate `--settings`, because Claude Code's multiple `--settings` are last-file-wins and a second file
+   would clobber the statusLine + telemetry hooks (befad61).
 3. **Auto-mode classifier policy** — `autoMode.hard_deny` carries a semantic "deny ANY command that
    modifies the filesystem or git/repo/system state" policy. This is the layer that catches commands
    the sandbox can't reach (anything in the user's `sandbox.excludedCommands`, e.g. `git`). It judges
@@ -308,8 +321,10 @@ a brittle command deny-list: a deny-list rots as the ecosystem changes and is tr
 (`git -C`, env prefixes, `sh -c`). Layer 3 is best-effort (an LLM judge, not adversary-proof); the only
 hard guarantee is the OS sandbox of layer 2, with a full process-level jail deferred. The same recipe
 powers the [`inspect` command](05-command-reference.md) — a throwaway read-only agent in a card's
-worktree — except `inspect` runs *without* Orchestra hooks so it stays untracked, whereas a read-only
-freeform card keeps its hooks and is a tracked citizen of the board.
+worktree — except `inspect` runs *without* Orchestra hooks so it stays untracked (it uses
+`ReadOnlyLaunch.settingsJSON` directly, intentionally hooks-free), whereas a read-only tracked card
+composes those same read-only settings *onto* the hooks base so it keeps its statusLine + telemetry and
+is a tracked citizen of the board.
 
 This three-layer recipe is Claude-Code-specific; the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
 design (Roadmap axis 2) generalizes it into a provider-agnostic **`readOnlyEnforcement` capability**

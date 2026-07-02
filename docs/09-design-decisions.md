@@ -79,7 +79,13 @@ elicitation — by **PR T2**, both in the [shipped history](#shipped-feature-his
 
 A read-only agent is constrained by three independent layers — edit tools removed, a kernel-level
 sandbox write-block, and a semantic auto-mode "deny any mutation" classifier — chosen over a brittle
-command deny-list precisely because deny-lists rot and are trivially evaded. (See
+command deny-list precisely because deny-lists rot and are trivially evaded. On a tracked card the
+sandbox layer's settings are **deep-merged onto the managed hooks base into one `--settings` file**
+(`SettingsComposer`), never handed as a second `--settings`: Claude Code applies multiple `--settings`
+last-file-wins (full replacement, not deep-merge), so a second file would silently strip the statusLine +
+telemetry hooks — which is exactly the regression befad61 fixed for agent-created (MCP/CLI-spawned)
+read-only cards. `settingsOverlays(_:)` is the single seam any future per-card setting appends to, keeping
+the one-file invariant automatic. (See
 [the read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier);
 `notes/plans/pr1-readonly-inspect-button.md`.)
 
