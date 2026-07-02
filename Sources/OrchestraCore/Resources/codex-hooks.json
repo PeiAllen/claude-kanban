@@ -1,0 +1,9 @@
+{
+  "_comment": "Orchestra-managed Codex hooks file. orchestrad renders this into dataDir/codex-hooks.json (replacing __ORCHESTRA_BIN__ with the live `orchestra` binary path); CodexAdapter.prepareToLaunch installs it into the pinned $CODEX_HOME/hooks.json (only when absent or already Orchestra's — never clobbering a foreign user hooks.json). Codex's SessionStart hook (Claude-parity) reads `hookSpecificOutput.additionalContext` from stdout; the `orient` event prints the card's column/mode/self-id orientation. Orientation ONLY — Codex telemetry stays the daemon-side rollout tail, so this hook never sends a StatusReport.",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume",
+        "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event orient" } ] }
+    ]
+  }
+}

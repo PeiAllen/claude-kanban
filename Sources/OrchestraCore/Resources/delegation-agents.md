@@ -1,9 +1,29 @@
-# Orchestra delegation — when to hand off, fork, fan-out, or wait
+# Orchestra delegation — knowing your column, and when to hand off / fork / fan-out / wait
 
 You are one agent on an Orchestra board. Besides doing the work yourself, you can **delegate** to other
 **cards** — each a durable, board-visible unit of work in its own git worktree, possibly running a
 different agent (Claude or Codex). This file is about **when** to reach for that, and when NOT to. The
 delegation tools below are the **same MCP/CLI surface** every agent sees — the seam is agent-agnostic.
+
+## Your column is your phase — start on it, and keep it honest
+
+Your card lives in one of three columns, which are the lifecycle stages of the work: **Plan** (scoping /
+figuring out what to do), **Implementation** (actively building), and **Review** (ready to be looked at
+by a human or a later automated pass). Your **access mode** is orthogonal: a **read-only** card can
+read/search/git but must not edit, write, or commit — report findings instead.
+
+At your first turn a **SessionStart** hook hands you a one-line orientation naming your column, your access
+mode (read/write vs **read-only**), and your own card id — so work in whatever phase your column implies
+without waiting to be told: in Plan, plan; in Implementation, build; in Review, review. (If you ever need to
+re-check, `orchestra list` shows your column.) As the work changes phase, **move yourself** so the board
+keeps reflecting reality (a *suggestion*, not a rule — but a stale column misleads whoever is supervising):
+
+- **Plan → Implementation** once you stop scoping and start building.
+- **Implementation → Review** once the work is ready for someone to look at.
+- **→ Plan** if you fall back to figuring out what to do.
+
+Move with the `move` tool / `orchestra move <thisCard> --col plan|impl|review`. It's just a board update
+— no worktree, wake, or round-trip cost. Move when you cross a real phase boundary, not on every step.
 
 ## The delegation surface (the tools)
 

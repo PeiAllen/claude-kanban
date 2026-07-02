@@ -263,6 +263,10 @@ public actor OrchestraService {
         let created = try await store.create(task)
 
         let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
+        // Column/mode/self-id orientation is delivered at SessionStart by each agent's hook (Claude's
+        // `_report --event session`, Codex's `_report --event orient`) as `additionalContext`, so it is
+        // NOT folded into the launch positional — the hook covers both a launched-with-prompt card and an
+        // idle provisional one, without submitting an unsolicited turn. See [[SessionBrief]] / [[CodexHooks]].
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
                                  hooksPath: Config.hooksPath, access: input.access,
@@ -373,6 +377,17 @@ public actor OrchestraService {
 
     /// Reset a card's consecutive-inject guard — called on a genuine user prompt (UserPromptSubmit).
     func resetInjectCount(_ cardId: UUID) { injectCounts[cardId] = 0 }
+
+    // MARK: - SessionStart orientation
+
+    /// The agent-agnostic SessionStart orientation for a card — which column it's in, whether it's
+    /// read-only, and its own id — so an agent knows where it was opened and starts on that footing
+    /// without being told (the open-time counterpart to `drainForStop`). Read **live** so a reopened or
+    /// dragged card reflects its CURRENT lane, not the launch-time `startIn`. `nil` if the card is gone.
+    public func sessionBrief(_ cardId: UUID) async -> String? {
+        guard let task = await store.get(cardId) else { return nil }
+        return SessionBrief.sentence(column: task.column, access: task.access, shortId: task.shortId)
+    }
 
     @discardableResult
     public func move(_ id: UUID, to column: Column, source: ActivitySource = .daemon) async throws -> Task {

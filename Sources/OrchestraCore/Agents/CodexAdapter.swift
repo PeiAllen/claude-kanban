@@ -164,6 +164,11 @@ public struct CodexAdapter: Adapter {
         // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
         // content keyed via forAgent(id), so there's no `if codex` here.
         DelegationDocs.install(agentId: id, at: "\(codexHome)/AGENTS.md")
+        // Codex's Claude-parity SessionStart hook injects the card's column/mode/self-id orientation
+        // (via `_report --event orient`), so an agent knows where it was opened without being told —
+        // the inbound counterpart to Claude's SessionStart hook. Install the daemon-rendered hooks file
+        // into the pinned CODEX_HOME, never clobbering a foreign user hooks.json. Best-effort.
+        CodexHooks.install(to: "\(codexHome)/hooks.json")
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
