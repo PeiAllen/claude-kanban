@@ -69,6 +69,7 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/build.sh` | `swift build` the package. |
 | `scripts/test.sh` | `swift test` with the CLT swift-testing flags. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
+| `scripts/build-and-launch-app.sh` | Build & install the bundle, then **refresh the live instance**: quit + relaunch the app and restart the daemon on the new binary. Needed because `build-app.sh` only replaces the bundle on disk — the running app and the KeepAlive daemon keep executing the old code until they restart. Agent tmux sessions are left running (a code refresh, not a state reset — use `reset-state.sh` for a full teardown). `--debug` passes through; `--run` is dropped (it manages the relaunch itself). |
 | `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |
 | `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |
 | `scripts/make-dev-cert.sh` | Create the "Orchestra Dev" self-signed signing cert. |
