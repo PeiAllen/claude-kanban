@@ -150,8 +150,11 @@ behavior, in order:
    for the card and, if the card's [durable inbox](03-data-model.md#the-inbox-store-f3) has anything
    pending, prints a `{"decision":"block","reason":<payload>}` object to stdout — the documented Claude
    Stop-hook continuation channel, which hands the queued messages back to the model so it keeps working
-   instead of stopping. The payload is the drained messages joined and capped at 10 000 characters
-   (`StopDrain`). This step is purely **additive** — the notify→`waiting` report of step 3 is unchanged,
+   instead of stopping. The payload (`StopDrain`) leads with a channel-neutral **provenance header** —
+   telling the model these are real instructions queued via Orchestra, not automated hook noise it should
+   distrust — followed by the messages `[k/N]`-numbered when batched; only the *whole messages that fit* the
+   10 000-char budget are delivered and drained, with any overflow left queued for the next turn-end. This
+   step is purely **additive** — the notify→`waiting` report of step 3 is unchanged,
    and non-`Stop` events never reach it. A per-card **consecutive-inject loop guard** in the daemon
    (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
    Stop→inject→Stop cycle by leaving messages queued once the cap is hit. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)

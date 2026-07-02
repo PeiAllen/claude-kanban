@@ -163,7 +163,10 @@ Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
 fresh process with **clean context while keeping its session id** — a *resume, not a blank `restart`*, so the
 transcript carries forward and the seed only adds the new instruction. It **drains the card's inbox first**,
 folds it with the authored handoff/fork context via `HandoffSeed.fold(handoff:inbox:)` (handoff first, then
-the inbox in FIFO order, bounded to the 10 000-char live-delivery limit), and threads the result onto a
+the inbox in FIFO order under the *same* channel-neutral provenance header the Claude Stop-drain uses —
+`StopDrain.inboxHeader`, `[k/N]`-numbered when batched — so a Codex card draining via the seed gets the
+identical framing a Claude card gets via the hook; the header rides only the inbox portion, so a pure
+handoff/fork seed is unchanged; bounded to the 10 000-char live-delivery limit), and threads the result onto a
 defaulted `seed:` param of `resume` → `ctx.seed`, which the adapter appends as the positional turn above.
 Draining before resume matters most for a `.sessionSeed` agent (Codex has no Stop hook) whose queued
 messages can *only* ride the seed; for Claude it also prevents a later Stop-drain double-delivering them.

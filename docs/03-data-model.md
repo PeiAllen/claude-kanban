@@ -101,8 +101,12 @@ Alongside `tasks.json`, the daemon keeps a second durable store — the **`Inbox
 sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, atomic write, malformed →
 `.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage` (`{id, cardId, text, createdAt}`)
 at `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
-filter on `cardId`. `enqueue` appends, `peek` reads without removing, and `drain` returns + removes all of
-a card's pending messages. Messages persist until drained, so they survive a daemon restart. Three
+filter on `cardId`. `enqueue` appends, `peek` reads without removing, `drain` returns + removes all of a
+card's pending messages, and `drainFirst(cardId, count:)` removes only the first `count` (in FIFO order),
+leaving the rest queued — the hook for the Stop-drain's *whole-messages-to-fit* delivery (deliver the
+messages that fit this turn's 10 000-char budget, defer the overflow to the next turn-end; see
+[Design decisions](09-design-decisions.md#shipped-feature-history)). Messages persist until drained, so they
+survive a daemon restart. Three
 editor mutators — `remove(id)`, `update(id, text:)` (text only; id/cardId/createdAt preserved), and
 `reorder(cardId, orderedIds:)` (a permutation of that card's ids, refilling only its own array slots so
 other cards' interleaving is untouched) — back the app's [inbox editor](07-app-ui.md#the-inspector) and
@@ -110,7 +114,9 @@ the [`inbox*` commands](05-command-reference.md#registry-commands).
 
 This is the durable merge-back channel for **F3** (see [Design decisions](09-design-decisions.md#one-seed-four-topologies)):
 `send` enqueues here instead of typing into tmux (then [wakes the card](09-design-decisions.md#shipped-feature-history)
-so an idle agent drains promptly rather than at its next unprompted turn), and the Claude Stop hook drains it
+so an idle agent drains promptly rather than at its next unprompted turn; `send` rejects a message over
+`StopDrain.maxMessageChars` at enqueue so any accepted one delivers whole — the inbox is a nudge channel, not
+a document transfer), and the Claude Stop hook drains it
 into the agent at its next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-reference.md#server-only-built-in-methods),
 and the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
 [`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).

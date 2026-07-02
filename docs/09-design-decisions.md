@@ -815,5 +815,38 @@ Phase 2 / plan *Deferred*), and whether any bindings become user-remappable is a
 later pass. Like the entries above, this is an app-UX feature, not a whole extensibility axis, so it stays
 here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
+Also landing after the forest is the **inbox provenance header + batching + send cap** (commit `4264575`,
+branch `inbox-stop-hook`; on the C1 [plan](../notes/plans/2026-07-01-c1-inbox-stopdrain.md)). It hardens how
+the durable [inbox](03-data-model.md#the-inbox-store-f3) *reads to the model* on the live-delivery channels
+the two agents distrust. The problem was verified empirically: a queued `send` reaches Claude as the
+Stop-hook `reason` framed "Stop hook feedback:" and Codex as a resume seed — framing an agent can mistake for
+automated hook noise and refuse to act on, treating a real instruction as an untrusted injection. Four
+decisions:
+
+- **A channel-neutral provenance header, shared byte-for-byte across both delivery paths.**
+  `StopDrain.inboxHeader` prepends a line stating the messages are *real instructions queued for this card via
+  Orchestra `send` (by the user or another agent), not automated system output — act on them*. It deliberately
+  says nothing about *how* they arrive ("turn-end", "hook", "seed"), so the Claude Stop-drain (`compose`) and
+  the Codex resume seed (`HandoffSeed.fold`, the [C3](#shipped-feature-history) fold) frame the identical
+  inbox identically — agent-agnostic. The header rides only the inbox portion of a seed, so a pure
+  handoff/fork seed is unchanged.
+- **`[k/N]` numbering for multi-message batches.** `StopDrain.renderMessages` numbers a pile-up (`[2/3] …`) so
+  the agent treats several queued messages as distinct actionable items rather than one run-on blob — the
+  documented mitigation for the "curse of instructions" compliance drop when instructions share a turn. A lone
+  message gets no index.
+- **Whole-messages-to-fit drain.** `StopDrain.fit` packs as many *whole* messages (FIFO) as fit the
+  10 000-char budget and reports how many it consumed; `drainForStop` then drains exactly that many via the new
+  [`Inbox.drainFirst(_:count:)`](03-data-model.md#the-inbox-store-f3), leaving the overflow durable for the next
+  turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
+  delivered truncated rather than stranded forever.)
+- **A send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) now rejects a message
+  over `StopDrain.maxMessageChars` (the payload budget minus a lone-message header) with `invalidParams` — *put
+  large content in a file in the worktree and reference it instead* — so any *accepted* message is guaranteed to
+  deliver whole and the truncation fallback is unreachable for `send`-queued messages. The inbox is a nudge
+  channel, not a document transfer.
+
+Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
+[C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
+
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
