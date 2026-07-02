@@ -42,9 +42,14 @@ struct OrchestraApp: App {
         }
 
         Settings {
-            SettingsView()
-                .environmentObject(model)
-                .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+            TabView {
+                SettingsView()
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                ConnectionsSettingsView()
+                    .tabItem { Label("Connections", systemImage: "network") }
+            }
+            .environmentObject(model)
+            .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
         }
     }
 }

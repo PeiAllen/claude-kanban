@@ -8,16 +8,25 @@ import SwiftTerm
 /// session directly (no byte-proxying through the daemon). When SwiftTerm isn't linked (e.g. building
 /// the core without the app dependency), a minimal placeholder is shown instead.
 struct AgentTerminalView: NSViewRepresentable {
+    /// Where the tmux server lives: the local machine, or a remote box reached over the app's shared SSH
+    /// control socket (multiplexed on the master — no extra auth/forward).
+    enum TerminalHost: Equatable {
+        case local
+        case remote(controlPath: String, sshTarget: String)
+    }
+
     let socket: String
     let session: String          // "orchestra-<id>"
     let window: String           // "agent"
+    var host: TerminalHost       // local tmux vs remote tmux over the SSH control socket
     var background: SwiftUI.Color  // app theme — terminal opens in (and switches to) the app's mode
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
+         host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false) {
-        self.socket = socket; self.session = session; self.window = window
+        self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
     }
@@ -115,7 +124,16 @@ struct AgentTerminalView: NSViewRepresentable {
         // SwiftTerm prepends argv[0] (the executable) itself, so args must start at argv[1] — i.e.
         // just ["-c", script], NOT ["sh", "-c", script] (which would make sh treat the extra "sh" as a
         // script file and fail with "cannot execute binary file").
-        term.startProcess(executable: "/bin/sh", args: ["-c", attachScript()], environment: envArray)
+        switch host {
+        case .local:
+            term.startProcess(executable: "/bin/sh", args: ["-c", attachScript()], environment: envArray)
+        case let .remote(controlPath, sshTarget):
+            // Ride the shared SSH master (-S). The grouped-view-session attach script runs REMOTELY
+            // against the box's tmux server; `socket` is the remote tmux -L name.
+            let (exe, args) = RemoteCommands.remoteTmuxAttach(
+                target: sshTarget, controlPath: controlPath, script: attachScript())
+            term.startProcess(executable: exe, args: args, environment: envArray)
+        }
     }
 
     /// Attach through a per-window *grouped* "view" session instead of the base session directly.

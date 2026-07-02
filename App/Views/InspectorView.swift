@@ -315,11 +315,13 @@ private struct AgentChrome: View {
             TerminalHeader(task: task)
             BreadcrumbStrip(task: task)
 
-            AgentTerminalView(session: task.tmuxSession, window: "agent",
+            AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
+                              host: model.terminalHost,
                               background: theme.termBg, foreground: theme.term, autofocus: true)
-                // Key by session so switching cards tears down the old terminal and attaches a fresh
-                // one — without this, SwiftUI reuses the same NSView and every card shows card #1's tmux.
-                .id(task.tmuxSession)
+                // Key by session AND active connection so switching cards OR connections tears down the
+                // old terminal and attaches a fresh one against the right host — without this, SwiftUI
+                // reuses the same NSView and every card shows card #1's tmux.
+                .id("\(model.connections.activeId)-\(task.tmuxSession)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.termBg)
 
