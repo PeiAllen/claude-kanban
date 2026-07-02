@@ -4,6 +4,13 @@ import OrchestraCore
 // orchestra — the CLI client. A thin ControlClient over the same CommandRegistry, plus the hidden
 // `_report` status-channel helper and the interactive `shell` / `daemon` specials.
 
+// A broken pipe to the agent must never take THIS process down. Claude captures our stdout for the
+// statusLine + hooks; that pipe dies the instant a self-close (`archive`) kills the card's session.
+// Ignoring SIGPIPE turns a write to the dead pipe into an EPIPE return instead of raising signal 13
+// (the `_report` helper's stdio then swallows the EPIPE rather than raising an NSException). Set
+// before any I/O; applies to every subcommand (also protects e.g. `orchestra list | head`).
+signal(SIGPIPE, SIG_IGN)
+
 let args = Array(CommandLine.arguments.dropFirst())
 let socketPath = ProcessInfo.processInfo.environment["ORCHESTRA_SOCK"] ?? Config.socketPath
 

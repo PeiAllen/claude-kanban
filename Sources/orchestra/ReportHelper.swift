@@ -1,5 +1,8 @@
 import Foundation
 import OrchestraCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// The hidden `orchestra _report --event <kind>` helper, run by the agent's statusLine + hooks. Reads
 /// the event JSON from stdin, maps it to a StatusReport, and calls the daemon's `report` over
@@ -9,7 +12,7 @@ enum ReportHelper {
     static func run(_ args: [String]) async {
         let env = ProcessInfo.processInfo.environment
         let kind = Flags(args).value("event") ?? "statusline"
-        let raw = FileHandle.standardInput.readDataToEndOfFile()
+        let raw = readAllStdin()
         let payload = (try? JSONValue.parse(raw)) ?? .object([:])
 
         // statusLine display happens regardless of whether the report send succeeds. Write it
@@ -18,7 +21,7 @@ enum ReportHelper {
         // a momentarily-slow daemon could stall the self-healing status bar. The bar must never wait
         // on the network. FileHandle.write bypasses stdio buffering.
         if kind == "statusline" {
-            FileHandle.standardOutput.write(Data(renderStatusLine(payload: payload, raw: raw).utf8))
+            writeStdout(Data(renderStatusLine(payload: payload, raw: raw).utf8))
         }
 
         guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty else { return }
@@ -44,9 +47,46 @@ enum ReportHelper {
             let drainParams = JSONValue.object(["ref": .string(taskId)])
             if let resp = await boundedCall(sock: sock, method: "drain", params: drainParams, budgetMs: 2000),
                let reason = resp["reason"]?.stringValue, !reason.isEmpty {
-                FileHandle.standardOutput.write(Data(StopDrain.blockJSON(reason: reason).utf8))
+                writeStdout(Data(StopDrain.blockJSON(reason: reason).utf8))
             }
         }
+    }
+
+    // MARK: crash-safe stdio
+    //
+    // The statusLine + hook pipes to Claude break the instant a self-close (`archive`) kills the
+    // card's session — right when this helper runs. `FileHandle`'s read/write RAISE an uncatchable
+    // ObjC `NSFileHandleOperationException` on the resulting EPIPE (Swift `try?` can't catch it →
+    // `terminate()` → SIGABRT → the "orchestra quit unexpectedly" popup). This helper is contractually
+    // best-effort (always exits 0, never fails the agent), so it does its own POSIX I/O and swallows
+    // EPIPE/any error. Paired with the process-wide `signal(SIGPIPE, SIG_IGN)` in main, so the raw
+    // signal can't kill us before the syscall even returns.
+
+    /// Write all bytes to stdout, swallowing EPIPE/errors (never raises). Handles partial writes/EINTR.
+    static func writeStdout(_ data: Data) {
+        data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+            guard let base = buf.baseAddress else { return }
+            var off = 0
+            while off < buf.count {
+                let n = Darwin.write(1, base + off, buf.count - off)
+                if n > 0 { off += n; continue }
+                if n < 0 && errno == EINTR { continue }
+                return   // EPIPE / any error: the reader is gone — drop it, never crash.
+            }
+        }
+    }
+
+    /// Read stdin to EOF via POSIX, swallowing errors (never raises).
+    static func readAllStdin() -> Data {
+        var out = Data()
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = buf.withUnsafeMutableBytes { Darwin.read(0, $0.baseAddress, $0.count) }
+            if n > 0 { out.append(contentsOf: buf[0..<n]); continue }
+            if n < 0 && errno == EINTR { continue }
+            break   // EOF (0) or any error
+        }
+        return out
     }
 
     // MARK: statusLine display
