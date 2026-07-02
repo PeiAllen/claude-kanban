@@ -103,6 +103,32 @@ terminal** as its literal control code. Consequences:
 - The **only** control key a focused terminal genuinely gives up is `Ctrl-h` (the board is always to
   the left). This is cheap: shells/agents receive the real Backspace key as `0x7f`, not `Ctrl-h`.
 
+## Layer 2.5 — Resizing / collapsing panes, and scrolling
+
+**Resize the focused pane** — `Ctrl-Shift-hjkl` grows / shrinks the focused pane's movable edge, the
+natural extension of `Ctrl-hjkl` (move focus) → `Ctrl-Shift-hjkl` (move the *border*). It drives the
+three drag handles the mouse uses: inspector width (`Ctrl-Shift-h`/`l`), freeform-dock height and
+shell-panel height (`Ctrl-Shift-k`/`j`). `:` carries a **"reset layout"** command.
+
+**Collapse / expand** — `z` toggles the focused collapsible region (freeform dock, shell panel) — the
+vim fold metaphor. (These persist across launches today, so the toggle just flips the stored state.)
+
+**Scrolling — three kinds of region, three rules:**
+
+- **Selection lists (columns, freeform grid):** there is no separate scroll — moving the selection
+  with `j`/`k`/`hjkl` **auto-scrolls the container to keep the selected card visible** (vim's
+  cursor-follows-view model). `Ctrl-d` / `Ctrl-u` half-page, `Ctrl-f` / `Ctrl-b` full-page,
+  `gg` / `G` to the ends — all moving selection *and* view together. (Safe here: not a pty.)
+- **Read-only content (the Diff view):** pure vim scrolling over a read-only buffer — `j`/`k` by
+  line, `Ctrl-d`/`Ctrl-u` half-page, `Ctrl-f`/`Ctrl-b` full-page, `gg`/`G`, and `/` `n` `N` to search
+  within the diff.
+- **Terminals (agent + shell):** scrollback is the **pty's own job**, not Orchestra's — the terminal
+  attaches to tmux, and Orchestra passes all keys through, so the user's **tmux copy-mode** (their
+  prefix + `[`, then vim keys / `/` search) scrolls it natively, alongside the mouse wheel (already
+  forwarded) and `Shift-PageUp`/`PageDown`. Orchestra deliberately binds **no** `Ctrl-d`/`Ctrl-u`
+  here — those are the pty's (EOF / clear-line) — which is why scroll keys are safe everywhere else
+  but hands-off inside a terminal.
+
 ## Layer 3 — Go-to a region (`g` + letter)
 
 A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
@@ -111,6 +137,12 @@ A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
 `gs` Settings
 
 ## Layer 4 — Verbs on the selected card (single keys)
+
+**Selecting ≠ opening.** Bare `hjkl` only *highlights* a card; only `Enter` opens the inspector.
+(This differs from a mouse click, which selects *and* opens.) So every verb below acts on the
+**highlighted card without opening it** — e.g. `a` archives ("closes") the card you've navigated to
+without entering it; multi-select (`x`, phase 2) then `a` closes several at once.
+
 
 - `c` — create / spawn a card (opens the spawn sheet)
 - `H` / `L` — **carry** the selected card one column left / right (shift = grab the card; mirrors `h`/`l`)
@@ -147,6 +179,18 @@ catch-all so the low-frequency buttons need no dedicated key.
 **`:` palette · `Tab` ring · `?` help** — every button is a named command in the `:` palette (which
 shows its shortcut); with the inspector focused (`Ctrl-l`), `Tab` / `Ctrl-j` / `Ctrl-k` cycle the
 chrome as a plain focus ring and `Enter` activates; `?` lists this table when the inspector is open.
+
+### Shell tabs
+
+The shell panel is a ribbon of `shell-N` tabs (each an `xmark` to close, `+` to add). Treated as
+horizontal sub-panes of the inspector:
+
+- **Switch tabs:** `Ctrl-h` / `Ctrl-l` move between tabs (edge-aware — `Ctrl-h` on the first tab
+  ejects to the board; `Ctrl-l` past the last falls through to the pty as clear-screen)
+- **New tab:** `t`
+- **Close the current tab:** naturally, `Ctrl-d` / `exit` in the shell ends it (the tmux window
+  closes, the tab drops); explicitly, `x` closes the focused tab when the **ribbon** (not the pty) has
+  focus — mirrors the `xmark`, and is also reachable via an `f` hint or `:` "close shell tab".
 
 ## Layer 5 — Command-line & search (vim keys, no `Cmd`)
 
