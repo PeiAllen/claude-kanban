@@ -42,6 +42,9 @@ public actor OrchestraService {
     var resumeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     // Cards currently being revived/restarted — guarded against the liveness reconcile.
     var recovering: Set<UUID> = []
+    // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
+    // activity burst off the normalized `report()` funnel — NOT a periodic poll.
+    var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
     public init(config: Config,
                 store: TaskStore? = nil,

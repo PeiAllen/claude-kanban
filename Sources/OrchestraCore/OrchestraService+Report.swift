@@ -104,6 +104,11 @@ extension OrchestraService {
         let saved = try await store.update(id) { $0 = task }
         emit(.taskUpserted(saved))
 
+        // Code review on the board (axis 7): any per-card activity that lands here (a normalized
+        // StatusReport — no tool_name) coalesces into a re-stat of the footer diffstat. Adapter-
+        // agnostic by construction; the debounce + idempotent recompute bound the cost.
+        if saved.origin == .worktree { scheduleDiffStat(id) }
+
         // Activity only on a real status transition (waiting<->running) or dead.
         if let tr = statusTransition, tr.from != tr.to {
             if tr.to == .dead {

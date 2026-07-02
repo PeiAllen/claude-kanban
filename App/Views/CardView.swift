@@ -157,11 +157,21 @@ struct CardView: View {
         }
     }
 
-    /// Right-side meta: the selected model (real data we have). The prototype's per-column meta
-    /// (plan-layer chip, edited-file path, +/− diff stat) needs fields the daemon doesn't yet plumb,
-    /// so we show the model rather than fabricate those.
+    /// Right-side meta: the branch diffstat (`k files · +N −M`) when the daemon has computed one for a
+    /// git card (axis 7 — code review on the board); otherwise the selected model. Zero-change / non-git
+    /// cards carry no `diffStat`, so they fall back to the model name rather than fabricate a stat.
     @ViewBuilder private var meta: some View {
-        if !task.model.id.isEmpty {
+        if let stat = task.diffStat, stat.filesChanged > 0 {
+            HStack(spacing: 5) {
+                Text("\(stat.filesChanged)f").foregroundStyle(theme.text3)
+                Text("+\(stat.insertions)").foregroundStyle(theme.green.text)
+                Text("−\(stat.deletions)").foregroundStyle(theme.red.text)
+            }
+            .font(F.mono(10.5, .medium))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help("\(stat.filesChanged) files changed · +\(stat.insertions) −\(stat.deletions)")
+        } else if !task.model.id.isEmpty {
             Text(task.model.displayName)
                 .font(F.mono(10.5, .medium))
                 .foregroundStyle(theme.text2)

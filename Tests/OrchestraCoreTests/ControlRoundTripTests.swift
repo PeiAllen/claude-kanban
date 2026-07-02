@@ -108,6 +108,40 @@ struct ControlRoundTripTests {
         #expect(got["reason"]?.stringValue?.contains("queued work") == true)
     }
 
+    @Test("diffText / diffStat endpoints route over the socket for a worktree card")
+    func diffEndpoints() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = ControlClient(socketPath: path, source: .app)
+        try client.connect(); defer { client.close() }
+
+        let task = try await client.call("spawn", .object([
+            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
+
+        // Turn the card's cwd into a real git repo with an uncommitted change.
+        let dir = task.cwd
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
+            #expect(try Proc.run(["git"] + args, cwd: dir).ok)
+        }
+        try "one\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+        #expect(try Proc.run(["git", "add", "-A"], cwd: dir).ok)
+        #expect(try Proc.run(["git", "commit", "-q", "-m", "base"], cwd: dir).ok)
+        try "one\ntwo\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+
+        // diffStat endpoint → the footer stat, via the socket.
+        let statRes = try await client.call("diffStat", .object([
+            "ref": .string(task.shortId), "base": .string("working")]))
+        #expect(try statRes.decode(DiffStat.self).filesChanged == 1)
+
+        // diffText endpoint → the rendered diff, via the socket.
+        let textRes = try await client.call("diffText", .object([
+            "ref": .string(task.shortId), "base": .string("working")]))
+        #expect(try !textRes.decode(String.self).isEmpty)
+    }
+
     @Test("ping / version / getConfig over the socket")
     func meta() async throws {
         let env = TestEnv.make()

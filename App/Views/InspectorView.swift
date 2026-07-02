@@ -4,9 +4,13 @@ import AppKit
 
 /// The right-hand inspector panel: header actions + the live agent terminal chrome (or the
 /// Recovery panel when the card is `dead`). ui-spec §3.5 / §4.5.
+/// Inspector content mode: the live agent terminal, or the read-only in-app diff (axis 7).
+enum InspectorMode { case agent, diff }
+
 struct InspectorView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+    @State private var mode: InspectorMode = .agent
 
     var body: some View {
         if let t = model.selected {
@@ -16,8 +20,12 @@ struct InspectorView: View {
                     RecoveryView(task: t)
                 } else {
                     VStack(spacing: 0) {
-                        HeaderBar(task: t)
-                        AgentChrome(task: t)
+                        HeaderBar(task: t, mode: $mode)
+                        if mode == .diff {
+                            DiffInspectorView(task: t)
+                        } else {
+                            AgentChrome(task: t)
+                        }
                     }
                 }
             }
@@ -36,12 +44,22 @@ private struct HeaderBar: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: Task
+    @Binding var mode: InspectorMode
 
     // Inbox editor popover state.
     @State private var showInbox = false
 
     var body: some View {
         HStack(spacing: 6) {
+            // Agent terminal vs the read-only in-app diff (axis 7).
+            Picker("", selection: $mode) {
+                Text("Agent").tag(InspectorMode.agent)
+                Text("Diff").tag(InspectorMode.diff)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
             Button {
                 _Concurrency.Task { await model.openInZed(task.id) }
             } label: {
