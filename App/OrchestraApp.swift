@@ -236,6 +236,89 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// A representative git-colored (ANSI/SGR) diff for the headless Diff-view snapshot — bold file
+    /// headers, a cyan hunk header, red removals + green additions — so `ANSIText`'s parser + the
+    /// DiffInspectorView chrome are visible without a daemon.
+    static var mockDiffANSI: String {
+        let E = "\u{1B}"
+        return [
+            "\(E)[1mdiff --git a/Sources/OrchestraCore/Diff/GitDiffProvider.swift b/Sources/OrchestraCore/Diff/GitDiffProvider.swift\(E)[m",
+            "\(E)[1m--- a/Sources/OrchestraCore/Diff/GitDiffProvider.swift\(E)[m",
+            "\(E)[1m+++ b/Sources/OrchestraCore/Diff/GitDiffProvider.swift\(E)[m",
+            "\(E)[36m@@ -14,9 +14,11 @@ public struct GitDiffProvider: DiffProvider {\(E)[m",
+            "         var files = 0, insertions = 0, deletions = 0",
+            "         for line in r.stdout.split(separator: \"\\n\") {",
+            "\(E)[31m-            let cols = line.split(separator: \"\\t\")\(E)[m",
+            "\(E)[31m-            files += 1\(E)[m",
+            "\(E)[32m+            let cols = line.split(separator: \"\\t\", maxSplits: 2, omittingEmptySubsequences: false)\(E)[m",
+            "\(E)[32m+            guard cols.count == 3 else { continue }\(E)[m",
+            "\(E)[32m+            files += 1   // binary rows count as a changed file, 0/0 lines\(E)[m",
+            "             insertions += Int(cols[0]) ?? 0",
+            "             deletions += Int(cols[1]) ?? 0",
+            "         }",
+            "\(E)[36m@@ -30,6 +32,7 @@\(E)[m",
+            "         if Proc.toolExists(\"difft\") {",
+            "\(E)[32m+            let env = [\"GIT_EXTERNAL_DIFF\": \"difft\", \"DFT_DISPLAY\": \"inline\"]\(E)[m",
+            "             return r.stdout",
+            "         }",
+            "",
+        ].joined(separator: "\n")
+    }
+
+    /// Render the real `DiffInspectorView` (with a canned ANSI diff seed) to a PNG — headless, no
+    /// daemon, no Screen-Recording permission. `ORCH_SNAPSHOT_DIFF=/path.png`.
+    static func snapshotDiff(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        var card = Task(title: "Promote the Zed diff engine into DiffProvider",
+                        repo: "/Users/allen/code/orchestra", branch: "feat/code-review-on-board",
+                        cwd: "/Users/allen/code/orchestra/.worktrees/code-review-on-board",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, status: .running, initialPrompt: "demo")
+        card.diffStat = DiffStat(filesChanged: 6, insertions: 214, deletions: 37)
+        let view = DiffInspectorView(task: card, preview: mockDiffANSI)
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .frame(width: 384, height: 470)
+            .background(theme.inspector)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
+    /// Render a few board cards carrying `diffStat`s (and one without → model-name fallback) so the
+    /// footer diffstat (`Nf +I −D`, axis 7) is visible. `ORCH_SNAPSHOT_CARDS=/path.png`.
+    static func snapshotCards(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        func mk(_ title: String, branch: String, status: AgentStatus, stat: DiffStat?) -> Task {
+            var t = Task(title: title, repo: "/Users/allen/code/orchestra", branch: branch,
+                         cwd: "/Users/allen/code/orchestra/.worktrees/\(branch)",
+                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                         order: 0, status: status, initialPrompt: title)
+            t.diffStat = stat
+            return t
+        }
+        let cards = [
+            mk("Wire the footer diffstat into CardView.meta", branch: "feat/footer-stat",
+               status: .running, stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
+            mk("Small tweak to the baseline toggle", branch: "fix/baseline",
+               status: .waiting, stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
+            mk("Freeform notes card (no git diff)", branch: "scratch",
+               status: .running, stat: nil),
+        ]
+        let list = VStack(spacing: 10) {
+            ForEach(cards, id: \.id) { CardView(task: $0) }
+        }
+        .padding(14)
+        .frame(width: 320)
+        .background(theme.colBg)
+        let view = list
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Shared ImageRenderer → PNG writer for the snapshot hooks.
     static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -257,6 +340,14 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_INBOX"] {
                 DebugLaunchHook.snapshotInbox(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DIFF"] {
+                DebugLaunchHook.snapshotDiff(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_CARDS"] {
+                DebugLaunchHook.snapshotCards(to: path, model: model)
                 exit(0)
             }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {

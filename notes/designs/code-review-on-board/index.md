@@ -4,7 +4,7 @@ feature: code-review-on-board
 type: design-index
 depth: 2
 created: 2026-06-26
-updated: 2026-06-29
+updated: 2026-07-01
 ---
 
 # View/Review Code on the Board — Design Index
@@ -30,33 +30,44 @@ updated: 2026-06-29
 
 | Layer | Document | Status |
 |-------|----------|--------|
-| 1 — Initial design | [[01-design]] | approved |
-| 2 — Contract | [[02-contract]] | approved |
-| 3 — Implementation | [[03-implementation]] | not started (design-only pass) |
-| 3 — Tests | [[04-tests]] | not started (design-only pass) |
+| 1 — Initial design | [[01-design]] | approved (refined 2026-07-01) |
+| 2 — Contract | [[02-contract]] | approved (refined 2026-07-01) |
+| 3 — Implementation | [[03-implementation]] | approved 2026-07-01 |
+| 3 — Tests | [[04-tests]] | approved 2026-07-01 |
 
-> Design-only pass: L1+L2 approved 2026-06-26. Generic DiffProvider (difftastic default, git fallback +
-> structured payload); default branch baseline; event-driven refresh; read-only.
+> L1+L2 approved 2026-06-26; **refined 2026-07-01** to a **lean** scope (see below). L3 (implementation)
+> + tests approved 2026-07-01 at one combined gate — **implementing**. Generic DiffProvider (difftastic
+> default, git fallback); default branch baseline; event-driven refresh off the normalized funnel;
+> read-only.
 
 ## Current picture
 
 ```mermaid
 flowchart TD
-    WT[(worktree)] --> DP[DiffProvider: difftastic default / git fallback]
-    DP --> Insp[Inspector: diff view - difftastic display]
-    DP --> Struct[git structured FileDiff -> diff verb]
-    Struct --> Agent[agent/PR-review reads diff]
-    Ev[commit/push/edit/pull events + selection] --> Stat[git --numstat]
-    Stat --> Card[card footer: files +/-]
+    subgraph Core[OrchestraCore]
+        DB[DiffBaseline: DiffBase -> git range] --> GP[GitDiffProvider]
+        GP -->|numstat| Stat[DiffStat]
+        GP -->|difft or git| Text[ANSI diff text]
+        Svc[OrchestraService: diffText / recomputeDiffStat] --> GP
+        Svc -->|origin != worktree| Empty[no stat / empty]
+        CS[ControlServer: diffText / diffStat endpoints] --> Svc
+        Ev[any agent activity: normalized StatusReport] --> Rep[report funnel] --> Sch[scheduleDiffStat: per-card debounce] --> Svc
+        Svc --> Store[(Task.diffStat)] --> Up[emit taskUpserted]
+    end
+    Up --> Foot[CardView footer: k files +N -M]
+    CS --> Insp[DiffInspectorView: ANSI -> AttributedString]
+    Note[agents just run git diff themselves] -.-> Core
 ```
 
 ## Open questions (rolled up)
 
-_Resolved at the 2026-06-26 gate:_ generic `DiffProvider` with **difftastic default** + git fallback (git
-for the structured payload) · default baseline **branch (else working)** · refresh **event-driven** + on
-selection · read-only (inline comments → axis 5).
+_Resolved at the 2026-06-26 gate:_ generic `DiffProvider` with **difftastic default** + git fallback ·
+default baseline **branch (else working)** · refresh **event-driven** + on selection · read-only (inline
+comments → axis 5).
 
-_Opened by the 2026-06-29 synthesis:_ a **parent-relative** baseline for stacked branches — diff vs the
-parent branch via a new `parentBranch`/`parentCardId` field, not vs `main`
-([[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2) · the non-git guard
+_Resolved at the 2026-07-01 L3 gate:_ **lean scope** — no structured `[FileDiff]` payload and **no MCP
+`diff` verb** (agents run `git diff` in their cwd); the inspector renders **difftastic-colored diff text**
+over **app-only `diffText`/`diffStat` `ControlServer` endpoints** · **`parentBranch` is a thin stub**
+(`.parent` → `.branch` until stacked-branches sets it;
+[[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2) · the non-git guard
 keys on shipped **`Task.origin`** (`.scratch`/`.borrowed` cards may have no git baseline).

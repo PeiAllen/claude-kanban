@@ -1,0 +1,11 @@
+import Foundation
+
+/// Computes a card's worktree diff for the board footer + inspector. **Read-only.** Two jobs, both from
+/// git: a cheap `DiffStat` (`git diff --numstat`) and a rendered ANSI diff string (difftastic when on
+/// PATH, git's own colored diff as the fallback). There is **no structured payload** — an agent reads a
+/// diff by running `git diff` in its own cwd, so re-serving it would be dead weight. A git failure (not
+/// a repo / git missing) degrades to `nil`/`""` — never fabricated. See `notes/designs/code-review-on-board`.
+public protocol DiffProvider: Sendable {
+    func stat(worktree: String, base: DiffBase, parentBranch: String?) throws -> DiffStat?
+    func render(worktree: String, base: DiffBase, parentBranch: String?) throws -> String
+}

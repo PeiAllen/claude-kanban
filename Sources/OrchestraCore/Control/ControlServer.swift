@@ -150,6 +150,24 @@ public final class ControlServer: @unchecked Sendable {
             let patch = try (p["report"] ?? p).decode(StatusReport.self)
             try await service.report(task.id, patch)
             return .object(["ok": .bool(true)])
+        case "diffText":
+            // Code review on the board (axis 7): the inspector's rendered diff. Internal + app-only —
+            // NOT a registry Command, so it never surfaces as an MCP tool (agents run `git diff`).
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("diffText needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
+            return .string(try await service.diffText(task.id, base: base))
+        case "diffStat":
+            // Recompute + return the footer diffstat (on-selection refresh). Internal + app-only.
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("diffStat needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
+            let stat = try await service.diffStat(task.id, base: base)
+            return try stat.map { try JSONValue(encodable: $0) } ?? .null
         case "drain":
             // F3 Stop-drain: the Stop hook pulls the card's durable inbox as the `decision:block` payload.
             // Orchestra-internal plumbing — NOT a Command (not user-facing), so it never touches the registry.

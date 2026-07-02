@@ -140,6 +140,23 @@ public enum CardOrigin: String, Codable, Sendable { case worktree, scratch, borr
 /// untracked shell — KEEP the Orchestra hooks, because a freeform read-only card is a tracked citizen.
 public enum CardAccess: String, Codable, Sendable { case readWrite, readOnly }
 
+// MARK: - Diff (code review on the board)
+
+/// A card's branch diffstat for the footer (`k files · +N −M`). Small + persisted on `Task`.
+public struct DiffStat: Codable, Sendable, Equatable {
+    public var filesChanged: Int
+    public var insertions: Int
+    public var deletions: Int
+    public init(filesChanged: Int, insertions: Int, deletions: Int) {
+        self.filesChanged = filesChanged; self.insertions = insertions; self.deletions = deletions
+    }
+}
+
+/// Which baseline a diff is computed against. `.working` = vs `HEAD`; `.branch` = vs the base branch
+/// (merge-base); `.parent` = vs the card's parent branch for a stacked card — falls back to `.branch`
+/// until `Task.parentBranch` is set. See `notes/designs/code-review-on-board`.
+public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
+
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 
@@ -154,6 +171,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var desc: String
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
+    public var parentBranch: String?  // stacked-branch parent (stub; nil until stacked-branches sets it) — the `.parent` diff baseline
     public var cwd: String         // the ONE path: where the agent + shells run (== worktree root for .worktree)
     public var origin: CardOrigin  // worktree | scratch | borrowed
     public var access: CardAccess  // readWrite | readOnly — read-only borrowed cards launch locked-down
@@ -166,6 +184,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var deadReason: DeadReason?  // set with `status = .dead`; cleared when status leaves `.dead`
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
+    public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
     public var initialPrompt: String  // the spawn prompt, persisted verbatim (title seed + Recovery panel)
@@ -195,6 +214,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
         initialPrompt: String,
+        parentBranch: String? = nil,
+        diffStat: DiffStat? = nil,
         archived: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -220,6 +241,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
         self.initialPrompt = initialPrompt
+        self.parentBranch = parentBranch
+        self.diffStat = diffStat
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -250,6 +273,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
+        self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
+        self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
         self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
@@ -281,14 +306,16 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
         try c.encode(priorSessionIds, forKey: .priorSessionIds)
         try c.encode(initialPrompt, forKey: .initialPrompt)
+        try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
+        try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encode(archived, forKey: .archived)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, titleProvisional, desc, repo, branch, cwd, worktree, origin, access, agentId, model,
-             startIn, column, order, status, deadReason, deadDetail, ctxPct, agentSessionId,
+        case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, worktree, origin, access, agentId, model,
+             startIn, column, order, status, deadReason, deadDetail, ctxPct, diffStat, agentSessionId,
              priorSessionIds, initialPrompt, archived, createdAt, updatedAt
     }
 
