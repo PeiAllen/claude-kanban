@@ -160,6 +160,40 @@ extension OrchestraService {
         return updated
     }
 
+    /// Reopen an archived (Done) card: recreate the run dir the archive reclaimed, put the card back on
+    /// the board (keeps its column), and bring the agent back — `resume` its transcript when resumable,
+    /// else a fresh `restart` in the recreated tree. Idempotent: a non-archived card is returned as-is.
+    /// Agent-agnostic — it reuses the same `resume`/`restart` primitives every adapter already implements.
+    @discardableResult
+    public func reopen(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
+        let t = try await require(id)
+        guard t.archived else { return t }
+
+        // Give the resumed agent its cwd back — archive removed it (branch kept for .worktree cards).
+        switch t.origin {
+        case .worktree:
+            _ = try worktrees.ensure(repo: t.repo, branch: t.branch)
+        case .scratch:
+            try? FileManager.default.createDirectory(atPath: t.cwd, withIntermediateDirectories: true)
+        case .borrowed:
+            break   // never removed on archive
+        }
+
+        // Back on the board (original column preserved); clear any stale dead state before reviving.
+        let unarchived = try await store.update(id) {
+            $0.archived = false; $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
+        }
+        emit(.taskUpserted(unarchived))
+        emitActivity(.recovered, unarchived, source, "Reopened “\(unarchived.title)”")
+
+        // resume keeps the transcript; a card whose transcript is gone gets a fresh blank session.
+        if isResumable(unarchived) {
+            return try await resume(id, source: source)
+        } else {
+            return try await restart(id, source: source)
+        }
+    }
+
     /// Background poll's continuous liveness reconcile (safety net when no SessionEnd fires). A
     /// non-archived, non-done/dead card whose tmux session vanished → `.dead` (sessionVanished),
     /// guarded against cards mid-resume/restart.

@@ -197,6 +197,13 @@ public struct CommandRegistry: Sendable {
                 return .ok()
             },
 
+            Command(name: "reopen", summary: "Reopen an archived card (recreate its worktree + resume the agent).",
+                    params: schema(["ref": refProp()], required: ["ref"])) { svc, p, src in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let updated = try await svc.reopen(t.id, source: src)
+                return try JSONValue(encodable: updated)
+            },
+
             Command(name: "restart", summary: "Start a new blank session in the same worktree (no prompt re-handed).",
                     params: schema(["ref": refProp()], required: ["ref"])) { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))

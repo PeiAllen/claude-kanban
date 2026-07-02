@@ -8,7 +8,7 @@ struct CommandsTests {
     @Test("registry exposes the full command set with param schemas")
     func fullSet() {
         let reg = CommandRegistry()
-        let expected = ["list", "spawn", "move", "send", "status", "archive",
+        let expected = ["list", "spawn", "move", "send", "status", "archive", "reopen",
                         "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions", "batch-spawn",
                         "wait", "handoff", "trust", "trustState",
                         "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
@@ -59,6 +59,18 @@ struct CommandsTests {
         let exec = try #require(reg.command("exec"))
         let ex = try await exec.run(env.svc, .object(["ref": .string(t.shortId), "cmd": .string("echo yo")]), .mcp)
         #expect(try ex.decode(ExecResult.self).stdout.contains("yo"))
+    }
+
+    @Test("reopen dispatches to the service and unarchives the card")
+    func dispatchReopen() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        try await env.svc.archive(t.id)
+        let reg = CommandRegistry()
+        let reopen = try #require(reg.command("reopen"))
+        let result = try await reopen.run(env.svc, .object(["ref": .string(t.shortId)]), .app)
+        #expect(try result.decode(Task.self).archived == false)
     }
 
     @Test("batch-spawn creates N cards")

@@ -78,16 +78,42 @@ struct ArchiveRow: View {
                 Spacer(minLength: 0)
             }
 
-            // Action row (ui-spec §4.9): chat-link (agent/session id) + branch, both copyable.
-            // No "Zed" action here — archiving removes the worktree, so there are no changes to open.
+            // Action row (ui-spec §4.9): chat-link (agent/session id) + branch, both copyable, plus
+            // Reopen — the daemon recreates the worktree + resumes the agent, bringing the card back live.
             HStack(spacing: 6) {
                 CopyChip(icon: "link", label: "\(task.agentId)/\(task.shortId)", value: task.ref())
                 CopyChip(icon: "doc.on.doc", label: task.branch, value: task.branch)
                 Spacer(minLength: 0)
+                ReopenButton(task: task)
             }
             .padding(.leading, 32)
         }
         .padding(.vertical, 9).padding(.horizontal, 6)
+    }
+}
+
+/// The "Reopen" action on an archived row: brings the Done card back onto the board (the daemon
+/// recreates its worktree + resumes the agent). Styled as an accent pill so it reads as the row's
+/// primary action next to the muted copy chips.
+private struct ReopenButton: View {
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) var theme: Theme
+    let task: Task
+
+    var body: some View {
+        Button {
+            _Concurrency.Task { await model.reopen(task.id) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.uturn.left").font(F.ui(8.5, .semibold))
+                Text("Reopen").font(F.ui(10.5, .semibold))
+            }
+            .foregroundColor(theme.accent)
+            .padding(.horizontal, 9).frame(height: 22)
+            .surface(theme.chip, corner: 6, hair: theme.hair)
+        }
+        .buttonStyle(.plain)
+        .help("Reopen “\(task.title)” — recreate its worktree and resume the agent")
     }
 }
 
