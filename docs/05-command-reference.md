@@ -15,7 +15,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
 | `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
-| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3), then **wake** the card (F2) so an *idle* agent drains it now rather than at its next unprompted turn. Content still rides the inbox (Stop-hook drain / session seed), never typed into tmux — `wake` only starts a turn. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
+| `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3), then **wake** the card (F2) so an *idle* agent drains it now rather than at its next unprompted turn. Content still rides the inbox (Stop-hook drain / session seed / resume seed), never typed into tmux — `wake` only starts a turn. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
 | `inbox` | `ref` (required) | List a card's pending [inbox](03-data-model.md#the-inbox-store-f3) messages (`{id, text, createdAt}`) in FIFO order. Read-only (`Inbox.peek`); backs the [inbox editor](07-app-ui.md#the-inspector)'s list. |
 | `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`createdAt` are preserved. |
 | `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
@@ -57,8 +57,11 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   (the same F2 `wake` the [merge-watch](09-design-decisions.md#shipped-feature-history) uses), so a message
   to an *idle* agent starts a turn immediately instead of sitting durable until the agent's next unprompted
   turn. The wake only *triggers* a turn — content still rides the inbox, never the keystroke — and no-ops
-  when the card is busy, drafting, or a `nativeReinvoke` idle; for a send-keys (Codex) card it fires the
-  content-free nudge. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`; the wake dispatcher is C2/C4.)
+  when the card is busy, drafting, mid-relaunch, or already watching children on a background `orchestra
+  wait`. For a send-keys (Codex) card it fires the content-free nudge; for a `nativeReinvoke` (Claude) card
+  that is genuinely idle with no live wait it **resume-seeds** — relaunches `claude --resume` with the inbox
+  folded into the opening turn. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`; the wake dispatcher is
+  C2/C4, extended by `send-wakes-idle-card`.)
 - **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
   `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, or a clean agent
   exit — and returns that `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A transient crash that is

@@ -229,7 +229,9 @@ change is deliberately additive: `HooksRenderer`/`claude-hooks.json` are untouch
 existing notify→`waiting` report is preserved byte-for-byte. Waking an *idle* card so it takes a turn to
 drain (F2) landed next (C2/C4, below), and `send` was subsequently wired to call that same `wake` right
 after it enqueues — so a message to an idle card now triggers a turn immediately (content still rides the
-inbox; the wake no-ops when the card is busy/drafting or a `nativeReinvoke` idle) instead of sitting durable
+inbox; the wake no-ops when the card is busy/drafting, mid-relaunch, or already watching children — a
+genuinely idle `nativeReinvoke` card with no live wait is instead woken via resume-seed, see the
+[`send-wakes-idle-card` entry](#shipped-feature-history) below) instead of sitting durable
 until the agent's next unprompted turn. Like the forest PRs above, C1 is one live-delivery function, not a whole
 axis, so it stays here as history while the roadmap's context-continuity row remains open.
 
@@ -257,9 +259,11 @@ Three decisions shape it:
   each concludes** — not a barrier on all N. `concludeCard` routes each into every registered watcher's
   durable inbox (F3 coalesce) and calls `wake`; several children concluding while the parent is mid-turn all
   enqueue and drain together at its next turn-end, so no return is lost or needs its own wake. `wake` dispatches
-  on the adapter's `wakeTransport`: Claude's `nativeReinvoke` is a no-op *push* — the wake instead rides the
-  background `orchestra wait` process exiting (which the harness re-invokes on), and Codex's `sendKeys` wake
-  landed later (C4, below). `wait` also short-circuits on an already-concluded child so the re-issue race can't
+  on the adapter's `wakeTransport`: at C2, Claude's `nativeReinvoke` was a no-op *push* — the wake rode the
+  background `orchestra wait` process exiting (which the harness re-invokes on) — and Codex's `sendKeys` wake
+  landed later (C4, below). (That no-op case was later narrowed: a genuinely *idle* Claude card with **no**
+  live wait is now woken by resume-seed; see the [`send-wakes-idle-card` entry](#shipped-feature-history)
+  below.) `wait` also short-circuits on an already-concluded child so the re-issue race can't
   lose a conclusion.
 
 Like the forest PRs above, C2 is one live-delivery function, not a whole axis, so it stays here as history;
@@ -687,6 +691,43 @@ decisions keep it small and provider-neutral:
   popover row gains an accent **Reopen** pill. `ReopenTests` pins the resumable / non-resumable /
   idempotent branches. Like the entries above, this is a lifecycle/surface change, not a whole axis, so it
   stays here as history.
+
+Also landing after the forest is **`send-wakes-idle-card` — waking an idle native (Claude) card via
+resume-seed** (commit `7d8037c`, branch `send-wakes-idle-card`). C1/C2 wired `send` to `wake` a card right
+after enqueuing, but the `nativeReinvoke` (Claude) transport treated *every* idle case as a no-op push: it
+assumed a background `orchestra wait` whose exit the harness re-invokes on. That holds for the **reactive
+fan-out** (a watcher card always has a live wait), but **not** for a plain `send`/queue onto a genuinely idle
+`.waiting` Claude card — with no in-flight turn and no live wait, the message sat inbox-durable until some
+unrelated future turn. This closes that gap without adding a fourth mechanism:
+
+- **The idle-no-wait case wakes via resume-seed — reusing F1, not a new path.** `wake`'s `nativeReinvoke`
+  branch now calls `resumeSeedWake`, which relaunches the card through the shipped
+  [`resumeInCard`](#one-seed-four-topologies) primitive (the same engine `handoff` uses): `claude --resume`
+  with the drained inbox folded into the opening turn. Delivery still rides the durable inbox (F3) — the
+  relaunch only *starts the turn*, so no content is ever typed into the TUI. It is gated to fire **only** when
+  the card is `.waiting`, resumable, not archived, not mid-relaunch (`recovering`), and **not** already
+  watching children — because a watcher's background `orchestra wait` will re-invoke it on exit, and
+  relaunching would kill that live wait and break the fan-out. So Claude now has **two** `nativeReinvoke`
+  mechanisms, keyed on wait-state: harness-reinvoke (a live wait) vs resume-seed relaunch (no wait).
+- **One `wake`, no per-caller special-casing.** `send` (a just-queued message) and the fan-out `concludeCard`
+  (a child's conclusion) now funnel through the **single** `wake(id)` primitive. To keep the watcher no-op
+  correct, `concludeCard` now wakes the watcher **before** clearing its registry entry, so `wake` sees the
+  still-live wait and defers to the wait-exit re-invoke rather than racing it with a resume that would kill
+  the wait. `wake` is idempotent and non-intrusive by construction — it acts only on a card that is idle with
+  no turn already coming (`recovering` is claimed synchronously so a concurrent wake defers) — so it can be
+  called freely.
+- **The send-keys pane-gate is now adapter-owned.** So core's generic wake never names a Codex type, the
+  detect-and-defer pane check moved behind a new defaulted `Adapter.canNudge(pane:)` (default `false` — a
+  non-send-keys agent never reads its pane); `CodexAdapter` delegates to `CodexComposer`, which moved under
+  `Sources/OrchestraCore/Agents/`, and `sendKeysWake` now asks the adapter rather than `CodexComposer`
+  directly.
+
+`SendWakeTests` pins the resume-seed happy path plus the running / live-watcher / unresumable defers. This
+remains a **stopgap on both transports** — Codex's `sendKeys` leans on a fragile TUI pane-scraper and
+Claude's no-wait wake on a heavy relaunch; the agent-agnostic target is a real `controlChannel` `turn/start`
+RPC (the already-frozen enum variant) that retires both, tracked in
+[agent-provider-interface.md §8](../notes/designs/agent-provider-interface.md). Like the entries above, this
+is one live-delivery refinement, not a whole axis, so it stays here as history.
 
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

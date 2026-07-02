@@ -188,7 +188,8 @@ A few decisions are explicitly deferred until the relevant axis is built:
   [durable inbox + Stop-drain (C1)](09-design-decisions.md#shipped-feature-history) and the
   [F2 wake + merge-watch (C2)](09-design-decisions.md#shipped-feature-history) have both landed: an
   orchestrator card `wait`s on its children, each conclusion coalesces into its inbox and wakes it. The
-  Claude wake is `nativeReinvoke` (the background `orchestra wait` process exiting is the wake); the
+  Claude wake is `nativeReinvoke` — for a watcher card the background `orchestra wait` process exiting is
+  the wake, and a genuinely idle card with no live wait is resume-seeded (`send-wakes-idle-card`, ch. 9); the
   Codex **send-keys** wake for an idle non-native card has since landed too (PR C4, ch. 9) — a fixed
   content-free TUI nudge, detect-and-defer gated on an idle, empty composer. Conclusion is
   read from real card state, never `git merge-base`. (`agent-provider-interface/01-design.md` §4;

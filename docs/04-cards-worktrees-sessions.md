@@ -120,10 +120,12 @@ adapter exercises yet, so later PRs implement behavior behind a shape that can't
 to advise (never cap) on heavy fan-out, the `stopHook` `inboxDrain` is now *realized* by the C1
 [F3 Stop-drain](09-design-decisions.md#shipped-feature-history) (the Claude Stop hook drains the durable
 [inbox](03-data-model.md#the-inbox-store-f3) into the agent at its turn-end), and the `nativeReinvoke`
-`wakeTransport` is now read by the C2 [F2 wake / merge-watch](09-design-decisions.md#shipped-feature-history):
-for Claude, waking a card is a no-op *push* — the wake instead rides the card's background
-[`orchestra wait`](05-command-reference.md#notes-on-key-commands) process exiting, which the harness
-re-invokes on. Core reads this
+`wakeTransport` is now read by the C2 [F2 wake / merge-watch](09-design-decisions.md#shipped-feature-history).
+For Claude that transport has **two** mechanisms, chosen by whether a wait is live: a card watching children
+rides its background [`orchestra wait`](05-command-reference.md#notes-on-key-commands) process exiting (the
+harness re-invokes it in-session), while a genuinely idle `.waiting` card with **no** live wait is woken by
+[resume-seed](09-design-decisions.md#shipped-feature-history) — a `claude --resume` relaunch with the pending
+inbox folded into its opening turn (the `send-wakes-idle-card` fix). Core reads this
 descriptor instead of branching on `agentId`: session-seeding switches on `capabilities.sessionId` (a
 `.seeded` agent like Claude mints its id pre-launch via `newSessionId()`; a `.discovered` agent is left
 unseeded to read its id back from its own output post-launch), and `isResumable` asks the adapter's
@@ -289,12 +291,15 @@ just ride a background process exiting — an idle Codex card is instead woken b
 nudge** (`sendKeysWakeNudge`, `"Please continue."`) typed into its composer. The nudge only *starts a turn*;
 the inbox payload never rides the keystroke — it arrives via the `.sessionSeed` drain on resume (F3/C3). It
 is **detect-and-defer**: `sendKeysWake` reads the agent pane just-in-time via `capture` (`capture-pane`) and
-fires only when the pure `CodexComposer` heuristic reports the TUI **idle and composer-empty**; a draft, an
-in-flight turn, an unparseable pane, or a dead session all *defer* (drop the nudge, leave the inbox durable
-for a later event-driven wake). No retry timer (that would risk the F3 inject cap); focus is not a gate.
-`CodexComposer` is a pure, isolated heuristic — its prompt markers, empty-composer placeholders, and
-"working" cues are the only Codex-specific knobs and the documented place to tune when the TUI drifts. It is
-keyed on the `.sendKeys` transport, never `agentId`; see [chapter 9](09-design-decisions.md#shipped-feature-history).
+asks the adapter's `canNudge(pane:)` gate — for Codex, the pure `CodexComposer` heuristic — whether the TUI
+is **idle and composer-empty**; a draft, an in-flight turn, an unparseable pane, or a dead session all
+*defer* (drop the nudge, leave the inbox durable for a later event-driven wake). No retry timer (that would
+risk the F3 inject cap); focus is not a gate. `CodexComposer` is a pure, isolated heuristic — its prompt
+markers, empty-composer placeholders, and "working" cues are the only Codex-specific knobs and the documented
+place to tune when the TUI drifts. It is reached only through `CodexAdapter.canNudge(pane:)` (the defaulted
+`Adapter.canNudge`, which returns `false` for every non-send-keys agent), so core's generic wake never names
+a Codex type; keyed on the `.sendKeys` transport, never `agentId`; see
+[chapter 9](09-design-decisions.md#shipped-feature-history).
 
 ## The read-only barrier
 
