@@ -92,8 +92,13 @@ the [Recovery panel](#recovery-panel) instead.
 
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
-**View changes** (opens the worktree in Zed with a branch-vs-base diff), an **Inbox** editor, **Archive**
-(non-dead cards only), and a **close** (X). The per-card **Inbox** button
+**View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
+(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
+**Open notes** opens the project's `notes/` folder as an **Obsidian vault** — the same
+`~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
+[`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
+plumbing. It deliberately targets the *canonical* project vault (`Task.repo/notes`), not the per-card
+worktree copy, so notes don't fragment across worktrees. The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
 Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
 (see [chapter 9](09-design-decisions.md#shipped-feature-history)):
