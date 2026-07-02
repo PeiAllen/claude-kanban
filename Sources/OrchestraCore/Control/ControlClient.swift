@@ -1,16 +1,13 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Darwin)
-import Darwin
-#endif
 
 /// UDS JSON-RPC client shared by the app, CLI, and MCP bridge. Request/response by id; a background
-/// reader resolves pending calls and feeds the event stream.
+/// reader resolves pending calls and feeds the event stream. I/O goes through a `Transport` (default
+/// `UDSTransport`) so the same client drives a local socket, an SSH-forwarded socket, or a future
+/// WebSocket without change.
 public final class ControlClient: @unchecked Sendable {
     public let source: ActivitySource
-    private let socketPath: String
-    private var fd: Int32 = -1
+    private let makeTransport: @Sendable () -> Transport
+    private var transport: Transport?
     private let writeLock = NSLock()
 
     private let stateLock = NSLock()
@@ -18,34 +15,45 @@ public final class ControlClient: @unchecked Sendable {
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var eventContinuation: AsyncStream<Event>.Continuation?
 
-    public init(socketPath: String = Config.socketPath, source: ActivitySource = .app) {
-        self.socketPath = socketPath
+    public private(set) var state: ConnectionState = .down
+    /// Observed by the UI. Fired on every state change (off the caller's thread — hop to your actor).
+    public var onState: (@Sendable (ConnectionState) -> Void)?
+
+    /// Back-compat convenience: a UDS client by socket path.
+    public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app) {
+        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source)
+    }
+
+    /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
+    public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app) {
+        self.makeTransport = transport
         self.source = source
     }
 
+    private func setState(_ s: ConnectionState) {
+        stateLock.withLock { state = s }
+        onState?(s)
+    }
+
     public func connect() throws {
-        fd = try UDS.connect(path: socketPath)
+        let t = makeTransport()
+        setState(.connecting)
+        try t.open()
+        writeLock.withLock { transport = t }
+        setState(.live)
         DispatchQueue.global().async { [weak self] in self?.readLoop() }
     }
 
     public func close() {
-        // Guard `fd` with writeLock so we never close it out from under an in-flight `writeAll`
-        // (which would race the `fd = -1` store and risk writing to a reused fd).
-        writeLock.lock()
-        if fd >= 0 {
-            #if canImport(Glibc)
-            _ = Glibc.close(fd)
-            #else
-            _ = Darwin.close(fd)
-            #endif
-            fd = -1
-        }
-        writeLock.unlock()
+        // Guard `transport` with writeLock so we never tear it down under an in-flight `write`.
+        let t: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
+        t?.close()
         stateLock.withLock {
             for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }
             pending.removeAll()
             eventContinuation?.finish()
         }
+        setState(.down)
     }
 
     // MARK: - calls
@@ -57,7 +65,7 @@ public final class ControlClient: @unchecked Sendable {
         let line = try RPCCodec.line(req)
         return try await withCheckedThrowingContinuation { cont in
             stateLock.withLock { pending[id] = cont }
-            writeLock.lock(); let ok = UDS.writeAll(fd, line); writeLock.unlock()
+            let ok = writeLock.withLock { transport?.write(line) ?? false }
             if !ok {
                 // Resume ONLY if we still own the pending entry. If `close()` raced in and already
                 // resumed+removed it, `removeValue` returns nil and we skip — never double-resume
@@ -92,8 +100,8 @@ public final class ControlClient: @unchecked Sendable {
     // MARK: - reader
 
     private func readLoop() {
-        let reader = LineReader(fd: fd)
-        while let line = reader.next() {
+        let t = writeLock.withLock { transport }
+        while let line = t?.readLine() {
             guard !line.isEmpty,
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
             if msg.method == "event" {
