@@ -48,9 +48,9 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
   CLI or an MCP tool, because all three speak to the same `CommandRegistry`.
 - **Fully keyboard-driven.** The board is completely navigable by keyboard with a vim-flavored scheme —
   bare `hjkl` moves the selection, `⌃hjkl` moves focus spatially between panes, `g`+letter jumps to a
-  region, single-key verbs act on the selected card, `?` shows help, and `⌘N`/`⌘T`/`⌘W` are the standard
-  accelerators — built around a *focus-is-the-mode* model so it never intercepts keys meant for the live
-  agent terminal.
+  region, single-key verbs act on the selected card, `/` searches, `f` link-hints jump to any card, a `:`
+  command palette runs any action, `?` shows help, and `⌘N`/`⌘T`/`⌘W` are the standard accelerators — built
+  around a *focus-is-the-mode* model so it never intercepts keys meant for the live agent terminal.
 
 ## Architecture at a glance
 

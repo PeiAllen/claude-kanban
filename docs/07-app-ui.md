@@ -46,7 +46,9 @@ view so the inspector overlay renders on top of it.
   diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
   there is no stat (non-git / zero-change / not-yet-computed).
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
-  dim to 72% opacity. Tapping a card selects it and opens the inspector.
+  dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
+  don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row
+  label badge.
 
 Colors come from the theme's **semantic palette** — green (running), amber (waiting), gray (done), red
 (dead) — used consistently for dots, text, and tints.
@@ -149,8 +151,9 @@ handle) and persisted.
 ## Keyboard navigation
 
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
-selection, spatial pane focus, `g`-go-to sequences, single-key verbs, and standard `⌘` accelerators —
-designed so it never fights the live agent terminals the inspector embeds. The full rationale (the
+selection, spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f` link-hints, a `:`
+command palette, and standard `⌘` accelerators — designed so it never fights the live agent terminals the
+inspector embeds. The full rationale (the
 precedent survey and the "focus *is* the mode" model that resolves the terminal-vs-navigation key
 collision) is in the
 [design note](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md); the build is the
@@ -170,10 +173,13 @@ intent dispatch table), and `BoardNavigator` (selection movement over `[Task]`, 
 same-row card in the adjacent column). The app installs **one** `NSEvent` keyDown local monitor —
 `KeyboardController` (mirroring the shared scroll monitor in `AgentTerminalView`) — which derives the
 context, builds a `KeyChord`, asks `KeyMap`, and executes the resulting `KeyIntent` against `BoardModel`
-(the model gains `focusZone`, `inspectorMode`, `searchQuery`, `showHelp`, `requestInboxOpen` state plus
-`selectMove`/`carrySelected`/`goTo`/`closeFrontmost` methods). A consumed key is swallowed (the monitor
+(the model gains `focusZone`, `inspectorMode`, `searchQuery`, `showHelp`, `requestInboxOpen`,
+`showPalette`/`paletteQuery`/`paletteIndex`, and `hintActive`/`hintLabels` state plus
+`selectMove`/`carrySelected`/`goTo`/`closeFrontmost`, the `searchMatchIds` filter, `resizeFocusedPane`,
+`toggleCollapseFocused`, and the palette/hint helpers). A consumed key is swallowed (the monitor
 returns `nil`); everything else passes through to SwiftTerm / fields / SwiftUI untouched. `FocusBridge`
-performs the AppKit first-responder moves, and the `g`-go-to and `y`-yank prefixes are small pending-state
+performs the AppKit first-responder moves (including agent↔shell and shell-tab hops, keyed off each
+terminal's `termWindow` tag), and the `g`-go-to and `y`-yank prefixes are small pending-state
 machines in the controller (kept out of the pure `KeyMap`).
 
 The shipped bindings:
@@ -186,23 +192,32 @@ The shipped bindings:
 | `i` | **Insert** — jump focus straight into the agent terminal to type |
 | `Esc` | Close / clear the frontmost thing |
 | `⌃h` `⌃j` `⌃k` `⌃l` | Move **focus between panes**, spatially and **edge-aware** — `⌃l` board → agent terminal, `⌃h` terminal → board (the eject), `⌃j` columns → freeform dock; a direction with **no neighbor passes straight through** to the pty (so `⌃l` in a terminal stays clear-screen, and `⌃h` is the only control key a focused terminal gives up) |
+| `⌃j` `⌃k` / `⌃h` `⌃l` *(in the inspector)* | **Inside the inspector:** `⌃j`/`⌃k` swap the **agent terminal ↔ shell panel**; on a focused shell, `⌃h`/`⌃l` **switch shell tabs** (edge-aware — `⌃h` on the first tab ejects to the board) |
 | `g` then `p`/`i`/`r`/`f`/`a`/`d`/`s` | Go to Plan / Implementation / Review / Freeform / Activity / Done / Settings |
 | `c` | New card (opens the spawn sheet) |
 | `H` / `L` | **Carry** the selected card one column left / right (shift = grab the card) |
 | `a` · `o` · `d` · `I` · `t` | Archive · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
 | `y c` / `y t` / `y p` | Copy chat link / tmux target / cwd path |
-| `?` | Help overlay — `KeyboardHelpView`, a reference card grouped by surface (Navigate / Go to / Act / Standard) |
+| `/` · `n` / `N` | **Search / filter cards** — opens the `SearchBar` (matches title / branch / repo); typing dims non-matches and jumps to the first hit, `Enter` commits back to the board where `n`/`N` cycle matches, `Esc` clears |
+| `f` | **Link-hints** — overlay a short home-row label on every visible card; type the label to jump to it (`Esc` aborts) |
+| `:` | **Command palette** (`CommandPalette`) — a fuzzy list of every board action with its shortcut shown inline (so it teaches the keymap); `⌃j`/`⌃k` move the highlight, `Enter` runs, `Esc` closes |
+| `⌃⇧h` `⌃⇧j` `⌃⇧k` `⌃⇧l` | **Resize the focused pane's edge** — inspector width (`⌃⇧h`/`⌃⇧l`), freeform-dock / shell-panel height (`⌃⇧k`/`⌃⇧j`); writes the same `@AppStorage` the drag handles use |
+| `z` | **Collapse / expand** the focused collapsible region (shell panel when a terminal is focused, else the freeform dock) |
+| `?` | Help overlay — `KeyboardHelpView`, a reference card grouped by surface (Navigate / Go to & find / Act / Panes & layout / Standard) |
 | `⌘N` / `⌘T` / `⌘W` | New card / new shell / close-frontmost — the standard macOS accelerators (also on the menu bar via the scene's `.commands`). Because terminals ignore `⌘` these work **even while a terminal is focused**; `⌘W` peels the most-transient thing first (open modal → focused shell tab → inspector → otherwise **archive the selected card**), mirroring the progressive `Esc` |
 
 The verbs act on the **selected** card, so `a`/`o`/`d`/`I` archive, open, toggle, or edit the inbox of the
-card you've navigated to. Beyond `?`, the help overlay counts as an `Overlay` context (so `Esc` /
-click-away closes it through `BoardModel.closeFrontmost()`).
+card you've navigated to. Beyond `?`, the search bar, command palette, and help overlay all count as an
+`Overlay` context (so `Esc` / click-away closes them through `BoardModel.closeFrontmost()`); the `f` hint
+overlay is a transient capture handled directly by the controller.
 
-**Deferred (intentionally not in this pass** — see the plan's *Deferred* list and the design's Phase 2):
-the `/` **search** filter UI (the `search` intent and `searchQuery` state exist, but the field is not built
-yet), shell-tab switching (`⌃h`/`⌃l` across tabs) + `x`-close from ribbon focus, combo-box `⌃j`/`⌃k`
-candidate movement and progressive `Esc` in the spawn sheet, `⌃⇧hjkl` pane resize + `z` collapse, `f`
-link-hints, `x` multi-select, the `:` command palette, and the which-key popup.
+The follow-up batch (merge `d16e3dc`) filled in everything the first core-nav slice deferred: `/` search
++ `n`/`N`, shell-tab switching + agent↔shell focus, combo-box `⌃j`/`⌃k` in the spawn sheet, `⌃⇧hjkl`
+resize + `z` collapse, `f` link-hints, and the `:` command palette.
+
+**Still deferred (intentionally** — see the plan's *Deferred* list and the design's Phase 2): `x`
+multi-select (extend the selection with `⇧J`/`⇧K`, then a verb acts on the whole set) and the which-key
+popup after a paused `g` / `:`. User-remappable bindings remain an open question for a later pass.
 
 ## Onboarding, settings, recovery, and popovers
 

@@ -802,12 +802,18 @@ terminal input. Its decisions:
   [phone client (axis 9)](10-roadmap.md) will reuse. A `ContextChip` in the toolbar surfaces the live
   context.
 
-This is a **core-nav-first** slice: `/` search (the `search` intent + `searchQuery` state exist, but the
-filter field is not built), shell-tab `⌃h`/`⌃l` switching, combo-box `⌃j`/`⌃k` in the spawn sheet,
-`⌃⇧hjkl` resize + `z` collapse, `f` link-hints, `x` multi-select, and the `:` command palette are
-explicitly **deferred** (design Phase 2 / plan *Deferred*). Whether any bindings become user-remappable is
-an open question left to a later pass. Like the entries above, this is an app-UX feature, not a whole
-extensibility axis, so it stays here as history rather than migrating a [roadmap](10-roadmap.md) row.
+It shipped in two passes. The first was a **core-nav-first** slice (commit `1c9daed`); a **follow-up batch**
+(merge `d16e3dc`) then filled in nearly everything it had deferred — `/` **search** + `n`/`N` match cycling
+(a floating `SearchBar` that dims non-matches), **shell-tab `⌃h`/`⌃l` switching** and agent↔shell `⌃j`/`⌃k`
+focus (each terminal tagged by its `termWindow`), **combo-box `⌃j`/`⌃k`** candidate movement in the spawn
+sheet, **`⌃⇧hjkl` resize + `z` collapse** (driving the same `@AppStorage` the drag handles use), **`f`
+link-hints** (home-row labels over every card), and the **`:` command palette** (a fuzzy `CommandPalette`
+listing every action with its shortcut inline, so it teaches the keymap). The new intents stayed on the pure
+`KeyMap`; the App-side `hintActive`/`showPalette`/`searchMatchIds` state and the shell-tab focus hops in
+`FocusBridge` carry the wiring. Only **`x` multi-select** and the **which-key popup** remain deferred (design
+Phase 2 / plan *Deferred*), and whether any bindings become user-remappable is an open question left to a
+later pass. Like the entries above, this is an app-UX feature, not a whole extensibility axis, so it stays
+here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).
