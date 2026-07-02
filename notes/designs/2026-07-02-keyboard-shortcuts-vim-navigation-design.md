@@ -47,8 +47,8 @@ focused — the same focus ring the user already tracks in any GUI:
 |---|---|---|
 | **Board** | a card / column / dock has focus | navigate + act (bare keys) |
 | **Terminal** | a SwiftTerm view has focus | everything → agent/shell, untouched |
-| **Field** | a text input has focus (spawn, inbox, search) | you type; `Esc` exits the field to Board |
-| **Overlay** | a modal / popover is up (spawn, done, activity, settings, help, palette) | navigate that overlay |
+| **Field** | a text input has focus (spawn, inbox, search) | you type; `Ctrl-n`/`Ctrl-p` move a dropdown; `Esc` steps out |
+| **Overlay** | a modal / popover is up (spawn, done, activity, settings, help, palette) | navigate that overlay (`Tab`/`j`/`k`, `h`/`l` on selectors) |
 
 A small **context chip** in the inspector chrome / toolbar always shows the current context
 (`BOARD` · `● TERMINAL` · `HINT`), so "am I about to type into the agent?" is answered at a glance.
@@ -130,10 +130,47 @@ A timed two-key sequence (GitHub-`hotkey` style; which-key popup on pause):
 - `x` — toggle multi-select; `Shift-J` / `Shift-K` extend the range; a verb (or `:`) then acts on the
   whole set (e.g. move several cards to Review at once).
 
-## Overlays (spawn sheet, popovers)
+## Layer 7 — Fields, selectors, and modals (settings, spawn sheet, inbox)
 
-`Tab` / `j` / `k` between fields & rows · `Enter` confirm · `Esc` cancel / close. Text fields inside an
-overlay are the **Field** context (type freely, `Esc` steps out).
+Modals must be as keyboard-driven as the board. The rule set, by control type:
+
+**Modal-level flow (Overlay context)**
+- `Tab` / `Shift-Tab` — next / previous control (and `Ctrl-n` / `Ctrl-p` as vim-friendly synonyms)
+- `Enter` — trigger the modal's **primary action** (Spawn / Save) from anywhere it's unambiguous;
+  a visible default button shows what `Enter` will do
+- **Progressive `Esc`** (layered, vim-style): `Esc` first closes an open dropdown → then steps out
+  of the focused field to modal-nav → then closes the modal. One key, peels one layer at a time.
+- On open, focus lands on the **most useful control** (e.g. the prompt field in the spawn sheet),
+  not nothing — so the keyboard is immediately live.
+
+**Text fields — single-line** (repos root, worktrees root, status-line command, inbox append)
+- Type normally; `Ctrl-a` / `Ctrl-e` start/end, `Ctrl-w` delete-word (readline muscle memory)
+- `Enter` commits and advances / fires the primary action; `Esc` steps out to modal-nav
+
+**Text fields — multiline** (initial prompt, allowlist textarea)
+- `Enter` inserts a newline; **`Ctrl-Enter`** submits the modal (existing convention); `Esc` steps out
+
+**Combo boxes — fuzzy** (repo, branch) — *the `Ctrl-n`/`Ctrl-p` crux*
+- Type to filter; **`Ctrl-n` / `Ctrl-p`** move the highlighted candidate in the open dropdown
+  (bare `j`/`k` can't be used — they'd type into the field), exactly like vim's completion popup
+- `Enter` accepts the highlight; `Tab` accepts-and-advances (readline style)
+- `Esc` closes the dropdown but keeps the field (progressive escape)
+
+**Segmented / button-row selectors** (Start-in, agent, model, status-line mode) — *not text, so bare
+keys are safe*
+- When focused: `h` / `l` (and `←` / `→`) cycle options; `Enter` / `Space` confirm
+
+**Toggles** (read-only checkbox): `Space` toggles when focused.
+
+**Inbox editor popover** (list + append field)
+- `j` / `k` move rows (not editing); `Enter` edits the row inline (→ `inbox-edit`);
+  in-edit `Enter` commits, `Esc` cancels; `dd` (or `x`) deletes a row (→ `inbox-remove`);
+  `Ctrl-k` / `Ctrl-j` reorder the row up / down (→ `inbox-reorder`);
+  the append field at the bottom is a single-line Field (`Enter` → `send`).
+
+The unifying idea: **`Ctrl-n`/`Ctrl-p` are the "move a list while a text field owns the keyboard"
+primitive**, mirroring vim completion and readline history — so a fuzzy combo box never forces the
+hand to the arrow keys or the mouse.
 
 ## Design principles / non-goals
 
