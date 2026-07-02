@@ -123,18 +123,26 @@ private struct ColumnView: View {
             emptyPlaceholder
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: model.density.cardGap) {
-                    ForEach(cards) { task in
-                        CardView(task: task)
-                            .draggable(task.id.uuidString)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: model.density.cardGap) {
+                        ForEach(cards) { task in
+                            CardView(task: task)
+                                .id(task.id)
+                                .draggable(task.id.uuidString)
+                        }
                     }
+                    .padding(.top, 2)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 12)
                 }
-                .padding(.top, 2)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 12)
+                .frame(maxHeight: .infinity)
+                // Keep the keyboard-selected card visible as hjkl moves the selection through the column.
+                .onChange(of: model.selectedId) { _, id in
+                    guard let id, cards.contains(where: { $0.id == id }) else { return }
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+                }
             }
-            .frame(maxHeight: .infinity)
         }
     }
 

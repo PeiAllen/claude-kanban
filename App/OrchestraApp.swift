@@ -5,6 +5,8 @@ import OrchestraCore
 @main
 struct OrchestraApp: App {
     @StateObject private var model = BoardModel()
+    /// The app-wide keyboard router — installed once when the window appears.
+    @State private var keyboard: KeyboardController? = nil
 
     var body: some Scene {
         Window("Orchestra · Personal", id: "board") {
@@ -14,9 +16,30 @@ struct OrchestraApp: App {
                 .preferredColorScheme(model.darkMode ? .dark : .light)
                 .frame(minWidth: 940, minHeight: 580)
                 .task { await model.bootstrap() }
+                .onAppear {
+                    if keyboard == nil {
+                        let k = KeyboardController(model: model)
+                        k.install()
+                        keyboard = k
+                    }
+                }
                 .onOpenURL { url in model.select(ref: url.absoluteString) }
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            // Standard macOS accelerators (Layer 8) — also surfaced in the menu bar for discoverability.
+            // The KeyboardController additionally handles these while a terminal is focused.
+            CommandGroup(replacing: .newItem) {
+                Button("New Card") { model.spawnDefaultColumn = .plan; model.showSpawn = true }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("New Shell") {
+                    if let id = model.selectedId { _Concurrency.Task { await model.newShell(id) } }
+                }
+                .keyboardShortcut("t", modifiers: .command)
+                Button("Close") { model.closeFrontmost() }
+                    .keyboardShortcut("w", modifiers: .command)
+            }
+        }
 
         Settings {
             SettingsView()
@@ -111,6 +134,15 @@ struct ContentView: View {
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
 
+            // Keyboard-shortcuts reference (?) — overlay like the spawn sheet.
+            if model.showHelp {
+                Color.black.opacity(0.28).ignoresSafeArea()
+                    .onTapGesture { model.showHelp = false }
+                KeyboardHelpView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .transition(.opacity)
+            }
+
             // First-run welcome / daemon install — covers the whole window.
             if model.showOnboarding {
                 OnboardingView()
@@ -119,6 +151,7 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
+        .animation(.easeOut(duration: 0.15), value: model.showHelp)
         .modifier(DebugLaunchHook())
     }
 }
