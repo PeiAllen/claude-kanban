@@ -42,10 +42,17 @@ public struct Launcher: Sendable {
         // Passing two DIRECTORIES to `--diff` (rather than one `--diff old new` per file) makes Zed
         // recurse and render every changed file in a SINGLE multi-diff multibuffer — the same view as
         // its native "Branch Diff" button, which has no external trigger of its own.
-        var argv = ["zed", "-n", worktree]
+        //
+        // Ordering is load-bearing: Zed's CLI positional (`PATHS_WITH_POSITION…`) is a trailing var-arg,
+        // so once a positional path is seen, EVERYTHING after it — including `--diff` — is consumed as a
+        // literal path rather than parsed as a flag. Putting the worktree first made Zed open `--diff`,
+        // `old`, and `new` as three separate paths (an empty `--diff` buffer + two folders). So the
+        // `--diff old new` flag MUST come before the worktree positional.
+        var argv = ["zed", "-n"]
         if let dirs = try? branchDiffDirs(worktree: worktree) {
             argv += ["--diff", dirs.old, dirs.new]
         }
+        argv.append(worktree)
         let r = try Proc.run(argv)
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "zed failed to open" : r.stderr) }
     }
