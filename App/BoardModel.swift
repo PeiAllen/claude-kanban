@@ -410,6 +410,7 @@ final class BoardModel: ObservableObject {
 
     func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
     func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
+    func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
 
     /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path).
     func copySelected(_ target: CopyTarget) {

@@ -69,7 +69,8 @@ public enum KeyMap {
         case "I": return .openInbox
         case "c": return .spawn
         case "a": return .archive
-        case "o": return .openInZed
+        case "o": return .openNotes
+        case "O": return .openInZed
         case "d": return .toggleDiff
         case "t": return .newShell
         case "z": return .toggleCollapse
