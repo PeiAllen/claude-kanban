@@ -120,6 +120,9 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)", status: .running) }
         return nil
     }
+    /// Stand in for a send-keys TUI agent's pane-gate: the send-keys wake tests feed Codex-style panes,
+    /// so mirror `CodexAdapter.canNudge` (default `false` would make those tests never nudge).
+    func canNudge(pane: String) -> Bool { CodexComposer.canNudge(pane) }
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
         let sid = current
         return AgentSessionInfo(agentId: id, sessionId: sid,

@@ -1,16 +1,16 @@
 import Foundation
 
-/// Best-effort read of a send-keys agent's TUI composer from a captured agent pane, for the F2
-/// detect-and-defer wake (C4). The send-keys nudge fires ONLY when the agent is idle AND its composer
-/// is empty; anything else (a user draft, an in-flight turn, or a pane we cannot parse) DEFERS.
+/// `CodexAdapter`'s TUI pane-gate — the Codex-specific half of the F2 send-keys detect-and-defer wake
+/// (C4), reached ONLY via `CodexAdapter.canNudge(pane:)` so core's generic wake never names a Codex type.
+/// Best-effort read of the captured agent pane: the nudge fires ONLY when the agent is idle AND its
+/// composer is empty; anything else (a user draft, an in-flight turn, or a pane we cannot parse) DEFERS.
 ///
 /// FRAGILE BY NATURE. This parses Codex's TUI text rendering, which drifts across versions — hence q10
 /// keeps v1 on send-keys and watches upstream app-server #29922 / #28144 to eventually replace this
 /// with a real control channel (`wakeTransport.controlChannel`). It is deliberately CONSERVATIVE: when
 /// the composer can't be located it reports "not nudgeable" so we never fire a keystroke into an unknown
-/// UI state. Focus is NOT consulted (per design: focus is not a gate). Keyed on the send-keys transport,
-/// not agent identity; the marker/placeholder tables below are the only Codex-specific knobs and are the
-/// documented place to tune when the TUI changes.
+/// UI state. Focus is NOT consulted (per design: focus is not a gate). The marker/placeholder tables below
+/// are the only Codex-specific knobs and are the documented place to tune when the TUI changes.
 enum CodexComposer {
 
     /// Substrings Codex renders WHILE a turn is streaming; idle = none present. Lower-cased match.

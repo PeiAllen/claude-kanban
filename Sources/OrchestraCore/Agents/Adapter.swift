@@ -44,6 +44,11 @@ public protocol Adapter: Sendable {
     /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
     /// adapter opts in per transport it actually receives.
     func parse(_ raw: RawTelemetry) -> StatusReport?
+    /// send-keys wake gate (F2): given the just-captured agent pane, is it safe to fire the fixed nudge?
+    /// AGENT-DEPENDENT and keyed to `wakeTransport == .sendKeys` — the adapter reads its OWN TUI rendering
+    /// (idle + empty composer), so core never has to know one agent's screen from another's. DEFAULTED to
+    /// `false` (additive; a non-send-keys agent wakes another way and never calls this).
+    func canNudge(pane: String) -> Bool
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo?
     /// Side-effecting prep run just before launch (default no-op). Claude uses it to pre-accept the
     /// worktree's directory-trust dialog so an autonomous agent never blocks on the "trust this
@@ -56,6 +61,7 @@ public extension Adapter {
     var env: [String: String] { [:] }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
+    func canNudge(pane: String) -> Bool { false }   // only send-keys agents read their pane; others never nudge
 
     /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic
     /// handle derived from the id. Keeps callers from ever fabricating a bad launch model.
