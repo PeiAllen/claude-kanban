@@ -369,6 +369,19 @@ private struct DebugLaunchHook: ViewModifier {
             "             return r.stdout",
             "         }",
             "",
+            "\(E)[1mdiff --git a/App/Views/DiffInspectorView.swift b/App/Views/DiffInspectorView.swift\(E)[m",
+            "\(E)[1m--- a/App/Views/DiffInspectorView.swift\(E)[m",
+            "\(E)[1m+++ b/App/Views/DiffInspectorView.swift\(E)[m",
+            "\(E)[36m@@ -46,6 +46,11 @@ struct DiffInspectorView: View {\(E)[m",
+            "                 .pickerStyle(.segmented)",
+            "                 .labelsHidden()",
+            "                 .fixedSize()",
+            "\(E)[32m+                Picker(\"\", selection: $layout) {\(E)[m",
+            "\(E)[32m+                    Text(\"Unified\").tag(DiffLayout.unified)\(E)[m",
+            "\(E)[32m+                    Text(\"Split\").tag(DiffLayout.split)\(E)[m",
+            "\(E)[32m+                }\(E)[m",
+            "\(E)[32m+                .pickerStyle(.segmented)\(E)[m",
+            "",
         ].joined(separator: "\n")
     }
 

@@ -411,8 +411,8 @@ final class BoardModel: ObservableObject {
     func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
     }
-    /// Rendered diff (difftastic/git ANSI) for the inspector Diff view (axis 7). App-only internal
-    /// endpoint — agents read a diff by running `git diff` in the card's cwd. `""` for non-git cards.
+    /// Rendered git patch for the inspector Diff view (axis 7). App-only internal endpoint — agents
+    /// read a diff by running `git diff` in the card's cwd. `""` for non-git cards.
     func diffText(_ id: UUID, base: String) async -> String {
         (try? await client.call("diffText",
             .object(["ref": .string(id.uuidString), "base": .string(base)])).decode(String.self)) ?? ""

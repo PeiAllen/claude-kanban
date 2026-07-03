@@ -9,13 +9,14 @@ extension OrchestraService {
     /// pointing at "open in Zed" for the full thing, so the inspector stays responsive.
     static let diffTextCap = 256 * 1024
 
-    /// The card's rendered diff (difftastic when `difft` is on PATH, git's colored diff otherwise) for
-    /// `base`. Non-`.worktree` cards return `""`. Errors: unknown card → `unknownTask`.
+    /// The card's rendered git patch for `base`. Non-`.worktree` cards return `""`. Errors:
+    /// unknown card → `unknownTask`.
     public func diffText(_ id: UUID, base: DiffBase = .branch) async throws -> String {
         let t = try await require(id)
         guard t.origin == .worktree else { return "" }
         try resolver.assertAllowed(t.cwd)
-        let text = (try? GitDiffProvider().render(worktree: t.cwd, base: base, parentBranch: t.parentBranch)) ?? ""
+        let text = (try? GitDiffProvider().render(worktree: t.cwd, base: base,
+                                                  parentBranch: t.parentBranch)) ?? ""
         if text.utf8.count > Self.diffTextCap {
             return String(text.prefix(Self.diffTextCap))
                 + "\n… (diff truncated — open in Zed for the full changes)\n"
