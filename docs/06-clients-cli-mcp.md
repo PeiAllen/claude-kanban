@@ -108,53 +108,65 @@ it logs readiness (and the socket path) to stderr.
 
 ## The hooks / `_report` channel
 
-When the daemon launches a Claude Code agent it hands it a **single managed `--settings` file** rendered
-by `HooksRenderer` from the `claude-hooks.json` resource, with `__ORCHESTRA_BIN__` substituted for the
-real `orchestra` path. That file wires Claude's statusLine and hooks to `orchestra _report --event
-<kind>`:
+Hooks are a **first-class, core-owned channel** — the primary bidirectional path between core and a
+running agent. Core owns the *protocol* (a `HookEvent` vocabulary + a `HookResponse`, dispatched once in
+the daemon); each adapter owns only the *format* at the edge (`parse` telemetry in, `encode` a response
+out, `sessionSource` normalize, and render its own hook file). The organizing rule is **convert at the
+edge, dispatch in core** — raw agent JSON never crosses the wire.
+
+**Rendering (per launch, by the adapter).** Each adapter renders its own hook file in `prepareToLaunch`
+(the daemon renders nothing) from a bundled template — `claude-hooks.json` for Claude's managed
+`--settings` file, `codex-hooks.json` for Codex's `$CODEX_HOME/hooks.json` — substituting
+`__ORCHESTRA_BIN__` for the live `orchestra` path and `__AGENT_ID__` for the card's agent id. The command
+carries a baked `--agent <id>` so the client can resolve its adapter with no env var:
 
 ```jsonc
 {
-  "statusLine": { "type": "command", "command": "<orchestra> _report --event statusline" },
+  "statusLine": { "type": "command", "command": "<orchestra> _report --event statusline --agent claude-code" },
   "hooks": {
-    "SessionStart":      [{ "hooks": [{ "command": "<orchestra> _report --event session"     }] }],
-    "UserPromptSubmit":  [{ "hooks": [{ "command": "<orchestra> _report --event prompt"      }] }],
-    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event tool" }] }],
-    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event tool" }] }],
-    "Notification":      [{ "hooks": [{ "command": "<orchestra> _report --event notify"      }] }],
-    "Stop":              [{ "hooks": [{ "command": "<orchestra> _report --event notify"      }] }],
-    "SessionEnd":        [{ "hooks": [{ "command": "<orchestra> _report --event sessionend"  }] }]
+    "SessionStart":      [{ "hooks": [{ "command": "<orchestra> _report --event session --agent claude-code"      }] }],
+    "UserPromptSubmit":  [{ "hooks": [{ "command": "<orchestra> _report --event prompt --agent claude-code"       }] }],
+    "PreToolUse":        [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event pretool --agent claude-code"  }] }],
+    "PostToolUse":       [{ "matcher": "*", "hooks": [{ "command": "<orchestra> _report --event posttool --agent claude-code" }] }],
+    "Notification":      [{ "hooks": [{ "command": "<orchestra> _report --event notification --agent claude-code" }] }],
+    "Stop":              [{ "hooks": [{ "command": "<orchestra> _report --event stop --agent claude-code"         }] }],
+    "SessionEnd":        [{ "hooks": [{ "command": "<orchestra> _report --event sessionend --agent claude-code"   }] }]
   }
 }
 ```
 
-A card that also needs per-card settings (read-only enforcement today — see [the read-only
-barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second `--settings`;
-`SettingsComposer` deep-merges those overlays *onto* this base into one file. Claude Code applies multiple
-`--settings` as last-file-wins (full replacement, not deep-merge), so a second file would silently drop
-the statusLine + every telemetry hook above — merging into one is the fix (befad61).
+The `--event` strings **are** the `HookEvent` raw values (Core), so the template, client, and daemon
+share one vocabulary. `Notification`/`Stop` and `PreToolUse`/`PostToolUse` each get a distinct event —
+so nothing downstream ever sniffs the raw `hook_event_name`. Codex wires only `SessionStart → --event
+session` (its telemetry is the daemon-side rollout tail; its `parse` returns `nil` for this push, so the
+event is orientation-only). A card that also needs per-card settings (read-only enforcement — see [the
+read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier)) does **not** get a second
+`--settings`; `SettingsComposer` deep-merges those overlays *onto* this base into one file (Claude applies
+multiple `--settings` last-file-wins, so a second file would silently drop the statusLine + hooks).
 
-`orchestra _report` (in `ReportHelper.swift`) is the hidden helper these callbacks invoke. Its
-behavior, in order:
+**`orchestra _report`** (in `ReportHelper.swift`) is the thin edge client these callbacks invoke:
 
-1. **Render and print the status line first** — to unbuffered stdout — so a slow daemon never stalls
-   Claude's status bar.
-2. **Guard on `$ORCHESTRA_TASK_ID`** (set by `SessionManager` at launch) — only Orchestra-spawned
-   agents report; a plain `claude` you run yourself does nothing.
-3. **Parse the event** into a `StatusReport` (see [Data model](03-data-model.md#the-report-types)) and
-   send it to the daemon's `report` method under a tight time budget (~50 ms for statusline, ~2 s for
-   hooks), closing the connection on budget/ack so a "budget trip" never blocks the agent.
-4. **On the Stop hook, drain the inbox (F3).** The `Stop` and `Notification` events share the same
-   `_report --event notify` command, distinguished at runtime by the stdin `hook_event_name`. When it is
-   `"Stop"`, `_report` additionally calls the daemon's [`drain` RPC](05-command-reference.md#server-only-built-in-methods)
-   for the card and, if the card's [durable inbox](03-data-model.md#the-inbox-store-f3) has anything
-   pending, prints a `{"decision":"block","reason":<payload>}` object to stdout — the documented Claude
-   Stop-hook continuation channel, which hands the queued messages back to the model so it keeps working
-   instead of stopping. The payload is the drained messages joined and capped at 10 000 characters
-   (`StopDrain`). This step is purely **additive** — the notify→`waiting` report of step 3 is unchanged,
-   and non-`Stop` events never reach it. A per-card **consecutive-inject loop guard** in the daemon
+1. **Render + print the status line first** — unbuffered — so a slow daemon never stalls the status bar.
+2. **Resolve this card's adapter** from `--agent` (`AgentRegistry`), guarding on `$ORCHESTRA_TASK_ID`
+   (set by `SessionManager` at launch) and a known `HookEvent` — a plain `claude` you run does nothing.
+3. **Convert at the edge:** `adapter.parse` turns the raw payload into a `StatusReport` (and, for
+   `session`, `adapter.sessionSource` extracts the `SessionSource`). The raw payload dies here.
+4. **Send one typed `hook` RPC** — `{ref, event, report?, source?}` — under a tight budget (~50 ms
+   statusline fire-and-forget, ~2 s otherwise). The daemon's `OrchestraService.handleHook` dispatches
+   **both directions and is adapter-free**: it applies the `report` to the store (send), and for
+   `session` composes the live orientation ([SessionBrief](04-cards-worktrees-sessions.md), skipped on a
+   `compact` source) or for `stop` drains the [durable inbox](03-data-model.md#the-inbox-store-f3) (F3)
+   into a neutral `HookResponse`.
+5. **Encode the response to stdout:** if the daemon returns a `HookResponse`, `adapter.encode` wraps it
+   in the agent's native envelope — `hookSpecificOutput.additionalContext` for orientation, or
+   `{"decision":"block","reason":<payload>}` (Claude's Stop-hook continuation, capped at 10 000 chars by
+   `StopDrain`) — and the client prints it. A per-card **consecutive-inject loop guard**
    (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
-   Stop→inject→Stop cycle by leaving messages queued once the cap is hit. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`.)
+   Stop→inject→Stop cycle.
+
+This single `hook` RPC replaced the former `report`/`drain`/`sessionBrief` methods. Because the daemon
+resolves the card's adapter from the persisted `agentId`, there is no agent identity on the wire beyond
+the shared `HookEvent`, and no `if agentId` anywhere in the dispatch.
 
 **Crash-safe, best-effort stdio.** `_report` is contractually best-effort — it always exits 0 and never
 fails the agent. Its statusLine + hook output goes to a stdout pipe that Claude captures, and that pipe

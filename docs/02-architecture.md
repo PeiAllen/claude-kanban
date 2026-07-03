@@ -25,17 +25,16 @@ restarted automatically by launchd if it ever exits.
 On startup the daemon (`Sources/orchestrad/main.swift`):
 
 1. **Loads config** from `~/Library/Application Support/Orchestra/config.json`.
-2. **Renders the Claude Code hooks file** (`HooksRenderer`) — substituting the real `orchestra` binary
-   path into the managed `--settings` template — so agents it launches report state back. (Re-rendered
-   on config change.)
-3. **Starts the `ControlServer`** on its unix-domain socket.
-4. **Runs recovery** asynchronously without blocking startup: sweeps orphaned scratch dirs, then
+2. **Starts the `ControlServer`** on its unix-domain socket. (The daemon renders **no** hook files — each
+   adapter renders its own in `prepareToLaunch`, per launch, so a new session always reflects the current
+   binary path + statusLine config. See [the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
+3. **Runs recovery** asynchronously without blocking startup: sweeps orphaned scratch dirs, then
    revives sessions for cards whose tmux session died (see [Recovery](04-cards-worktrees-sessions.md#recovery-resume-and-restart)).
-5. **Starts a 2-second poll loop** that reconciles liveness (a safety net that flips a card to `dead`
+4. **Starts a 2-second poll loop** that reconciles liveness (a safety net that flips a card to `dead`
    if its tmux session vanished without a `SessionEnd` hook) and, alongside it, drives
    [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter) — the rollout-tail tick that
    pulls live state for `fileTail` agents (Codex) that don't push it.
-6. Parks on `dispatchMain()`.
+5. Parks on `dispatchMain()`.
 
 ### Why a daemon, and why tmux
 
@@ -110,10 +109,12 @@ drift apart on *what* commands exist — only on presentation.
 
 ## The report channel
 
-The fourth participant is the **agent itself**. When the daemon launches a Claude Code agent it passes
-a managed `--settings` file (rendered by `HooksRenderer`) that wires Claude's **statusLine** and
-**hooks** to a hidden helper: `orchestra _report --event <kind>`. Each callback POSTs a `StatusReport`
-to the daemon's internal `report` method over the same control socket:
+The fourth participant is the **agent itself**. Each adapter renders its own hook file in
+`prepareToLaunch` (Claude a managed `--settings` file, Codex `$CODEX_HOME/hooks.json`) that wires the
+agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind> --agent <id>`.
+The helper resolves the card's adapter, parses at the edge, and sends one typed `hook` RPC to the daemon's
+adapter-free `handleHook` over the same control socket — which applies the `StatusReport` (and returns
+orientation/inbox-drain content to print):
 
 | Claude event | `_report --event` | What it updates on the card |
 |--------------|-------------------|------------------------------|
