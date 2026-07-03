@@ -178,12 +178,13 @@ struct SendRoutingTests {
     }
 }
 
-@Suite("C1 · Stop-drain preserves the notify/waiting report")
+@Suite("C1 · Stop-drain preserves the stop/waiting report")
 struct NotifyPreservedTests {
-    @Test("the Stop hook's notify event still parses to a waiting StatusReport and drives the card to waiting")
+    @Test("the Stop hook's stop event still parses to a waiting StatusReport and drives the card to waiting")
     func notifyStillWaiting() async throws {
-        // 1. parse is byte-identical: notify → waiting.
-        let report = ClaudeCodeAdapter().parse(.hooksPush(kind: "notify", payload: .object([:])))
+        // 1. parse is byte-identical: the stop event → waiting (the old shared "notify" kind is now split
+        //    into distinct notification/stop --event values; both still map to waiting).
+        let report = ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:])))
         #expect(report?.snapshot?.status == .waiting)
 
         // 2. applied through the service, the card goes to .waiting — with a message still queued in the inbox
