@@ -320,6 +320,29 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the dead-card recovery panel straight to a PNG via `ImageRenderer` — headless, needs no
+    /// Screen-Recording permission. Used by `ORCH_SNAPSHOT_RECOVERY=/path.png` for UI review. Renders the
+    /// REAL `RecoveryView` for a `.dead` task, so the screenshot can't drift from the shipping panel
+    /// (including the "Copy prompt" affordance on the "Originally asked:" block).
+    static func snapshotRecovery(to path: String, model: BoardModel) {
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        var card = Task(title: "Wire the KeyboardController", repo: "/Users/allen/code/orchestra",
+                        branch: "feat/controller",
+                        cwd: "/Users/allen/code/orchestra/.worktrees/feat/controller",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, status: .dead,
+                        initialPrompt: "Wire the KeyboardController to the command palette and add hjkl navigation across columns.")
+        card.deadReason = .sessionVanished
+        card.agentSessionId = "mock-session"   // surfaces the "Try resume" button too
+        let view = RecoveryView(task: card)
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .frame(width: 460, height: 560)
+            .background(theme.inspector)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// A representative git-colored (ANSI/SGR) diff for the headless Diff-view snapshot — bold file
     /// headers, a cyan hunk header, red removals + green additions — so `ANSIText`'s parser + the
     /// DiffInspectorView chrome are visible without a daemon.
@@ -451,6 +474,10 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_INBOX"] {
                 DebugLaunchHook.snapshotInbox(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_RECOVERY"] {
+                DebugLaunchHook.snapshotRecovery(to: path, model: model)
                 exit(0)
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DIFF"] {

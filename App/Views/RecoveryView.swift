@@ -10,6 +10,7 @@ struct RecoveryView: View {
     let task: Task
 
     @State private var resuming = false
+    @State private var promptCopied = false
 
     private var whyLine: String {
         switch task.deadReason {
@@ -61,7 +62,19 @@ struct RecoveryView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Originally asked:").font(F.ui(11, .semibold)).foregroundColor(theme.text3)
+                        HStack(spacing: 6) {
+                            Text("Originally asked:").font(F.ui(11, .semibold)).foregroundColor(theme.text3)
+                            Spacer(minLength: 0)
+                            Button { copyPrompt() } label: {
+                                miniLabel(text: promptCopied ? "Copied" : "Copy prompt") {
+                                    Image(systemName: promptCopied ? "checkmark" : "doc.on.doc")
+                                        .font(F.ui(9.5))
+                                        .foregroundColor(promptCopied ? theme.green.dot : theme.text2)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help(promptCopied ? "Copied!" : "Copy prompt")
+                        }
                         Text(task.initialPrompt)
                             .font(F.ui(12)).foregroundColor(theme.text2)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,6 +166,15 @@ struct RecoveryView: View {
         .padding(.horizontal, 9).frame(height: 24)
         .surface(theme.chip, corner: 7, hair: theme.hair)
         .contentShape(Rectangle())
+    }
+
+    private func copyPrompt() {
+        copy(task.initialPrompt)
+        promptCopied = true
+        _Concurrency.Task {
+            try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
+            promptCopied = false
+        }
     }
 
     private func copy(_ s: String) {
