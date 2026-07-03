@@ -263,7 +263,10 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   shared core so the planned [phone client](10-roadmap.md#the-nine-axes) reuses it.
 - **Recovery panel** (`RecoveryView`) — fills the inspector for a `dead` card. It explains *why* (per
   `DeadReason`), surfaces the **preserved work** (repo/branch/path with View-changes / Reveal-in-Finder
-  / Copy-path), shows the **original prompt**, and offers **Start new session** (`restart`), **Archive**,
+  / Copy-path), shows the **original prompt** under an "Originally asked:" heading — with a **Copy prompt**
+  affordance that grabs `task.initialPrompt` verbatim (always persisted, so it survives even a dead card)
+  and flashes a "Copied" checkmark for ~1.2 s, mirroring the sibling Copy-path chrome and the
+  `BreadcrumbStrip`'s copied feedback — and offers **Start new session** (`restart`), **Archive**,
   and — when a session id exists — **Try resume** (`resume`).
 - **Activity popover** (`ActivityPopover`) — a **Live** tab (the streamed activity feed, each row
   colored by source and clickable to select its card) and a **CLI** tab (a quick reference of the
