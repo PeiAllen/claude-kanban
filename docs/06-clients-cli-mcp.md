@@ -186,13 +186,13 @@ Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 
 **Codex gets a parity SessionStart hook.** Codex ships a Claude-parity SessionStart hook whose stdout
 `additionalContext` is folded into the session, so the same orientation (step 5) reaches a Codex card too.
-`HooksRenderer.renderCodex` renders the bundled `codex-hooks.json` (SessionStart → `_report --event orient`)
-into `dataDir/codex-hooks.json` at daemon start — and again on config change — and each Codex card's
-`prepareToLaunch` installs it into the pinned `$CODEX_HOME/hooks.json`, **never clobbering a foreign user
-`hooks.json`** (`CodexHooks.installIfSafe` writes only when the destination is absent or already Orchestra's,
-identified by the `_report --event orient` sentinel). The `orient` event is **orientation-only**: it prints
-the brief and sends **no** telemetry — Codex telemetry stays the
-[daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter), not this push channel.
+Each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
+`_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json`,
+**never clobbering a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the
+destination is absent or already Orchestra's, identified by the `_report --event session` sentinel).
+Codex's `parse` returns `nil` for this push (its telemetry is the
+[daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
+**orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.
 
 The raw→`StatusReport` conversion is **not** `ReportHelper`'s own. This `_report` process *is* the Claude
 **`hooksPush` transport**, so it wraps the event as a `RawTelemetry.hooksPush(kind:payload:)` and hands it

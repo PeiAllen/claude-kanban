@@ -743,9 +743,9 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
 
 - **The brief is pure, live, and agent-agnostic.** `SessionBrief.sentence(column:access:shortId:)` composes
   the orientation as a pure, synchronous value — trivially testable and callable from the `_report` hook
-  process — and the daemon exposes it through a new **`sessionBrief` RPC**
-  ([server-only, not a Command](05-command-reference.md#server-only-built-in-methods), mirroring `drain`)
-  that reads the card's column **live** from the store. So a **reopened or dragged card reflects its
+  process — and the daemon serves it live from the adapter-free `handleHook` dispatch (the
+  [`hook` RPC](05-command-reference.md#server-only-built-in-methods)'s `session` event; later unified with
+  drain by the first-class-hooks refactor) that reads the card's column **live** from the store. So a **reopened or dragged card reflects its
   *current* lane**, not the launch-time `startIn` — the whole point is that the board is the source of truth
   the agent reads at open time.
 - **It rides the SessionStart hook's `additionalContext`, not a positional turn.** The brief is *not* folded
@@ -755,12 +755,12 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
   report is byte-for-byte unchanged. A mid-turn `compact` is skipped (the agent already has its bearings).
   This is the open-time counterpart to the F3 Stop-drain's turn-end inbox inject.
 - **Codex reaches it through a Claude-parity hook, orientation-only.** Codex now gets its own managed
-  hooks file: `HooksRenderer.renderCodex` renders the bundled `codex-hooks.json` (SessionStart →
-  `_report --event orient`) at daemon start and on config change, and each Codex card's `prepareToLaunch`
-  installs it into the pinned `$CODEX_HOME/hooks.json` — but **never clobbers a foreign user `hooks.json`**
-  (`CodexHooks.installIfSafe` writes only when the destination is absent or already Orchestra's, keyed on
-  the `_report --event orient` sentinel). The `orient` event is **orientation-only** — it prints the brief
-  and sends **no** telemetry, so Codex telemetry stays the [daemon-side rollout tail](#shipped-feature-history)
+  hooks file: each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
+  `_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json` — but
+  **never clobbers a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the destination
+  is absent or already Orchestra's, keyed on the `_report --event session` sentinel). Codex's `parse` returns
+  `nil` for this push, so the event is **orientation-only** — it yields the brief and sends **no**
+  telemetry, so Codex telemetry stays the [daemon-side rollout tail](#shipped-feature-history)
   (B2) rather than gaining a second, conflicting source. Same brief, byte-identical envelope, both agents.
 - **A nudge, not a leash.** The sentence tells the agent to begin on its column's footing and to **keep its
   column honest** by moving itself (`move <thisCard> --col plan|impl|review`) as work crosses a real phase
@@ -770,7 +770,7 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
   (skill-injection, above) and the SessionStart orientation reinforce the same behavior.
 
 `SessionBriefTests` pin the brief's column/mode wording and the Claude `additionalContext` envelope, and a
-control round-trip test pins the `sessionBrief` RPC. Verified end-to-end against an isolated daemon. Like the
+control round-trip test pins the `hook` RPC's `session` event. Verified end-to-end against an isolated daemon. Like the
 entries above, this is one context-injection increment, not a whole axis, so it stays here as history while
 axis 3's structured sub-status + more agent commands stay open ([chapter 10](10-roadmap.md)). (It also
 foreshadows [axis 1's configurable columns](10-roadmap.md) and [axis 5's automated review phase](10-roadmap.md):
