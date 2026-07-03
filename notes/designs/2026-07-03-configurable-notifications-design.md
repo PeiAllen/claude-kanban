@@ -1,8 +1,16 @@
 # Notifications, rethought
 
 **Date:** 2026-07-03
-**Status:** Design — awaiting user review
+**Status:** Implemented — plan `notes/plans/2026-07-03-configurable-notifications.md`
 **Branch:** `update-notification-time`
+
+**Verification:** 8 new unit tests (classification incl. background-suppression, waitReason
+lifecycle, Codex humanTurn) + full `swift test` green (one pre-existing async-diff flake,
+passes in isolation); app builds clean (no warnings); end-to-end through the real `_report`
+pipeline on an isolated daemon confirms a Stop with pending `background_tasks` keeps the card
+`running` (no alert), a clean Stop → `waiting`/`humanTurn`, and `permission_prompt` →
+`waiting`/`permission`. Not headless-verifiable: the actual macOS banner/sound firing and the
+Settings panel visuals — verify those in a real app session.
 
 ## Problem
 
