@@ -75,10 +75,13 @@ final class BoardModel: ObservableObject {
     @Published var connectionState: ConnectionState = .down
     /// Rebuilt whenever the active connection changes (a fresh transport per connection).
     private(set) var client: ControlClient
+    /// Posts a macOS notification / sound when an agent card flips to `.waiting` (needs the human).
+    private let notifier = AgentNotifier()
 
     init() {
         client = ControlClient(socketPath: Config.socketPath, source: .app)
         wireState()
+        notifier.onSelect = { [weak self] id in self?.selectedId = id }
     }
 
     /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`).
@@ -145,6 +148,7 @@ final class BoardModel: ObservableObject {
     ///   • first run, daemon not running → show the welcome / install screen
     ///   • returning user, daemon down   → stay offline; the banner offers a one-click restart
     func bootstrap() async {
+        notifier.requestAuthorization()
         await activate(connections.active)
     }
 
@@ -269,9 +273,17 @@ final class BoardModel: ObservableObject {
                 // on its own).
                 if selectedId == t.id { selectedId = nil }
             } else {
+                // Prior status of an *existing* card, captured before we overwrite it. `nil` for a
+                // freshly-appended card — so new cards and the post-reconnect refresh (which sets
+                // `tasks` wholesale, bypassing `apply`) never fire a notification.
+                let prev = tasks.first { $0.id == t.id }?.status
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }
+                // A genuine non-waiting → waiting transition: the agent's turn ended, it needs you.
+                if let prev, prev != .waiting, t.status == .waiting {
+                    notifier.agentBecameWaiting(t)
+                }
             }
         case .taskRemoved(let id):
             tasks.removeAll { $0.id == id }
