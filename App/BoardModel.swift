@@ -493,6 +493,14 @@ final class BoardModel: ObservableObject {
         _Concurrency.Task { await move(id, to: order[ti]) }
     }
 
+    /// Descend the keyboard into the selected card's agent terminal (Enter / i). No-op with no
+    /// selection so the focus ring never lights on an empty inspector.
+    func enterTerminalZone() {
+        guard selectedId != nil else { return }
+        focusZone = .terminal
+        FocusBridge.enterTerminal()
+    }
+
     func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
     func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
     func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
@@ -533,15 +541,21 @@ final class BoardModel: ObservableObject {
         if showDone { showDone = false; return }
         if showActivity { showActivity = false; return }
         if searchQuery != nil { searchQuery = nil; return }
-        // A focused shell tab closes; otherwise an open inspector closes; otherwise archive the card.
+        // A focused shell tab closes first.
         if focusZone == .shell, let id = selectedId, let w = selectedShell[id] {
             _Concurrency.Task { await closeShell(id, w) }
             return
         }
-        if selectedId != nil && focusZone != .board {
-            selectedId = nil; focusZone = .board; return
+        // Keyboard inside the agent terminal → step back out to the board, keeping the card open so you
+        // can carry on navigating (this is the Cmd-W path; a live terminal owns plain Esc itself).
+        if focusZone != .board {
+            focusZone = .board
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            return
         }
-        if let id = selectedId { _Concurrency.Task { await archive(id) } }
+        // On the board with a card open → close the inspector. Archiving is the `a` verb only, never
+        // Esc — now that "board + selection" is the resting state, Esc-to-archive would be a footgun.
+        if selectedId != nil { selectedId = nil }
     }
 
     // MARK: search / hints / resize / collapse
