@@ -14,9 +14,8 @@ struct SettingsView: View {
     @State private var statusLineMode: StatusLineMode = .passthroughGlobal
     @State private var customStatusLine = ""
 
-    // Client-local notification prefs (per-Mac, not daemon config); default on.
-    @AppStorage(AgentNotifier.bannerKey) private var notifyBanner = true
-    @AppStorage(AgentNotifier.soundKey) private var notifySound = true
+    // Bump to force a re-read of the per-trigger notification UserDefaults after a menu pick.
+    @State private var notifyTick = 0
 
     @State private var loaded = false
     @State private var saveTask: _Concurrency.Task<Void, Never>?
@@ -79,13 +78,14 @@ struct SettingsView: View {
                 }
 
                 section("Notifications") {
-                    toggleRow("Notify when an agent needs input",
-                              "Show a banner when an agent's turn ends and it's waiting on you — only while Orchestra is in the background.",
-                              isOn: $notifyBanner)
+                    notifyRow(.permission, "Permission needed",
+                              "Alert when an agent is blocked waiting for your approval.")
                     rowDivider
-                    toggleRow("Play a sound",
-                              "Play an alert sound on every such hand-off, even when Orchestra is focused.",
-                              isOn: $notifySound)
+                    notifyRow(.needsYou, "Needs you",
+                              "Alert when an agent finishes its turn and is waiting on you. Background waits (a task auto-resuming) don't count.")
+                    rowDivider
+                    notifyRow(.died, "Card died",
+                              "Alert when an agent session crashes or exits and needs recovery.")
                 }
             }
             .padding(20)
@@ -142,22 +142,6 @@ struct SettingsView: View {
         Rectangle().fill(theme.hair).frame(height: 0.5).padding(.leading, 13)
     }
 
-    private func toggleRow(_ label: String, _ desc: String, isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(F.ui(12.5, .medium)).foregroundStyle(theme.text)
-                Text(desc).font(F.ui(11)).foregroundStyle(theme.text2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(theme.accent)
-        }
-        .padding(.horizontal, 13).padding(.vertical, 11)
-    }
-
     private func field(_ binding: Binding<String>, _ placeholder: String, focus: Field) -> some View {
         TextField("", text: binding, prompt: Text(placeholder).foregroundColor(theme.text3))
             .textFieldStyle(.plain)
@@ -206,6 +190,56 @@ struct SettingsView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    // MARK: - Notification rows (per-trigger scope + sound)
+
+    private func notifyRow(_ trigger: AgentNotifier.NotifyTrigger, _ label: String, _ desc: String) -> some View {
+        let scope = currentScope(trigger)
+        let sound = currentSound(trigger)
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(F.ui(12.5, .medium)).foregroundStyle(theme.text)
+                Text(desc).font(F.ui(11)).foregroundStyle(theme.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            menu(scopeLabel(scope)) {
+                ForEach(AgentNotifier.NotifyScope.allCases, id: \.self) { s in
+                    Button(scopeLabel(s)) { setScope(trigger, s) }
+                }
+            }
+            menu(soundLabel(sound)) {
+                Button("Default") { setSound(trigger, "default") }
+                Button("None") { setSound(trigger, "none") }
+                Divider()
+                ForEach(AgentNotifier.soundNames, id: \.self) { name in
+                    Button(name) { setSound(trigger, name); NSSound(named: name)?.play() }
+                }
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 11)
+        .id(notifyTick)   // re-render this row when a pick lands
+    }
+
+    private func currentScope(_ t: AgentNotifier.NotifyTrigger) -> AgentNotifier.NotifyScope {
+        UserDefaults.standard.string(forKey: AgentNotifier.scopeKey(t))
+            .flatMap(AgentNotifier.NotifyScope.init(rawValue:)) ?? AgentNotifier.defaultScope(t)
+    }
+    private func currentSound(_ t: AgentNotifier.NotifyTrigger) -> String {
+        UserDefaults.standard.string(forKey: AgentNotifier.soundKey(t)) ?? AgentNotifier.defaultSound(t)
+    }
+    private func setScope(_ t: AgentNotifier.NotifyTrigger, _ s: AgentNotifier.NotifyScope) {
+        UserDefaults.standard.set(s.rawValue, forKey: AgentNotifier.scopeKey(t)); notifyTick += 1
+    }
+    private func setSound(_ t: AgentNotifier.NotifyTrigger, _ name: String) {
+        UserDefaults.standard.set(name, forKey: AgentNotifier.soundKey(t)); notifyTick += 1
+    }
+    private func scopeLabel(_ s: AgentNotifier.NotifyScope) -> String {
+        switch s { case .off: return "Off"; case .background: return "Background only"; case .always: return "Always" }
+    }
+    private func soundLabel(_ s: String) -> String {
+        switch s { case "default": return "Default"; case "none": return "None"; default: return s }
     }
 
     // MARK: - Load / save

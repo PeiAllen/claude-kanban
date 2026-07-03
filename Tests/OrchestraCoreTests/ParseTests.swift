@@ -36,9 +36,11 @@ struct ParseTests {
         #expect(a.parse(.hooksPush(kind: "tool", payload: bash))
                 == StatusReport(desc: "Running: ls -la", status: .running))
 
+        // notify now also classifies the wait reason (permission vs human-turn). A bare Notification
+        // payload (no permission_prompt) → humanTurn; the desc/status are otherwise unchanged.
         let notify = try JSONValue.parse(Data(#"{"message":"done"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "notify", payload: notify))
-                == StatusReport(desc: "done", status: .waiting))
+                == StatusReport(desc: "done", status: .waiting, waitReason: .humanTurn))
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "prompt", payload: prompt))

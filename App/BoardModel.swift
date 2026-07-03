@@ -280,9 +280,15 @@ final class BoardModel: ObservableObject {
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }
-                // A genuine non-waiting → waiting transition: the agent's turn ended, it needs you.
-                if let prev, prev != .waiting, t.status == .waiting {
-                    notifier.agentBecameWaiting(t)
+                // Genuine transitions → the matching notification trigger. `prev == nil` (fresh card)
+                // and the post-reconnect wholesale set (which bypasses `apply`) never fire.
+                if let prev {
+                    if prev != .waiting, t.status == .waiting {
+                        notifier.notify(t.waitReason == .permission ? .permission : .needsYou, task: t)
+                    }
+                    if prev != .dead, t.status == .dead {
+                        notifier.notify(.died, task: t)
+                    }
                 }
             }
         case .taskRemoved(let id):
