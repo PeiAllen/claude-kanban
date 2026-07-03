@@ -158,7 +158,15 @@ short helper line notes that the alert sound follows macOS Notification settings
 - **Claude Code < v2.1.145** (no `background_tasks`/`session_crons`): a Stop can't be
   classified as a background-wait, so it falls back to *Needs you* — i.e. today's behavior
   (the pollution returns, but nothing breaks).
-- **Codex cards**: only *Needs you* / *Died* ever fire.
+- **Codex cards**: only *Needs you* / *Died* ever fire, and *Needs you* is **correct** with no
+  suppression — Codex's background shell commands and subagents both resolve *within* a single
+  turn (subagents run synchronously; background shells are polled in-turn), and the local CLI
+  has no self-scheduler, so a Codex `task_complete` reliably means the human is waited on
+  (verified against the OpenAI Codex docs, June 2026). The only auto-resume analog is the
+  Codex **desktop app's "Automations"** (heartbeat/cron thread re-wakes) — an external
+  scheduler that routes to Codex's own Triage inbox; it's undocumented whether those runs even
+  reach the local `~/.codex/sessions` rollout Orchestra tails, and Orchestra doesn't support
+  Codex-app automations today, so they're out of scope.
 
 ## Testing
 
