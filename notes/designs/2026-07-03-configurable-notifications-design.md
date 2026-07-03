@@ -50,11 +50,11 @@ introspection), so Codex cards can only ever reach *Needs you* / *Died*.
 **A notification is a macOS notification, raised only when the agent needs *your*
 attention.** Three attention events, each independently configurable with a single dial.
 
-| Trigger | Raised on | Default scope |
-|---|---|---|
-| 🔐 **Permission** | `Notification` / `permission_prompt` | **Always** — you're blocking the agent |
-| 🙋 **Needs you** | `Stop` with **empty** `background_tasks` **and** `session_crons` (agent genuinely done), or `Notification`/`idle_prompt` | **Background only** — most frequent; don't nag when you're watching |
-| 💀 **Died** | `status → .dead` | **Always** — rare + important |
+| Trigger | Raised on | Default scope | Default sound |
+|---|---|---|---|
+| 🔐 **Permission** | `Notification` / `permission_prompt` | **Always** — you're blocking the agent | Hero |
+| 🙋 **Needs you** | `Stop` with **empty** `background_tasks` **and** `session_crons` (agent genuinely done), or `Notification`/`idle_prompt` | **Background only** — most frequent; don't nag when you're watching | Submarine |
+| 💀 **Died** | `status → .dead` | **Always** — rare + important | Basso |
 
 **Scope dial** (per trigger): `Off` · `Background only` · `Always (foreground + background)`.
 Firing rule, given the trigger's `scope` and `NSApp.isActive`:
@@ -63,14 +63,28 @@ Firing rule, given the trigger's `scope` and `NSApp.isActive`:
 fire = (scope == .always) || (scope == .background && !isActive)   // .off → never
 ```
 
-**No sound configuration.** A notification is posted with the system default sound
-(`UNNotificationSound.default`); *whether* and *how* it chimes is governed by the user's
-macOS Notification / Focus settings — not by Orchestra. This deletes the entire former
-sound axis (picker, `NSSound` cache, silent-banner coupling question). To make foreground
-`Always` alerts both show and chime, the notifier implements
+**Sound dial** (per trigger): `Default` · `None (silent)` · one of the 14 built-in macOS
+sounds (Basso, Blow, Bottle, Frog, Funk, Glass, Hero, Morse, Ping, Pop, Purr, Sosumi,
+Submarine, Tink). This is set directly on the notification content — **no separate audio
+player**:
+
+```
+content.sound = .default                              // "Default" — follows macOS alert-sound setting
+content.sound = nil                                   // "None" — silent banner
+content.sound = UNNotificationSound(named: <name>)    // a named built-in
+```
+
+`UNNotificationSound(named:)` resolves from the standard Sounds search paths, which include
+`/System/Library/Sounds`, so the 14 built-ins work **by name with zero bundling**. (The exact
+name token — with vs. without the `.aiff` extension — is a known finicky detail to pin down
+at implementation time.) All sound is still ultimately gated by the user's macOS Notification
+/ Focus settings; `Default` defers to the user's system alert-sound choice, a named sound
+overrides it.
+
+To make foreground `Always` alerts both show **and** chime, the notifier implements
 `userNotificationCenter(_:willPresent:)` returning `[.banner, .sound]` (today, with no
-`willPresent`, macOS suppresses foreground banners — which is why the old design needed a
-separate always-on `NSSound`).
+`willPresent`, macOS suppresses foreground banners entirely). When a trigger's sound is
+`None`, `content.sound` is `nil`, so the same code path yields a silent foreground banner.
 
 ## Design
 
@@ -119,15 +133,21 @@ working for every Stop.
 
 - `enum NotifyTrigger { case permission, needsYou, died }`,
   `enum NotifyScope: String { case off, background, always }`.
-- One pref per trigger: `orch_notify_<trigger>_scope`. Defaults: permission `.always`,
-  needsYou `.background`, died `.always` (applied via `object(forKey:) ?? default`, as today).
+- **Two prefs per trigger:** `orch_notify_<trigger>_scope` and `orch_notify_<trigger>_sound`
+  (`default` | `none` | a built-in sound name). Defaults (applied via
+  `object(forKey:) ?? default`, as today): permission `.always`/Hero, needsYou
+  `.background`/Submarine, died `.always`/Basso.
 - **Pure decision helper** (unit-tested, no AppKit):
-  `func shouldFire(_ scope: NotifyScope, isActive: Bool) -> Bool`.
-- `notify(_ trigger:, task:)` → look up scope, apply `shouldFire`, and on fire post a
-  `UNNotificationRequest` (`content.sound = .default`, `userInfo["taskId"]`, body from the
+  `func shouldFire(_ scope: NotifyScope, isActive: Bool) -> Bool`; plus a pure
+  `sound(for pref: String) -> UNNotificationSound?` mapping `default`→`.default`,
+  `none`→`nil`, name→`UNNotificationSound(named:)`.
+- `notify(_ trigger:, task:)` → look up scope + sound, apply `shouldFire`, and on fire post a
+  `UNNotificationRequest` (`content.sound = sound(for:)`, `userInfo["taskId"]`, body from the
   trigger). Click handling (activate + select card) is unchanged.
-- Add `willPresent` → `[.banner, .sound]` so `Always` alerts surface in the foreground.
-- Delete the `NSSound` member, `soundKey`, `bannerKey`, and `playSound()`.
+- Add `willPresent` → `[.banner, .sound]` so `Always` alerts surface in the foreground (with
+  their configured sound, or silent when the pref is `None`).
+- Delete the old always-on `NSSound` member, `soundKey`, `bannerKey`, and `playSound()` —
+  sound now rides on the notification content, not a parallel player.
 
 ### Wiring (`BoardModel.apply`, taskUpserted branch, ~284)
 
@@ -149,9 +169,11 @@ will legitimately raise *Died* then later *Needs you*; accepted (death is real a
 ### Settings UI (`SettingsView.swift`)
 
 Replace the two-toggle "Notifications" section with three rows — Permission needed, Needs
-you, Card died — each a label + one-line description + a scope menu (`Off` / `Background
-only` / `Always`), reusing the existing themed `menu(...)` control. No sound controls. A
-short helper line notes that the alert sound follows macOS Notification settings.
+you, Card died — each a label + one-line description + a **scope menu** (`Off` / `Background
+only` / `Always`) and a **sound menu** (`Default` / `None` / the 14 built-ins), reusing the
+existing themed `menu(...)` control. Picking a sound previews it (`NSSound(named:)?.play()`
+— preview only; the notification itself uses `content.sound`). A short helper line notes that
+alert sound is ultimately governed by macOS Notification / Focus settings.
 
 ### Graceful degradation
 
@@ -177,6 +199,8 @@ short helper line notes that the alert sound follows macOS Notification settings
 - **`report()`:** a waiting-causing patch sets `task.waitReason`; a following
   running/dead/done patch clears it.
 - **`shouldFire`** truth table: `{off, background, always} × {active, inactive}` (6 cases).
+- **`sound(for:)`** mapping: `default`→`.default`, `none`→`nil`, a name→a non-nil
+  `UNNotificationSound`.
 - **AppKit paths** (`UNUserNotificationCenter`, `willPresent`) stay thin over the pure
   helpers; verified manually — Settings layout via `scripts/orch-ui-shot.sh`, and a live
   smoke of each trigger (incl. a background-wait producing no alert and no `waiting` flip).
@@ -189,15 +213,17 @@ short helper line notes that the alert sound follows macOS Notification settings
 | `Sources/OrchestraCore/Agents/ClaudeCodeAdapter.swift` | classify `notify` via `hook_event_name` / `notification_type` / `background_tasks` / `session_crons` |
 | `Sources/OrchestraCore/Agents/CodexAdapter.swift` | `turncomplete` → reason `.humanTurn` |
 | `Sources/OrchestraCore/OrchestraService+Report.swift` | set / clear `task.waitReason` on status change |
-| `App/AgentNotifier.swift` | per-trigger scope table, `shouldFire`, macOS default sound, `willPresent`, *Died* path; drop `NSSound` |
+| `App/AgentNotifier.swift` | per-trigger scope + sound table, `shouldFire`, `sound(for:)`, `content.sound`, `willPresent`, *Died* path; drop the old always-on `NSSound` |
 | `App/BoardModel.swift` | route waiting(reason) / dead transitions to `notify(...)` |
-| `App/Views/SettingsView.swift` | three per-trigger scope rows; remove sound toggle |
+| `App/Views/SettingsView.swift` | three per-trigger rows, each a scope menu + a sound menu (with preview) |
 | `Tests/OrchestraCoreTests/ReportTests.swift` | classification + `waitReason` set/clear tests |
 
 ## Settled decisions (from the design dialogue)
 
-1. **No custom sound** — a notification is a macOS notification; its sound is the user's
-   macOS/Focus setting.
+1. **Per-trigger sound via `content.sound`** — `Default` / `None` / one of the 14 built-in
+   macOS sounds, set on the notification itself (no separate `NSSound` player). Ultimately
+   gated by macOS Notification / Focus settings.
 2. **Background-wait = option A** — the card stays `.running` (no `waiting` flip, no alert)
    while awaiting background work, keyed off `background_tasks` / `session_crons`.
-3. **Three triggers, one scope dial each**; defaults Always / Background / Always.
+3. **Three triggers, each with a scope dial + a sound dial**; defaults Always/Hero,
+   Background/Submarine, Always/Basso.
