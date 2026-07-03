@@ -292,9 +292,14 @@ private struct AgentChrome: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
-    /// The keyboard is inside this terminal box (agent terminal or a shell tab). Drives the accent
-    /// focus ring — the "your keys go here now" tell the board's card highlight can't give.
-    private var focused: Bool { model.focusZone == .terminal || model.focusZone == .shell }
+    /// Panel corner radius (shared by the outline, the region clips, and the focus rings).
+    private let cr: CGFloat = 10
+
+    /// Which pane owns the keyboard. The accent focus ring hugs whichever one is active — the agent
+    /// terminal (top block) or the shell panel (bottom block) — so *where* the glow sits tells you
+    /// where your keys go, the "your keys go here now" cue the board's card highlight can't give.
+    private var agentFocused: Bool { model.focusZone == .terminal }
+    private var shellFocused: Bool { model.focusZone == .shell }
 
     private var ctxColor: Color {
         if task.ctxPct >= 80 { return theme.red.dot }
@@ -303,58 +308,81 @@ private struct AgentChrome: View {
     }
 
     var body: some View {
+        // ui-spec §3.5: the bottom strip is *either* the full-width "New terminal" button (no shells)
+        // *or* the shell tab ribbon + resizable panel. When shells are open the panel splits into two
+        // stacked regions — the agent terminal on top, the shells below — and the focus ring hugs
+        // whichever one owns the keyboard. With no shells open the agent region *is* the whole panel.
+        let shellsOpen = model.shellOpen.contains(task.id)
+        // Agent region rounds the top; its bottom rounds too only when it fills the panel (no shells).
+        let agentShape = UnevenRoundedRectangle(topLeadingRadius: cr,
+                                                bottomLeadingRadius: shellsOpen ? 0 : cr,
+                                                bottomTrailingRadius: shellsOpen ? 0 : cr,
+                                                topTrailingRadius: cr, style: .continuous)
+        // Shell region butts up square against the agent above and rounds only the panel's bottom.
+        let shellShape = UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: cr,
+                                                bottomTrailingRadius: cr, topTrailingRadius: 0,
+                                                style: .continuous)
+
         VStack(spacing: 0) {
-            // Context bar (2px)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Color.clear
-                    Rectangle()
-                        .fill(ctxColor)
-                        .frame(width: geo.size.width * CGFloat(min(94, task.ctxPct)) / 100)
-                        .opacity(0.7)
+            // AGENT region — context bar + header + breadcrumb + agent terminal (+ the "New terminal"
+            // strip when there are no shells, so the region is the full panel).
+            VStack(spacing: 0) {
+                // Context bar (2px)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Color.clear
+                        Rectangle()
+                            .fill(ctxColor)
+                            .frame(width: geo.size.width * CGFloat(min(94, task.ctxPct)) / 100)
+                            .opacity(0.7)
+                    }
                 }
+                .frame(height: 2)
+
+                TerminalHeader(task: task)
+                BreadcrumbStrip(task: task)
+
+                AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
+                                  host: model.terminalHost,
+                                  background: theme.termBg, foreground: theme.term,
+                                  // Only grab the keyboard when the user has actually descended into the
+                                  // terminal (Enter / i / Ctrl-l) — NOT on every card change. Otherwise
+                                  // hjkl-ing between cards would remount this view and steal focus, so the
+                                  // next nav key would type into the agent instead of moving the selection.
+                                  autofocus: model.focusZone == .terminal,
+                                  // A mouse click into the terminal also counts as descending: keep the
+                                  // zone (and the focus ring / chip) honest.
+                                  onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
+                    // Key by session AND active connection so switching cards OR connections tears down the
+                    // old terminal and attaches a fresh one against the right host — without this, SwiftUI
+                    // reuses the same NSView and every card shows card #1's tmux.
+                    .id("\(model.connections.activeId)-\(task.tmuxSession)")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(theme.termBg)
+
+                if !shellsOpen { BottomStrip(task: task) }
             }
-            .frame(height: 2)
+            .background(theme.termBg)
+            .clipShape(agentShape)
+            .overlay(agentShape.strokeBorder(agentFocused ? theme.accent.opacity(0.55) : .clear,
+                                             lineWidth: agentFocused ? 1.5 : 0))
+            .shadow(color: agentFocused ? theme.accent.opacity(0.1) : .clear, radius: agentFocused ? 3 : 0)
+            .zIndex(agentFocused ? 1 : 0)
 
-            TerminalHeader(task: task)
-            BreadcrumbStrip(task: task)
-
-            AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
-                              host: model.terminalHost,
-                              background: theme.termBg, foreground: theme.term,
-                              // Only grab the keyboard when the user has actually descended into the
-                              // terminal (Enter / i / Ctrl-l) — NOT on every card change. Otherwise
-                              // hjkl-ing between cards would remount this view and steal focus, so the
-                              // next nav key would type into the agent instead of moving the selection.
-                              autofocus: model.focusZone == .terminal,
-                              // A mouse click into the terminal also counts as descending: keep the
-                              // zone (and the focus ring / chip) honest.
-                              onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
-                // Key by session AND active connection so switching cards OR connections tears down the
-                // old terminal and attaches a fresh one against the right host — without this, SwiftUI
-                // reuses the same NSView and every card shows card #1's tmux.
-                .id("\(model.connections.activeId)-\(task.tmuxSession)")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(theme.termBg)
-
-            // ui-spec §3.5: the bottom strip is *either* the full-width "New terminal" button (no
-            // shells) *or* the shell tab ribbon (which carries its own "+" to add more). They never
-            // stack — closing the last shell drops `shellOpen` and the button comes back.
-            if model.shellOpen.contains(task.id) {
+            // SHELL region — the tab ribbon + resizable shell panel, with its own focus ring.
+            if shellsOpen {
                 ShellTabsView(task: task)
-            } else {
-                BottomStrip(task: task)
+                    .background(theme.termBg)
+                    .clipShape(shellShape)
+                    .overlay(shellShape.strokeBorder(shellFocused ? theme.accent.opacity(0.55) : .clear,
+                                                     lineWidth: shellFocused ? 1.5 : 0))
+                    .shadow(color: shellFocused ? theme.accent.opacity(0.1) : .clear, radius: shellFocused ? 3 : 0)
+                    .zIndex(shellFocused ? 1 : 0)
             }
         }
-        .background(theme.termBg)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        // Accent ring + soft glow while the terminal owns the keyboard; plain hairline otherwise.
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(focused ? theme.accent : theme.hair, lineWidth: focused ? 2 : 0.5)
-        )
-        .shadow(color: focused ? theme.accent.opacity(0.28) : .clear, radius: focused ? 7 : 0)
-        .animation(.easeOut(duration: 0.12), value: focused)
+        // A single always-on hairline traces the whole panel; the region rings above supply the focus tell.
+        .overlay(RoundedRectangle(cornerRadius: cr, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+        .animation(.easeOut(duration: 0.12), value: model.focusZone)
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
     }

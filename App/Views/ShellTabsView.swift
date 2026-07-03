@@ -47,7 +47,11 @@ struct ShellTabsView: View {
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        // Round only the panel's bottom corners — the top edge butts up square against the agent
+        // terminal region above (AgentChrome rounds the shared silhouette).
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 10,
+                                          bottomTrailingRadius: 10, topTrailingRadius: 0,
+                                          style: .continuous))
     }
 
     private var ribbon: some View {

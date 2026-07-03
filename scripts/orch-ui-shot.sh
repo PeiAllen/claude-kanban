@@ -99,5 +99,9 @@ shoot "4-panel-tall"    env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_SHELL_HEIGHT=4
 # Inspector focus ring: board zone (plain hairline) vs terminal zone (accent ring + glow).
 shoot "5-focus-board"   env ORCH_SHOW=shells ORCH_SHELLS_N=0
 shoot "6-focus-terminal" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_FOCUS=terminal
+# Region-scoped focus ring: with shells open the accent ring hugs the agent block (top) vs the
+# shell block (bottom), depending on which pane owns the keyboard.
+shoot "7-focus-shell"        env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=shell
+shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=terminal
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
