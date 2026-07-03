@@ -20,9 +20,9 @@ catch { log("warning: could not render codex hooks file: \(error)") }
 
 let server = ControlServer(service: service)
 server.onConfigChanged = { cfg in
-    try? ConfigStore.save(cfg)
-    try? HooksRenderer.render(orchestraBin: orchestraBin)
-    try? HooksRenderer.renderCodex(orchestraBin: orchestraBin)
+    _ = try? ConfigStore.save(cfg)
+    _ = try? HooksRenderer.render(orchestraBin: orchestraBin)
+    _ = try? HooksRenderer.renderCodex(orchestraBin: orchestraBin)
 }
 
 do {
