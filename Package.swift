@@ -32,6 +32,7 @@ let package = Package(
             resources: [
                 .copy("Resources/embedded.conf"),
                 .copy("Resources/claude-hooks.json"),
+                .copy("Resources/codex-hooks.json"),
                 .copy("Resources/claude-code-models.json"),
                 .copy("Resources/codex-models.json"),
                 .copy("Resources/com.orchestra.daemon.plist"),

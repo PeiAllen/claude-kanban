@@ -240,10 +240,10 @@ final class BoardModel: ObservableObject {
         streamStarted = true
         let stream = client.subscribe()
         _Concurrency.Task { [weak self] in
-            for await event in stream { await self?.apply(event) }
+            for await event in stream { self?.apply(event) }
             // Stream ended → the daemon connection dropped. Reflect offline and allow the next
             // (re)connect to wire a fresh stream.
-            await self?.handleStreamEnded()
+            self?.handleStreamEnded()
         }
     }
 

@@ -58,6 +58,9 @@ extension OrchestraService {
         // — both gate on `!recovering.contains(id)`. Do not narrow this window.
         recovering.insert(id)
         defer { recovering.remove(id) }
+        // Start clean: drop any confirmation left over from a prior attempt so only THIS relaunch's
+        // SessionStart(resume) callback can confirm it.
+        pendingResumeConfirmations.remove(id)
 
         // Pre-check: must have a tracked id whose transcript still exists.
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
@@ -264,7 +267,13 @@ extension OrchestraService {
     }
 
     private func awaitResume(_ id: UUID, graceSeconds: Int) async -> Bool {
-        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+        // The confirmation may already have landed while we were relaunching off-actor (see
+        // `pendingResumeConfirmations`). Consume it synchronously — before registering a waiter —
+        // so an early callback confirms instantly instead of waiting out (or timing out) the grace.
+        // This block and the registration below run without an intervening `await`, so no callback
+        // can slip between the check and the registration on this serialized actor.
+        if pendingResumeConfirmations.remove(id) != nil { return true }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             resumeWaiters[id] = cont
             let grace = max(0, graceSeconds)
             _Concurrency.Task { [weak self] in
@@ -275,7 +284,13 @@ extension OrchestraService {
     }
 
     func resolveResume(_ id: UUID, _ ok: Bool) {
-        if let cont = resumeWaiters.removeValue(forKey: id) { cont.resume(returning: ok) }
+        if let cont = resumeWaiters.removeValue(forKey: id) {
+            cont.resume(returning: ok)
+        } else if ok {
+            // No waiter yet: `awaitResume` hasn't registered (resume() is still relaunching off-actor).
+            // Remember this confirmation so the waiter picks it up rather than losing the wakeup.
+            pendingResumeConfirmations.insert(id)
+        }
     }
 
     private func timeoutResume(_ id: UUID) { resolveResume(id, false) }

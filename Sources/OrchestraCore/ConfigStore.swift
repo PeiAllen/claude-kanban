@@ -30,7 +30,9 @@ public func currentExecutablePath() -> String {
     _NSGetExecutablePath(nil, &size)
     var buf = [CChar](repeating: 0, count: Int(size))
     if _NSGetExecutablePath(&buf, &size) == 0 {
-        let path = String(cString: buf)
+        // Drop the null terminator, then decode the CChar bytes as UTF-8 (lossy, matching the old
+        // `String(cString:)` behavior but without the deprecated array initializer).
+        let path = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         return PathResolver.canonical(path)
     }
     #endif

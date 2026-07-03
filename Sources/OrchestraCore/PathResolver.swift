@@ -32,7 +32,10 @@ public struct PathResolver: Sendable {
     private static func resolveExisting(_ path: String) -> String? {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
         if realpath(path, &buf) != nil {
-            return String(validatingCString: buf) ?? String(cString: buf)
+            // Drop the null terminator, then decode the CChar bytes as UTF-8 (matching the old
+            // `String(cString:)` behavior without the deprecated array initializer; the macOS-15-only
+            // `String(validating:as:)` isn't usable on this macOS-14 target).
+            return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
         // Resolve the deepest existing ancestor, then re-append the missing tail — collapsing `.`/`..`
         // against the realpath-resolved ancestor. This is the security crux: the tail is non-existent

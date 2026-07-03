@@ -68,6 +68,30 @@ struct RecoveryTests {
         #expect(updated.agentSessionId == oldId)   // resume keeps the id (no new mint)
     }
 
+    @Test("resume success: SessionStart callback delivered BEFORE awaitResume registers still confirms (no lost wakeup)")
+    func resumeConfirmBeforeWaiterRegistered() async throws {
+        let env = TestEnv.make(grace: 2)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
+        env.adapter.writeTranscript(for: t.agentSessionId!)
+        let oldId = t.agentSessionId
+
+        // Force the exact ordering behind the parallel-load flake: make the off-actor relaunch slow so
+        // the SessionStart(resume) `report()` lands WHILE resume() is still inside `offActor` — i.e.
+        // before `awaitResume()` has registered its continuation. The confirmation must not be dropped.
+        env.sessions.ensureSleepMs = 250
+
+        async let resumed = env.svc.resume(t.id)
+        try await _Concurrency.Task.sleep(for: .milliseconds(40))   // well inside the 250ms relaunch window
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
+        let updated = try await resumed
+
+        #expect(updated.status == .waiting)
+        #expect(updated.deadReason == nil)
+        #expect(updated.agentSessionId == oldId)   // resume keeps the id
+    }
+
     @Test("resume failure: no transcript → .dead resumeFailed + throws")
     func resumeFailNoTranscript() async throws {
         let env = TestEnv.make(grace: 1)
