@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraCore
 
 /// Renders ANSI-colored terminal text (git / difftastic diff output) as an `AttributedString`. A
 /// minimal SGR parser — foreground color (basic 30-37 / 90-97, 256-color, truecolor) + bold + reset.
@@ -6,6 +7,10 @@ import SwiftUI
 /// coloring. Both git's colored diff and difft's inline output are SGR, so one parser handles both.
 enum ANSIText {
     private struct Style { var color: Color?; var bold: Bool }
+
+    static func strip(_ raw: String) -> String {
+        ANSIEscape.strip(raw)
+    }
 
     /// `raw` may contain SGR escapes; `base` is the default foreground; `size` the monospaced point size.
     static func attributed(_ raw: String, base: Color, size: CGFloat) -> AttributedString {
