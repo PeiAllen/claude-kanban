@@ -36,12 +36,14 @@ struct ParseTests {
         #expect(a.parse(.hooksPush(kind: "posttool", payload: bash))
                 == StatusReport(desc: "Running: ls -la", status: .running))
 
-        // notify split into notification/stop — both map to waiting (unchanged StatusReport).
+        // notification/stop now also classify the wait reason. A bare Notification (no permission_prompt)
+        // → waiting/.humanTurn keeping its message; a bare Stop (no pending background work) →
+        // waiting/.humanTurn (no message field on the Stop hook).
         let notify = try JSONValue.parse(Data(#"{"message":"done"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "notification", payload: notify))
-                == StatusReport(desc: "done", status: .waiting))
+                == StatusReport(desc: "done", status: .waiting, waitReason: .humanTurn))
         #expect(a.parse(.hooksPush(kind: "stop", payload: notify))
-                == StatusReport(desc: "done", status: .waiting))
+                == StatusReport(status: .waiting, waitReason: .humanTurn))
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "prompt", payload: prompt))

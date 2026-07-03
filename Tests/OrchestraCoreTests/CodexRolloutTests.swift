@@ -45,6 +45,13 @@ struct CodexRolloutParseTests {
         #expect(r.snapshot?.status == .running)
     }
 
+    @Test("turn_complete → waiting with humanTurn reason")
+    func turnCompleteHumanTurn() throws {
+        let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"turn_complete"}}"#))
+        #expect(r.snapshot?.status == .waiting)
+        #expect(r.snapshot?.waitReason == .humanTurn)
+    }
+
     @Test("token_count → ctxPct (tokens ÷ table window) + modelId")
     func tokenCountCtx() throws {
         // 68000 / 272000 = 25%

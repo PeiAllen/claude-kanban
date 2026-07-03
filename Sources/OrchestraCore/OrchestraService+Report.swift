@@ -91,6 +91,7 @@ extension OrchestraService {
                 if let s = snap.status, task.status != .dead {
                     if s != task.status { statusTransition = statusTransition ?? (task.status, s) }
                     task.status = s
+                    if s == .waiting { task.waitReason = snap.waitReason }
                 }
             }
         }
@@ -99,6 +100,8 @@ extension OrchestraService {
         if before.status == .dead && task.status != .dead {
             task.deadReason = nil; task.deadDetail = nil
         }
+        // waitReason is meaningful only while waiting.
+        if task.status != .waiting { task.waitReason = nil }
 
         guard task != before else { return }   // idempotent: no delta -> no persist, no event
         let saved = try await store.update(id) { $0 = task }

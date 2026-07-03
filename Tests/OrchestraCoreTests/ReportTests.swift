@@ -13,6 +13,78 @@ struct ReportTests {
     }
     typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
 
+    // MARK: - waitReason (notification classification)
+
+    private func parse(_ kind: String, _ json: String) -> StatusReport? {
+        let p = (try? JSONValue.parse(Data(json.utf8))) ?? .object([:])
+        return ClaudeCodeAdapter().parse(.hooksPush(kind: kind, payload: p))
+    }
+
+    @Test("Task encodes/decodes waitReason round-trip; absent decodes to nil")
+    func waitReasonCodable() async throws {
+        let (_, t) = try await spawned()
+        var card = t
+        card.waitReason = .permission
+        let data = try JSONEncoder().encode(card)
+        let back = try JSONDecoder().decode(Task.self, from: data)
+        #expect(back.waitReason == .permission)
+        let legacy = try JSONEncoder().encode(t)          // t.waitReason is nil already
+        #expect(try JSONDecoder().decode(Task.self, from: legacy).waitReason == nil)
+    }
+
+    @Test("StatusReport routes waitReason into the snapshot bucket")
+    func waitReasonRoutes() {
+        let r = StatusReport(status: .waiting, waitReason: .permission)
+        #expect(r.snapshot?.waitReason == .permission)
+        #expect(r.snapshot?.status == .waiting)
+    }
+
+    @Test("report sets waitReason on a waiting snapshot and clears it when status leaves waiting")
+    func waitReasonLifecycle() async throws {
+        let (env, t) = try await spawned()
+        try await env.svc.report(t.id, StatusReport(status: .waiting, waitReason: .permission))
+        var after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .permission)
+        try await env.svc.report(t.id, StatusReport(status: .running))
+        after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.waitReason == nil)
+    }
+
+    @Test("Notification permission_prompt → waiting/.permission")
+    func classifyPermission() {
+        let r = parse("notification", #"{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)
+        #expect(r?.snapshot?.status == .waiting)
+        #expect(r?.snapshot?.waitReason == .permission)
+        #expect(r?.snapshot?.desc == "Claude needs your permission to use Bash")
+    }
+
+    @Test("Notification idle_prompt → waiting/.humanTurn")
+    func classifyIdle() {
+        let r = parse("notification", #"{"notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#)
+        #expect(r?.snapshot?.status == .waiting)
+        #expect(r?.snapshot?.waitReason == .humanTurn)
+    }
+
+    @Test("Stop with no background work → waiting/.humanTurn")
+    func classifyStopIdle() {
+        let r = parse("stop", #"{"background_tasks":[],"session_crons":[]}"#)
+        #expect(r?.snapshot?.status == .waiting)
+        #expect(r?.snapshot?.waitReason == .humanTurn)
+    }
+
+    @Test("Stop with pending background_tasks → nil (no status change)")
+    func classifyStopBackgroundTasks() {
+        let r = parse("stop", #"{"background_tasks":[{"id":"t1","type":"shell","status":"running"}],"session_crons":[]}"#)
+        #expect(r == nil)
+    }
+
+    @Test("Stop with pending session_crons → nil (no status change)")
+    func classifyStopCrons() {
+        let r = parse("stop", #"{"background_tasks":[],"session_crons":[{"id":"c1","schedule":"*/5 * * * *"}]}"#)
+        #expect(r == nil)
+    }
+
     @Test("merges only present fields; ctxPct/desc/model update in place")
     func mergeFields() async throws {
         let (env, t) = try await spawned()

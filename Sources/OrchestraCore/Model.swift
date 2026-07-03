@@ -19,6 +19,13 @@ public enum AgentStatus: String, Codable, Sendable {
     case waiting, running, done, dead
 }
 
+/// Why a card is `.waiting` — set with `status = .waiting`, cleared when status leaves `.waiting`.
+/// Drives which notification trigger the app fires. `.dead` is a separate transition (see `deadReason`).
+public enum WaitReason: String, Codable, Sendable {
+    case permission   // agent blocked on tool approval (Claude Notification/permission_prompt)
+    case humanTurn    // agent genuinely finished its turn / idle, waiting on the human
+}
+
 /// Why a card went `dead` — set alongside `status = .dead`, surfaced by the Recovery panel + CLI/MCP.
 public enum DeadReason: String, Codable, Sendable {
     case agentExited       // SessionEnd reason exit/logout — the agent quit (mid-life, usually resumable)
@@ -183,6 +190,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var status: AgentStatus // waiting/running/done/dead — pushed from hooks; tmux-liveness fallback
     public var deadReason: DeadReason?  // set with `status = .dead`; cleared when status leaves `.dead`
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
+    public var waitReason: WaitReason?  // set with `status = .waiting`; cleared when status leaves `.waiting`
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
@@ -210,6 +218,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         status: AgentStatus = .running,
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
+        waitReason: WaitReason? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
@@ -237,6 +246,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.status = status
         self.deadReason = deadReason
         self.deadDetail = deadDetail
+        self.waitReason = waitReason
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
@@ -269,6 +279,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.status = try c.decodeIfPresent(AgentStatus.self, forKey: .status) ?? .running
         self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
+        self.waitReason = try c.decodeIfPresent(WaitReason.self, forKey: .waitReason)
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
@@ -302,6 +313,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(deadReason, forKey: .deadReason)
         try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
+        try c.encodeIfPresent(waitReason, forKey: .waitReason)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
         try c.encode(priorSessionIds, forKey: .priorSessionIds)
@@ -315,7 +327,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, worktree, origin, access, agentId, model,
-             startIn, column, order, status, deadReason, deadDetail, ctxPct, diffStat, agentSessionId,
+             startIn, column, order, status, deadReason, deadDetail, waitReason, ctxPct, diffStat, agentSessionId,
              priorSessionIds, initialPrompt, archived, createdAt, updatedAt
     }
 
@@ -447,15 +459,17 @@ public struct SnapshotReport: Codable, Sendable, Equatable {
     public var modelDisplay: String?
     public var status: AgentStatus?
     public var desc: String?
+    /// Why the card is waiting (permission vs human-turn) — set alongside `status = .waiting`.
+    public var waitReason: WaitReason?
     /// A `/rename` mirror — applied only on a genuine change (see report) so it can't clobber the
     /// re-title-after-restart flow.
     public var sessionName: String?
     public init(seq: UInt64 = 0, ctxPct: Double? = nil, modelId: String? = nil,
                 modelDisplay: String? = nil, status: AgentStatus? = nil, desc: String? = nil,
-                sessionName: String? = nil) {
+                waitReason: WaitReason? = nil, sessionName: String? = nil) {
         self.seq = seq; self.ctxPct = ctxPct; self.modelId = modelId
         self.modelDisplay = modelDisplay; self.status = status; self.desc = desc
-        self.sessionName = sessionName
+        self.waitReason = waitReason; self.sessionName = sessionName
     }
 }
 
@@ -496,9 +510,10 @@ public struct StatusReport: Codable, Sendable, Equatable {
     public init(seq: UInt64 = 0, sessionId: String? = nil, transcriptPath: String? = nil,
                 ctxPct: Double? = nil, modelId: String? = nil, modelDisplay: String? = nil,
                 sessionName: String? = nil, desc: String? = nil, status: AgentStatus? = nil,
+                waitReason: WaitReason? = nil,
                 promptText: String? = nil, sessionSource: String? = nil, endReason: String? = nil) {
         let hasSnapshot = seq != 0 || ctxPct != nil || modelId != nil || modelDisplay != nil
-            || sessionName != nil || desc != nil || status != nil
+            || sessionName != nil || desc != nil || status != nil || waitReason != nil
         let hasEvent = sessionId != nil || transcriptPath != nil || promptText != nil
             || sessionSource != nil || endReason != nil
         self.init(
@@ -507,7 +522,8 @@ public struct StatusReport: Codable, Sendable, Equatable {
                                           promptText: promptText) : nil,
             snapshot: hasSnapshot ? SnapshotReport(seq: seq, ctxPct: ctxPct, modelId: modelId,
                                                    modelDisplay: modelDisplay, status: status,
-                                                   desc: desc, sessionName: sessionName) : nil)
+                                                   desc: desc, waitReason: waitReason,
+                                                   sessionName: sessionName) : nil)
     }
 }
 

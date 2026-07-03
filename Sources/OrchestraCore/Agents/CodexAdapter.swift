@@ -79,7 +79,9 @@ public struct CodexAdapter: Adapter {
 
         // Idle signal FIRST (a completed turn ends `.running`, rename-tolerant).
         if any("turncomplete", "taskcomplete") {
-            return StatusReport(seq: seq, status: .waiting)
+            // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
+            // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
+            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn)
         }
         // Token usage → ctxPct (÷ offline model window) + modelId. No status (avoids churn vs turn edges).
         if any("tokencount", "tokenusage") {
