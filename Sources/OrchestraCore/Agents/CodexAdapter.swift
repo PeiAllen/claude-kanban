@@ -182,6 +182,10 @@ public struct CodexAdapter: Adapter {
         // (via `_report --event orient`), so an agent knows where it was opened without being told —
         // the inbound counterpart to Claude's SessionStart hook. Install the daemon-rendered hooks file
         // into the pinned CODEX_HOME, never clobbering a foreign user hooks.json. Best-effort.
+        // Render the managed Codex hooks file (SessionStart→session) pointing at the live orchestra
+        // binary, then install it into the pinned CODEX_HOME (no-clobber). Per-launch; the daemon renders
+        // nothing. Best-effort.
+        _ = try? HooksRenderer.renderCodex(orchestraBin: ctx.orchestraBin, agentId: id)
         CodexHooks.install(to: "\(codexHome)/hooks.json")
     }
 

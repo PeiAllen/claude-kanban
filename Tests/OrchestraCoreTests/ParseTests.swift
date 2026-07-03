@@ -29,15 +29,18 @@ struct ParseTests {
         let a = ClaudeCodeAdapter()
 
         let tool = try JSONValue.parse(Data(#"{"tool_name":"Edit","tool_input":{"file_path":"/x/Foo.swift"}}"#.utf8))
-        #expect(a.parse(.hooksPush(kind: "tool", payload: tool))
+        #expect(a.parse(.hooksPush(kind: "pretool", payload: tool))
                 == StatusReport(desc: "Editing Foo.swift", status: .running))
 
         let bash = try JSONValue.parse(Data(#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#.utf8))
-        #expect(a.parse(.hooksPush(kind: "tool", payload: bash))
+        #expect(a.parse(.hooksPush(kind: "posttool", payload: bash))
                 == StatusReport(desc: "Running: ls -la", status: .running))
 
+        // notify split into notification/stop — both map to waiting (unchanged StatusReport).
         let notify = try JSONValue.parse(Data(#"{"message":"done"}"#.utf8))
-        #expect(a.parse(.hooksPush(kind: "notify", payload: notify))
+        #expect(a.parse(.hooksPush(kind: "notification", payload: notify))
+                == StatusReport(desc: "done", status: .waiting))
+        #expect(a.parse(.hooksPush(kind: "stop", payload: notify))
                 == StatusReport(desc: "done", status: .waiting))
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
@@ -81,7 +84,7 @@ struct ParseTests {
         let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
 
         let raw = RawTelemetry.hooksPush(
-            kind: "tool",
+            kind: "posttool",
             payload: try JSONValue.parse(Data(#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#.utf8)))
         let report = try #require(ClaudeCodeAdapter().parse(raw))
         try await env.svc.report(t.id, report)

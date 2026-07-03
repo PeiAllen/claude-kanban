@@ -62,7 +62,7 @@ extension OrchestraService {
         // Pre-check: must have a tracked id whose transcript still exists.
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
-                                 sessionId: task.agentSessionId, name: task.title, hooksPath: Config.hooksPath,
+                                 sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
                                  trustCwd: trustDecision == .trusted, seed: seed)
         guard let sid = task.agentSessionId,
               let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
@@ -135,7 +135,7 @@ extension OrchestraService {
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  startIn: task.startIn, sessionId: freshId, prompt: nil,
-                                 name: task.title, hooksPath: Config.hooksPath,
+                                 name: task.title, orchestraBin: orchestraBin,
                                  trustCwd: trustDecision == .trusted)
         let launchTask = task
         try? adapter.prepareToLaunch(ctx)
@@ -220,7 +220,7 @@ extension OrchestraService {
         switch adapter.capabilities.sessionId {
         case .seeded, .discovered:
             guard let sid = t.agentSessionId, !sid.isEmpty else { return false }
-            let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, hooksPath: Config.hooksPath)
+            let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, orchestraBin: orchestraBin)
             guard let statePath = adapter.sessionInfo(ctx, current: sid, prior: t.priorSessionIds)?.transcriptPath
             else { return false }
             return FileManager.default.fileExists(atPath: statePath)

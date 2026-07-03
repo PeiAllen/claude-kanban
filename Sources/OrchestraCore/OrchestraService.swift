@@ -8,6 +8,9 @@ public actor OrchestraService {
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
+    /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
+    /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
+    let orchestraBin: String
     var worktrees: any WorktreeManaging
     var sessions: any SessionManaging
     let launcher: Launcher
@@ -55,8 +58,10 @@ public actor OrchestraService {
                 resolver: PathResolver? = nil,
                 trust: TrustLedger? = nil,
                 inbox: Inbox? = nil,
-                grantResolver: any TrustGrantResolver = SurfaceGrantResolver()) {
+                grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
+                orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
+        self.orchestraBin = orchestraBin
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
@@ -269,7 +274,7 @@ public actor OrchestraService {
         // idle provisional one, without submitting an unsolicited turn. See [[SessionBrief]] / [[CodexHooks]].
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
-                                 hooksPath: Config.hooksPath, access: input.access,
+                                 orchestraBin: orchestraBin, access: input.access,
                                  trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
@@ -513,7 +518,7 @@ public actor OrchestraService {
         let targets = (try? sessions.windows(name)) ?? []
         let running = !targets.isEmpty
         let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
-                                 name: t.title, hooksPath: Config.hooksPath)
+                                 name: t.title, orchestraBin: orchestraBin)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)

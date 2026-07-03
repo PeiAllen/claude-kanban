@@ -68,7 +68,7 @@ struct SessionBriefTests {
 @Suite("Codex SessionStart hook install (CodexHooks)")
 struct CodexHooksTests {
     private func tmp() -> String { NSTemporaryDirectory() + "cxhooks-\(UUID().uuidString)" }
-    private let rendered = #"{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"/bin/orchestra _report --event orient"}]}]}}"#
+    private let rendered = #"{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"/bin/orchestra _report --event session --agent codex"}]}]}}"#
 
     @Test("installs into an absent hooks.json")
     func writesWhenAbsent() throws {
@@ -95,13 +95,14 @@ struct CodexHooksTests {
         #expect(try String(contentsOfFile: dest, encoding: .utf8) == mine)   // untouched
     }
 
-    @Test("renderCodex substitutes the orchestra bin and emits the orient command")
+    @Test("renderCodex substitutes the orchestra bin + agent id and emits the session command")
     func renderCodexSubstitutes() throws {
         let dest = tmp() + "/codex-hooks.json"
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", to: dest)
+        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: dest)
         let got = try String(contentsOfFile: dest, encoding: .utf8)
-        #expect(got.contains("/abs/orchestra _report --event orient"))
+        #expect(got.contains("/abs/orchestra _report --event session --agent codex"))
         #expect(!got.contains("__ORCHESTRA_BIN__"))
+        #expect(!got.contains("__AGENT_ID__"))
         #expect(got.contains("startup|resume"))
     }
 }
