@@ -80,6 +80,14 @@ public struct ClaudeCodeAdapter: Adapter {
         }
     }
 
+    /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.
+    /// Explicit (not the protocol default) so Claude's shape is never silently inherited by another agent.
+    public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
+        if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
+        if let cont = r.continuation   { return HookEnvelope.block(cont) }
+        return nil
+    }
+
     private func toolDesc(tool: String, input: JSONValue?) -> String {
         switch tool {
         case "Edit", "Write", "MultiEdit":

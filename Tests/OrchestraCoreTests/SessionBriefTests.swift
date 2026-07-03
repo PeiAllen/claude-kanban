@@ -27,24 +27,7 @@ struct SessionBriefTests {
         #expect(!rw.lowercased().contains("read-only"))
     }
 
-    // MARK: Claude SessionStart envelope
-
-    @Test("claudeSessionStartJSON is a valid SessionStart additionalContext payload")
-    func envelope() throws {
-        let ctx = SessionBrief.sentence(column: .plan, access: .readWrite, shortId: "abc123")
-        let json = SessionBrief.claudeSessionStartJSON(ctx)
-        let parsed = try JSONValue.parse(Data(json.utf8))
-        #expect(parsed["hookSpecificOutput"]?["hookEventName"]?.stringValue == "SessionStart")
-        #expect(parsed["hookSpecificOutput"]?["additionalContext"]?.stringValue == ctx)
-    }
-
-    @Test("envelope escapes newlines/quotes in the context round-trip")
-    func envelopeEscaping() throws {
-        let tricky = "line1\n\"quoted\" & <tag>"
-        let json = SessionBrief.claudeSessionStartJSON(tricky)
-        let parsed = try JSONValue.parse(Data(json.utf8))
-        #expect(parsed["hookSpecificOutput"]?["additionalContext"]?.stringValue == tricky)
-    }
+    // (SessionStart envelope encoding is covered by HookChannelTests — HookEnvelope.additionalContext.)
 
     // MARK: service reads the LIVE column (not launch-time startIn)
 

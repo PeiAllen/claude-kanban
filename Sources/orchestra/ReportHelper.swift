@@ -78,7 +78,7 @@ enum ReportHelper {
         let params = JSONValue.object(["ref": .string(taskId)])
         if let resp = await boundedCall(sock: sock, method: "sessionBrief", params: params, budgetMs: 2000),
            let context = resp["context"]?.stringValue, !context.isEmpty {
-            writeStdout(Data(SessionBrief.claudeSessionStartJSON(context).utf8))
+            writeStdout(Data(HookEnvelope.additionalContext(context).utf8))
         }
     }
 

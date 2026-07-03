@@ -44,6 +44,14 @@ public protocol Adapter: Sendable {
     /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
     /// adapter opts in per transport it actually receives.
     func parse(_ raw: RawTelemetry) -> StatusReport?
+    /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
+    /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
+    /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
+    /// Claude/Codex implement it explicitly via `HookEnvelope`.
+    func encode(_ response: HookResponse, for event: HookEvent) -> String?
+    /// Normalize a raw SessionStart payload's `source` at the edge, so core never reads raw payload
+    /// fields. DEFAULTED to reading `payload["source"]` (both current agents share it) → `.other`.
+    func sessionSource(_ payload: JSONValue) -> SessionSource?
     /// send-keys wake gate (F2): given the just-captured agent pane, is it safe to fire the fixed nudge?
     /// AGENT-DEPENDENT and keyed to `wakeTransport == .sendKeys` — the adapter reads its OWN TUI rendering
     /// (idle + empty composer), so core never has to know one agent's screen from another's. DEFAULTED to
@@ -61,6 +69,10 @@ public extension Adapter {
     var env: [String: String] { [:] }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
+    func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
+    func sessionSource(_ payload: JSONValue) -> SessionSource? {
+        payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
+    }
     func canNudge(pane: String) -> Bool { false }   // only send-keys agents read their pane; others never nudge
 
     /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic

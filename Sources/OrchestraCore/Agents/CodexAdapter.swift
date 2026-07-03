@@ -158,6 +158,15 @@ public struct CodexAdapter: Adapter {
         return argv   // no prompt beyond the optional seed — the rollout holds prior task history
     }
 
+    /// Receive-direction format: Codex 0.135+ reads the SAME `hookSpecificOutput.additionalContext`
+    /// envelope Claude does, so this body is identical — but stated explicitly (not inherited) so the
+    /// shape is a deliberate Codex choice, not a silent inheritance of Claude's.
+    public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
+        if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
+        if let cont = r.continuation   { return HookEnvelope.block(cont) }
+        return nil
+    }
+
     /// Prep runs isolation FIRST (ensure the pinned CODEX_HOME exists), THEN mirrors the core's trust
     /// decision into it. The adapter applies `ctx.trustCwd` only — it never reads the `TrustLedger`.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
