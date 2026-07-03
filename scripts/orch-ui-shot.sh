@@ -50,14 +50,18 @@ BIN="$APP/Contents/MacOS/Orchestra"
 # the user's real ~/Library.
 rm -rf "$ISO_HOME"; mkdir -p "$ISO_HOME"
 
-# Find the Orchestra window id (tiny Swift one-shot via CGWindowList) — capture by id so we never
-# foreground the app or grab the whole screen.
+# Find the launched app's window id (tiny Swift one-shot via CGWindowList) — capture by id so we
+# never foreground the app or grab the whole screen. Filter by the spawned process's PID, NOT the
+# owner name: when the user's LIVE Orchestra app is already running, an owner-name match would grab
+# their real window instead of our throwaway isolated instance. (Same "filter by PID not name"
+# convention the keyboard-driving harness uses.)
 window_id() {
-  /usr/bin/swift - <<'SWIFT'
+  /usr/bin/swift - "$1" <<'SWIFT'
 import CoreGraphics
 import Foundation
+let want = Int(CommandLine.arguments.dropFirst().first ?? "") ?? -1
 let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-for w in infos where (w[kCGWindowOwnerName as String] as? String) == "Orchestra" {
+for w in infos where (w[kCGWindowOwnerPID as String] as? Int) == want {
     if let n = w[kCGWindowNumber as String] as? Int,
        let b = w[kCGWindowBounds as String] as? [String: CGFloat], (b["Height"] ?? 0) > 200 {
         print(n); break
@@ -76,7 +80,7 @@ shoot() { # name  env...
   local wid=""
   for _ in $(seq 1 40); do
     sleep 0.4
-    wid="$(window_id || true)"
+    wid="$(window_id "$pid" || true)"
     [[ -n "$wid" ]] && break
   done
   if [[ -z "$wid" ]]; then echo "  ✗ $name: no window found"; kill "$pid" 2>/dev/null || true; return 1; fi
