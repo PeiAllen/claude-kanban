@@ -15,75 +15,46 @@ import Musl
 enum ReportHelper {
     static func run(_ args: [String]) async {
         let env = ProcessInfo.processInfo.environment
-        let kind = Flags(args).value("event") ?? "statusline"
+        let flags = Flags(args)
+        let kind = flags.value("event") ?? "statusline"
         let raw = readAllStdin()
         let payload = (try? JSONValue.parse(raw)) ?? .object([:])
 
-        // statusLine display happens regardless of whether the report send succeeds. Write it
-        // UNBUFFERED and BEFORE the send: against a pipe (Claude captures stdout) stdio is
-        // block-buffered and would otherwise only flush at exit() — i.e. after the bounded send — so
-        // a momentarily-slow daemon could stall the self-healing status bar. The bar must never wait
-        // on the network. FileHandle.write bypasses stdio buffering.
+        // statusLine display happens regardless of whether the send succeeds. Write it UNBUFFERED and
+        // BEFORE any network: against a pipe (Claude captures stdout) stdio is block-buffered and would
+        // otherwise only flush at exit() — so a momentarily-slow daemon could stall the self-healing
+        // status bar. The bar must never wait on the network. FileHandle.write bypasses stdio buffering.
         if kind == "statusline" {
             writeStdout(Data(renderStatusLine(payload: payload, raw: raw).utf8))
         }
 
-        guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty else { return }
+        // THE EDGE: resolve this card's adapter from the baked `--agent`, convert the raw payload to typed
+        // telemetry, and send a typed `hook` to the daemon. Raw agent JSON never leaves this process; the
+        // daemon dispatches on the typed HookEvent (adapter-free). No agent identity in the wire beyond
+        // the event vocabulary. Missing task/agent/unknown event → bail (best-effort; always exits 0).
+        guard let taskId = env["ORCHESTRA_TASK_ID"], !taskId.isEmpty,
+              let event = HookEvent(rawValue: kind),
+              let agentId = flags.value("agent"),
+              let adapter = try? AgentRegistry().get(agentId) else { return }
         let sock = env["ORCHESTRA_SOCK"] ?? Config.socketPath
 
-        // `orient` (Codex SessionStart hook): orientation ONLY — print the card's column/mode/self-id
-        // `additionalContext`, send NO telemetry (Codex telemetry is the daemon-side rollout tail). This
-        // is the agent-agnostic inbound channel; Claude folds the same brief onto its `session` event
-        // below. Returns early — no parse, no report.
-        if kind == "orient" {
-            await emitSessionBrief(taskId: taskId, sock: sock, source: payload["source"]?.stringValue)
+        let report = adapter.parse(.hooksPush(kind: kind, payload: payload))   // raw → typed; raw dies here
+        let source = event == .sessionStart ? adapter.sessionSource(payload) : nil
+        var fields: [String: JSONValue] = ["ref": .string(taskId), "event": .string(kind)]
+        if let report { fields["report"] = (try? JSONValue(encodable: report)) ?? .null }
+        if let source { fields["source"] = .string(source.rawValue) }
+        let params = JSONValue.object(fields)
+
+        // statusLine never yields a response → pure fire-and-forget send (~50ms; snapshot self-heals).
+        // Every other event awaits a possible HookResponse (~2s; the agent waits) and encodes it to stdout.
+        if event == .statusLine {
+            await boundedSend(sock: sock, method: "hook", params: params, budgetMs: 50)
             return
         }
-
-        // Parse is the ADAPTER's (agent-dependent, D3). This `_report` process IS the Claude hooksPush
-        // transport; it supplies raw bytes and lets the adapter normalize them. Daemon-side transports
-        // (Codex rollout tail, next PR) call the same `adapter.parse` seam.
-        guard let report = ClaudeCodeAdapter().parse(.hooksPush(kind: kind, payload: payload))
-        else { return }  // dropped (e.g. transition SessionEnd, unknown kind)
-
-        let params = JSONValue.object(["ref": .string(taskId),
-                                       "report": (try? JSONValue(encodable: report)) ?? .object([:])])
-        // Bounded send: statusLine ~50ms (snapshot self-heals), hooks ~2s (Claude waits for them).
-        let budgetMs = kind == "statusline" ? 50 : 2000
-        await boundedSend(sock: sock, params: params, budgetMs: budgetMs)
-
-        // SessionStart orientation (Claude): on a fresh open / reopen / clear (NOT a mid-turn compact),
-        // print the card's live column/mode/self-id as the SessionStart hook's `additionalContext`, so the
-        // agent knows where it was opened and starts on that footing without being told. Additive: the
-        // session→(waiting/clear) report sent above is unchanged.
-        if kind == "session" {
-            await emitSessionBrief(taskId: taskId, sock: sock, source: payload["source"]?.stringValue)
-        }
-
-        // F3 Stop-drain: on the Stop hook (same `_report --event notify` command — distinguished by the
-        // stdin `hook_event_name`), pull the card's durable inbox and, if non-empty, print the
-        // `decision:block` continuation so Claude reads the queued messages as context. Additive: the
-        // notify→waiting report sent above is unchanged, and non-Stop events never reach here.
-        if payload["hook_event_name"]?.stringValue == "Stop" {
-            let drainParams = JSONValue.object(["ref": .string(taskId)])
-            if let resp = await boundedCall(sock: sock, method: "drain", params: drainParams, budgetMs: 2000),
-               let reason = resp["reason"]?.stringValue, !reason.isEmpty {
-                writeStdout(Data(StopDrain.blockJSON(reason: reason).utf8))
-            }
-        }
-    }
-
-    /// Fetch the card's live orientation (column + mode + self-id) from the daemon and print it as a
-    /// SessionStart hook `additionalContext` payload (byte-identical schema for Claude and Codex). Skips
-    /// a mid-turn `compact` so we don't re-announce where the agent already has its bearings. Best-effort
-    /// and bounded — a slow/absent daemon just prints nothing.
-    static func emitSessionBrief(taskId: String, sock: String, source: String?) async {
-        guard (source ?? "startup") != "compact" else { return }
-        let params = JSONValue.object(["ref": .string(taskId)])
-        if let resp = await boundedCall(sock: sock, method: "sessionBrief", params: params, budgetMs: 2000),
-           let context = resp["context"]?.stringValue, !context.isEmpty {
-            writeStdout(Data(SessionBrief.claudeSessionStartJSON(context).utf8))
-        }
+        guard let resp = await boundedCall(sock: sock, method: "hook", params: params, budgetMs: 2000),
+              let response = resp["response"].flatMap({ try? $0.decode(HookResponse.self) }),
+              let out = adapter.encode(response, for: event) else { return }
+        writeStdout(Data(out.utf8))   // native envelope (orientation / drain continuation) → the agent
     }
 
     // MARK: crash-safe stdio
@@ -166,11 +137,11 @@ enum ReportHelper {
     /// `call` with an error so the send task ends immediately. (Cancellation alone wouldn't bound it:
     /// `call` is a CheckedContinuation that doesn't observe cancellation, so without the close the
     /// task group would still implicitly await the full round-trip and the "budget" would be a lie.)
-    static func boundedSend(sock: String, params: JSONValue, budgetMs: Int) async {
+    static func boundedSend(sock: String, method: String, params: JSONValue, budgetMs: Int) async {
         let client = ControlClient(socketPath: sock, source: .agent)
         do { try client.connect() } catch { return }
         await withTaskGroup(of: Void.self) { group in
-            group.addTask { _ = try? await client.call("report", params) }
+            group.addTask { _ = try? await client.call(method, params) }
             group.addTask { try? await _Concurrency.Task.sleep(for: .milliseconds(budgetMs)) }
             await group.next()   // first to finish: send completed, or budget tripped
             client.close()       // unblock the send if the budget tripped; idempotent if it acked

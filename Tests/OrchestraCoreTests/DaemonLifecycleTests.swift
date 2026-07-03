@@ -68,10 +68,16 @@ struct DaemonLifecycleTests {
     @Test("HooksRenderer substitutes the orchestra binary path")
     func hooksRender() throws {
         let dest = NSTemporaryDirectory() + "orch-hooks-\(UUID().uuidString).json"
-        try HooksRenderer.render(orchestraBin: "/opt/orchestra", to: dest)
+        try HooksRenderer.render(orchestraBin: "/opt/orchestra", agentId: "claude-code", to: dest)
         let s = try String(contentsOfFile: dest, encoding: .utf8)
-        #expect(s.contains("/opt/orchestra _report --event statusline"))
+        #expect(s.contains("/opt/orchestra _report --event statusline --agent claude-code"))
         #expect(!s.contains("__ORCHESTRA_BIN__"))
+        #expect(!s.contains("__AGENT_ID__"))
+        // the event vocabulary is split (distinct notification/stop, pretool/posttool)
+        #expect(s.contains("--event stop --agent claude-code"))
+        #expect(s.contains("--event notification --agent claude-code"))
+        #expect(s.contains("--event pretool --agent claude-code"))
+        #expect(s.contains("--event posttool --agent claude-code"))
         // valid JSON
         #expect(throws: Never.self) { _ = try JSONValue.parse(Data(s.utf8)) }
     }

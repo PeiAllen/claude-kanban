@@ -22,13 +22,19 @@ struct AgentTerminalView: NSViewRepresentable {
     var background: SwiftUI.Color  // app theme — terminal opens in (and switches to) the app's mode
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
+    /// Called whenever this terminal *becomes* the window's first responder — by keyboard descent OR a
+    /// mouse click into it. Lets the owner keep `focusZone` (and thus the inspector focus ring + chip)
+    /// honest without polling the responder chain.
+    var onFocused: (() -> Void)?
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
-         background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false) {
+         background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
+         onFocused: (() -> Void)? = nil) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
+        self.onFocused = onFocused
     }
 
     #if canImport(SwiftTerm)
@@ -44,6 +50,7 @@ struct AgentTerminalView: NSViewRepresentable {
         // a light theme. Force the standard fixed xterm palette so indexed colours mean what apps expect.
         term.getTerminal().ansi256PaletteStrategy = .xterm
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
+        term.onBecameFirstResponder = onFocused
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
@@ -58,6 +65,7 @@ struct AgentTerminalView: NSViewRepresentable {
         // re-point it at the right tmux target instead of leaving it on the previous card's session.
         let target = "\(session):\(window)"
         (nsView as? ScrollableTerminalView)?.termWindow = window
+        (nsView as? ScrollableTerminalView)?.onBecameFirstResponder = onFocused
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             attach(nsView)
@@ -219,6 +227,12 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// is the exact lifecycle hook — no guessing.
     var claimFocusOnMount = false
 
+    /// Fired when this terminal takes keyboard focus by a mouse click (see the shared monitor below).
+    /// The owner uses it to sync `focusZone` so the inspector focus ring / context chip stay truthful
+    /// even when focus is taken by the mouse rather than a keyboard verb. (`becomeFirstResponder` is
+    /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
+    var onBecameFirstResponder: (() -> Void)?
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard claimFocusOnMount, window != nil else { return }
@@ -240,7 +254,7 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     static func installScrollMonitorIfNeeded() {
         guard !monitorInstalled else { return }
         monitorInstalled = true
-        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved]) { event in
+        NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .mouseMoved, .leftMouseDown]) { event in
             guard let hit = event.window?.contentView?.hitTest(event.locationInWindow) else { return event }
             var view: NSView? = hit
             while let cur = view {
@@ -250,6 +264,12 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
                         return term.handleScroll(event) ? nil : event   // nil = consumed (forwarded to tmux)
                     case .mouseMoved:
                         return nil                                       // swallow hover motion (see above)
+                    case .leftMouseDown:
+                        // Clicking into a terminal makes it first responder — notify the owner so
+                        // `focusZone` (and the inspector focus ring / chip) tracks the mouse, then let
+                        // the click reach SwiftTerm normally (never consumed).
+                        term.onBecameFirstResponder?()
+                        return event
                     default:
                         return event
                     }

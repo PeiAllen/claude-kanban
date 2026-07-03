@@ -9,17 +9,17 @@ public struct AdapterContext: Sendable {
     public let sessionId: String?   // seeded id for `start`; target id for `resume`
     public let prompt: String?      // initial prompt (launch positional arg); nil on restart/resume
     public let name: String?        // card title -> `claude --name`
-    public let hooksPath: String    // managed --settings file
+    public let orchestraBin: String // absolute path of the `orchestra` binary the agent's hooks call (agent-agnostic)
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
     public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
-                hooksPath: String = Config.hooksPath, access: CardAccess = .readWrite,
+                orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
                 trustCwd: Bool = false, seed: String? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
-        self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.hooksPath = hooksPath
+        self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
         self.access = access; self.trustCwd = trustCwd; self.seed = seed
     }
 }
@@ -44,6 +44,14 @@ public protocol Adapter: Sendable {
     /// result via `OrchestraService.report`. DEFAULTED to `nil` (additive — no conformer breaks) so an
     /// adapter opts in per transport it actually receives.
     func parse(_ raw: RawTelemetry) -> StatusReport?
+    /// Encode core's agent-neutral `HookResponse` into THIS agent's hook stdout envelope (receive
+    /// direction). AGENT-DEPENDENT format. DEFAULTED to `nil` (fail-safe, like `parse`) — so a divergent
+    /// future agent that forgets can't silently emit another agent's shape (A1 "no silent inheritance").
+    /// Claude/Codex implement it explicitly via `HookEnvelope`.
+    func encode(_ response: HookResponse, for event: HookEvent) -> String?
+    /// Normalize a raw SessionStart payload's `source` at the edge, so core never reads raw payload
+    /// fields. DEFAULTED to reading `payload["source"]` (both current agents share it) → `.other`.
+    func sessionSource(_ payload: JSONValue) -> SessionSource?
     /// send-keys wake gate (F2): given the just-captured agent pane, is it safe to fire the fixed nudge?
     /// AGENT-DEPENDENT and keyed to `wakeTransport == .sendKeys` — the adapter reads its OWN TUI rendering
     /// (idle + empty composer), so core never has to know one agent's screen from another's. DEFAULTED to
@@ -61,6 +69,10 @@ public extension Adapter {
     var env: [String: String] { [:] }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
+    func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output
+    func sessionSource(_ payload: JSONValue) -> SessionSource? {
+        payload["source"]?.stringValue.flatMap(SessionSource.init(rawValue:)) ?? .other
+    }
     func canNudge(pane: String) -> Bool { false }   // only send-keys agents read their pane; others never nudge
 
     /// Resolve a launch id to a full `AgentModel`: the catalog entry if known, else a heuristic

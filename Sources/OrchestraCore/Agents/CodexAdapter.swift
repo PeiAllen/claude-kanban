@@ -170,6 +170,15 @@ public struct CodexAdapter: Adapter {
         return argv   // no prompt beyond the optional seed — the rollout holds prior task history
     }
 
+    /// Receive-direction format: Codex 0.135+ reads the SAME `hookSpecificOutput.additionalContext`
+    /// envelope Claude does, so this body is identical — but stated explicitly (not inherited) so the
+    /// shape is a deliberate Codex choice, not a silent inheritance of Claude's.
+    public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
+        if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
+        if let cont = r.continuation   { return HookEnvelope.block(cont) }
+        return nil
+    }
+
     /// Prep runs isolation FIRST (ensure the pinned CODEX_HOME exists), THEN mirrors the core's trust
     /// decision into it. The adapter applies `ctx.trustCwd` only — it never reads the `TrustLedger`.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
@@ -185,6 +194,10 @@ public struct CodexAdapter: Adapter {
         // (via `_report --event orient`), so an agent knows where it was opened without being told —
         // the inbound counterpart to Claude's SessionStart hook. Install the daemon-rendered hooks file
         // into the pinned CODEX_HOME, never clobbering a foreign user hooks.json. Best-effort.
+        // Render the managed Codex hooks file (SessionStart→session) pointing at the live orchestra
+        // binary, then install it into the pinned CODEX_HOME (no-clobber). Per-launch; the daemon renders
+        // nothing. Best-effort.
+        _ = try? HooksRenderer.renderCodex(orchestraBin: ctx.orchestraBin, agentId: id)
         CodexHooks.install(to: "\(codexHome)/hooks.json")
     }
 

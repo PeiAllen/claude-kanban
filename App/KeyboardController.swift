@@ -108,9 +108,10 @@ final class KeyboardController {
         switch intent {
         case .moveSelection(let d): model.selectMove(d); model.focusZone = .board; return true
         case .selectEnd(let f):     model.selectEnd(first: f); return true
-        case .openInspector:        model.focusZone = .inspector; return true
+        // Enter and `i` are the same verb: descend the keyboard into the selected card's terminal.
+        case .openInspector:        model.enterTerminalZone(); return true
         case .closeOrClear:         model.closeFrontmost(); return true
-        case .enterTerminal:        model.focusZone = .terminal; FocusBridge.enterTerminal(); return true
+        case .enterTerminal:        model.enterTerminalZone(); return true
         case .focusPane(let d):     return FocusBridge.movePane(d, model: model, from: ctx)
         case .carry(let d):         model.carrySelected(d); return true
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true

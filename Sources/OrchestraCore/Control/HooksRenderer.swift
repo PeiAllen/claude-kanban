@@ -19,14 +19,16 @@ public enum HooksRenderer {
     /// orchestra binary path — mirrors `render` for the second agent. CodexAdapter later installs this
     /// rendered file into the pinned `$CODEX_HOME/hooks.json`.
     @discardableResult
-    public static func renderCodex(orchestraBin: String, to dest: String = Config.codexHooksPath) throws -> String {
+    public static func renderCodex(orchestraBin: String, agentId: String, to dest: String = Config.codexHooksPath) throws -> String {
         let template: String
         if let p = codexTemplatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
             template = s
         } else {
             template = codexFallbackTemplate
         }
-        let rendered = template.replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+        let rendered = template
+            .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+            .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
         let dir = (dest as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try rendered.write(toFile: dest, atomically: true, encoding: .utf8)
@@ -38,7 +40,7 @@ public enum HooksRenderer {
       "hooks": {
         "SessionStart": [
           { "matcher": "startup|resume",
-            "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event orient" } ] }
+            "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }
         ]
       }
     }
@@ -46,14 +48,16 @@ public enum HooksRenderer {
 
     /// Render the template into `dest`, substituting the orchestra binary path. Returns the dest path.
     @discardableResult
-    public static func render(orchestraBin: String, to dest: String = Config.hooksPath) throws -> String {
+    public static func render(orchestraBin: String, agentId: String, to dest: String = Config.hooksPath) throws -> String {
         let template: String
         if let p = templatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
             template = s
         } else {
             template = fallbackTemplate
         }
-        let rendered = template.replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+        let rendered = template
+            .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
+            .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
         let dir = (dest as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try rendered.write(toFile: dest, atomically: true, encoding: .utf8)
@@ -62,15 +66,15 @@ public enum HooksRenderer {
 
     private static let fallbackTemplate = """
     {
-      "statusLine": { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event statusline" },
+      "statusLine": { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event statusline --agent __AGENT_ID__" },
       "hooks": {
-        "SessionStart": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session" }] }],
-        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt" }] }],
-        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event tool" }] }],
-        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event tool" }] }],
-        "Notification": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notify" }] }],
-        "Stop": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notify" }] }],
-        "SessionEnd": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event sessionend" }] }]
+        "SessionStart": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" }] }],
+        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event prompt --agent __AGENT_ID__" }] }],
+        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" }] }],
+        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttool --agent __AGENT_ID__" }] }],
+        "Notification": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notification --agent __AGENT_ID__" }] }],
+        "Stop": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" }] }],
+        "SessionEnd": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event sessionend --agent __AGENT_ID__" }] }]
       }
     }
     """

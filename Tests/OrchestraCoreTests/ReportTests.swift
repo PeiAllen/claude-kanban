@@ -15,9 +15,9 @@ struct ReportTests {
 
     // MARK: - waitReason (notification classification)
 
-    private func notify(_ json: String) -> StatusReport? {
+    private func parse(_ kind: String, _ json: String) -> StatusReport? {
         let p = (try? JSONValue.parse(Data(json.utf8))) ?? .object([:])
-        return ClaudeCodeAdapter().parse(.hooksPush(kind: "notify", payload: p))
+        return ClaudeCodeAdapter().parse(.hooksPush(kind: kind, payload: p))
     }
 
     @Test("Task encodes/decodes waitReason round-trip; absent decodes to nil")
@@ -53,7 +53,7 @@ struct ReportTests {
 
     @Test("Notification permission_prompt → waiting/.permission")
     func classifyPermission() {
-        let r = notify(#"{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)
+        let r = parse("notification", #"{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)
         #expect(r?.snapshot?.status == .waiting)
         #expect(r?.snapshot?.waitReason == .permission)
         #expect(r?.snapshot?.desc == "Claude needs your permission to use Bash")
@@ -61,27 +61,27 @@ struct ReportTests {
 
     @Test("Notification idle_prompt → waiting/.humanTurn")
     func classifyIdle() {
-        let r = notify(#"{"hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#)
+        let r = parse("notification", #"{"notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#)
         #expect(r?.snapshot?.status == .waiting)
         #expect(r?.snapshot?.waitReason == .humanTurn)
     }
 
     @Test("Stop with no background work → waiting/.humanTurn")
     func classifyStopIdle() {
-        let r = notify(#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[]}"#)
+        let r = parse("stop", #"{"background_tasks":[],"session_crons":[]}"#)
         #expect(r?.snapshot?.status == .waiting)
         #expect(r?.snapshot?.waitReason == .humanTurn)
     }
 
     @Test("Stop with pending background_tasks → nil (no status change)")
     func classifyStopBackgroundTasks() {
-        let r = notify(#"{"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"shell","status":"running"}],"session_crons":[]}"#)
+        let r = parse("stop", #"{"background_tasks":[{"id":"t1","type":"shell","status":"running"}],"session_crons":[]}"#)
         #expect(r == nil)
     }
 
     @Test("Stop with pending session_crons → nil (no status change)")
     func classifyStopCrons() {
-        let r = notify(#"{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"c1","schedule":"*/5 * * * *"}]}"#)
+        let r = parse("stop", #"{"background_tasks":[],"session_crons":[{"id":"c1","schedule":"*/5 * * * *"}]}"#)
         #expect(r == nil)
     }
 

@@ -232,10 +232,18 @@ private struct DebugLaunchHook: ViewModifier {
                         order: 0, status: .running, initialPrompt: "demo")
         model.tasks = [mock]
         model.selectedId = mock.id
+        // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
+        model.onboarded = true
+        model.showOnboarding = false
         if n > 0 {
             model.shellWindows[mock.id] = (1...n).map { "shell-\($0)" }
             model.selectedShell[mock.id] = "shell-1"
             model.shellOpen.insert(mock.id)
+        }
+        // ORCH_FOCUS=terminal|shell descends the keyboard into the terminal box so its accent focus
+        // ring can be screenshotted (board zone = no ring; terminal/shell zone = ring).
+        if let f = env["ORCH_FOCUS"] {
+            model.focusZone = (f == "shell") ? .shell : .terminal
         }
     }
 

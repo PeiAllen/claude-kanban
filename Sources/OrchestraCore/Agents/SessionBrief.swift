@@ -28,18 +28,4 @@ public enum SessionBrief {
             + "column honest by moving yourself with the `move` tool (`move \(shortId) --col plan|impl|review`) "
             + "— e.g. plan→impl once you start building, impl→review once it's ready to look at."
     }
-
-    /// Wrap a brief in the Claude SessionStart hook's stdout envelope. Claude reads
-    /// `hookSpecificOutput.additionalContext` on a SessionStart hook and folds it into the session's
-    /// context. Returns `""` on the (unreachable) encode failure so the hook prints nothing.
-    public static func claudeSessionStartJSON(_ context: String) -> String {
-        let obj = JSONValue.object([
-            "hookSpecificOutput": .object([
-                "hookEventName": .string("SessionStart"),
-                "additionalContext": .string(context),
-            ])
-        ])
-        if let data = try? obj.rawData(), let s = String(data: data, encoding: .utf8) { return s }
-        return ""
-    }
 }

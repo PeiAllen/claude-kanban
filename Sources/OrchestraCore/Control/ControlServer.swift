@@ -149,14 +149,20 @@ public final class ControlServer: @unchecked Sendable {
             let task = try await service.resolveRef(ref)
             try await service.openNotes(task.id)
             return .object(["ok": .bool(true)])
-        case "report":
-            guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("report needs ref")
+        case "hook":
+            // The unified hook channel: the `_report` edge sends a TYPED event (already parsed at the
+            // edge); the daemon dispatches both directions (apply telemetry + compose orientation/drain)
+            // and returns an optional HookResponse to print. Replaces the old report/drain/sessionBrief
+            // RPCs. Internal plumbing — NOT a registry Command.
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let kind = p.optString("event"), let event = HookEvent(rawValue: kind) else {
+                throw OrchestraError.invalidParams("hook needs ref + event")
             }
-            let task = try await service.resolveRef(ref)
-            let patch = try (p["report"] ?? p).decode(StatusReport.self)
-            try await service.report(task.id, patch)
-            return .object(["ok": .bool(true)])
+            let report = p["report"].flatMap { try? $0.decode(StatusReport.self) }
+            let source = p.optString("source").flatMap(SessionSource.init(rawValue:))
+            let resp = await service.handleHook(ref, event: event, report: report, source: source)
+            if let resp { return .object(["response": try JSONValue(encodable: resp)]) }
+            return .object(["response": .null])
         case "diffText":
             // Code review on the board (axis 7): the inspector's rendered diff. Internal + app-only —
             // NOT a registry Command, so it never surfaces as an MCP tool (agents run `git diff`).
@@ -175,25 +181,6 @@ public final class ControlServer: @unchecked Sendable {
             let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
-        case "drain":
-            // F3 Stop-drain: the Stop hook pulls the card's durable inbox as the `decision:block` payload.
-            // Orchestra-internal plumbing — NOT a Command (not user-facing), so it never touches the registry.
-            guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("drain needs ref")
-            }
-            let task = try await service.resolveRef(ref)
-            let reason = await service.drainForStop(task.id)
-            return .object(["reason": reason.map(JSONValue.string) ?? .null])
-        case "sessionBrief":
-            // SessionStart orientation: the session hook fetches the card's live column + access + id to
-            // inject as `additionalContext`. Orchestra-internal plumbing — NOT a Command (not user-facing),
-            // so it never touches the registry (mirrors `drain`).
-            guard let p = req.params, let ref = p.optString("ref") else {
-                throw OrchestraError.invalidParams("sessionBrief needs ref")
-            }
-            let task = try await service.resolveRef(ref)
-            let context = await service.sessionBrief(task.id)
-            return .object(["context": context.map(JSONValue.string) ?? .null])
         default:
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")

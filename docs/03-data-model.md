@@ -117,8 +117,8 @@ This is the durable merge-back channel for **F3** (see [Design decisions](09-des
 so an idle agent drains promptly rather than at its next unprompted turn; `send` rejects a message over
 `StopDrain.maxMessageChars` at enqueue so any accepted one delivers whole — the inbox is a nudge channel, not
 a document transfer), and the Claude Stop hook drains it
-into the agent at its next turn-end (`OrchestraService.drainForStop`, the [`drain` RPC](05-command-reference.md#server-only-built-in-methods),
-and the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
+into the agent at its next turn-end (`OrchestraService.drainForStop`, dispatched by the [`hook` RPC](05-command-reference.md#server-only-built-in-methods)
+on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
 [`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).
 
 ## The trust ledger (T1)
