@@ -125,6 +125,20 @@ struct TrustCommandTests {
         #expect(await env.trust.isTrusted(dir) == true)
     }
 
+    @Test("trust command grants for an app source (the SpawnSheet's Trust this directory button)")
+    func commandGrantsFromApp() async throws {
+        // The app is a human grant surface — the user clicking "Trust this directory" in the spawn
+        // sheet arrives as an `.app`-sourced `trust` command, which SurfaceGrantResolver approves with
+        // no further prompt. This is the exact backend contract BoardModel.trust(path:) relies on.
+        let env = TestEnv.make(grantResolver: SurfaceGrantResolver())
+        let dir = env.base + "/cmd-grant-app"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let cmd = try #require(CommandRegistry().command("trust"))
+        let out = try await cmd.run(env.svc, .object(["path": .string(dir)]), .app)
+        #expect(try out.decode(TrustGrantResult.self).granted)
+        #expect(await env.trust.isTrusted(dir) == true)
+    }
+
     @Test("trust command surfaces trustDenied when the agent source can't self-grant")
     func commandDenies() async throws {
         let env = TestEnv.make(grantResolver: StubGrantResolver(.denied))

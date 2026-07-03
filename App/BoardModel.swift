@@ -372,6 +372,21 @@ final class BoardModel: ObservableObject {
         guard let r = try? await client.call("trustState", .object(["path": .string(path)])) else { return false }
         return r["trusted"]?.boolValue ?? false
     }
+
+    /// Grant a human's trust for a borrowed directory (the T2 grant), so the freeform card can run
+    /// read-write. The app is a human surface — the user clicking "Trust this directory" in the spawn
+    /// sheet *is* the human gate the daemon's `SurfaceGrantResolver` requires for an `.app` source, so
+    /// this succeeds without any further prompt. Returns whether the directory is now trusted; toasts on
+    /// failure (a denial can only happen if the resolver policy changes under us).
+    func trust(path: String) async -> Bool {
+        do {
+            let r = try await client.call("trust", .object(["path": .string(path)]))
+            return r["granted"]?.boolValue ?? false
+        } catch {
+            toast("Couldn't trust directory", sub: "\(error)", color: .red)
+            return false
+        }
+    }
     func restart(_ id: UUID) async {
         do {
             _ = try await client.call("restart", .object(["ref": .string(id.uuidString)]))

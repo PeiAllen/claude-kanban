@@ -24,10 +24,13 @@ struct SpawnSheet: View {
     @State private var cwd = ""
     @State private var readOnly = false
 
-    /// T1 trust state for the freeform cwd (nil = unknown/unchecked). An untrusted borrowed dir can
-    /// only run read-only (sandboxed) — granting trust is a separate human surface (the `trust` tool /
-    /// `orchestra trust`), so here we surface the state and force the safe fallback.
+    /// T1 trust state for the freeform cwd (nil = unknown/unchecked). An untrusted borrowed dir runs
+    /// read-only (sandboxed) until the human grants trust — which they can do right here via
+    /// "Trust this directory" (the app is a human grant surface, so it flips the dir read-write) or
+    /// out-of-band with the `trust` tool / `orchestra trust`.
     @State private var cwdTrusted: Bool? = nil
+    /// True while the in-sheet trust grant is in flight (disables the button, shows progress).
+    @State private var granting = false
 
     /// Existing local branches in the selected repo (most-recently-committed first), loaded on appear
     /// and whenever the repo changes. Used to power the branch combo's fuzzy search.
@@ -293,6 +296,15 @@ struct SpawnSheet: View {
         .surface(theme.winBg, corner: 13, hair: theme.hair)
         .shadow(color: Color(r: 20, g: 18, b: 40, a: 0.4), radius: 35, x: 0, y: 28)
         .onAppear {
+            #if DEBUG
+            // Headless screenshot hook (scripts/orch-ui-shot.sh): preset the mode + freeform cwd so the
+            // freeform trust notice (and its "Trust this directory" button) is screenshotable. With no
+            // daemon behind the mock, trustState resolves untrusted — exactly the state under test.
+            if let m = ProcessInfo.processInfo.environment["ORCH_SPAWN_MODE"] {
+                switch m { case "freeform": mode = .freeform; case "scratch": mode = .scratch; default: break }
+            }
+            if let c = ProcessInfo.processInfo.environment["ORCH_SPAWN_CWD"], !c.isEmpty { cwd = c }
+            #endif
             if repo.isEmpty { repo = repoCandidates.first ?? "" }
             if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
             // Guard against a stale/unknown default agent id (adapter disabled, etc.).
@@ -316,8 +328,9 @@ struct SpawnSheet: View {
     /// The freeform trust indicator (reads T1's ledger via the daemon). Three states:
     ///   • cwd empty / unchecked → nothing;
     ///   • trusted → a subtle "Trusted ✓";
-    ///   • untrusted → an amber notice; the card is forced read-only (sandboxed) here — granting trust
-    ///     is a separate human surface (the `trust` tool / `orchestra trust`).
+    ///   • untrusted → an amber notice plus a "Trust this directory" button. The card is read-only
+    ///     (sandboxed) until the human grants trust — clicking the button *is* that human grant (the app
+    ///     is a grant surface), which records the dir in the ledger and flips the card read-write.
     @ViewBuilder private var trustNotice: some View {
         if !cwd.isEmpty, let trusted = cwdTrusted {
             if trusted {
@@ -327,15 +340,34 @@ struct SpawnSheet: View {
                 }
                 .foregroundColor(theme.green.dot)
             } else {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10)).foregroundColor(theme.amber.dot)
-                    Text("Not a trusted directory — it will run read-only (sandboxed). Grant trust from "
-                        + "the agent’s client or `orchestra trust` to enable read-write.")
-                        .font(F.ui(11)).foregroundColor(theme.text2)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10)).foregroundColor(theme.amber.dot)
+                        Text("Not a trusted directory — it will run read-only (sandboxed). Trust it to "
+                            + "let the agent edit, write & commit here.")
+                            .font(F.ui(11)).foregroundColor(theme.text2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(action: grantTrust) {
+                        HStack(spacing: 5) {
+                            if granting {
+                                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 11, height: 11)
+                            } else {
+                                Image(systemName: "checkmark.shield").font(.system(size: 10, weight: .semibold))
+                            }
+                            Text("Trust this directory").font(F.ui(11.5, .semibold))
+                        }
+                        .foregroundColor(theme.text)
+                        .padding(.horizontal, 11).frame(height: 28)
+                        .surface(theme.card, corner: 7, hair: theme.hair)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(granting)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 8)
                 .surface(theme.chip, corner: 8, hair: theme.hair)
             }
         }
@@ -351,6 +383,25 @@ struct SpawnSheet: View {
                 guard path == cwd else { return }   // ignore a stale result after the dir changed
                 cwdTrusted = trusted
                 if !trusted { readOnly = true }
+            }
+        }
+    }
+
+    /// Grant the human's trust for the current freeform cwd (T2). On success the dir is trusted, so we
+    /// clear the read-only lock and default the card to read-write — the user asked to enable writes.
+    private func grantTrust() {
+        guard !cwd.isEmpty, !granting else { return }
+        let path = cwd
+        granting = true
+        _Concurrency.Task {
+            let ok = await model.trust(path: path)
+            await MainActor.run {
+                granting = false
+                guard path == cwd else { return }   // ignore a stale result after the dir changed
+                if ok {
+                    cwdTrusted = true
+                    readOnly = false
+                }
             }
         }
     }
