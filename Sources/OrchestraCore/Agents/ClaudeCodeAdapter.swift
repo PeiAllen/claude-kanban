@@ -222,13 +222,19 @@ public struct ClaudeCodeAdapter: Adapter {
     // MARK: transcript path helpers
 
     /// Claude Code stores transcripts at ~/.claude/projects/<cwd-slug>/<sessionId>.jsonl, where the
-    /// slug is the absolute cwd with '/' replaced by '-'.
+    /// slug is the absolute cwd with EVERY non-alphanumeric char replaced by '-'.
     func transcriptPath(cwd: String, sessionId: String) -> String {
         "\(Config.home)/.claude/projects/\(cwdSlug(cwd))/\(sessionId).jsonl"
     }
 
+    /// Reproduce Claude Code's project-dir encoding EXACTLY: every non-`[A-Za-z0-9]` char in the
+    /// absolute cwd becomes '-', with NO collapsing of consecutive separators (`/.orchestra` →
+    /// `--orchestra`). Matching '.' → '-' is essential: an Orchestra worktree always lives under
+    /// `~/.orchestra/…`, so slugging the dot as a literal '.' points `sessionInfo`/`isResumable`/
+    /// `resume` at a nonexistent transcript — silently downgrading a reopen or recovery to a blank
+    /// restart instead of resuming the real session.
     func cwdSlug(_ cwd: String) -> String {
-        cwd.replacingOccurrences(of: "/", with: "-")
+        String(cwd.map { ($0.isASCII && ($0.isLetter || $0.isNumber)) ? $0 : "-" })
     }
 
     /// Fallback for sessions Orchestra didn't start: newest *.jsonl under the cwd-slug dir whose first
