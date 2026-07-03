@@ -228,10 +228,11 @@ provider-agnostic — registered in the default `AgentRegistry` alongside Claude
 `notes/plans/2026-07-01-b2-codex-rollout-tail.md`). It differs from Claude on every capability axis, and
 core handles the difference purely through the descriptor:
 
-- **Read-only-first launch.** `start`/`resume` always emit `-s read-only -a never` regardless of the
-  card's `access` — B1 ships read-only only; write access and the approval round-trip are deferred. `-s
+- **Access-gated launch.** Like Claude, Codex honors the card's `access`: a **default (read-write)**
+  card launches with **Codex's own default permissioning** (no `-s`/`-a` clamp), and only a
+  **read-only** card applies Codex's read-only preset `-s read-only -a never` (`accessFlags`). `-s
   read-only` selects Codex's own OS-sandboxed read-only mode; `-a never` disables approvals. `resume`
-  (`codex resume <sid> -s read-only -a never [-m <model>] [<seed>]`) also appends the F1 `seed` as a
+  (`codex resume <sid> [-s read-only -a never] [-m <model>] [<seed>]`) also appends the F1 `seed` as a
   trailing positional turn when present (PR C3) — and because Codex has **no Stop hook**
   (`inboxDrain == .sessionSeed`), this folded seed is the *only* channel its queued inbox messages ride
   (see [the resume argv](#the-claude-code-adapter) above).
@@ -261,8 +262,8 @@ core handles the difference purely through the descriptor:
   Orchestra's, keyed on the `orient` sentinel), is **orientation-only** (no telemetry — that stays the
   rollout tail below), and is best-effort/argv-preserving
   (column-aware-orientation PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
-- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5-codex` /
-  `gpt-5` = 272 000-token window, `o3` = 200 000), `.copy`-bundled so the app stays fully offline. This
+- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5.3-codex` /
+  `gpt-5.5` = 272 000-token window), `.copy`-bundled so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.
 

@@ -276,8 +276,9 @@ The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its r
 (`notes/plans/2026-07-01-b2-codex-rollout-tail.md`). Together they add the **second `Adapter` conformer**
 — the first proof the provider seam is agent-agnostic — registered in the default `AgentRegistry`
 alongside Claude (`[ClaudeCodeAdapter(), CodexAdapter()]`). **B1** builds the launch/session/trust half:
-`CodexAdapter` (`id = "codex"`) launches **read-only-first** (`-s read-only -a never`, write/approvals
-deferred), uses a **discovered** session id (it can't be seeded, so `sessionInfo` reads the newest
+`CodexAdapter` (`id = "codex"`) launches **access-gated** like Claude — a default card uses Codex's own
+default permissioning, a read-only card gets the `-s read-only -a never` preset (`accessFlags`) — uses a
+**discovered** session id (it can't be seeded, so `sessionInfo` reads the newest
 `$CODEX_HOME/sessions/**/rollout-*.jsonl` back), isolates its home via `env["CODEX_HOME"]` (B1 also wired
 `Adapter.env` into the tmux launch — Claude byte-identical), and mirrors the core's trust decision into
 `config.toml`'s `[projects."<cwd>"].trust_level` (never reading the `TrustLedger`). **B2** makes its
@@ -292,7 +293,7 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   (`hooksPush`) is never tailed, so its push path is byte-identical.
 - **`ctxPct` is derived from a vendored offline model table, and the parse is rename-tolerant.** Because
   Codex reports no context percentage, the parse computes it as tokens ÷ the context window from a
-  **vendored** `Resources/codex-models.json` (`gpt-5-codex` = 272 000), never the rollout's own reported
+  **vendored** `Resources/codex-models.json` (`gpt-5.3-codex` = 272 000), never the rollout's own reported
   window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
   PR — **E1** (`notes/plans/e1-model-table.md`), a root off `main` — which B2 consumes here; it is the
@@ -531,7 +532,7 @@ This change is pure **reachability wiring**, no new launch behavior:
 - **Model→adapter routing — Codex startable from a model-only pick.** `spawn` now resolves its adapter in
   three steps: an explicit **`agentId`** wins → else the adapter that **owns the chosen model**
   (new `AgentRegistry.adapter(forModel:)`, catalog-driven) → else the **configured default**. So the app's
-  flat model picker, which sends only a model id, lands a `gpt-5-codex` selection on the Codex adapter.
+  flat model picker, which sends only a model id, lands a `gpt-5.3-codex` selection on the Codex adapter.
 - **Two surfaces for the picker.** `OrchestraService.models(nil)` now returns the **union** across every
   enabled adapter (default agent first), keeping the flat/default-model surfaces (e.g. Settings) working;
   a new `agents()` + `AgentInfo` + [`agents` RPC](05-command-reference.md#server-only-built-in-methods)
@@ -540,9 +541,10 @@ This change is pure **reachability wiring**, no new launch behavior:
   **`agent`** param; the app's `SpawnSheet` gains an Agent segmented control that scopes the Model picker,
   and `BoardModel` fetches `agents` and threads `agent` through spawn (`ORCH_SHOW=spawn` seeds a mock agent
   catalog for the headless screenshot).
-- **Read-only-first still holds.** Codex is now *launchable* but still ships **read-only only** — B1 clamps
-  every Codex launch to `-s read-only -a never`. Write access + approvals remain the model-providers axis's
-  live remainder ([chapter 10](10-roadmap.md)). New tests (`CodexAdapterTests`) pin `adapter(forModel:)`,
+- **Access-gated permissioning.** Codex now honors the card's `access` like Claude: a default card launches
+  with Codex's own default permissioning, and only a read-only card gets the `-s read-only -a never` preset
+  (`accessFlags`). Board-routed approval telemetry remains the model-providers axis's live remainder
+  ([chapter 10](10-roadmap.md)). New tests (`CodexAdapterTests`) pin `adapter(forModel:)`,
   the union `models()`, `agents()`, a model-only spawn landing on Codex, the default preserved, and an
   explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
 

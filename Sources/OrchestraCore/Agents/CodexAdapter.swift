@@ -4,7 +4,9 @@ import Foundation
 /// launch/resume argv (`-s read-only -a never`), pins `CODEX_HOME` (via `env`), discovers the session
 /// id from the rollout dir post-launch (Codex is `.discovered`, not seeded), and mirrors the CORE's
 /// trust decision (`ctx.trustCwd`) into Codex's native per-project `trust_level` — never reading the
-/// `TrustLedger`. B1 ships READ-ONLY ONLY (approvals/write deferred), so every launch clamps read-only.
+/// `TrustLedger`. Permission posture honors `ctx.access` like Claude: a default (read-write) card
+/// launches with Codex's OWN default permissioning, and only a read-only card clamps to Codex's
+/// OS-sandboxed read-only preset (`-s read-only -a never`).
 public struct CodexAdapter: Adapter {
     public let id = "codex"
     public let name = "Codex"
@@ -36,17 +38,20 @@ public struct CodexAdapter: Adapter {
     /// tmux launch via `SessionManaging.ensure(env:)`). Claude leaves this empty (default).
     public var env: [String: String] { ["CODEX_HOME": codexHome] }
 
-    /// Codex's selectable models. B2/E1 vendor `Resources/codex-models.json` (offline table); until
-    /// then this hardcoded list keeps `models()` non-empty so model resolution never fails.
+    /// Codex's selectable models, from the vendored `Resources/codex-models.json` offline table
+    /// (mirrors Codex's own model catalog). The hardcoded list is a safety net if that resource is
+    /// missing/unreadable, so `models()` is never empty and model resolution never fails.
     public func models() -> [AgentModel] {
         let table = ModelCatalog.load("codex-models")
         return table.isEmpty ? Self.fallbackModels : table
     }
 
     private static let fallbackModels: [AgentModel] = [
-        AgentModel(id: "gpt-5-codex", displayName: "GPT-5 Codex", family: "gpt"),
-        AgentModel(id: "gpt-5", displayName: "GPT-5", family: "gpt"),
-        AgentModel(id: "o3", displayName: "o3", family: "gpt"),
+        AgentModel(id: "gpt-5.5", displayName: "GPT-5.5", family: "gpt"),
+        AgentModel(id: "gpt-5.4", displayName: "GPT-5.4", family: "gpt"),
+        AgentModel(id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini", family: "gpt"),
+        AgentModel(id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", family: "gpt"),
+        AgentModel(id: "gpt-5.2", displayName: "GPT-5.2", family: "gpt"),
     ]
 
     /// Codex's session id is `.discovered` (read back from the rollout dir after launch), so Orchestra
@@ -129,10 +134,15 @@ public struct CodexAdapter: Adapter {
         return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
     }
 
-    // Read-only-first: B1 ships read-only ONLY (approvals deferred), so EVERY launch clamps to these
-    // flags regardless of `ctx.access`. `-s read-only` selects Codex's OS-sandboxed read-only mode;
-    // `-a never` disables the approval round-trip (which B1 does not implement).
-    private var readOnlyFlags: [String] { ["-s", "read-only", "-a", "never"] }
+    // Permission posture — mirrors Claude's `accessFlags` (D8 §7): a DEFAULT (read-write) card launches
+    // with Codex's OWN default permissioning — NO `-s`/`-a` clamp — so `AccessPolicy .default` means
+    // "the agent's native default", exactly like Claude passes no `--permission-mode`. Only a `.readOnly`
+    // card applies Codex's OS-sandboxed read-only PRESET: `-s read-only` selects the sandboxed read-only
+    // mode and `-a never` disables the approval round-trip. This is the Codex analogue of Claude's
+    // `--disallowedTools` + `denyWrite` overlay.
+    private func accessFlags(_ access: CardAccess) -> [String] {
+        access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
+    }
 
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
@@ -141,7 +151,7 @@ public struct CodexAdapter: Adapter {
 
     public func start(_ ctx: AdapterContext) -> [String] {
         var argv = [binary]
-        argv += readOnlyFlags
+        argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
         if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
         return argv
@@ -150,7 +160,7 @@ public struct CodexAdapter: Adapter {
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
         var argv = [binary, "resume", sid]
-        argv += readOnlyFlags
+        argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
         // F1 (C3): Codex has no Stop hook (`inboxDrain == .sessionSeed`), so the folded seed (handoff
         // ctx + pending inbox) rides the resume as its opening positional turn.
