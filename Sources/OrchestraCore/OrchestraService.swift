@@ -268,6 +268,15 @@ public actor OrchestraService {
         )
         let created = try await store.create(task)
 
+        // INVARIANT (mirrors resume/restart): guard the create → ensure window. The card is now
+        // persisted as `.running`/`.waiting`, but its tmux session isn't created until `sessions.ensure`
+        // below — and `resolveTrust` awaits the TrustLedger actor in between, suspending this actor. Without
+        // this, the background liveness poll (`reconcileLiveness`) can interleave at that suspension, see a
+        // session-less non-dead card, and falsely mark it `.dead(sessionVanished)`. `recovering` makes the
+        // poll skip it until the session exists.
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+
         let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
         // Column/mode/self-id orientation is delivered at SessionStart by each agent's hook (Claude's
         // `_report --event session`, Codex's `_report --event orient`) as `additionalContext`, so it is

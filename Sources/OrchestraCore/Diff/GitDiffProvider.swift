@@ -1,7 +1,7 @@
 import Foundation
 
-/// Git-backed `DiffProvider`: `git diff --numstat` for the stat, difft-or-git for the ANSI render. Both
-/// key off the same `git diff <range>` so the footer stat and the inspector render never disagree
+/// Git-backed `DiffProvider`: `git diff --numstat` for the stat, colored `git diff` for the inspector.
+/// Both key off the same `git diff <range>` so the footer stat and the inspector render never disagree
 /// (untracked-uncommitted files show in neither until staged/committed). All calls are read-only; a git
 /// failure (not a repo / git missing) degrades to `nil`/`""`.
 public struct GitDiffProvider: DiffProvider {
@@ -26,15 +26,6 @@ public struct GitDiffProvider: DiffProvider {
 
     public func render(worktree: String, base: DiffBase, parentBranch: String?) throws -> String {
         let range = DiffBaseline.range(base, worktree: worktree, parentBranch: parentBranch)
-        // difftastic (structural, syntax-aware) when on PATH — inline mode fits a narrow inspector pane;
-        // DFT_COLOR=always forces ANSI under a non-TTY.
-        if Proc.toolExists("difft") {
-            let env = ["GIT_EXTERNAL_DIFF": "difft", "DFT_DISPLAY": "inline", "DFT_COLOR": "always"]
-            if let r = try? Proc.run(["git", "diff", range], cwd: worktree, env: env), r.ok {
-                return r.stdout
-            }
-        }
-        // git's own colored diff (difft absent / failed).
         guard let r = try? Proc.run(["git", "-c", "color.ui=always", "diff", range], cwd: worktree), r.ok else {
             return ""
         }

@@ -103,6 +103,29 @@ struct DiffProviderTests {
         #expect(parent == branch)
     }
 
+    @Test(".branch bases on the LOCAL default branch, not a stale origin/main")
+    func statBranchPrefersLocalDefault() throws {
+        let dir = try Self.makeRepo()   // main @ C0 (a.txt)
+        let c0 = try Self.git(dir, "rev-parse", "HEAD").stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Simulate a remote whose default branch (origin/main) lags: it's pinned at C0.
+        try Self.git(dir, "update-ref", "refs/remotes/origin/main", c0)
+        try Self.git(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        // Local main advances with a commit the CARD did not author.
+        try Self.write(dir, "b.txt", "mainline\n")
+        try Self.git(dir, "add", "-A")
+        try Self.git(dir, "commit", "-q", "-m", "main advances")
+        // The card branch forks from the NEW local main and makes exactly one change.
+        try Self.git(dir, "checkout", "-q", "-b", "feat")
+        try Self.write(dir, "a.txt", "one\ntwo\nthree\nfive\n")
+        try Self.git(dir, "commit", "-q", "-am", "feat change")
+
+        let s = try #require(try provider.stat(worktree: dir, base: .branch, parentBranch: nil))
+        // Only the card's own change (a.txt, +1) — NOT main's own b.txt commit. A stale-origin
+        // baseline would fork at C0 and wrongly count b.txt too (2 files).
+        #expect(s.filesChanged == 1)
+        #expect(s.insertions == 1)
+    }
+
     @Test("repo with no commits does not crash and yields nil stat")
     func noCommits() throws {
         let dir = NSTemporaryDirectory() + "orch-empty-\(UUID().uuidString)"

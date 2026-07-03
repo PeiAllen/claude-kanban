@@ -123,7 +123,10 @@ extension OrchestraService {
         let adapter = try registry.get(task.agentId)
 
         recovering.insert(id)
-        defer { recovering.remove(id) }
+        // On the error path, release immediately; on success we hand off to a delayed release (below) so
+        // the killed old process's stale SessionEnd is absorbed during a grace window.
+        var launched = false
+        defer { if !launched { recovering.remove(id) } }
 
         // Same capability gate as spawn: only a `.seeded` agent mints a fresh id on restart.
         let freshId: String?
@@ -148,6 +151,11 @@ extension OrchestraService {
             _ = try sessions.kill(sessions.sessionName(id))
             _ = try sessions.ensure(launchTask, argv: startArgv, env: env)
         }
+        // The fresh session is up: keep `recovering` set across a grace window (instead of dropping it
+        // on return) so a late SessionEnd from the process we just killed is ignored, not treated as the
+        // NEW session exiting. See scheduleRecoveringRelease / resume's kill→ensure→grace invariant.
+        launched = true
+        scheduleRecoveringRelease(id, after: config.revivalGraceSeconds)
 
         let updated = try await store.update(id) {
             $0.agentSessionId = freshId
@@ -234,6 +242,20 @@ extension OrchestraService {
     private func failResume(_ id: UUID, detail: String, source: ActivitySource) async throws -> Task {
         await markDead(id, reason: .resumeFailed, detail: detail, source: source)
         throw OrchestraError.resumeFailed(detail)
+    }
+
+    /// Remove `id` from `recovering` (actor-isolated) — the target of a delayed release.
+    func releaseRecovering(_ id: UUID) { recovering.remove(id) }
+
+    /// Keep `id` in `recovering` for `seconds`, then release it. Used by `restart` so a stale `SessionEnd`
+    /// from the just-killed old process (delivered out-of-band shortly after restart returns) is ignored
+    /// instead of re-killing the fresh session as `.agentExited`. Mirrors `resume`'s kill→ensure→grace
+    /// window, which `restart` otherwise lacked.
+    func scheduleRecoveringRelease(_ id: UUID, after seconds: Int) {
+        _Concurrency.Task { [weak self] in
+            try? await _Concurrency.Task.sleep(for: .seconds(max(0, seconds)))
+            await self?.releaseRecovering(id)
+        }
     }
 
     func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {

@@ -125,23 +125,11 @@ public struct Launcher: Sendable {
         return (oldRoot.path, newRoot.path)
     }
 
-    /// The merge-base of HEAD and the repo's default branch (origin/HEAD → local `main` → `master`):
-    /// the commit this branch forked from. `nil` if no base branch is found or git fails.
+    /// The merge-base of HEAD and the repo's default branch: the commit this branch forked from. `nil`
+    /// if no base branch is found or git fails. Base-ref resolution (local default branch preferred over a
+    /// stale `origin/main`) is shared with the board diffstat via `DiffBaseline.defaultBaseRef`.
     private func mergeBase(worktree: String) -> String? {
-        var baseRef: String?
-        if let r = try? Proc.run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd: worktree),
-           r.ok {
-            baseRef = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if baseRef == nil {
-            for name in ["main", "master"] {
-                if let r = try? Proc.run(["git", "rev-parse", "--verify", "--quiet", name], cwd: worktree), r.ok {
-                    baseRef = name
-                    break
-                }
-            }
-        }
-        guard let baseRef,
+        guard let baseRef = DiffBaseline.defaultBaseRef(worktree: worktree),
               let r = try? Proc.run(["git", "merge-base", "HEAD", baseRef], cwd: worktree), r.ok
         else { return nil }
         let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
