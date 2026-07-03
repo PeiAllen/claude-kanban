@@ -82,7 +82,7 @@ struct SettingsView: View {
                               "Alert when an agent is blocked waiting for your approval.")
                     rowDivider
                     notifyRow(.needsYou, "Needs you",
-                              "Alert when an agent finishes its turn and is waiting on you. Background waits (a task auto-resuming) don't count.")
+                              "Alert when an agent finishes and is waiting on you — not while a background task is still running.")
                     rowDivider
                     notifyRow(.died, "Card died",
                               "Alert when an agent session crashes or exits and needs recovery.")
@@ -169,16 +169,19 @@ struct SettingsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 
-    private func menu<Content: View>(_ label: String, @ViewBuilder _ items: () -> Content) -> some View {
+    /// A themed dropdown. `width == nil` sizes to content (intrinsic); passing a fixed `width` makes
+    /// the control that wide with the chevron pinned trailing — used to align columns of menus.
+    private func menu<Content: View>(_ label: String, width: CGFloat? = nil, @ViewBuilder _ items: () -> Content) -> some View {
         Menu {
             items()
         } label: {
             HStack(spacing: 8) {
                 Text(label).font(F.ui(12, .medium)).foregroundStyle(theme.text).lineLimit(1)
+                if width != nil { Spacer(minLength: 6) }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold)).foregroundStyle(theme.text)
             }
-            .padding(.horizontal, 11).frame(height: 28)
+            .padding(.horizontal, 11).frame(width: width, height: 28)
             .background(theme.field)
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.fieldBorder, lineWidth: 0.5))
             .clipShape(RoundedRectangle(cornerRadius: 7))
@@ -189,7 +192,7 @@ struct SettingsView: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
+        .fixedSize(horizontal: width == nil, vertical: false)
     }
 
     // MARK: - Notification rows (per-trigger scope + sound)
@@ -197,19 +200,19 @@ struct SettingsView: View {
     private func notifyRow(_ trigger: AgentNotifier.NotifyTrigger, _ label: String, _ desc: String) -> some View {
         let scope = currentScope(trigger)
         let sound = currentSound(trigger)
-        return HStack(alignment: .center, spacing: 12) {
+        return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label).font(F.ui(12.5, .medium)).foregroundStyle(theme.text)
                 Text(desc).font(F.ui(11)).foregroundStyle(theme.text2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
-            menu(scopeLabel(scope)) {
+            .frame(maxWidth: .infinity, alignment: .leading)
+            menu(scopeLabel(scope), width: 148) {
                 ForEach(AgentNotifier.NotifyScope.allCases, id: \.self) { s in
                     Button(scopeLabel(s)) { setScope(trigger, s) }
                 }
             }
-            menu(soundLabel(sound)) {
+            menu(soundLabel(sound), width: 116) {
                 Button("Default") { setSound(trigger, "default") }
                 Button("None") { setSound(trigger, "none") }
                 Divider()
