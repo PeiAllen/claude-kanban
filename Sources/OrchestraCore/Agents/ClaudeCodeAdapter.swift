@@ -69,7 +69,24 @@ public struct ClaudeCodeAdapter: Adapter {
             let tool = p["tool_name"]?.stringValue ?? "tool"
             return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), status: .running)
         case "notify":
-            return StatusReport(desc: p["message"]?.stringValue, status: .waiting)
+            // Both the Notification and Stop hooks arrive here (claude-hooks.json wires both to
+            // `--event notify`); `hook_event_name` distinguishes them.
+            let event = p["hook_event_name"]?.stringValue
+            if event == "Stop" {
+                // A turn that yielded to await background work (a run_in_background shell, a background
+                // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave
+                // the card running (return nil) so it neither flips to waiting nor alerts. (background_tasks
+                // / session_crons are Claude Code v2.1.145+; absent on older builds → treated as empty.)
+                let hasBg = (p["background_tasks"]?.arrayValue?.isEmpty == false)
+                    || (p["session_crons"]?.arrayValue?.isEmpty == false)
+                if hasBg { return nil }
+                return StatusReport(status: .waiting, waitReason: .humanTurn)
+            }
+            // Notification hook: permission_prompt is the only "you're blocking me" case; everything
+            // else (idle_prompt, …) is a genuine human-turn wait.
+            let reason: WaitReason = p["notification_type"]?.stringValue == "permission_prompt"
+                ? .permission : .humanTurn
+            return StatusReport(desc: p["message"]?.stringValue, status: .waiting, waitReason: reason)
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
             // Transition reasons are ignored (the matching SessionStart handles them).
