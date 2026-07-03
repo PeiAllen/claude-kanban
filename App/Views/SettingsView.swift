@@ -14,6 +14,10 @@ struct SettingsView: View {
     @State private var statusLineMode: StatusLineMode = .passthroughGlobal
     @State private var customStatusLine = ""
 
+    // Client-local notification prefs (per-Mac, not daemon config); default on.
+    @AppStorage(AgentNotifier.bannerKey) private var notifyBanner = true
+    @AppStorage(AgentNotifier.soundKey) private var notifySound = true
+
     @State private var loaded = false
     @State private var saveTask: _Concurrency.Task<Void, Never>?
 
@@ -73,6 +77,16 @@ struct SettingsView: View {
                         row("Command") { field($customStatusLine, "statusline.sh", focus: .custom) }
                     }
                 }
+
+                section("Notifications") {
+                    toggleRow("Notify when an agent needs input",
+                              "Show a banner when an agent's turn ends and it's waiting on you — only while Orchestra is in the background.",
+                              isOn: $notifyBanner)
+                    rowDivider
+                    toggleRow("Play a sound",
+                              "Play an alert sound on every such hand-off, even when Orchestra is focused.",
+                              isOn: $notifySound)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,6 +140,22 @@ struct SettingsView: View {
 
     private var rowDivider: some View {
         Rectangle().fill(theme.hair).frame(height: 0.5).padding(.leading, 13)
+    }
+
+    private func toggleRow(_ label: String, _ desc: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(F.ui(12.5, .medium)).foregroundStyle(theme.text)
+                Text(desc).font(F.ui(11)).foregroundStyle(theme.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(theme.accent)
+        }
+        .padding(.horizontal, 13).padding(.vertical, 11)
     }
 
     private func field(_ binding: Binding<String>, _ placeholder: String, focus: Field) -> some View {
