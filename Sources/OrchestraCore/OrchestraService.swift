@@ -40,6 +40,12 @@ public actor OrchestraService {
     var lastSeqStore: [UUID: UInt64] = [:]
     // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout).
     var resumeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    // A SessionStart(resume) callback can arrive BEFORE `awaitResume` registers its waiter, because
+    // resume()'s off-actor relaunch frees this reentrant actor to service `report()` mid-revival. We
+    // remember such early confirmations here so the waiter consumes them instead of losing the wakeup
+    // and timing out. Cleared at the start of each resume attempt so a late callback from a prior,
+    // already-failed attempt can't spuriously confirm a future one.
+    var pendingResumeConfirmations: Set<UUID> = []
     // Cards currently being revived/restarted — guarded against the liveness reconcile.
     var recovering: Set<UUID> = []
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
