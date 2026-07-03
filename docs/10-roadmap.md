@@ -40,7 +40,8 @@ that lets an orchestrator card block until a watched child concludes (read from 
 [chapter 9](09-design-decisions.md#shipped-feature-history)). Two more forest PRs, **B1 and B2 — the
 Codex adapter + its rollout-tail telemetry** ([plan](../notes/plans/2026-07-01-b2-codex-rollout-tail.md)),
 have now landed too: the **second `Adapter` conformer** (registered alongside Claude), launching
-read-only-first with a discovered session id and an isolated `CODEX_HOME`, its live context %/status
+access-gated (default permissioning, or the read-only preset for a read-only card) with a discovered
+session id and an isolated `CODEX_HOME`, its live context %/status
 derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
 vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
@@ -99,7 +100,7 @@ The principle is to design every change *toward* these axes, never away from the
 | # | Axis | Slug | One-line goal |
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
-| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** read-only-first, with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); write access and approvals are the live remainder. |
+| 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); board-routed approval telemetry is the live remainder. |
 | 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads (a Claude skill + a Codex AGENTS.md) has **shipped** as vendored resources + a `DelegationDocs` loader (D2, ch. 9) and is now **auto-materialized on every launch** via each adapter's `prepareToLaunch` (skill-injection, ch. 9), and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |

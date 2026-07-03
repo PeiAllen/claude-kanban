@@ -41,43 +41,54 @@ struct CodexAdapterArgvTests {
     @Test("models() is non-empty (fallback when no vendored table)")
     func models() { #expect(!adapter.models().isEmpty) }
 
-    @Test("start(ctx) is read-only-first with adjacent flags, model, and trailing prompt")
+    @Test("start(ctx) for a default card: model, trailing prompt, and NO read-only clamp")
     func startArgv() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5-codex",
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex",
                                  prompt: "Add OAuth login\nwith Google")
         let argv = adapter.start(ctx)
         #expect(argv.first == "codex")
-        #expect(adjacent(argv, "-s", "read-only"))
-        #expect(adjacent(argv, "-a", "never"))
-        #expect(adjacent(argv, "-m", "gpt-5-codex"))
+        #expect(!argv.contains("read-only"))                   // default = Codex's own permissioning
+        #expect(!argv.contains("never"))
+        #expect(adjacent(argv, "-m", "gpt-5.3-codex"))
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
     }
 
-    @Test("start clamps to read-only even when ctx.access is readWrite (read-only-first)")
-    func startReadOnlyFirst() {
-        let ctx = AdapterContext(cwd: "/wt", access: .readWrite)
-        let argv = adapter.start(ctx)
-        #expect(adjacent(argv, "-s", "read-only"))
-        #expect(adjacent(argv, "-a", "never"))
+    @Test("start honors ctx.access: default launches unclamped, read-only applies the RO preset")
+    func startAccessGated() {
+        let rw = adapter.start(AdapterContext(cwd: "/wt", access: .readWrite))
+        #expect(!rw.contains("read-only"))                     // default permissioning, no clamp
+        #expect(!rw.contains("never"))
+        let ro = adapter.start(AdapterContext(cwd: "/wt", access: .readOnly))
+        #expect(adjacent(ro, "-s", "read-only"))               // read-only card → sandboxed RO preset
+        #expect(adjacent(ro, "-a", "never"))
     }
 
     @Test("start with no prompt has no trailing positional")
     func startNoPrompt() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5-codex", prompt: nil)
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex", prompt: nil)
         let argv = adapter.start(ctx)
-        #expect(argv.last == "gpt-5-codex")   // last token is the -m value, no prompt
+        #expect(argv.last == "gpt-5.3-codex")   // last token is the -m value, no prompt
     }
 
-    @Test("resume(ctx) is `resume <id>` read-only-first, NO prompt")
+    @Test("resume(ctx) is `resume <id>`, model, NO prompt; default card is unclamped")
     func resumeArgv() throws {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5", sessionId: "sess-9",
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", sessionId: "sess-9",
                                  prompt: "should be ignored")
+        let argv = try #require(adapter.resume(ctx))
+        #expect(adjacent(argv, "resume", "sess-9"))
+        #expect(!argv.contains("read-only"))                   // default = Codex's own permissioning
+        #expect(!argv.contains("never"))
+        #expect(adjacent(argv, "-m", "gpt-5.5"))
+        #expect(!argv.contains("should be ignored"))
+    }
+
+    @Test("resume honors ctx.access: a read-only card resumes with the RO preset")
+    func resumeReadOnly() throws {
+        let ctx = AdapterContext(cwd: "/wt", sessionId: "sess-9", access: .readOnly)
         let argv = try #require(adapter.resume(ctx))
         #expect(adjacent(argv, "resume", "sess-9"))
         #expect(adjacent(argv, "-s", "read-only"))
         #expect(adjacent(argv, "-a", "never"))
-        #expect(adjacent(argv, "-m", "gpt-5"))
-        #expect(!argv.contains("should be ignored"))
     }
 
     @Test("resume returns nil without a session id")
@@ -159,9 +170,9 @@ struct CodexAdapterDiscoveryTests {
     }
 }
 
-@Suite("CodexAdapter — spawn wires CODEX_HOME + read-only argv")
+@Suite("CodexAdapter — spawn wires CODEX_HOME + access-gated argv")
 struct CodexSpawnWiringTests {
-    @Test("spawn(agentId: codex) resolves the adapter, passes CODEX_HOME env + read-only argv to the session")
+    @Test("spawn(agentId: codex, access: readOnly) passes CODEX_HOME env + the read-only preset to the session")
     func spawnWiresHomeAndArgv() async throws {
         let base = NSTemporaryDirectory() + "codex-spawn-\(UUID().uuidString)"
         let work = base + "/work"
@@ -179,7 +190,7 @@ struct CodexSpawnWiringTests {
                                    sessions: sessions,
                                    trust: TrustLedger(path: base + "/trust.json"))
         let t = try await svc.spawn(SpawnInput(prompt: "look around", agentId: "codex",
-                                               cwd: PathResolver.canonical(work)))
+                                               cwd: PathResolver.canonical(work), access: .readOnly))
         #expect(t.agentId == "codex")
         let name = sessions.sessionName(t.id)
         let argv = try #require(sessions.ensureArgv[name])
@@ -243,7 +254,7 @@ struct CodexModelRoutingTests {
     @Test("adapter(forModel:) routes a model id to its owning adapter (catalog-driven)")
     func routesModelToOwningAdapter() {
         let reg = AgentRegistry()                                   // Claude + Codex, both enabled
-        #expect(reg.adapter(forModel: "gpt-5-codex")?.id == "codex")
+        #expect(reg.adapter(forModel: "gpt-5.3-codex")?.id == "codex")
         let claudeModel = try! reg.get("claude-code").models().first!.id
         #expect(reg.adapter(forModel: claudeModel)?.id == "claude-code")
         #expect(reg.adapter(forModel: "no-such-model") == nil)     // unknown → nil (never fabricates)
@@ -253,7 +264,7 @@ struct CodexModelRoutingTests {
     func modelsUnionAllAdapters() async {
         let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
         let ids = await env.svc.models().map(\.id)
-        #expect(ids.contains("gpt-5-codex"))                        // Codex now surfaced in the picker
+        #expect(ids.contains("gpt-5.3-codex"))                        // Codex now surfaced in the picker
         #expect(ids.contains { $0.contains("claude") })            // Claude still there
         // Default agent (claude-code) lists first, so the picker's default entry stays a Claude model.
         #expect(AgentRegistry().adapter(forModel: ids.first!)?.id == "claude-code")
@@ -277,7 +288,7 @@ struct CodexModelRoutingTests {
         let codex = try! #require(agents.first { $0.id == "codex" })
         #expect(codex.name == "Codex")
         #expect(!codex.icon.isEmpty)
-        #expect(codex.models.contains { $0.id == "gpt-5-codex" })  // carries its own catalog
+        #expect(codex.models.contains { $0.id == "gpt-5.3-codex" })  // carries its own catalog
     }
 
     @Test("spawn with a Codex model (no agentId) lands on the Codex adapter")
@@ -286,11 +297,12 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // Model only — the way the app's flat picker sends it — no agentId.
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5-codex"))
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.first == "fake-codex")                         // launched the Codex adapter's argv
+        #expect(!argv.contains("read-only"))                        // default card = Codex's own permissioning
         try? FileManager.default.removeItem(atPath: base)
     }
 
@@ -311,7 +323,7 @@ struct CodexModelRoutingTests {
         let repo = TestEnv.repo(env.base)
         // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
         let t = try await env.svc.spawn(
-            SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5-codex", agentId: "claude-code"))
+            SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex", agentId: "claude-code"))
         #expect(t.agentId == "claude-code")
         try? FileManager.default.removeItem(atPath: base)
     }
@@ -357,7 +369,7 @@ struct CodexDelegationTests {
     @Test("start argv + env are unchanged by the added materialization")
     func argvEnvUnchanged() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5-codex", prompt: "go")
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex", prompt: "go")
         let before = adapter.start(ctx)
         try adapter.prepareToLaunch(ctx)
         #expect(adapter.start(ctx) == before)                    // byte-identical argv
