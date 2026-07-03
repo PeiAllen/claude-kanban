@@ -10,4 +10,4 @@ exec swiftc -typecheck \
   -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
   -target "$(uname -m)-apple-macosx14.0" \
   -I "$MOD" \
-  App/Theme.swift App/BoardModel.swift App/OrchestraApp.swift App/Views/*.swift
+  App/*.swift App/Views/*.swift
