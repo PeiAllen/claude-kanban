@@ -292,6 +292,10 @@ private struct AgentChrome: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
+    /// The keyboard is inside this terminal box (agent terminal or a shell tab). Drives the accent
+    /// focus ring — the "your keys go here now" tell the board's card highlight can't give.
+    private var focused: Bool { model.focusZone == .terminal || model.focusZone == .shell }
+
     private var ctxColor: Color {
         if task.ctxPct >= 80 { return theme.red.dot }
         if task.ctxPct >= 50 { return theme.amber.dot }
@@ -317,7 +321,15 @@ private struct AgentChrome: View {
 
             AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
                               host: model.terminalHost,
-                              background: theme.termBg, foreground: theme.term, autofocus: true)
+                              background: theme.termBg, foreground: theme.term,
+                              // Only grab the keyboard when the user has actually descended into the
+                              // terminal (Enter / i / Ctrl-l) — NOT on every card change. Otherwise
+                              // hjkl-ing between cards would remount this view and steal focus, so the
+                              // next nav key would type into the agent instead of moving the selection.
+                              autofocus: model.focusZone == .terminal,
+                              // A mouse click into the terminal also counts as descending: keep the
+                              // zone (and the focus ring / chip) honest.
+                              onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
                 // Key by session AND active connection so switching cards OR connections tears down the
                 // old terminal and attaches a fresh one against the right host — without this, SwiftUI
                 // reuses the same NSView and every card shows card #1's tmux.
@@ -336,7 +348,13 @@ private struct AgentChrome: View {
         }
         .background(theme.termBg)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .hairline(theme.hair, corner: 10)
+        // Accent ring + soft glow while the terminal owns the keyboard; plain hairline otherwise.
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(focused ? theme.accent : theme.hair, lineWidth: focused ? 2 : 0.5)
+        )
+        .shadow(color: focused ? theme.accent.opacity(0.28) : .clear, radius: focused ? 7 : 0)
+        .animation(.easeOut(duration: 0.12), value: focused)
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
     }

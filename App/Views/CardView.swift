@@ -49,7 +49,9 @@ struct CardView: View {
         .opacity(dimmed ? 0.32 : (isDead ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture { model.selectedId = task.id }
+        // Clicking a card is a board-level select — land in the board zone (don't inherit a stale
+        // terminal zone from a previously-descended card).
+        .onTapGesture { model.selectedId = task.id; model.focusZone = .board }
     }
 
     /// Dim when a `/` search is active and this card doesn't match.

@@ -32,7 +32,13 @@ struct ShellTabsView: View {
             if !minimized && !windows.isEmpty {
                 AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession,
                                   window: selectedWindow, host: model.terminalHost,
-                                  background: theme.termBg, foreground: theme.term)
+                                  background: theme.termBg, foreground: theme.term,
+                                  // A click into a shell counts as descending: mark the zone so the
+                                  // inspector focus ring / chip track it.
+                                  onFocused: {
+                                      model.focusZone = .shell
+                                      model.selectedShell[task.id] = selectedWindow
+                                  })
                     // Re-create the terminal per shell tab (and per active connection) so each attaches to
                     // its own tmux window against the right host.
                     .id("\(model.connections.activeId)-\(task.tmuxSession):\(selectedWindow)")
