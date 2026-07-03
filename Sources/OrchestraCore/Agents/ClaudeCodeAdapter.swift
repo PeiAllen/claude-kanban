@@ -65,10 +65,10 @@ public struct ClaudeCodeAdapter: Adapter {
                 sessionSource: p["source"]?.stringValue)
         case "prompt":
             return StatusReport(status: .running, promptText: p["prompt"]?.stringValue)
-        case "tool":
+        case "pretool", "posttool":
             let tool = p["tool_name"]?.stringValue ?? "tool"
             return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), status: .running)
-        case "notify":
+        case "notification", "stop":
             return StatusReport(desc: p["message"]?.stringValue, status: .waiting)
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
@@ -78,6 +78,14 @@ public struct ClaudeCodeAdapter: Adapter {
         default:
             return nil
         }
+    }
+
+    /// Receive-direction format: wrap core's neutral `HookResponse` in Claude's hook stdout envelope.
+    /// Explicit (not the protocol default) so Claude's shape is never silently inherited by another agent.
+    public func encode(_ r: HookResponse, for event: HookEvent) -> String? {
+        if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
+        if let cont = r.continuation   { return HookEnvelope.block(cont) }
+        return nil
     }
 
     private func toolDesc(tool: String, input: JSONValue?) -> String {
@@ -102,6 +110,10 @@ public struct ClaudeCodeAdapter: Adapter {
     /// is a fresh path Claude would otherwise re-prompt for). If the repo isn't trusted, we leave the
     /// worktree alone so Claude still asks — we don't silently grant trust the user never gave.
     public func prepareToLaunch(_ ctx: AdapterContext) throws {
+        // Render the managed --settings base (statusLine + hooks) pointing at the live orchestra binary,
+        // FIRST — the overlay merge below reads it. Per-launch render keeps the bin path + statusLine
+        // config fresh; the daemon no longer renders anything. Best-effort (never blocks a launch).
+        _ = try? HooksRenderer.render(orchestraBin: ctx.orchestraBin, agentId: id)
         // Apply the CORE's trust decision (resolved into ctx.trustCwd by OrchestraService.resolveTrust).
         // The adapter only *mirrors* that decision into Claude's native per-directory trust — it never
         // reads the TrustLedger itself. When untrusted, leave Claude to prompt / the card to clamp.
@@ -113,7 +125,7 @@ public struct ClaudeCodeAdapter: Adapter {
         // — see SettingsComposer. Cards with no overlays just use the shared hooks file directly.
         let overlays = settingsOverlays(ctx)
         if !overlays.isEmpty {
-            let base = (try? String(contentsOfFile: ctx.hooksPath, encoding: .utf8)) ?? ""
+            let base = (try? String(contentsOfFile: Config.hooksPath, encoding: .utf8)) ?? ""
             let json = SettingsComposer.composeJSON(baseJSON: base, overlays: overlays)
             try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
             try? json.write(toFile: cardSettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
@@ -156,7 +168,7 @@ public struct ClaudeCodeAdapter: Adapter {
     /// directly; with overlays, the per-card merged file `prepareToLaunch` wrote. Exactly one --settings,
     /// always — Claude Code's multiple --settings are last-file-wins (full replace), not deep-merged.
     private func settingsFlags(_ ctx: AdapterContext) -> [String] {
-        ["--settings", settingsOverlays(ctx).isEmpty ? ctx.hooksPath : cardSettingsPath(ctx.cwd)]
+        ["--settings", settingsOverlays(ctx).isEmpty ? Config.hooksPath : cardSettingsPath(ctx.cwd)]
     }
 
     /// Deterministic per-cwd path for the merged per-card settings file, so `prepareToLaunch` writes the
@@ -208,7 +220,7 @@ public struct ClaudeCodeAdapter: Adapter {
                                     resumeCmd: nil)
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
-                                       name: ctx.name, hooksPath: ctx.hooksPath, access: ctx.access)
+                                       name: ctx.name, access: ctx.access)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

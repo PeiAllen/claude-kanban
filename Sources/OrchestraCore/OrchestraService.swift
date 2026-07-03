@@ -8,6 +8,9 @@ public actor OrchestraService {
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
+    /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
+    /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
+    let orchestraBin: String
     var worktrees: any WorktreeManaging
     var sessions: any SessionManaging
     let launcher: Launcher
@@ -61,8 +64,10 @@ public actor OrchestraService {
                 resolver: PathResolver? = nil,
                 trust: TrustLedger? = nil,
                 inbox: Inbox? = nil,
-                grantResolver: any TrustGrantResolver = SurfaceGrantResolver()) {
+                grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
+                orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
+        self.orchestraBin = orchestraBin
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
@@ -284,7 +289,7 @@ public actor OrchestraService {
         // idle provisional one, without submitting an unsolicited turn. See [[SessionBrief]] / [[CodexHooks]].
         let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
                                  sessionId: sid, prompt: launchPrompt, name: title,
-                                 hooksPath: Config.hooksPath, access: input.access,
+                                 orchestraBin: orchestraBin, access: input.access,
                                  trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
@@ -416,6 +421,27 @@ public actor OrchestraService {
         return SessionBrief.sentence(column: task.column, access: task.access, shortId: task.shortId)
     }
 
+    /// The core-owned hook-channel dispatch — the single place both directions of the hook channel meet,
+    /// and it is ADAPTER-FREE (dispatch keys on `HookEvent`, never on agent identity). The `_report` edge
+    /// has already converted the raw payload into a typed event: it applies any telemetry `report` to the
+    /// store (send direction) and composes the existing `sessionBrief`/`drainForStop` content into a
+    /// neutral `HookResponse` (receive direction) for the adapter to encode. `nil` on unknown ref or when
+    /// there is nothing to send back.
+    public func handleHook(_ ref: String, event: HookEvent,
+                           report: StatusReport?, source: SessionSource?) async -> HookResponse? {
+        guard let task = try? await resolveRef(ref) else { return nil }
+        if let report { try? await self.report(task.id, report) }
+        switch event {
+        case .sessionStart where source != .compact:
+            // Skip re-orienting on a mid-turn compact (the agent already has its bearings).
+            return await sessionBrief(task.id).map { HookResponse(additionalContext: $0) }
+        case .stop:
+            return await drainForStop(task.id).map { HookResponse(continuation: $0) }
+        default:
+            return nil
+        }
+    }
+
     @discardableResult
     public func move(_ id: UUID, to column: Column, source: ActivitySource = .daemon) async throws -> Task {
         let updated = try await store.move(id, to: column)
@@ -539,7 +565,7 @@ public actor OrchestraService {
         let targets = (try? sessions.windows(name)) ?? []
         let running = !targets.isEmpty
         let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
-                                 name: t.title, hooksPath: Config.hooksPath)
+                                 name: t.title, orchestraBin: orchestraBin)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)

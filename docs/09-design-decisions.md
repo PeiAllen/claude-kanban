@@ -217,16 +217,16 @@ functions (see [One seed, four topologies](#one-seed-four-topologies)): a durabl
 store (sibling to `TaskStore`, actor-over-JSON, FIFO-per-card, restart-durable — see
 [the inbox store](03-data-model.md#the-inbox-store-f3)), with `send` **rerouted through it** instead of
 typing into tmux, and a `StopDrain` helper that composes the pending messages into a 10 000-char-bounded
-payload. The delivery reuses — rather than adds to — the existing Claude Stop hook: the same
-`_report --event notify` command, on detecting `hook_event_name == "Stop"`, calls a new Orchestra-internal
-[`drain` RPC](05-command-reference.md#server-only-built-in-methods) and prints a `{"decision":"block",
-"reason":…}` continuation so the model reads the queued messages and keeps working. Two decisions shape it:
-the merge-back is **turn-end, never mid-turn** — a queued `send` waits for the agent's natural stop rather
-than interrupting it — and because `stop_hook_active` is only *informational* on the agent, Orchestra
-enforces its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine
-`UserPromptSubmit`) to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. The
-change is deliberately additive: `HooksRenderer`/`claude-hooks.json` are untouched, and the Stop hook's
-existing notify→`waiting` report is preserved byte-for-byte. Waking an *idle* card so it takes a turn to
+payload. The delivery rides the Claude Stop hook: on the `stop` event the daemon's `handleHook` drains the inbox
+and returns a `HookResponse.continuation`, which the edge encodes as a `{"decision":"block","reason":…}`
+continuation so the model reads the queued messages and keeps working. Two decisions shape it: the
+merge-back is **turn-end, never mid-turn** — a queued `send` waits for the agent's natural stop rather than
+interrupting it — and because `stop_hook_active` is only *informational* on the agent, Orchestra enforces
+its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`)
+to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
+C1 reused the shared `notify` command distinguished by `hook_event_name` and a standalone `drain` RPC;
+the [first-class-hooks](#) refactor later split `Stop` into its own `--event stop` and folded drain into
+the unified `hook` channel, but the turn-end/loop-guard behaviour is byte-preserved.) Waking an *idle* card so it takes a turn to
 drain (F2) landed next (C2/C4, below), and `send` was subsequently wired to call that same `wake` right
 after it enqueues — so a message to an idle card now triggers a turn immediately (content still rides the
 inbox; the wake no-ops when the card is busy/drafting, mid-relaunch, or already watching children — a

@@ -22,23 +22,21 @@ final class ReadOnlyAdapterTests: XCTestCase {
     // --settings (after the hooks file) drops the managed statusLine + telemetry hooks entirely.
     func test_start_readonly_passes_single_settings_not_hooksPath_then_readonly() {
         let a = ClaudeCodeAdapter()
-        let ctx = AdapterContext(cwd: "/r/app", sessionId: "sid", name: "look",
-                                 hooksPath: "/data/claude-hooks.json", access: .readOnly)
+        let ctx = AdapterContext(cwd: "/r/app", sessionId: "sid", name: "look", access: .readOnly)
         let argv = a.start(ctx)
         let settingsArgs = argv.enumerated().filter { $0.element == "--settings" }.map { argv[$0.offset + 1] }
         XCTAssertEqual(settingsArgs.count, 1, "read-only must ship one merged --settings, not two")
-        XCTAssertNotEqual(settingsArgs.first, "/data/claude-hooks.json",
+        XCTAssertNotEqual(settingsArgs.first, Config.hooksPath,
                           "the single --settings must be the merged read-only file, not the bare hooks file")
         XCTAssertTrue(settingsArgs.first?.contains("card-settings-") ?? false)
     }
 
     func test_start_readwrite_passes_hooksPath_settings() {
         let a = ClaudeCodeAdapter()
-        let ctx = AdapterContext(cwd: "/r/app", sessionId: "sid",
-                                 hooksPath: "/data/claude-hooks.json", access: .readWrite)
+        let ctx = AdapterContext(cwd: "/r/app", sessionId: "sid", access: .readWrite)
         let argv = a.start(ctx)
         let settingsArgs = argv.enumerated().filter { $0.element == "--settings" }.map { argv[$0.offset + 1] }
-        XCTAssertEqual(settingsArgs, ["/data/claude-hooks.json"])
+        XCTAssertEqual(settingsArgs, [Config.hooksPath])
     }
 
     // Regression guard for the whole class of bug: Claude Code's multiple --settings are last-file-wins,
@@ -55,15 +53,14 @@ final class ReadOnlyAdapterTests: XCTestCase {
             for startIn in startIns {
                 let startCtx = AdapterContext(cwd: "/r/app", model: "claude-opus-4-8", startIn: startIn,
                                               sessionId: "sid", prompt: "go", name: "card",
-                                              hooksPath: "/data/claude-hooks.json", access: access)
+                                              access: access)
                 let start = a.start(startCtx)
                 XCTAssertLessThanOrEqual(start.filter { $0 == "--settings" }.count, 1,
                                          "start(access: \(access), startIn: \(String(describing: startIn))) emitted >1 --settings")
 
                 let resumeCtx = AdapterContext(cwd: "/r/app", model: "claude-opus-4-8", startIn: startIn,
                                                sessionId: "sid", name: "card",
-                                               hooksPath: "/data/claude-hooks.json", access: access,
-                                               seed: "resume seed")
+                                               access: access, seed: "resume seed")
                 let resume = a.resume(resumeCtx) ?? []
                 XCTAssertLessThanOrEqual(resume.filter { $0 == "--settings" }.count, 1,
                                          "resume(access: \(access), startIn: \(String(describing: startIn))) emitted >1 --settings")

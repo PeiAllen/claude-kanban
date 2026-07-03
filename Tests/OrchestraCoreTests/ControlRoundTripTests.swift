@@ -84,8 +84,8 @@ struct ControlRoundTripTests {
         #expect(acts.contains { $0.kind == .spawned && $0.text.contains("Earlier card") })
     }
 
-    @Test("drain RPC returns the composed inbox payload for a card")
-    func drainRPC() async throws {
+    @Test("hook RPC: stop drains the inbox into the continuation; empty inbox → null")
+    func hookStopDrainRPC() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let path = Self.sock()
@@ -94,22 +94,21 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let spawnRes = try await client.call("spawn", .object([
-            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")]))
-        let task = try spawnRes.decode(Task.self)
+        let task = try await client.call("spawn", .object([
+            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
-        // empty inbox → reason is null
-        let empty = try await client.call("drain", .object(["ref": .string(task.shortId)]))
-        #expect(empty["reason"]?.stringValue == nil)
+        // empty inbox → no continuation
+        let empty = try await client.call("hook", .object(["ref": .string(task.shortId), "event": .string("stop")]))
+        #expect(empty["response"]?["continuation"]?.stringValue == nil)
 
-        // enqueue via send, then drain returns the payload
+        // enqueue via send, then stop returns the drain as continuation
         try await env.svc.send(task.id, "queued work")
-        let got = try await client.call("drain", .object(["ref": .string(task.shortId)]))
-        #expect(got["reason"]?.stringValue?.contains("queued work") == true)
+        let got = try await client.call("hook", .object(["ref": .string(task.shortId), "event": .string("stop")]))
+        #expect(got["response"]?["continuation"]?.stringValue?.contains("queued work") == true)
     }
 
-    @Test("sessionBrief RPC returns the card's live column orientation over the socket")
-    func sessionBriefRPC() async throws {
+    @Test("hook RPC: sessionStart returns live orientation; the retired RPCs are gone")
+    func hookSessionStartRPC() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let path = Self.sock()
@@ -122,10 +121,23 @@ struct ControlRoundTripTests {
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         _ = try await env.svc.move(task.id, to: .review)
-        let got = try await client.call("sessionBrief", .object(["ref": .string(task.shortId)]))
-        let ctx = try #require(got["context"]?.stringValue)
+        let got = try await client.call("hook", .object([
+            "ref": .string(task.shortId), "event": .string("session"), "source": .string("startup")]))
+        let ctx = try #require(got["response"]?["additionalContext"]?.stringValue)
         #expect(ctx.contains("Review"))
         #expect(ctx.contains(task.shortId))
+
+        // compact re-open does NOT re-orient
+        let compact = try await client.call("hook", .object([
+            "ref": .string(task.shortId), "event": .string("session"), "source": .string("compact")]))
+        #expect(compact["response"]?["additionalContext"]?.stringValue == nil)
+
+        // the three RPCs the hook channel replaced are now method-not-found
+        for retired in ["report", "drain", "sessionBrief"] {
+            await #expect(throws: (any Error).self) {
+                _ = try await client.call(retired, .object(["ref": .string(task.shortId)]))
+            }
+        }
     }
 
     @Test("diffText / diffStat endpoints route over the socket for a worktree card")

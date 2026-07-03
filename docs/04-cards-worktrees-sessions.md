@@ -85,7 +85,8 @@ plus `newSessionId()`, `sessionInfo(...)`, `prepareToLaunch(ctx)` (side-effectin
 **`parse(_:)`** — the adapter's own conversion of one unit of raw telemetry into a `StatusReport`
 (relocated into the adapter by A2; see [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 The `AdapterContext` it receives carries `cwd`, `repo`, `model`, `startIn`, `sessionId`, `prompt`, `name`,
-the managed `hooksPath`, the card's `access`, `trustCwd` (the core's `resolveTrust` decision, `.trusted`
+the agent-agnostic `orchestraBin` (the `orchestra` path the agent's hooks call — each adapter renders its
+own hook file from it in `prepareToLaunch`), the card's `access`, `trustCwd` (the core's `resolveTrust` decision, `.trusted`
 → `true` — see [trust](#the-claude-code-adapter) below), and `seed` — authored system-level context (a handoff / fork /
 `additionalContext` summary) whose *carrier* is frozen here (defaulted `nil`) and whose per-agent
 *injection* has now shipped (PR C3): each adapter appends `ctx.seed` as the resumed session's opening
@@ -152,7 +153,8 @@ Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
   the trailing positional opening turn, otherwise nothing follows and the argv is byte-identical to before.
 
   Both paths emit **exactly one `--settings`**. A card with no settings overlays uses the shared managed
-  `hooksPath` directly; a card that contributes overlays (read-only enforcement today — see [the read-only
+  hooks file (`Config.hooksPath`, rendered by the adapter in `prepareToLaunch`) directly; a card that
+  contributes overlays (read-only enforcement today — see [the read-only
   barrier](#the-read-only-barrier)) gets a per-card file that `SettingsComposer` deep-merges from the hooks
   base plus those overlays. Claude Code applies multiple `--settings` as **last-file-wins (full replacement,
   not deep-merge)**, so a *second* `--settings` would silently drop the managed statusLine + telemetry hooks

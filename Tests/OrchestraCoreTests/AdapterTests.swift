@@ -30,14 +30,14 @@ struct AdapterTests {
     func startArgv() {
         let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-4-6", startIn: .plan,
                                  sessionId: "the-id", prompt: "Add OAuth login\nwith Google",
-                                 name: nil, hooksPath: "/hooks.json")
+                                 name: nil)
         let argv = adapter.start(ctx)
         #expect(argv.first == "claude")
         #expect(argv.contains("--model"))
         #expect(argv.contains("claude-sonnet-4-6"))
         #expect(adjacent(argv, "--permission-mode", "auto"))   // plan column → auto mode
         #expect(adjacent(argv, "--session-id", "the-id"))
-        #expect(adjacent(argv, "--settings", "/hooks.json"))
+        #expect(adjacent(argv, "--settings", Config.hooksPath))
         // --name defaults to the prompt's first line (== Task.title seed)
         #expect(adjacent(argv, "--name", "Add OAuth login"))
         // the prompt is the launch positional arg (last element, full text)
@@ -58,10 +58,10 @@ struct AdapterTests {
     @Test("resume(ctx) is --resume <id> --settings --name, NO --session-id, NO prompt")
     func resumeArgv() throws {
         let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-4-8", sessionId: "sess-9",
-                                 prompt: "should be ignored", name: "Title", hooksPath: "/h.json")
+                                 prompt: "should be ignored", name: "Title")
         let argv = try #require(adapter.resume(ctx))
         #expect(adjacent(argv, "--resume", "sess-9"))
-        #expect(adjacent(argv, "--settings", "/h.json"))
+        #expect(adjacent(argv, "--settings", Config.hooksPath))
         #expect(adjacent(argv, "--name", "Title"))
         #expect(adjacent(argv, "--model", "claude-opus-4-8"))
         #expect(!argv.contains("--session-id"))
@@ -157,7 +157,7 @@ struct ClaudeDelegationTests {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         let a = ClaudeCodeAdapter()
         let ctx = AdapterContext(cwd: cwd, model: "claude-sonnet-4-6", startIn: .plan,
-                                 sessionId: "sid", prompt: "do it", name: nil, hooksPath: "/hooks.json")
+                                 sessionId: "sid", prompt: "do it", name: nil)
         let before = a.start(ctx)
         try a.prepareToLaunch(ctx)
         #expect(a.start(ctx) == before)                          // byte-identical argv
