@@ -303,8 +303,9 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   so the [report seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel) keeps the freshest snapshot.
 
 Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis — the
-Codex **send-keys wake** has since landed (C4, below) but write/approval access remains deferred — so the row
-stays in the roadmap as history is recorded here. (As-built symbols:
+Codex **send-keys wake** has since landed (C4, below) and its launch is now **access-gated** like Claude
+(default permissioning, or the read-only preset per card) — but **board-routed approval telemetry** remains
+deferred, so the row stays in the roadmap as history is recorded here. (As-built symbols:
 [agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1 & §Area 3.)
 
 The eighth landed PR is **C3 — F1 resume-in-card with a seed**
@@ -518,7 +519,8 @@ pins the seed-fold order and the query's no-side-effect. D3 also lands the **app
 `USE_REAL_CLAUDE` unset — and an RPC-driven UC1–UC8 replay; the `screencapture` step is advisory per design
 rule O6 and expected to fail on a headless window server). With D3 merged the **whole agent-provider forest
 is shipped**; but as with every entry above it is a set of surfaces, not a whole axis — the model-providers
-axis still owes Codex write access + approvals, and agent-integration its richer sub-status — so those rows
+axis still owes Codex board-routed approval telemetry (its launch is now access-gated like Claude, so write
+access is no longer clamped off), and agent-integration its richer sub-status — so those rows
 stay in [chapter 10](10-roadmap.md). (As-built symbols:
 [agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md)
 "As-built (D3, shipped)".)

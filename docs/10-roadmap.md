@@ -85,7 +85,8 @@ Handoff/Send card actions) **and** the app `SpawnSheet` trust control T2 deferre
 read-only `trustState` query) — so **all 15 forest PRs are merged** (see
 [the overnight build result](../notes/designs/agent-provider-interface/OVERNIGHT-RESULT.md) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). What the forest did **not** ship — and what
-keeps axes 2 and 3 as roadmap rows below — is Codex **write access + approvals** (axis 2's live remainder)
+keeps axes 2 and 3 as roadmap rows below — is Codex **board-routed approval telemetry** (axis 2's live
+remainder — its launch is now access-gated like Claude, so write access is no longer clamped off)
 and the richer agent-integration surfaces (axis 3's structured sub-status and more agent-facing commands —
 though *auto-injecting the vendored delegation guidance on launch* has since shipped, skill-injection above).
 Separately from the forest, **axis 9's connection spine has now landed** — the `Transport`/reconnect seam,
