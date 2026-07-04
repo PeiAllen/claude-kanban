@@ -11,21 +11,29 @@ public struct Launcher: Sendable {
     /// the vault tree.
     static let openNotesTabCap = 15
 
-    /// "Open notes" — open the card's WORKTREE as an Obsidian vault and jump straight to the
-    /// markdown files its branch changed (docs, notes, superpower specs, `.claude/skills` — anywhere
-    /// in the worktree), each as a tab. Uses the same `~/.claude/open-obsidian-vault.sh` recipe the
-    /// `/open-notes` Claude command runs (seed a default config, register the vault, launch Obsidian
-    /// — restarting a running instance only when the vault is new).
+    /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with the markdown files
+    /// its branch changed (docs, notes, superpower specs, `.claude/skills` — anywhere in the worktree)
+    /// each in its own tab. Uses the same `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes`
+    /// Claude command runs (seed a default config, register the vault, launch Obsidian — restarting a
+    /// running instance only when the vault is new).
     ///
     /// The vault is the worktree root — not `<repo>/notes` — because Obsidian only opens files that
-    /// live inside a registered vault, and the changed notes span several top-level dirs. Opening the
-    /// changed files directly as tabs means the whole-worktree vault is never actually browsed. When
-    /// nothing changed (or the card isn't a git worktree) the vault still opens, just with no tabs.
+    /// live inside a registered vault, and the changed notes span several top-level dirs. When nothing
+    /// changed (or the card isn't a git worktree) the vault still opens, just with no seeded tabs.
+    ///
+    /// HOW THE TABS OPEN: firing `obsidian://open?path=…` per file does NOT work — Obsidian's open URI
+    /// has no honored new-tab parameter (verified: `newtab=true` on both the `path=` and `vault=&file=`
+    /// routes just reuses the active leaf, so only the last file survives). The official `obsidian`
+    /// CLI's `newtab` flag needs Obsidian ≥ 1.12.7, and Advanced-URI means a bundled plugin. Instead we
+    /// SEED `.obsidian/workspace.json` with one tab per changed note before opening; Obsidian restores
+    /// that layout when it loads the vault. Caveat: a vault window that's ALREADY open in a running
+    /// Obsidian keeps its in-memory workspace, so the seed only takes on a fresh load (first open, or a
+    /// reopen after the vault window was closed) — acceptable for the review flow.
     ///
     /// `.obsidian/` is gitignored at the repo root, so registering the worktree as a vault never
     /// pollutes the card's diff (and the script's own `.gitignore`-append is then a no-op).
     ///
-    /// Returns `(opened:` tabs opened, ≤ cap `, total:` changed `.md` count `)` for the caller's toast.
+    /// Returns `(opened:` tabs seeded, ≤ cap `, total:` changed `.md` count `)` for the caller's toast.
     @discardableResult
     public func openNotes(_ worktree: String) throws -> (opened: Int, total: Int) {
         #if !os(macOS)
@@ -35,39 +43,58 @@ public struct Launcher: Sendable {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let script = (home as NSString).appendingPathComponent(".claude/open-obsidian-vault.sh")
         guard FileManager.default.fileExists(atPath: script) else { throw OrchestraError.toolMissing(script) }
+
+        // Seed the changed notes as tabs BEFORE the script opens the vault, so Obsidian restores them
+        // on load. Capped so a large diff doesn't seed dozens of tabs.
+        let all = changedNotes(worktree: worktree)          // vault-relative paths
+        let opened = Array(all.prefix(Self.openNotesTabCap))
+        if !opened.isEmpty { seedWorkspaceTabs(worktree: worktree, relPaths: opened) }
+
         // The script resolves jq/python3/osascript/open on PATH; augmentedPATH (applied by Proc.run)
         // adds Homebrew + per-user bins so they're found under launchd's minimal PATH. Running it on
         // the worktree root registers + opens that as the vault, and covers the no-changes case.
         let r = try Proc.run(["bash", script, worktree])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "open-obsidian-vault.sh failed" : r.stderr) }
-
-        // Jump to the changed notes: fire one `obsidian://open?path=…` URI per file so each opens as
-        // a tab in the just-registered vault. Capped so a large diff doesn't spawn dozens of tabs.
-        let notes = changedNotes(worktree: worktree)
-        let opened = Array(notes.prefix(Self.openNotesTabCap))
-        for path in opened {
-            var comps = URLComponents()
-            comps.scheme = "obsidian"
-            comps.host = "open"
-            comps.queryItems = [URLQueryItem(name: "path", value: path)]
-            guard let uri = comps.url?.absoluteString else { continue }
-            _ = try? Proc.run(["/usr/bin/open", uri])
-        }
-        return (opened: opened.count, total: notes.count)
+        return (opened: opened.count, total: all.count)
         #endif
+    }
+
+    /// Write `<worktree>/.obsidian/workspace.json` describing one Obsidian tab per changed note, so a
+    /// fresh vault load opens them all side by side. Mirrors Obsidian's own layout shape: a `split`
+    /// holding one `tabs` container whose `leaf` children are the markdown files. Best-effort — a
+    /// failure here just means the vault opens without pre-seeded tabs.
+    func seedWorkspaceTabs(worktree: String, relPaths: [String]) {
+        let obsidianDir = (worktree as NSString).appendingPathComponent(".obsidian")
+        try? FileManager.default.createDirectory(atPath: obsidianDir, withIntermediateDirectories: true)
+        let leaves: [[String: Any]] = relPaths.enumerated().map { i, rel in
+            ["id": String(format: "orchnotesleaf%03d", i),
+             "type": "leaf",
+             "state": ["type": "markdown",
+                       "state": ["file": rel, "mode": "source", "source": false]]]
+        }
+        let workspace: [String: Any] = [
+            "main": ["id": "orchnotesroot", "type": "split", "direction": "vertical",
+                     "children": [["id": "orchnotestabs", "type": "tabs", "currentTab": 0,
+                                   "children": leaves]]],
+            "active": leaves.first?["id"] as? String ?? "",
+            "lastOpenFiles": relPaths,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: workspace, options: [.prettyPrinted])
+        else { return }
+        let dest = URL(fileURLWithPath: (obsidianDir as NSString).appendingPathComponent("workspace.json"))
+        try? data.write(to: dest)
     }
 
     /// The markdown files the worktree's branch changed vs its base — the same branch-vs-base set as
     /// the Zed "View changes" diff, filtered to notes/docs (`.md`) and excluding deletions (a deleted
-    /// file can't be opened). Returns absolute worktree paths. Empty when nothing changed, the base
-    /// can't be resolved, or the card isn't a git worktree.
+    /// file can't be opened). Returns worktree-RELATIVE paths (what `workspace.json` leaves reference).
+    /// Empty when nothing changed, the base can't be resolved, or the card isn't a git worktree.
     func changedNotes(worktree: String) -> [String] {
         guard let base = mergeBase(worktree: worktree) else { return [] }
         return changedFiles(worktree: worktree, base: base)
             .filter { $0.status != .deleted }
             .map { $0.newPath }
             .filter { $0.lowercased().hasSuffix(".md") }
-            .map { (worktree as NSString).appendingPathComponent($0) }
     }
 
     public func openInZed(_ worktree: String) throws {
