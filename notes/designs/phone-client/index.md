@@ -41,6 +41,14 @@ updated: 2026-06-29
 > Design-only pass: L1+L2 approved 2026-06-26. SSH-forwarded UDS primary; scope = shared-core seams
 > (iOS app build follow-on); pull ControlClient auto-reconnect ahead as a standalone fix.
 
+## Related notes
+
+- [[../2026-07-03-phone-agent-terminal-ux-design|Phone Agent & Terminal UX + the shared-tmux sizing
+  problem]] (2026-07-03) — how the phone's **Agent** and **Terminal** tabs should work, and how to keep
+  a narrow phone client from resize-thrashing the desktop agent's size-sensitive TUI. Headline: the
+  phone reads the agent **structurally over RPC** (never a PTY attach to the agent window), and its
+  live shell (when used) runs in a **phone-owned window** — per-window tmux sizes are independent.
+
 ## Current picture
 
 ```mermaid
