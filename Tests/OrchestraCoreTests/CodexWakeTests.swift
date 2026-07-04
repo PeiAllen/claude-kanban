@@ -17,6 +17,15 @@ struct CodexWakeTests {
         wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription)
 
+    /// The REAL Codex confirmation shape: `fileTail` telemetry + `.relaunchLiveness` — Codex emits NO
+    /// SessionStart(resume) marker, so the live relaunch must confirm the wake. (`relaunchCaps` above masks
+    /// the bug by advertising `.hooksPush` + hand-injecting a `sessionSource:"resume"` that Codex never sends.)
+    static let realCodexCaps = AgentCapabilities(
+        sessionId: .seeded, telemetry: .fileTail, contextUsage: .tokens,
+        wakeTransport: .relaunch, inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        resumeConfirmation: .relaunchLiveness)
+
     @Test("send resume-seeds an idle Codex card so the queued message lands now")
     func sendResumeSeedsIdleCodex() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
@@ -71,5 +80,30 @@ struct CodexWakeTests {
         #expect(env.sessions.ensureCount == ensureBefore)                         // no relaunch
         #expect(env.sessions.killed.isEmpty)                                      // live turn untouched
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])    // durable → its Stop drains it
+    }
+
+    /// Regression (the fatal Codex symptom): a `send` to an idle Codex card KILLED it — `resume()` waited
+    /// `revivalGraceSeconds` for a `sessionSource=="resume"` hook that `codex resume` never emits, then
+    /// `failResume` → `.dead(resumeFailed)`. With `.relaunchLiveness` the live relaunch confirms, so the card
+    /// stays alive. This drives the REAL confirmation path — NO hand-injected `sessionSource:"resume"`.
+    @Test("send wakes an idle Codex card with NO resume hook — the live relaunch confirms; card stays alive")
+    func codexWakeConfirmsOnRelaunchLiveness() async throws {
+        let env = TestEnv.make(grace: 1, capabilities: Self.realCodexCaps)
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
+        try await env.svc.report(card.id, StatusReport(status: .waiting))                       // idle
+        let name = env.sessions.sessionName(card.id)
+
+        try await env.svc.send(card.id, "PING-CODEX")
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }     // relaunched
+        // Wait PAST the grace: before the fix the resume would time out and markDead by now.
+        try await _Concurrency.Task.sleep(for: .milliseconds(1300))
+
+        let after = try #require(await env.svc.list().first { $0.id == card.id })
+        #expect(after.status == .waiting)                     // alive — NOT .dead(resumeFailed)
+        #expect(after.status != .dead)
+        #expect(after.deadReason == nil)
+        #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("PING-CODEX") == true)  // seed rode in
     }
 }

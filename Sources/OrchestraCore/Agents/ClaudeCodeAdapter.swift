@@ -295,7 +295,8 @@ public extension AgentCapabilities {
         inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
-        terminalImagePaste: .controlV)
+        terminalImagePaste: .controlV,
+        resumeConfirmation: .sessionStartHook)   // Claude fires SessionStart(resume) via hooksPush
 }
 
 /// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under

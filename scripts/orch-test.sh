@@ -15,13 +15,23 @@
 #         scripts/orch-test.sh tmux capture-pane -p -t orchestra-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:shell-1
 #         scripts/orch-test.sh down
 #   AGENT=codex scripts/orch-test.sh init            # seed a codex card instead of claude-code
+#   USE_REAL_CLAUDE=1 scripts/orch-test.sh claude-smoke # end-to-end: send → live claude delivery (resume-seed wake)
 #   USE_REAL_CODEX=1 scripts/orch-test.sh codex-smoke  # end-to-end: send → live codex delivery
 #
 # Run unsandboxed: the daemon binds a UDS socket, writes its data dir, and enumerates processes —
 # all blocked by the Bash sandbox.
 set -euo pipefail
 
-ROOT=/tmp/orch-test                              # short path: UDS socket must stay < 104 chars
+# Canonical, symlink-resolved ROOT is LOAD-BEARING for the resume/wake/inbox paths.
+# On macOS /tmp is a symlink to /private/tmp. The daemon stores a card's cwd VERBATIM and derives
+# Claude's transcript dir (~/.claude/projects/<slug>) by replacing every non-alnum in the cwd with '-'
+# (ClaudeCodeAdapter.cwdSlug). But Claude Code resolves its cwd to the PHYSICAL path before writing the
+# transcript, so a /tmp/... cwd slugs to '-tmp-...' while the real transcript lands under
+# '-private-tmp-...' → transcript not found → isResumable=false → `wake` no-ops at gate C → an idle card
+# NEVER wakes. The same mismatch breaks Claude's per-directory trust lookup (projects[<abs-cwd>]).
+# Resolving ROOT to its physical path up front makes every cwd match what the agents actually write.
+# `/tmp` always exists, so `cd /tmp && pwd -P` yields the canonical prefix even before orch-test exists.
+ROOT="$(cd /tmp && pwd -P)/orch-test"            # e.g. /private/tmp/orch-test — canonical (see above); UDS socket stays < 104 chars
 HOME_DIR="$ROOT/home"
 DATA="$HOME_DIR/Library/Application Support/Orchestra"
 SOCK="$DATA/orchestrad.sock"
@@ -35,6 +45,56 @@ else RUN_PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"; fi
 AGENT="${AGENT:-claude-code}"                    # which adapter the seeded card uses (init)
 
 rpc() { ORCH_SOCK="$SOCK" python3 "$REPO_ROOT/scripts/orch-rpc.py" "$@"; }
+
+# Pre-seed the throwaway HOME so real `claude`/`codex` start CLEAN and TRUSTED — no first-run onboarding
+# (theme picker) and no per-directory trust prompt. Without this, a fresh HOME shows those prompts and
+# the agent never starts a session / fires hooks / goes idle-resumable, so any send/wake test stalls.
+# The live app avoids this because the real HOME already completed onboarding and pre-accepted trust.
+# Mirrors exactly what the daemon's ClaudeTrust/CodexTrust write natively (see ClaudeCodeAdapter.swift /
+# CodexAdapter.swift), so it composes with — never clobbers — the daemon's own trust mirroring.
+seed_home() {
+  mkdir -p "$HOME_DIR/.codex"
+  # We pre-trust the seeded card's worktree + its source repo. Scratch cards spawned during a test get
+  # their cwds trusted by the daemon at launch (now that cwds are canonical, those writes line up too).
+  HOME_DIR="$HOME_DIR" python3 - "$ROOT/wt" "$ROOT/repo" <<'PY'
+import json, os, sys
+home = os.environ["HOME_DIR"]
+cwds = sys.argv[1:]
+
+# --- Claude: ~/.claude.json — hasCompletedOnboarding + theme skip the first-run picker; a per-project
+#     `hasTrustDialogAccepted` skips the "Yes, I trust this folder" prompt (keyed by ABSOLUTE cwd).
+cj = os.path.join(home, ".claude.json")
+try:
+    root = json.load(open(cj))
+    if not isinstance(root, dict): root = {}
+except Exception:
+    root = {}
+root["hasCompletedOnboarding"] = True
+root.setdefault("theme", "dark")
+projects = root.get("projects") if isinstance(root.get("projects"), dict) else {}
+for cwd in cwds:
+    proj = projects.get(cwd) if isinstance(projects.get(cwd), dict) else {}
+    proj["hasTrustDialogAccepted"] = True
+    projects[cwd] = proj
+root["projects"] = projects
+json.dump(root, open(cj, "w"), indent=2)
+
+# --- Codex: $CODEX_HOME/config.toml (CODEX_HOME = $HOME/.codex) — a [projects."<cwd>"] table with
+#     trust_level = "trusted" pre-accepts directory trust so `codex` doesn't prompt on first launch.
+ct = os.path.join(home, ".codex", "config.toml")
+try:
+    text = open(ct).read()
+except Exception:
+    text = ""
+def esc(s): return s.replace("\\", "\\\\").replace('"', '\\"')
+for cwd in cwds:
+    header = '[projects."%s"]' % esc(cwd)
+    if header in text: continue
+    if text and not text.endswith("\n"): text += "\n"
+    text += '\n%s\ntrust_level = "trusted"\n' % header
+open(ct, "w").write(text)
+PY
+}
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -60,6 +120,7 @@ PY
   up)                                            # build + start the isolated daemon in the background
     swift build --package-path "$REPO_ROOT" >&2
     mkdir -p "$DATA"
+    seed_home                                    # onboarding + per-dir trust so real agents start clean (no prompts)
     HOME="$HOME_DIR" ORCHESTRA_TMUX_SOCKET="$TMUX_SOCK" PATH="$RUN_PATH" \
       "$DAEMON" > "$ROOT/daemon.log" 2>&1 &
     sleep 2
@@ -104,6 +165,41 @@ PY
     echo "  inspect: scripts/orch-test.sh tmux capture-pane -p -t $sess:agent   ·   scripts/orch-test.sh log" >&2
     exit 1
     ;;
+  claude-smoke)
+    # END-TO-END: send → live Claude delivery via resume-seed wake. Spawns a REAL claude card, waits for
+    # it to go idle (.waiting) AND resumable (transcript found — this is exactly what the canonical-HOME
+    # fix above unblocks), `send`s a unique marker, and asserts it surfaces in the live claude pane —
+    # proving the idle card woke and drained its inbox. Requires a real `claude` on PATH: USE_REAL_CLAUDE=1.
+    # Auth: macOS Claude Code reads its OAuth token from the login Keychain (NOT HOME-scoped), so the
+    # throwaway HOME stays authenticated; we also best-effort bridge ~/.claude/.credentials.json for
+    # file-based installs (harmless if absent/Keychain-based). Assumes `up` already ran.
+    command -v claude >/dev/null 2>&1 || { echo "claude-smoke: no real 'claude' on PATH — run with USE_REAL_CLAUDE=1" >&2; exit 1; }
+    mkdir -p "$HOME_DIR/.claude"
+    cp "$HOME/.claude/.credentials.json" "$HOME_DIR/.claude/.credentials.json" 2>/dev/null || true
+    marker="ORCH-CLAUDE-$$-${RANDOM}"
+    echo "claude-smoke: spawning a claude card…"
+    ref=$(rpc spawn '{"prompt":"Reply with the single word READY and then stop.","agent":"claude-code","scratch":true}' \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+    echo "claude-smoke: card $ref — waiting for it to go idle (.waiting)…"
+    for _ in $(seq 1 60); do
+      st=$(rpc status "{\"ref\":\"$ref\"}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task",{}).get("status",""))' 2>/dev/null || true)
+      [ "$st" = "waiting" ] && break
+      sleep 2
+    done
+    echo "claude-smoke: idle. sending marker '$marker'…"
+    rpc send "{\"ref\":\"$ref\",\"message\":\"$marker\"}" >/dev/null
+    sess="orchestra-$(printf '%s' "$ref" | tr 'A-Z' 'a-z')"
+    echo "claude-smoke: waiting for the marker to surface in the live claude pane ($sess:agent)…"
+    for _ in $(seq 1 60); do
+      if tmux -L "$TMUX_SOCK" capture-pane -p -t "$sess:agent" 2>/dev/null | grep -q "$marker"; then
+        echo "claude-smoke: PASS ✅ — 'send' reached the live claude session via resume-seed."; exit 0
+      fi
+      sleep 2
+    done
+    echo "claude-smoke: FAIL ❌ — marker not seen within timeout." >&2
+    echo "  inspect: scripts/orch-test.sh tmux capture-pane -p -t $sess:agent   ·   scripts/orch-test.sh log" >&2
+    exit 1
+    ;;
   rpc)  rpc "$@" ;;
   tmux) tmux -L "$TMUX_SOCK" "$@" ;;
   log)  cat "$ROOT/daemon.log" ;;
@@ -115,7 +211,7 @@ PY
     echo "isolated instance torn down."
     ;;
   *)
-    echo "usage: orch-test.sh {init|up|codex-smoke|rpc <method> [json]|tmux <args…>|log|down}" >&2
+    echo "usage: orch-test.sh {init|up|claude-smoke|codex-smoke|rpc <method> [json]|tmux <args…>|log|down}" >&2
     echo "  AGENT=codex             seed a codex card in init (default: claude-code)" >&2
     echo "  USE_REAL_CLAUDE=1       widen PATH for a genuine claude launch (default: neutralized)" >&2
     echo "  USE_REAL_CODEX=1        widen PATH for a genuine codex launch  (needed for codex-smoke)" >&2
