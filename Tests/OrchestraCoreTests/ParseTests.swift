@@ -56,9 +56,9 @@ struct ParseTests {
         // sessionend: transition reasons (clear/resume/compact) drop to nil; genuine exit carries.
         let clear = try JSONValue.parse(Data(#"{"reason":"clear"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "sessionend", payload: clear)) == nil)
-        let exit = try JSONValue.parse(Data(#"{"reason":"exit"}"#.utf8))
+        let exit = try JSONValue.parse(Data(#"{"reason":"exit","session_id":"sid"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "sessionend", payload: exit))
-                == StatusReport(endReason: "exit"))
+                == StatusReport(sessionId: "sid", endReason: "exit"))
 
         // statusline: seq is a live timestamp → assert the parsed fields, not the whole struct.
         let sl = try JSONValue.parse(Data(#"""

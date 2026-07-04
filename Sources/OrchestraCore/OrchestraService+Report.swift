@@ -14,8 +14,14 @@ extension OrchestraService {
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
+            let staleSessionEnd = ev.endReason != nil
+                && ev.sessionId != nil
+                && task.agentSessionId != nil
+                && ev.sessionId != task.agentSessionId
+
             // SessionEnd genuine termination → mid-life death (no auto-resume).
-            if let reason = ev.endReason, ["exit", "logout", "other"].contains(reason) {
+            if !staleSessionEnd,
+               let reason = ev.endReason, ["exit", "logout", "other"].contains(reason) {
                 if !recovering.contains(id) && task.status != .dead && !task.archived {
                     statusTransition = (task.status, .dead)
                     task.status = .dead
@@ -25,7 +31,8 @@ extension OrchestraService {
             }
 
             // Session id rollover (e.g. after /clear): roll the old current onto priorSessionIds.
-            if let newId = ev.sessionId, !newId.isEmpty, newId != task.agentSessionId {
+            if !staleSessionEnd,
+               let newId = ev.sessionId, !newId.isEmpty, newId != task.agentSessionId {
                 if let old = task.agentSessionId, !old.isEmpty { task.priorSessionIds.append(old) }
                 task.agentSessionId = newId
             }

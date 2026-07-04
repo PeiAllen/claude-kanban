@@ -87,7 +87,7 @@ public struct ClaudeCodeAdapter: Adapter {
             let reason = p["reason"]?.stringValue ?? "other"
             // Transition reasons are ignored (the matching SessionStart handles them).
             if ["clear", "resume", "compact"].contains(reason) { return nil }
-            return StatusReport(endReason: reason)
+            return StatusReport(sessionId: p["session_id"]?.stringValue, endReason: reason)
         default:
             return nil
         }
