@@ -7,8 +7,14 @@ public struct RPCRequest: Codable, Sendable {
     public var method: String
     public var params: JSONValue?
     public var source: String?    // calling client: app/cli/mcp (for activity attribution)
-    public init(id: Int? = nil, method: String, params: JSONValue? = nil, source: String? = nil) {
+    public var clientId: String?  // D3: stable per-install client identity; nil for anonymous CLI/MCP.
+                                  // Optional + additive: omitted from the wire when nil (encodeIfPresent),
+                                  // decodes to nil when absent. Server tracks connection→clientId so D4
+                                  // attributes ownership + detects disconnect.
+    public init(id: Int? = nil, method: String, params: JSONValue? = nil, source: String? = nil,
+                clientId: String? = nil) {
         self.id = id; self.method = method; self.params = params; self.source = source
+        self.clientId = clientId
     }
 }
 

@@ -109,6 +109,10 @@ public final class BoardModel: ObservableObject {
     /// Rebuilt whenever the active connection changes (a fresh transport per connection).
     private(set) var client: ControlClient
 
+    /// Stable per-install identity sent to the daemon so it can attribute ownership + detect this
+    /// client's disconnect (D3/D4). Resolved once; the same id is reused for local and remote links.
+    private let clientId = ClientIdentity.persistentId(at: Config.clientIdPath)
+
     #if os(macOS)
     /// Owns the SSH tunnel for a remote connection; publishes tunnel state. Host-only: iOS reaches the
     /// daemon over the dev transport (F3), not an SSH master.
@@ -126,7 +130,7 @@ public final class BoardModel: ObservableObject {
 
     public init(platform: PlatformUI = .noop) {
         self.platform = platform
-        client = ControlClient(socketPath: Config.socketPath, source: .app)
+        client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()
     }
 
@@ -210,7 +214,7 @@ public final class BoardModel: ObservableObject {
         }
         do {
             let sockPath = try await connectionController.localSocketPath(for: conn)
-            client = ControlClient(socketPath: sockPath, source: .app)
+            client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
             wireState()
             streamStarted = false
             if conn.isLocal {

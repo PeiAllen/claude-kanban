@@ -82,6 +82,9 @@ public struct Config: Codable, Sendable, Equatable {
     public static var socketPath: String { "\(dataDir)/orchestrad.sock" }
     public static var configPath: String { "\(dataDir)/config.json" }
     public static var tasksPath: String { "\(dataDir)/tasks.json" }
+    /// Per-install control-client identity (D3), a sibling of `tasksPath`. The app persists a stable
+    /// clientId here so the daemon can attribute ownership + detect this client's disconnect (D4).
+    public static var clientIdPath: String { "\(dataDir)/client-id" }
     public static var trustLedgerPath: String { "\(dataDir)/trust-ledger.json" }
     /// Durable per-card message inbox (F3), sibling to `tasksPath`.
     public static var inboxPath: String { "\(dataDir)/inbox.json" }

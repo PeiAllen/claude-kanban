@@ -7,6 +7,9 @@ import Foundation
 /// than dying; `state`/`onState` surface the live connection state for the UI to bind.
 public final class ControlClient: @unchecked Sendable {
     public let source: ActivitySource
+    /// Stable per-install identity stamped on every request (D3). Immutable per instance, so a reconnect
+    /// re-subscribes with the SAME id; nil for anonymous callers (CLI/MCP), which send no clientId.
+    public let clientId: String?
     private let makeTransport: @Sendable () -> Transport
     private var transport: Transport?
     private let writeLock = NSLock()
@@ -23,14 +26,17 @@ public final class ControlClient: @unchecked Sendable {
     public var onState: (@Sendable (ConnectionState) -> Void)?
 
     /// Back-compat convenience: a UDS client by socket path.
-    public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app) {
-        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source)
+    public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app,
+                            clientId: String? = nil) {
+        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source, clientId: clientId)
     }
 
     /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
-    public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app) {
+    public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app,
+                clientId: String? = nil) {
         self.makeTransport = transport
         self.source = source
+        self.clientId = clientId
     }
 
     private func setState(_ s: ConnectionState) {
@@ -74,7 +80,7 @@ public final class ControlClient: @unchecked Sendable {
     @discardableResult
     public func call(_ method: String, _ params: JSONValue? = nil) async throws -> JSONValue {
         let id = stateLock.withLock { let i = nextId; nextId += 1; return i }
-        let req = RPCRequest(id: id, method: method, params: params, source: source.rawValue)
+        let req = RPCRequest(id: id, method: method, params: params, source: source.rawValue, clientId: clientId)
         let line = try RPCCodec.line(req)
         return try await withCheckedThrowingContinuation { cont in
             stateLock.withLock { pending[id] = cont }
