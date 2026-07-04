@@ -50,6 +50,7 @@ public enum KeyIntent: Equatable, Sendable {
     case toggleDiff                 // d — toggle Agent/Diff inspector view
     case openInbox                  // I — open the inbox editor
     case copy(CopyTarget)           // yc/yt/yp — yank
+    case beginYank                  // y — begin a yank (copy) sequence
     case beginGoTo                  // g — begin a go-to sequence
     case goTo(GoTarget)             // g<letter> — jump to a region
     case search                     // / — search/filter cards
