@@ -43,6 +43,13 @@ final class IOSAppTests: XCTestCase {
         XCTAssertNil(adjacentColumn(from: .plan, movingRight: false))      // no column left of Plan
     }
 
+    func testInitialPageDefaultsToPlan() {
+        // Absent the ORCH_DEV_BOARD_PAGE dev override, the pager lands on Plan (no behavior change).
+        if ProcessInfo.processInfo.environment["ORCH_DEV_BOARD_PAGE"] == nil {
+            XCTAssertEqual(BoardPage.initial, .plan)
+        }
+    }
+
     func testActivityFilterSplitsLiveFromCli() {
         func item(_ source: ActivitySource) -> ActivityItem {
             ActivityItem(taskId: nil, ref: nil, source: source, kind: .command, text: "x")

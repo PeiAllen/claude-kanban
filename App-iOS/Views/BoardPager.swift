@@ -36,6 +36,18 @@ public enum BoardPage: Int, CaseIterable, Identifiable, Sendable {
     }
 
     public var isFreeform: Bool { self == .freeform }
+
+    /// The pager's initial page — **Plan** (the start of the lifecycle; Freeform is one swipe left).
+    /// A dev/test override via the `ORCH_DEV_BOARD_PAGE` env (`freeform|plan|impl|review`) lets a
+    /// headless Simulator screenshot a specific page deterministically. Absent env ⇒ Plan (no change).
+    public static var initial: BoardPage {
+        switch ProcessInfo.processInfo.environment["ORCH_DEV_BOARD_PAGE"] {
+        case "freeform": return .freeform
+        case "impl":     return .impl
+        case "review":   return .review
+        default:         return .plan
+        }
+    }
 }
 
 /// Which lifecycle columns a card can be moved to, given where it is now — every column except its

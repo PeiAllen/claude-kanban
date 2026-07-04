@@ -10,7 +10,8 @@ struct BoardTab: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.colorScheme) private var scheme
     // Land on Plan — the start of the lifecycle; Freeform is one swipe left, Review two right.
-    @State private var page: BoardPage = .plan
+    // (A dev/test `ORCH_DEV_BOARD_PAGE` env can override the initial page for headless screenshots.)
+    @State private var page: BoardPage = .initial
     @State private var showDone = false
     @State private var showActivity = false
 
