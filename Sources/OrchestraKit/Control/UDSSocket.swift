@@ -24,11 +24,11 @@ import Musl
 
 /// Low-level AF_UNIX (SOCK_STREAM) helpers. The control plane uses these directly so it has no
 /// network dependency and works identically locally and over an SSH-forwarded socket.
-enum UDS {
+public enum UDS {
 
     /// Create a listening server socket bound to `path` (dir 0700, socket user-only). Unlinks a stale
     /// socket first. Returns the listening fd.
-    static func listen(path: String, backlog: Int32 = 64) throws -> Int32 {
+    public static func listen(path: String, backlog: Int32 = 64) throws -> Int32 {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -55,7 +55,7 @@ enum UDS {
     }
 
     /// Connect to a server socket at `path`. Returns the connected fd.
-    static func connect(path: String) throws -> Int32 {
+    public static func connect(path: String) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw OrchestraError.io("socket() failed: \(errnoString())") }
         var addr = sockaddr_un()
@@ -70,7 +70,7 @@ enum UDS {
         return fd
     }
 
-    static func accept(_ serverFd: Int32) -> Int32 {
+    public static func accept(_ serverFd: Int32) -> Int32 {
         let fd = posixAccept(serverFd)
         if fd >= 0 { suppressSIGPIPE(fd) }
         return fd
@@ -93,7 +93,7 @@ enum UDS {
 
     /// Write all bytes (handles partial writes / EINTR).
     @discardableResult
-    static func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+    public static func writeAll(_ fd: Int32, _ data: Data) -> Bool {
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
             guard let base = raw.baseAddress else { return true }
             var off = 0
@@ -109,7 +109,7 @@ enum UDS {
     }
 
     /// Read available bytes into a buffer; returns nil on EOF/error.
-    static func read(_ fd: Int32, into buf: inout [UInt8]) -> Int? {
+    public static func read(_ fd: Int32, into buf: inout [UInt8]) -> Int? {
         let n = buf.withUnsafeMutableBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
             return posixRead(fd, base, raw.count)
@@ -136,15 +136,15 @@ enum UDS {
 }
 
 /// A buffered line reader over a socket fd. Splits the stream on '\n' into NDJSON frames.
-final class LineReader {
+public final class LineReader {
     private let fd: Int32
     private var pending = Data()
     private var buf = [UInt8](repeating: 0, count: 64 * 1024)
 
-    init(fd: Int32) { self.fd = fd }
+    public init(fd: Int32) { self.fd = fd }
 
     /// Block-read the next complete line (without the trailing '\n'); nil on EOF.
-    func next() -> Data? {
+    public func next() -> Data? {
         while true {
             if let nl = pending.firstIndex(of: 0x0A) {
                 let line = pending.subdata(in: pending.startIndex..<nl)
