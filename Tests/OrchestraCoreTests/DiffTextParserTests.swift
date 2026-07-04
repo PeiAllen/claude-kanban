@@ -32,6 +32,33 @@ struct DiffTextParserTests {
         #expect(files.map(\.hunks) == [1, 1])
     }
 
+    @Test("rows carry kinds, computed line numbers, and stripped text; metadata is dropped")
+    func rowsComputeLineNumbers() {
+        let rows = DiffRows.make([
+            "diff --git a/a.txt b/a.txt",
+            "index 111..222 100644",
+            "--- a/a.txt",
+            "+++ b/a.txt",
+            "@@ -10,4 +10,5 @@ func greet() {",
+            " keep",
+            "-old",
+            "+new",
+            "+added",
+            " tail",
+        ])
+
+        // Metadata (diff --git / index / --- / +++) is never rendered.
+        #expect(rows.map(\.kind) == [.hunk, .context, .remove, .add, .add, .context])
+        // Hunk divider carries the section heading, no line numbers.
+        #expect(rows[0].text == "func greet() {")
+        #expect(rows[0].oldNum == nil && rows[0].newNum == nil)
+        // Leading +/-/space is stripped from the code text.
+        #expect(rows.map(\.text) == ["func greet() {", "keep", "old", "new", "added", "tail"])
+        // Line numbers advance per side: old skips additions, new skips removals.
+        #expect(rows.map(\.oldNum) == [nil, 10, 11, nil, nil, 12])
+        #expect(rows.map(\.newNum) == [nil, 10, nil, 11, 12, 13])
+    }
+
     @Test("split rows pair removals and additions by position")
     func splitRowsPairChanges() {
         let rows = DiffSplitRows.make([
@@ -45,17 +72,15 @@ struct DiffTextParserTests {
             "+new three",
         ])
 
-        #expect(rows[0].full == "diff --git a/a.txt b/a.txt")
-        #expect(rows[0].tone == .header)
-        #expect(rows[1].full == "@@ -1,3 +1,3 @@")
-        #expect(rows[1].tone == .hunk)
-        #expect(rows[2].old == " context")
-        #expect(rows[2].new == " context")
-        #expect(rows[3].old == "-old one")
-        #expect(rows[3].new == "+new one")
-        #expect(rows[4].old == "-old two")
-        #expect(rows[4].new == "+new two")
-        #expect(rows[5].old == nil)
-        #expect(rows[5].new == "+new three")
+        #expect(rows[0].kind == .hunk)
+        #expect(rows[1].kind == .context)
+        #expect(rows[1].oldText == "context" && rows[1].newText == "context")
+        #expect(rows[1].oldNum == 1 && rows[1].newNum == 1)
+        #expect(rows[2].kind == .change)
+        #expect(rows[2].oldText == "old one" && rows[2].newText == "new one")
+        #expect(rows[3].oldText == "old two" && rows[3].newText == "new two")
+        // Third addition has no removal to pair with — the old side is a blank cell.
+        #expect(rows[4].oldText == nil && rows[4].newText == "new three")
+        #expect(rows[4].newNum == 4)
     }
 }

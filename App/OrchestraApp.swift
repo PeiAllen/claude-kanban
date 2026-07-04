@@ -415,7 +415,8 @@ private struct DebugLaunchHook: ViewModifier {
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, status: .running, initialPrompt: "demo")
         card.diffStat = DiffStat(filesChanged: 6, insertions: 214, deletions: 37)
-        let view = DiffInspectorView(task: card, preview: mockDiffANSI)
+        let split = ProcessInfo.processInfo.environment["ORCH_SNAP_SPLIT"] == "1"
+        let view = DiffInspectorView(task: card, preview: mockDiffANSI, split: split)
             .environmentObject(model)
             .environment(\.theme, theme)
             .frame(width: 384, height: 470)
