@@ -41,6 +41,16 @@ updated: 2026-06-29
 > Design-only pass: L1+L2 approved 2026-06-26. SSH-forwarded UDS primary; scope = shared-core seams
 > (iOS app build follow-on); pull ControlClient auto-reconnect ahead as a standalone fix.
 
+## Related notes
+
+- [[../2026-07-03-phone-agent-terminal-ux-design|Phone Agent & Terminal UX — capture by default,
+  exclusive takeover for live control]] (2026-07-03) — how the phone's **Agent** and **Terminal** tabs
+  should work, and how to keep a narrow phone client from resize-thrashing the desktop agent's
+  size-sensitive TUI. Headline: the default Agent view is non-attaching capture/structured UI, but v1
+  live control can use an explicit **Take Over Agent Terminal** lease: desktop unmounts, phone attaches
+  the real TUI, then desktop can retake. Its live shell (when used) still runs in a **phone-owned
+  window** — per-window tmux sizes are independent.
+
 ## Current picture
 
 ```mermaid
