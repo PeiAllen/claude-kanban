@@ -1,7 +1,0 @@
-{
-  "name": "ship",
-  "description": "Ship this card — commit its work, merge to main, relaunch the app off main, and archive the card.",
-  "author": {
-    "name": "claude-kanban"
-  }
-}
