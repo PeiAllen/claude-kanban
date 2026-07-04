@@ -4,10 +4,35 @@ feature: mobile-orchestra
 type: design-spec
 status: approved
 created: 2026-07-01
-links: ["[[../../../notes/designs/phone-client/index|phone-client]]"]
+updated: 2026-07-03
+links: ["[[../../../notes/designs/phone-client/index|phone-client]]", "[[2026-07-02-remote-daemon-connections-design|remote-daemon-connections]]", "[[../../../notes/designs/2026-07-03-configurable-notifications-design|configurable-notifications]]"]
 ---
 
 # Mobile Orchestra — Design Spec
+
+> **Sync with `main` (2026-07-03).** Several parts of this design that were speculative on 2026-07-01
+> are now shipped on the desktop, so the mobile screens were updated to match the real thing:
+> - **Connections are real.** The [remote-daemon connections](2026-07-02-remote-daemon-connections-design.md)
+>   work landed a shared-core `Connection` model (`local` "This Mac" + remote Linux boxes over SSH),
+>   a persisted `ConnectionStore` (list + active id), reconnect with an observable
+>   `connectionState` (`connecting | live | retrying | down`), and an SSH-tunnel. The mobile
+>   **Settings → Connection** pane is now that model, not a hand-wavy "Tailscale status" — the `Connection`
+>   value was built in shared core *specifically* so the phone reuses it.
+> - **Notifications, rethought.** Three attention triggers — **🔐 Permission · 🙋 Needs you · 💀 Died** —
+>   each with a **scope dial** (Off / Background only / Always) and a **sound dial**. The daemon now
+>   classifies the waiting reason (`permission` vs `humanTurn`) and **suppresses background-waits** (a card
+>   awaiting a `run_in_background` / subagent / `/loop` stays *running*, not *waiting*). This reshapes both
+>   the **Needs You** queue and a new **Settings → Notifications** section.
+> - **Grant trust from Spawn.** Freeform spawn on an untrusted directory forces read-only and shows a
+>   Trust / Keep-read-only notice (the `trustState` check). Spawn modes are labeled **Worktree · Freeform ·
+>   Scratch** (matching the app).
+> - **Diff baseline** is **Working · Branch · Parent** (Parent only for stacked cards); dead cards get a
+>   **Recovery** view (why it died · preserved work · original prompt + Copy prompt · Start new / Resume /
+>   Archive). **Moving a card** on the board now notifies its agent of the new column.
+> - **Phone-native cleanups:** the "borrowed" `CardOrigin` is surfaced as **Freeform** everywhere (never
+>   "borrowed"); host-only actions **View changes in Zed** and **Reveal in Finder** are dropped (a remote
+>   phone isn't at the daemon host); and **Open Notes** becomes a new in-app **Notes page** that renders
+>   the branch's changed/new `.md` files (no Obsidian on the phone).
 
 > A high-fidelity iPhone app design for Orchestra, delivered as an interactive prototype on
 > Claude Design. This is the **UI** the existing [[phone-client]] design deliberately deferred —
@@ -68,15 +93,18 @@ iOS-native reinterpretation that stays unmistakably Orchestra:
 - **Card** contents: title, `repo/branch` (mono), status pill, model, context-window mini-gauge,
   live diffstat `+N −M / k files`, current activity line.
 - **Move a card:** tap-and-hold → swipe to an adjacent column, *and* a "Move to…" context-menu
-  action (both, because a pure drag across a pager is fiddly).
+  action (both, because a pure drag across a pager is fiddly). A user-initiated move **notifies the
+  agent** — the daemon queues an inbox message telling the card which column it landed in (a self-move
+  via CLI/MCP, or a no-op drop back into the same column, does not).
 
 ### 2a. Freeform page (1st pager page — leftmost)
 Agents running in an **existing directory**, outside the Plan → Review worktree flow. Cards show a
-**mode chip** for the `CardOrigin` (**Borrowed · Scratch**), the **directory path** (mono) instead
-of a `repo/branch → worktree` breadcrumb, and — where the card is read-only — a **separate
-Read-only badge** (the `CardAccess` dimension, orthogonal to mode) with a "no writes" note. Scratch
-cards note "auto-deletes." The pager order is **Freeform · Plan · Impl · Review**; Freeform is a peer
-page but visually distinct so it doesn't read as part of the linear flow.
+**mode chip** labeled **Freeform** or **Scratch** (the user-facing labels the app's spawn sheet uses;
+the underlying `CardOrigin` is `borrowed` / `scratch` — "borrowed" is never surfaced in the UI), the
+**directory path** (mono) instead of a `repo/branch → worktree` breadcrumb, and — where the card is
+read-only — a **separate Read-only badge** (the `CardAccess` dimension, orthogonal to mode) with a "no
+writes" note. The pager order is **Freeform · Plan · Impl · Review**;
+Freeform is a peer page but visually distinct so it doesn't read as part of the linear flow.
 
 ### 2b. Done (archive, via the Board nav Done button)
 A pushed screen listing finished agents, each with **Reopen** (recreates the worktree + resumes).
@@ -86,23 +114,71 @@ Deliberately *not* a pager column — matching the desktop's decision that Done 
 - Pushed from a card tap. **Pinned header:** title, status pill, model selector, context-window
   gauge, worktree breadcrumb (`repo/branch → path`), chat link.
 - **Tabs:** **Agent · Terminal · Diff · Inbox · Info** — the desktop separates the agent session
-  from the worktree shells, so these are two distinct views:
-  - **Agent** — the live **agent session** (Claude/Codex conversation + tool calls), with a
-    "Message the agent" steer bar. SSH PTY per phone-client.
-  - **Terminal** — the worktree **shell(s)**: shell tabs + "＋", a raw command input, and a
-    **key-accessory bar** (esc / ctrl / arrows / tab). Distinct from the agent's own session.
-  - **Diff** — read-only; working/branch baseline toggle; file list → per-file diff.
+  from the worktree shells, so these are two distinct views. Their phone behavior follows the
+  [phone agent & terminal UX design](../../../notes/designs/2026-07-03-phone-agent-terminal-ux-design.md),
+  which resolves two problems the earlier spec left open — *a raw tmux isn't phone-native*, and
+  *desktop + phone attaching the same tmux window fights over its one size*. The answer is a
+  three-tier model (**Agent is primary; Terminal is a secondary escape hatch**):
+  - **Agent** (primary, ~90% of phone use) — a **non-attaching** read/steer surface, **not** a live
+    PTY: a capture/structured render of the session (capture text in v1 → conversation/tool-call
+    timeline later) + a "Message the agent" steer bar (discrete `send`/`send-keys`, no attach).
+    Gates surface as **Needs You** (Approve/Deny), never TUI keystrokes. An explicit
+    **Take Over Agent Terminal** button is the *only* path that attaches the real TUI — see Takeover.
+  - **Terminal** (secondary escape hatch) — a **block REPL** by default: a "Run a command…" field →
+    one-shot `exec` in the worktree → a **copyable output block** (no PTY, no tmux, no sizing
+    concern). An opt-in **Attach live shell** enters a live PTY in a **phone-owned** `shell` window
+    (per-window sizes are independent, so the desktop's windows are untouched). No shell tabs / full
+    key bar in the default view.
+  - **Takeover** (live, full-screen) — the reinterpreted live terminal, reached from Agent's
+    *Take Over* (or Terminal's *Attach live shell*). It's the sole surface that attaches a real TUI,
+    under a **daemon-authoritative ownership lease**: the phone attaches only after the desktop
+    unmounts its terminal (a "Taken over by phone" placeholder with *Retake*), so the one shared
+    window's reflow is intentional, not accidental. UI: a compact owner bar (title/status,
+    connection, *You have control*, **Return to Desktop**), **armed input** ("Start typing" — nothing
+    sends until tapped), a **minimal key-accessory bar** (Esc · sticky Ctrl · Tab · ↵ · ↑ · ↓ · ⋯),
+    an explicit **Select** mode, font A−/A+, and landscape as the "real terminal" posture.
+  - **Diff** — read-only; a three-way baseline toggle **Working · Branch · Parent** (Working vs
+    `HEAD`, Branch vs the default-branch merge-base = default, Parent only shown for **stacked cards**
+    that carry a `parentBranch`); file list → per-file diff; difftastic-rendered.
   - **Inbox** — durable inbox editor: list / reorder / edit / append / remove (matches desktop).
   - **Info** — metadata; **Mode** (`CardOrigin`: worktree / borrowed / scratch) + **Access**
-    (`CardAccess`: read-write / read-only); session id; **real app actions only** — Restart session,
-    View changes in Zed, Reveal in Finder, Archive. (Hand off / Fork / Fan-out are *not* here —
-    they were removed as app buttons; they're agent/CLI moves.)
+    (`CardAccess`: read-write / read-only); session id; **phone-native actions only** — Restart
+    session, **Open notes** (→ the Notes page below), Copy branch name, Archive (with a confirm).
+    **No "View changes in Zed" or "Reveal in Finder"** — those act on the daemon *host's* local
+    filesystem, which a remote phone client isn't sitting at, so they're dropped; viewing changes is
+    the in-app **Diff** tab instead. (Hand off / Fork / Fan-out are also not here — they're agent/CLI
+    moves.)
+
+- **Notes page.** A pushed, full-screen page (from the card's **Open notes** action / `•••` menu)
+  that **renders the markdown notes this branch changed** — the phone-native equivalent of the
+  desktop's Open Notes (which opens the worktree's changed/new `notes/*.md` as Obsidian tabs; there's
+  no Obsidian on the phone, so it renders in-app). A **file switcher** lists the changed/new `.md`
+  files with an `M`/`A` (modified/added) badge each; the selected file renders as styled markdown
+  (headings, lists, inline code, fenced code blocks, blockquotes). Sourced from the same "notes this
+  branch touched" set the desktop's [changed-notes feature](../../11-doc-automation.md) computes.
+
+- **Dead card → Recovery view.** A `dead` card replaces the agent chrome with a recovery panel
+  (mirrors the desktop `RecoveryView`): **why it ended** (per `DeadReason`), the **preserved work**
+  (repo/branch/path with View changes · Reveal in Finder · Copy path), the **original prompt** under
+  "Originally asked" with a **Copy prompt** affordance (grabs `task.initialPrompt` verbatim — survives
+  a dead card), and the actions **Start new session** · **Try resume** (when a session id exists) ·
+  **Archive**.
 
 ### 4. Spawn (+) sheet
-Modal: prompt field, backend (Claude Code / Codex), model, repo picker, branch (new/existing) →
-**computed worktree path preview**, then **Card mode** (`CardOrigin`: **Worktree · Borrowed ·
-Scratch** — three kinds) and a **separate Read-only toggle** (`CardAccess`, orthogonal to mode —
-not a 4th mode). "Spawn agent" CTA. Mirrors desktop spawn.
+Modal: prompt field, backend (Claude Code / Codex), model, then **Card mode** — a three-way chip
+**Worktree · Freeform · Scratch** (the app's labels; `CardOrigin` = worktree / borrowed / scratch)
+plus a **separate Read-only toggle** (`CardAccess`, orthogonal to mode — not a 4th mode).
+
+- **Worktree** — repo picker, branch (new/existing) → **computed worktree path preview**.
+- **Freeform** — a **directory picker**. On every directory change the sheet checks `trustState`;
+  when the chosen dir is **untrusted** it shows an amber **"Directory not trusted"** notice
+  (**Trust & allow writes** / **Keep read-only**) and **forces the Read-only toggle on** — so an
+  agent can't get write access to a dir no human has granted. Granting trust is a human-only act,
+  now doable **right from the sheet** (mirrors the desktop `SpawnSheet` PR D3). The CTA reads
+  **"Spawn read-only agent"** while forced read-only.
+- **Scratch** — informational (Orchestra makes and later `rm -rf`s the dir).
+
+"Spawn agent" CTA. Mirrors desktop spawn.
 
 ### 5. Activity (via the Board nav Activity button)
 The Live/CLI feed as a chronological list with a Live/CLI filter; tap an entry → its card. A pushed
@@ -113,20 +189,40 @@ A **bottom-tab** destination listing **the cards that need human intervention**,
 count. Card-centric, not a stream of toasts: each row is a card that is blocked on *you*, sorted
 most-urgent-first.
 
-- **Reasons surfaced per row** (the "why you're needed"): *waiting for input · blocked / error ·
-  awaiting review approval · context near-full · needs a decision (permission/plan gate)*.
+- **Reasons surfaced per row**, aligned to the daemon's real attention events (the same signals that
+  drive notifications): **🔐 Permission** (`waitReason == .permission` — blocked on tool approval),
+  **🙋 Needs you** (`waitReason == .humanTurn` — genuinely done and waiting), **💀 Died**
+  (`status → .dead`), and the derived **◔ Context near-full** (`ctxPct`). No fabricated "blocked/error"
+  bucket — the row reason is whatever the card's `waitReason` / status actually is.
+- **Background-waits are excluded.** A card paused on a background task (`run_in_background` shell,
+  subagent, `/loop` wake — non-empty `background_tasks` / `session_crons`) stays **running**, not
+  waiting, so it never appears here — it auto-resumes and isn't waiting on you. The queue notes this so
+  its emptiness reads as "genuinely nothing," not "the signal is broken."
 - **Row content:** card title, `repo/branch` (mono), the reason chip, status pill, how long it's
   been waiting, and the last activity line.
-- **Inline actions** so you can clear the queue without leaving it: a quick **reply/steer** field,
-  **approve & move** (e.g. Review → Done), **open card** (→ full detail), **snooze/dismiss**.
+- **Inline actions** matched to the reason: a **Permission** row gets **Approve / Deny**; a
+  **Needs you** row gets a quick **reply/steer** field; a **Died** row deep-links to the **Recovery**
+  view; plus **open card** and **snooze/dismiss** throughout.
 - **Empty state:** "All caught up — no agents need you." Grouped by reason when the list is long.
 - Backed by the same attention events that drive **push** (APNs delivery is a backend follow-on);
   this in-app queue is what push notifications deep-link into.
 
 ### 7. Settings tab
-Grouped inset lists: Connection (Tailscale/SSH status, add device/key, host), Theme
-(light/dark/system), Devices, About. A **connecting / offline / online** banner reflects the
-reconnect state; never fabricate data when offline.
+Grouped inset lists, now grounded in the shipped `Connection` model and notification system:
+
+- **Connection status banner** — reflects `BoardModel.connectionState` verbatim
+  (`connecting | live | retrying | down` → *Connecting… / Connected / Reconnecting… / Disconnected*),
+  with a Disconnect action; never fabricate data when offline.
+- **Connection** — the `ConnectionStore` list: which daemon the board talks to. A built-in
+  **This Mac** (local UDS + local tmux) plus saved **remote Linux boxes** (`sshTarget`, remote socket
+  path, remote tmux socket). Each row has an **active radio** (switch the active connection), and
+  remotes get **Edit**; an **Add remote…** row opens the connection editor. This is the *same* model
+  the phone reuses — the phone is just another client picking a daemon over the SSH-forwarded socket.
+- **Notifications** — three rows, one per attention trigger: **🔐 Permission needed** · **🙋 Needs
+  you** · **💀 Card died**. Each carries a **scope dial** (Off / Background only / Always) and a
+  **sound dial**. A helper line notes background-only alerts stay quiet while the app is open, and that
+  agents on background tasks never alert.
+- **Appearance** (theme light/dark/system, accent) and **About** (app + daemon version).
 
 ## Prototype build scope
 
@@ -135,12 +231,15 @@ Screens to build in the Claude Design project, light + dark, interactive where t
 
 1. Board — 4-page pager (Freeform · Plan · Impl · Review)
 2. Freeform page — Borrowed / Scratch cards (+ Read-only badge) with folder paths + mode chips
-3. Card detail — all 5 tabs (Agent, Terminal, Diff, Inbox, Info)
-4. Spawn sheet
-5. Needs You — attention queue (blocked / waiting / awaiting review / context-full), with inline reply, approve-&-move, snooze
-6. Activity — Live/CLI feed (pushed from Board)
-7. Settings
-8. Done archive (pushed from Board)
+3. Card detail — all 5 tabs (Agent [non-attaching read/steer + Take Over], Terminal [block REPL + Attach live shell], Diff [Working · Branch · Parent], Inbox, Info)
+3a. Notes — pushed page rendering the branch's changed/new `.md` files (file switcher + rendered markdown)
+3b. Takeover — full-screen live terminal (owner bar, armed input, minimal key bar, Select mode, landscape)
+4. Recovery — dead-card panel (why · preserved work · Copy prompt · Start new / Resume / Archive)
+5. Spawn sheet — Worktree mode, **and** a Freeform-mode variant showing the untrusted-directory trust flow
+6. Needs You — attention queue (🔐 Permission / 🙋 Needs you / 💀 Died / ◔ Context-full), with Approve-Deny, inline reply, snooze
+7. Activity — Live/CLI feed (pushed from Board)
+8. Settings — Connection (ConnectionStore list + status) · Notifications (3 triggers) · Appearance · About
+9. Done archive (pushed from Board)
 
 ## Risks / open points
 
