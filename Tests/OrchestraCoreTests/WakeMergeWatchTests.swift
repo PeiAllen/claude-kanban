@@ -209,6 +209,136 @@ struct WakeMergeWatchTests {
         #expect(await env.svc.drainForStop(parent.id) == nil)
     }
 
+    @Test("Codex task_complete concludes a watched read-only delegated child without archiving it")
+    func codexTaskCompleteConcludesReadOnlyDelegatedChild() async throws {
+        let base = NSTemporaryDirectory() + "orch-codex-complete-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: base + "/cwd", withIntermediateDirectories: true)
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [codex]))
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p", agentId: "codex"))
+        let child = try await env.svc.spawn(SpawnInput(
+            prompt: "what is 2+2",
+            agentId: "codex",
+            cwd: base + "/cwd",
+            access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(codex.parse(.fileTail(line: #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#)))
+        try await env.svc.report(child.id, report)
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("Claude TaskCompleted concludes a watched read-only delegated child without archiving it")
+    func claudeTaskCompletedConcludesReadOnlyDelegatedChild() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let repo = TestEnv.repo(env.base)
+        let cwd = env.base + "/borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "taskcompleted", payload: .object([:]))))
+        try await env.svc.report(child.id, report)
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("Claude stop still waits for the human and does not conclude")
+    func claudeStopDoesNotConclude() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let cwd = env.base + "/borrowed-stop"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "ask if unclear", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:]))))
+        try await env.svc.report(child.id, report)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
+    }
+
+    @Test("provider-neutral turn completion concludes a watched read-only delegated child")
+    func genericTurnCompletionConcludesReadOnlyDelegatedChild() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let cwd = env.base + "/generic-borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "answer briefly", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("ordinary worktree turn completion still waits for the human and does not conclude")
+    func worktreeTurnCompletionDoesNotConclude() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
+    }
+
+    @Test("idle notification still waits for the human and does not conclude")
+    func idleNotificationDoesNotConclude() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let cwd = env.base + "/borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(
+            kind: "notification",
+            payload: try JSONValue.parse(Data(#"{"notification_type":"idle_prompt","message":"done"}"#.utf8)))))
+        try await env.svc.report(child.id, report)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
+    }
+
     // extra · wait short-circuits on an already-concluded child (re-issue race).
     @Test("wait returns immediately if a watched child already concluded")
     func alreadyConcluded() async throws {

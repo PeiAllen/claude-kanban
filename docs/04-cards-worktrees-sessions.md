@@ -285,7 +285,8 @@ separated (the tailer never inspects JSON; the parse never touches files):
 - **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
   and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
   `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
-  `turn_complete` / `TurnComplete` all mean *idle* (`status: .waiting`), and token totals read from a
+  `turn_complete` / `TurnComplete` all mean a natural turn completion (`status: .waiting`,
+  `turnCompleted: true`), and token totals read from a
   nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
   yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)
   plus `modelId`; a turn/task start or a mid-turn `function_call` → `.running` (with a coarse
@@ -293,6 +294,9 @@ separated (the tailer never inspects JSON; the parse never touches files):
   (dropped). `seq` is the line's RFC3339 `timestamp` in microseconds since epoch (monotonic in file
   order), so a duplicate or out-of-order line loses to the freshest snapshot at
   [`report`'s seq-gate](06-clients-cli-mcp.md#the-hooks--_report-channel).
+- **Claude completion signal**: Claude uses the separate `TaskCompleted` hook for the same
+  `turnCompleted` signal. Claude `Stop` stays a waiting/Stop-drain event and does not by itself conclude
+  a delegated card.
 - **Driver — `OrchestraService.pollTelemetry()`**: one tick per card, called from the daemon's existing
   **2-second poll loop** next to `reconcileLiveness`. For every live card whose
   `capabilities.telemetry == .fileTail` it resolves the rollout path via `sessionInfo`, feeds each new

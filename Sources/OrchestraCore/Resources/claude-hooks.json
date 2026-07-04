@@ -20,6 +20,9 @@
     "Notification": [
       { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notification --agent __AGENT_ID__" } ] }
     ],
+    "TaskCompleted": [
+      { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event taskcompleted --agent __AGENT_ID__" } ] }
+    ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" } ] }
     ],

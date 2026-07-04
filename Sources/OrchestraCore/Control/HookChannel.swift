@@ -10,6 +10,7 @@ public enum HookEvent: String, Sendable, Codable, CaseIterable {
     case preToolUse   = "pretool"
     case postToolUse  = "posttool"
     case notification = "notification"
+    case taskCompleted = "taskcompleted"
     case stop         = "stop"
     case sessionEnd   = "sessionend"
 }

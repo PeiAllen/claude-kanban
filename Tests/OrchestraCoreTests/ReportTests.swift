@@ -39,6 +39,14 @@ struct ReportTests {
         #expect(r.snapshot?.status == .waiting)
     }
 
+    @Test("StatusReport routes provider-neutral turn completion into the snapshot bucket")
+    func turnCompletedRoutes() {
+        let r = StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true)
+        #expect(r.snapshot?.status == .waiting)
+        #expect(r.snapshot?.waitReason == .humanTurn)
+        #expect(r.snapshot?.turnCompleted == true)
+    }
+
     @Test("report sets waitReason on a waiting snapshot and clears it when status leaves waiting")
     func waitReasonLifecycle() async throws {
         let (env, t) = try await spawned()
@@ -71,6 +79,15 @@ struct ReportTests {
         let r = parse("stop", #"{"background_tasks":[],"session_crons":[]}"#)
         #expect(r?.snapshot?.status == .waiting)
         #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.turnCompleted != true)
+    }
+
+    @Test("TaskCompleted → waiting/.humanTurn with turn-completion signal")
+    func classifyTaskCompleted() {
+        let r = parse("taskcompleted", #"{"task_id":"task-1","task_subject":"answer"}"#)
+        #expect(r?.snapshot?.status == .waiting)
+        #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.turnCompleted == true)
     }
 
     @Test("Stop with pending background_tasks → nil (no status change)")

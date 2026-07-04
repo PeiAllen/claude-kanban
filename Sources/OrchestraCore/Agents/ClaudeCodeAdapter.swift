@@ -74,6 +74,8 @@ public struct ClaudeCodeAdapter: Adapter {
             let reason: WaitReason = p["notification_type"]?.stringValue == "permission_prompt"
                 ? .permission : .humanTurn
             return StatusReport(desc: p["message"]?.stringValue, status: .waiting, waitReason: reason)
+        case "taskcompleted":
+            return StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true)
         case "stop":
             // A turn that yielded to await background work (a run_in_background shell, a background
             // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave the
