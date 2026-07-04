@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// Settings → Connections. Lists the built-in local connection + saved remotes, lets you add/edit/delete

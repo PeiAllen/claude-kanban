@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import Foundation
 import AppKit
 import OrchestraCore
