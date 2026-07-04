@@ -151,6 +151,24 @@ public struct SessionManager: Sendable {
         _ = try tmux(["send-keys", "-t", "\(name):\(window)", "Enter"])
     }
 
+    /// Send a constrained key chord to a window — an ordered mix of named special keys and literal
+    /// text runs. Distinct from `sendKeys` (line-only) and the inbox `send`: named keys are delivered
+    /// as tmux key tokens (`Escape`, `Up`, `C-c`, …) and text as raw bytes; there is NO implicit Enter,
+    /// so submitting requires an explicit `.named(.enter)` token.
+    public func sendChord(_ name: String, tokens: [KeyToken], window: String = "agent") throws {
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        let target = "\(name):\(window)"
+        for token in tokens {
+            switch token {
+            case .named(let key):
+                _ = try tmux(["send-keys", "-t", target, key.tmuxToken])
+            case .text(let text):
+                // `-l` = literal; `--` ends option parsing so text starting with `-` isn't swallowed.
+                _ = try tmux(["send-keys", "-t", target, "-l", "--", text])
+            }
+        }
+    }
+
     /// Read-only snapshot of a window's pane via `capture-pane -p` — the non-attaching read the
     /// phone Agent tab uses. Captures the *visible* pane (no scrollback) so output is naturally
     /// bounded; `maxChars` is a hard safety cap on top. Never attaches, never resizes. Works for the

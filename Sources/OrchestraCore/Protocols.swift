@@ -20,6 +20,7 @@ public protocol SessionManaging: Sendable {
     func windows(_ name: String) throws -> [TmuxTarget]
     func list() throws -> [SessionInfo]
     func sendKeys(_ name: String, text: String, window: String) throws
+    func sendChord(_ name: String, tokens: [KeyToken], window: String) throws
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult
     func kill(_ name: String) throws
 }
