@@ -9,6 +9,15 @@ final class BoardNavigatorTests: XCTestCase {
              order: order, status: .running, initialPrompt: id)
     }
 
+    /// A freeform-dock card (non-worktree). `at` seeds `createdAt`, which drives freeform order.
+    private func freeform(_ id: String, at: TimeInterval) -> Task {
+        Task(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!,
+             title: id, repo: "/r", branch: id, cwd: "/r/\(id)", origin: .borrowed,
+             model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .plan,
+             order: 0, status: .running, initialPrompt: id,
+             createdAt: Date(timeIntervalSince1970: at))
+    }
+
     func test_down_moves_within_column() {
         let ts = [card("01", .plan, order: 0), card("02", .plan, order: 1)]
         XCTAssertEqual(BoardNavigator.move(ts, selected: ts[0].id, .down), ts[1].id)
@@ -55,6 +64,52 @@ final class BoardNavigatorTests: XCTestCase {
         let ts = [card("01", .plan, order: 0), card("02", .plan, order: 1)]
         XCTAssertEqual(BoardNavigator.end(ts, selected: ts[0].id, first: false), ts[1].id)
         XCTAssertEqual(BoardNavigator.end(ts, selected: ts[1].id, first: true), ts[0].id)
+    }
+
+    // MARK: freeform dock
+
+    func test_freeform_right_and_down_move_to_next() {
+        let ts = [freeform("01", at: 1), freeform("02", at: 2), freeform("03", at: 3)]
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[0].id, .right), ts[1].id)
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[0].id, .down), ts[1].id)
+    }
+
+    func test_freeform_left_and_up_move_to_prev() {
+        let ts = [freeform("01", at: 1), freeform("02", at: 2), freeform("03", at: 3)]
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[1].id, .left), ts[0].id)
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[1].id, .up), ts[0].id)
+    }
+
+    func test_freeform_stays_at_ends_never_deselects() {
+        let ts = [freeform("01", at: 1), freeform("02", at: 2)]
+        // The regression: a single freeform card must not clear the selection on any key.
+        for dir in [Direction.up, .down, .left, .right] {
+            XCTAssertEqual(BoardNavigator.move([ts[0]], selected: ts[0].id, dir), ts[0].id)
+        }
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[0].id, .left), ts[0].id)   // already first
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[1].id, .right), ts[1].id)  // already last
+    }
+
+    func test_freeform_order_follows_createdAt_not_array_order() {
+        let ts = [freeform("03", at: 3), freeform("01", at: 1), freeform("02", at: 2)]
+        // Oldest-first: 01 → 02 → 03 regardless of array order.
+        XCTAssertEqual(BoardNavigator.move(ts, selected: ts[1].id, .right), ts[2].id)
+    }
+
+    func test_freeform_end_first_and_last() {
+        let ts = [freeform("01", at: 1), freeform("02", at: 2), freeform("03", at: 3)]
+        XCTAssertEqual(BoardNavigator.end(ts, selected: ts[1].id, first: true), ts[0].id)
+        XCTAssertEqual(BoardNavigator.end(ts, selected: ts[1].id, first: false), ts[2].id)
+    }
+
+    func test_firstBoardCard_prefers_plan_then_impl_then_review() {
+        XCTAssertEqual(BoardNavigator.firstBoardCard([card("11", .impl, order: 0),
+                                                      card("01", .plan, order: 0)]),
+                       UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        XCTAssertEqual(BoardNavigator.firstBoardCard([card("21", .review, order: 0),
+                                                      card("11", .impl, order: 0)]),
+                       UUID(uuidString: "00000000-0000-0000-0000-000000000011"))
+        XCTAssertNil(BoardNavigator.firstBoardCard([freeform("01", at: 1)]))
     }
 
     func test_columnOf() {
