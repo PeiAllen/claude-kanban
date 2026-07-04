@@ -125,6 +125,29 @@ enum CLIRunner {
                 if !res.stderr.isEmpty { FileHandle.standardError.write(Data(res.stderr.utf8)) }
                 exit(res.exitCode)
 
+            case "send-keys":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let window = flags.value("window") ?? "agent"
+                // Each positional after the ref is one chord element: a known key name (Esc, Up, C-c,
+                // …) becomes a named key; anything else is sent as literal text. Use --text to force a
+                // token to be treated as literal even if it looks like a key name.
+                var keys: [JSONValue] = []
+                if let forced = flags.value("text") {
+                    keys.append(.object(["text": .string(forced)]))
+                }
+                for tok in flags.positionalsFrom(1) {
+                    if KeyName(rawValue: tok) != nil {
+                        keys.append(.object(["key": .string(tok)]))
+                    } else {
+                        keys.append(.object(["text": .string(tok)]))
+                    }
+                }
+                guard !keys.isEmpty else { die("send-keys needs at least one key or --text") }
+                _ = try await client.call("send-keys", .object([
+                    "ref": .string(ref), "keys": .array(keys), "window": .string(window),
+                ]))
+                print("sent-keys")
+
             case "sessions":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("sessions", .object(["ref": .string(ref)]))

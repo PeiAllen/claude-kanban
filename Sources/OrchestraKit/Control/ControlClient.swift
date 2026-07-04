@@ -103,6 +103,17 @@ public final class ControlClient: @unchecked Sendable {
                        as: CaptureResult.self)
     }
 
+    /// Send a constrained key chord to a card's tmux window (default `agent`). Convenience over the
+    /// `send-keys` verb — encodes the typed chord to the wire form. Distinct from queuing to the inbox
+    /// (`send`): live keystrokes, no implicit Enter (submitting needs an explicit `.named(.enter)`).
+    public func sendKeys(ref: String, _ chord: [KeyToken], window: String = "agent") async throws {
+        _ = try await call("send-keys", .object([
+            "ref": .string(ref),
+            "keys": try JSONValue(encodable: chord),
+            "window": .string(window),
+        ]))
+    }
+
     /// Subscribe to the daemon's event stream (task upserts/removals + activity). Sends the subscribe
     /// request and returns a live stream. The stream persists across reconnects — only `close()` ends it;
     /// on reconnect the client re-issues the subscribe RPC so the same stream keeps receiving events.
