@@ -70,6 +70,14 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     func sendKeys(_ name: String, text: String, window: String) throws {
         lock.lock(); sentKeys.append((name, text)); lock.unlock()
     }
+    /// Records a chord's rendered wire form (`key:<name>` / raw text) so command tests can assert
+    /// what would reach tmux without a real server. Throws if the session isn't alive, mirroring the
+    /// real manager's guard.
+    private(set) var sentChords: [(name: String, tokens: [KeyToken])] = []
+    func sendChord(_ name: String, tokens: [KeyToken], window: String) throws {
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        lock.lock(); sentChords.append((name, tokens)); lock.unlock()
+    }
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         let text = "stub-pane:\(name):\(window)"

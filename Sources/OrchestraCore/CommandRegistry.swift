@@ -205,6 +205,23 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: cap)
             },
 
+            "send-keys": { svc, p, src in
+                // Decode + validate the chord BEFORE any session work so a bad request fails cleanly.
+                guard let arr = p["keys"]?.arrayValue, !arr.isEmpty else {
+                    throw OrchestraError.invalidParams("keys must be a non-empty array")
+                }
+                let tokens = try (p["keys"] ?? .array([])).decode([KeyToken].self)
+                for token in tokens {
+                    if case .text(let s) = token, s.isEmpty {
+                        throw OrchestraError.invalidParams("keys text elements must be non-empty")
+                    }
+                }
+                let t = try await svc.resolveRef(try p.string("ref"))
+                try await svc.sendChord(t.id, tokens: tokens, window: p.optString("window") ?? "agent")
+                await svc.logCommand("send-keys", ref: t, source: src)
+                return .ok()
+            },
+
             "trustState": { svc, p, _ in
                 let trusted = await svc.isPathTrusted(try p.string("path"))
                 return .object(["trusted": .bool(trusted)])

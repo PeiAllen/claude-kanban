@@ -12,7 +12,9 @@ enum CLIHelp {
             spawn --prompt <p> --scratch                   (throwaway ~/.orchestra/scratch dir)
                                                  Spawn a new agent (prints its ref). --seed = fork context.
       move <ref> --col <plan|impl|review>        Move a card
-      send <ref> <message...>                    Message the agent
+      send <ref> <message...>                    Message the agent (inbox queue)
+      send-keys <ref> <key|text...> [--text <literal>] [--window <w>]
+                                                 Send live keystrokes (Esc, Up, C-c, Enter, text …)
       wait <ref...>                              Block until a watched card concludes (fan-out)
       handoff <ref> <context...>                 Clean-context handoff: resume the card seeded with context
       trust <path>                               Grant a human's write-trust for a dir (interactive only)

@@ -172,4 +172,88 @@ final class SessionManagerTests {
         #expect(cap.text.contains(marker))
         try sm.kill(name)
     }
+
+    // MARK: - send-keys (D2)
+
+    /// Poll a pane via `sm.capture` until it contains `needle` or the attempt budget runs out.
+    /// Pane reactions are asynchronous (the program processes the key after tmux delivers it),
+    /// so assertions poll rather than read once. Returns the last capture for failure messages.
+    @discardableResult
+    private func waitForPane(_ name: String, window: String = "agent",
+                             contains needle: String, attempts: Int = 40) throws -> String {
+        var last = ""
+        for _ in 0..<attempts {
+            last = (try? sm.capture(name, window: window))?.text ?? ""
+            if last.contains(needle) { return last }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return last
+    }
+
+    private var menuFixturePath: String {
+        Bundle.module.path(forResource: "Fixtures/menu", ofType: "sh")
+            ?? Bundle.module.path(forResource: "menu", ofType: "sh") ?? ""
+    }
+
+    @Test("literal text token types into the pane; Enter token submits it")
+    func chordTextThenEnter() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        // A plain shell in the agent window reads commands from its pty.
+        let (name, _) = try sm.ensure(task, argv: ["/bin/sh"])
+
+        // Text alone types the line; the explicit Enter token then submits it and it runs.
+        try sm.sendChord(name, tokens: [.text("echo D2_SUBMIT_OK")], window: "agent")
+        try sm.sendChord(name, tokens: [.named(.enter)], window: "agent")
+        let pane = try waitForPane(name, contains: "D2_SUBMIT_OK")
+        #expect(pane.contains("D2_SUBMIT_OK"))
+        try sm.kill(name)
+    }
+
+    @Test("C-c interrupts a running foreground command")
+    func chordCtrlCInterrupts() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        let (name, _) = try sm.ensure(task, argv: ["/bin/sh"])
+
+        // Block the shell on a long sleep.
+        try sm.sendChord(name, tokens: [.text("sleep 30")], window: "agent")
+        try sm.sendChord(name, tokens: [.named(.enter)], window: "agent")
+        // Interrupt it, then prove the shell is interactive again.
+        try sm.sendChord(name, tokens: [.named(.ctrlC)], window: "agent")
+        try sm.sendChord(name, tokens: [.text("echo BACK_ALIVE")], window: "agent")
+        try sm.sendChord(name, tokens: [.named(.enter)], window: "agent")
+        // If C-c had NOT interrupted, the shell would still be blocked on sleep and never echo.
+        let pane = try waitForPane(name, contains: "BACK_ALIVE")
+        #expect(pane.contains("BACK_ALIVE"))
+        try sm.kill(name)
+    }
+
+    @Test("arrow keys move a menu selection; Enter chooses it")
+    func chordArrowsMoveMenu() throws {
+        #expect(!menuFixturePath.isEmpty)
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        // Run the menu fixture as the agent-window program (bash <path> — no exec bit needed).
+        let (name, _) = try sm.ensure(task, argv: ["bash", menuFixturePath])
+        _ = try waitForPane(name, contains: "SELECTED=ALPHA")   // initial render
+
+        try sm.sendChord(name, tokens: [.named(.down)], window: "agent")   // ALPHA -> BRAVO
+        _ = try waitForPane(name, contains: "SELECTED=BRAVO")
+        try sm.sendChord(name, tokens: [.named(.down)], window: "agent")   // BRAVO -> CHARLIE
+        _ = try waitForPane(name, contains: "SELECTED=CHARLIE")
+        try sm.sendChord(name, tokens: [.named(.up)], window: "agent")     // CHARLIE -> BRAVO
+        _ = try waitForPane(name, contains: "SELECTED=BRAVO")
+        try sm.sendChord(name, tokens: [.named(.enter)], window: "agent")  // choose BRAVO
+        let pane = try waitForPane(name, contains: "CHOSE=BRAVO")
+        #expect(pane.contains("CHOSE=BRAVO"))
+        try sm.kill(name)
+    }
+
+    @Test("sendChord on a dead session throws")
+    func chordDeadSession() throws {
+        #expect(throws: OrchestraError.self) {
+            try sm.sendChord("orchestra-does-not-exist", tokens: [.named(.enter)], window: "agent")
+        }
+    }
 }
