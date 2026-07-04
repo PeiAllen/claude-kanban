@@ -324,10 +324,15 @@ private struct AgentChrome: View {
                                                 style: .continuous)
 
         VStack(spacing: 0) {
-            // AGENT region — context bar + header + breadcrumb + agent terminal (+ the "New terminal"
-            // strip when there are no shells, so the region is the full panel).
+            // AGENT region — header + breadcrumb + context bar + agent terminal (+ the "New terminal"
+            // strip when there are no shells, so the region is the full panel). The context gauge sits
+            // just above the terminal (interior) rather than on the panel's top edge, so the accent
+            // focus ring can own that edge cleanly instead of overlapping the gauge.
             VStack(spacing: 0) {
-                // Context bar (2px)
+                TerminalHeader(task: task)
+                BreadcrumbStrip(task: task)
+
+                // Context bar (2px) — context-window usage gauge, riding the top of the terminal.
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Color.clear
@@ -338,9 +343,6 @@ private struct AgentChrome: View {
                     }
                 }
                 .frame(height: 2)
-
-                TerminalHeader(task: task)
-                BreadcrumbStrip(task: task)
 
                 AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
                                   host: model.terminalHost,

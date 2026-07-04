@@ -50,6 +50,10 @@ final class BoardModel: ObservableObject {
     /// `f` link-hint mode: labels overlaid on cards; typing a label jumps to it.
     @Published var hintActive = false
     @Published var hintLabels: [UUID: String] = [:]
+    /// Non-nil while the archive-confirm dialog is up (keyboard `a` path only). Holds the card id
+    /// awaiting confirmation; ⏎ archives, esc/⌘W cancels. Deliberate UI actions (buttons, palette)
+    /// archive directly and never set this.
+    @Published var archiveConfirm: UUID?
 
     /// First-run flag: once the user has installed the daemon we skip the welcome screen.
     @AppStorage("orch_onboarded") var onboarded = false
@@ -272,6 +276,7 @@ final class BoardModel: ObservableObject {
                 // inspector pinned to it (`selected` also searches `archived`, so it wouldn't clear
                 // on its own).
                 if selectedId == t.id { selectedId = nil }
+                if archiveConfirm == t.id { archiveConfirm = nil }
             } else {
                 // Prior status of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
@@ -295,6 +300,7 @@ final class BoardModel: ObservableObject {
             tasks.removeAll { $0.id == id }
             archived.removeAll { $0.id == id }
             if selectedId == id { selectedId = nil }
+            if archiveConfirm == id { archiveConfirm = nil }
             // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
             shellOpen.remove(id); shellWindows[id] = nil; selectedShell[id] = nil
         case .activity(let item):
@@ -514,7 +520,36 @@ final class BoardModel: ObservableObject {
         FocusBridge.enterTerminal()
     }
 
+    /// A mouse click on a card selects it AND descends into its agent terminal (matching Enter / i),
+    /// so the card glow, the inspector ring, and the real first responder all agree after the click.
+    /// Falls back to the board zone when the card has no mounted terminal (e.g. a dead agent showing
+    /// RecoveryView), so `focusZone` never claims a terminal that isn't there.
+    func selectAndEnterTerminal(_ id: UUID) {
+        let sameCard = selectedId == id
+        selectedId = id
+        focusZone = .terminal
+        if sameCard {
+            if !FocusBridge.enterTerminal() { focusZone = .board }   // already mounted → claim now
+        } else {
+            // Selecting a different card remounts the inspector; its autofocus (focusZone == .terminal)
+            // claims focus on mount. Re-assert once that terminal view exists, as a fallback.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                if !FocusBridge.enterTerminal() { self?.focusZone = .board }
+            }
+        }
+    }
+
     func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
+
+    /// The keyboard `a` path: don't archive immediately — raise the confirm dialog. Archive is
+    /// effectively permanent, and a bare `a` is too easy to fire when focus isn't where you think.
+    func requestArchiveSelected() { if let id = selectedId { archiveConfirm = id } }
+    /// ⏎ in the confirm dialog: perform the archive we were holding.
+    func confirmArchive() { if let id = archiveConfirm { archiveConfirm = nil; _Concurrency.Task { await archive(id) } } }
+    /// esc / ⌘W in the confirm dialog: back out, archive nothing.
+    func cancelArchive() { archiveConfirm = nil }
+    /// A card's title by id (searches board + archived), for confirm-dialog copy. "" if unknown.
+    func cardTitle(_ id: UUID) -> String { (tasks + archived).first { $0.id == id }?.title ?? "" }
     func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
     func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
 
@@ -547,6 +582,7 @@ final class BoardModel: ObservableObject {
 
     /// Cmd-W / Esc "close the frontmost thing," peeling most-transient-first.
     func closeFrontmost() {
+        if archiveConfirm != nil { archiveConfirm = nil; return }   // the confirm dialog is frontmost
         if hintActive { endHint(); return }
         if showHelp { showHelp = false; return }
         if showPalette { showPalette = false; return }
