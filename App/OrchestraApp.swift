@@ -5,7 +5,7 @@ import OrchestraCore
 
 @main
 struct OrchestraApp: App {
-    @StateObject private var model = BoardModel()
+    @StateObject private var model = BoardModel(platform: MacPlatform.ui)
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
 

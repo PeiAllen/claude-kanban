@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import OrchestraCore
 
@@ -79,3 +80,4 @@ final class SSHMaster: @unchecked Sendable {
         try? FileManager.default.removeItem(at: dir)
     }
 }
+#endif

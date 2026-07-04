@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import UserNotifications
 import OrchestraCore
@@ -11,23 +12,23 @@ import OrchestraCore
 /// Settings panel and the notifier never drift. Clicking a banner brings Orchestra forward + selects
 /// the card.
 @MainActor
-final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
+public final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
 
-    enum NotifyTrigger: String { case permission, needsYou, died }
-    enum NotifyScope: String, CaseIterable { case off, background, always }
+    public enum NotifyTrigger: String { case permission, needsYou, died }
+    public enum NotifyScope: String, CaseIterable { case off, background, always }
 
     /// The 14 built-in macOS sounds (files in /System/Library/Sounds), resolvable by name.
-    static let soundNames = ["Basso","Blow","Bottle","Frog","Funk","Glass","Hero","Morse",
-                             "Ping","Pop","Purr","Sosumi","Submarine","Tink"]
+    public static let soundNames = ["Basso","Blow","Bottle","Frog","Funk","Glass","Hero","Morse",
+                                    "Ping","Pop","Purr","Sosumi","Submarine","Tink"]
 
-    static func scopeKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_scope" }
-    static func soundKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_sound" }
+    public static func scopeKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_scope" }
+    public static func soundKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_sound" }
 
-    static func defaultScope(_ t: NotifyTrigger) -> NotifyScope {
+    public static func defaultScope(_ t: NotifyTrigger) -> NotifyScope {
         switch t { case .permission: return .always; case .needsYou: return .background; case .died: return .always }
     }
     /// `"default"` (system) / `"none"` (silent) / a name from `soundNames`.
-    static func defaultSound(_ t: NotifyTrigger) -> String {
+    public static func defaultSound(_ t: NotifyTrigger) -> String {
         switch t { case .permission: return "Hero"; case .needsYou: return "Submarine"; case .died: return "Basso" }
     }
 
@@ -97,17 +98,17 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Show (and chime) even when Orchestra is frontmost — needed for scope `.always`. A `nil`
     /// `content.sound` (pref `none`) yields a silent foreground banner via the same path.
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            willPresent notification: UNNotification,
-                                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+    public nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                                   willPresent notification: UNNotification,
+                                                   withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
     }
 
     /// Banner clicked → bring Orchestra forward and select the card. Delivered off the main actor, so
     /// pull the Sendable id out synchronously and hop back on.
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            didReceive response: UNNotificationResponse,
-                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+    public nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                                   didReceive response: UNNotificationResponse,
+                                                   withCompletionHandler completionHandler: @escaping () -> Void) {
         let idStr = response.notification.request.content.userInfo["taskId"] as? String
         _Concurrency.Task { @MainActor [weak self] in
             if let idStr, let id = UUID(uuidString: idStr) {
@@ -118,3 +119,4 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
     }
 }
+#endif

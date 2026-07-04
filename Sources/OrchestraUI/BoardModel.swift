@@ -1,44 +1,49 @@
 import SwiftUI
-import OrchestraUI
-import AppKit
+import OrchestraKit
+#if os(macOS)
+// Host-only: the daemon-lifecycle helpers (DaemonLifecycle, siblingBinary) live in OrchestraCore,
+// reached via OrchestraUI's macOS-conditional dependency. Every use is behind `#if os(macOS)` so the
+// iOS build never pulls OrchestraCore. The AppKit UI operations that used to live here (pasteboard,
+// settings window, focus) are now injected through the `PlatformUI` protocols — no `import AppKit`.
 import OrchestraCore
+#endif
 
 /// Which surface currently has keyboard focus, for the context chip + pane-focus moves. Distinct from
 /// `KeyContext` (which is derived per-event): this is the app's coarse notion of "where am I."
-enum FocusZone { case board, inspector, terminal, shell }
+public enum FocusZone { case board, inspector, terminal, shell }
 
-struct Toast: Identifiable {
-    let id = UUID()
-    let title: String
-    let sub: String?
-    var color: ToastColor = .green
-    enum ToastColor { case green, blue, red }
+public struct Toast: Identifiable {
+    public let id = UUID()
+    public let title: String
+    public let sub: String?
+    public var color: ToastColor = .green
+    public enum ToastColor { case green, blue, red }
 }
 
 /// The app's single source of view state. Subscribes to the daemon's event stream and drives all
 /// SwiftUI views; every mutation is a thin call to the daemon (no business logic here).
 @MainActor
-final class BoardModel: ObservableObject {
-    @Published var tasks: [Task] = []
-    @Published var archived: [Task] = []
-    @Published var activity: [ActivityItem] = []
-    @Published var selectedId: UUID?
-    @Published var config = Config()
-    @Published var models: [AgentModel] = []
-    @Published var agents: [AgentInfo] = []
-    @Published var connected = false
-    @Published var connecting = false
-    @Published var toasts: [Toast] = []
+public final class BoardModel: ObservableObject {
+    @Published public var tasks: [Task] = []
+    @Published public var archived: [Task] = []
+    @Published public var activity: [ActivityItem] = []
+    @Published public var selectedId: UUID?
+    @Published public var config = Config()
+    @Published public var models: [AgentModel] = []
+    @Published public var agents: [AgentInfo] = []
+    @Published public var connected = false
+    @Published public var connecting = false
+    @Published public var toasts: [Toast] = []
 
     // Sheet / popover UI state.
-    @Published var showSpawn = false
-    @Published var showDone = false
-    @Published var showActivity = false
-    @Published var showOnboarding = false
-    @Published var spawnDefaultColumn: Column = .plan
+    @Published public var showSpawn = false
+    @Published public var showDone = false
+    @Published public var showActivity = false
+    @Published public var showOnboarding = false
+    @Published public var spawnDefaultColumn: Column = .plan
 
     // Keyboard-navigation state (see notes/plans/2026-07-02-keyboard-shortcuts.md).
-    @Published var focusZone: FocusZone = .board {
+    @Published public var focusZone: FocusZone = .board {
         didSet {
             // A committed `/` search bar stays up so `n`/`N` cycle matches while you browse the board.
             // But once focus descends into a card (terminal/shell) it can't be Esc-dismissed anymore
@@ -47,66 +52,82 @@ final class BoardModel: ObservableObject {
             if focusZone != .board, searchQuery != nil { searchQuery = nil }
         }
     }
-    @Published var showHelp = false
+    @Published public var showHelp = false
     /// Non-nil while the `/` card filter is active; the empty string means "field open, no query yet".
-    @Published var searchQuery: String? = nil
+    @Published public var searchQuery: String? = nil
     /// The inspector's Agent/Diff mode, kept *per card* (keyed by task id) so switching cards preserves
     /// each card's own choice instead of carrying one global mode everywhere. Defaults to `.agent`.
-    @Published var inspectorModeByCard: [UUID: InspectorMode] = [:]
+    @Published public var inspectorModeByCard: [UUID: InspectorMode] = [:]
     /// The selected card's Agent/Diff mode. Hoisted here so the `d` verb can toggle it from the board;
     /// reads/writes route through `inspectorModeByCard` for the current selection.
-    var inspectorMode: InspectorMode {
+    public var inspectorMode: InspectorMode {
         get { selectedId.flatMap { inspectorModeByCard[$0] } ?? .agent }
         set { if let id = selectedId { inspectorModeByCard[id] = newValue } }
     }
 
-    func capabilities(for agentId: String) -> AgentCapabilities {
+    public func capabilities(for agentId: String) -> AgentCapabilities {
         agents.first { $0.id == agentId }?.capabilities ?? .claudeCode
     }
 
     /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
-    @Published var requestInboxOpen = false
+    @Published public var requestInboxOpen = false
     /// The `:` command palette overlay.
-    @Published var showPalette = false
+    @Published public var showPalette = false
     /// `f` link-hint mode: labels overlaid on cards; typing a label jumps to it.
-    @Published var hintActive = false
-    @Published var hintLabels: [UUID: String] = [:]
+    @Published public var hintActive = false
+    @Published public var hintLabels: [UUID: String] = [:]
     /// Non-nil while the archive-confirm dialog is up (keyboard `a` path only). Holds the card id
     /// awaiting confirmation; ⏎ archives, esc/⌘W cancels. Deliberate UI actions (buttons, palette)
     /// archive directly and never set this.
-    @Published var archiveConfirm: UUID?
+    @Published public var archiveConfirm: UUID?
 
     /// First-run flag: once the user has installed the daemon we skip the welcome screen.
-    @AppStorage("orch_onboarded") var onboarded = false
+    @AppStorage("orch_onboarded") public var onboarded = false
 
     // Per-card shell state (keyed by task id so it survives selecting away and back).
-    @Published var shellOpen: Set<UUID> = []
-    @Published var shellWindows: [UUID: [String]] = [:]
-    @Published var selectedShell: [UUID: String] = [:]
+    @Published public var shellOpen: Set<UUID> = []
+    @Published public var shellWindows: [UUID: [String]] = [:]
+    @Published public var selectedShell: [UUID: String] = [:]
 
     // Preferences (host props in the prototype).
-    @AppStorage("orch_accent") var accentRaw = Accent.blue.rawValue
-    @AppStorage("orch_density") var densityRaw = Density.comfortable.rawValue
-    @AppStorage("orch_dark") var darkMode = false
+    @AppStorage("orch_accent") public var accentRaw = Accent.blue.rawValue
+    @AppStorage("orch_density") public var densityRaw = Density.comfortable.rawValue
+    @AppStorage("orch_dark") public var darkMode = false
 
-    var accent: Accent { Accent(rawValue: accentRaw) ?? .blue }
-    var density: Density { Density(rawValue: densityRaw) ?? .comfortable }
+    public var accent: Accent { Accent(rawValue: accentRaw) ?? .blue }
+    public var density: Density { Density(rawValue: densityRaw) ?? .comfortable }
+
+    /// The platform seam — the three host UI operations (pasteboard, settings window, focus) that the
+    /// desktop backs with AppKit and the iOS client backs with UIKit. Injected so `BoardModel` itself
+    /// stays AppKit-free. Defaults to `.noop` for previews / tests / the iOS client before it wires impls.
+    public let platform: PlatformUI
 
     /// Client-local connection list + which one is active (local by default).
-    let connections = ConnectionStore()
-    /// Owns the SSH tunnel for a remote connection; publishes tunnel state.
-    let connectionController = ConnectionController()
+    public let connections = ConnectionStore()
     /// Live link state, mirrored from the client for the Connections pane's status chip.
-    @Published var connectionState: ConnectionState = .down
+    @Published public var connectionState: ConnectionState = .down
     /// Rebuilt whenever the active connection changes (a fresh transport per connection).
     private(set) var client: ControlClient
-    /// Posts a macOS notification / sound when an agent card flips to `.waiting` (needs the human).
-    private let notifier = AgentNotifier()
 
-    init() {
+    #if os(macOS)
+    /// Owns the SSH tunnel for a remote connection; publishes tunnel state. Host-only: iOS reaches the
+    /// daemon over the dev transport (F3), not an SSH master.
+    public let connectionController = ConnectionController()
+    /// Posts a macOS notification / sound when an agent card flips to `.waiting` (needs the human).
+    /// Host-only: iOS notifications are N1. Built lazily (with its banner-click wiring) so a headless
+    /// test process — which has no app bundle for `UNUserNotificationCenter.current()` — never
+    /// constructs it; the app touches it first on `bootstrap()`.
+    private lazy var notifier: AgentNotifier = {
+        let n = AgentNotifier()
+        n.onSelect = { [weak self] id in self?.selectedId = id }
+        return n
+    }()
+    #endif
+
+    public init(platform: PlatformUI = .noop) {
+        self.platform = platform
         client = ControlClient(socketPath: Config.socketPath, source: .app)
         wireState()
-        notifier.onSelect = { [weak self] id in self?.selectedId = id }
     }
 
     /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`).
@@ -123,21 +144,19 @@ final class BoardModel: ObservableObject {
         }
     }
 
-    /// Terminal host for the active connection: local tmux, or the remote box over the SSH control socket.
-    var terminalHost: AgentTerminalView.TerminalHost { connectionController.terminalHost }
-    /// tmux `-L` socket name for the active connection (remote boxes may differ from the local default).
-    var terminalTmuxSocket: String { connections.active.remoteTmuxSocket }
+    // The desktop terminal accessors (`terminalHost` / `terminalTmuxSocket`) reference App-side types
+    // (AgentTerminalView) and so live in `App/BoardModelPlatform.swift` as a `#if os(macOS)` extension.
 
-    var selected: Task? { tasks.first { $0.id == selectedId } ?? archived.first { $0.id == selectedId } }
+    public var selected: Task? { tasks.first { $0.id == selectedId } ?? archived.first { $0.id == selectedId } }
 
-    func cards(in column: Column) -> [Task] {
+    public func cards(in column: Column) -> [Task] {
         tasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
              .sorted { $0.order < $1.order }
     }
 
     /// Non-worktree cards (`.borrowed`/`.scratch`) live in the standalone freeform region, not the
     /// plan/impl/review lifecycle columns. Oldest-first for a stable order.
-    var freeformTasks: [Task] {
+    public var freeformTasks: [Task] {
         tasks.filter { $0.origin != .worktree && !$0.archived }
              .sorted { $0.createdAt < $1.createdAt }
     }
@@ -145,21 +164,21 @@ final class BoardModel: ObservableObject {
     /// Other non-archived cards that share this card's worktree (any status). Multiple agents on one
     /// worktree is intentional — keeping them from clobbering each other is the user's job; this just
     /// surfaces the co-located cards. Oldest-first for a stable list.
-    func worktreeSiblings(of task: Task) -> [Task] {
+    public func worktreeSiblings(of task: Task) -> [Task] {
         tasks.filter { $0.cwd == task.cwd && $0.id != task.id
                        && $0.origin == .worktree && task.origin == .worktree }
              .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Hover-tooltip text listing the co-located cards (`<shortId>  <title>` per line). Empty when none.
-    func worktreeSiblingsHelp(of task: Task) -> String {
+    public func worktreeSiblingsHelp(of task: Task) -> String {
         let sibs = worktreeSiblings(of: task)
         guard !sibs.isEmpty else { return "" }
         return "Also on this worktree:\n" + sibs.map { "\($0.shortId)  \($0.title)" }.joined(separator: "\n")
     }
 
     /// distinct agents with running/waiting cards (for the MCP chip count).
-    var activeAgentCount: Int {
+    public var activeAgentCount: Int {
         Set(tasks.filter { $0.status == .running || $0.status == .waiting }.map(\.agentId)).count
     }
 
@@ -172,14 +191,17 @@ final class BoardModel: ObservableObject {
     ///   • daemon already running        → attach (and consider the user onboarded)
     ///   • first run, daemon not running → show the welcome / install screen
     ///   • returning user, daemon down   → stay offline; the banner offers a one-click restart
-    func bootstrap() async {
+    public func bootstrap() async {
+        #if os(macOS)
         notifier.requestAuthorization()
+        #endif
         await activate(connections.active)
     }
 
+    #if os(macOS)
     /// Point the board at a connection: resolve its local socket (spinning the SSH tunnel for a remote),
     /// (re)build the client, then connect + stream. Preserves the local onboarding/daemon-install flow.
-    func activate(_ conn: Connection) async {
+    public func activate(_ conn: Connection) async {
         client.close()
         connectionController.deactivate()
         connectionController.onTunnelExit = { [weak self] in
@@ -202,22 +224,37 @@ final class BoardModel: ObservableObject {
             toast("Couldn't connect", sub: "\(error)", color: .red)
         }
     }
+    #else
+    /// iOS connection path — F3 fills this in. It resolves the dev transport socket
+    /// (`ConnectionSocketResolver` / `ORCH_DEV_SOCKET`), rebuilds `client` against it, and calls
+    /// `start()`. There is no local daemon or SSH master on the phone, so none of the macOS
+    /// `connectionController` / `DaemonLifecycle` machinery applies. F2 ships only this compiling stub
+    /// so the shared `BoardModel` builds for iOS.
+    public func activate(_ conn: Connection) async {
+        client.close()
+        connected = false
+    }
+    #endif
 
     /// Switch the active connection (persisted) and re-point the board at it.
-    func switchConnection(_ id: UUID) async {
+    public func switchConnection(_ id: UUID) async {
         connections.activeId = id
         await activate(connections.active)
     }
 
     /// Connect/Disconnect toggle for the Connections pane.
-    func disconnect() {
+    public func disconnect() {
         client.close()
+        #if os(macOS)
         connectionController.deactivate()
+        #endif
     }
 
+    #if os(macOS)
     /// Invoked from the onboarding screen's primary button. Installs + starts the daemon and, on
-    /// success, marks onboarding complete and dismisses the welcome screen.
-    func installDaemon() async {
+    /// success, marks onboarding complete and dismisses the welcome screen. Host-only: iOS has no
+    /// local daemon to install (F3/N1).
+    public func installDaemon() async {
         await ensureDaemonAndStart()
         if connected {
             onboarded = true
@@ -227,7 +264,7 @@ final class BoardModel: ObservableObject {
 
     /// Ensure the background daemon is installed/running, then connect and start streaming. This is
     /// the user-approved path (button / banner) — it may install the LaunchAgent on first use.
-    func ensureDaemonAndStart() async {
+    public func ensureDaemonAndStart() async {
         guard !connecting else { return }
         connecting = true
         defer { connecting = false }
@@ -247,8 +284,9 @@ final class BoardModel: ObservableObject {
         if FileManager.default.isExecutableFile(atPath: embedded) { return embedded }
         return siblingBinary("orchestrad")
     }
+    #endif
 
-    func start() async {
+    public func start() async {
         // Retry briefly — the daemon may still be binding its socket right after launch.
         connected = false
         for _ in 0..<25 {
@@ -278,7 +316,7 @@ final class BoardModel: ObservableObject {
         streamStarted = false
     }
 
-    func refresh() async {
+    public func refresh() async {
         if let list = try? await client.call("list", .object([:])).decode([Task].self) {
             tasks = list
             await refreshShellPanels(for: list)
@@ -339,6 +377,8 @@ final class BoardModel: ObservableObject {
                 else { tasks.append(t) }
                 // Genuine transitions → the matching notification trigger. `prev == nil` (fresh card)
                 // and the post-reconnect wholesale set (which bypasses `apply`) never fire.
+                // Host-only: the macOS notifier surfaces these as system banners; iOS notifications are N1.
+                #if os(macOS)
                 if let prev {
                     if prev != .waiting, t.status == .waiting {
                         notifier.notify(t.waitReason == .permission ? .permission : .needsYou, task: t)
@@ -347,6 +387,7 @@ final class BoardModel: ObservableObject {
                         notifier.notify(.died, task: t)
                     }
                 }
+                #endif
             }
         case .taskRemoved(let id):
             tasks.removeAll { $0.id == id }
@@ -363,7 +404,7 @@ final class BoardModel: ObservableObject {
 
     // MARK: actions
 
-    func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
+    public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async {
         var p: [String: JSONValue] = [
@@ -387,20 +428,20 @@ final class BoardModel: ObservableObject {
         } catch { toast("Spawn failed", sub: "\(error)", color: .red) }
     }
 
-    func move(_ id: UUID, to col: Column) async {
+    public func move(_ id: UUID, to col: Column) async {
         guard tasks.first(where: { $0.id == id })?.origin == .worktree else {
             return
         }
         _ = try? await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)]))
     }
-    func archive(_ id: UUID) async {
+    public func archive(_ id: UUID) async {
         _ = try? await client.call("archive", .object(["ref": .string(id.uuidString)]))
         if selectedId == id { selectedId = nil }
         toast("Archived", sub: nil)
     }
     /// Reopen a Done card: the daemon recreates its worktree + resumes the agent; we bring the card back
     /// onto the board, select it (so the live inspector opens), and close the Done popover.
-    func reopen(_ id: UUID) async {
+    public func reopen(_ id: UUID) async {
         do {
             let t = try await client.call("reopen", .object(["ref": .string(id.uuidString)])).decode(Task.self)
             apply(.taskUpserted(t))   // off the Done list onto the board immediately; the stream is idempotent
@@ -409,33 +450,33 @@ final class BoardModel: ObservableObject {
             toast("Reopened “\(t.title)”", sub: nil)
         } catch { toast("Reopen failed", sub: "\(error)", color: .red) }
     }
-    func send(_ id: UUID, _ message: String) async {
+    public func send(_ id: UUID, _ message: String) async {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
 
     /// Inbox editor: list a card's pending messages (empty on any error).
-    func inboxPeek(_ id: UUID) async -> [InboxMessage] {
+    public func inboxPeek(_ id: UUID) async -> [InboxMessage] {
         (try? await client.call("inbox", .object(["ref": .string(id.uuidString)]))
             .decode([InboxMessage].self)) ?? []
     }
     /// Inbox editor: edit one queued message's text.
-    func inboxEdit(_ id: UUID, messageId: UUID, text: String) async {
+    public func inboxEdit(_ id: UUID, messageId: UUID, text: String) async {
         _ = try? await client.call("inbox-edit", .object(["ref": .string(id.uuidString),
             "id": .string(messageId.uuidString), "text": .string(text)]))
     }
     /// Inbox editor: remove one queued message.
-    func inboxRemove(_ id: UUID, messageId: UUID) async {
+    public func inboxRemove(_ id: UUID, messageId: UUID) async {
         _ = try? await client.call("inbox-remove", .object(["ref": .string(id.uuidString),
             "id": .string(messageId.uuidString)]))
     }
     /// Inbox editor: reorder a card's queued messages (full new order).
-    func inboxReorder(_ id: UUID, orderedIds: [UUID]) async {
+    public func inboxReorder(_ id: UUID, orderedIds: [UUID]) async {
         _ = try? await client.call("inbox-reorder", .object(["ref": .string(id.uuidString),
             "ids": .array(orderedIds.map { .string($0.uuidString) })]))
     }
 
     /// Read-only trust check for the spawn sheet's freeform trust indicator (T1's ledger via the daemon).
-    func trustState(path: String) async -> Bool {
+    public func trustState(path: String) async -> Bool {
         guard let r = try? await client.call("trustState", .object(["path": .string(path)])) else { return false }
         return r["trusted"]?.boolValue ?? false
     }
@@ -445,7 +486,7 @@ final class BoardModel: ObservableObject {
     /// sheet *is* the human gate the daemon's `SurfaceGrantResolver` requires for an `.app` source, so
     /// this succeeds without any further prompt. Returns whether the directory is now trusted; toasts on
     /// failure (a denial can only happen if the resolver policy changes under us).
-    func trust(path: String) async -> Bool {
+    public func trust(path: String) async -> Bool {
         do {
             let r = try await client.call("trust", .object(["path": .string(path)]))
             return r["granted"]?.boolValue ?? false
@@ -454,23 +495,23 @@ final class BoardModel: ObservableObject {
             return false
         }
     }
-    func restart(_ id: UUID) async {
+    public func restart(_ id: UUID) async {
         do {
             _ = try await client.call("restart", .object(["ref": .string(id.uuidString)]))
             toast("Started a new session", sub: nil)
         } catch { toast("Couldn't start session", sub: "\(error)", color: .red) }
     }
-    func resume(_ id: UUID) async {
+    public func resume(_ id: UUID) async {
         do { _ = try await client.call("resume", .object(["ref": .string(id.uuidString)])) }
         catch { toast("Resume failed", sub: "\(error)", color: .red) }
     }
-    func openShell(_ id: UUID) async -> String? {
+    public func openShell(_ id: UUID) async -> String? {
         guard let r = try? await client.call("shell", .object(["ref": .string(id.uuidString)])) else { return nil }
         return r["window"]?.stringValue
     }
 
     /// Open a new shell window for a card and track it (the one place that mutates shell state).
-    func newShell(_ id: UUID) async {
+    public func newShell(_ id: UUID) async {
         if let w = await openShell(id) {
             shellWindows[id, default: []].append(w)
             selectedShell[id] = w
@@ -480,7 +521,7 @@ final class BoardModel: ObservableObject {
 
     /// Open a read-only inspect shell for a card (read-only claude in its worktree) and track its
     /// window like a normal shell tab.
-    func inspect(_ id: UUID) async {
+    public func inspect(_ id: UUID) async {
         guard let r = try? await client.call("inspect", .object(["ref": .string(id.uuidString)])),
               let w = r["window"]?.stringValue else { return }
         shellWindows[id, default: []].append(w)
@@ -490,7 +531,7 @@ final class BoardModel: ObservableObject {
 
     /// Close one shell window, dropping it from the daemon and the per-card state. Selects a
     /// neighbouring tab if the closed one was active; hides the strip once the last shell is gone.
-    func closeShell(_ id: UUID, _ window: String) async {
+    public func closeShell(_ id: UUID, _ window: String) async {
         _ = try? await client.call("closeShell", .object(["ref": .string(id.uuidString),
                                                           "window": .string(window)]))
         var ws = shellWindows[id] ?? []
@@ -502,16 +543,16 @@ final class BoardModel: ObservableObject {
         }
         if ws.isEmpty { shellOpen.remove(id) }
     }
-    func sessions(_ id: UUID) async -> CardSessions? {
+    public func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
     }
     /// Rendered git patch for the inspector Diff view (axis 7). App-only internal endpoint — agents
     /// read a diff by running `git diff` in the card's cwd. `""` for non-git cards.
-    func diffText(_ id: UUID, base: String) async -> String {
+    public func diffText(_ id: UUID, base: String) async -> String {
         (try? await client.call("diffText",
             .object(["ref": .string(id.uuidString), "base": .string(base)])).decode(String.self)) ?? ""
     }
-    func openInZed(_ id: UUID) async {
+    public func openInZed(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
             _ = try await client.call("openInZed", .object(["ref": .string(id.uuidString)]))
@@ -520,7 +561,7 @@ final class BoardModel: ObservableObject {
             toast("Couldn't open in Zed", sub: "\(error)", color: .red)
         }
     }
-    func openNotes(_ id: UUID) async {
+    public func openNotes(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
             let r = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
@@ -536,12 +577,12 @@ final class BoardModel: ObservableObject {
             toast("Couldn't open notes", sub: "\(error)", color: .red)
         }
     }
-    func saveConfig(_ cfg: Config) async {
+    public func saveConfig(_ cfg: Config) async {
         if let saved = try? await client.call("setConfig", JSONValue(encodable: cfg)).decode(Config.self) { config = saved }
     }
 
     /// Focus a card from an `orchestra://task/<shortId>-<slug>` URL (the registered URL scheme).
-    func select(ref: String) {
+    public func select(ref: String) {
         let all = tasks + archived
         if let t = try? resolve(TaskRef(parsing: ref), in: all) { selectedId = t.id }
     }
@@ -550,15 +591,15 @@ final class BoardModel: ObservableObject {
     // Thin executors the KeyboardController calls; selection movement delegates to the pure
     // BoardNavigator, everything else reuses the existing daemon-backed actions above.
 
-    func selectMove(_ dir: Direction) {
+    public func selectMove(_ dir: Direction) {
         selectedId = BoardNavigator.move(tasks, selected: selectedId, dir)
     }
-    func selectEnd(first: Bool) {
+    public func selectEnd(first: Bool) {
         selectedId = BoardNavigator.end(tasks, selected: selectedId, first: first)
     }
 
     /// Carry the selected card one column left/right (Plan↔Impl↔Review).
-    func carrySelected(_ dir: Direction) {
+    public func carrySelected(_ dir: Direction) {
         guard let id = selectedId, let col = BoardNavigator.columnOf(tasks, id) else { return }
         let order: [Column] = [.plan, .impl, .review]
         guard let ci = order.firstIndex(of: col) else { return }
@@ -569,47 +610,48 @@ final class BoardModel: ObservableObject {
 
     /// Descend the keyboard into the selected card's agent terminal (Enter / i). No-op with no
     /// selection so the focus ring never lights on an empty inspector.
-    func enterTerminalZone() {
+    public func enterTerminalZone() {
         guard selectedId != nil else { return }
         focusZone = .terminal
-        FocusBridge.enterTerminal()
+        _ = platform.window.enterTerminalFocus()
     }
 
     /// A mouse click on a card selects it AND descends into its agent terminal (matching Enter / i),
     /// so the card glow, the inspector ring, and the real first responder all agree after the click.
     /// Falls back to the board zone when the card has no mounted terminal (e.g. a dead agent showing
     /// RecoveryView), so `focusZone` never claims a terminal that isn't there.
-    func selectAndEnterTerminal(_ id: UUID) {
+    public func selectAndEnterTerminal(_ id: UUID) {
         let sameCard = selectedId == id
         selectedId = id
         focusZone = .terminal
         if sameCard {
-            if !FocusBridge.enterTerminal() { focusZone = .board }   // already mounted → claim now
+            if !platform.window.enterTerminalFocus() { focusZone = .board }   // already mounted → claim now
         } else {
             // Selecting a different card remounts the inspector; its autofocus (focusZone == .terminal)
             // claims focus on mount. Re-assert once that terminal view exists, as a fallback.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
-                if !FocusBridge.enterTerminal() { self?.focusZone = .board }
+                guard let self else { return }
+                if !self.platform.window.enterTerminalFocus() { self.focusZone = .board }
             }
         }
     }
 
-    func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
+    public func archiveSelected() { if let id = selectedId { _Concurrency.Task { await archive(id) } } }
 
     /// The keyboard `a` path: don't archive immediately — raise the confirm dialog. Archive is
     /// effectively permanent, and a bare `a` is too easy to fire when focus isn't where you think.
-    func requestArchiveSelected() { if let id = selectedId { archiveConfirm = id } }
+    public func requestArchiveSelected() { if let id = selectedId { archiveConfirm = id } }
     /// ⏎ in the confirm dialog: perform the archive we were holding.
-    func confirmArchive() { if let id = archiveConfirm { archiveConfirm = nil; _Concurrency.Task { await archive(id) } } }
+    public func confirmArchive() { if let id = archiveConfirm { archiveConfirm = nil; _Concurrency.Task { await archive(id) } } }
     /// esc / ⌘W in the confirm dialog: back out, archive nothing.
-    func cancelArchive() { archiveConfirm = nil }
+    public func cancelArchive() { archiveConfirm = nil }
     /// A card's title by id (searches board + archived), for confirm-dialog copy. "" if unknown.
-    func cardTitle(_ id: UUID) -> String { (tasks + archived).first { $0.id == id }?.title ?? "" }
-    func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
-    func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
+    public func cardTitle(_ id: UUID) -> String { (tasks + archived).first { $0.id == id }?.title ?? "" }
+    public func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
+    public func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
 
     /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path).
-    func copySelected(_ target: CopyTarget) {
+    public func copySelected(_ target: CopyTarget) {
         guard let t = selected else { return }
         let s: String
         switch target {
@@ -617,13 +659,12 @@ final class BoardModel: ObservableObject {
         case .tmux:     s = "\(t.tmuxSession):agent"
         case .path:     s = t.cwd
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
+        platform.clipboard.copy(s)
         toast("Copied", sub: s)
     }
 
     /// Jump to a region: select the first card of a column / freeform, or open a popover / settings.
-    func goTo(_ target: GoTarget) {
+    public func goTo(_ target: GoTarget) {
         switch target {
         case .plan:     selectedId = BoardNavigator.columnCards(tasks, .plan).first?.id
         case .impl:     selectedId = BoardNavigator.columnCards(tasks, .impl).first?.id
@@ -631,12 +672,12 @@ final class BoardModel: ObservableObject {
         case .freeform: selectedId = freeformTasks.first?.id; focusZone = .board
         case .activity: showActivity = true
         case .done:     showDone = true
-        case .settings: NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case .settings: platform.opener.openSettings()
         }
     }
 
     /// Cmd-W / Esc "close the frontmost thing," peeling most-transient-first.
-    func closeFrontmost() {
+    public func closeFrontmost() {
         if archiveConfirm != nil { archiveConfirm = nil; return }   // the confirm dialog is frontmost
         if hintActive { endHint(); return }
         if showHelp { showHelp = false; return }
@@ -654,7 +695,7 @@ final class BoardModel: ObservableObject {
         // can carry on navigating (this is the Cmd-W path; a live terminal owns plain Esc itself).
         if focusZone != .board {
             focusZone = .board
-            NSApp.keyWindow?.makeFirstResponder(nil)
+            platform.window.resignInputFocus()
             return
         }
         // On the board with a card open → close the inspector. Archiving is the `a` verb only, never
@@ -665,7 +706,7 @@ final class BoardModel: ObservableObject {
     // MARK: search / hints / resize / collapse
 
     /// Every visible card in navigation order: Plan → Impl → Review columns, then the freeform dock.
-    var orderedVisibleCards: [Task] {
+    public var orderedVisibleCards: [Task] {
         BoardNavigator.columnCards(tasks, .plan)
             + BoardNavigator.columnCards(tasks, .impl)
             + BoardNavigator.columnCards(tasks, .review)
@@ -673,7 +714,7 @@ final class BoardModel: ObservableObject {
     }
 
     /// Ids of cards matching the active `/` query (title / branch / repo substring, case-insensitive).
-    var searchMatchIds: [UUID] {
+    public var searchMatchIds: [UUID] {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces).lowercased(), !q.isEmpty else { return [] }
         return orderedVisibleCards.filter {
             $0.title.lowercased().contains(q) || $0.branch.lowercased().contains(q)
@@ -681,17 +722,17 @@ final class BoardModel: ObservableObject {
         }.map(\.id)
     }
     /// True when a search is active and this card matches (drives the dim of non-matches).
-    func isSearchMatch(_ t: Task) -> Bool {
+    public func isSearchMatch(_ t: Task) -> Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
         return searchMatchIds.contains(t.id)
     }
     /// A search filter is active (a non-empty committed query).
-    var searchActive: Bool {
+    public var searchActive: Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces) else { return false }
         return !q.isEmpty
     }
-    func searchNext() { cycleMatch(+1) }
-    func searchPrev() { cycleMatch(-1) }
+    public func searchNext() { cycleMatch(+1) }
+    public func searchPrev() { cycleMatch(-1) }
     private func cycleMatch(_ step: Int) {
         let ids = searchMatchIds
         guard !ids.isEmpty else { return }
@@ -702,7 +743,7 @@ final class BoardModel: ObservableObject {
 
     // f link-hints: assign a short label to every visible card; the controller matches typed keys.
     private static let hintAlphabet = Array("asdfghjklqwertyuiopzxcvbnm")
-    func beginHint() {
+    public func beginHint() {
         let cards = orderedVisibleCards
         guard !cards.isEmpty else { return }
         let a = Self.hintAlphabet
@@ -714,13 +755,13 @@ final class BoardModel: ObservableObject {
         hintLabels = labels
         hintActive = true
     }
-    func endHint() { hintActive = false; hintLabels = [:] }
+    public func endHint() { hintActive = false; hintLabels = [:] }
     /// The card whose hint label exactly equals `typed`, if any.
-    func hintTarget(_ typed: String) -> UUID? { hintLabels.first { $0.value == typed }?.key }
+    public func hintTarget(_ typed: String) -> UUID? { hintLabels.first { $0.value == typed }?.key }
 
     /// Grow/shrink the focused pane's movable edge (Ctrl-Shift-hjkl), writing the same @AppStorage the
     /// drag handles use so the views update live.
-    func resizeFocusedPane(_ dir: Direction) {
+    public func resizeFocusedPane(_ dir: Direction) {
         let d = UserDefaults.standard
         func bump(_ key: String, _ fallback: Double, _ delta: Double, _ lo: Double, _ hi: Double) {
             let cur = d.object(forKey: key) as? Double ?? fallback
@@ -742,23 +783,25 @@ final class BoardModel: ObservableObject {
 
     /// Toggle the focused collapsible region (z): the shell panel when a terminal/shell is focused,
     /// else the freeform dock. Writes the same @AppStorage the chevrons use.
-    func toggleCollapseFocused() {
+    public func toggleCollapseFocused() {
         let key = (focusZone == .shell || focusZone == .terminal) ? "shellMinimized" : "freeformCollapsed"
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
     }
 
     // MARK: command palette (:)
 
-    @Published var paletteQuery = ""
-    @Published var paletteIndex = 0
+    @Published public var paletteQuery = ""
+    @Published public var paletteIndex = 0
 
-    struct PaletteCommand: Identifiable { let id = UUID(); let title: String; let keys: String; let run: () -> Void }
+    public struct PaletteCommand: Identifiable {
+        public let id = UUID(); public let title: String; public let keys: String; public let run: () -> Void
+    }
 
-    func openPalette() { paletteQuery = ""; paletteIndex = 0; showPalette = true }
+    public func openPalette() { paletteQuery = ""; paletteIndex = 0; showPalette = true }
 
     /// The full command catalogue (label · shortcut · action). Rebuilt each access; closures capture
     /// `self` weakly-enough (transient values) to avoid a retained cycle.
-    func paletteCommands() -> [PaletteCommand] {
+    public func paletteCommands() -> [PaletteCommand] {
         [
             .init(title: "New card", keys: "c") { [self] in spawnDefaultColumn = .plan; showSpawn = true },
             .init(title: "Search cards", keys: "/") { [self] in searchQuery = "" },
@@ -782,18 +825,18 @@ final class BoardModel: ObservableObject {
     }
 
     /// Commands whose title fuzzily matches the query (case-insensitive subsequence).
-    var filteredPaletteCommands: [PaletteCommand] {
+    public var filteredPaletteCommands: [PaletteCommand] {
         let q = paletteQuery.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return paletteCommands() }
         return paletteCommands().filter { fuzzySubsequence(q, $0.title.lowercased()) }
     }
 
-    func paletteMove(_ delta: Int) {
+    public func paletteMove(_ delta: Int) {
         let n = filteredPaletteCommands.count
         guard n > 0 else { paletteIndex = 0; return }
         paletteIndex = (paletteIndex + delta + n) % n
     }
-    func runPaletteSelection() {
+    public func runPaletteSelection() {
         let cmds = filteredPaletteCommands
         guard paletteIndex >= 0, paletteIndex < cmds.count else { showPalette = false; return }
         let cmd = cmds[paletteIndex]
@@ -811,7 +854,7 @@ final class BoardModel: ObservableObject {
         return true
     }
 
-    func toast(_ title: String, sub: String?, color: Toast.ToastColor = .green) {
+    public func toast(_ title: String, sub: String?, color: Toast.ToastColor = .green) {
         let t = Toast(title: title, sub: sub, color: color)
         toasts.append(t)
         _Concurrency.Task { [weak self] in
