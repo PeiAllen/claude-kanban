@@ -278,11 +278,42 @@ final class BoardModel: ObservableObject {
     }
 
     func refresh() async {
-        if let list = try? await client.call("list", .object([:])).decode([Task].self) { tasks = list }
+        if let list = try? await client.call("list", .object([:])).decode([Task].self) {
+            tasks = list
+            await refreshShellPanels(for: list)
+        }
         if let arch = try? await client.call("archivedList").decode([Task].self) { archived = arch }
         if let cfg = try? await client.call("getConfig").decode(Config.self) { config = cfg }
         if let ms = try? await client.call("models").decode([AgentModel].self) { models = ms }
         if let ag = try? await client.call("agents").decode([AgentInfo].self) { agents = ag }
+    }
+
+    private func refreshShellPanels(for cards: [Task]) async {
+        let activeIds = Set(cards.map(\.id))
+        var knownIds = shellOpen
+        knownIds.formUnion(shellWindows.keys)
+        knownIds.formUnion(selectedShell.keys)
+        for id in knownIds where !activeIds.contains(id) {
+            applyShellPanelState(ShellPanelState(targets: [], previousSelection: nil), for: id)
+        }
+
+        for card in cards {
+            guard let sessions = await sessions(card.id) else { continue }
+            let state = ShellPanelState(targets: sessions.targets, previousSelection: selectedShell[card.id])
+            applyShellPanelState(state, for: card.id)
+        }
+    }
+
+    private func applyShellPanelState(_ state: ShellPanelState, for id: UUID) {
+        if state.isOpen {
+            shellWindows[id] = state.windows
+            selectedShell[id] = state.selected
+            shellOpen.insert(id)
+        } else {
+            shellWindows[id] = nil
+            selectedShell[id] = nil
+            shellOpen.remove(id)
+        }
     }
 
     private func apply(_ event: Event) {
