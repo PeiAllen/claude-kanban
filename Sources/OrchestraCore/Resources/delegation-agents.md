@@ -36,8 +36,10 @@ Move with the `move` tool / `orchestra move <thisCard> --col plan|impl|review`. 
   card instead by spawning with the context as the seed.
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox; it is delivered at the card's
   next turn.
-- **`wait <ref…>`** — block until **any** watched card concludes (merged / done / exited). Run it in the
-  background so your turn ends; you are nudged awake when a child concludes.
+- **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
+  reminded/woken when it finishes. If your harness has native background tasks, run the CLI wait there so
+  your turn ends while the process stays subscribed. Otherwise use the MCP/immediate-return wait path;
+  Orchestra records the durable watch and resumes you when a child concludes.
 
 ## Delegate, or just continue?
 
@@ -63,12 +65,14 @@ tightly-coupled work.
 - **Fan-out** — *N independent pieces of work to run in parallel*, each in its own worktree. `batch-spawn`
   them. There's no come-back wiring unless you also `wait`. Good for a stacked-PR forest or N independent
   tasks.
-- **Wait** — *after spawning children, react when they finish.* Background `wait <refs>`; you are woken when
-  any concludes; drain your inbox for the conclusions and act (e.g. spawn the next PR in the stack). Several
-  children concluding at once coalesce in the inbox and drain together — none is lost.
+- **Wait** — *after spawning children, react when they finish.* Subscribe with `wait <refs>`; you are woken
+  when any child concludes. Drain your inbox for the conclusions and act (e.g. spawn the next PR in the
+  stack). Several children concluding at once coalesce in the inbox and drain together — none is lost.
 
-  Note: Codex is woken by a send-keys **nudge**, so a just-concluded delegation may take a beat to surface
-  in your composer — that's expected; the conclusion is already durable in your inbox.
+  Choose one completion return channel for each child. If you subscribe with `wait`, treat the wait wake
+  as that child's completion signal; do not also ask those same children to `send` a completion/result to
+  your inbox, or you can receive two notices in either order. If you need a child-authored result message
+  in your inbox, ask the child to `send` that message when done and do not also `wait` on that child.
 
 ## Cards vs. ephemeral in-context helpers — keep both
 
@@ -88,6 +92,6 @@ synthesize the answer now → keep it **in-context** (a native subagent if you h
 
 ## The reactive orchestration loop
 
-The headline pattern: spawn the stack head → background `wait` → your turn ends → the child concludes → you
-are nudged awake → drain your inbox → spawn the next-in-stack off the merged branch. Repeat. That is how one
-card orchestrates a whole PR forest without polling.
+The headline pattern: spawn the stack head → subscribe with `wait` → your turn ends → the child concludes
+→ Orchestra resumes you with durable inbox context → spawn the next-in-stack off the merged branch. Repeat.
+That is how one card orchestrates a whole PR forest without polling.

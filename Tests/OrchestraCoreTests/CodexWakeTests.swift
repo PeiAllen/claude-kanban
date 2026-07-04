@@ -55,7 +55,7 @@ struct CodexWakeTests {
         let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
-        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a live `orchestra wait`
+        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a durable watch
         try await env.svc.report(parent.id, StatusReport(status: .waiting))   // idle, but watching
         let name = env.sessions.sessionName(parent.id)
 
@@ -64,6 +64,34 @@ struct CodexWakeTests {
         try await env.svc.report(parent.id, StatusReport(sessionSource: "resume"))
 
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("POKE-CODEX") == true)
+    }
+
+    @Test("MCP wait also returns immediately for a Codex watcher")
+    func mcpWaitRegistersAndReturnsImmediatelyForCodex() async throws {
+        let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let cmd = try #require(CommandRegistry().command("wait"))
+
+        let result = try await withThrowingTaskGroup(of: JSONValue.self) { group in
+            group.addTask {
+                try await cmd.run(env.svc, .object([
+                    "refs": .array([.string(child.id.uuidString)]),
+                    "watcher": .string(parent.id.uuidString),
+                ]), .mcp)
+            }
+            group.addTask {
+                try await _Concurrency.Task.sleep(for: .milliseconds(120))
+                throw OrchestraError.invalidParams("MCP wait did not return immediately")
+            }
+            let first = try await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        #expect(result["watching"]?.boolValue == true)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 0)
     }
 
     @Test("send does NOT resume-seed a RUNNING Codex card (its Stop hook drains it at turn-end)")

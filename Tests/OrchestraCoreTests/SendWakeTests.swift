@@ -56,14 +56,15 @@ struct SendWakeTests {
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])    // message stays durable
     }
 
-    @Test("send does NOT resume-seed a card blocked on a background wait (would kill the wait)")
-    func sendDefersPendingWatcher() async throws {
+    @Test("send does NOT resume-seed a card with a live native wait subscription")
+    func sendDefersLiveNativeWaitSubscription() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
         let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
-        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a live `orchestra wait`
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 } // parent has a live `orchestra wait`
         try await env.svc.report(parent.id, StatusReport(status: .waiting))   // idle, but waiting on the child
         let ensureBefore = env.sessions.ensureCount
 
@@ -72,6 +73,7 @@ struct SendWakeTests {
 
         #expect(env.sessions.ensureCount == ensureBefore)                     // NOT relaunched — fan-out preserved
         #expect(try await env.svc.inboxPeek(parent.id).contains { $0.text == "poke" })
+        waiting.cancel(); _ = await waiting.value
     }
 
     @Test("send does NOT resume-seed a never-prompted card with no transcript (nothing to resume)")
