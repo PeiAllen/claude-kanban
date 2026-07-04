@@ -73,7 +73,7 @@ private struct HeaderBar: View {
             }
             .buttonStyle(.plain)
 
-            // Open the project's notes/ folder as an Obsidian vault (mirrors the `/open-notes` command).
+            // Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
             Button {
                 _Concurrency.Task { await model.openNotes(task.id) }
             } label: {
@@ -86,7 +86,7 @@ private struct HeaderBar: View {
                 .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
-            .help("Open this project's notes folder as an Obsidian vault")
+            .help("Open this card's changed notes in its worktree (Obsidian)")
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.status != .dead {

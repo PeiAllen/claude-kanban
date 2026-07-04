@@ -88,13 +88,70 @@ struct LauncherDiffTests {
         #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt)) == nil)
     }
 
-    @Test("openNotes refuses a repo outside the allowlist before touching Obsidian")
-    func openNotesRejectsUnallowedRepo() throws {
+    @Test("openNotes refuses a worktree outside the allowlist before touching Obsidian")
+    func openNotesRejectsUnallowedWorktree() throws {
         // An empty allowlist means every path is out of bounds — the security gate must fire on the
-        // `<repo>/notes` target before the script is ever resolved or run.
+        // worktree target before the vault script is ever resolved or run.
         let launcher = Launcher(resolver: PathResolver(allowedRoots: []))
-        #expect(throws: OrchestraError.pathNotAllowed("/not/allowed/repo/notes")) {
-            try launcher.openNotes("/not/allowed/repo")
+        #expect(throws: OrchestraError.pathNotAllowed("/not/allowed/worktree")) {
+            _ = try launcher.openNotes("/not/allowed/worktree")
         }
+    }
+
+    /// A repo on `main`, plus a worktree whose branch changes a mix of markdown and non-markdown
+    /// files across several dirs: a committed `.md` modify, untracked `.md` adds under `notes/` and
+    /// `docs/superpowers/`, a deleted `.md`, and a non-`.md` change.
+    private func makeNotesWorktree() throws -> (worktree: String, launcher: Launcher) {
+        let root = IntegrationSupport.tempDir("ln")
+        let repo = root + "/repo"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: repo + "/notes", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: repo + "/docs", withIntermediateDirectories: true)
+        try git(repo, "init", "-q", "-b", "main")
+        try git(repo, "config", "user.email", "t@t.t")
+        try git(repo, "config", "user.name", "T")
+        try "base\n".write(toFile: repo + "/notes/keep.md", atomically: true, encoding: .utf8)
+        try "gone\n".write(toFile: repo + "/docs/gone.md", atomically: true, encoding: .utf8)
+        try "code\n".write(toFile: repo + "/main.swift", atomically: true, encoding: .utf8)
+        try git(repo, "add", ".")
+        try git(repo, "commit", "-q", "-m", "base")
+
+        let wt = root + "/wt"
+        try git(repo, "worktree", "add", "-q", "-b", "feature", wt)
+        // Committed change: modify a tracked note.
+        try "feature\n".write(toFile: wt + "/notes/keep.md", atomically: true, encoding: .utf8)
+        try git(wt, "commit", "-aqm", "edit note")
+        // Uncommitted: add notes in two dirs, delete a note, change a non-md file.
+        try fm.createDirectory(atPath: wt + "/docs/superpowers", withIntermediateDirectories: true)
+        try "new\n".write(toFile: wt + "/notes/added.md", atomically: true, encoding: .utf8)
+        try "spec\n".write(toFile: wt + "/docs/superpowers/spec.md", atomically: true, encoding: .utf8)
+        try fm.removeItem(atPath: wt + "/docs/gone.md")
+        try "changed\n".write(toFile: wt + "/main.swift", atomically: true, encoding: .utf8)
+
+        let config = Config(reposRoot: PathResolver.canonical(root),
+                            worktreesRoot: PathResolver.canonical(root))
+        return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
+    }
+
+    @Test("changedNotes returns only changed .md (across dirs, untracked included), excludes deletes & non-md")
+    func changedNotesFiltering() throws {
+        let (wt, launcher) = try makeNotesWorktree()
+        let got = Set(launcher.changedNotes(worktree: wt))
+        let expected: Set<String> = [
+            wt + "/notes/keep.md",           // committed modify
+            wt + "/notes/added.md",          // untracked add
+            wt + "/docs/superpowers/spec.md" // untracked add in a nested dir
+        ]
+        #expect(got == expected)
+        // gone.md was deleted → not openable; main.swift is not markdown → both excluded.
+        #expect(!got.contains(wt + "/docs/gone.md"))
+        #expect(!got.contains(wt + "/main.swift"))
+    }
+
+    @Test("changedNotes is empty for a non-git directory (no base)")
+    func changedNotesNonGit() throws {
+        let dir = IntegrationSupport.tempDir("ln0")
+        let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
+        #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir)).isEmpty)
     }
 }

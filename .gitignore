@@ -1,6 +1,12 @@
 .DS_Store
 .scratch/
 .claude/
+# Obsidian vault config — "Open notes" registers the worktree root as a vault, which creates
+# .obsidian/ here. Both patterns match the vault script's own .gitignore write, so it no-ops
+# instead of dirtying this tracked file at runtime. (.trash/ = Obsidian's optional in-vault
+# trash, only under the non-default "local trash" setting.)
+.obsidian/
+.trash/
 
 # Swift / SwiftPM
 .build/

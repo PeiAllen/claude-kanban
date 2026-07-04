@@ -578,9 +578,12 @@ public actor OrchestraService {
         try launcher.openInZed(t.cwd)
     }
 
-    public func openNotes(_ id: UUID) async throws {
+    /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
+    /// Returns `(opened:` tabs opened `, total:` changed `.md` count `)`.
+    @discardableResult
+    public func openNotes(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        try launcher.openNotes(t.repo)
+        return try launcher.openNotes(t.cwd)
     }
 
     // MARK: - config

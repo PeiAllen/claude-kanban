@@ -6,25 +6,68 @@ public struct Launcher: Sendable {
 
     public init(resolver: PathResolver) { self.resolver = resolver }
 
-    /// "Open notes" — open the project's `notes/` folder as an Obsidian vault, using the exact same
-    /// `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes` Claude command runs (seed a default
-    /// config, register the vault, launch Obsidian on it — restarting a running Obsidian only when the
-    /// vault is new). `repo` is the project root; `<repo>/notes` is the vault — the ONE canonical
-    /// project vault, not the per-card worktree copy, so edits don't fragment across worktrees.
-    public func openNotes(_ repo: String) throws {
+    /// Cap on how many changed-note tabs `openNotes` opens at once, so a card that touched many
+    /// markdown files doesn't flood Obsidian with dozens of tabs. The rest stay one click away in
+    /// the vault tree.
+    static let openNotesTabCap = 15
+
+    /// "Open notes" — open the card's WORKTREE as an Obsidian vault and jump straight to the
+    /// markdown files its branch changed (docs, notes, superpower specs, `.claude/skills` — anywhere
+    /// in the worktree), each as a tab. Uses the same `~/.claude/open-obsidian-vault.sh` recipe the
+    /// `/open-notes` Claude command runs (seed a default config, register the vault, launch Obsidian
+    /// — restarting a running instance only when the vault is new).
+    ///
+    /// The vault is the worktree root — not `<repo>/notes` — because Obsidian only opens files that
+    /// live inside a registered vault, and the changed notes span several top-level dirs. Opening the
+    /// changed files directly as tabs means the whole-worktree vault is never actually browsed. When
+    /// nothing changed (or the card isn't a git worktree) the vault still opens, just with no tabs.
+    ///
+    /// `.obsidian/` is gitignored at the repo root, so registering the worktree as a vault never
+    /// pollutes the card's diff (and the script's own `.gitignore`-append is then a no-op).
+    ///
+    /// Returns `(opened:` tabs opened, ≤ cap `, total:` changed `.md` count `)` for the caller's toast.
+    @discardableResult
+    public func openNotes(_ worktree: String) throws -> (opened: Int, total: Int) {
         #if !os(macOS)
         throw OrchestraError.io("opening notes in Obsidian is a macOS-only convenience")
         #else
-        let notes = (repo as NSString).appendingPathComponent("notes")
-        try resolver.assertAllowed(notes)
+        try resolver.assertAllowed(worktree)
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let script = (home as NSString).appendingPathComponent(".claude/open-obsidian-vault.sh")
         guard FileManager.default.fileExists(atPath: script) else { throw OrchestraError.toolMissing(script) }
         // The script resolves jq/python3/osascript/open on PATH; augmentedPATH (applied by Proc.run)
-        // adds Homebrew + per-user bins so they're found under launchd's minimal PATH.
-        let r = try Proc.run(["bash", script, notes])
+        // adds Homebrew + per-user bins so they're found under launchd's minimal PATH. Running it on
+        // the worktree root registers + opens that as the vault, and covers the no-changes case.
+        let r = try Proc.run(["bash", script, worktree])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "open-obsidian-vault.sh failed" : r.stderr) }
+
+        // Jump to the changed notes: fire one `obsidian://open?path=…` URI per file so each opens as
+        // a tab in the just-registered vault. Capped so a large diff doesn't spawn dozens of tabs.
+        let notes = changedNotes(worktree: worktree)
+        let opened = Array(notes.prefix(Self.openNotesTabCap))
+        for path in opened {
+            var comps = URLComponents()
+            comps.scheme = "obsidian"
+            comps.host = "open"
+            comps.queryItems = [URLQueryItem(name: "path", value: path)]
+            guard let uri = comps.url?.absoluteString else { continue }
+            _ = try? Proc.run(["/usr/bin/open", uri])
+        }
+        return (opened: opened.count, total: notes.count)
         #endif
+    }
+
+    /// The markdown files the worktree's branch changed vs its base — the same branch-vs-base set as
+    /// the Zed "View changes" diff, filtered to notes/docs (`.md`) and excluding deletions (a deleted
+    /// file can't be opened). Returns absolute worktree paths. Empty when nothing changed, the base
+    /// can't be resolved, or the card isn't a git worktree.
+    func changedNotes(worktree: String) -> [String] {
+        guard let base = mergeBase(worktree: worktree) else { return [] }
+        return changedFiles(worktree: worktree, base: base)
+            .filter { $0.status != .deleted }
+            .map { $0.newPath }
+            .filter { $0.lowercased().hasSuffix(".md") }
+            .map { (worktree as NSString).appendingPathComponent($0) }
     }
 
     public func openInZed(_ worktree: String) throws {

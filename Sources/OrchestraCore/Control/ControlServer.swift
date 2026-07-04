@@ -147,8 +147,8 @@ public final class ControlServer: @unchecked Sendable {
                 throw OrchestraError.invalidParams("openNotes needs ref")
             }
             let task = try await service.resolveRef(ref)
-            try await service.openNotes(task.id)
-            return .object(["ok": .bool(true)])
+            let n = try await service.openNotes(task.id)
+            return .object(["ok": .bool(true), "opened": .int(n.opened), "total": .int(n.total)])
         case "hook":
             // The unified hook channel: the `_report` edge sends a TYPED event (already parsed at the
             // edge); the daemon dispatches both directions (apply telemetry + compose orientation/drain)
