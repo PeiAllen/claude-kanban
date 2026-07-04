@@ -17,6 +17,18 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: 1.2.0
+  # SSH-PTY terminal transport (T1). iOS can't fork/exec the system `ssh`, so the SSH client is
+  # in-process: Apple's first-party swift-nio-ssh (provider-neutral). NIOCore/NIOPosix come from
+  # swift-nio; Curve25519 keys from swift-crypto. First build needs network to resolve these.
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio
+    from: 2.65.0
+  SwiftNIOSSH:
+    url: https://github.com/apple/swift-nio-ssh
+    from: 0.9.0
+  SwiftCrypto:
+    url: https://github.com/apple/swift-crypto
+    from: 3.0.0
 
 targets:
   OrchestraiOS:
@@ -24,7 +36,7 @@ targets:
     platform: iOS
     sources:
       - path: .
-        excludes: ["project.yml", "README.md", "Tests"]
+        excludes: ["project.yml", "README.md", "Tests", "OrchestraiOS.entitlements"]
     info:
       path: Info.plist
       properties:
@@ -40,6 +52,14 @@ targets:
         product: OrchestraUI
       - package: SwiftTerm
         product: SwiftTerm
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOCore
+      - package: SwiftNIO
+        product: NIOPosix
+      - package: SwiftCrypto
+        product: Crypto
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.orchestra.ios
@@ -48,6 +68,9 @@ targets:
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
         GENERATE_INFOPLIST_FILE: NO
+        # Keychain-access-group entitlement so SSHKeyStore can store the per-device SSH key. Ignored
+        # when building unsigned (the compile-only gate); applied when signed (device / harness).
+        CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG

@@ -21,25 +21,17 @@ struct IOSSystemOpener: SystemOpener {
     func open(path: String) {}
 }
 
-/// iOS has no key-window first responder to juggle and (until T1) no mounted terminal, so both window
-/// operations are inert. `enterTerminalFocus()` returns false — there is no terminal to focus yet.
+/// iOS has no key-window first responder to juggle, and terminal keyboard focus is *view-local* on
+/// iOS (tap the SwiftTerm view to focus it; there is no global first-responder to route through), so
+/// both operations are inert. `enterTerminalFocus()` returns false: the shared `BoardModel`'s
+/// keyboard-descent nav is a desktop path the phone doesn't drive. Global focus routing for the
+/// takeover surface is T4's concern.
 struct IOSWindowConfig: WindowConfig {
     func resignInputFocus() {}
     func enterTerminalFocus() -> Bool { false }
 }
 
-/// Placeholder terminal host until T1 lands the SwiftTerm-iOS SSH-PTY implementation. Every attach
-/// returns an explanatory stub instead of a live terminal.
-struct IOSTerminalHost: TerminalHost {
-    func attach(target: TmuxTarget) -> AnyView {
-        AnyView(
-            Text("Terminal coming soon")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        )
-    }
-}
+// The real terminal host lives in Terminal/IOSTerminalHost.swift (SwiftTerm iOS over an SSH PTY).
 
 /// The bundle injected into the shared `BoardModel(platform:)` on iOS.
 extension PlatformUI {
