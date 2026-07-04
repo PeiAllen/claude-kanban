@@ -102,6 +102,34 @@ public final class ControlClient: @unchecked Sendable {
         return try result.decode(T.self)
     }
 
+    // MARK: - Agent-terminal ownership (app/phone UI coordination)
+
+    public func agentTerminalOwner(_ ref: String) async throws -> AgentTerminalOwnerState {
+        try await call("agentTerminalOwner", .object(["ref": .string(ref)]),
+                       as: AgentTerminalOwnerState.self)
+    }
+
+    public func takeOverAgentTerminal(_ ref: String, clientId: String,
+                                      kind: AgentTerminalOwnerKind) async throws -> TakeOverResult {
+        try await call("takeOverAgentTerminal", .object([
+            "ref": .string(ref), "clientId": .string(clientId), "kind": .string(kind.rawValue),
+        ]), as: TakeOverResult.self)
+    }
+
+    public func releaseAgentTerminal(_ ref: String, clientId: String,
+                                     epoch: Int) async throws -> AgentTerminalOwnerState {
+        try await call("releaseAgentTerminal", .object([
+            "ref": .string(ref), "clientId": .string(clientId), "epoch": .int(epoch),
+        ]), as: AgentTerminalOwnerState.self)
+    }
+
+    public func heartbeatAgentTerminal(_ ref: String, clientId: String,
+                                       epoch: Int) async throws -> AgentTerminalOwnerState {
+        try await call("heartbeatAgentTerminal", .object([
+            "ref": .string(ref), "clientId": .string(clientId), "epoch": .int(epoch),
+        ]), as: AgentTerminalOwnerState.self)
+    }
+
     /// Typed convenience over the `capture` verb — a non-attaching, read-only pane snapshot. The
     /// phone Agent tab's v1 read source.
     public func capture(_ ref: String, window: String = "agent") async throws -> CaptureResult {
