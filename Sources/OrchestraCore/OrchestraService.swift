@@ -615,7 +615,9 @@ public actor OrchestraService {
         let t = try await resolveRef(ref)
         let state = terminalOwnership.takeOver(cardId: t.id, ref: t.ref(), clientId: clientId,
                                                kind: kind, now: Date())
-        // (Task 5 adds a best-effort detach of prior agent-view clients here.)
+        // Belt-and-suspenders: drop any existing clients of the agent view session so the new owner's
+        // PTY drives the window size. Authoritative unmount is D5 (it consumes this event).
+        try? sessions.detachAgentViewClients(sessions.sessionName(t.id))
         emit(.agentTerminalOwner(state))
         let target = try await agentTarget(t.id)
         return TakeOverResult(state: state, target: target)

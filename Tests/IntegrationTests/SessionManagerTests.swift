@@ -27,6 +27,21 @@ final class SessionManagerTests {
     /// A long-lived window command so the session stays alive for assertions.
     private var keepAliveArgv: [String] { ["sleep", "30"] }
 
+    @Test("detachAgentViewClients drops clients of the agent view session; no-op when absent")
+    func detachAgentView() throws {
+        // Load-bearing guarantee: never throws when there is no such session/view.
+        #expect(throws: Never.self) { try sm.detachAgentViewClients("orchestra-nonexistent") }
+
+        // With a live agent view session standing, detaching still succeeds (best-effort).
+        let cwd = IntegrationSupport.tempDir("sm-detach")
+        let task = makeTask(cwd: cwd)
+        let (name, _) = try sm.ensure(task, argv: keepAliveArgv)
+        _ = try? Proc.run(["tmux", "-L", socket, "new-session", "-d",
+                           "-s", SessionManager.viewSession(name, "agent"), "-t", name])
+        #expect(throws: Never.self) { try sm.detachAgentViewClients(name) }
+        try sm.kill(name)
+    }
+
     @Test("ensure creates an agent window in the worktree cwd; idempotent; isAlive flips on kill")
     func ensureAndLiveness() throws {
         let cwd = IntegrationSupport.tempDir("sm")
