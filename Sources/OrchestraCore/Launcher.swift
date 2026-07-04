@@ -70,7 +70,7 @@ public struct Launcher: Sendable {
             ["id": String(format: "orchnotesleaf%03d", i),
              "type": "leaf",
              "state": ["type": "markdown",
-                       "state": ["file": rel, "mode": "source", "source": false]]]
+                       "state": ["file": rel, "mode": "preview", "source": false]]]
         }
         let workspace: [String: Any] = [
             "main": ["id": "orchnotesroot", "type": "split", "direction": "vertical",
