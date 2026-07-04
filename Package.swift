@@ -20,6 +20,9 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "OrchestraKit", targets: ["OrchestraKit"]),
+        // Shared SwiftUI layer (Theme + BoardModel + platform protocols). macOS + iOS only; NEVER
+        // linked by orchestrad/CLI/MCP, so it is never compiled for Linux (keeps SwiftUI off Linux).
+        .library(name: "OrchestraUI", targets: ["OrchestraUI"]),
         .library(name: "OrchestraCore", targets: ["OrchestraCore"]),
         .executable(name: "orchestrad", targets: ["orchestrad"]),
         .executable(name: "orchestra", targets: ["orchestra"]),
@@ -37,6 +40,17 @@ let package = Package(
             // MUST NOT gain Foundation.Process / posix_spawn / AppKit / UIKit references
             // (verified by scripts/typecheck-kit-ios.sh).
             swiftSettings: []
+        ),
+        .target(
+            // Shared SwiftUI view-model + design tokens + the four platform protocols. Depends only on
+            // the client-safe OrchestraKit. The macOS-only host/daemon machinery it carries is fenced
+            // with `#if os(macOS)`; on macOS those fences resolve against OrchestraCore, pulled in via a
+            // platform-conditional dependency so iOS/Linux never see it. (Added in the BoardModel move.)
+            name: "OrchestraUI",
+            dependencies: [
+                "OrchestraKit",
+                .target(name: "OrchestraCore", condition: .when(platforms: [.macOS])),
+            ]
         ),
         .target(
             name: "OrchestraCore",
@@ -71,6 +85,10 @@ let package = Package(
             name: "IntegrationTests",
             dependencies: ["OrchestraCore", "OrchestraKit"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "OrchestraUITests",
+            dependencies: ["OrchestraUI", "OrchestraKit"]
         ),
     ]
 )
