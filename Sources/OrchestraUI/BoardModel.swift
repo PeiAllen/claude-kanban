@@ -229,14 +229,19 @@ public final class BoardModel: ObservableObject {
         }
     }
     #else
-    /// iOS connection path — F3 fills this in. It resolves the dev transport socket
-    /// (`ConnectionSocketResolver` / `ORCH_DEV_SOCKET`), rebuilds `client` against it, and calls
-    /// `start()`. There is no local daemon or SSH master on the phone, so none of the macOS
-    /// `connectionController` / `DaemonLifecycle` machinery applies. F2 ships only this compiling stub
-    /// so the shared `BoardModel` builds for iOS.
+    /// iOS connection path (F3, reconcile #3). Resolves the dev-transport socket
+    /// (`ConnectionSocketResolver` / `ORCH_DEV_SOCKET`), rebuilds `client` against it, re-wires state,
+    /// then streams via `start()`. There is no local daemon or SSH master on the phone, so none of the
+    /// macOS `connectionController` / `DaemonLifecycle` / onboarding machinery applies — the phone is a
+    /// pure client of an already-running daemon reached over the dev transport (Simulator: a direct UDS
+    /// at the Mac's absolute socket path; a real device needs T1's SSH-forwarded socket).
     public func activate(_ conn: Connection) async {
         client.close()
-        connected = false
+        let sockPath = ConnectionSocketResolver.socketPath(for: conn)
+        client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
+        wireState()
+        streamStarted = false
+        await start()
     }
     #endif
 

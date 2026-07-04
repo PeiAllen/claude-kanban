@@ -1,0 +1,69 @@
+# XcodeGen spec for the Orchestra iOS app (mirrors App/project.yml for macOS).
+#   brew install xcodegen
+#   xcodegen generate --spec App-iOS/project.yml --project App-iOS
+# Links the local SwiftPM package (OrchestraKit + OrchestraUI) and SwiftTerm (iOS). The app reuses the
+# SHARED OrchestraUI.BoardModel (reconcile #3) — OrchestraUI's OrchestraCore dep is macOS-conditional,
+# so the iOS graph is OrchestraKit + OrchestraUI + SwiftTerm only.
+name: OrchestraiOS
+options:
+  bundleIdPrefix: com.orchestra
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  Orchestra:
+    path: ..                       # the SwiftPM package at the repo root
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.2.0
+
+targets:
+  OrchestraiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        excludes: ["project.yml", "README.md", "Tests"]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: OrchestraiOS
+        CFBundleDisplayName: Orchestra
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    dependencies:
+      - package: Orchestra
+        product: OrchestraKit
+      - package: Orchestra
+        product: OrchestraUI
+      - package: SwiftTerm
+        product: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.orchestra.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
+        GENERATE_INFOPLIST_FILE: NO
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+
+  OrchestraiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: OrchestraiOS
+      - package: Orchestra
+        product: OrchestraKit
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
