@@ -14,8 +14,12 @@ import PackageDescription
 // intentionally NOT a SwiftPM target here so `swift build` / `swift test` stay offline-green.
 let package = Package(
     name: "Orchestra",
-    platforms: [.macOS(.v14)],
+    // Package-level platforms set the *minimum* per-OS deployment target. iOS is declared so the
+    // client-safe OrchestraKit target can be compiled against the iOS SDK (scripts/typecheck-kit-ios.sh);
+    // the daemon executables are never asked to build for iOS, so this does not make them iOS products.
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
+        .library(name: "OrchestraKit", targets: ["OrchestraKit"]),
         .library(name: "OrchestraCore", targets: ["OrchestraCore"]),
         .executable(name: "orchestrad", targets: ["orchestrad"]),
         .executable(name: "orchestra", targets: ["orchestra"]),
@@ -28,7 +32,15 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "OrchestraKit",
+            // Client-safe: Foundation + POSIX only. Platforms include iOS so a phone client links it.
+            // MUST NOT gain Foundation.Process / posix_spawn / AppKit / UIKit references
+            // (verified by scripts/typecheck-kit-ios.sh).
+            swiftSettings: []
+        ),
+        .target(
             name: "OrchestraCore",
+            dependencies: ["OrchestraKit"],
             resources: [
                 .copy("Resources/embedded.conf"),
                 .copy("Resources/claude-hooks.json"),
@@ -48,11 +60,14 @@ let package = Package(
         ),
         .testTarget(
             name: "OrchestraCoreTests",
-            dependencies: ["OrchestraCore"]
+            // OrchestraKit is a direct dep so tests can `@testable import OrchestraKit` for the few
+            // internal helpers (e.g. Config.dataDir(isLinux:home:env:)) that moved to Kit in F1 —
+            // keeping those helpers internal instead of forcing them into Kit's public surface.
+            dependencies: ["OrchestraCore", "OrchestraKit"]
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["OrchestraCore"],
+            dependencies: ["OrchestraCore", "OrchestraKit"],
             resources: [.copy("Fixtures")]
         ),
     ]

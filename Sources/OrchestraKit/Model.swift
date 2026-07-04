@@ -133,8 +133,11 @@ public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
     public let models: [AgentModel]  // this agent's selectable models
     public let capabilities: AgentCapabilities
 
+    // No default for `capabilities`: the `.claudeCode` preset is an adapter extension that lives in
+    // OrchestraCore (client-safe Kit cannot reference it). Every call site passes the adapter's own
+    // `capabilities` explicitly, so this is behavior-neutral.
     public init(id: String, name: String, icon: String, models: [AgentModel],
-                capabilities: AgentCapabilities = .claudeCode) {
+                capabilities: AgentCapabilities) {
         self.id = id; self.name = name; self.icon = icon; self.models = models
         self.capabilities = capabilities
     }

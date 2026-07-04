@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+@testable import OrchestraKit   // Config.dataDir(isLinux:home:env:) is an internal Kit helper post-F1
 
 @Suite("Config.dataDir — platform-specific data directory")
 struct ConfigDataDirTests {

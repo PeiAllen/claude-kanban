@@ -10,4 +10,4 @@ import Glibc
 import Musl
 #endif
 
-@inline(__always) func closeFD(_ fd: Int32) { _ = close(fd) }
+@inline(__always) public func closeFD(_ fd: Int32) { _ = close(fd) }
