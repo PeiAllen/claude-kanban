@@ -99,11 +99,14 @@ final class BoardModel: ObservableObject {
     @Published var connectionState: ConnectionState = .down
     /// Rebuilt whenever the active connection changes (a fresh transport per connection).
     private(set) var client: ControlClient
+    /// Stable per-install identity sent to the daemon so it can attribute ownership + detect this
+    /// client's disconnect (D3/D4). Resolved once; the same id is reused for local and remote links.
+    private let clientId = ClientIdentity.persistentId(at: Config.clientIdPath)
     /// Posts a macOS notification / sound when an agent card flips to `.waiting` (needs the human).
     private let notifier = AgentNotifier()
 
     init() {
-        client = ControlClient(socketPath: Config.socketPath, source: .app)
+        client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()
         notifier.onSelect = { [weak self] id in self?.selectedId = id }
     }
@@ -187,7 +190,7 @@ final class BoardModel: ObservableObject {
         }
         do {
             let sockPath = try await connectionController.localSocketPath(for: conn)
-            client = ControlClient(socketPath: sockPath, source: .app)
+            client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
             wireState()
             streamStarted = false
             if conn.isLocal {
