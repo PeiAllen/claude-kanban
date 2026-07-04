@@ -41,8 +41,13 @@ public actor OrchestraService {
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
-    // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout).
-    var resumeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout). Keyed by
+    // card id but TOKEN-tagged: two overlapping resume() for the same id must never silently clobber (and
+    // thus LEAK) the earlier continuation — the displaced waiter is resolved `.superseded`, and a stale
+    // timeout is ignored unless its token still owns the slot. See `awaitResume`/`resolveResume`.
+    var resumeWaiters: [UUID: (token: UInt64, cont: CheckedContinuation<ResumeOutcome, Never>)] = [:]
+    // Monotonic tag minted per awaitResume so a timeout only fires for the waiter it was scheduled for.
+    var resumeTokenSeq: UInt64 = 0
     // A SessionStart(resume) callback can arrive BEFORE `awaitResume` registers its waiter, because
     // resume()'s off-actor relaunch frees this reentrant actor to service `report()` mid-revival. We
     // remember such early confirmations here so the waiter consumes them instead of losing the wakeup

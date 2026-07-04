@@ -37,6 +37,17 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         case nativeReinvoke, relaunch, controlChannel
     }
 
+    /// How a `resume` relaunch is confirmed alive (F2 wake / recovery). `sessionStartHook` = wait for the
+    /// agent's own SessionStart(resume) telemetry to reach `report()` (Claude `hooksPush` — precise + fast).
+    /// `relaunchLiveness` = the successful relaunch (tmux `ensure`) IS the confirmation because the agent
+    /// emits no resume marker: Codex's `codex resume` writes no rollout at resume time, so waiting for a
+    /// hook would time out at the grace and fail-DANGEROUSLY `markDead` a card whose session is actually
+    /// live. The continuous liveness reconcile (`reconcileLiveness`, 2s) is the safety net if the relaunch
+    /// truly didn't take.
+    public enum ResumeConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
+        case sessionStartHook, relaunchLiveness
+    }
+
     /// How the durable inbox is drained into the agent (F3). `stopHook` = a Stop hook injects at
     /// turn-end (both shipped agents); `none` = no live drain. (Delivery to an *idle* card is F2 wake —
     /// a resume-seed folds the inbox into the opening turn — not an `inboxDrain` mode.)
@@ -79,11 +90,13 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
+    public let resumeConfirmation: ResumeConfirmation
 
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
-                terminalImagePaste: TerminalImagePaste = .direct) {
+                terminalImagePaste: TerminalImagePaste = .direct,
+                resumeConfirmation: ResumeConfirmation = .sessionStartHook) {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
@@ -92,5 +105,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
+        self.resumeConfirmation = resumeConfirmation
     }
 }

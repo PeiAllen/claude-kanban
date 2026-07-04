@@ -322,7 +322,10 @@ public extension AgentCapabilities {
         inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
-        terminalImagePaste: .controlV)
+        terminalImagePaste: .controlV,
+        // `codex resume` emits no SessionStart(resume) marker (no rollout written at resume time), so the
+        // successful relaunch itself confirms — waiting for a hook would time out and kill a live idle card.
+        resumeConfirmation: .relaunchLiveness)
 }
 
 /// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).
