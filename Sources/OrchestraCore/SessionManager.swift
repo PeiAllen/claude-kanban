@@ -97,6 +97,13 @@ public struct SessionManager: Sendable {
         }
     }
 
+    /// Best-effort: detach every client of the card's `agent` grouped view session so a new owner's
+    /// PTY (re)sizes the window. No-op if the session/view doesn't exist. Belt-and-suspenders behind
+    /// the D5 desktop unmount — never load-bearing for the ownership lease itself.
+    public func detachAgentViewClients(_ base: String) throws {
+        _ = try? tmux(["detach-client", "-s", SessionManager.viewSession(base, "agent")])
+    }
+
     /// Grouped view sessions pinned to this base session's windows (named `<base>__<window>`).
     private func viewSessions(of base: String) throws -> [String] {
         let r = try tmux(["list-sessions", "-F", "#{session_name}"])

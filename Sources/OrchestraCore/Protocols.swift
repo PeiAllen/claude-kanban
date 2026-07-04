@@ -23,11 +23,15 @@ public protocol SessionManaging: Sendable {
     func sendChord(_ name: String, tokens: [KeyToken], window: String) throws
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult
     func kill(_ name: String) throws
+    func detachAgentViewClients(_ base: String) throws
 }
 
 public extension SessionManaging {
     // Default so test stubs needn't implement it; the real `SessionManager` overrides.
     func closeShellWindow(_ name: String, window: String) throws {}
+    // Default no-op so mocks/conformers needn't implement it; `SessionManager` overrides with a
+    // best-effort tmux detach. Belt-and-suspenders behind the D5 desktop unmount.
+    func detachAgentViewClients(_ base: String) throws {}
     /// Convenience: launch with no extra environment (keep-alive shells + existing callers/tests).
     @discardableResult
     func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {

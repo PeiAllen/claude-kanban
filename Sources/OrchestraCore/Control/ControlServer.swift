@@ -184,6 +184,35 @@ public final class ControlServer: @unchecked Sendable {
             let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
+        case "agentTerminalOwner":
+            // App/phone UI coordination — internal + app-only, NOT a registry Command (an agent must
+            // never take over a terminal). Ephemeral lease; nothing is persisted to the task store.
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("agentTerminalOwner needs ref")
+            }
+            return try JSONValue(encodable: await service.agentTerminalOwner(ref))
+        case "takeOverAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"),
+                  let kind = p.optString("kind").flatMap(AgentTerminalOwnerKind.init(rawValue:)) else {
+                throw OrchestraError.invalidParams("takeOverAgentTerminal needs ref, clientId, kind")
+            }
+            return try JSONValue(encodable:
+                await service.takeOverAgentTerminal(ref, clientId: clientId, kind: kind))
+        case "releaseAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"), let epoch = p.optInt("epoch") else {
+                throw OrchestraError.invalidParams("releaseAgentTerminal needs ref, clientId, epoch")
+            }
+            return try JSONValue(encodable:
+                try await service.releaseAgentTerminal(ref, clientId: clientId, epoch: epoch))
+        case "heartbeatAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"), let epoch = p.optInt("epoch") else {
+                throw OrchestraError.invalidParams("heartbeatAgentTerminal needs ref, clientId, epoch")
+            }
+            return try JSONValue(encodable:
+                try await service.heartbeatAgentTerminal(ref, clientId: clientId, epoch: epoch))
         default:
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")
