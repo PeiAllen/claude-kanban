@@ -109,7 +109,8 @@ CODEX PARITY + DELIVERY
 
 ### PR F1 — Split a client-safe core out of `OrchestraCore`
 
-**Branch:** `mobile/f1-core-split` · **Stacks on:** none (base = `main`/`mobile-impl-orchestration`)
+**Branch:** `mobile/f1-core-split` · **Stacks on:** none (base = `mobile-impl-orchestration` — the
+integration branch; **all PRs merge onto `mobile-impl-orchestration`, never `main`**)
 
 **Problem:** `OrchestraCore` compiles daemon-side code (`Proc`, `SessionManager`, `OrchestraService`,
 `Launcher`, `DaemonLifecycle`) that uses `Foundation.Process` / `posix_spawn`, unavailable on iOS.

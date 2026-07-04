@@ -107,11 +107,22 @@ flowchart TD
 - **Wave 2 (after Wave 1 plans land + reconcile):** M1, M5, T1, then M2, M3, M4.
 - **Wave 3 (after Wave 2):** M6a→M6, M7, T2, T3, T4, C1, C2, N1.
 
+## Integration target — the `mobile-impl-orchestration` branch, NEVER `main`
+
+**All work integrates onto the `mobile-impl-orchestration` branch, not `main`.** That branch is the
+mobile-feature integration line (it already carries the plan docs). `main` is not touched until Allen
+decides to land the whole feature. Concretely:
+
+- **Base of the forest:** the root PRs (F1, D1, D2, D3) are cut off `mobile-impl-orchestration`.
+- **"Merged" always means merged into `mobile-impl-orchestration`** (never `main`) throughout this plan.
+
 ## Implementation stacking rule (Phase C)
 
-A PR's implementation branch is cut **off its dependency's branch**, not off `main`, wherever the
-depends-on column names a PR (e.g. `mobile/f2-*` is cut off `mobile/f1-*`; `mobile/t4-*` is cut off
-`mobile/t1-*` and must also carry D4/D5's daemon changes — merge order: D-track before T4). Where a
-PR has **multiple** dependencies (T2, T3, T4), it is cut off the **primary code dependency** (the iOS
-branch) and the others (daemon RPCs) must already be **merged to main** first. The orchestrator
-sequences merges so daemon PRs (D1–D5) land before the iOS PRs that consume them.
+A PR's implementation branch is cut **off its dependency's branch**, not off the integration branch,
+wherever the depends-on column names a PR (e.g. `mobile/f2-*` is cut off `mobile/f1-*`; `mobile/t4-*`
+is cut off `mobile/t1-*` and must also carry D4/D5's daemon changes — merge order: D-track before T4).
+Where a PR has **multiple** dependencies (T2, T3, T4), it is cut off the **primary code dependency**
+(the iOS branch) and the others (daemon RPCs) must already be **merged into
+`mobile-impl-orchestration`** first. The orchestrator sequences merges so daemon PRs (D1–D5) land on
+the integration branch before the iOS PRs that consume them. `main` receives nothing until Allen
+green-lights the whole feature.
