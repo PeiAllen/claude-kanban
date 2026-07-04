@@ -58,6 +58,11 @@ final class BoardModel: ObservableObject {
         get { selectedId.flatMap { inspectorModeByCard[$0] } ?? .agent }
         set { if let id = selectedId { inspectorModeByCard[id] = newValue } }
     }
+
+    func capabilities(for agentId: String) -> AgentCapabilities {
+        agents.first { $0.id == agentId }?.capabilities ?? .claudeCode
+    }
+
     /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
     @Published var requestInboxOpen = false
     /// The `:` command palette overlay.

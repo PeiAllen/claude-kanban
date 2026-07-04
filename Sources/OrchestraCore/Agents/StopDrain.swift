@@ -80,9 +80,9 @@ public enum StopDrain {
 
     /// The Stop-hook stdout that blocks the stop and hands `reason` to the model to continue.
     public static func blockJSON(reason: String) -> String {
-        let obj = JSONValue.object(["decision": .string("block"), "reason": .string(reason)])
-        if let data = try? obj.rawData(), let s = String(data: data, encoding: .utf8) {
-            return s
+        if let data = try? JSONValue.string(reason).rawData(),
+           let escapedReason = String(data: data, encoding: .utf8) {
+            return #"{"decision":"block","reason":"# + escapedReason + "}"
         }
         return #"{"decision":"block","reason":""}"#
     }

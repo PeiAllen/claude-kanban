@@ -226,7 +226,10 @@ private struct DebugLaunchHook: ViewModifier {
     /// `[any Adapter]` so the heterogeneous literal doesn't stall type inference.
     static var mockAgents: [AgentInfo] {
         let adapters: [any Adapter] = [ClaudeCodeAdapter(), CodexAdapter()]
-        return adapters.map { AgentInfo(id: $0.id, name: $0.name, icon: $0.icon, models: $0.models()) }
+        return adapters.map {
+            AgentInfo(id: $0.id, name: $0.name, icon: $0.icon,
+                      models: $0.models(), capabilities: $0.capabilities)
+        }
     }
 
     /// Visual-check harness for the inspector's shell strip (scripts/orch-ui-shot.sh). Injects one

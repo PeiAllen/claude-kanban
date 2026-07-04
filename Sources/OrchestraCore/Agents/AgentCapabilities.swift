@@ -56,6 +56,21 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         case subscription, apiKey
     }
 
+    /// How Orchestra should handle host Cmd-V image paste for a terminal-hosted agent. `direct` delegates
+    /// to the terminal/agent's normal paste path. `controlV` means the TUI has a native Ctrl-V image paste
+    /// action that reads the clipboard itself, so Orchestra may send that pty byte for Cmd-V image paste
+    /// without materializing files or inventing prompt text.
+    public enum TerminalImagePaste: String, Sendable, Equatable, Codable, CaseIterable {
+        case direct, controlV
+
+        public var canPasteImages: Bool {
+            switch self {
+            case .direct: true
+            case .controlV: true
+            }
+        }
+    }
+
     public let sessionId: SessionId
     public let telemetry: Telemetry
     public let contextUsage: ContextUsage
@@ -63,10 +78,12 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let inboxDrain: InboxDrain
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
+    public let terminalImagePaste: TerminalImagePaste
 
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
-                readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode) {
+                readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
+                terminalImagePaste: TerminalImagePaste = .direct) {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
@@ -74,18 +91,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.inboxDrain = inboxDrain
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
+        self.terminalImagePaste = terminalImagePaste
     }
-}
-
-public extension AgentCapabilities {
-    /// The Claude Code adapter's shipped capabilities — the behavior A1 must preserve. Also the default
-    /// for the test `StubAdapter`, so existing suites see Claude-shaped behavior unless they opt out.
-    static let claudeCode = AgentCapabilities(
-        sessionId: .seeded,
-        telemetry: .hooksPush,
-        contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed,
-        authMode: .subscription)
 }

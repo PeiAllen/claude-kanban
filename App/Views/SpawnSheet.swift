@@ -52,7 +52,8 @@ struct SpawnSheet: View {
     private var agentOptions: [AgentInfo] {
         if !model.agents.isEmpty { return model.agents }
         let a = ClaudeCodeAdapter()
-        return [AgentInfo(id: a.id, name: a.name, icon: a.icon, models: a.models())]
+        return [AgentInfo(id: a.id, name: a.name, icon: a.icon,
+                          models: a.models(), capabilities: a.capabilities)]
     }
 
     /// The currently-selected agent (falls back to the first available).
