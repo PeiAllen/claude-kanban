@@ -431,6 +431,10 @@ public actor OrchestraService {
                            report: StatusReport?, source: SessionSource?) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
         if let report { try? await self.report(task.id, report) }
+        if event == .sessionStart, let source, source != .startup, source != .compact,
+           report?.event?.sessionSource == nil {
+            try? await self.report(task.id, StatusReport(sessionSource: source.rawValue))
+        }
         switch event {
         case .sessionStart where source != .compact:
             // Skip re-orienting on a mid-turn compact (the agent already has its bearings).

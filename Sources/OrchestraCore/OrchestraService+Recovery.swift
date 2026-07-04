@@ -57,7 +57,8 @@ extension OrchestraService {
         // SessionEnd from the killed process (and the poll's liveness reconcile) is ignored mid-revival
         // — both gate on `!recovering.contains(id)`. Do not narrow this window.
         recovering.insert(id)
-        defer { recovering.remove(id) }
+        var keepRecoveringAfterReturn = false
+        defer { if !keepRecoveringAfterReturn { recovering.remove(id) } }
         // Start clean: drop any confirmation left over from a prior attempt so only THIS relaunch's
         // SessionStart(resume) callback can confirm it.
         pendingResumeConfirmations.remove(id)
@@ -91,6 +92,8 @@ extension OrchestraService {
         guard confirmed else {
             return try await failResume(id, detail: "no SessionStart callback in \(grace)s", source: source)
         }
+        keepRecoveringAfterReturn = true
+        scheduleRecoveringRelease(id, after: grace)
 
         let updated = try await store.update(id) {
             $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
