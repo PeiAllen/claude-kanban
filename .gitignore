@@ -1,6 +1,8 @@
 .DS_Store
 .scratch/
-.claude/
+!.claude/
+.claude/*
+!.claude/commands/
 # Obsidian vault config — "Open notes" registers the worktree root as a vault, which creates
 # .obsidian/ here. Both patterns match the vault script's own .gitignore write, so it no-ops
 # instead of dirtying this tracked file at runtime. (.trash/ = Obsidian's optional in-vault
