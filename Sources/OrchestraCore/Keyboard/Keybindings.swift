@@ -1,11 +1,24 @@
 import Foundation
 
-/// The pure keyboard dispatch table: given a chord, the current context, and whether a `g` go-to
-/// sequence is in flight, return the intent to execute (or nil to let the key pass through to the
-/// terminal / text field / overlay). No UI, no state — the App holds the `awaitingGoTo` flag and the
-/// `y`-yank prefix, and executes whatever intent this returns.
-public enum KeyMap {
-    public static func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent? {
+/// The pure keyboard policy: given a chord, the current context, and whether a `g` go-to sequence is
+/// in flight, return the intent to execute (or nil to let the key pass through to the terminal / text
+/// field / overlay). Stateless — the App holds the transient prefix flags (`awaitingGoTo`, the yank
+/// prefix) and executes whatever intent this returns.
+///
+/// Two implementations, chosen by the "Vim keyboard" setting (see `KeyboardController`) rather than
+/// branched on inline: `CommandKeybindings` — the always-on ⌘ accelerators + Esc — and
+/// `VimKeybindings`, which layers the full single-key navigation/command set on top of it.
+public protocol Keybindings: Sendable {
+    func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent?
+}
+
+/// The generic, always-on layer: the ⌘ accelerators (⌘N / ⌘T / ⌘W) plus a bare `Esc` to close or
+/// clear the board selection / an overlay. Nothing else is captured — no navigation, no single-key
+/// verbs — so every other key passes straight through to the terminal, a text field, or an overlay.
+public struct CommandKeybindings: Keybindings {
+    public init() {}
+
+    public func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent? {
         // Cmd accelerators apply in every context (terminals ignore Cmd, so these never collide).
         if chord.mods.contains(.command) {
             switch chord.key {
@@ -15,12 +28,33 @@ public enum KeyMap {
             default:  return nil
             }
         }
+        // A bare Esc closes/clears the board selection or an overlay; it stays sacred to the pty/field.
+        if chord.key == "\u{1B}", chord.mods.isEmpty, ctx == .board || ctx == .overlay { return .closeOrClear }
+        return nil
+    }
+}
+
+/// The full vim layer: everything `CommandKeybindings` resolves, plus `hjkl` navigation, spatial pane
+/// focus, edge resize, the `g` / `y` / `f` prefixes, and the single-key board verbs. Composed on the
+/// generic layer so the ⌘ / Esc handling lives in exactly one place.
+public struct VimKeybindings: Keybindings {
+    private let command = CommandKeybindings()
+
+    public init() {}
+
+    public func intent(for chord: KeyChord, in ctx: KeyContext, awaitingGoTo: Bool) -> KeyIntent? {
+        // The generic layer decides first: ⌘ accelerators everywhere, Esc on the board / an overlay.
+        if let base = command.intent(for: chord, in: ctx, awaitingGoTo: awaitingGoTo) { return base }
+        // Any other ⌘ chord belongs to the command layer alone — never fall through to a board verb
+        // (e.g. ⌘D must not read as the bare `d` toggle-diff).
+        if chord.mods.contains(.command) { return nil }
+
         // Ctrl-Shift-hjkl: resize the focused pane's edge (board / terminal only).
-        if chord.mods.contains(.control), chord.mods.contains(.shift), let dir = direction(chord.key) {
+        if chord.mods.contains(.control), chord.mods.contains(.shift), let dir = Self.direction(chord.key) {
             return (ctx == .board || ctx == .terminal) ? .resize(dir) : nil
         }
         // Ctrl-hjkl: pane focus on the board / in a terminal; only vertical (form/dropdown) in a field.
-        if chord.mods.contains(.control), let dir = direction(chord.key) {
+        if chord.mods.contains(.control), let dir = Self.direction(chord.key) {
             switch ctx {
             case .field:            return (dir == .up || dir == .down) ? .focusPane(dir) : nil
             case .board, .terminal: return .focusPane(dir)
@@ -31,9 +65,9 @@ public enum KeyMap {
         case .terminal, .field:
             return nil                                  // everything else → pty / text field
         case .overlay:
-            return chord.key == "\u{1B}" ? .closeOrClear : nil
+            return nil                                  // Esc already handled by the command layer
         case .board:
-            return boardIntent(chord, awaitingGoTo: awaitingGoTo)
+            return Self.boardIntent(chord, awaitingGoTo: awaitingGoTo)
         }
     }
 
@@ -73,6 +107,7 @@ public enum KeyMap {
         case "O": return .openInZed
         case "d": return .toggleDiff
         case "t": return .newShell
+        case "y": return .beginYank
         case "z": return .toggleCollapse
         case "f": return .hint
         case ":": return .palette

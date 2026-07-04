@@ -8,6 +8,12 @@ struct OrchestraApp: App {
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
 
+    init() {
+        // The "Vim keyboard" setting defaults to on; register it so the plain-object
+        // KeyboardController reads `true` before the user ever visits Settings.
+        UserDefaults.standard.register(defaults: ["orch_vim_keys": true])
+    }
+
     var body: some Scene {
         Window("Orchestra · Personal", id: "board") {
             ContentView()

@@ -1,10 +1,20 @@
 import XCTest
 @testable import OrchestraCore
 
-final class KeyMapTests: XCTestCase {
+final class KeybindingsTests: XCTestCase {
+    private let vim = VimKeybindings()
+    private let command = CommandKeybindings()
+
+    /// Resolve through the full vim layer.
     private func map(_ c: KeyChord, _ ctx: KeyContext, goTo: Bool = false) -> KeyIntent? {
-        KeyMap.intent(for: c, in: ctx, awaitingGoTo: goTo)
+        vim.intent(for: c, in: ctx, awaitingGoTo: goTo)
     }
+    /// Resolve through the generic (command-only) layer.
+    private func base(_ c: KeyChord, _ ctx: KeyContext, goTo: Bool = false) -> KeyIntent? {
+        command.intent(for: c, in: ctx, awaitingGoTo: goTo)
+    }
+
+    // MARK: - VimKeybindings
 
     func test_board_hjkl_moves() {
         XCTAssertEqual(map(KeyChord("j"), .board), .moveSelection(.down))
@@ -22,6 +32,10 @@ final class KeyMapTests: XCTestCase {
         XCTAssertEqual(map(KeyChord("i"), .board), .enterTerminal)
         XCTAssertEqual(map(KeyChord("I", .shift), .board), .openInbox)
         XCTAssertEqual(map(KeyChord("t"), .board), .newShell)
+    }
+
+    func test_board_yank_prefix() {
+        XCTAssertEqual(map(KeyChord("y"), .board), .beginYank)
     }
 
     func test_board_carry_is_shifted_hl() {
@@ -72,6 +86,12 @@ final class KeyMapTests: XCTestCase {
         }
     }
 
+    func test_unmapped_cmd_chord_does_not_fall_through_to_a_board_verb() {
+        // ⌘D must pass through, not read as the bare `d` toggle-diff.
+        XCTAssertNil(map(KeyChord("d", .command), .board))
+        XCTAssertNil(map(KeyChord("a", .command), .board))
+    }
+
     func test_terminal_passes_through_non_ctrl() {
         XCTAssertNil(map(KeyChord("j"), .terminal))
         XCTAssertNil(map(KeyChord("\u{1B}"), .terminal))    // Esc is sacred to the pty
@@ -108,5 +128,35 @@ final class KeyMapTests: XCTestCase {
 
     func test_ctrl_hjkl_still_focuses_without_shift() {
         XCTAssertEqual(map(KeyChord("l", .control), .board), .focusPane(.right))
+    }
+
+    // MARK: - CommandKeybindings (Vim keyboard off)
+
+    func test_command_keeps_cmd_accelerators_everywhere() {
+        for ctx in [KeyContext.board, .terminal, .field, .overlay] {
+            XCTAssertEqual(base(KeyChord("n", .command), ctx), .newCard)
+            XCTAssertEqual(base(KeyChord("t", .command), ctx), .newShell)
+            XCTAssertEqual(base(KeyChord("w", .command), ctx), .closeFrontmost)
+        }
+    }
+
+    func test_command_keeps_esc_on_board_and_overlay() {
+        XCTAssertEqual(base(KeyChord("\u{1B}"), .board), .closeOrClear)
+        XCTAssertEqual(base(KeyChord("\u{1B}"), .overlay), .closeOrClear)
+        // Esc is still sacred to the pty / a text field even with the vim layer off.
+        XCTAssertNil(base(KeyChord("\u{1B}"), .terminal))
+        XCTAssertNil(base(KeyChord("\u{1B}"), .field))
+    }
+
+    func test_command_swallows_nothing_else() {
+        XCTAssertNil(base(KeyChord("j"), .board))                     // navigation off
+        XCTAssertNil(base(KeyChord("c"), .board))                     // verbs off
+        XCTAssertNil(base(KeyChord("y"), .board))                     // yank off
+        XCTAssertNil(base(KeyChord("f"), .board))                     // hints off
+        XCTAssertNil(base(KeyChord(":", .shift), .board))             // palette off
+        XCTAssertNil(base(KeyChord("/"), .board))                     // search off
+        XCTAssertNil(base(KeyChord("l", .control), .board))          // pane focus off
+        XCTAssertNil(base(KeyChord("H", [.control, .shift]), .board)) // resize off
+        XCTAssertNil(base(KeyChord("g"), .board, goTo: true))        // goto off
     }
 }

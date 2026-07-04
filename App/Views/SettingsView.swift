@@ -14,6 +14,10 @@ struct SettingsView: View {
     @State private var statusLineMode: StatusLineMode = .passthroughGlobal
     @State private var customStatusLine = ""
 
+    // Local app preference (not daemon Config), like the notification rows. Registered `true` at
+    // launch in OrchestraApp; the KeyboardController reads the same key live on each keypress.
+    @AppStorage("orch_vim_keys") private var vimKeys = true
+
     // Bump to force a re-read of the per-trigger notification UserDefaults after a menu pick.
     @State private var notifyTick = 0
 
@@ -75,6 +79,12 @@ struct SettingsView: View {
                         rowDivider
                         row("Command") { field($customStatusLine, "statusline.sh", focus: .custom) }
                     }
+                }
+
+                section("Keyboard") {
+                    toggleRow("Vim keyboard",
+                              "Single-key navigation and commands (hjkl, g, f, :, …). ⌘N / ⌘T / ⌘W and Esc always work.",
+                              isOn: $vimKeys)
                 }
 
                 section("Notifications") {
@@ -140,6 +150,23 @@ struct SettingsView: View {
 
     private var rowDivider: some View {
         Rectangle().fill(theme.hair).frame(height: 0.5).padding(.leading, 13)
+    }
+
+    /// A label + description on the left, a themed switch on the right.
+    private func toggleRow(_ label: String, _ desc: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(F.ui(12.5, .medium)).foregroundStyle(theme.text)
+                Text(desc).font(F.ui(11)).foregroundStyle(theme.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(theme.accent)
+        }
+        .padding(.horizontal, 13).padding(.vertical, 11)
     }
 
     private func field(_ binding: Binding<String>, _ placeholder: String, focus: Field) -> some View {

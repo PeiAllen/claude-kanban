@@ -3,12 +3,16 @@ import OrchestraCore
 
 /// The app's single keyboard router. Installs one `NSEvent` keyDown local monitor (mirroring the
 /// shared scroll monitor in AgentTerminalView), derives the current `KeyContext` from the first
-/// responder + model state, asks the pure `KeyMap` what to do, and executes the resulting intent
-/// against `BoardModel`. Returns `nil` from the monitor to swallow a consumed key; anything it doesn't
-/// consume returns the event untouched so SwiftTerm / text fields / SwiftUI see it normally.
+/// responder + model state, asks the active `Keybindings` what to do, and executes the resulting
+/// intent against `BoardModel`. Returns `nil` from the monitor to swallow a consumed key; anything it
+/// doesn't consume returns the event untouched so SwiftTerm / text fields / SwiftUI see it normally.
 @MainActor
 final class KeyboardController {
     private let model: BoardModel
+    /// The two keybinding strategies, selected per keypress by the "Vim keyboard" setting. Both are
+    /// stateless value types, so a single shared instance of each is all we need.
+    private static let vim: Keybindings = VimKeybindings()
+    private static let command: Keybindings = CommandKeybindings()
     /// A `g` go-to sequence is in flight (waiting for the second key).
     private var pendingG = false
     /// A `y` yank sequence is in flight (waiting for c/t/p).
@@ -90,7 +94,14 @@ final class KeyboardController {
 
         let ctx = context()
 
-        // `y`-prefix yank state machine (board only) — kept out of KeyMap to avoid a second prefix arg.
+        // Pick the strategy once — the "Vim keyboard" setting (on by default). CommandKeybindings
+        // resolves only ⌘ accelerators + Esc; VimKeybindings adds the whole single-key layer. Read
+        // live so a Settings toggle takes effect on the very next keystroke.
+        let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
+
+        // `y`-prefix yank state machine (board only) — resolving the c/t/p second key stays here
+        // rather than in the pure layer, to avoid a second prefix arg. It's self-gating: `pendingY`
+        // is only ever set by the `.beginYank` intent, which only VimKeybindings emits.
         if ctx == .board, pendingY {
             pendingY = false
             switch ch.key {
@@ -100,10 +111,9 @@ final class KeyboardController {
             default:  return true                       // abort the yank, swallow the stray key
             }
         }
-        if ctx == .board, ch.key == "y", ch.mods.isEmpty { pendingY = true; return true }
 
         let wasAwaitingG = pendingG
-        guard let intent = KeyMap.intent(for: ch, in: ctx, awaitingGoTo: wasAwaitingG) else {
+        guard let intent = bindings.intent(for: ch, in: ctx, awaitingGoTo: wasAwaitingG) else {
             pendingG = false
             return false
         }
@@ -129,6 +139,7 @@ final class KeyboardController {
         case .toggleDiff:           model.inspectorMode = (model.inspectorMode == .agent ? .diff : .agent); return true
         case .openInbox:            model.requestInboxOpen = true; return true
         case .copy(let t):          model.copySelected(t); return true
+        case .beginYank:            pendingY = true; return true
         case .beginGoTo:            pendingG = true; return true
         case .goTo(let t):          model.goTo(t); return true
         case .search:               model.searchQuery = ""; return true
