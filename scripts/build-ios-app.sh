@@ -45,10 +45,15 @@ if [[ "$RUN" == 1 ]]; then
   # Boot a headless Simulator, install, launch against the local daemon socket, screenshot.
   # Never touches the user's screen (the Simulator runs headless; simctl drives it).
   DEV_SOCKET="${ORCH_DEV_SOCKET:-$HOME/Library/Application Support/Orchestra/orchestrad.sock}"
-  DEVICE="${ORCH_SIM_DEVICE:-iPhone 15}"
-  # macOS-awk-safe: grab the first available device whose name matches, then its 36-char UDID.
-  UDID="$(xcrun simctl list devices available | grep -m1 "    ${DEVICE} (" | grep -oE '[0-9A-Fa-f-]{36}' | head -1)"
-  [[ -n "$UDID" ]] || { echo "error: no available Simulator '$DEVICE' (set ORCH_SIM_DEVICE)"; exit 1; }
+  # Pick the named device if set, else the first available iPhone (device names drift across Xcode
+  # versions, so we don't hardcode one).
+  if [[ -n "${ORCH_SIM_DEVICE:-}" ]]; then
+    UDID="$(xcrun simctl list devices available | grep -m1 "    ${ORCH_SIM_DEVICE} (" | grep -oE '[0-9A-Fa-f-]{36}' | head -1)"
+    [[ -n "$UDID" ]] || { echo "error: no available Simulator '$ORCH_SIM_DEVICE'"; exit 1; }
+  else
+    UDID="$(xcrun simctl list devices available | grep -m1 '    iPhone ' | grep -oE '[0-9A-Fa-f-]{36}' | head -1)"
+    [[ -n "$UDID" ]] || { echo "error: no available iPhone Simulator (set ORCH_SIM_DEVICE)"; exit 1; }
+  fi
   xcrun simctl boot "$UDID" 2>/dev/null || true
   APP="$(xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration "$CONFIG" \
     -destination 'generic/platform=iOS Simulator' -showBuildSettings 2>/dev/null \
