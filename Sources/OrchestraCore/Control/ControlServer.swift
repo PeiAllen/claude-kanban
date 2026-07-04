@@ -8,6 +8,9 @@ public final class ControlServer: @unchecked Sendable {
     let registry = CommandRegistry()
     let socketPath: String
     public var onConfigChanged: (@Sendable (Config) -> Void)?
+    /// Fired once per connection teardown with the connection's clientId (nil-clientId connections
+    /// never fire). D4 wires its ownership lease here to mark a disconnected client's leases stale.
+    public var onClientDisconnect: (@Sendable (String) -> Void)?
 
     private var serverFd: Int32 = -1
     private let lock = NSLock()
@@ -71,13 +74,13 @@ public final class ControlServer: @unchecked Sendable {
             }
             _Concurrency.Task { [weak self] in await self?.handle(req, conn) }
         }
-        removeSubscriber(conn)
-        conn.close()
+        handleDisconnect(conn)
     }
 
     // MARK: - dispatch
 
     private func handle(_ req: RPCRequest, _ conn: PeerConnection) async {
+        if let cid = req.clientId { conn.setClientId(cid) }
         let source = ActivitySource(rawValue: req.source ?? "app") ?? .app
         do {
             let result = try await dispatch(req, conn, source: source)
@@ -109,7 +112,7 @@ public final class ControlServer: @unchecked Sendable {
             conn.isSubscriber = true
             conn.onBroken = { [weak self, weak conn] in
                 guard let self, let conn else { return }
-                self.removeSubscriber(conn); conn.close()
+                self.handleDisconnect(conn)
             }
             // Register + replay the ring under one lock (paired with handleEvent's lock) so live
             // delivery and history replay can't duplicate or reorder. enqueue() only appends to the
@@ -214,6 +217,24 @@ public final class ControlServer: @unchecked Sendable {
     }
 
     private func removeSubscriber(_ conn: PeerConnection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
+
+    /// Snapshot of the clientIds with at least one live subscriber connection. D4 uses this for
+    /// liveness. NOTE: a reconnecting client briefly disappears here (old connection torn down before
+    /// the new one subscribes), so D4 must use a heartbeat grace window, not treat absence as loss.
+    public func connectedClientIds() -> Set<String> {
+        lock.withLock { Set(subscribers.values.compactMap { $0.clientId }) }
+    }
+
+    /// Single teardown path for a dropped connection: drop it as a subscriber, close it, and fire
+    /// `onClientDisconnect` once if it had a known clientId. Reached from the read-loop EOF and from a
+    /// broken write; the once-guard keeps the callback single-shot.
+    private func handleDisconnect(_ conn: PeerConnection) {
+        removeSubscriber(conn)
+        conn.close()
+        if let cid = conn.clientId, conn.markDisconnectNotified() {
+            onClientDisconnect?(cid)
+        }
+    }
 }
 
 /// A single client connection with a serial, non-blocking writer. All writes (responses + events)
@@ -230,6 +251,22 @@ final class PeerConnection: @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
     private var broken = false
+    private var _clientId: String?
+    private var disconnectNotified = false
+
+    /// The caller's stable per-install identity (D3). Set once from the first request that carries a
+    /// clientId; nil for anonymous CLI/MCP connections. Read by the ownership lease (D4).
+    var clientId: String? { lock.withLock { _clientId } }
+
+    /// Record the connection's clientId. Idempotent: a client sends the same id on every request, so
+    /// only the first non-nil set sticks.
+    func setClientId(_ id: String) { lock.withLock { if _clientId == nil { _clientId = id } } }
+
+    /// Returns true exactly once, so the server fires `onClientDisconnect` a single time even though
+    /// teardown can be reached from both the read-loop EOF and a broken write.
+    func markDisconnectNotified() -> Bool {
+        lock.withLock { if disconnectNotified { return false }; disconnectNotified = true; return true }
+    }
 
     init(fd: Int32) {
         self.fd = fd
