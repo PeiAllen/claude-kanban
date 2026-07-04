@@ -2,22 +2,33 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-/// Stub until M5 (Connection · Notifications · Appearance · About). Surfaces just the live link state
-/// and the resolved dev-transport socket so the skeleton has an at-a-glance connection readout.
+/// Settings tab (M5): Connection (status banner + `ConnectionStore` list) · Notifications (3 triggers) ·
+/// Appearance · About. Grouped inset lists, grounded in the shared `Connection` + notification models.
 struct SettingsTab: View {
     @EnvironmentObject var model: BoardModel
+    @State private var daemonVersion: String?
+
     var body: some View {
         NavigationStack {
             List {
-                Section("Connection") {
-                    LabeledContent("Status", value: model.connectionState.rawValue)
-                    LabeledContent("Daemon", value: ConnectionSocketResolver.socketPath(for: .local))
-                }
-                Section("About") {
-                    LabeledContent("App", value: "Orchestra iOS 0.1.0")
-                }
+                ConnectionSettingsSections()
+                NotificationsSettingsSection()
+                AppearanceSettingsSection()
+                aboutSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Settings")
+        }
+        // Refresh the daemon version whenever the link comes up (and once on appear).
+        .task(id: model.connectionState) {
+            daemonVersion = model.connectionState == .live ? await model.daemonVersion() : nil
+        }
+    }
+
+    private var aboutSection: some View {
+        Section("About") {
+            LabeledContent("App", value: "Orchestra iOS \(OrchestraVersion.current)")
+            LabeledContent("Daemon", value: daemonVersion ?? (model.connectionState == .live ? "…" : "—"))
         }
     }
 }

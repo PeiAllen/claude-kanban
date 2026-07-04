@@ -266,6 +266,13 @@ public final class BoardModel: ObservableObject {
         #endif
     }
 
+    /// The connected daemon's version string (About section), via the `version` RPC. `nil` when offline
+    /// or the call fails — the caller shows a placeholder rather than fabricating a value.
+    public func daemonVersion() async -> String? {
+        struct VersionInfo: Decodable { let version: String }
+        return try? await client.call("version").decode(VersionInfo.self).version
+    }
+
     #if os(macOS)
     /// Invoked from the onboarding screen's primary button. Installs + starts the daemon and, on
     /// success, marks onboarding complete and dismisses the welcome screen. Host-only: iOS has no
