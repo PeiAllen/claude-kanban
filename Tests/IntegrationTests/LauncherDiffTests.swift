@@ -136,16 +136,17 @@ struct LauncherDiffTests {
     @Test("changedNotes returns only changed .md (across dirs, untracked included), excludes deletes & non-md")
     func changedNotesFiltering() throws {
         let (wt, launcher) = try makeNotesWorktree()
+        // Vault-relative paths — the form workspace.json leaf `file` entries use.
         let got = Set(launcher.changedNotes(worktree: wt))
         let expected: Set<String> = [
-            wt + "/notes/keep.md",           // committed modify
-            wt + "/notes/added.md",          // untracked add
-            wt + "/docs/superpowers/spec.md" // untracked add in a nested dir
+            "notes/keep.md",            // committed modify
+            "notes/added.md",           // untracked add
+            "docs/superpowers/spec.md", // untracked add in a nested dir
         ]
         #expect(got == expected)
         // gone.md was deleted → not openable; main.swift is not markdown → both excluded.
-        #expect(!got.contains(wt + "/docs/gone.md"))
-        #expect(!got.contains(wt + "/main.swift"))
+        #expect(!got.contains("docs/gone.md"))
+        #expect(!got.contains("main.swift"))
     }
 
     @Test("changedNotes is empty for a non-git directory (no base)")
@@ -153,5 +154,29 @@ struct LauncherDiffTests {
         let dir = IntegrationSupport.tempDir("ln0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
         #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir)).isEmpty)
+    }
+
+    @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")
+    func seedWorkspaceTabsFormat() throws {
+        let dir = IntegrationSupport.tempDir("lws")
+        let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
+        let rels = ["notes/a.md", "docs/superpowers/b.md", "c.md"]
+        launcher.seedWorkspaceTabs(worktree: dir, relPaths: rels)
+
+        let ws = dir + "/.obsidian/workspace.json"
+        let data = try #require(FileManager.default.contents(atPath: ws))
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        // main → split → [tabs] → leaves, each a markdown leaf whose state.file is the note (in order).
+        let main = try #require(obj["main"] as? [String: Any])
+        let split = try #require(main["children"] as? [[String: Any]])
+        let tabs = try #require(split.first)
+        #expect(tabs["type"] as? String == "tabs")
+        let leaves = try #require(tabs["children"] as? [[String: Any]])
+        let files = leaves.map { (($0["state"] as? [String: Any])?["state"] as? [String: Any])?["file"] as? String }
+        #expect(files == rels)                                   // one tab per note, order preserved
+        #expect(leaves.allSatisfy { ($0["state"] as? [String: Any])?["type"] as? String == "markdown" })
+        #expect(obj["lastOpenFiles"] as? [String] == rels)
+        #expect((obj["active"] as? String)?.isEmpty == false)    // an active leaf is set
     }
 }

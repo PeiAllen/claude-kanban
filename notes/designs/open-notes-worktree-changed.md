@@ -44,37 +44,60 @@ func openNotes(_ worktree: String) throws  // was openNotes(_ repo: String)
 ```
 
 - `assertAllowed(worktree)`.
+- Compute changed notes (helper below). **Seed `<worktree>/.obsidian/workspace.json`** with one
+  tab per changed note (up to the cap) BEFORE opening the vault — see "How the tabs open."
 - Run the same `~/.claude/open-obsidian-vault.sh <worktree>` recipe as today — now on the
-  worktree root. Its register/restart-when-new logic is unchanged; for the empty-changes
-  case this alone satisfies "open the vault, no tabs."
-- Compute changed notes (helper below). For each absolute path (up to the cap), fire
-  `open "obsidian://open?path=<url-encoded abs path>"`. Obsidian resolves the containing
-  vault (the one just registered) and opens the file as a tab.
-- Return the number of tabs opened (for the toast).
+  worktree root. Its register/restart-when-new logic is unchanged; it opens the vault, at which
+  point Obsidian restores the seeded tab layout. Empty-changes case: no seed, vault opens bare.
+- Return `(opened:` tabs seeded `, total:` changed `.md` count `)` for the toast.
 
-Ordering: run the script first (registers + opens the vault, and covers the empty case),
-then fire the per-file URIs.
+Ordering: seed `workspace.json` FIRST, then run the script (which opens the vault and triggers
+Obsidian to load that layout).
 
-### 2. New `Launcher.changedNotes(worktree:) -> [String]`
+#### How the tabs open (why not per-file URIs)
 
-Reuses the **existing** private helpers `mergeBase(worktree:)` and
-`changedFiles(worktree:base:)` — the same branch-vs-base baseline the Zed "View changes"
-diff uses, so the notes opened and the diff shown always agree.
+Firing `obsidian://open?path=…` per file does **not** work: Obsidian's open-URI handler reuses the
+active leaf, so every file replaces the previous one and only the **last** survives as a single tab.
+Verified empirically with screenshots — `newtab=true` on both the `path=` and `vault=&file=` routes
+still collapses to one tab (the URI has no honored new-tab parameter). Alternatives rejected:
+
+- **Official `obsidian` CLI** (`obsidian open path=… newtab`) — needs Obsidian ≥ 1.12.7 and the CLI
+  symlink registered; unverified that its `newtab` opens separate tabs (the URI's didn't).
+- **Advanced URI plugin** (`openmode`) — a bundled community plugin + trust; too heavy.
+
+Instead we **seed `.obsidian/workspace.json`**: a `split` → one `tabs` container → one markdown
+`leaf` per changed note. Obsidian restores exactly that layout when it loads the vault. Proven with
+screenshots (N distinct tabs). **Caveat:** a vault window ALREADY open in a running Obsidian keeps
+its in-memory workspace, so the seed only takes on a fresh load (first open, or a reopen after that
+vault window was closed). Acceptable for the review flow; the official CLI is the future upgrade if
+live-refresh-while-open ever matters.
+
+### 2. New `Launcher.changedNotes(worktree:) -> [String]` + `seedWorkspaceTabs`
+
+`changedNotes` reuses the **existing** private helpers `mergeBase(worktree:)` and
+`changedFiles(worktree:base:)` — the same branch-vs-base baseline the Zed "View changes" diff uses,
+so the notes opened and the diff shown always agree — and returns worktree-**relative** paths (what
+`workspace.json` leaf `file` entries reference).
 
 ```
 func changedNotes(worktree: String) -> [String] {
     guard let base = mergeBase(worktree: worktree) else { return [] }   // non-git / no base
     return changedFiles(worktree: worktree, base: base)
         .filter { $0.status != .deleted }                 // can't open a deleted file
-        .map { $0.newPath }
+        .map { $0.newPath }                               // worktree-relative
         .filter { $0.lowercased().hasSuffix(".md") }
-        .map { (worktree as NSString).appendingPathComponent($0) }
 }
 ```
 
 `changedFiles` already unions tracked changes (`git diff --name-status`) with untracked,
 non-ignored files (`git ls-files --others --exclude-standard`), so freshly created,
 un-`git add`ed notes are included.
+
+`seedWorkspaceTabs(worktree:relPaths:)` writes `<worktree>/.obsidian/workspace.json`
+(`JSONSerialization`) as `{ main: { split → [tabs → [leaf per note]] }, active, lastOpenFiles }`,
+mirroring Obsidian's own layout shape. Best-effort: any failure just means the vault opens without
+pre-seeded tabs. Unit-tested for the exact leaf/tab structure (a malformed layout is silently
+ignored by Obsidian).
 
 ### 3. Tab cap
 
