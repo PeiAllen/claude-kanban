@@ -68,7 +68,7 @@ struct SessionBriefTests {
 @Suite("Codex SessionStart hook install (CodexHooks)")
 struct CodexHooksTests {
     private func tmp() -> String { NSTemporaryDirectory() + "cxhooks-\(UUID().uuidString)" }
-    private let rendered = #"{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"/bin/orchestra _report --event session --agent codex"}]}]}}"#
+    private let rendered = #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event session --agent codex"}]}]}}"#
 
     @Test("installs into an absent hooks.json")
     func writesWhenAbsent() throws {
@@ -103,6 +103,6 @@ struct CodexHooksTests {
         #expect(got.contains("/abs/orchestra _report --event session --agent codex"))
         #expect(!got.contains("__ORCHESTRA_BIN__"))
         #expect(!got.contains("__AGENT_ID__"))
-        #expect(got.contains("startup|resume"))
+        #expect(!got.contains(#""matcher""#))
     }
 }
