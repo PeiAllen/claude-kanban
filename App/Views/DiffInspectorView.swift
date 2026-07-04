@@ -1,10 +1,11 @@
 import SwiftUI
 import OrchestraCore
 
-/// Read-only in-app diff for a card (axis 7 — code review on the board). Renders the daemon's
-/// git ANSI patch output as colored monospaced text, with working/branch(/parent) baseline and
-/// unified/split layout toggles. Refreshes on card selection + mode change; "Open in Zed" for the full
-/// changes. Editing stays Zed's job.
+/// Read-only in-app diff for a card (axis 7 — code review on the board). Parses the daemon's git
+/// patch output into a structured line model (`DiffRows`) and renders it as a real diff — old/new
+/// line-number gutters, a `+`/`−` marker column, full-row add/remove tinting, and section-heading
+/// hunk dividers — with working/branch(/parent) baseline and unified/split layout toggles. Refreshes
+/// on card selection + mode change; "Open in Zed" for the full changes. Editing stays Zed's job.
 struct DiffInspectorView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
@@ -20,7 +21,7 @@ struct DiffInspectorView: View {
     @State private var loading = true
     @State private var collapsedFiles: Set<String> = []
 
-    init(task: Task, preview: String? = nil) {
+    init(task: Task, preview: String? = nil, split: Bool = false) {
         self.task = task
         self.preview = preview
         // Seed synchronously so a headless ImageRenderer snapshot (which never runs `.task`) still
@@ -28,6 +29,7 @@ struct DiffInspectorView: View {
         _text = State(initialValue: preview ?? "")
         _files = State(initialValue: preview.map(DiffFileParser.parse) ?? [])
         _loading = State(initialValue: preview == nil)
+        _layout = State(initialValue: split ? .split : .unified)
     }
 
     /// `.parent` is only offered once the card carries a parent branch (stacked-branches sets it).
@@ -136,12 +138,10 @@ struct DiffInspectorView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                        .font(F.ui(10, .semibold))
-                        .frame(width: 12)
-                    Image(systemName: "doc.text").font(F.ui(12))
-                    Text(file.title)
-                        .font(F.ui(12, .semibold))
-                        .foregroundStyle(theme.text)
+                        .font(F.ui(9, .semibold))
+                        .foregroundStyle(theme.text3)
+                        .frame(width: 10)
+                    filePath(file.title)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 8)
@@ -150,14 +150,10 @@ struct DiffInspectorView: View {
                             .font(F.ui(10, .medium))
                             .foregroundStyle(theme.text3)
                     }
-                    if file.additions > 0 {
-                        Text("+\(file.additions)").font(F.ui(10, .semibold)).foregroundStyle(theme.green.text)
-                    }
-                    if file.deletions > 0 {
-                        Text("-\(file.deletions)").font(F.ui(10, .semibold)).foregroundStyle(theme.red.text)
-                    }
+                    if file.additions > 0 { statPill("+\(file.additions)", theme.green) }
+                    if file.deletions > 0 { statPill("−\(file.deletions)", theme.red) }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .frame(height: 34)
                 .background(theme.termPrompt)
                 .contentShape(Rectangle())
@@ -176,50 +172,163 @@ struct DiffInspectorView: View {
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
     }
 
+    // MARK: - Unified layout
+
     private func unifiedDiff(_ file: DiffFileSection) -> some View {
-        ScrollView(.horizontal) {
-            Text(ANSIText.attributed(file.text, base: theme.term, size: 11.5))
-                .textSelection(.enabled)
+        let rows = DiffRows.make(file.lines)
+        let numW = numberWidth(digits: maxDigits(rows.map { max($0.oldNum ?? 0, $0.newNum ?? 0) }))
+        let body = VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { unifiedRow($0, numW: numW) }
+        }
+        .fixedSize(horizontal: true, vertical: false)   // width = widest line; guards the horizontal scroll
+        return scrollableBody(body)
+    }
+
+    @ViewBuilder private func unifiedRow(_ row: DiffRow, numW: CGFloat) -> some View {
+        if row.kind == .hunk {
+            hunkDivider(row.text)
+        } else {
+            HStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    lineNumber(row.oldNum, width: numW)
+                    lineNumber(row.newNum, width: numW)
+                }
+                .background(theme.dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025))
+                HStack(spacing: 0) {
+                    Text(marker(row.kind))
+                        .font(codeFont(.medium))
+                        .foregroundStyle(markerColor(row.kind))
+                        .frame(width: 16)
+                    codeText(row.text)
+                        .padding(.trailing, 16)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
+                .background(rowTint(row.kind))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    // MARK: - Split layout
 
     private func splitDiff(_ file: DiffFileSection) -> some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(DiffSplitRows.make(file.lines)) { row in
-                    if let full = row.full {
-                        splitFullRow(full, tone: row.tone)
-                    } else {
-                        HStack(spacing: 0) {
-                            splitCell(row.old, tone: row.old == nil ? .blank : row.tone)
-                            Rectangle().fill(theme.hair).frame(width: 0.5)
-                            splitCell(row.new, tone: row.new == nil ? .blank : row.tone)
-                        }
-                    }
-                }
-            }
-            .padding(.vertical, 8)
+        let rows = DiffSplitRows.make(file.lines)
+        let numW = numberWidth(digits: maxDigits(rows.flatMap { [$0.oldNum ?? 0, $0.newNum ?? 0] }))
+        let body = VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { splitRow($0, numW: numW) }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        return scrollableBody(body)
+    }
+
+    /// Long lines scroll horizontally in the live view. The headless snapshot renderer (`ImageRenderer`)
+    /// can't lay out a `ScrollView` and proposes an unbounded width, so it instead clips the body to a
+    /// fixed width, left-aligned — matching the scroll's resting position. The width tracks the 384pt
+    /// snapshot frame in `snapshotDiff` minus the file-card insets.
+    @ViewBuilder private func scrollableBody(_ body: some View) -> some View {
+        if preview == nil {
+            ScrollView(.horizontal, showsIndicators: false) { body }
+        } else {
+            body.frame(width: 364, alignment: .leading).clipped()
         }
     }
 
-    private func splitFullRow(_ text: String, tone: DiffTone) -> some View {
-        Text(ANSIText.attributed(text, base: theme.term, size: 11))
-            .textSelection(.enabled)
-            .frame(width: splitCellWidth * 2 + splitDividerWidth, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 2)
-            .background(tone.color(theme))
+    @ViewBuilder private func splitRow(_ row: DiffSplitRow, numW: CGFloat) -> some View {
+        if row.kind == .hunk {
+            hunkDivider(row.heading).frame(width: splitCellWidth * 2 + splitDividerWidth, alignment: .leading)
+        } else {
+            HStack(spacing: 0) {
+                splitCell(num: row.oldNum, text: row.oldText, side: .remove, changed: row.kind == .change, numW: numW)
+                Rectangle().fill(theme.hair).frame(width: splitDividerWidth)
+                splitCell(num: row.newNum, text: row.newText, side: .add, changed: row.kind == .change, numW: numW)
+            }
+        }
     }
 
-    private func splitCell(_ text: String?, tone: DiffTone) -> some View {
-        Text(ANSIText.attributed(text ?? " ", base: text == nil ? theme.text3 : theme.term, size: 11))
-            .textSelection(.enabled)
-            .frame(width: splitCellWidth, alignment: .leading)
-            .padding(.horizontal, 10)
+    /// One side of a split row. `text == nil` renders an empty (no-counterpart) cell.
+    private func splitCell(num: Int?, text: String?, side: DiffRow.Kind, changed: Bool, numW: CGFloat) -> some View {
+        let kind: DiffRow.Kind = (changed && text != nil) ? side : .context
+        return HStack(spacing: 0) {
+            lineNumber(num, width: numW)
+                .background(theme.dark ? Color.white.opacity(0.03) : Color.black.opacity(0.025))
+            HStack(spacing: 0) {
+                if changed {
+                    Text(text == nil ? " " : marker(side))
+                        .font(codeFont(.medium)).foregroundStyle(markerColor(side)).frame(width: 14)
+                }
+                codeText(text ?? " ").padding(.trailing, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(text == nil ? theme.termPrompt : rowTint(kind))
+        }
+        .frame(width: splitCellWidth, alignment: .leading)
+    }
+
+    // MARK: - Shared row pieces
+
+    private func lineNumber(_ n: Int?, width: CGFloat) -> some View {
+        Text(n.map(String.init) ?? "")
+            .font(.system(size: 10, weight: .regular, design: .monospaced))
+            .foregroundStyle(theme.text3)
+            .padding(.trailing, 8)
+            .frame(width: width, alignment: .trailing)
             .padding(.vertical, 1.5)
-            .background(tone.color(theme))
+    }
+
+    private func codeText(_ s: String) -> some View {
+        Text(s.isEmpty ? " " : s)
+            .font(codeFont(.regular))
+            .foregroundStyle(theme.term)
+            .fixedSize(horizontal: true, vertical: false)
+            .textSelection(.enabled)
+            .padding(.vertical, 1.5)
+    }
+
+    /// A soft band marking a jump in the file, labelled with git's section heading (the enclosing
+    /// function) when present. Replaces the raw `@@ -14,9 +14,11 @@` line.
+    private func hunkDivider(_ heading: String) -> some View {
+        Text(heading)
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(theme.text3)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(theme.accent.opacity(theme.dark ? 0.10 : 0.06))
+            .overlay(Rectangle().fill(theme.hair).frame(height: 0.5), alignment: .top)
+            .overlay(Rectangle().fill(theme.hair).frame(height: 0.5), alignment: .bottom)
+    }
+
+    private func codeFont(_ weight: Font.Weight) -> Font { .system(size: 11.5, weight: weight, design: .monospaced) }
+    private func marker(_ kind: DiffRow.Kind) -> String { kind == .add ? "+" : kind == .remove ? "−" : " " }
+    private func markerColor(_ kind: DiffRow.Kind) -> Color {
+        kind == .add ? theme.green.text : kind == .remove ? theme.red.text : .clear
+    }
+    private func rowTint(_ kind: DiffRow.Kind) -> Color {
+        kind == .add ? theme.green.tint : kind == .remove ? theme.red.tint : .clear
+    }
+    private func maxDigits(_ nums: [Int]) -> Int { max(2, String(nums.max() ?? 0).count) }
+    private func numberWidth(digits: Int) -> CGFloat { CGFloat(digits) * 7 + 12 }
+
+    private func statPill(_ s: String, _ c: SemColor) -> some View {
+        Text(s)
+            .font(F.ui(10, .semibold))
+            .foregroundStyle(c.text)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(c.tint)
+            .clipShape(Capsule())
+    }
+
+    /// Path styled as a dimmed directory + bold filename, e.g. `App/Views/` + **DiffInspectorView.swift**.
+    private func filePath(_ path: String) -> Text {
+        guard let slash = path.lastIndex(of: "/") else {
+            return Text(path).font(F.ui(12, .semibold)).foregroundColor(theme.text)
+        }
+        let dir = String(path[...slash])
+        let name = String(path[path.index(after: slash)...])
+        return Text(dir).font(F.ui(12)).foregroundColor(theme.text3)
+             + Text(name).font(F.ui(12, .semibold)).foregroundColor(theme.text)
     }
 
     private func label(_ b: DiffBase) -> String {
@@ -271,16 +380,4 @@ struct DiffInspectorView: View {
 
 private enum DiffLayout: String {
     case unified, split
-}
-
-private extension DiffTone {
-    func color(_ theme: Theme) -> Color {
-        switch self {
-        case .blank:   return theme.termBg
-        case .context: return Color.clear
-        case .header:  return theme.chip
-        case .hunk:    return theme.accent.opacity(theme.dark ? 0.16 : 0.10)
-        case .change:  return theme.termPrompt
-        }
-    }
 }
