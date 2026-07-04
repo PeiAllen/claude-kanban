@@ -137,6 +137,21 @@ public enum CommandCatalog {
                                           + "window like 'shell-1'")],
                                      required: ["ref"])),
 
+        CommandSchema(name: "send-keys",
+                      summary: "Send live keystrokes to a card's tmux window — an ordered chord of named "
+                          + "keys (Esc, Up/Down/Left/Right, Tab, Enter, C-c, PgUp/PgDn, Home/End) and/or "
+                          + "literal text. Distinct from `send` (inbox queue): no implicit Enter.",
+                      params: schema([
+                          "ref": refProp(),
+                          "keys": .object([
+                              "type": .string("array"),
+                              "description": .string(
+                                  "Ordered chord elements; each is {\"key\": <name>} (Esc, Up, Down, Left, "
+                                  + "Right, Tab, Enter, C-c, PgUp, PgDn, Home, End) or {\"text\": <literal>}."),
+                          ]),
+                          "window": strProp("Target window (default 'agent')"),
+                      ], required: ["ref", "keys"])),
+
         CommandSchema(name: "trustState",
                       summary: "Is a directory already trusted? Read-only ledger query for the spawn "
                           + "sheet's trust indicator — never grants (granting is a human-only surface).",

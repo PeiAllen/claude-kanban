@@ -10,7 +10,7 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let expected = ["list", "spawn", "move", "send", "status", "archive", "reopen",
                         "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions",
-                        "capture", "batch-spawn",
+                        "capture", "send-keys", "batch-spawn",
                         "wait", "handoff", "trust", "trustState",
                         "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
         #expect(Set(reg.names) == Set(expected))

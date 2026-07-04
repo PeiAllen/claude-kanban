@@ -364,6 +364,15 @@ public actor OrchestraService {
         await wake(t.id)
     }
 
+    /// Send a constrained key chord to one of the card's tmux windows (default `agent`). Unlike
+    /// `send` (which queues to the durable inbox), this delivers live keystrokes — used by the phone's
+    /// captured-prompt semantic buttons and non-live steering fallbacks. Validation of the chord itself
+    /// happens at the command boundary; here we just require a live card and forward to the session.
+    public func sendChord(_ id: UUID, tokens: [KeyToken], window: String) async throws {
+        let t = try await require(id)
+        try sessions.sendChord(sessions.sessionName(t.id), tokens: tokens, window: window)
+    }
+
     /// Inbox editor (UI + MCP): list a card's pending messages. Non-destructive.
     public func inboxPeek(_ id: UUID) async throws -> [InboxMessage] {
         let t = try await require(id)
