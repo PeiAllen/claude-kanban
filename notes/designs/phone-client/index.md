@@ -43,11 +43,13 @@ updated: 2026-06-29
 
 ## Related notes
 
-- [[../2026-07-03-phone-agent-terminal-ux-design|Phone Agent & Terminal UX + the shared-tmux sizing
-  problem]] (2026-07-03) — how the phone's **Agent** and **Terminal** tabs should work, and how to keep
-  a narrow phone client from resize-thrashing the desktop agent's size-sensitive TUI. Headline: the
-  phone reads the agent **structurally over RPC** (never a PTY attach to the agent window), and its
-  live shell (when used) runs in a **phone-owned window** — per-window tmux sizes are independent.
+- [[../2026-07-03-phone-agent-terminal-ux-design|Phone Agent & Terminal UX — capture by default,
+  exclusive takeover for live control]] (2026-07-03) — how the phone's **Agent** and **Terminal** tabs
+  should work, and how to keep a narrow phone client from resize-thrashing the desktop agent's
+  size-sensitive TUI. Headline: the default Agent view is non-attaching capture/structured UI, but v1
+  live control can use an explicit **Take Over Agent Terminal** lease: desktop unmounts, phone attaches
+  the real TUI, then desktop can retake. Its live shell (when used) still runs in a **phone-owned
+  window** — per-window tmux sizes are independent.
 
 ## Current picture
 
