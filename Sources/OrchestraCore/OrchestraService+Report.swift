@@ -11,6 +11,7 @@ extension OrchestraService {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
         var statusTransition: (from: AgentStatus, to: AgentStatus)? = nil
+        var turnCompletionConcluded = false
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
@@ -100,6 +101,12 @@ extension OrchestraService {
                     task.status = s
                     if s == .waiting { task.waitReason = snap.waitReason }
                 }
+                if snap.turnCompleted == true, shouldConcludeOnTurnCompletion(task) {
+                    if task.status != .done { statusTransition = (before.status, .done) }
+                    task.status = .done
+                    task.waitReason = nil
+                    turnCompletionConcluded = true
+                }
             }
         }
 
@@ -134,5 +141,15 @@ extension OrchestraService {
         if let tr = statusTransition, tr.to == .dead, saved.deadReason == .agentExited, !recovering.contains(id) {
             await concludeCard(id, .exited)
         }
+        if turnCompletionConcluded {
+            await concludeCard(id, .done)
+        }
+    }
+
+    /// Read-only freeform/scratch cards are the durable-card form of a one-shot delegation: they have no
+    /// branch lifecycle to merge, so an adapter's explicit task-completion signal is the card's completion
+    /// signal. Worktree cards remain long-lived and keep their existing `.waiting(.humanTurn)` behavior.
+    private func shouldConcludeOnTurnCompletion(_ task: Task) -> Bool {
+        task.origin != .worktree && task.access == .readOnly && !task.archived && task.status != .dead
     }
 }

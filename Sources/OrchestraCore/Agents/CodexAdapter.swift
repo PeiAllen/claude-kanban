@@ -88,7 +88,7 @@ public struct CodexAdapter: Adapter {
         if any("turncomplete", "taskcomplete") {
             // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
             // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn)
+            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn, turnCompleted: true)
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less

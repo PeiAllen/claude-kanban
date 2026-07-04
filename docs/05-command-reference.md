@@ -20,7 +20,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`createdAt` are preserved. |
 | `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
 | `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder a card's queued messages (`Inbox.reorder`); `ids` is the full new order and must be a permutation of the card's pending message ids. Refills exactly that card's array slots, so other cards' interleaving is preserved. |
-| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
+| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done, a read-only freeform/scratch delegated card finishes its agent turn, or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
 | `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
@@ -63,11 +63,13 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
   folded into the opening turn. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`; the wake dispatcher is
   C2/C4, extended by `send-wakes-idle-card`.)
 - **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
-  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, or a clean agent
-  exit — and returns that `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A transient crash that is
+  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, a read-only
+  freeform/scratch delegated card reports task completion (Codex `task_complete` / `turn_complete`, Claude
+  `TaskCompleted` — not Claude `Stop`), or a clean agent exit — and returns
+  that `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A transient crash that is
   later revived is deliberately **not** a conclusion, and conclusion is read from real card state, never
   `git merge-base` (which false-positives a 0-commit branch as "merged"). `OrchestraService` is the single
-  authority that marks a card concluded (from `archive`→Done and the clean-exit report branch); `MergeWatch`
+  authority that marks a card concluded (from `archive`→Done, the delegated turn-completion branch, and the clean-exit report branch); `MergeWatch`
   is a **subscriber** it feeds — no polling, no file/git watching. `wait` is single-shot on purpose: when
   one child concludes it returns, and the caller (an orchestrator card) re-issues on the cards that remain,
   so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also

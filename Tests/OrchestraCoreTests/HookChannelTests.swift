@@ -9,6 +9,7 @@ import Foundation
         #expect(HookEvent(rawValue: "pretool") == .preToolUse)
         #expect(HookEvent(rawValue: "posttool") == .postToolUse)
         #expect(HookEvent(rawValue: "notification") == .notification)
+        #expect(HookEvent(rawValue: "taskcompleted") == .taskCompleted)
         #expect(HookEvent(rawValue: "stop") == .stop)
         #expect(HookEvent(rawValue: "orient") == nil)          // collapsed into sessionStart
         #expect(HookEvent.sessionStart.rawValue == "session")

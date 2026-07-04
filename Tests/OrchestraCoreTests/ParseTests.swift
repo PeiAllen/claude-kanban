@@ -44,6 +44,10 @@ struct ParseTests {
                 == StatusReport(desc: "done", status: .waiting, waitReason: .humanTurn))
         #expect(a.parse(.hooksPush(kind: "stop", payload: notify))
                 == StatusReport(status: .waiting, waitReason: .humanTurn))
+        #expect(a.parse(.hooksPush(kind: "notification", payload: notify))?.snapshot?.turnCompleted != true)
+        #expect(a.parse(.hooksPush(kind: "stop", payload: notify))?.snapshot?.turnCompleted != true)
+        #expect(a.parse(.hooksPush(kind: "taskcompleted", payload: notify))
+                == StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "prompt", payload: prompt))
