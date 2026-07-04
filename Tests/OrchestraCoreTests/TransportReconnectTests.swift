@@ -66,6 +66,14 @@ struct TransportReconnectTests {
                 writes.filter { (try? RPCCodec.decoder.decode(RPCRequest.self, from: $0))?.method == "subscribe" }.count
             }
         }
+        /// The clientId carried by each `subscribe` frame that was written (in write order).
+        var subscribeClientIds: [String?] {
+            lock.withLock {
+                writes.compactMap { try? RPCCodec.decoder.decode(RPCRequest.self, from: $0) }
+                      .filter { $0.method == "subscribe" }
+                      .map { $0.clientId }
+            }
+        }
     }
 
     @Test("dropped transport → state goes live → retrying → live and re-subscribes")
@@ -102,6 +110,32 @@ struct TransportReconnectTests {
         #expect(box.opens == 1)                                    // never reconnected after an intentional close
         #expect(await states.values.last == .down)
     }
+    @Test("clientId is stamped on requests and preserved across a reconnect")
+    func clientIdAcrossReconnect() async throws {
+        let box = FakeBox()
+        let client = ControlClient(transport: { FakeTransport(box) }, source: .app, clientId: "phone-xyz")
+        try client.connect()
+        _ = client.subscribe()                                       // subscribe #1
+        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        box.dropCurrent()                                            // force a reconnect
+        try await _Concurrency.Task.sleep(for: .milliseconds(700))   // backoff + reconnect + re-subscribe
+        let ids = box.subscribeClientIds
+        #expect(ids.count >= 2)                                      // subscribed on both transports
+        #expect(ids.allSatisfy { $0 == "phone-xyz" })               // SAME id after reconnect
+        client.close()
+    }
+
+    @Test("an anonymous client (nil clientId) writes no clientId — CLI/MCP back-compat")
+    func anonymousClientNoId() async throws {
+        let box = FakeBox()
+        let client = ControlClient(transport: { FakeTransport(box) }, source: .cli)   // clientId defaults nil
+        try client.connect()
+        _ = client.subscribe()
+        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        #expect(box.subscribeClientIds.allSatisfy { $0 == nil })
+        client.close()
+    }
+
     // NOTE: real tunnel-death → reconnect against a live daemon is verified end-to-end in Workstream D
     // (D5). A ControlServer.stop()-based test can't stand in here: stop() closes only the listener, not
     // already-accepted client connections, so the link never actually drops.
