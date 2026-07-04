@@ -9,7 +9,8 @@ struct CommandsTests {
     func fullSet() {
         let reg = CommandRegistry()
         let expected = ["list", "spawn", "move", "send", "status", "archive", "reopen",
-                        "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions", "batch-spawn",
+                        "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions",
+                        "capture", "batch-spawn",
                         "wait", "handoff", "trust", "trustState",
                         "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
         #expect(Set(reg.names) == Set(expected))
@@ -59,6 +60,30 @@ struct CommandsTests {
         let exec = try #require(reg.command("exec"))
         let ex = try await exec.run(env.svc, .object(["ref": .string(t.shortId), "cmd": .string("echo yo")]), .mcp)
         #expect(try ex.decode(ExecResult.self).stdout.contains("yo"))
+    }
+
+    @Test("capture dispatches to a read of the card's agent pane")
+    func dispatchCapture() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        // Make the card's tmux session deterministically alive for the read (spawn's ensure is async).
+        env.sessions.setAlive(t.id, true)
+
+        let reg = CommandRegistry()
+        let capture = try #require(reg.command("capture"))
+        let res = try await capture.run(env.svc, .object(["ref": .string(t.shortId)]), .mcp)
+        let cap = try res.decode(CaptureResult.self)
+        #expect(cap.window == "agent")
+        // The stub echoes the session name into its pane text.
+        #expect(cap.text.contains(env.sessions.sessionName(t.id)))
+
+        // A read of a card whose session isn't running surfaces an error.
+        let t2 = try await env.svc.spawn(SpawnInput(prompt: "y", repo: repo, branch: "c"))
+        env.sessions.setAlive(t2.id, false)
+        await #expect(throws: OrchestraError.self) {
+            _ = try await capture.run(env.svc, .object(["ref": .string(t2.shortId)]), .mcp)
+        }
     }
 
     @Test("reopen dispatches to the service and unarchives the card")

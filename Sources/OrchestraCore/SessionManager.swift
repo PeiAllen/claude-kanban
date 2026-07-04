@@ -151,6 +151,23 @@ public struct SessionManager: Sendable {
         _ = try tmux(["send-keys", "-t", "\(name):\(window)", "Enter"])
     }
 
+    /// Read-only snapshot of a window's pane via `capture-pane -p` — the non-attaching read the
+    /// phone Agent tab uses. Captures the *visible* pane (no scrollback) so output is naturally
+    /// bounded; `maxChars` is a hard safety cap on top. Never attaches, never resizes. Works for the
+    /// `agent` window and any `shell-N` window. Throws if the target window/pane doesn't exist.
+    public func capture(_ name: String, window: String = "agent",
+                        maxChars: Int = 256 * 1024) throws -> CaptureResult {
+        let target = "\(name):\(window)"
+        let r = try tmux(["capture-pane", "-p", "-t", target])
+        guard r.ok else {
+            throw OrchestraError.io(r.stderr.isEmpty ? "tmux capture-pane failed for \(target)" : r.stderr)
+        }
+        let full = r.stdout
+        let truncated = full.count > maxChars
+        let text = truncated ? String(full.prefix(maxChars)) : full
+        return CaptureResult(window: window, text: text, truncated: truncated)
+    }
+
     public func kill(_ name: String) throws {
         // Kill every grouped view session first: they share (and so keep alive) the base session's
         // windows — including the agent pane — so killing only the base would leak the processes.

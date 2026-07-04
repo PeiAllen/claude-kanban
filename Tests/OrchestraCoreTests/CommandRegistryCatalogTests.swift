@@ -26,7 +26,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
         XCTAssertEqual(Set(CommandCatalog.all.map(\.name)), [
             "list", "spawn", "move", "send", "inbox", "inbox-edit", "inbox-remove",
             "inbox-reorder", "wait", "handoff", "status", "archive", "reopen", "restart",
-            "resume", "shell", "inspect", "closeShell", "exec", "sessions", "trustState",
+            "resume", "shell", "inspect", "closeShell", "exec", "sessions", "capture", "trustState",
             "batch-spawn", "trust",
         ])
     }

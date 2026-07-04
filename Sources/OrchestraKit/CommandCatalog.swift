@@ -129,6 +129,14 @@ public enum CommandCatalog {
         CommandSchema(name: "sessions", summary: "Debug handles for a card: tmux targets + agent session id.",
                       params: schema(["ref": refProp()], required: ["ref"])),
 
+        CommandSchema(name: "capture",
+                      summary: "Read-only snapshot of a card's tmux pane (agent or a shell window). "
+                          + "No attach, no resize.",
+                      params: schema(["ref": refProp(),
+                                      "window": strProp("Window to read: 'agent' (default) or a shell "
+                                          + "window like 'shell-1'")],
+                                     required: ["ref"])),
+
         CommandSchema(name: "trustState",
                       summary: "Is a directory already trusted? Read-only ledger query for the spawn "
                           + "sheet's trust indicator — never grants (granting is a human-only surface).",

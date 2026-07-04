@@ -197,6 +197,14 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: cs)
             },
 
+            "capture": { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let cap = try await svc.capture(t.id, window: p.optString("window") ?? "agent")
+                // NOT logged: the phone Agent tab polls `capture` on a timer (like `list`), so
+                // logging each read would flood the activity feed and bury real events.
+                return try JSONValue(encodable: cap)
+            },
+
             "trustState": { svc, p, _ in
                 let trusted = await svc.isPathTrusted(try p.string("path"))
                 return .object(["trusted": .bool(trusted)])

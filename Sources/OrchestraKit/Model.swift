@@ -362,6 +362,17 @@ public struct ExecResult: Codable, Sendable, Equatable {
     }
 }
 
+/// A read-only pane snapshot (the `capture` command). Provider-neutral: just the pane's text,
+/// size-capped. `truncated` is true when `text` was cut to the cap. No attach, no resize.
+public struct CaptureResult: Codable, Sendable, Equatable {
+    public let window: String    // "agent" | "shell-1" | ...
+    public let text: String      // captured *visible* pane text, size-capped
+    public let truncated: Bool   // true if `text` was cut to the cap
+    public init(window: String, text: String, truncated: Bool) {
+        self.window = window; self.text = text; self.truncated = truncated
+    }
+}
+
 public struct ShellTab: Codable, Sendable, Equatable {
     public let window: String
     public let label: String

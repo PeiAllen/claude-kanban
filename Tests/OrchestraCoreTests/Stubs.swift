@@ -70,6 +70,11 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     func sendKeys(_ name: String, text: String, window: String) throws {
         lock.lock(); sentKeys.append((name, text)); lock.unlock()
     }
+    func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        let text = "stub-pane:\(name):\(window)"
+        return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
+    }
     func kill(_ name: String) throws { lock.lock(); alive.remove(name); killed.append(name); lock.unlock() }
 }
 

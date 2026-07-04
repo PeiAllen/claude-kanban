@@ -589,6 +589,16 @@ public actor OrchestraService {
                             session: name, running: running, targets: targets, agent: info)
     }
 
+    /// Read-only snapshot of a card's `agent` (default) or a `shell-N` window — the phone Agent
+    /// tab's v1 read source. No attach, no resize. Not allowlist-gated: it runs no user code, it
+    /// only reads an existing pane (cf. `exec`, which does gate). Throws if the session isn't running.
+    public func capture(_ id: UUID, window: String = "agent") async throws -> CaptureResult {
+        _ = try await require(id)                     // validates the card exists
+        let name = sessions.sessionName(id)
+        guard try sessions.isAlive(name) else { throw OrchestraError.io("session not running") }
+        return try sessions.capture(name, window: window, maxChars: 256 * 1024)
+    }
+
     public func openInZed(_ id: UUID) async throws {
         let t = try await require(id)
         try launcher.openInZed(t.cwd)

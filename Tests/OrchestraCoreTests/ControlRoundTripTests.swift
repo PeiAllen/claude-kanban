@@ -190,6 +190,28 @@ struct ControlRoundTripTests {
         let cfg = try await client.call("getConfig").decode(Config.self)
         #expect(cfg.maxConcurrentRevivals == 4)
     }
+
+    @Test("capture round-trips a pane read over the socket via the typed client method")
+    func captureRoundTrip() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+
+        let client = ControlClient(socketPath: path, source: .cli)
+        try client.connect(); defer { client.close() }
+
+        let spawnRes = try await client.call("spawn", .object([
+            "prompt": .string("x"), "repo": .string(repo), "branch": .string("feat"),
+        ]))
+        let task = try spawnRes.decode(Task.self)
+        env.sessions.setAlive(task.id, true)   // same StubSessions instance the server holds
+
+        let cap = try await client.capture(task.shortId)
+        #expect(cap.window == "agent")
+        #expect(cap.text.contains(env.sessions.sessionName(task.id)))
+    }
 }
 
 actor EventBox {

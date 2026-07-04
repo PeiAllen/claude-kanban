@@ -124,4 +124,52 @@ final class SessionManagerTests {
         #expect(r.stdout.contains(task.id.uuidString.lowercased()))
         try sm.kill(name)
     }
+
+    @Test("capture returns the agent pane's visible text; size-caps; missing window throws")
+    func captureAgent() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        let marker = "CAPTURE_MARKER_\(UInt32.random(in: 0..<1_000_000))"
+        // Echo a known marker into the agent pane, then keep the window alive.
+        let (name, _) = try sm.ensure(task, argv: ["sh", "-c", "echo \(marker); sleep 30"])
+
+        // tmux needs a beat to render the echo; retry so the test isn't flaky.
+        var cap = try sm.capture(name)
+        for _ in 0..<20 where !cap.text.contains(marker) {
+            Thread.sleep(forTimeInterval: 0.05)
+            cap = try sm.capture(name)
+        }
+        #expect(cap.window == "agent")
+        #expect(cap.text.contains(marker))
+        #expect(!cap.truncated)
+
+        // A tiny cap truncates and sets the flag.
+        let small = try sm.capture(name, window: "agent", maxChars: 3)
+        #expect(small.text.count == 3)
+        #expect(small.truncated)
+
+        // Capturing a non-existent window throws (target can't be found).
+        #expect(throws: OrchestraError.self) { try sm.capture(name, window: "shell-9") }
+
+        try sm.kill(name)
+    }
+
+    @Test("capture reads a shell window too (works for non-agent windows)")
+    func captureShell() throws {
+        let cwd = IntegrationSupport.tempDir("sm")
+        let task = makeTask(cwd: cwd)
+        let (name, _) = try sm.ensure(task, argv: keepAliveArgv)   // ["sleep", "30"]
+        let win = try sm.newShellWindow(name, cwd: cwd)            // "shell-1"
+        let marker = "SHELL_MARK_\(UInt32.random(in: 0..<1_000_000))"
+        try sm.sendKeys(name, text: "echo \(marker)", window: win)
+
+        var cap = try sm.capture(name, window: win)
+        for _ in 0..<20 where !cap.text.contains(marker) {
+            Thread.sleep(forTimeInterval: 0.05)
+            cap = try sm.capture(name, window: win)
+        }
+        #expect(cap.window == win)
+        #expect(cap.text.contains(marker))
+        try sm.kill(name)
+    }
 }
