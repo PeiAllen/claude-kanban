@@ -56,6 +56,30 @@ struct OrchestraServiceTests {
         #expect(await collector.activities.contains { $0.kind == .moved })
     }
 
+    @Test("move rejects non-worktree cards instead of silently changing their lifecycle column")
+    func moveRejectsNonWorktreeCards() async throws {
+        try await withScratchLock {
+            let env = TestEnv.make()
+            let dir = env.base + "/borrowed"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let borrowed = try await env.svc.spawn(SpawnInput(prompt: "borrowed", startIn: .plan, cwd: dir))
+            let scratch = try await env.svc.spawn(SpawnInput(prompt: "scratch", startIn: .plan, scratch: true))
+            defer { try? FileManager.default.removeItem(atPath: scratch.cwd) }
+
+            let message = "freeform cards stay in Freeform; only worktree cards can move between Plan, Implementation, and Review"
+            await #expect(throws: OrchestraError.invalidParams(message)) {
+                _ = try await env.svc.move(borrowed.id, to: .review, source: .mcp)
+            }
+            await #expect(throws: OrchestraError.invalidParams(message)) {
+                _ = try await env.svc.move(scratch.id, to: .impl, source: .cli)
+            }
+
+            let after = await env.svc.list()
+            #expect(after.first { $0.id == borrowed.id }?.column == .plan)
+            #expect(after.first { $0.id == scratch.id }?.column == .plan)
+        }
+    }
+
     @Test("archive sets done + archived, kills session, emits")
     func archive() async throws {
         let env = TestEnv.make()

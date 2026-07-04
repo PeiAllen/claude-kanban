@@ -351,6 +351,9 @@ final class BoardModel: ObservableObject {
     }
 
     func move(_ id: UUID, to col: Column) async {
+        guard tasks.first(where: { $0.id == id })?.origin == .worktree else {
+            return
+        }
         _ = try? await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)]))
     }
     func archive(_ id: UUID) async {

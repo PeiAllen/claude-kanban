@@ -444,14 +444,19 @@ public actor OrchestraService {
 
     @discardableResult
     public func move(_ id: UUID, to column: Column, source: ActivitySource = .daemon) async throws -> Task {
-        let from = await store.get(id)?.column
+        let current = try await require(id)
+        guard current.origin == .worktree else {
+            throw OrchestraError.invalidParams(
+                "freeform cards stay in Freeform; only worktree cards can move between Plan, Implementation, and Review")
+        }
+        let from = current.column
         let updated = try await store.move(id, to: column)
         emit(.taskUpserted(updated))
         emitActivity(.moved, updated, source, "→ \(column.displayName)")
         // A user drag / keyboard-carry on the board (`.app`) notifies the card that it was moved; a card
         // moving ITSELF via CLI/MCP/agent, or a no-op drop back into its own column, does not. Best-effort
         // (`try?`): a notification failure must never fail the move it is reporting on.
-        if source == .app, let from, from != column {
+        if source == .app, from != column {
             try? await send(id, "You were moved from \(from.displayName) to \(column.displayName) by the user (via the board UI).")
         }
         return updated
