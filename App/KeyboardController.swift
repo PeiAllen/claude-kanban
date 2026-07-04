@@ -196,13 +196,19 @@ enum FocusBridge {
     static func movePane(_ dir: Direction, model: BoardModel, from ctx: KeyContext) -> Bool {
         switch ctx {
         case .board:
+            let onFreeform = model.selectedId.map { id in model.freeformTasks.contains { $0.id == id } } ?? false
             switch dir {
             case .right:
                 guard model.selectedId != nil else { return false }
                 model.focusZone = .terminal; enterTerminal(); return true
             case .down:
-                guard !model.freeformTasks.isEmpty else { return false }
+                // Descend from the columns into the freeform dock. Already in the dock → passthrough.
+                guard !model.freeformTasks.isEmpty, !onFreeform else { return false }
                 model.selectedId = model.freeformTasks.first?.id; model.focusZone = .board; return true
+            case .up:
+                // Climb back out of the freeform dock into the board columns.
+                guard onFreeform, let target = BoardNavigator.firstBoardCard(model.tasks) else { return false }
+                model.selectedId = target; model.focusZone = .board; return true
             default:
                 return false
             }
