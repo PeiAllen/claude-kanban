@@ -37,7 +37,15 @@ final class BoardModel: ObservableObject {
     @Published var spawnDefaultColumn: Column = .plan
 
     // Keyboard-navigation state (see notes/plans/2026-07-02-keyboard-shortcuts.md).
-    @Published var focusZone: FocusZone = .board
+    @Published var focusZone: FocusZone = .board {
+        didSet {
+            // A committed `/` search bar stays up so `n`/`N` cycle matches while you browse the board.
+            // But once focus descends into a card (terminal/shell) it can't be Esc-dismissed anymore
+            // (Esc belongs to the pty), and `n`/`N` no longer apply — so the search has served its
+            // purpose. Clear it the moment focus leaves the board so the bar never strands itself.
+            if focusZone != .board, searchQuery != nil { searchQuery = nil }
+        }
+    }
     @Published var showHelp = false
     /// Non-nil while the `/` card filter is active; the empty string means "field open, no query yet".
     @Published var searchQuery: String? = nil

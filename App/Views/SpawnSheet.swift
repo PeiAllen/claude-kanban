@@ -834,9 +834,13 @@ private struct BranchSearchField: NSViewRepresentable {
     }
 }
 
-/// An `NSTextField` that grabs keyboard focus the instant it's mounted in a window, so the branch
-/// popover's search field is ready to type into without a click.
-private final class AutoFocusTextField: NSTextField {
+/// An `NSTextField` that grabs keyboard focus the instant it's mounted in a window, so a field is
+/// ready to type into without a click. The claim is deferred one runloop tick (`main.async`) so it
+/// lands *after* SwiftUI's own focus/layout pass — and, crucially, after the agent terminal's
+/// deferred `claimFocusNow()` — rather than being clobbered by them. SwiftUI's `@FocusState` focuses
+/// synchronously in `onAppear`, so it loses this race to the terminal; this AppKit claim wins it.
+/// Shared by the branch search field, the `:` command palette, and the `/` card search bar.
+final class AutoFocusTextField: NSTextField {
     private var didFocus = false
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
