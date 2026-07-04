@@ -270,6 +270,31 @@ private struct DebugLaunchHook: ViewModifier {
         }
     }
 
+    /// `ORCH_SHOW=takeover`: a mock running card whose agent terminal is owned by a phone, so the
+    /// inspector renders the "Taken over by phone" placeholder headlessly (no daemon). `ORCH_STALE=1`
+    /// seeds a STALE phone owner to screenshot the Force Retake variant.
+    static func showTakeover(model: BoardModel) {
+        let mock = Task(title: "Wire desktop unmount + phone-takeover placeholder",
+                        repo: "/Users/allen/code/orchestra", branch: "mobile/d5-desktop-unmount",
+                        cwd: "/Users/allen/code/orchestra/.worktrees/d5",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, status: .running, ctxPct: 40, initialPrompt: "demo")
+        model.tasks = [mock]
+        model.selectedId = mock.id
+        // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
+        model.onboarded = true
+        model.showOnboarding = false
+        let stale = ProcessInfo.processInfo.environment["ORCH_STALE"] == "1"
+        // A stale owner also gets an old `updatedAt` so the desktop's local staleness derivation agrees
+        // with the server flag (both paths converge on Force Retake).
+        let updatedAt = stale ? Date(timeIntervalSinceNow: -120) : Date()
+        let owner = AgentTerminalOwner(ownerKind: .phone, clientId: "phone-demo", epoch: 1,
+                                       cardId: mock.id, window: "agent", updatedAt: updatedAt)
+        model.agentOwners[mock.id] = AgentTerminalOwnerState(
+            ref: mock.id.uuidString, cardId: mock.id, window: "agent",
+            owner: owner, epoch: 1, stale: stale)
+    }
+
     /// A multi-card mock board (no daemon) that STAYS RUNNING, for driving keyboard-navigation tests:
     /// `ORCH_SHOW=demo`. Cards span all three columns plus a freeform card, so hjkl / g-go-to / hints
     /// have something to move through. The terminals render empty (no tmux behind a mock card).
@@ -512,6 +537,25 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the REAL `AgentTerminalPlaceholder` ("Taken over by phone") straight to a PNG via
+    /// `ImageRenderer` — headless, no daemon, no Screen-Recording permission (works even with the screen
+    /// locked, unlike `screencapture`). `ORCH_SNAPSHOT_TAKEOVER=/path.png`; `ORCH_STALE=1` renders the
+    /// Force-Retake variant. Reuses `showTakeover` to seed the mock card + phone owner so the snapshot
+    /// can't drift from the shipping view.
+    static func snapshotTakeover(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        showTakeover(model: model)
+        guard let task = model.tasks.first else { return }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        let view = AgentTerminalPlaceholder(task: task)
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .frame(width: 520, height: 300)
+            .background(theme.termBg)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Shared ImageRenderer → PNG writer for the snapshot hooks.
     static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -527,6 +571,10 @@ private struct DebugLaunchHook: ViewModifier {
     func body(content: Content) -> some View {
         #if DEBUG
         content.task {
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_TAKEOVER"] {
+                DebugLaunchHook.snapshotTakeover(to: path, model: model)
+                exit(0)
+            }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_DONE"] {
                 DebugLaunchHook.snapshotDone(to: path, model: model)
                 exit(0)
@@ -574,6 +622,7 @@ private struct DebugLaunchHook: ViewModifier {
                 model.archived = DebugLaunchHook.mockArchived
                 model.showDone = true
             case "shells": DebugLaunchHook.showShells(model: model)
+            case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
             default: break
             }

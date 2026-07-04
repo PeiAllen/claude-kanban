@@ -89,6 +89,13 @@ public final class BoardModel: ObservableObject {
     @Published public var shellWindows: [UUID: [String]] = [:]
     @Published public var selectedShell: [UUID: String] = [:]
 
+    /// Daemon-authoritative agent-terminal ownership (PR D4), mirrored per card so the inspector can
+    /// render the live terminal vs the "Taken over by phone" placeholder (PR D5). Ephemeral UI
+    /// coordination only — rebuilt from `agentTerminalOwner` events (and a reconcile query on every
+    /// (re)connect), never persisted. The stored snapshot's `owner == nil` means *available* (mount);
+    /// a `.phone` owner means the desktop shows the placeholder and stays detached from the tmux window.
+    @Published public var agentOwners: [UUID: AgentTerminalOwnerState] = [:]
+
     // Preferences (host props in the prototype).
     @AppStorage("orch_accent") public var accentRaw = Accent.blue.rawValue
     @AppStorage("orch_density") public var densityRaw = Density.comfortable.rawValue
@@ -329,6 +336,7 @@ public final class BoardModel: ObservableObject {
         if let list = try? await client.call("list", .object([:])).decode([Task].self) {
             tasks = list
             await refreshShellPanels(for: list)
+            await refreshAgentOwners(for: list)
         }
         if let arch = try? await client.call("archivedList").decode([Task].self) { archived = arch }
         if let cfg = try? await client.call("getConfig").decode(Config.self) { config = cfg }
@@ -361,6 +369,22 @@ public final class BoardModel: ObservableObject {
             shellWindows[id] = nil
             selectedShell[id] = nil
             shellOpen.remove(id)
+        }
+    }
+
+    /// Reconcile agent-terminal ownership on (re)connect. Owner events are live-only (not replayed from
+    /// the ring), so a client that connects mid-takeover would never learn the phone owns a card without
+    /// this query. Mirrors `refreshShellPanels`: drop stale keys for gone cards, then snapshot each
+    /// visible card's current owner. After this, the live `agentTerminalOwner` stream keeps it current.
+    private func refreshAgentOwners(for cards: [Task]) async {
+        let activeIds = Set(cards.map(\.id))
+        // Snapshot the keys before mutating — iterating the live `.keys` view while assigning would be a
+        // simultaneous-access violation.
+        for id in Array(agentOwners.keys) where !activeIds.contains(id) { agentOwners[id] = nil }
+        for card in cards {
+            if let state = try? await client.agentTerminalOwner(card.id.uuidString) {
+                agentOwners[card.id] = state
+            }
         }
     }
 
@@ -408,8 +432,11 @@ public final class BoardModel: ObservableObject {
         case .activity(let item):
             activity.insert(item, at: 0)
             if activity.count > 200 { activity.removeLast(activity.count - 200) }
-        case .agentTerminalOwner:
-            break   // D5 (desktop-unmount) consumes this; D4 keeps the desktop build green with a no-op.
+        case .agentTerminalOwner(let state):
+            // Live owner flip from the daemon. Store the whole snapshot (it carries `owner` + `stale`);
+            // the render/acquire decisions read the owner kind out of it. Events are LIVE-ONLY (not ring-
+            // replayed), so `refreshAgentOwners` reconciles current ownership on every (re)connect.
+            agentOwners[state.cardId] = state
         }
     }
 
@@ -596,6 +623,52 @@ public final class BoardModel: ObservableObject {
     public func select(ref: String) {
         let all = tasks + archived
         if let t = try? resolve(TaskRef(parsing: ref), in: all) { selectedId = t.id }
+    }
+
+    // MARK: agent-terminal ownership (PR D5) — desktop consumer of D4's lease
+
+    /// The current owner of a card's agent terminal, or nil when available.
+    public func agentOwner(for cardId: UUID) -> AgentTerminalOwner? { agentOwners[cardId]?.owner }
+
+    /// Whether the card's phone owner has gone stale — derived locally (`updatedAt + timeout`) OR taken
+    /// from the daemon's own `stale` flag. Drives the placeholder's Force-Retake copy; never affects
+    /// mount-vs-placeholder (a stale phone owner is still the placeholder — see the policy).
+    public func agentOwnerStale(for cardId: UUID) -> Bool {
+        guard let s = agentOwners[cardId], let owner = s.owner else { return false }
+        return isAgentTerminalStale(updatedAt: owner.updatedAt, serverStale: s.stale, now: Date())
+    }
+
+    /// Whether the inspector should mount the live terminal or the "Taken over by phone" placeholder.
+    public func desktopTerminalDecision(for cardId: UUID) -> DesktopTerminalDecision {
+        let owner = agentOwners[cardId]?.owner
+        return OrchestraUI.desktopTerminalDecision(ownerKind: owner?.ownerKind,
+                                                   isStale: agentOwnerStale(for: cardId))
+    }
+
+    /// Called when the desktop selects/mounts a card's terminal: claim `desktopOwned` unless the phone
+    /// owns it or we already own it (the policy short-circuits both). Fire-and-forget; the authoritative
+    /// state comes back as an `agentTerminalOwner` event that re-drives the decision.
+    public func acquireDesktopTerminal(_ cardId: UUID) {
+        let owner = agentOwners[cardId]?.owner
+        guard shouldAcquireDesktopOwnership(ownerKind: owner?.ownerKind, ownerClientId: owner?.clientId,
+                                            desktopClientId: clientId) else { return }
+        takeOverAgentTerminal(cardId)
+    }
+
+    /// Explicit **Retake Terminal** from the placeholder: CAS the lease to this desktop even though the
+    /// phone currently owns it. The resulting owner event flips `desktopTerminalDecision` back to `.mount`
+    /// and the inspector remounts `AgentTerminalView` automatically. Works for a fresh OR stale phone
+    /// owner — `takeOverAgentTerminal` always wins (epoch++), so no guard here.
+    public func retakeAgentTerminal(_ cardId: UUID) { takeOverAgentTerminal(cardId) }
+
+    /// Shared CAS: take this card's `agent` lease as *this desktop*. `acquire` gates this behind the
+    /// policy (silent, on select); `retake` calls it unconditionally (explicit, from the button).
+    private func takeOverAgentTerminal(_ cardId: UUID) {
+        let ref = cardId.uuidString
+        let me = clientId
+        _Concurrency.Task { [weak self] in
+            _ = try? await self?.client.takeOverAgentTerminal(ref, clientId: me, kind: .desktop)
+        }
     }
 
     // MARK: keyboard-navigation intents
