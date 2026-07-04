@@ -68,6 +68,9 @@ private struct ColumnView: View {
         .animation(.easeInOut(duration: 0.15), value: isTargeted)
         .dropDestination(for: String.self) { items, _ in
             guard let dropped = items.first, let id = UUID(uuidString: dropped) else { return false }
+            guard model.tasks.first(where: { $0.id == id })?.origin == .worktree else {
+                return false
+            }
             _Concurrency.Task { await model.move(id, to: column) }
             return true
         } isTargeted: { targeted in
