@@ -154,6 +154,9 @@ actor EventCollector {
     var upserts: [Task] {
         events.compactMap { if case .taskUpserted(let t) = $0 { return t } else { return nil } }
     }
+    var ownerStates: [AgentTerminalOwnerState] {
+        events.compactMap { if case .agentTerminalOwner(let s) = $0 { return s } else { return nil } }
+    }
 }
 
 /// A minimal async mutex. Scratch-card tests share ONE global resource — the real

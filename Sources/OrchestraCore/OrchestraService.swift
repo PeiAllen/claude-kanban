@@ -39,6 +39,8 @@ public actor OrchestraService {
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
+    // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
+    var terminalOwnership = TerminalOwnershipStore()
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
     // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout).
@@ -596,6 +598,61 @@ public actor OrchestraService {
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
         return CardSessions(ref: t.ref(), id: t.id, worktree: t.cwd, tmuxSocket: Config.tmuxSocket,
                             session: name, running: running, targets: targets, agent: info)
+    }
+
+    // MARK: - Agent-terminal ownership (ephemeral UI coordination)
+
+    /// Current owner of the card's `agent` terminal (owner + epoch + stale/fresh). Read-only.
+    public func agentTerminalOwner(_ ref: String) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        return terminalOwnership.snapshot(cardId: t.id, ref: t.ref(), now: Date())
+    }
+
+    /// Compare-and-set acquisition of the card's `agent` terminal: bump the epoch, set the owner,
+    /// emit an owner event, and return the tmux attach target. Always wins (desktop Retake / takeover).
+    public func takeOverAgentTerminal(_ ref: String, clientId: String,
+                                      kind: AgentTerminalOwnerKind) async throws -> TakeOverResult {
+        let t = try await resolveRef(ref)
+        let state = terminalOwnership.takeOver(cardId: t.id, ref: t.ref(), clientId: clientId,
+                                               kind: kind, now: Date())
+        // (Task 5 adds a best-effort detach of prior agent-view clients here.)
+        emit(.agentTerminalOwner(state))
+        let target = try await agentTarget(t.id)
+        return TakeOverResult(state: state, target: target)
+    }
+
+    /// Release the card's `agent` terminal — clears the owner ONLY if the caller still holds the
+    /// current epoch + clientId; otherwise throws `ownershipDenied`. Emits on success.
+    public func releaseAgentTerminal(_ ref: String, clientId: String,
+                                     epoch: Int) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        let state = try terminalOwnership.release(cardId: t.id, ref: t.ref(),
+                                                  clientId: clientId, epoch: epoch, now: Date())
+        emit(.agentTerminalOwner(state))
+        return state
+    }
+
+    /// Refresh a takeover across reconnects — succeeds ONLY for the current epoch + clientId; throws
+    /// otherwise. Keepalive: does NOT emit (staleness is derived from `updatedAt` by consumers).
+    public func heartbeatAgentTerminal(_ ref: String, clientId: String,
+                                       epoch: Int) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        return try terminalOwnership.heartbeat(cardId: t.id, ref: t.ref(),
+                                               clientId: clientId, epoch: epoch, now: Date())
+    }
+
+    /// Test hook: shrink/enlarge the ownership heartbeat window (default 30s) so staleness tests
+    /// don't have to sleep the real timeout. Not called in production.
+    func setOwnershipHeartbeatTimeout(_ t: TimeInterval) { terminalOwnership.heartbeatTimeout = t }
+
+    /// The card's `agent` window as a ready-to-attach `TmuxTarget` (reuses the shipped `sessions`
+    /// discovery). Throws if the card has no live `agent` window.
+    private func agentTarget(_ id: UUID) async throws -> TmuxTarget {
+        let cs = try await sessions(id)
+        guard let agent = cs.targets.first(where: { $0.kind == .agent }) else {
+            throw OrchestraError.io("no agent window for card \(id)")
+        }
+        return agent
     }
 
     /// Read-only snapshot of a card's `agent` (default) or a `shell-N` window — the phone Agent
