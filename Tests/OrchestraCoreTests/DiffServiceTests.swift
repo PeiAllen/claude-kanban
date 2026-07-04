@@ -53,7 +53,9 @@ struct DiffServiceTests {
         try modify(t.cwd)
         // A normalized snapshot carrying NO tool_name — the diff core must still refresh off it.
         try await env.svc.report(t.id, StatusReport(desc: "working", status: .running))
-        try await _Concurrency.Task.sleep(for: .milliseconds(1100))   // > 750ms debounce
+        try await pollUntil {
+            await env.svc.list().first { $0.id == t.id }?.diffStat?.filesChanged == 1
+        }
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.diffStat?.filesChanged == 1)
     }

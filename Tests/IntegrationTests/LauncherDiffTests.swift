@@ -176,6 +176,8 @@ struct LauncherDiffTests {
         let files = leaves.map { (($0["state"] as? [String: Any])?["state"] as? [String: Any])?["file"] as? String }
         #expect(files == rels)                                   // one tab per note, order preserved
         #expect(leaves.allSatisfy { ($0["state"] as? [String: Any])?["type"] as? String == "markdown" })
+        let modes = leaves.map { (($0["state"] as? [String: Any])?["state"] as? [String: Any])?["mode"] as? String }
+        #expect(modes == Array(repeating: "preview", count: rels.count))
         #expect(obj["lastOpenFiles"] as? [String] == rels)
         #expect((obj["active"] as? String)?.isEmpty == false)    // an active leaf is set
     }
