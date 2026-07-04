@@ -96,6 +96,13 @@ public final class ControlClient: @unchecked Sendable {
         return try result.decode(T.self)
     }
 
+    /// Typed convenience over the `capture` verb — a non-attaching, read-only pane snapshot. The
+    /// phone Agent tab's v1 read source.
+    public func capture(_ ref: String, window: String = "agent") async throws -> CaptureResult {
+        try await call("capture", .object(["ref": .string(ref), "window": .string(window)]),
+                       as: CaptureResult.self)
+    }
+
     /// Subscribe to the daemon's event stream (task upserts/removals + activity). Sends the subscribe
     /// request and returns a live stream. The stream persists across reconnects — only `close()` ends it;
     /// on reconnect the client re-issues the subscribe RPC so the same stream keeps receiving events.
