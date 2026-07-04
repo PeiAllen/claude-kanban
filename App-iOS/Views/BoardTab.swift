@@ -1,70 +1,212 @@
 import SwiftUI
+import UIKit
 import OrchestraKit
 import OrchestraUI
 
-/// Skeleton board: a connection banner + a flat live list of the daemon's cards, straight off the
-/// shared `BoardModel`. The swipeable column pager is M1; this proves the shared core streams on-device.
+/// The Board home (design §2): a swipeable full-width column pager **Freeform · Plan · Impl · Review**
+/// with a segmented per-page-count indicator up top, off the shared `BoardModel`. Replaces F3's flat
+/// list. The nav bar carries **Activity** + **Done**, each a pushed screen within the Board tab.
 struct BoardTab: View {
     @EnvironmentObject var model: BoardModel
+    @Environment(\.colorScheme) private var scheme
+    // Land on Plan — the start of the lifecycle; Freeform is one swipe left, Review two right.
+    @State private var page: BoardPage = .plan
+    @State private var showDone = false
+    @State private var showActivity = false
+
+    private var theme: Theme { Theme(scheme: scheme, accent: model.accent) }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if model.tasks.isEmpty {
-                    ContentUnavailableView("No cards",
-                                           systemImage: "square.stack.3d.up.slash",
-                                           description: Text("Spawn agents on the desktop to see them here."))
-                } else {
-                    List(model.tasks) { task in CardRow(task: task) }
-                        .listStyle(.plain)
+            VStack(spacing: 0) {
+                ConnectionBanner(state: model.connectionState)
+                PagerHeader(page: $page, counts: counts)
+                TabView(selection: $page) {
+                    ForEach(BoardPage.allCases) { p in
+                        BoardPageView(page: p).tag(p)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+            }
+            .background(theme.winBg.ignoresSafeArea())
+            .navigationTitle("Orchestra")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showActivity = true } label: { Image(systemName: "waveform") }
+                        .accessibilityLabel("Activity")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showDone = true } label: { Image(systemName: "archivebox") }
+                        .accessibilityLabel("Done")
                 }
             }
-            .navigationTitle("Board")
-            .safeAreaInset(edge: .top) { ConnectionBanner(state: model.connectionState) }
+            .navigationDestination(isPresented: $showActivity) { ActivityFeedView() }
+            .navigationDestination(isPresented: $showDone) { DoneArchiveView() }
         }
+        .environment(\.theme, theme)
+    }
+
+    /// Live per-page card counts for the segmented indicator.
+    private var counts: [BoardPage: Int] {
+        [.freeform: model.freeformTasks.count,
+         .plan:   model.cards(in: .plan).count,
+         .impl:   model.cards(in: .impl).count,
+         .review: model.cards(in: .review).count]
     }
 }
 
-private struct CardRow: View {
-    let task: Task
+// MARK: - Segmented per-page-count indicator
+
+private struct PagerHeader: View {
+    @Binding var page: BoardPage
+    let counts: [BoardPage: Int]
+    @Environment(\.theme) private var theme: Theme
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(task.title).font(.headline).lineLimit(1)
-                Spacer()
-                StatusPill(status: task.status)
+        HStack(spacing: 4) {
+            ForEach(BoardPage.allCases) { p in
+                let active = p == page
+                Button {
+                    withAnimation(.easeInOut(duration: 0.22)) { page = p }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(p.title).font(.footnote.weight(active ? .semibold : .regular))
+                        Text("\(counts[p] ?? 0)")
+                            .font(.caption2.weight(.semibold))
+                            .monospacedDigit()
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(active ? theme.accent.opacity(0.20) : theme.chip))
+                    }
+                    .foregroundStyle(active ? theme.text : theme.text2)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(active ? theme.chip : .clear,
+                               in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
-            Text("\(URL(fileURLWithPath: task.repo).lastPathComponent)/\(task.branch)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 }
 
-private struct StatusPill: View {
-    let status: AgentStatus
-    var body: some View {
-        Text(status.rawValue.uppercased())
-            .font(.system(.caption2, design: .rounded).weight(.semibold))
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.18)))
-            .foregroundStyle(color)
+// MARK: - One pager page
+
+private struct BoardPageView: View {
+    let page: BoardPage
+    @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) private var theme: Theme
+
+    private var cards: [Task] {
+        page.isFreeform ? model.freeformTasks : model.cards(in: page.column!)
     }
-    private var color: Color {
-        switch status {
-        case .running: return .green
-        case .waiting: return .orange
-        case .dead:    return .red
-        case .done:    return .secondary
+
+    var body: some View {
+        Group {
+            if cards.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(cards) { MovableCard(task: $0) }
+                    }
+                    .padding(16)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label(page.isFreeform ? "No freeform agents" : "Nothing in \(page.title)",
+                  systemImage: page.isFreeform ? "folder" : "square.stack.3d.up.slash")
+        } description: {
+            Text(page.isFreeform
+                 ? "Agents running in an existing directory appear here."
+                 : "Cards in the \(page.title) column appear here.")
         }
     }
 }
+
+// MARK: - A card with its move affordances (swipe-to-adjacent + "Move to…" menu)
+
+/// Wraps `BoardCardCell` with the two move gestures (design §2). Only **worktree** cards move —
+/// freeform cards have no lifecycle column and the daemon's `move` guards `origin == .worktree`, so
+/// they render without either affordance. A user move drives the shipped `move` RPC, which queues the
+/// agent an inbox message about its new column.
+private struct MovableCard: View {
+    let task: Task
+    @EnvironmentObject var model: BoardModel
+    @State private var dragX: CGFloat = 0
+
+    var body: some View {
+        if task.origin == .worktree {
+            BoardCardCell(task: task)
+                .offset(x: dragX)
+                .gesture(moveDrag)
+                .contextMenu { moveMenu }
+        } else {
+            BoardCardCell(task: task)
+        }
+    }
+
+    /// The "Move to…" context menu — every lifecycle column except this card's current one.
+    @ViewBuilder private var moveMenu: some View {
+        ForEach(moveTargets(from: task.column), id: \.self) { col in
+            Button {
+                move(to: col)
+            } label: {
+                Label("Move to \(col.displayName)", systemImage: symbol(for: col))
+            }
+        }
+    }
+
+    /// Tap-and-hold → swipe to an adjacent column. The long press disambiguates from the pager's own
+    /// horizontal swipe; a drag past the threshold commits the move to the neighbouring column.
+    private var moveDrag: some Gesture {
+        LongPressGesture(minimumDuration: 0.3)
+            .sequenced(before: DragGesture(minimumDistance: 12))
+            .onChanged { value in
+                if case .second(true, let drag?) = value {
+                    dragX = min(130, max(-130, drag.translation.width))
+                }
+            }
+            .onEnded { value in
+                guard case .second(true, let drag?) = value else { snapBack(); return }
+                let movingRight = drag.translation.width > 0
+                if abs(drag.translation.width) > 64,
+                   let target = adjacentColumn(from: task.column, movingRight: movingRight) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    move(to: target)
+                }
+                snapBack()
+            }
+    }
+
+    private func snapBack() { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { dragX = 0 } }
+
+    private func move(to col: Column) {
+        _Concurrency.Task { await model.move(task.id, to: col) }
+    }
+
+    private func symbol(for col: Column) -> String {
+        switch col {
+        case .plan:   return "list.bullet.clipboard"
+        case .impl:   return "hammer"
+        case .review: return "checkmark.seal"
+        }
+    }
+}
+
+// MARK: - Connection banner (from F3; hidden while live)
 
 /// Thin bar reflecting `ConnectionState`; hidden while live so the board is chrome-free when connected.
 private struct ConnectionBanner: View {
     let state: ConnectionState
+    @Environment(\.theme) private var theme: Theme
     var body: some View {
         if state != .live {
             HStack(spacing: 8) {
@@ -74,7 +216,8 @@ private struct ConnectionBanner: View {
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(.orange.opacity(0.15))
+            .background(theme.amber.tint)
+            .foregroundStyle(theme.amber.text)
         }
     }
     private var label: String {
