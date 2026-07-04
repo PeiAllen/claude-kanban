@@ -1,11 +1,11 @@
 import Foundation
-import OrchestraCore
+import OrchestraKit
 import MCP
 
 // orchestra-mcp — the MCP stdio bridge, built on the official Swift SDK. One tool per
-// CommandRegistry command; each tool call relays to the daemon over the control socket.
+// CommandCatalog command; each tool call relays to the daemon over the control socket. The bridge
+// depends on OrchestraKit only (the client-safe vocabulary + transport) — never on daemon code.
 
-let registry = CommandRegistry()
 let socketPath = ProcessInfo.processInfo.environment["ORCHESTRA_SOCK"] ?? Config.socketPath
 
 func logErr(_ s: String) { FileHandle.standardError.write(Data("[orchestra-mcp] \(s)\n".utf8)) }
@@ -24,10 +24,10 @@ let server = Server(
     capabilities: .init(tools: .init(listChanged: false))
 )
 
-// tools/list — generated from the canonical command set.
+// tools/list — generated from the canonical command vocabulary (schema only; no daemon handlers).
 _ = await server.withMethodHandler(ListTools.self) { _ in
-    let tools = registry.commands.map { cmd in
-        Tool(name: cmd.name, description: cmd.summary, inputSchema: toMCPValue(cmd.params))
+    let tools = CommandCatalog.all.map { s in
+        Tool(name: s.name, description: s.summary, inputSchema: toMCPValue(s.params))
     }
     return ListTools.Result(tools: tools)
 }

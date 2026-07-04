@@ -56,7 +56,9 @@ let package = Package(
         .executableTarget(name: "orchestra", dependencies: ["OrchestraCore"]),
         .executableTarget(
             name: "orchestra-mcp",
-            dependencies: ["OrchestraCore", .product(name: "MCP", package: "swift-sdk")]
+            // D4: the MCP bridge references only client-safe types (CommandCatalog/ControlClient/
+            // Config/JSONValue/RPCError/OrchestraJSON/OrchestraVersion) — all in OrchestraKit.
+            dependencies: ["OrchestraKit", .product(name: "MCP", package: "swift-sdk")]
         ),
         .testTarget(
             name: "OrchestraCoreTests",
