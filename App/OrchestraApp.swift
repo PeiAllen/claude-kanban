@@ -662,6 +662,26 @@ struct NonWindowDraggable: NSViewRepresentable {
     }
 }
 
+/// An `NSHostingView` for a title-bar accessory whose width tracks its SwiftUI content. The titlebar
+/// sizes a `.right` accessory from its view's *frame* (not its intrinsic size) and only re-lays-out
+/// on window resize — so a plain hosting view freezes at its install-time width, and when the content
+/// later grows (ContextChip BOARD→INSPECTOR/TERMINAL/SHELL, MCP offline→"connected · N agents") the
+/// right-aligned row overflows the stale frame and clips on the left. Here we resize our own frame to
+/// the content's fitting width whenever the content re-lays-out, then poke the titlebar container to
+/// reposition us so the right edge stays pinned to the window edge.
+final class AutoWidthHostingView<Content: View>: NSHostingView<Content> {
+    override func layout() {
+        super.layout()
+        let w = fittingSize.width
+        guard w > 0, abs(frame.width - w) > 0.5 else { return }
+        setFrameSize(NSSize(width: w, height: max(fittingSize.height, ToolbarView.height)))
+        // The accessory's superview is the titlebar container; make it re-run its accessory layout so
+        // it picks up our new width and re-pins our right edge to the window's trailing edge.
+        superview?.needsLayout = true
+        superview?.layoutSubtreeIfNeeded()
+    }
+}
+
 /// Static, one-time window setup: pull the SwiftUI content under a transparent full-size titlebar so
 /// our toolbar occupies the same band as the traffic lights (the toolbar then lays itself out to line
 /// up — no runtime querying or moving of the OS buttons). Also disables move-by-background so the
@@ -698,11 +718,7 @@ struct WindowConfigurator: NSViewRepresentable {
                 installedAccessory = true
                 let acc = NSTitlebarAccessoryViewController()
                 acc.layoutAttribute = .right
-                let host = NSHostingView(rootView: ToolbarControls().environmentObject(model))
-                let fit = host.fittingSize
-                host.frame = NSRect(x: 0, y: 0,
-                                    width: max(fit.width, 1),
-                                    height: max(fit.height, ToolbarView.height))
+                let host = AutoWidthHostingView(rootView: ToolbarControls().environmentObject(model))
                 acc.view = host
                 window.addTitlebarAccessoryViewController(acc)
             }
