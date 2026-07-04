@@ -14,6 +14,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case invalidParams(String)
     case io(String)
     case trustDenied(String)
+    case ownershipDenied(String)   // CAS failure: release/heartbeat by a non-current epoch/clientId
 
     public var description: String {
         switch self {
@@ -29,6 +30,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .invalidParams(let m): return "invalid params: \(m)"
         case .io(let m):            return "io error: \(m)"
         case .trustDenied(let m):   return "trust not granted: \(m)"
+        case .ownershipDenied(let m): return "ownership denied: \(m)"
         }
     }
 
@@ -47,6 +49,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .zedMissing:       return 1009
         case .io:               return 1010
         case .trustDenied:      return 1011
+        case .ownershipDenied:  return 1012
         }
     }
 }

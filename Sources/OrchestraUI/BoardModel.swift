@@ -403,6 +403,8 @@ public final class BoardModel: ObservableObject {
         case .activity(let item):
             activity.insert(item, at: 0)
             if activity.count > 200 { activity.removeLast(activity.count - 200) }
+        case .agentTerminalOwner:
+            break   // D5 (desktop-unmount) consumes this; D4 keeps the desktop build green with a no-op.
         }
     }
 

@@ -442,6 +442,56 @@ public struct TmuxTarget: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Agent-terminal ownership (ephemeral UI coordination — NOT durable card state)
+
+/// Which surface currently owns a card's live `agent` terminal.
+public enum AgentTerminalOwnerKind: String, Codable, Sendable, Equatable {
+    case desktop, phone
+}
+
+/// The ephemeral owner of one card's `agent` window. `epoch` is a monotonic per-card counter that
+/// makes stale releases/heartbeats safe: only the holder of the *current* epoch may release or refresh.
+public struct AgentTerminalOwner: Codable, Sendable, Equatable {
+    public let ownerKind: AgentTerminalOwnerKind
+    public let clientId: String       // D3's per-install client id; the owning surface
+    public let epoch: Int
+    public let cardId: UUID
+    public let window: String          // always "agent" in v1; keyed for future windows
+    public let updatedAt: Date
+    public init(ownerKind: AgentTerminalOwnerKind, clientId: String, epoch: Int,
+                cardId: UUID, window: String, updatedAt: Date) {
+        self.ownerKind = ownerKind; self.clientId = clientId; self.epoch = epoch
+        self.cardId = cardId; self.window = window; self.updatedAt = updatedAt
+    }
+}
+
+/// Snapshot returned by `agentTerminalOwner` and broadcast on the event stream. `owner == nil` means
+/// *available*. `epoch` is the current per-card epoch even when available (monotonic). `stale` is true
+/// when an owner exists but hasn't heartbeated within the timeout.
+public struct AgentTerminalOwnerState: Codable, Sendable, Equatable {
+    public let ref: String
+    public let cardId: UUID
+    public let window: String
+    public let owner: AgentTerminalOwner?
+    public let epoch: Int
+    public let stale: Bool
+    public init(ref: String, cardId: UUID, window: String,
+                owner: AgentTerminalOwner?, epoch: Int, stale: Bool) {
+        self.ref = ref; self.cardId = cardId; self.window = window
+        self.owner = owner; self.epoch = epoch; self.stale = stale
+    }
+}
+
+/// `takeOverAgentTerminal` result: the new ownership state + the tmux attach target for the caller
+/// (the card's `agent` window, reusing the shipped `sessions`→`TmuxTarget` discovery).
+public struct TakeOverResult: Codable, Sendable, Equatable {
+    public let state: AgentTerminalOwnerState
+    public let target: TmuxTarget
+    public init(state: AgentTerminalOwnerState, target: TmuxTarget) {
+        self.state = state; self.target = target
+    }
+}
+
 /// The agent's own identity for transcript search / resume / debugging — sourced from the Adapter.
 public struct AgentSessionInfo: Codable, Sendable, Equatable {
     public let agentId: String
@@ -592,6 +642,9 @@ public enum Event: Codable, Sendable, Equatable {
     case taskUpserted(Task)
     case taskRemoved(UUID)
     case activity(ActivityItem)
+    /// Ephemeral agent-terminal ownership change. Live-only — NOT ring-replayed (only `.activity`
+    /// is). A (re)connecting client reconciles via `agentTerminalOwner(ref)`.
+    case agentTerminalOwner(AgentTerminalOwnerState)
 }
 
 // MARK: - Spawn input
