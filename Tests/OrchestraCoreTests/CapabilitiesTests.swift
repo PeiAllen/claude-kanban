@@ -6,15 +6,17 @@ import Testing
 struct CapabilitiesTests {
 
     // The COMPLETE variant spelling, locked against SSOT §4 + 02-contract classDiagram.
-    // If any spelling drifts (add/rename/remove a case), this fails — that is the point.
+    // If any spelling drifts (add/rename/remove a case), this fails — that is the point. `sendKeys` /
+    // `sessionSeed` were retired when Codex moved to resume-seed wake + the Stop-hook drain (see
+    // notes/designs/codex-wake-delivery); capabilities are computed from the adapter, never persisted.
     @Test("every enum variant spelling is frozen exactly")
     func variantSpellingsFrozen() {
         #expect(AgentCapabilities.SessionId.allCases.map(\.rawValue) == ["seeded", "discovered"])
         #expect(AgentCapabilities.Telemetry.allCases.map(\.rawValue) == ["hooksPush", "fileTail", "ptyScrape"])
         #expect(AgentCapabilities.ContextUsage.allCases.map(\.rawValue) == ["percent", "tokens", "none"])
         #expect(AgentCapabilities.WakeTransport.allCases.map(\.rawValue)
-                == ["nativeReinvoke", "controlChannel", "sendKeys", "relaunch"])
-        #expect(AgentCapabilities.InboxDrain.allCases.map(\.rawValue) == ["stopHook", "sessionSeed", "none"])
+                == ["nativeReinvoke", "relaunch", "controlChannel"])
+        #expect(AgentCapabilities.InboxDrain.allCases.map(\.rawValue) == ["stopHook", "none"])
         #expect(AgentCapabilities.ReadOnlyEnforcement.allCases.map(\.rawValue)
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
@@ -41,7 +43,7 @@ struct CapabilitiesTests {
     func stubAdvertisesTuple() {
         let custom = AgentCapabilities(
             sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-            wakeTransport: .sendKeys, inboxDrain: .stopHook,
+            wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .toolGatedOnly, authMode: .apiKey)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: custom)
         #expect(stub.capabilities == custom)
@@ -103,6 +105,6 @@ struct CapabilitiesTests {
     /// A representative non-Claude tuple used to prove core gates on the descriptor, not identity.
     static let discoveredTuple = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .sendKeys, inboxDrain: .stopHook,
+        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription)
 }

@@ -2,9 +2,10 @@ import Foundation
 
 /// Folds an authored handoff/fork seed **plus** a card's pending inbox into ONE bounded string that is
 /// delivered as the resumed session's opening turn (F1). The inbox "folds into the seed" (design §8 F1):
-/// a `.sessionSeed`-drain agent (Codex) has no Stop hook, so its queued messages must ride the resume
-/// seed rather than a later drain. Handoff context comes first, then the inbox in FIFO order. Pure +
-/// synchronous → trivially testable and callable from `resumeInCard`.
+/// on a resume — a handoff/fork, or an idle-wake relaunch (`.relaunch`) — the pending inbox rides the
+/// opening turn instead of a live drain (that's the Stop hook, on a turn already running). Handoff context
+/// comes first, then the inbox in FIFO order. Pure + synchronous → trivially testable, callable from
+/// `resumeInCard`.
 public enum HandoffSeed {
     /// Handoff text (trimmed; dropped if empty) followed by the pending `inbox` under the shared
     /// `StopDrain.inboxHeader` provenance line (so a Codex card draining via the seed gets the *same*

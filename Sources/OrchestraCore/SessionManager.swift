@@ -141,13 +141,6 @@ public struct SessionManager: Sendable {
             .map { SessionInfo(name: $0, running: true) }
     }
 
-    /// Capture the agent pane (fallback for desc/ctxPct heuristics).
-    public func capture(_ name: String, window: String = "agent") throws -> String {
-        guard try isAlive(name) else { return "" }
-        let r = try tmux(["capture-pane", "-p", "-t", "\(name):\(window)"])
-        return r.ok ? r.stdout : ""
-    }
-
     /// Send a line of input to the agent window (the `send` command / inline prompt).
     public func sendKeys(_ name: String, text: String, window: String = "agent") throws {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }

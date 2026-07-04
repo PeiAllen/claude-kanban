@@ -41,6 +41,9 @@ public enum HooksRenderer {
         "SessionStart": [
           { "matcher": "startup|resume",
             "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event session --agent __AGENT_ID__" } ] }
+        ],
+        "Stop": [
+          { "hooks": [ { "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" } ] }
         ]
       }
     }

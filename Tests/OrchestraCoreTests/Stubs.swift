@@ -35,15 +35,10 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private(set) var peakConcurrentEnsure = 0
     private var curConcurrentEnsure = 0
     var ensureSleepMs: UInt32 = 0
-    private var captureText: [String: String] = [:]
     private(set) var sentKeys: [(name: String, text: String)] = []
 
-    /// Seed the pane text `capture(_:window:)` returns for this card (drives C4 detect-and-defer).
-    func setCapture(_ id: UUID, _ text: String) {
-        lock.lock(); captureText[sessionName(id)] = text; lock.unlock()
-    }
-
-    /// Nudges/keystrokes sent to a card's agent window, in order (drives C4 nudge-only assertions).
+    /// Keystrokes sent to a card's agent window, in order (the read-only shell launcher; historically also
+    /// the retired send-keys nudge).
     func keysSent(to id: UUID) -> [String] {
         lock.lock(); defer { lock.unlock() }
         let n = sessionName(id)
@@ -72,9 +67,6 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
                            target: "\(name):agent", attach: "tmux -L orchestra attach -t \(name):agent")]
     }
     func list() throws -> [SessionInfo] { lock.lock(); defer { lock.unlock() }; return alive.map { SessionInfo(name: $0, running: true) } }
-    func capture(_ name: String, window: String) throws -> String {
-        lock.lock(); defer { lock.unlock() }; return captureText[name] ?? ""
-    }
     func sendKeys(_ name: String, text: String, window: String) throws {
         lock.lock(); sentKeys.append((name, text)); lock.unlock()
     }
@@ -120,9 +112,6 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         if case let .fileTail(line) = raw { return StatusReport(desc: "tail:\(line)", status: .running) }
         return nil
     }
-    /// Stand in for a send-keys TUI agent's pane-gate: the send-keys wake tests feed Codex-style panes,
-    /// so mirror `CodexAdapter.canNudge` (default `false` would make those tests never nudge).
-    func canNudge(pane: String) -> Bool { CodexComposer.canNudge(pane) }
     func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
         let sid = current
         return AgentSessionInfo(agentId: id, sessionId: sid,

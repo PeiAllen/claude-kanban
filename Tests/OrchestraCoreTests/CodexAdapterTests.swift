@@ -20,15 +20,15 @@ struct CodexAdapterArgvTests {
         #expect(try reg.get("claude-code").id == "claude-code")   // both registered
     }
 
-    @Test("capabilities are Codex's discovered/fileTail/sendKeys tuple")
+    @Test("capabilities are Codex's discovered/fileTail/relaunch/stopHook tuple")
     func capabilities() {
         let c = CodexAdapter().capabilities
         #expect(c == .codex)
         #expect(c.sessionId == .discovered)
         #expect(c.telemetry == .fileTail)
         #expect(c.contextUsage == .tokens)
-        #expect(c.wakeTransport == .sendKeys)
-        #expect(c.inboxDrain == .sessionSeed)
+        #expect(c.wakeTransport == .relaunch)
+        #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
     }
@@ -36,6 +36,27 @@ struct CodexAdapterArgvTests {
     @Test("discovered agents do not mint a session id")
     func newSessionIdIsNil() {
         #expect(CodexAdapter().newSessionId() == nil)
+    }
+
+    // F3 · live drain: Codex encodes a Stop-drain continuation into the SAME `decision:block` envelope as
+    // Claude (byte-identical framing). This is what `handleHook(.stop)` → `drainForStop` rides.
+    @Test("encode(.continuation, for: .stop) is the shared block continuation")
+    func encodesStopContinuation() {
+        let out = CodexAdapter().encode(HookResponse(continuation: "DRAIN-ME"), for: .stop)
+        #expect(out == HookEnvelope.block("DRAIN-ME"))
+        #expect(out == StopDrain.blockJSON(reason: "DRAIN-ME"))
+    }
+
+    // The rendered Codex hooks file must wire the Stop event, or the drain above never fires.
+    @Test("rendered Codex hooks wire the Stop event to `_report --event stop --agent codex`")
+    func rendersStopHook() throws {
+        let dest = NSTemporaryDirectory() + "codex-hooks-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: dest) }
+        _ = try HooksRenderer.renderCodex(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex", to: dest)
+        let json = try String(contentsOfFile: dest, encoding: .utf8)
+        #expect(json.contains("\"Stop\""))
+        #expect(json.contains("_report --event stop --agent codex"))
+        #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
     @Test("models() is non-empty (fallback when no vendored table)")

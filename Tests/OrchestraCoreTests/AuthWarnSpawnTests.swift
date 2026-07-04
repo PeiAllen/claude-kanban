@@ -7,7 +7,7 @@ struct AuthWarnSpawnTests {
 
     static let apiKeyCaps = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-        wakeTransport: .sendKeys, inboxDrain: .stopHook,
+        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .apiKey)
 
     @Test("spawning past the default threshold emits a .warning activity; the spawn still succeeds (no cap)")

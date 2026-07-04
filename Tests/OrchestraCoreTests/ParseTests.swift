@@ -15,7 +15,7 @@ struct ParseTests {
         // A tail-shaped stub parses the SAME raw into a report the Claude adapter can't produce.
         let tailCaps = AgentCapabilities(
             sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-            wakeTransport: .sendKeys, inboxDrain: .stopHook,
+            wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .sandboxed, authMode: .subscription)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: tailCaps)
         #expect(stub.parse(.fileTail(line: "hello")) == StatusReport(desc: "tail:hello", status: .running))

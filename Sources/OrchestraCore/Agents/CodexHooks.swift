@@ -1,11 +1,10 @@
 import Foundation
 
-/// Installs Orchestra's managed Codex hooks file into the pinned `$CODEX_HOME/hooks.json`. Codex 0.135+
-/// ships a Claude-parity **SessionStart** hook whose stdout `hookSpecificOutput.additionalContext` is
-/// folded into the session — the same inbound channel Claude uses — so the card's column/mode/self-id
-/// orientation ([[SessionBrief]]) rides that hook instead of the launch positional. Orientation ONLY:
-/// the hook runs `orchestra _report --event orient`, which prints the brief and sends NO telemetry
-/// (Codex telemetry stays the daemon-side rollout tail).
+/// Installs Orchestra's managed Codex hooks file into the pinned `$CODEX_HOME/hooks.json`. Two hooks (both
+/// Claude-parity): **SessionStart** (`_report --event session`) folds the card's column/mode/self-id
+/// orientation ([[SessionBrief]]) into the session via `hookSpecificOutput.additionalContext`, and **Stop**
+/// (`_report --event stop`) drains the durable inbox at turn-end (F3). Neither sends telemetry — Codex
+/// telemetry stays the daemon-side rollout tail (its `adapter.parse` returns nil for these pushes).
 ///
 /// Ownership: Orchestra owns the pinned CODEX_HOME's global level (it already writes `AGENTS.md` there),
 /// but a hooks file is executable config, so this is deliberately conservative — it **never clobbers a
@@ -22,7 +21,7 @@ public enum CodexHooks {
     public static func installIfSafe(content: String, to dest: String) -> Bool {
         if let existing = try? String(contentsOfFile: dest, encoding: .utf8),
            !existing.contains(sentinel) {
-            return false   // a user's own hooks.json — leave it; the card just misses the orient hook
+            return false   // a user's own hooks.json — leave it; the card just misses orientation + drain
         }
         let dir = (dest as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
