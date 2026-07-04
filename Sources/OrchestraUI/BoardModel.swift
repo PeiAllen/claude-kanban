@@ -238,7 +238,7 @@ public final class BoardModel: ObservableObject {
     public func activate(_ conn: Connection) async {
         client.close()
         let sockPath = ConnectionSocketResolver.socketPath(for: conn)
-        client = ControlClient(socketPath: sockPath, source: .app)
+        client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
         wireState()
         streamStarted = false
         await start()
