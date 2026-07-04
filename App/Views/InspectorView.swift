@@ -346,24 +346,41 @@ private struct AgentChrome: View {
                 }
                 .frame(height: 2)
 
-                AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
-                                  host: model.terminalHost,
-                                  background: theme.termBg, foreground: theme.term,
-                                  // Only grab the keyboard when the user has actually descended into the
-                                  // terminal (Enter / i / Ctrl-l) — NOT on every card change. Otherwise
-                                  // hjkl-ing between cards would remount this view and steal focus, so the
-                                  // next nav key would type into the agent instead of moving the selection.
-                                  autofocus: model.focusZone == .terminal,
-                                  terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
-                                  // A mouse click into the terminal also counts as descending: keep the
-                                  // zone (and the focus ring / chip) honest.
-                                  onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
-                    // Key by session AND active connection so switching cards OR connections tears down the
-                    // old terminal and attaches a fresh one against the right host — without this, SwiftUI
-                    // reuses the same NSView and every card shows card #1's tmux.
-                    .id("\(model.connections.activeId)-\(task.tmuxSession)")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(theme.termBg)
+                // A phone can take over this card's agent terminal (PR D4/D5). When it owns the tmux
+                // `agent` window the desktop MUST detach — one window has one size, so two attached
+                // clients would resize-fight. Swapping in the placeholder tears down the
+                // NSViewRepresentable below, which ends its `tmux attach` process = the unmount (no
+                // `resize-window`, so `embedded.conf`'s `window-size latest` is untouched). Retake flips
+                // the daemon lease back and this branch remounts the live terminal automatically.
+                switch model.desktopTerminalDecision(for: task.id) {
+                case .placeholder:
+                    AgentTerminalPlaceholder(task: task)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(theme.termBg)
+                case .mount:
+                    AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession, window: "agent",
+                                      host: model.terminalHost,
+                                      background: theme.termBg, foreground: theme.term,
+                                      // Only grab the keyboard when the user has actually descended into the
+                                      // terminal (Enter / i / Ctrl-l) — NOT on every card change. Otherwise
+                                      // hjkl-ing between cards would remount this view and steal focus, so the
+                                      // next nav key would type into the agent instead of moving the selection.
+                                      autofocus: model.focusZone == .terminal,
+                                      terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
+                                      // A mouse click into the terminal also counts as descending: keep the
+                                      // zone (and the focus ring / chip) honest.
+                                      onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
+                        // Key by session AND active connection so switching cards OR connections tears down the
+                        // old terminal and attaches a fresh one against the right host — without this, SwiftUI
+                        // reuses the same NSView and every card shows card #1's tmux.
+                        .id("\(model.connections.activeId)-\(task.tmuxSession)")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(theme.termBg)
+                        // Mounting a card's live terminal claims `desktopOwned` unless the phone owns it or
+                        // we already do (the policy short-circuits both). Idempotent: repeat selects of a
+                        // card we own send no RPC.
+                        .onAppear { model.acquireDesktopTerminal(task.id) }
+                }
 
                 if !shellsOpen { BottomStrip(task: task) }
             }
