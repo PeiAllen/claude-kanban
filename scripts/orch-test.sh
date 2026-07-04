@@ -21,11 +21,15 @@
 # all blocked by the Bash sandbox.
 set -euo pipefail
 
-ROOT=/tmp/orch-test                              # short path: UDS socket must stay < 104 chars
+# ORCH_TEST_NAME isolates parallel runs: several cards each running this script at once would
+# otherwise clobber a shared /tmp/orch-test dir + `orch-test` tmux server. Set it per-card (e.g.
+# ORCH_TEST_NAME=om2) so ROOT and the tmux socket are unique. Default keeps the old single-instance path.
+NAME="${ORCH_TEST_NAME:-orch-test}"
+ROOT="/tmp/$NAME"                                # short path: UDS socket must stay < 104 chars
 HOME_DIR="$ROOT/home"
 DATA="$HOME_DIR/Library/Application Support/Orchestra"
 SOCK="$DATA/orchestrad.sock"
-TMUX_SOCK=orch-test
+TMUX_SOCK="$NAME"
 CARD_ID="AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"   # fixed id ⇒ shortId "aaaaaa", session orchestra-aaaa…
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO_ROOT/.build/debug/orchestrad"
