@@ -23,6 +23,7 @@ enum CLIHelp {
       resume <ref>                               Re-attempt claude --resume
       shell <ref>                                Attach the card's tmux session
       inspect <ref>                              Open a read-only claude in the card's worktree shell
+      open-notes [ref]                           Open the card's worktree as an Obsidian vault, on its changed notes
       exec <ref> <cmd...>                        Run a one-shot command in the worktree
       sessions <ref> [--json]                    Debug handles (tmux targets + session id)
       batch-spawn --repo <r> --branch <b>        Spawn many (stdin: JSON array or one prompt/line)

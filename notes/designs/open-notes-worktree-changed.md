@@ -83,21 +83,23 @@ tree hold the rest. `openNotes` returns both `opened` (tabs opened, ≤15) and `
 (changed `.md` count) so the toast can signal truncation. Rationale: a card that touched
 many markdown files shouldn't flood Obsidian with dozens of tabs.
 
-### 4. Root `.gitignore`: add `.obsidian/` (one-time, tracked/committed)
+### 4. Root `.gitignore`: add `.obsidian/` and `.trash/` (one-time, tracked/committed)
 
 Because the vault is now the worktree root, the script creates `<worktree>/.obsidian/`.
-Committing `.obsidian/` to the tracked root `.gitignore` once means:
+Committing these to the tracked root `.gitignore` once means:
 
 - Obsidian's config folder never appears in any card's diff (`changedFiles` respects
   `--exclude-standard`), so it can't pollute "View changes" or be accidentally committed.
-- The shared script's own `.gitignore`-append step becomes a **no-op** (`grep -qxF`
-  finds `.obsidian/` already present), so **no tracked file is modified at open time** and
-  the global script needs no changes.
+- The shared script's own `.gitignore`-append step becomes a **no-op**, so **no tracked file
+  is modified at open time** and the global script needs no changes.
 
-Only `.obsidian/` is added — not `.trash/`. `.trash/` is Obsidian's in-vault trash, created
-only under the non-default "Move to Obsidian trash" setting; the seeded template
-(`~/.claude/obsidian-template/app.json`) doesn't set it, so `.trash/` is never created.
-Adding it later is trivial if that setting is ever enabled.
+Both patterns are required for the no-op: the shared script unconditionally ensures **both**
+`.obsidian/` and `.trash/` are present in the vault's `.gitignore` (a `for pat in '.obsidian/'
+'.trash/'` loop). If only `.obsidian/` were committed, the first Open Notes would append
+`.trash/` to the tracked root `.gitignore` at runtime — the exact pollution this avoids
+(verified empirically). `.trash/` is Obsidian's optional in-vault trash (only created under
+the non-default "local trash" setting), but the script writes the ignore line regardless, so
+we commit it too.
 
 ### 5. Thin wiring updates
 
@@ -111,6 +113,27 @@ Adding it later is trivial if that setting is ever enabled.
   - error toast unchanged.
 - `App/Views/InspectorView.swift` → button tooltip/comment: "Open this card's changed notes
   in its worktree (Obsidian)."
+
+## `/open-notes` command — same behavior, one implementation
+
+The `/open-notes` slash command must do exactly what the inspector button does. Rather than
+re-implement the changed-notes logic in bash (which would fork the diff-baseline resolution and
+risk divergence), both entry points funnel into the **one** Swift implementation
+(`OrchestraService.openNotes` → `Launcher.openNotes`):
+
+- **New CLI verb `orchestra open-notes [ref]`** (`CLIRunner`): resolves the ref from a positional/
+  `--ref`, defaulting to `$ORCHESTRA_TASK_ID` (exported into every card's tmux session), and calls
+  the same daemon `openNotes` control verb the button uses. Prints a one-line result from the
+  returned `opened`/`total`.
+- **Command wrapper `~/.claude/open-notes.sh`**: inside a card (`ORCHESTRA_TASK_ID` set, `orchestra`
+  found on PATH or in the installed app bundle) it `exec`s `orchestra open-notes` — the identical
+  daemon → `Launcher.openNotes(t.cwd)` path as the button. Standalone (not an Orchestra card) it
+  falls back to the old behavior: open `$PWD/notes` as a plain vault via `open-obsidian-vault.sh`.
+- **`~/.claude/commands/open-notes.md`** now runs that wrapper (updated `description` +
+  `allowed-tools`).
+
+Net: button and `/open-notes` share a single code path; no bash reimplementation of the diff
+baseline.
 
 ## Edge cases
 

@@ -462,8 +462,15 @@ final class BoardModel: ObservableObject {
     func openNotes(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {
-            _ = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
-            if let t { toast("Opening notes in Obsidian…", sub: "\((t.repo as NSString).lastPathComponent)/notes") }
+            let r = try await client.call("openNotes", .object(["ref": .string(id.uuidString)]))
+            let opened = r["opened"]?.intValue ?? 0
+            let total = r["total"]?.intValue ?? 0
+            let where_ = t.map { ($0.cwd as NSString).lastPathComponent } ?? "worktree"
+            let title: String
+            if total == 0 { title = "Opening worktree notes…" }
+            else if opened < total { title = "Opening \(opened) of \(total) changed notes…" }
+            else { title = "Opening \(total) changed note\(total == 1 ? "" : "s")…" }
+            toast(title, sub: where_)
         } catch {
             toast("Couldn't open notes", sub: "\(error)", color: .red)
         }

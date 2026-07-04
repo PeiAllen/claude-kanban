@@ -145,6 +145,22 @@ enum CLIRunner {
                 client.close()
                 attach(socket: Config.tmuxSocket, target: "\(session):\(window)")
 
+            case "open-notes":
+                // Same path as the inspector's "Open notes" button: open the card's worktree as an
+                // Obsidian vault, jumped to the notes its branch changed. Defaults to THIS card via
+                // `ORCHESTRA_TASK_ID`, so `/open-notes` inside a card session just works with no ref.
+                let ref = flags.positional(0) ?? flags.value("ref")
+                    ?? ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"]
+                guard let ref, !ref.isEmpty else {
+                    die("open-notes needs a card ref (or run inside an Orchestra card session)")
+                }
+                let r = try await client.call("openNotes", .object(["ref": .string(ref)]))
+                let opened = r["opened"]?.intValue ?? 0
+                let total = r["total"]?.intValue ?? 0
+                if total == 0 { print("opened worktree vault in Obsidian (no changed notes)") }
+                else if opened < total { print("opened \(opened) of \(total) changed notes in Obsidian") }
+                else { print("opened \(total) changed note\(total == 1 ? "" : "s") in Obsidian") }
+
             case "trustState":
                 // Read-only trust query (the SpawnSheet's indicator, from the CLI). Never grants.
                 let path = flags.positional(0) ?? flags.require("path")
