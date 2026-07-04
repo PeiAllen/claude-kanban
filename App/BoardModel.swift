@@ -41,8 +41,15 @@ final class BoardModel: ObservableObject {
     @Published var showHelp = false
     /// Non-nil while the `/` card filter is active; the empty string means "field open, no query yet".
     @Published var searchQuery: String? = nil
-    /// The inspector's Agent/Diff mode, hoisted here so the `d` verb can toggle it from the board.
-    @Published var inspectorMode: InspectorMode = .agent
+    /// The inspector's Agent/Diff mode, kept *per card* (keyed by task id) so switching cards preserves
+    /// each card's own choice instead of carrying one global mode everywhere. Defaults to `.agent`.
+    @Published var inspectorModeByCard: [UUID: InspectorMode] = [:]
+    /// The selected card's Agent/Diff mode. Hoisted here so the `d` verb can toggle it from the board;
+    /// reads/writes route through `inspectorModeByCard` for the current selection.
+    var inspectorMode: InspectorMode {
+        get { selectedId.flatMap { inspectorModeByCard[$0] } ?? .agent }
+        set { if let id = selectedId { inspectorModeByCard[id] = newValue } }
+    }
     /// A one-shot pulse the inspector observes to open its Inbox popover (from the `I` verb).
     @Published var requestInboxOpen = false
     /// The `:` command palette overlay.

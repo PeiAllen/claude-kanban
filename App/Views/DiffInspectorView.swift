@@ -38,7 +38,6 @@ struct DiffInspectorView: View {
     }
     private var reloadKey: String { "\(task.id.uuidString)-\(base.rawValue)" }
     private var allCollapsed: Bool { !files.isEmpty && files.allSatisfy { collapsedFiles.contains($0.id) } }
-    private let splitCellWidth: CGFloat = 360
     private let splitDividerWidth: CGFloat = 0.5
 
     var body: some View {
@@ -217,8 +216,14 @@ struct DiffInspectorView: View {
         let body = VStack(alignment: .leading, spacing: 0) {
             ForEach(rows) { splitRow($0, numW: numW) }
         }
-        .fixedSize(horizontal: true, vertical: false)
-        return scrollableBody(body)
+        // The two columns each fill half the pane and clip long lines to their own side (see `splitCell`),
+        // so a line can never overflow across the divider into the other column. Unlike the unified layout
+        // there is no horizontal scroll — "Open in Zed" / the unified view cover reading full long lines.
+        // The headless snapshot proposes an unbounded width, so pin the body to the snapshot frame.
+        return Group {
+            if preview == nil { body }
+            else { body.frame(width: 364, alignment: .leading).clipped() }
+        }
     }
 
     /// Long lines scroll horizontally in the live view. The headless snapshot renderer (`ImageRenderer`)
@@ -235,7 +240,7 @@ struct DiffInspectorView: View {
 
     @ViewBuilder private func splitRow(_ row: DiffSplitRow, numW: CGFloat) -> some View {
         if row.kind == .hunk {
-            hunkDivider(row.heading).frame(width: splitCellWidth * 2 + splitDividerWidth, alignment: .leading)
+            hunkDivider(row.heading)
         } else {
             HStack(spacing: 0) {
                 splitCell(num: row.oldNum, text: row.oldText, side: .remove, changed: row.kind == .change, numW: numW)
@@ -261,7 +266,10 @@ struct DiffInspectorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(text == nil ? theme.termPrompt : rowTint(kind))
         }
-        .frame(width: splitCellWidth, alignment: .leading)
+        // Each side takes half the row and clips its own overflow, so a long line stays on its side of
+        // the divider instead of bleeding into the opposite column.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 
     // MARK: - Shared row pieces
