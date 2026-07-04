@@ -20,6 +20,7 @@ struct OrchestraApp: App {
             ContentView()
                 .environmentObject(model)
                 .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+                .platformUI()
                 .preferredColorScheme(model.darkMode ? .dark : .light)
                 .frame(minWidth: 940, minHeight: 580)
                 .task { await model.bootstrap() }
@@ -57,6 +58,7 @@ struct OrchestraApp: App {
             }
             .environmentObject(model)
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+            .platformUI()
         }
     }
 }
