@@ -14,8 +14,9 @@ public struct CodexAdapter: Adapter {
     public let bin = "codex"
     public let enabled = true
 
-    /// Codex's capability tuple (B1 as-built). Differs from Claude on every launch-relevant axis:
-    /// discovered session id, rollout file-tail telemetry, token-based ctx, send-keys wake.
+    /// Codex's capability tuple (B1 as-built). Differs from Claude on the launch-relevant axes: discovered
+    /// session id, rollout file-tail telemetry, token-based ctx. Shares Claude's live-delivery shape —
+    /// resume-seed wake (`.relaunch`) + Stop-hook drain (`.stopHook`).
     public var capabilities: AgentCapabilities { .codex }
 
     /// Test injection (fake binary / isolated home) — never spawns real Codex.
@@ -106,11 +107,6 @@ public struct CodexAdapter: Adapter {
         return nil
     }
 
-    /// send-keys wake gate (F2 / C4): defer unless the Codex TUI is idle with an empty composer. The
-    /// fragile pane parsing lives in `CodexComposer` — this adapter OWNS that Codex-specific knowledge so
-    /// core's generic send-keys wake never names a Codex type. See `CodexComposer` for the version-drift caveat.
-    public func canNudge(pane: String) -> Bool { CodexComposer.canNudge(pane) }
-
     /// Lower-case + drop underscores so `task_complete` / `TaskComplete` / `TurnComplete` normalize alike.
     private static func norm(_ s: String) -> String {
         s.lowercased().replacingOccurrences(of: "_", with: "")
@@ -164,8 +160,9 @@ public struct CodexAdapter: Adapter {
         var argv = [binary, "resume", sid]
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
-        // F1 (C3): Codex has no Stop hook (`inboxDrain == .sessionSeed`), so the folded seed (handoff
-        // ctx + pending inbox) rides the resume as its opening positional turn.
+        // F1: the folded seed (handoff ctx + pending inbox) rides the resume as its opening positional
+        // turn. This is the resume-seed delivery for handoff AND the idle-wake path (`.relaunch`); live
+        // turn-end delivery is the Stop hook (`inboxDrain == .stopHook`).
         if let seed = ctx.seed, !seed.isEmpty { argv.append(seed) }
         return argv   // no prompt beyond the optional seed — the rollout holds prior task history
     }
@@ -190,13 +187,11 @@ public struct CodexAdapter: Adapter {
         // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
         // content keyed via forAgent(id), so there's no `if codex` here.
         DelegationDocs.install(agentId: id, at: "\(codexHome)/AGENTS.md")
-        // Codex's Claude-parity SessionStart hook injects the card's column/mode/self-id orientation
-        // (via `_report --event orient`), so an agent knows where it was opened without being told —
-        // the inbound counterpart to Claude's SessionStart hook. Install the daemon-rendered hooks file
-        // into the pinned CODEX_HOME, never clobbering a foreign user hooks.json. Best-effort.
-        // Render the managed Codex hooks file (SessionStart→session) pointing at the live orchestra
-        // binary, then install it into the pinned CODEX_HOME (no-clobber). Per-launch; the daemon renders
-        // nothing. Best-effort.
+        // Render + install the managed Codex hooks file (per-launch; the daemon renders nothing), pointing
+        // at the live orchestra binary with `--agent codex` baked in. Two hooks: SessionStart→`session`
+        // (column/mode/self-id orientation) and Stop→`stop` (drain the durable inbox at turn-end, parity
+        // with Claude — F3). Installed into the pinned CODEX_HOME, never clobbering a foreign user
+        // hooks.json. Best-effort.
         _ = try? HooksRenderer.renderCodex(orchestraBin: ctx.orchestraBin, agentId: id)
         CodexHooks.install(to: "\(codexHome)/hooks.json")
     }
@@ -264,14 +259,15 @@ public struct CodexAdapter: Adapter {
 
 public extension AgentCapabilities {
     /// Codex's shipped capabilities (B1 as-built). Discovered session id (rollout), file-tail telemetry
-    /// (rollout JSONL, parsed in B2), token-based context usage, send-keys wake (C4), seed-folded inbox
-    /// drain (no Stop hook), an OS-sandboxed read-only guarantee, and subscription auth.
+    /// (rollout JSONL), token-based context usage, resume-seed wake (`.relaunch` — idle cards resume; no
+    /// TUI scrape), Stop-hook inbox drain (parity with Claude), an OS-sandboxed read-only guarantee, and
+    /// subscription auth.
     static let codex = AgentCapabilities(
         sessionId: .discovered,
         telemetry: .fileTail,
         contextUsage: .tokens,
-        wakeTransport: .sendKeys,
-        inboxDrain: .sessionSeed,
+        wakeTransport: .relaunch,
+        inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription)
 }

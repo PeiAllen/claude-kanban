@@ -349,7 +349,7 @@ public actor OrchestraService {
     /// drains it now instead of waiting for its next unprompted turn. Content is delivered by the inbox
     /// (Stop-hook drain / resume seed) — `wake` only starts a turn, and is idempotent/non-intrusive: it
     /// no-ops on a card that already has a turn coming (running, mid-relaunch, or blocked on a background
-    /// `orchestra wait`). See `wake` for the per-transport delivery (Codex nudge / Claude resume-seed).
+    /// `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one drains at its Stop.
     public func send(_ id: UUID, _ message: String) async throws {
         let t = try await require(id)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the

@@ -21,3 +21,5 @@ Package.resolved
 
 # Orchestra runtime artifacts (live under ~/Library/Application Support/Orchestra)
 *.sock
+.obsidian/
+.trash/

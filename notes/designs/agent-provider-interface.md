@@ -573,8 +573,8 @@ heaviest one is actually a *start* action. (The only synchronous path remains ap
 | | Function | Kind | Claude | Codex (v1) |
 |---|---|---|---|---|
 | **F1** | **Resume-in-card** — kill the agent, relaunch it in the same card seeded with context + inbox | **start action** (§4.1) | `claude --resume <id>` + `SessionStart additionalContext` | `codex exec resume <id> "…"` |
-| **F2** | **Wake** — trigger a turn on an *idle* agent so it drains its inbox | live | **native re-invoke** (agent backgrounds a watcher → harness wakes it) | **send-keys nudge** + detect-and-defer |
-| **F3** | **Push-inbox** — enqueue a durable message; the agent reads it at its next turn-end via an Orchestra hook | live | Stop hook `decision:block` + `additionalContext` (10k) | Stop hook `decision:block` + `reason` |
+| **F2** | **Wake** — trigger a turn on an *idle* agent so it drains its inbox | live | **native re-invoke** (agent backgrounds a watcher → harness wakes it) | **resume-seed** (`.relaunch`) — resumes the idle session (as-built; the send-keys pane-scraper was retired) |
+| **F3** | **Push-inbox** — enqueue a durable message; the agent reads it at its next turn-end via an Orchestra hook | live | Stop hook `decision:block` + `additionalContext` (10k) | Stop hook `decision:block` + `reason` (as-built — wired 2026-07-03) |
 
 **F1 — resume-in-card (a *start* action).** Killing the agent and relaunching it in the same card is — by
 the §4.1 taxonomy — a *start*: a new process is born. It's `LaunchRequest{resume, seed}` on the existing
@@ -591,9 +591,12 @@ transport is the capability `wakeTransport`:
 - **Claude — `nativeReinvoke`.** The orchestrator agent backgrounds `orchestra wait <cards>`; when that task
   completes, **Claude's harness re-invokes the agent in the same session** (the proven merge-watch
   workflow). No keystrokes; stays interactive between wakes.
-- **Codex — `sendKeys`.** Codex has no completion-wake (background exec is model-pull) and the plain TUI has
-  no control channel — so Orchestra owns the watcher (its merge-watch) and nudges the idle TUI with
-  `send-keys` to start a turn. **Gated by detect-and-defer** (below). Keeps the persistent, chattable TUI.
+- **Codex — `relaunch` (resume-seed).** *As-built (2026-07-03) — supersedes the `sendKeys` nudge below.*
+  Codex has no completion-wake and the plain TUI has no control channel, so an idle Codex card is woken by
+  **resume-seed** (`resumeInCard`: kill + `codex resume` with the inbox folded into the opening turn) — the
+  same primitive as Claude's no-wait wake and `handoff`. No pane scrape, no keystroke; idleness is read from
+  the authoritative rollout-tail `.waiting`. The persistent TUI is torn down and replayed for that wake (the
+  cost the future `controlChannel` removes).
 - **`controlChannel`** (future) — app-server `turn/start` / ACP / HTTP wakes an idle session cleanly, but
   needs that run-mode (Codex app-server drops the native TUI → an Orchestra-built viewer; §9).
   **`relaunch`** = F1, the universal fallback.
@@ -619,7 +622,20 @@ transport is the capability `wakeTransport`:
 > Until then, F2 is: `sendKeys` (Codex, gated) · `nativeReinvoke`-or-`resume-seed` (Claude, by wait-state) ·
 > `controlChannel` (target). See `OrchestraService+Wake.swift` (`wake` / `resumeSeedWake`).
 
-> **Detect-and-defer (the safety guard for `sendKeys` wake).** A wake is **not time-critical** — the
+> **RESOLVED (2026-07-03) — the `sendKeys` pane-scraper is retired.** Rather than harden the scraper, Codex
+> now wakes by **resume-seed** (`wakeTransport: .sendKeys → .relaunch`) and drains live via a **Stop hook**
+> (`inboxDrain: .sessionSeed → .stopHook`, wired onto the already-adapter-free `handleHook(.stop)` channel —
+> `CodexAdapter.encode` already emitted the `decision:block` continuation). `CodexComposer`, `Adapter.canNudge`,
+> `sendKeysWake`, `SessionManaging.capture`, and the `WakeTransport.sendKeys` / `InboxDrain.sessionSeed`
+> variants were **deleted**. Both live agents now share one `resumeSeedWake` handler; the sole per-agent
+> difference is `watcherWillReinvoke` — Claude (`.nativeReinvoke`) defers a watching card to its harness
+> re-invoke, Codex (`.relaunch`) has none so it resumes regardless. `controlChannel` (`turn/start`, no
+> relaunch) remains the future target — it now retires only the resume-*relaunch*, not a scraper. See
+> `notes/designs/codex-wake-delivery/`.
+
+> **Detect-and-defer (the safety guard for `sendKeys` wake).** *Superseded 2026-07-03 — `sendKeys` retired
+> (see RESOLVED above). Kept for history; there is no pane scrape or draft gate anymore — idleness is the
+> authoritative `.waiting`.* A wake is **not time-critical** — the
 > conclusion is durable in the inbox — so Orchestra defers the nudge until it's safe. Gate: **idle AND
 > composer-empty** (Orchestra reads the composer via `capture-pane`; an unsent draft → *hold* the wake until
 > you submit/clear). **Focus is *not* a gate** — sitting on an idle orchestrator *watching it wait is the

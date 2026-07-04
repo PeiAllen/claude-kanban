@@ -2,95 +2,74 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-@Suite("C4 · Codex send-keys wake (nudge-only; detect-and-defer)")
+/// F2 · Codex wakes by **resume-seed** (`wakeTransport == .relaunch`), NOT a TUI keystroke. An idle Codex
+/// card `send`-ed a message relaunches via `resumeInCard` with the inbox folded into the opening turn — the
+/// same primitive Claude's no-wait wake uses (see `SendWakeTests` for the shared behaviour). The ONE
+/// divergence from Claude (`nativeReinvoke`): a Codex card has no harness re-invoke, so `resumeSeedWake`
+/// passes `watcherWillReinvoke: false` and it resumes **even when watching children**.
+@Suite("F2 · Codex resume-seed wake (.relaunch)")
 struct CodexWakeTests {
 
-    /// A Claude-shaped capability tuple with the send-keys wake transport, so `wake` routes through the
-    /// C4 case without dragging in Codex's discovered-session / file-tail launch behavior.
-    static let sendKeysCaps = AgentCapabilities(
+    /// Codex-shaped wake+drain (resume-seed + Stop hook), run over the StubAdapter's resume machinery so the
+    /// transcript/resume-callback plumbing matches `SendWakeTests`.
+    static let relaunchCaps = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        wakeTransport: .sendKeys, inboxDrain: .stopHook,
+        wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription)
 
-    // Idle + empty composer → the fixed nudge is sent exactly once.
-    @Test("wake nudges when the card is idle and the composer is empty")
-    func nudgesWhenIdleAndEmpty() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
+    @Test("send resume-seeds an idle Codex card so the queued message lands now")
+    func sendResumeSeedsIdleCodex() async throws {
+        let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        env.sessions.setCapture(card.id, "● Done.\n\n›\n")
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
+        try await env.svc.report(card.id, StatusReport(status: .waiting))                       // idle
+        let name = env.sessions.sessionName(card.id)
 
-        await env.svc.wake(card.id)
+        try await env.svc.send(card.id, "PING-CODEX")
+        // The wake resume-seeds on a detached task; wait for the relaunch, then feed the resume callback.
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
 
-        #expect(env.sessions.keysSent(to: card.id) == [OrchestraService.sendKeysWakeNudge])
+        let argv = try #require(env.sessions.ensureArgv[name])
+        #expect(argv.contains("--resume"))                    // a resume relaunch, never a fresh start
+        #expect(try #require(argv.last).contains("PING-CODEX"))   // the message rides the opening turn
+        #expect(await env.svc.drainForStop(card.id) == nil)   // drained into the seed — no double-delivery
     }
 
-    // A user draft in the composer → defer (no keystroke).
-    @Test("wake defers (no nudge) when the composer holds a draft")
-    func defersOnDraft() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
+    // The divergence from Claude: a WATCHING Codex card still resumes — there is no `orchestra wait`
+    // re-invoke to defer to, so `watcherWillReinvoke: false`. (Compare `SendWakeTests.sendDefersPendingWatcher`.)
+    @Test("send resume-seeds a WATCHING Codex card (Claude would defer)")
+    func codexResumesEvenWhenWatching() async throws {
+        let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        env.sessions.setCapture(card.id, "● Done.\n\n› half-written question")
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        env.adapter.writeTranscript(for: parent.agentSessionId!)
+        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a live `orchestra wait`
+        try await env.svc.report(parent.id, StatusReport(status: .waiting))   // idle, but watching
+        let name = env.sessions.sessionName(parent.id)
 
-        await env.svc.wake(card.id)
+        try await env.svc.send(parent.id, "POKE-CODEX")
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await env.svc.report(parent.id, StatusReport(sessionSource: "resume"))
 
-        #expect(env.sessions.keysSent(to: card.id).isEmpty)
+        #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("POKE-CODEX") == true)
     }
 
-    // A turn is streaming → defer even though the composer is empty (idle is a gate; focus is not).
-    @Test("wake defers when a turn is in flight (not idle)")
-    func defersWhenBusy() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
+    @Test("send does NOT resume-seed a RUNNING Codex card (its Stop hook drains it at turn-end)")
+    func codexDefersRunning() async throws {
+        let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        env.sessions.setCapture(card.id, "● Thinking… (Esc to interrupt)\n\n›\n")
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)
+        let ensureBefore = env.sessions.ensureCount
 
-        await env.svc.wake(card.id)
+        try await env.svc.send(card.id, "later")
+        try await _Concurrency.Task.sleep(for: .milliseconds(120))
 
-        #expect(env.sessions.keysSent(to: card.id).isEmpty)
-    }
-
-    // An unreadable pane (capture empty / no composer marker) → conservative defer.
-    @Test("wake defers when the pane can't be parsed")
-    func defersWhenPaneUnreadable() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
-        let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        // No setCapture → StubSessions.capture returns "".
-
-        await env.svc.wake(card.id)
-
-        #expect(env.sessions.keysSent(to: card.id).isEmpty)
-    }
-
-    // NUDGE-ONLY: inbox content is NEVER delivered via keystroke — only the fixed nudge is sent.
-    @Test("the nudge carries no inbox content (content rides F3, not keys)")
-    func nudgeCarriesNoContent() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
-        let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        let marker = "SECRET-INBOX-PAYLOAD-ac91"
-        try await env.svc.send(card.id, marker)          // durable inbox content (F3), not a keystroke
-        env.sessions.setCapture(card.id, "● Done.\n\n›\n")
-
-        await env.svc.wake(card.id)
-
-        let sent = env.sessions.keysSent(to: card.id)
-        #expect(sent == [OrchestraService.sendKeysWakeNudge])
-        #expect(sent.allSatisfy { !$0.contains(marker) })   // content did NOT ride the keystroke
-    }
-
-    @Test("send wakes an idle card after enqueueing inbox content")
-    func sendWakesIdleCard() async throws {
-        let env = TestEnv.make(capabilities: Self.sendKeysCaps)
-        let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
-        env.sessions.setCapture(card.id, "● Done.\n\n›\n")
-
-        try await env.svc.send(card.id, "queued wake")
-
-        #expect(await Inbox(path: env.base + "/inbox.json").peek(card.id).map(\.text) == ["queued wake"])
-        #expect(env.sessions.keysSent(to: card.id) == [OrchestraService.sendKeysWakeNudge])
+        #expect(env.sessions.ensureCount == ensureBefore)                         // no relaunch
+        #expect(env.sessions.killed.isEmpty)                                      // live turn untouched
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])    // durable → its Stop drains it
     }
 }

@@ -104,9 +104,9 @@ extension OrchestraService {
     /// context AND its pending inbox (folded into one seed delivered as the resumed session's opening
     /// turn). This is **resume, not a blank restart**: `agentSessionId` is KEPT, so the vendor transcript
     /// carries forward and the seed adds new context to a continued session. The inbox "folds into the
-    /// seed" (design §8 F1) — drained BEFORE resume so a `.sessionSeed` agent (Codex, no Stop hook) still
-    /// receives its queued messages, and they are not double-delivered by a later Claude Stop-drain.
-    /// Backs D1's `handoff` Command.
+    /// seed" (design §8 F1) — drained BEFORE resume so the queued messages ride the opening turn, and are
+    /// not double-delivered by a later Stop-drain. This is F1 (handoff) AND the idle-wake path for a
+    /// `.relaunch` agent (`resumeSeedWake`). Backs D1's `handoff` Command.
     @discardableResult
     public func resumeInCard(_ id: UUID, seed: String? = nil, graceSeconds: Int? = nil,
                              source: ActivitySource = .daemon) async throws -> Task {

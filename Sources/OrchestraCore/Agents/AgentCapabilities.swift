@@ -2,10 +2,13 @@ import Foundation
 
 /// The capability descriptor every adapter advertises. Core degrades on these flags — never on adapter
 /// identity (no `if agentId == "claude"`). This is the seam-contract root (A1): the COMPLETE set of
-/// fields and every variant spelling is frozen here, so later PRs implement behavior behind variants
-/// declared now but not yet exercised (e.g. `wakeTransport.controlChannel`, `inboxDrain.sessionSeed`,
-/// `readOnlyEnforcement.orchestraSandboxed`, `telemetry.ptyScrape`, `contextUsage.none`). Additions to
-/// the seam are defaulted; the one true drift vector is these enum spellings — hence the freeze.
+/// fields and every variant spelling is declared here, so later PRs implement behavior behind variants
+/// declared now but not yet exercised (e.g. `wakeTransport.controlChannel`,
+/// `readOnlyEnforcement.orchestraSandboxed`, `telemetry.ptyScrape`, `contextUsage.none`). Additions are
+/// defaulted; spellings are stable BUT not immortal — a variant that was exercised and then retired is
+/// removed, not kept as dead vocabulary (capabilities are computed from the adapter, never persisted, so a
+/// removal breaks nothing). `wakeTransport.sendKeys` + `inboxDrain.sessionSeed` were retired when Codex
+/// moved to resume-seed wake + the Stop-hook drain.
 public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     /// How the agent's session id is obtained. `seeded` = Orchestra mints it pre-launch (Claude
@@ -28,16 +31,17 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     }
 
     /// How an idle agent is woken to start a turn (F2). `nativeReinvoke` = the harness re-invokes it in
-    /// session (Claude); `controlChannel` = an app-server / RPC `turn/start` (future); `sendKeys` = a TUI
-    /// keystroke nudge (Codex); `relaunch` = kill + resume (the F1 universal fallback).
+    /// session (Claude); `relaunch` = kill + resume-seed (Codex, and the universal fallback);
+    /// `controlChannel` = an app-server / RPC `turn/start` (future — wakes without tearing the session down).
     public enum WakeTransport: String, Sendable, Equatable, Codable, CaseIterable {
-        case nativeReinvoke, controlChannel, sendKeys, relaunch
+        case nativeReinvoke, relaunch, controlChannel
     }
 
     /// How the durable inbox is drained into the agent (F3). `stopHook` = a Stop hook injects at
-    /// turn-end; `sessionSeed` = folded into the resume seed; `none` = no live drain.
+    /// turn-end (both shipped agents); `none` = no live drain. (Delivery to an *idle* card is F2 wake —
+    /// a resume-seed folds the inbox into the opening turn — not an `inboxDrain` mode.)
     public enum InboxDrain: String, Sendable, Equatable, Codable, CaseIterable {
-        case stopHook, sessionSeed, none
+        case stopHook, none
     }
 
     /// The strength of the read-only guarantee. `sandboxed` = an OS sandbox is the boundary (true RO);
