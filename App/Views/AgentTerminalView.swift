@@ -22,6 +22,7 @@ struct AgentTerminalView: NSViewRepresentable {
     var background: SwiftUI.Color  // app theme — terminal opens in (and switches to) the app's mode
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
+    var terminalImagePaste: AgentCapabilities.TerminalImagePaste
     /// Called whenever this terminal *becomes* the window's first responder — by keyboard descent OR a
     /// mouse click into it. Lets the owner keep `focusZone` (and thus the inspector focus ring + chip)
     /// honest without polling the responder chain.
@@ -30,10 +31,12 @@ struct AgentTerminalView: NSViewRepresentable {
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
+         terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
          onFocused: (() -> Void)? = nil) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
+        self.terminalImagePaste = terminalImagePaste
         self.onFocused = onFocused
     }
 
@@ -51,6 +54,7 @@ struct AgentTerminalView: NSViewRepresentable {
         term.getTerminal().ansi256PaletteStrategy = .xterm
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
+        term.terminalImagePaste = terminalImagePaste
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
         attach(term)
@@ -66,6 +70,7 @@ struct AgentTerminalView: NSViewRepresentable {
         let target = "\(session):\(window)"
         (nsView as? ScrollableTerminalView)?.termWindow = window
         (nsView as? ScrollableTerminalView)?.onBecameFirstResponder = onFocused
+        (nsView as? ScrollableTerminalView)?.terminalImagePaste = terminalImagePaste
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             attach(nsView)
@@ -232,6 +237,7 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// even when focus is taken by the mouse rather than a keyboard verb. (`becomeFirstResponder` is
     /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
     var onBecameFirstResponder: (() -> Void)?
+    var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -248,6 +254,27 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
             guard let self, let window = self.window else { return }
             window.makeFirstResponder(self)
         }
+    }
+
+    @objc
+    override func paste(_ sender: Any) {
+        guard Self.pasteboardContainsImage(NSPasteboard.general) else {
+            super.paste(sender)
+            return
+        }
+
+        switch terminalImagePaste {
+        case .controlV:
+            send(data: [0x16][0...])   // Ctrl-V: native paste-image shortcut for TUIs that advertise it.
+        case .direct:
+            super.paste(sender)
+        }
+    }
+
+    private static func pasteboardContainsImage(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSImage.self])
+            || pasteboard.data(forType: NSPasteboard.PasteboardType("public.png")) != nil
+            || pasteboard.data(forType: .tiff) != nil
     }
 
     /// Install the shared scroll/motion monitor once. Safe to call repeatedly.

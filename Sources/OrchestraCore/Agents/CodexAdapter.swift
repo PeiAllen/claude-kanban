@@ -315,7 +315,8 @@ public extension AgentCapabilities {
         wakeTransport: .relaunch,
         inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
-        authMode: .subscription)
+        authMode: .subscription,
+        terminalImagePaste: .controlV)
 }
 
 /// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).

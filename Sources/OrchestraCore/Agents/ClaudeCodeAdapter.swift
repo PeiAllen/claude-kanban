@@ -10,7 +10,7 @@ public struct ClaudeCodeAdapter: Adapter {
     public let bin = "claude"
     public let enabled = true
 
-    /// Claude Code's shipped seam behavior, frozen as the descriptor (A1). Behavior unchanged.
+    /// Claude Code's shipped seam behavior, frozen as the descriptor (A1).
     public var capabilities: AgentCapabilities { .claudeCode }
 
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
@@ -282,6 +282,20 @@ public struct ClaudeCodeAdapter: Adapter {
     private func mtime(_ path: String) -> Date {
         (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date ?? .distantPast
     }
+}
+
+public extension AgentCapabilities {
+    /// The Claude Code adapter's shipped capabilities. Also the default for the test `StubAdapter`, so
+    /// existing suites see Claude-shaped behavior unless they opt out.
+    static let claudeCode = AgentCapabilities(
+        sessionId: .seeded,
+        telemetry: .hooksPush,
+        contextUsage: .percent,
+        wakeTransport: .nativeReinvoke,
+        inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed,
+        authMode: .subscription,
+        terminalImagePaste: .controlV)
 }
 
 /// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under

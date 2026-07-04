@@ -20,6 +20,7 @@ struct CapabilitiesTests {
         #expect(AgentCapabilities.ReadOnlyEnforcement.allCases.map(\.rawValue)
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
+        #expect(AgentCapabilities.TerminalImagePaste.allCases.map(\.rawValue) == ["direct", "controlV"])
     }
 
     @Test("Claude advertises its frozen shipped tuple")
@@ -32,6 +33,7 @@ struct CapabilitiesTests {
         #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
+        #expect(c.terminalImagePaste == .controlV)
     }
 
     @Test("ClaudeCodeAdapter conforms and advertises the Claude tuple")
@@ -45,10 +47,18 @@ struct CapabilitiesTests {
             sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
             wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .toolGatedOnly, authMode: .apiKey)
+        #expect(custom.terminalImagePaste == .direct)
+        #expect(custom.terminalImagePaste.canPasteImages)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: custom)
         #expect(stub.capabilities == custom)
         // Default stays Claude-shaped so existing suites are unaffected.
         #expect(StubAdapter(transcriptDir: NSTemporaryDirectory()).capabilities == .claudeCode)
+    }
+
+    @Test("terminal image paste direct means the normal paste path handles images")
+    func terminalImagePasteSemantics() {
+        #expect(AgentCapabilities.TerminalImagePaste.direct.canPasteImages)
+        #expect(AgentCapabilities.TerminalImagePaste.controlV.canPasteImages)
     }
 
     @Test("AdapterContext.seed defaults to nil and round-trips when set")

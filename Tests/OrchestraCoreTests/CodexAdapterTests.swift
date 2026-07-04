@@ -31,6 +31,7 @@ struct CodexAdapterArgvTests {
         #expect(c.inboxDrain == .stopHook)
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
+        #expect(c.terminalImagePaste == .controlV)
     }
 
     @Test("discovered agents do not mint a session id")

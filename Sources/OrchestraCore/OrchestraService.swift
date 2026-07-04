@@ -637,7 +637,10 @@ public actor OrchestraService {
     /// agent picker, DEFAULT agent first. The union `models()` above stays for the flat/default-model
     /// surfaces (e.g. Settings); this is the per-agent grouping.
     public func agents() -> [AgentInfo] {
-        orderedAdapters().map { AgentInfo(id: $0.id, name: $0.name, icon: $0.icon, models: $0.models()) }
+        orderedAdapters().map {
+            AgentInfo(id: $0.id, name: $0.name, icon: $0.icon,
+                      models: $0.models(), capabilities: $0.capabilities)
+        }
     }
 
     /// Enabled adapters with the configured default agent first (shared ordering for `models()`/`agents()`).

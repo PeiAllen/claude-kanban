@@ -131,8 +131,12 @@ public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
     public let name: String          // human label
     public let icon: String          // SF Symbol name
     public let models: [AgentModel]  // this agent's selectable models
-    public init(id: String, name: String, icon: String, models: [AgentModel]) {
+    public let capabilities: AgentCapabilities
+
+    public init(id: String, name: String, icon: String, models: [AgentModel],
+                capabilities: AgentCapabilities = .claudeCode) {
         self.id = id; self.name = name; self.icon = icon; self.models = models
+        self.capabilities = capabilities
     }
 }
 
