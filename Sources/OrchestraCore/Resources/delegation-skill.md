@@ -44,8 +44,12 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   window. Hand off to a *new* card instead by spawning with the context as the seed.
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox (F3); it drains at the card's
   next turn-end, waking it if idle.
-- **`wait <ref…>`** — block until **any** watched card concludes (merged / done / exited). Run it in the
-  background so your turn ends and you stay chattable; you're re-invoked when a child concludes.
+- **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
+  reminded/woken when it finishes. For Claude, run the CLI wait as a native Claude Code background task
+  (Bash with `run_in_background: true`, or Monitor if available), so your turn ends and you stay chattable;
+  Claude is re-invoked when that background process prints/exits. If you invoke MCP `wait` instead, it
+  records the durable watch and returns immediately as a fallback, but it is not the native Claude
+  background-task wake path.
 
 ## Delegate, or just continue?
 
@@ -71,9 +75,16 @@ tightly-coupled work.
 - **Fan-out** — *N independent pieces of work to run in parallel*, each in its own worktree. `batch-spawn`
   them. There's no come-back wiring unless you also `wait`. Good for a stacked-PR forest or N independent
   tasks.
-- **Wait** — *after spawning children, react when they finish.* Background `wait <refs>`; you're woken when
-  any concludes; drain your inbox for the conclusions and act (e.g. spawn the next PR in the stack). Several
-  children concluding at once coalesce in the inbox and drain together — none is lost.
+- **Wait** — *after spawning children, react when they finish.* Start `orchestra wait <refs>` through
+  Claude Code's background execution (`run_in_background: true`) or Monitor. The wait process exits when
+  any child concludes, and Claude can then inspect the process output plus the durable inbox, react, and
+  spawn the next PR in the stack. Several children concluding at once coalesce in the inbox and drain
+  together — none is lost.
+
+  Choose one completion return channel for each child. If you subscribe with `wait`, treat the wait wake
+  as that child's completion signal; do not also ask those same children to `send` a completion/result to
+  your inbox, or you can receive two notices in either order. If you need a child-authored result message
+  in your inbox, ask the child to `send` that message when done and do not also `wait` on that child.
 
 ## Cards vs. native subagents — keep both
 
@@ -93,6 +104,7 @@ synthesize the answer now → **subagent**. Reach for a card *in addition to*, n
 
 ## The reactive orchestration loop
 
-The headline pattern: spawn the stack head → background `wait` → your turn ends (you stay chattable) → the
-child concludes → you're woken → drain your inbox → spawn the next-in-stack off the merged branch. Repeat.
-That is how one card orchestrates a whole PR forest without polling.
+The headline pattern: spawn the stack head → start `orchestra wait <child>` as a Claude Code background
+task → your turn ends (you stay chattable) → the child concludes → the wait process exits and Claude is
+woken → drain your inbox → spawn the next-in-stack off the merged branch. Repeat. That is how one card
+orchestrates a whole PR forest without polling.

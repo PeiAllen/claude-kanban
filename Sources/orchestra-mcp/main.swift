@@ -63,8 +63,19 @@ _ = await server.withMethodHandler(CallTool.self) { params in
                 isError: true)
         }
     }
+    var args = argsToJSON(params.arguments)
+    if params.name == "wait",
+       args.optString("watcher") == nil,
+       let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"],
+       !selfId.isEmpty {
+        let existing: [String: JSONValue]
+        if case .object(let fields) = args { existing = fields } else { existing = [:] }
+        var fields = existing
+        fields["watcher"] = .string(selfId)
+        args = .object(fields)
+    }
     do {
-        let result = try await client.call(params.name, argsToJSON(params.arguments))
+        let result = try await client.call(params.name, args)
         let text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
         return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
     } catch let e as RPCError {

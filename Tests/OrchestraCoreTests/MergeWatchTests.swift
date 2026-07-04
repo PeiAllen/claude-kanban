@@ -10,12 +10,12 @@ struct MergeWatchTests {
         let mw = MergeWatch()
         let a = UUID()
         let waiting = _Concurrency.Task { await mw.awaitConclusion([a]) }
-        try await pollUntil { await mw.waiterCount() == 1 }
+        try await pollUntil { await mw.subscriptionCount() == 1 }
         await mw.conclude(Conclusion(cardId: a, ref: "orchestra://task/aaaaaa", kind: .done))
         let got = await waiting.value
         #expect(got?.cardId == a)
         #expect(got?.kind == .done)
-        #expect(await mw.waiterCount() == 0)   // resolved waiter removed
+        #expect(await mw.subscriptionCount() == 0)   // resolved subscription removed
     }
 
     @Test("a set watcher resolves on the FIRST of its cards to conclude")
@@ -23,7 +23,7 @@ struct MergeWatchTests {
         let mw = MergeWatch()
         let a = UUID(); let b = UUID()
         let waiting = _Concurrency.Task { await mw.awaitConclusion([a, b]) }
-        try await pollUntil { await mw.waiterCount() == 1 }
+        try await pollUntil { await mw.subscriptionCount() == 1 }
         await mw.conclude(Conclusion(cardId: b, ref: "r", kind: .exited))
         #expect(await waiting.value?.cardId == b)
     }
@@ -33,23 +33,23 @@ struct MergeWatchTests {
         let mw = MergeWatch()
         let a = UUID(); let other = UUID()
         let waiting = _Concurrency.Task { await mw.awaitConclusion([a]) }
-        try await pollUntil { await mw.waiterCount() == 1 }
+        try await pollUntil { await mw.subscriptionCount() == 1 }
         await mw.conclude(Conclusion(cardId: other, ref: "r", kind: .done))
         try await _Concurrency.Task.sleep(for: .milliseconds(60))
-        #expect(await mw.waiterCount() == 1)   // still waiting
+        #expect(await mw.subscriptionCount() == 1)   // still subscribed
         await mw.conclude(Conclusion(cardId: a, ref: "r", kind: .done))   // cleanup
         _ = await waiting.value
     }
 
-    @Test("cancellation unblocks awaitConclusion with nil and drops the waiter")
+    @Test("cancellation resolves awaitConclusion with nil and drops the subscription")
     func cancel() async throws {
         let mw = MergeWatch()
         let a = UUID()
         let waiting = _Concurrency.Task { await mw.awaitConclusion([a]) }
-        try await pollUntil { await mw.waiterCount() == 1 }
+        try await pollUntil { await mw.subscriptionCount() == 1 }
         waiting.cancel()
         #expect(await waiting.value == nil)
-        #expect(await mw.waiterCount() == 0)
+        #expect(await mw.subscriptionCount() == 0)
     }
 }
 
