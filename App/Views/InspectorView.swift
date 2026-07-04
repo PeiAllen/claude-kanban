@@ -19,8 +19,10 @@ struct InspectorView: View {
                     RecoveryView(task: t)
                 } else {
                     VStack(spacing: 0) {
-                        // Mode lives on the model so the `d` keyboard verb can toggle it from the board.
-                        HeaderBar(task: t, mode: $model.inspectorMode)
+                        // Mode lives on the model (per card) so the `d` keyboard verb can toggle it from
+                        // the board; the binding routes to the selected card's entry.
+                        HeaderBar(task: t, mode: Binding(get: { model.inspectorMode },
+                                                         set: { model.inspectorMode = $0 }))
                         if model.inspectorMode == .diff {
                             DiffInspectorView(task: t)
                         } else {
