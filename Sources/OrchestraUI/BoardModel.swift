@@ -378,7 +378,9 @@ public final class BoardModel: ObservableObject {
     /// visible card's current owner. After this, the live `agentTerminalOwner` stream keeps it current.
     private func refreshAgentOwners(for cards: [Task]) async {
         let activeIds = Set(cards.map(\.id))
-        for id in agentOwners.keys where !activeIds.contains(id) { agentOwners[id] = nil }
+        // Snapshot the keys before mutating — iterating the live `.keys` view while assigning would be a
+        // simultaneous-access violation.
+        for id in Array(agentOwners.keys) where !activeIds.contains(id) { agentOwners[id] = nil }
         for card in cards {
             if let state = try? await client.agentTerminalOwner(card.id.uuidString) {
                 agentOwners[card.id] = state
