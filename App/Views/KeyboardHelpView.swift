@@ -31,7 +31,7 @@ struct KeyboardHelpView: View {
         Section(title: "Act on the card", rows: [
             Row(keys: "c", desc: "New card (spawn)"),
             Row(keys: "H / L", desc: "Carry card left / right a column"),
-            Row(keys: "a", desc: "Archive"),
+            Row(keys: "a", desc: "Archive (asks to confirm)"),
             Row(keys: "o", desc: "Open the card's notes"),
             Row(keys: "O", desc: "View changes in Zed"),
             Row(keys: "d", desc: "Toggle Agent / Diff view"),
@@ -48,7 +48,7 @@ struct KeyboardHelpView: View {
         Section(title: "Standard (⌘)", rows: [
             Row(keys: "⌘N", desc: "New card"),
             Row(keys: "⌘T", desc: "New shell"),
-            Row(keys: "⌘W", desc: "Close frontmost (→ archive card)"),
+            Row(keys: "⌘W", desc: "Close the frontmost thing"),
         ]),
     ]
 

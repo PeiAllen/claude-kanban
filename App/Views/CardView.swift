@@ -49,9 +49,9 @@ struct CardView: View {
         .opacity(dimmed ? 0.32 : (isDead ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        // Clicking a card is a board-level select — land in the board zone (don't inherit a stale
-        // terminal zone from a previously-descended card).
-        .onTapGesture { model.selectedId = task.id; model.focusZone = .board }
+        // Clicking a card selects it AND descends into its agent terminal, so the glow, the
+        // inspector ring, and the real keyboard first responder all agree after the click.
+        .onTapGesture { model.selectAndEnterTerminal(task.id) }
     }
 
     /// Dim when a `/` search is active and this card doesn't match.

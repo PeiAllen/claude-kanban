@@ -166,6 +166,16 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
+            // Archive confirmation — the keyboard `a` path routes here so an accidental keystroke
+            // can't permanently archive a card. ⏎ confirms, esc / ⌘W / click-away cancels.
+            if let id = model.archiveConfirm {
+                Color.black.opacity(0.28).ignoresSafeArea()
+                    .onTapGesture { model.cancelArchive() }
+                ArchiveConfirmView(cardTitle: model.cardTitle(id))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .transition(.opacity)
+            }
+
             // First-run welcome / daemon install — covers the whole window.
             if model.showOnboarding {
                 OnboardingView()
@@ -175,6 +185,7 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.2), value: model.showOnboarding)
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
         .animation(.easeOut(duration: 0.15), value: model.showHelp)
+        .animation(.easeOut(duration: 0.15), value: model.archiveConfirm)
         .modifier(DebugLaunchHook())
     }
 }
@@ -229,7 +240,7 @@ private struct DebugLaunchHook: ViewModifier {
                         repo: "/Users/allen/code/orchestra", branch: "fix/shells",
                         cwd: "/Users/allen/code/orchestra/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .running, initialPrompt: "demo")
+                        order: 0, status: .running, ctxPct: 62, initialPrompt: "demo")
         model.tasks = [mock]
         model.selectedId = mock.id
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
@@ -474,6 +485,20 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the archive-confirm dialog to a PNG via `ImageRenderer` — headless. Renders the REAL
+    /// `ArchiveConfirmView` so the screenshot can't drift from the shipping dialog. `ORCH_SNAPSHOT_ARCHIVE`.
+    static func snapshotArchive(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        let view = ArchiveConfirmView(cardTitle: "Wire the KeyboardController to the command palette")
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .padding(40)
+            .background(theme.winBg)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Shared ImageRenderer → PNG writer for the snapshot hooks.
     static func renderPNG(_ view: some View, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -511,6 +536,10 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_PALETTE"] {
                 DebugLaunchHook.snapshotPalette(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_ARCHIVE"] {
+                DebugLaunchHook.snapshotArchive(to: path, model: model)
                 exit(0)
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_CARDS"] {

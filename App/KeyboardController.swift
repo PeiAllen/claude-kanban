@@ -28,7 +28,7 @@ final class KeyboardController {
     // MARK: context
 
     private func context() -> KeyContext {
-        if model.showSpawn || model.showDone || model.showActivity || model.showHelp || model.showPalette { return .overlay }
+        if model.showSpawn || model.showDone || model.showActivity || model.showHelp || model.showPalette || model.archiveConfirm != nil { return .overlay }
         let fr = NSApp.keyWindow?.firstResponder
         var v = fr as? NSView
         while let cur = v {
@@ -63,6 +63,14 @@ final class KeyboardController {
             if ch.mods.contains(.control), ch.key.lowercased() == "j" { model.paletteMove(1); return true }
             if ch.mods.contains(.control), ch.key.lowercased() == "k" { model.paletteMove(-1); return true }
             return false
+        }
+
+        // Archive-confirm dialog owns ⏎ (archive) — esc / ⌘W fall through to closeFrontmost, which
+        // peels the dialog first; every other key is inert while it's up.
+        if model.archiveConfirm != nil {
+            if ch.key == "\r" || ch.key == "\n" { model.confirmArchive(); return true }
+            let isClose = ch.key == "\u{1B}" || (ch.mods.contains(.command) && ch.key.lowercased() == "w")
+            if !isClose { return true }
         }
 
         // f link-hint mode captures all keys until a label resolves, an invalid prefix aborts, or Esc.
@@ -115,7 +123,7 @@ final class KeyboardController {
         case .focusPane(let d):     return FocusBridge.movePane(d, model: model, from: ctx)
         case .carry(let d):         model.carrySelected(d); return true
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true
-        case .archive:              model.archiveSelected(); return true
+        case .archive:              model.requestArchiveSelected(); return true
         case .openInZed:            model.openZedSelected(); return true
         case .openNotes:            model.openNotesSelected(); return true
         case .toggleDiff:           model.inspectorMode = (model.inspectorMode == .agent ? .diff : .agent); return true
@@ -142,14 +150,18 @@ final class KeyboardController {
 /// the `@MainActor BoardModel`.
 @MainActor
 enum FocusBridge {
-    /// Move keyboard focus into the agent terminal, if one is mounted.
-    static func enterTerminal() { focusTerminal(window: "agent") }
+    /// Move keyboard focus into the agent terminal, if one is mounted. Returns whether it succeeded.
+    @discardableResult
+    static func enterTerminal() -> Bool { focusTerminal(window: "agent") }
 
-    /// Focus the mounted terminal view attached to `window` ("agent" / "shell-N").
-    static func focusTerminal(window: String) {
+    /// Focus the mounted terminal view attached to `window` ("agent" / "shell-N"). Returns false when
+    /// no such terminal is mounted (e.g. a dead card showing RecoveryView), so callers can reconcile.
+    @discardableResult
+    static func focusTerminal(window: String) -> Bool {
         guard let root = NSApp.keyWindow?.contentView,
-              let term = terminal(in: root, window: window) else { return }
+              let term = terminal(in: root, window: window) else { return false }
         term.window?.makeFirstResponder(term)
+        return true
     }
 
     /// Eject focus back to the board (drop first responder off any terminal).
