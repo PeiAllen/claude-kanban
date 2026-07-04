@@ -104,11 +104,12 @@ struct CodexRolloutParseTests {
         #expect((t2.snapshot?.seq ?? 0) > (t1.snapshot?.seq ?? 0))
     }
 
-    @Test("unhandled + junk lines drop to nil")
+    @Test("session_meta binds id; unhandled + junk lines drop to nil")
     func junkDropsNil() {
         #expect(tail("not json at all") == nil)
         #expect(tail("") == nil)
-        #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#) == nil)
+        #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#)?.event?.sessionId == "x")
+        #expect(tail(#"{"type":"unhandled","payload":{}}"#) == nil)
     }
 }
 
@@ -202,6 +203,7 @@ struct CodexTelemetryE2ETests {
         let sid = UUID().uuidString.lowercased()
         let rollout = "\(day)/rollout-2026-07-01T10-00-00-\(sid).jsonl"
         FileManager.default.createFile(atPath: rollout, contents: nil)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(PathResolver.canonical(work))"}}"#)
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
@@ -217,6 +219,47 @@ struct CodexTelemetryE2ETests {
                                                   agentId: "codex",
                                                   cwd: PathResolver.canonical(work)))
         return (svc, card, rollout)
+    }
+
+    private func makeMultiEnv() async throws -> (svc: OrchestraService, cardA: Task, rolloutA: String,
+                                                 cardB: Task, rolloutB: String) {
+        let base = NSTemporaryDirectory() + "codex-tel-\(UUID().uuidString)"
+        let workA = PathResolver.canonical(base + "/work-a")
+        let workB = PathResolver.canonical(base + "/work-b")
+        let codexHome = base + "/codexhome"
+        let day = codexHome + "/sessions/2026/07/01"
+        try FileManager.default.createDirectory(atPath: workA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: workB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+
+        let sidA = UUID().uuidString.lowercased()
+        let sidB = UUID().uuidString.lowercased()
+        let rolloutA = "\(day)/rollout-2026-07-01T10-00-00-\(sidA).jsonl"
+        let rolloutB = "\(day)/rollout-2026-07-01T10-01-00-\(sidB).jsonl"
+        FileManager.default.createFile(atPath: rolloutA, contents: nil)
+        FileManager.default.createFile(atPath: rolloutB, contents: nil)
+        append(rolloutA, #"{"timestamp":"2026-07-01T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sidA)","cwd":"\#(workA)"}}"#)
+        append(rolloutB, #"{"timestamp":"2026-07-01T10:01:00.000Z","type":"session_meta","payload":{"id":"\#(sidB)","cwd":"\#(workB)"}}"#)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1000)],
+                                              ofItemAtPath: rolloutA)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2000)],
+                                              ofItemAtPath: rolloutB)
+
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)])
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
+        let svc = OrchestraService(config: config,
+                                   store: TaskStore(path: base + "/tasks.json"),
+                                   registry: AgentRegistry(adapters: [codex]),
+                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   sessions: StubSessions(),
+                                   trust: TrustLedger(path: base + "/trust.json"))
+        let cardA = try await svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
+                                                   agentId: "codex", cwd: workA))
+        let cardB = try await svc.spawn(SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
+                                                   agentId: "codex", cwd: workB))
+        return (svc, cardA, rolloutA, cardB, rolloutB)
     }
 
     private func append(_ path: String, _ line: String) {
@@ -256,6 +299,21 @@ struct CodexTelemetryE2ETests {
 
         let after = try #require(await svc.list().first { $0.id == card.id })
         #expect(after.ctxPct == 50.0)   // the stale 10% snapshot was dropped by the seq-gate
+    }
+
+    @Test("multiple Codex cards keep independent rollout status and description")
+    func multipleCardsDoNotShareNewestRolloutStatus() async throws {
+        let (svc, cardA, rolloutA, cardB, rolloutB) = try await makeMultiEnv()
+        append(rolloutA, #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"older_tool"}}"#)
+        append(rolloutB, #"{"timestamp":"2026-07-01T10:01:03.000Z","type":"response_item","payload":{"type":"function_call","name":"newer_tool"}}"#)
+
+        await svc.pollTelemetry()
+
+        let afterA = try #require(await svc.list().first { $0.id == cardA.id })
+        let afterB = try #require(await svc.list().first { $0.id == cardB.id })
+        #expect(afterA.agentSessionId != afterB.agentSessionId)
+        #expect(afterA.desc == "Running older_tool")
+        #expect(afterB.desc == "Running newer_tool")
     }
 
     @Test("a Claude (hooksPush) card is NOT tailed by pollTelemetry")

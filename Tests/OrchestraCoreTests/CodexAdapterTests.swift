@@ -131,11 +131,13 @@ struct CodexAdapterDiscoveryTests {
         let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
     }
-    private func writeRollout(_ home: String, day: String, sessionId: String, mtime: Date? = nil) {
+    private func writeRollout(_ home: String, day: String, sessionId: String,
+                              cwd: String = "/wt", mtime: Date? = nil) {
         let dir = "\(home)/sessions/\(day)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/rollout-2026-07-01T10-00-00-\(sessionId).jsonl"
-        try? "{}".write(toFile: path, atomically: true, encoding: .utf8)
+        try? #"{"type":"session_meta","payload":{"id":"\#(sessionId)","cwd":"\#(cwd)"}}"#
+            .write(toFile: path, atomically: true, encoding: .utf8)
         if let m = mtime {
             try? FileManager.default.setAttributes([.modificationDate: m], ofItemAtPath: path)
         }
@@ -161,6 +163,22 @@ struct CodexAdapterDiscoveryTests {
         writeRollout(home, day: "2026/06/30", sessionId: older, mtime: Date(timeIntervalSince1970: 1000))
         writeRollout(home, day: "2026/07/01", sessionId: newer, mtime: Date(timeIntervalSince1970: 2000))
         #expect(adapter.discover() == newer)
+    }
+
+    @Test("sessionInfo discovers newest rollout for the card cwd, not global newest")
+    func sessionInfoDiscoversByCwd() throws {
+        let (home, adapter) = makeHome()
+        let target = UUID().uuidString.lowercased()
+        let other = UUID().uuidString.lowercased()
+        writeRollout(home, day: "2026/07/01", sessionId: target,
+                     cwd: "/work/target", mtime: Date(timeIntervalSince1970: 1000))
+        writeRollout(home, day: "2026/07/01", sessionId: other,
+                     cwd: "/work/other", mtime: Date(timeIntervalSince1970: 2000))
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/work/target"),
+                                                    current: nil, prior: []))
+        #expect(info.sessionId == target)
+        #expect(info.transcriptPath?.hasSuffix("-\(target).jsonl") == true)
     }
 
     @Test("current id wins over discovery")
