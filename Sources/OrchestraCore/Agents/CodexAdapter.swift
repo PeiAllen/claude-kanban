@@ -78,6 +78,12 @@ public struct CodexAdapter: Adapter {
             .compactMap { $0 }.map(Self.norm)
         func any(_ needles: String...) -> Bool { kinds.contains { k in needles.contains { k.contains($0) } } }
 
+        // Bind the discovered rollout id to this card as soon as the first metadata record is tailed.
+        if any("sessionmeta") {
+            let sid = (payload["id"] ?? payload["session_id"])?.stringValue
+            guard let sid, !sid.isEmpty else { return nil }
+            return StatusReport(sessionId: sid)
+        }
         // Idle signal FIRST (a completed turn ends `.running`, rename-tolerant).
         if any("turncomplete", "taskcomplete") {
             // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
@@ -197,7 +203,7 @@ public struct CodexAdapter: Adapter {
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
-        let sid = current ?? discover()
+        let sid = current ?? discover(cwd: ctx.cwd)
         guard let sid else {
             return AgentSessionInfo(agentId: id, sessionId: nil, transcriptPath: nil,
                                     priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
@@ -217,13 +223,27 @@ public struct CodexAdapter: Adapter {
 
     var sessionsDir: String { "\(codexHome)/sessions" }
 
-    /// Newest rollout's embedded session UUID, or nil. The `.discovered` fallback when Orchestra has no
-    /// tracked id yet. NOTE: like Claude's `discover`, "newest" is ambiguous if multiple Codex cards
-    /// share one CODEX_HOME — safe only as the `current == nil` fallback (tracked cards pass `current`).
+    /// Newest rollout's embedded session UUID, or nil. Kept for diagnostics/tests; live card discovery
+    /// uses `discover(cwd:)` so one Codex card does not accidentally claim another card's newest rollout.
     func discover() -> String? {
         let newest = rolloutFiles().max { mtime($0) < mtime($1) }
         guard let newest else { return nil }
         return sessionId(fromRollout: newest)
+    }
+
+    /// Newest rollout whose first metadata record belongs to this cwd. This is the safe discovery path
+    /// for Orchestra cards before their Codex session id has been bound.
+    func discover(cwd: String) -> String? {
+        let canon = PathResolver.canonical(cwd)
+        let newest = rolloutFiles()
+            .compactMap { path -> (path: String, mtime: Date)? in
+                guard let metaCwd = rolloutCwd(path),
+                      PathResolver.canonical(metaCwd) == canon else { return nil }
+                return (path, mtime(path))
+            }
+            .max { $0.mtime < $1.mtime }
+        guard let newest else { return nil }
+        return sessionId(fromRollout: newest.path)
     }
 
     func rolloutPath(for sessionId: String) -> String? {
@@ -250,6 +270,32 @@ public struct CodexAdapter: Adapter {
         let stem = String(name.dropLast(".jsonl".count))
         let candidate = String(stem.suffix(36))
         return UUID(uuidString: candidate) != nil ? candidate.lowercased() : nil
+    }
+
+    private func rolloutCwd(_ path: String) -> String? {
+        guard let line = firstLine(path),
+              let jv = try? JSONValue.parse(Data(line.utf8)) else { return nil }
+        let payload = jv["payload"] ?? jv
+        return payload["cwd"]?.stringValue
+    }
+
+    private func firstLine(_ path: String) -> String? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        var data = Data()
+        let chunkSize = 64 * 1024
+        let cap = 4 * 1024 * 1024
+        while data.count < cap {
+            let chunk = fh.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            if let nl = chunk.firstIndex(of: 0x0A) {
+                data.append(chunk[..<nl])
+                break
+            }
+            data.append(chunk)
+        }
+        guard !data.isEmpty else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private func mtime(_ path: String) -> Date {
