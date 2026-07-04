@@ -284,19 +284,8 @@ public struct ClaudeCodeAdapter: Adapter {
     }
 }
 
-public extension AgentCapabilities {
-    /// The Claude Code adapter's shipped capabilities. Also the default for the test `StubAdapter`, so
-    /// existing suites see Claude-shaped behavior unless they opt out.
-    static let claudeCode = AgentCapabilities(
-        sessionId: .seeded,
-        telemetry: .hooksPush,
-        contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed,
-        authMode: .subscription,
-        terminalImagePaste: .controlV)
-}
+// `AgentCapabilities.claudeCode` moved to OrchestraKit (the shared BoardModel's capability fallback
+// needs it on iOS); the adapter and all Core consumers still see it via Core's re-export of Kit.
 
 /// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under
 /// `projects.<path>`, flagged via `hasTrustDialogAccepted`). The adapter only ever *applies* the core's

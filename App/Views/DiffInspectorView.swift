@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// Read-only in-app diff for a card (axis 7 — code review on the board). Parses the daemon's git

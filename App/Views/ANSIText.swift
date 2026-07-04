@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// Renders ANSI-colored terminal text (git / difftastic diff output) as an `AttributedString`. A

@@ -1,11 +1,11 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 import AppKit
 
 /// The right-hand inspector panel: header actions + the live agent terminal chrome (or the
 /// Recovery panel when the card is `dead`). ui-spec §3.5 / §4.5.
-/// Inspector content mode: the live agent terminal, or the read-only in-app diff (axis 7).
-enum InspectorMode { case agent, diff }
+/// `InspectorMode` (agent vs diff) now lives in OrchestraUI alongside BoardModel.
 
 struct InspectorView: View {
     @EnvironmentObject var model: BoardModel

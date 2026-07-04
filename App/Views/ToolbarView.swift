@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// The 53px application toolbar (ui-spec §3.2, §4.1). The window uses a hidden title bar, so the

@@ -94,3 +94,19 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.terminalImagePaste = terminalImagePaste
     }
 }
+
+public extension AgentCapabilities {
+    /// The Claude Code adapter's shipped capabilities. Also the default for the test `StubAdapter` and
+    /// the shared `BoardModel`'s capability fallback, so existing suites and the client see Claude-shaped
+    /// behavior unless they opt out. Lives in OrchestraKit (moved from the Core adapter in F2) so the
+    /// shared, client-side `BoardModel` can use it on iOS.
+    static let claudeCode = AgentCapabilities(
+        sessionId: .seeded,
+        telemetry: .hooksPush,
+        contextUsage: .percent,
+        wakeTransport: .nativeReinvoke,
+        inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed,
+        authMode: .subscription,
+        terminalImagePaste: .controlV)
+}

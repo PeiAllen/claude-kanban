@@ -1,15 +1,7 @@
 import Foundation
 
-/// One durable inbox message (F3). Conclusions/sends ride the inbox; artifacts ride git.
-public struct InboxMessage: Codable, Sendable, Equatable {
-    public let id: UUID
-    public let cardId: UUID
-    public let text: String
-    public let createdAt: Date
-    public init(id: UUID = UUID(), cardId: UUID, text: String, createdAt: Date = Date()) {
-        self.id = id; self.cardId = cardId; self.text = text; self.createdAt = createdAt
-    }
-}
+// `InboxMessage` (the client-safe value type) now lives in OrchestraKit so the shared BoardModel can
+// use it on iOS; the daemon-side `Inbox` actor below stays here and sees it via Core's re-export.
 
 /// Durable per-card message queue (F3), sibling to `TaskStore`: actor-over-JSON, atomic save, malformed
 /// → `.bak` + `[]`. A single append-ordered array gives FIFO-per-card via a stable filter, and survives

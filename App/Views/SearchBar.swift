@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import AppKit
 
 /// The `/` card search bar — a floating field at the top of the board. Typing filters (dims

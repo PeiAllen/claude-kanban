@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 
 /// The `?` keyboard-shortcuts overlay — a reference card grouped by surface. Static content (mirrors
 /// notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md); `Esc` / click-away closes it

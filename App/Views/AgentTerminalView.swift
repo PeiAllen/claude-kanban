@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 #if canImport(SwiftTerm)
 import SwiftTerm

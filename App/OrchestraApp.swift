@@ -1,10 +1,11 @@
 import SwiftUI
+import OrchestraUI
 import AppKit
 import OrchestraCore
 
 @main
 struct OrchestraApp: App {
-    @StateObject private var model = BoardModel()
+    @StateObject private var model = BoardModel(platform: MacPlatform.ui)
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
 
@@ -19,6 +20,7 @@ struct OrchestraApp: App {
             ContentView()
                 .environmentObject(model)
                 .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+                .platformUI()
                 .preferredColorScheme(model.darkMode ? .dark : .light)
                 .frame(minWidth: 940, minHeight: 580)
                 .task { await model.bootstrap() }
@@ -56,6 +58,7 @@ struct OrchestraApp: App {
             }
             .environmentObject(model)
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+            .platformUI()
         }
     }
 }

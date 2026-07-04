@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// The Activity popover with Live feed + CLI reference tabs. ui-spec §3.8 / §4.10.
