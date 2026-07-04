@@ -73,6 +73,17 @@ public extension Adapter {
     func model(for id: String) -> AgentModel {
         models().first { $0.id == id } ?? AgentModel(id: id)
     }
+
+    /// Shared policy for token-based context reporters: prefer the adapter's model table when a model id
+    /// is present, and fall back to an explicit telemetry window only when the model window is unknown.
+    func tokenContextPercent(usedTokens: Int?, modelId: String?, reportedContextWindow: Int?) -> Double? {
+        guard let usedTokens else { return nil }
+        if let modelId, let pct = model(for: modelId).ctxPct(usedTokens: usedTokens) {
+            return pct
+        }
+        guard let window = reportedContextWindow, window > 0 else { return nil }
+        return min(100, max(0, Double(usedTokens) / Double(window) * 100))
+    }
 }
 
 /// Look up / list adapters; list an agent's models.

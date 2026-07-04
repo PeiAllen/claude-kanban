@@ -61,6 +61,16 @@ struct CodexRolloutParseTests {
         #expect(r.snapshot?.modelId == "gpt-5.3-codex")
     }
 
+    @Test("token_count without model uses last_token_usage over inline context window")
+    func tokenCountWithoutModelUsesInlineWindow() throws {
+        // Current Codex rollout lines can omit `model`; `total_token_usage` is session-cumulative,
+        // while `last_token_usage` is the request that reflects the current context window.
+        let line = #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":27200},"model_context_window":272000}}}"#
+        let r = try #require(tail(line))
+        #expect(r.snapshot?.ctxPct == 10.0)
+        #expect(r.snapshot?.modelId == nil)
+    }
+
     @Test("test_ctxpct_from_model_table: ctxPct denominator is the OFFLINE model window, not the rollout's")
     func ctxPctFromModelTable() throws {
         // Rollout carries a bogus in-line window; parse must ignore it and use codex-models.json (272000).
@@ -277,6 +287,16 @@ struct CodexTelemetryE2ETests {
         let after = try #require(await svc.list().first { $0.id == card.id })
         #expect(after.ctxPct == 25.0)
         #expect(after.status == .running)
+    }
+
+    @Test("pollTelemetry handles current Codex token_count without model id")
+    func tailUpdatesBoardFromCurrentTokenShape() async throws {
+        let (svc, card, rollout) = try await makeEnv()
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9999999},"last_token_usage":{"total_tokens":27200},"model_context_window":272000}}}"#)
+        await svc.pollTelemetry()
+
+        let after = try #require(await svc.list().first { $0.id == card.id })
+        #expect(after.ctxPct == 10.0)
     }
 
     @Test("idle signal reaches the board: TurnComplete → waiting")

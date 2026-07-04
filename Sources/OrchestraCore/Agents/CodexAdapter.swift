@@ -90,12 +90,16 @@ public struct CodexAdapter: Adapter {
             // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
             return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn)
         }
-        // Token usage → ctxPct (÷ offline model window) + modelId. No status (avoids churn vs turn edges).
+        // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
+        // rollout names a model; fall back to the rollout's explicit context window for model-less
+        // token reporters. No status (avoids churn vs turn edges).
         if any("tokencount", "tokenusage") {
             let info = payload["info"] ?? payload
             let mid = (info["model"] ?? payload["model"])?.stringValue
-            let total = Self.tokenTotal(info)
-            let pct = (mid != nil && total != nil) ? model(for: mid!).ctxPct(usedTokens: total!) : nil
+            let pct = tokenContextPercent(
+                usedTokens: Self.contextTokenTotal(info),
+                modelId: mid,
+                reportedContextWindow: info["model_context_window"]?.intValue)
             guard pct != nil || mid != nil else { return nil }
             return StatusReport(seq: seq, ctxPct: pct, modelId: mid)
         }
@@ -118,10 +122,12 @@ public struct CodexAdapter: Adapter {
         s.lowercased().replacingOccurrences(of: "_", with: "")
     }
 
-    /// Total tokens from a usage `info` object, tolerating the nested (`total_token_usage.total_tokens`)
-    /// and flat (`total_tokens` / `tokens`) shapes the rollout schema has used.
-    private static func tokenTotal(_ info: JSONValue) -> Int? {
-        info["total_token_usage"]?["total_tokens"]?.intValue
+    /// Tokens currently occupying the model context. Modern Codex emits both session-cumulative
+    /// `total_token_usage` and request/window-sized `last_token_usage`; the latter is the context gauge.
+    /// Older rollouts only had total/flat fields, so keep them as fallbacks.
+    private static func contextTokenTotal(_ info: JSONValue) -> Int? {
+        info["last_token_usage"]?["total_tokens"]?.intValue
+            ?? info["total_token_usage"]?["total_tokens"]?.intValue
             ?? info["total_tokens"]?.intValue
             ?? info["tokens"]?.intValue
     }
