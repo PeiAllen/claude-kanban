@@ -368,6 +368,21 @@ public struct ShellTab: Codable, Sendable, Equatable {
     }
 }
 
+public struct ShellPanelState: Sendable, Equatable {
+    public let windows: [String]
+    public let selected: String?
+    public var isOpen: Bool { !windows.isEmpty }
+
+    public init(targets: [TmuxTarget], previousSelection: String?) {
+        self.windows = targets.filter { $0.kind == .shell }.map(\.window)
+        if let previousSelection, windows.contains(previousSelection) {
+            self.selected = previousSelection
+        } else {
+            self.selected = windows.first
+        }
+    }
+}
+
 public struct TaskStatus: Codable, Sendable, Equatable {
     public let task: Task
     public let running: Bool
