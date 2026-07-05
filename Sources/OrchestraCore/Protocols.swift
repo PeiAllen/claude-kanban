@@ -16,6 +16,8 @@ public protocol SessionManaging: Sendable {
     func isAlive(_ name: String) throws -> Bool
     @discardableResult
     func newShellWindow(_ name: String, cwd: String) throws -> String
+    @discardableResult
+    func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String
     func closeShellWindow(_ name: String, window: String) throws
     func windows(_ name: String) throws -> [TmuxTarget]
     func list() throws -> [SessionInfo]
@@ -29,6 +31,10 @@ public protocol SessionManaging: Sendable {
 public extension SessionManaging {
     // Default so test stubs needn't implement it; the real `SessionManager` overrides.
     func closeShellWindow(_ name: String, window: String) throws {}
+    /// Default so test stubs needn't implement it; the real `SessionManager` overrides with an
+    /// idempotent tmux create-or-reuse. The default just echoes the requested window name.
+    @discardableResult
+    func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String { window }
     // Default no-op so mocks/conformers needn't implement it; `SessionManager` overrides with a
     // best-effort tmux detach. Belt-and-suspenders behind the D5 desktop unmount.
     func detachAgentViewClients(_ base: String) throws {}

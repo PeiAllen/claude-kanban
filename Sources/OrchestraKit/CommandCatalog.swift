@@ -112,7 +112,9 @@ public enum CommandCatalog {
                       params: schema(["ref": refProp()], required: ["ref"])),
 
         CommandSchema(name: "shell", summary: "Open a shell window in the worktree; returns its tmux target.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp(),
+                                      "window": strProp("Reuse/create this exact window (idempotent, e.g. a phone-owned `phone-<client>`); omit for a fresh shell-N")],
+                                     required: ["ref"])),
 
         CommandSchema(name: "inspect", summary: "Open a read-only claude in the card's worktree shell.",
                       params: schema(["ref": refProp()], required: ["ref"])),

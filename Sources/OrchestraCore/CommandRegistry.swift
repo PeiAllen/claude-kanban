@@ -163,9 +163,13 @@ public struct CommandRegistry: Sendable {
 
             "shell": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                let tab = try await svc.openShell(t.id)
+                // Optional `window`: a phone client passes a deterministic `phone-<client>` name so the
+                // window is reused across reconnects (idempotent); omit it for the desktop's `shell-N`.
+                let tab = try await svc.openShell(t.id, window: p.optString("window"))
                 await svc.logCommand("shell", ref: t, source: src)
-                return .object(["session": .string(t.tmuxSession), "window": .string(tab.window)])
+                // `socket` lets a client build the full tmux attach target without a second round-trip.
+                return .object(["session": .string(t.tmuxSession), "window": .string(tab.window),
+                                "socket": .string(Config.tmuxSocket)])
             },
 
             "inspect": { svc, p, src in
