@@ -14,6 +14,8 @@ struct BoardTab: View {
     @State private var page: BoardPage = .initial
     @State private var showDone = false
     @State private var showActivity = false
+    /// Guards the one-shot dev auto-open (below) so it fires once, not on every card-list change.
+    @State private var autoOpened = false
 
     private var theme: Theme { Theme(scheme: scheme, accent: model.accent) }
 
@@ -44,8 +46,42 @@ struct BoardTab: View {
             }
             .navigationDestination(isPresented: $showActivity) { ActivityFeedView() }
             .navigationDestination(isPresented: $showDone) { DoneArchiveView() }
+            // Card tap → push the tabbed card detail (design §3). Driven off `selectedId` (reachable from
+            // any nested card, and auto-cleared on back), so no binding is threaded down the pager.
+            .navigationDestination(item: selectedCardBinding) { id in
+                CardDetailView(taskId: id)
+            }
         }
         .environment(\.theme, theme)
+        // Dev/headless hook (mirrors ORCH_DEV_BOARD_PAGE): auto-open a card's detail once the board has
+        // loaded, so a Simulator screenshot can capture the detail/Diff/Inbox deterministically. Absent
+        // the env, this returns immediately (production no-op). Fires once via `autoOpened`.
+        .task { await autoOpenCardIfDev() }
+    }
+
+    /// A `UUID?` binding over `model.selectedId` — the card whose detail is pushed. `navigationDestination`
+    /// sets it to `nil` on back, so re-tapping the same card re-pushes.
+    private var selectedCardBinding: Binding<UUID?> {
+        Binding(get: { model.selectedId }, set: { model.selectedId = $0 })
+    }
+
+    /// One-shot dev auto-open: if `ORCH_DEV_OPEN_CARD` is set (`"1"`/`"first"` ⇒ the initial page's first
+    /// card; otherwise a shortId to match), select it so the detail pushes. Waits briefly for the board to
+    /// load so it's not racy on a warm reconnect. Deterministic headless screenshots only — returns
+    /// immediately (no effect) when the env is unset.
+    private func autoOpenCardIfDev() async {
+        guard let want = ProcessInfo.processInfo.environment["ORCH_DEV_OPEN_CARD"], !want.isEmpty else { return }
+        for _ in 0..<40 {   // up to ~6s for the first board list to arrive
+            if !autoOpened, !model.tasks.isEmpty {
+                let onPage = page.isFreeform ? model.freeformTasks : model.cards(in: page.column ?? .plan)
+                let pool = onPage.isEmpty ? model.tasks : onPage
+                let card = (want == "1" || want == "first") ? pool.first
+                         : pool.first { $0.shortId == want } ?? model.tasks.first { $0.shortId == want }
+                if let card { model.selectedId = card.id; autoOpened = true }
+                return
+            }
+            try? await _Concurrency.Task.sleep(for: .milliseconds(150))
+        }
     }
 
     /// Live per-page card counts for the segmented indicator.
@@ -147,10 +183,14 @@ private struct MovableCard: View {
         if task.origin == .worktree {
             BoardCardCell(task: task)
                 .offset(x: dragX)
-                .gesture(moveDrag)
+                .contentShape(Rectangle())
+                .onTapGesture { model.selectedId = task.id }   // tap → open detail (§3)
+                .gesture(moveDrag)                             // tap-and-hold → move (§2)
                 .contextMenu { moveMenu }
         } else {
             BoardCardCell(task: task)
+                .contentShape(Rectangle())
+                .onTapGesture { model.selectedId = task.id }
         }
     }
 
