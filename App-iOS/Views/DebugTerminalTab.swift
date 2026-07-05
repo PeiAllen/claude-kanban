@@ -9,22 +9,31 @@ import OrchestraUI
 /// T2/T3/T4 will use. Compiled out of Release; not a product surface.
 struct DebugTerminalTab: View {
     @Environment(\.terminalHost) private var terminalHost
+    @EnvironmentObject private var model: BoardModel
 
     @State private var socket: String
     @State private var session: String
     @State private var window: String
     @State private var attached: Bool
+    // PR T4 takeover entry (temporary DEBUG surface). The REAL entry — the "Take Over Agent Terminal"
+    // button on the Agent tab — is T3's to wire; this exercises the full lease + attach flow before it exists.
+    @State private var cardId: String
+    @State private var takeover: Bool
 
     init() {
         // Prefill + optionally auto-attach from the launch environment so a `simctl` harness can drive
         // the terminal without UI text entry (there's no XCUITest here). ORCH_T1_AUTOATTACH=1 attaches
-        // immediately when a session is provided.
+        // immediately when a session is provided; ORCH_T4_AUTOTAKEOVER=1 opens the takeover surface for a
+        // card id (ORCH_T4_CARD).
         let env = ProcessInfo.processInfo.environment
         _socket = State(initialValue: env["ORCH_T1_SOCKET"] ?? "orchestra")
         let s = env["ORCH_T1_SESSION"] ?? ""
         _session = State(initialValue: s)
         _window = State(initialValue: env["ORCH_T1_WINDOW"] ?? "agent")
         _attached = State(initialValue: env["ORCH_T1_AUTOATTACH"] == "1" && !s.isEmpty)
+        let card = env["ORCH_T4_CARD"] ?? ""
+        _cardId = State(initialValue: card)
+        _takeover = State(initialValue: env["ORCH_T4_AUTOTAKEOVER"] == "1" && !card.isEmpty)
     }
 
     private var target: TmuxTarget {
@@ -57,10 +66,24 @@ struct DebugTerminalTab: View {
                         } footer: {
                             Text("SSH target: \(SSHEndpoint.resolve().map { "\($0.user)@\($0.host):\($0.port)" } ?? "unset (ORCH_SSH_TARGET) — attach shows setup banner")")
                         }
+                        // T3 wires the real Agent-tab "Take Over Agent Terminal" entry; this DEBUG button
+                        // drives the same flow (lease → takeover attach → heartbeat) against a card id.
+                        Section("Takeover (T4)") {
+                            TextField("card id (UUID)", text: $cardId)
+                                .autocorrectionDisabled().textInputAutocapitalization(.never)
+                            Button("Take Over Agent Terminal") { takeover = true }
+                                .disabled(UUID(uuidString: cardId) == nil)
+                        }
                     }
                 }
             }
             .navigationTitle("Terminal (dev)")
+        }
+        .fullScreenCover(isPresented: $takeover) {
+            if let id = UUID(uuidString: cardId) {
+                AgentTakeoverView(cardId: id, model: model) { takeover = false }
+                    .environmentObject(model)
+            }
         }
     }
 }

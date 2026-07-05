@@ -47,7 +47,9 @@ private struct RootView: View {
     private static func initialTab() -> Tab {
         let env = ProcessInfo.processInfo.environment
         #if DEBUG
-        if env["ORCH_T1_AUTOATTACH"] == "1" { return .terminal }
+        // Land on the DEBUG Terminal harness for either the T1 auto-attach or the T4 auto-takeover, so a
+        // headless simctl screenshot reaches the surface without UI driving (that tab hosts both).
+        if env["ORCH_T1_AUTOATTACH"] == "1" || env["ORCH_T4_AUTOTAKEOVER"] == "1" { return .terminal }
         #endif
         switch (env["ORCH_INITIAL_TAB"] ?? env["ORCH_DEV_TAB"] ?? "").lowercased() {
         case "needs", "needsyou", "needs-you": return .needsYou

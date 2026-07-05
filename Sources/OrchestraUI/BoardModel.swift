@@ -678,6 +678,55 @@ public final class BoardModel: ObservableObject {
         }
     }
 
+    // MARK: agent-terminal ownership (PR T4) — phone consumer of D4's lease
+
+    /// **Take Over Agent Terminal** from the phone: CAS this card's `agent` lease to `.phone` (epoch++),
+    /// which the daemon broadcasts so the desktop tears down its `AgentTerminalView` and shows the
+    /// placeholder. Returns the `TakeOverResult` — the new state's `epoch` (the phone heartbeats/releases
+    /// at it) and the `agent` `TmuxTarget` the takeover surface attaches to via `TmuxAttach(takeover:)`.
+    /// `nil` on RPC failure so the caller can surface an error instead of attaching to nothing.
+    ///
+    /// Mirrors the desktop's private `takeOverAgentTerminal`, but async/returning because the phone needs
+    /// the attach target and epoch back; `clientId` stays private to the shared model (never leaked to the
+    /// App layer). Optimistically mirrors the returned state into `agentOwners` so `phoneStillHolds…`
+    /// reads it immediately, before the live event echoes back.
+    public func takeOverAgentTerminalAsPhone(_ cardId: UUID) async -> TakeOverResult? {
+        guard let result = try? await client.takeOverAgentTerminal(
+            cardId.uuidString, clientId: clientId, kind: .phone) else { return nil }
+        agentOwners[cardId] = result.state
+        return result
+    }
+
+    /// Refresh a phone-held lease (~every 10s while the takeover surface is up). Epoch-guarded on the
+    /// daemon: a heartbeat at a stale epoch (a desktop retook, bumping the epoch) is rejected and the
+    /// reply reflects the *current* owner — which `phoneStillHolds…` then reads as lost. `nil` on RPC
+    /// failure (a transient mobile drop); the surface tolerates a missed beat within the 30s stale window.
+    @discardableResult
+    public func heartbeatAgentTerminalAsPhone(_ cardId: UUID, epoch: Int) async -> AgentTerminalOwnerState? {
+        guard let state = try? await client.heartbeatAgentTerminal(
+            cardId.uuidString, clientId: clientId, epoch: epoch) else { return nil }
+        agentOwners[cardId] = state
+        return state
+    }
+
+    /// **Return to Desktop**: release a phone-held lease so the desktop reattaches. Epoch-guarded — a
+    /// stale release (after a desktop already retook) is a daemon no-op, so this can't clear a newer owner.
+    public func releaseAgentTerminalAsPhone(_ cardId: UUID, epoch: Int) async {
+        if let state = try? await client.releaseAgentTerminal(
+            cardId.uuidString, clientId: clientId, epoch: epoch) {
+            agentOwners[cardId] = state
+        }
+    }
+
+    /// Whether THIS phone still holds `cardId`'s lease at ≥ `epoch`. Reads the mirrored owner snapshot so
+    /// live owner events, heartbeat replies, and reconnect reconcile all feed one decision (via the pure
+    /// `phoneTakeoverStatus`). The takeover surface polls this to drop its attach on a desktop retake.
+    /// `clientId` stays private — the App layer never needs it, only this yes/no.
+    public func phoneStillHoldsAgentTerminal(_ cardId: UUID, epoch: Int) -> Bool {
+        phoneTakeoverStatus(myClientId: clientId, myEpoch: epoch,
+                            owner: agentOwners[cardId]?.owner) == .holding
+    }
+
     // MARK: keyboard-navigation intents
     // Thin executors the KeyboardController calls; selection movement delegates to the pure
     // BoardNavigator, everything else reuses the existing daemon-backed actions above.

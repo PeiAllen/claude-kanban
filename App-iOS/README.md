@@ -81,8 +81,47 @@ Host-key policy is trust-on-first-use *accept* (a personal Mac over a trusted Ta
 per-host pinning is a device-hardening follow-on (swift-nio-ssh doesn't expose the host key's raw bytes
 for a stable fingerprint without private API).
 
+## Live takeover (T4)
+
+`Views/AgentTakeoverView.swift` is the full-screen **Take Over Agent Terminal** surface — the phone
+attaching the REAL agent TUI (Claude *or* Codex, provider-neutrally) under D4's exclusive lease.
+
+- **Lease lifecycle** — `Terminal/TakeoverController.swift`: on appear, `takeOverAgentTerminalAsPhone`
+  (CAS to `.phone`, epoch++, returns the `agent` `TmuxTarget`); heartbeat ~10s (well inside D4's 30s
+  stale window); **drop** the attach when ownership flips away (a desktop Retake → `phoneStillHolds…`
+  reads `false` via the pure `PhoneTakeoverPolicy.phoneTakeoverStatus`), caught both on a heartbeat reply
+  and on a live owner event; **Return to Desktop** releases (epoch-guarded). All RPCs route through
+  `BoardModel`'s phone methods, so `clientId` stays private to the shared model.
+- **Attach** — `IOSTerminalHost.takeoverAttach` runs `TmuxAttach.attachScript(takeover: true)`
+  (`detach-client` first) so the phone is the *sole* client of the grouped `agent` view session (no
+  resize-fight). Called only after the lease is held, so the desktop has already unmounted (D5).
+- **Surface** — compact owner bar (title/status · connection · *You have control* · Return to Desktop);
+  **armed input** (nothing sends until *Start Typing*); a minimal **accessory bar** (Esc · sticky Ctrl ·
+  Tab · ↵ · ↑ · ↓ · ⋯ drawer for Left/Right/PgUp/PgDn/Home/End); explicit **Select** mode; **A− / A+**
+  font; landscape-friendly. Key bytes are the canonical xterm sequences in `OrchestraKit/TerminalKeyBytes`
+  (`applyControlModifier` folds sticky-Ctrl chords). `Terminal/TerminalControl.swift` is the reusable
+  handle the chrome drives the mounted `IOSTerminalView` through (T2's live shell reuses it).
+- **Entry point** — the real "Take Over Agent Terminal" button belongs on the **T3 Agent tab** (not built
+  yet). Until then a temporary **DEBUG** entry lives in the `Terminal` harness tab (a card-id field + a
+  Take Over button; `ORCH_T4_CARD` / `ORCH_T4_AUTOTAKEOVER=1` drive it headlessly).
+
+### Verifying
+
+- **Lease round-trip** (`scripts/t4-takeover-verify.sh`) — drives D4's ownership RPCs against an isolated
+  daemon in the exact sequence the controller performs: `takeOver(.phone)` → owner `.phone` + epoch++ →
+  heartbeat → a `takeOver(.desktop)` **retake** flips ownership (the drop signal) → a stale phone
+  `release` is an epoch-guarded no-op → clean release. No app needed.
+- **Full-stack screenshot** (`scripts/t4-takeover-shot.sh`) — isolated daemon + seeded stand-in `agent`
+  window + throwaway sshd + the Debug app auto-taking over: the app connects, holds the `.phone` lease,
+  SSH-attaches the agent window, and heartbeats, so the shot shows the real TUI under the T4 chrome. Prints
+  the daemon owner state to prove the phone holds the lease.
+- **Deferred (not faked)** — a **live desktop app and the phone taking over simultaneously** is not
+  exercised end-to-end here (it needs both apps up at once). The desktop half is D5's (verified there); the
+  seam between them — the daemon owner event — is exercised from both sides in isolation (D5's desktop
+  tests + T4's `takeOver(.desktop)` retake in the lease harness), just not in one live both-apps run.
+
 ## Scope
 Board · Needs You · Settings tabs (+ a DEBUG-only Terminal harness tab). Board is a flat live list off
 the shared `BoardModel` (the swipeable column pager is M1); Needs You + Settings are stubs (M3 / M5).
-The terminal host is **real** (T1); the product Terminal/Agent/Takeover surfaces that mount it are
-T2/T3/T4.
+The terminal host is **real** (T1) and the live **Takeover** surface is built (T4); the Terminal (T2)
+and Agent (T3) product surfaces that also mount it are still to come.

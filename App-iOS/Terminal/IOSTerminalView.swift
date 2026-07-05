@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import SwiftTerm
+import OrchestraKit   // TerminalKey + applyControlModifier (sticky-Ctrl transform)
 
 /// A live SwiftTerm iOS terminal bound to a `TerminalByteChannel`. This is the one place the phone
 /// runs a real terminal emulator; T2 (phone-owned shell) and T4 (agent takeover) reuse it verbatim,
@@ -14,13 +15,20 @@ struct IOSTerminalView: UIViewRepresentable {
     /// Builds the channel for this terminal. Called once, lazily, when the view first learns its real
     /// column/row size (so the PTY opens at the right size). Reused across reconnects.
     let makeChannel: () -> TerminalByteChannel
+    /// Optional imperative handle (PR T4 takeover / T2 shell): accessory keys, arming, font, Select. `nil`
+    /// for the plain read-only attach (DebugTerminalTab / IOSTerminalHost.attach), which needs none of it.
+    var control: TerminalControl? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(makeChannel: makeChannel) }
+    func makeCoordinator() -> Coordinator {
+        let c = Coordinator(makeChannel: makeChannel)
+        control?.attach(coordinator: c)
+        return c
+    }
 
     func makeUIView(context: Context) -> TerminalView {
         let term = TerminalView(frame: .zero)
         term.terminalDelegate = context.coordinator
-        term.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        term.font = UIFont.monospacedSystemFont(ofSize: control?.fontSize ?? 13, weight: .regular)
         term.nativeBackgroundColor = UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1)
         term.nativeForegroundColor = UIColor(white: 0.92, alpha: 1)
         // Fixed xterm 256-colour palette (same reasoning as the desktop) so indexed colours mean what
@@ -30,7 +38,17 @@ struct IOSTerminalView: UIViewRepresentable {
         return term
     }
 
-    func updateUIView(_ uiView: TerminalView, context: Context) {}
+    func updateUIView(_ uiView: TerminalView, context: Context) {
+        // Reflect the live control state (font size / Select mode) onto the SwiftTerm view. Runs whenever
+        // the observed `TerminalControl` publishes a change (the takeover view owns it as @StateObject).
+        guard let control else { return }
+        let size = control.fontSize
+        if abs(uiView.font.pointSize - size) > 0.5 {
+            uiView.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        // Select mode ⇒ no mouse reporting ⇒ a drag selects text instead of moving the TUI cursor.
+        uiView.allowMouseReporting = !control.selectMode
+    }
 
     static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
         coordinator.teardown()
@@ -48,6 +66,10 @@ struct IOSTerminalView: UIViewRepresentable {
         private var intentionalClose = false
         private var reconnects = 0
         private let maxReconnects = 5
+        // Sticky-Ctrl state for soft-keyboard input (set from the accessory bar's Ctrl key via the control
+        // handle). One-shot unless locked; consumed on the next typed keystroke.
+        private var pendingCtrl = false
+        private var ctrlLocked = false
 
         init(makeChannel: @escaping () -> TerminalByteChannel) {
             self.makeChannel = makeChannel
@@ -57,6 +79,22 @@ struct IOSTerminalView: UIViewRepresentable {
             intentionalClose = true
             channel?.close()
             channel = nil
+        }
+
+        // MARK: imperative control (PR T4 — accessory bar / arming / sticky Ctrl)
+
+        /// Send raw bytes straight to the PTY — the accessory bar's explicit key taps, which always send
+        /// regardless of the arming scrim (arming only gates the soft keyboard).
+        func sendBytes(_ bytes: [UInt8]) { channel?.send(bytes) }
+
+        /// Arm typing: show the soft keyboard by making the terminal first responder.
+        func focus() { _ = terminal?.becomeFirstResponder() }
+        /// Dismiss the soft keyboard.
+        func blur() { _ = terminal?.resignFirstResponder() }
+
+        func setPendingCtrl(_ on: Bool, locked: Bool) {
+            pendingCtrl = on
+            ctrlLocked = locked
         }
 
         // MARK: channel wiring
@@ -127,8 +165,19 @@ struct IOSTerminalView: UIViewRepresentable {
         }
 
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            channel?.send(Array(data))
+            var bytes = Array(data)
+            // Sticky Ctrl: a primed Ctrl folds the next soft-keyboard keystroke to its control code
+            // (Ctrl-C etc.), then clears unless locked. Keeps the bar's Ctrl chip in sync via onConsume.
+            if pendingCtrl {
+                bytes = applyControlModifier(to: bytes)
+                if !ctrlLocked { pendingCtrl = false; onCtrlConsumed?() }
+            }
+            channel?.send(bytes)
         }
+
+        /// Called after a one-shot Ctrl is consumed by a typed keystroke, so the `TerminalControl` can
+        /// clear its published `ctrl` chip (the bar de-highlights). Set by `TerminalControl.attach`.
+        var onCtrlConsumed: (() -> Void)?
 
         func scrolled(source: TerminalView, position: Double) {}
         func setTerminalTitle(source: TerminalView, title: String) {}
