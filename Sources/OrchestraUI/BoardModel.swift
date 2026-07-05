@@ -648,6 +648,12 @@ public final class BoardModel: ObservableObject {
         (try? await client.call("diffText",
             .object(["ref": .string(id.uuidString), "base": .string(base)])).decode(String.self)) ?? ""
     }
+    /// The changed/new markdown notes on a card's branch, each with its current content — the phone's
+    /// Notes page (M6) renders these in-app (it has no Obsidian). Read-only; `[]` for non-worktree cards
+    /// or on any error. Delegates to M6a's typed `changedNotes` client method (`changedNotes` RPC).
+    public func changedNotes(_ id: UUID) async -> [NoteFile] {
+        (try? await client.changedNotes(id.uuidString)) ?? []
+    }
     public func openInZed(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
         do {

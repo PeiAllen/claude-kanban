@@ -3,9 +3,9 @@ import OrchestraKit
 import OrchestraUI
 
 // M2 shipped the tabbed shell. The **Agent** tab now lives in `AgentTab.swift` (T3) and the **Terminal**
-// tab in `TerminalTab.swift` (T2) — both real (design §3's three-tier Agent/Terminal/Takeover model).
-// This file holds the remaining deferred hooks the detail leaves open: **Recovery** (dead card → M7;
-// consumed by the Agent tab) and the **Notes page** (M6).
+// tab in `TerminalTab.swift` (T2) — both real (design §3's three-tier Agent/Terminal/Takeover model). The
+// **Notes page** (M6) is now built too — see `NotesPage.swift`. The one remaining hook this file holds is
+// **Recovery** (dead card → M7; consumed by the Agent tab).
 
 // The Terminal tab (T2) is now built — see `TerminalTab.swift`. Its stub lived here in M2.
 
@@ -19,32 +19,8 @@ struct RecoveryHook: View {
     var body: some View { RecoveryView(task: task) }
 }
 
-// MARK: - Notes page hook (→ M6)
-
-/// HOOK for the **Notes page** (M6): design §3's in-app renderer of the markdown notes this branch
-/// changed (file switcher + rendered markdown). M2 leaves the navigation hook — Info's "Open notes" pushes
-/// here — and marks where M6 builds it.
-struct NotesPageHook: View {
-    let task: Task
-    @Environment(\.theme) private var theme: Theme
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "note.text").font(.system(size: 44)).foregroundStyle(theme.text3)
-            Text("Notes").font(.title3.weight(.semibold)).foregroundStyle(theme.text)
-            Text("Renders the markdown notes this branch changed — a file switcher over the changed/new `.md` files, each rendered in-app (no Obsidian on the phone). Built in M6.")
-                .font(.footnote).foregroundStyle(theme.text2)
-                .multilineTextAlignment(.center).padding(.horizontal, 28)
-            deferredBadge("M6", theme: theme)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.winBg)
-        .navigationTitle("Notes")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
+// The Notes page (M6) is now built — see `NotesPage.swift` (rendered in-app; Info's "Open notes" pushes
+// it). Its hook lived here in M2.
 
 // MARK: - Shared stub chrome
 
