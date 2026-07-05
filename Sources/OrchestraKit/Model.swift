@@ -171,6 +171,25 @@ public struct DiffStat: Codable, Sendable, Equatable {
 /// until `Task.parentBranch` is set. See `notes/designs/code-review-on-board`.
 public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
 
+// MARK: - Notes (the phone's Notes page)
+
+/// Whether a changed note is modified vs the branch base (`M`) or newly added (`A`). Deletions never
+/// appear — a deleted note has nothing to render. Wire form is the bare git status letter.
+public enum NoteStatus: String, Codable, Sendable { case modified = "M", added = "A" }
+
+/// One markdown note a card's branch changed/added vs its base, WITH its current content — the payload
+/// of the `changedNotes` RPC. The phone's Notes page renders these in-app (it has no Obsidian, which is
+/// what the desktop's "Open notes" opens the same file set in). `path` is worktree-relative. Mirrors the
+/// desktop changed-notes computation; see mobile spec §3 "Notes page".
+public struct NoteFile: Codable, Sendable, Equatable {
+    public let path: String        // worktree-relative, e.g. "notes/designs/foo.md"
+    public let status: NoteStatus  // M = modified vs base, A = added
+    public let content: String     // full file content (UTF-8), size-capped by the daemon
+    public init(path: String, status: NoteStatus, content: String) {
+        self.path = path; self.status = status; self.content = content
+    }
+}
+
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 

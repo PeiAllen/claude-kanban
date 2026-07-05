@@ -11,6 +11,11 @@ public struct Launcher: Sendable {
     /// the vault tree.
     static let openNotesTabCap = 15
 
+    /// Per-note byte cap for the phone's `changedNoteFiles` RPC — a pathological note is truncated with
+    /// a sentinel so the wire payload stays bounded, mirroring `diffText`'s cap. Notes are markdown, so
+    /// this virtually never fires.
+    static let noteContentCap = 256 * 1024
+
     /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with the markdown files
     /// its branch changed (docs, notes, superpower specs, `.claude/skills` — anywhere in the worktree)
     /// each in its own tab. Uses the same `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes`
@@ -90,11 +95,38 @@ public struct Launcher: Sendable {
     /// file can't be opened). Returns worktree-RELATIVE paths (what `workspace.json` leaves reference).
     /// Empty when nothing changed, the base can't be resolved, or the card isn't a git worktree.
     func changedNotes(worktree: String) -> [String] {
+        changedMarkdown(worktree: worktree).map { $0.path }
+    }
+
+    /// A changed markdown note: its worktree-relative path + whether it's modified vs base or newly
+    /// added. The primitive shared by `changedNotes` (paths only, for Obsidian tabs) and the phone's
+    /// `changedNoteFiles` RPC (which also reads each file's content). Deletions are excluded.
+    struct ChangedNote { let path: String; let added: Bool }
+
+    /// The changed/new markdown notes with their M/A status — the exact "which notes did this branch
+    /// touch" set the desktop's Open-notes uses, before dropping status. Empty when nothing changed, the
+    /// base can't be resolved, or the card isn't a git worktree.
+    func changedMarkdown(worktree: String) -> [ChangedNote] {
         guard let base = mergeBase(worktree: worktree) else { return [] }
         return changedFiles(worktree: worktree, base: base)
-            .filter { $0.status != .deleted }
-            .map { $0.newPath }
-            .filter { $0.lowercased().hasSuffix(".md") }
+            .filter { $0.status != .deleted && $0.newPath.lowercased().hasSuffix(".md") }
+            .map { ChangedNote(path: $0.newPath, added: $0.status == .added) }
+    }
+
+    /// The changed/new markdown notes WITH their current worktree content — what the phone's Notes page
+    /// (M6) renders in-app (it has no Obsidian). Same branch-vs-base set as `changedNotes`, each note's
+    /// live file content attached (UTF-8, capped for a pathological note). A note whose file can't be
+    /// read is skipped. Not `#if os(macOS)`-gated — the git/file work runs on the Linux daemon too.
+    func changedNoteFiles(worktree: String) -> [NoteFile] {
+        changedMarkdown(worktree: worktree).compactMap { note in
+            let abs = (worktree as NSString).appendingPathComponent(note.path)
+            guard let data = FileManager.default.contents(atPath: abs) else { return nil }
+            var content = String(decoding: data, as: UTF8.self)
+            if content.utf8.count > Self.noteContentCap {
+                content = String(content.prefix(Self.noteContentCap)) + "\n… (note truncated)\n"
+            }
+            return NoteFile(path: note.path, status: note.added ? .added : .modified, content: content)
+        }
     }
 
     public func openInZed(_ worktree: String) throws {

@@ -174,6 +174,41 @@ struct ControlRoundTripTests {
         #expect(try !textRes.decode(String.self).isEmpty)
     }
 
+    @Test("changedNotes endpoint routes over the socket via the typed client method")
+    func changedNotesRoundTrip() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = ControlClient(socketPath: path, source: .app)
+        try client.connect(); defer { client.close() }
+
+        let task = try await client.call("spawn", .object([
+            "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
+
+        // Card cwd → a git repo with a committed note, then an uncommitted modify + an untracked add.
+        let dir = task.cwd
+        #expect(try Proc.run(["mkdir", "-p", dir + "/notes"], cwd: dir).ok)
+        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
+            #expect(try Proc.run(["git"] + args, cwd: dir).ok)
+        }
+        try "base\n".write(toFile: dir + "/notes/keep.md", atomically: true, encoding: .utf8)
+        #expect(try Proc.run(["git", "add", "-A"], cwd: dir).ok)
+        #expect(try Proc.run(["git", "commit", "-q", "-m", "base"], cwd: dir).ok)
+        try "edited\n".write(toFile: dir + "/notes/keep.md", atomically: true, encoding: .utf8)
+        try "new\n".write(toFile: dir + "/notes/new.md", atomically: true, encoding: .utf8)
+
+        // Typed client method → decoded [NoteFile] over the socket.
+        let notes = try await client.changedNotes(task.shortId)
+        let byPath = Dictionary(uniqueKeysWithValues: notes.map { ($0.path, $0) })
+        #expect(Set(byPath.keys) == ["notes/keep.md", "notes/new.md"])
+        #expect(byPath["notes/keep.md"]?.status == .modified)
+        #expect(byPath["notes/keep.md"]?.content == "edited\n")
+        #expect(byPath["notes/new.md"]?.status == .added)
+        #expect(byPath["notes/new.md"]?.content == "new\n")
+    }
+
     @Test("ping / version / getConfig over the socket")
     func meta() async throws {
         let env = TestEnv.make()
