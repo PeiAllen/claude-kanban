@@ -43,6 +43,16 @@ struct BoardTab: View {
                     Button { showDone = true } label: { Image(systemName: "archivebox") }
                         .accessibilityLabel("Done")
                 }
+                // The Spawn (+) — M1 deliberately left this out; M4 adds it. Seeds the sheet's Start-in
+                // from the current lifecycle page and defaults to Freeform mode when launched from the
+                // Freeform page, then presents the spawn sheet (design §1 / §4).
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        model.spawnDefaultColumn = page.column ?? .plan
+                        model.showSpawn = true
+                    } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Spawn")
+                }
             }
             .navigationDestination(isPresented: $showActivity) { ActivityFeedView() }
             .navigationDestination(isPresented: $showDone) { DoneArchiveView() }
@@ -51,12 +61,25 @@ struct BoardTab: View {
             .navigationDestination(item: selectedCardBinding) { id in
                 CardDetailView(taskId: id)
             }
+            // The nav-bar + presents the spawn sheet (design §4), off the shared `showSpawn` flag so the
+            // sheet stays the single source of truth. Default mode follows the page it was launched from.
+            .sheet(isPresented: $model.showSpawn) {
+                SpawnSheet(startFreeform: page.isFreeform)
+            }
         }
         .environment(\.theme, theme)
         // Dev/headless hook (mirrors ORCH_DEV_BOARD_PAGE): auto-open a card's detail once the board has
         // loaded, so a Simulator screenshot can capture the detail/Diff/Inbox deterministically. Absent
         // the env, this returns immediately (production no-op). Fires once via `autoOpened`.
         .task { await autoOpenCardIfDev() }
+        #if DEBUG
+        // Headless-screenshot hook: `ORCH_DEV_OPEN_SPAWN=1` presents the spawn sheet on launch so a
+        // Simulator shot can capture it (mode + freeform cwd come from ORCH_SPAWN_MODE/ORCH_SPAWN_CWD,
+        // read inside SpawnSheet). Production no-op without the env.
+        .onAppear {
+            if ProcessInfo.processInfo.environment["ORCH_DEV_OPEN_SPAWN"] == "1" { model.showSpawn = true }
+        }
+        #endif
     }
 
     /// A `UUID?` binding over `model.selectedId` — the card whose detail is pushed. `navigationDestination`
