@@ -2,48 +2,10 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-// M2 shipped the Agent + Terminal tabs as clearly-marked stubs (design §3's three-tier
-// Agent/Terminal/Takeover model). The **Terminal** tab is now built — see `TerminalTab.swift` (T2). The
-// **Agent** tab remains a stub here until T3. This file also holds the other deferred hooks the detail
-// leaves open: **Recovery** (dead card → M7), **Takeover** (live TUI → T4), and the **Notes page** (M6).
-
-// MARK: - Agent tab (STUB → T3; also hosts the Recovery hook → M7)
-
-/// STUB for the primary **Agent** tab (T3): design §3's non-attaching read/steer surface (capture render
-/// + "Message the agent" steer bar; gates surface as Needs You; an explicit **Take Over** is the only path
-/// to the live TUI → T4). A `dead` card shows the **Recovery** hook (M7) here instead of agent chrome.
-struct AgentTabStub: View {
-    let task: Task
-    @Environment(\.theme) private var theme: Theme
-
-    var body: some View {
-        if task.status == .dead {
-            RecoveryHook(task: task)
-        } else {
-            StubScaffold(
-                icon: "brain",
-                title: "Agent",
-                deferredTo: "T3",
-                blurb: "The non-attaching read/steer surface: a capture/structured render of the session plus a “Message the agent” bar. Approvals surface in Needs You — never raw keystrokes.",
-                livePreview: AnyView(livePreview)
-            ) {
-                // Take Over hook (T4): the only path that attaches the real TUI, under the daemon's
-                // ownership lease. Disabled placeholder in M2 so the seam is visible.
-                StubActionRow(icon: "arrow.up.forward.app", label: "Take Over Agent Terminal",
-                              note: "Live TUI — built in T4", theme: theme)
-            }
-        }
-    }
-
-    @ViewBuilder private var livePreview: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Current activity").font(.caption2.weight(.semibold)).foregroundStyle(theme.text3)
-            Text(task.desc.isEmpty ? "—" : task.desc)
-                .font(.system(.footnote, design: .monospaced)).foregroundStyle(theme.text2)
-                .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
+// M2 shipped the tabbed shell. The **Agent** tab now lives in `AgentTab.swift` (T3) and the **Terminal**
+// tab in `TerminalTab.swift` (T2) — both real (design §3's three-tier Agent/Terminal/Takeover model).
+// This file holds the remaining deferred hooks the detail leaves open: **Recovery** (dead card → M7;
+// consumed by the Agent tab) and the **Notes page** (M6).
 
 // The Terminal tab (T2) is now built — see `TerminalTab.swift`. Its stub lived here in M2.
 
