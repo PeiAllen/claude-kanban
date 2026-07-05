@@ -193,6 +193,19 @@ public final class ControlServer: @unchecked Sendable {
             }
             let task = try await service.resolveRef(ref)
             return try JSONValue(encodable: try await service.changedNotes(task.id))
+        case "registerDevice":
+            // The phone hands over its APNs device token + notification-pref snapshot (N1) so the daemon
+            // can push attention alerts while the phone is backgrounded. Internal + app-only — NOT a
+            // registry Command (agents never register for push). Keyed by clientId; re-register replaces.
+            guard let p = req.params else { throw OrchestraError.invalidParams("registerDevice needs a registration") }
+            let reg = try p.decode(DeviceRegistration.self)
+            return try JSONValue(encodable: try await service.registerDevice(reg))
+        case "unregisterDevice":
+            guard let p = req.params, let clientId = p.optString("clientId") else {
+                throw OrchestraError.invalidParams("unregisterDevice needs clientId")
+            }
+            try await service.unregisterDevice(clientId: clientId)
+            return .object(["ok": .bool(true)])
         case "agentTerminalOwner":
             // App/phone UI coordination — internal + app-only, NOT a registry Command (an agent must
             // never take over a terminal). Ephemeral lease; nothing is persisted to the task store.

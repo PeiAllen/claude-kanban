@@ -88,6 +88,10 @@ public struct Config: Codable, Sendable, Equatable {
     public static var trustLedgerPath: String { "\(dataDir)/trust-ledger.json" }
     /// Durable per-card message inbox (F3), sibling to `tasksPath`.
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
+    /// Registered APNs device tokens (N1), sibling to `tasksPath`. The daemon persists each client's
+    /// push token + notification-pref snapshot so it can deliver attention pushes while the phone is
+    /// backgrounded.
+    public static var deviceTokensPath: String { "\(dataDir)/device-tokens.json" }
     public static var logPath: String { "\(dataDir)/orchestrad.log" }
     public static var hooksPath: String { "\(dataDir)/claude-hooks.json" }
     /// Rendered Codex hooks file (SessionStart→orient). CodexAdapter installs it into `$CODEX_HOME/hooks.json`.

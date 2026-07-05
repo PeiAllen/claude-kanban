@@ -154,6 +154,22 @@ public final class ControlClient: @unchecked Sendable {
         ]))
     }
 
+    /// Register this device for push (N1): hand the APNs device token + the current notification-pref
+    /// snapshot to the daemon so it can deliver attention pushes while the phone is backgrounded. Called
+    /// after `registerForRemoteNotifications` yields a token, and re-called whenever prefs change. Keyed
+    /// by `clientId` daemon-side; a re-register replaces the prior entry.
+    @discardableResult
+    public func registerDevice(token: String, prefs: NotifyPrefsSnapshot,
+                               platform: String = "ios") async throws -> DeviceRegistration {
+        let reg = DeviceRegistration(token: token, clientId: clientId ?? "", platform: platform, prefs: prefs)
+        return try await call("registerDevice", try JSONValue(encodable: reg), as: DeviceRegistration.self)
+    }
+
+    /// Drop this device's push registration (notifications revoked / sign-out).
+    public func unregisterDevice() async throws {
+        _ = try await call("unregisterDevice", .object(["clientId": .string(clientId ?? "")]))
+    }
+
     /// Subscribe to the daemon's event stream (task upserts/removals + activity). Sends the subscribe
     /// request and returns a live stream. The stream persists across reconnects — only `close()` ends it;
     /// on reconnect the client re-issues the subscribe RPC so the same stream keeps receiving events.
