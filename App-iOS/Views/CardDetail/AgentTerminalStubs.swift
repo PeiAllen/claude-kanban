@@ -2,10 +2,10 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-// The Agent + Terminal tabs are OUT OF SCOPE for M2 — T3 builds Agent, T2 builds Terminal (design §3's
-// three-tier Agent/Terminal/Takeover model). M2 ships them as clearly-marked stubs so the tabbed shell is
-// complete and the seams are obvious. This file also holds the other deferred hooks the detail leaves
-// open: **Recovery** (dead card → M7), **Takeover** (live TUI → T4), and the **Notes page** (M6).
+// M2 shipped the Agent + Terminal tabs as clearly-marked stubs (design §3's three-tier
+// Agent/Terminal/Takeover model). The **Terminal** tab is now built — see `TerminalTab.swift` (T2). The
+// **Agent** tab remains a stub here until T3. This file also holds the other deferred hooks the detail
+// leaves open: **Recovery** (dead card → M7), **Takeover** (live TUI → T4), and the **Notes page** (M6).
 
 // MARK: - Agent tab (STUB → T3; also hosts the Recovery hook → M7)
 
@@ -45,28 +45,7 @@ struct AgentTabStub: View {
     }
 }
 
-// MARK: - Terminal tab (STUB → T2)
-
-/// STUB for the secondary **Terminal** tab (T2): design §3's block REPL by default (a "Run a command…"
-/// field → one-shot `exec` → a copyable output block) with an opt-in **Attach live shell** into a
-/// phone-owned `shell` window. No PTY / tmux / key bar in the default view.
-struct TerminalTabStub: View {
-    let task: Task
-    @Environment(\.theme) private var theme: Theme
-
-    var body: some View {
-        StubScaffold(
-            icon: "terminal",
-            title: "Terminal",
-            deferredTo: "T2",
-            blurb: "A block REPL: run one-shot commands in the worktree and get a copyable output block — no PTY, no tmux, no sizing fight with the desktop.",
-            livePreview: nil
-        ) {
-            StubActionRow(icon: "bolt.horizontal", label: "Attach live shell",
-                          note: "Phone-owned PTY — built in T2", theme: theme)
-        }
-    }
-}
+// The Terminal tab (T2) is now built — see `TerminalTab.swift`. Its stub lived here in M2.
 
 // MARK: - Recovery hook (→ M7)
 

@@ -85,6 +85,19 @@ public struct SessionManager: Sendable {
         return win
     }
 
+    /// Ensure a **specifically-named** window exists in the worktree; returns its name. Unlike
+    /// `newShellWindow` (which auto-increments `shell-N`), this is **idempotent** — if a window of that
+    /// name already exists it is reused, never duplicated. This is the phone-owned-shell reconnect
+    /// guarantee: the phone requests a deterministic `phone-<client>` window, so a re-attach lands on the
+    /// same window instead of spawning a fresh one (phone-agent-terminal UX design, §"Reconnect churn").
+    @discardableResult
+    public func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String {
+        if try windowNames(name).contains(window) { return window }
+        let r = try tmux(["new-window", "-t", name, "-n", window, "-c", cwd])
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux new-window failed" : r.stderr) }
+        return window
+    }
+
     /// Close a shell window and its grouped view session. No-op for a missing window; refuses to
     /// touch the `agent` window (window 0) so a stray call can't kill the agent.
     public func closeShellWindow(_ name: String, window: String) throws {

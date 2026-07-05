@@ -19,6 +19,11 @@ struct IOSTerminalView: UIViewRepresentable {
     /// for the plain read-only attach (DebugTerminalTab / IOSTerminalHost.attach), which needs none of it.
     var control: TerminalControl? = nil
 
+    /// T2 "Select mode": when `true`, mouse reporting is disabled so a one-finger drag selects text
+    /// natively instead of being forwarded to a mouse-aware TUI. Applied on every update so the tab can
+    /// toggle it live. Defaults to `false`. (Takeover drives Select via `control` instead; either wins.)
+    var selectMode: Bool = false
+
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(makeChannel: makeChannel)
         control?.attach(coordinator: c)
@@ -39,15 +44,16 @@ struct IOSTerminalView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: TerminalView, context: Context) {
-        // Reflect the live control state (font size / Select mode) onto the SwiftTerm view. Runs whenever
-        // the observed `TerminalControl` publishes a change (the takeover view owns it as @StateObject).
-        guard let control else { return }
-        let size = control.fontSize
-        if abs(uiView.font.pointSize - size) > 0.5 {
-            uiView.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        // Takeover chrome (T4) drives font + Select through the `control` handle; the Terminal-tab live
+        // shell (T2) has no control and passes `selectMode` directly. Reflect whichever is active.
+        if let control {
+            let size = control.fontSize
+            if abs(uiView.font.pointSize - size) > 0.5 {
+                uiView.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            }
         }
         // Select mode ⇒ no mouse reporting ⇒ a drag selects text instead of moving the TUI cursor.
-        uiView.allowMouseReporting = !control.selectMode
+        uiView.allowMouseReporting = !((control?.selectMode ?? false) || selectMode)
     }
 
     static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {

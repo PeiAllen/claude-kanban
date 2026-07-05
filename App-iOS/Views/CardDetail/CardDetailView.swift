@@ -46,7 +46,7 @@ struct CardDetailView: View {
     @ViewBuilder private func tabBody(_ task: Task) -> some View {
         switch tab {
         case .agent:    AgentTabStub(task: task)
-        case .terminal: TerminalTabStub(task: task)
+        case .terminal: TerminalTab(task: task)
         case .diff:     DiffTab(task: task)
         case .inbox:    InboxTab(task: task)
         case .info:     InfoTab(task: task)

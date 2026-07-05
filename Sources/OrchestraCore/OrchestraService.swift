@@ -536,11 +536,16 @@ public actor OrchestraService {
 
     // MARK: - shells / exec / sessions
 
-    public func openShell(_ id: UUID) async throws -> ShellTab {
+    /// Open a shell window in the card's worktree. With `window == nil` (the desktop path) a fresh
+    /// `shell-N` window is created each call. With an explicit `window` (the phone-owned path) the
+    /// named window is **reused if it already exists** — the idempotent-reconnect guarantee a phone
+    /// client relies on so a re-attach doesn't leak a new window every time.
+    public func openShell(_ id: UUID, window: String? = nil) async throws -> ShellTab {
         let t = try await require(id)
         let name = sessions.sessionName(id)
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
-        let win = try sessions.newShellWindow(name, cwd: t.cwd)
+        let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
+            ?? sessions.newShellWindow(name, cwd: t.cwd)
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 

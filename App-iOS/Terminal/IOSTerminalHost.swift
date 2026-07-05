@@ -14,10 +14,15 @@ enum TerminalRuntime {
 /// attach recipe on the Mac (no daemon byte-proxy). Replaces F3's "coming soon" placeholder. The
 /// Agent/Terminal/Takeover surfaces (T2/T3/T4) inject this through F2's `TerminalHost` Environment key.
 struct IOSTerminalHost: TerminalHost {
-    /// Plain (additive) attach — the read-only view path used by DebugTerminalTab and (later) the Agent
-    /// tab's captured terminal. Matches the desktop's non-exclusive behaviour (`takeover: false`).
+    /// Plain (additive) attach — the read-only view path used by DebugTerminalTab and the Agent tab's
+    /// captured terminal. Non-exclusive (`takeover: false`), no Select.
     func attach(target: TmuxTarget) -> AnyView {
-        terminalView(target: target, takeover: false, control: nil)
+        terminalView(target: target, takeover: false, control: nil, selectMode: false)
+    }
+
+    /// T2 Terminal-tab live shell: additive `selectMode` overload (non-exclusive, no takeover chrome).
+    func attach(target: TmuxTarget, selectMode: Bool) -> AnyView {
+        terminalView(target: target, takeover: false, control: nil, selectMode: selectMode)
     }
 
     /// **Exclusive takeover attach** (PR T4). Runs the `takeover` recipe (`detach-client` first) so the
@@ -26,16 +31,16 @@ struct IOSTerminalHost: TerminalHost {
     /// Call this only *after* acquiring the lease (`takeOverAgentTerminalAsPhone`) so the desktop has
     /// already unmounted per D5.
     func takeoverAttach(target: TmuxTarget, control: TerminalControl) -> AnyView {
-        terminalView(target: target, takeover: true, control: control)
+        terminalView(target: target, takeover: true, control: control, selectMode: false)
     }
 
-    private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?) -> AnyView {
+    private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool) -> AnyView {
         // No SSH target configured → render a live terminal that explains setup instead of hanging on a
         // black rectangle. (A real settings surface for the endpoint is M5's; T1 reads ORCH_SSH_TARGET.)
         guard let endpoint = SSHEndpoint.resolve() else {
             let banner = Self.setupBanner()
             return AnyView(
-                IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control)
+                IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control, selectMode: selectMode)
                     .id("unconfigured:\(target.session):\(target.window)"))
         }
 
@@ -49,7 +54,7 @@ struct IOSTerminalHost: TerminalHost {
         return AnyView(
             IOSTerminalView(makeChannel: {
                 SSHPTYChannel(endpoint: endpoint, command: command, group: group)
-            }, control: control)
+            }, control: control, selectMode: selectMode)
             // Stable identity per attach target so SwiftUI keeps ONE Coordinator (and one SSH session)
             // across re-renders — the client half of reconnect idempotency. `takeover` is part of the id so
             // switching modes rebuilds the session with the right recipe.
