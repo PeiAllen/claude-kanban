@@ -116,6 +116,9 @@ private struct CaptureRender: View {
     @State private var frame: CaptureResult?
     @State private var lastUpdated: Date?
     @State private var loadedOnce = false
+    /// The pane's own width, so inline images (C2) fit the phone instead of the unbounded horizontal
+    /// scroll content. Measured off the resolved pane size, not the scroll content.
+    @State private var paneWidth: CGFloat = 0
 
     /// Poll cadence for the non-attaching scrape. Fast enough to feel live for "check and steer", cheap
     /// because `capture` is a single `capture-pane` with no attach.
@@ -127,14 +130,24 @@ private struct CaptureRender: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(widthReader)
         .overlay(alignment: .bottomTrailing) { footer.padding(8) }
         .task(id: cardId) { await pollLoop() }
+    }
+
+    /// Publishes the pane width into `paneWidth` so `CapturePaneText` can fit inline images to it.
+    private var widthReader: some View {
+        GeometryReader { geo in
+            Color.clear
+                .onAppear { paneWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, w in paneWidth = w }
+        }
     }
 
     @ViewBuilder private var content: some View {
         if let frame, !frame.text.isEmpty {
             ScrollView([.vertical, .horizontal]) {
-                CapturePaneText(text: frame.text)
+                CapturePaneText(text: frame.text, maxImageWidth: max(0, paneWidth - 24))
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -181,19 +194,72 @@ private struct CaptureRender: View {
     }
 }
 
-/// Renders one captured pane frame as monospaced text. **C2 seam:** Codex emits Sixel images sized to the
-/// window; native image rendering (C2) hooks *here* — detect image/Sixel runs in the captured pane and draw
-/// them as native `Image`s at phone width, falling back to this plain text for everything else. Kept as a
-/// dedicated view so C2 is a localized change, not a rewrite of the Agent tab.
+/// Renders one captured pane frame. **C2:** the frame is split into ordered runs (`captureRuns`) — plain
+/// monospaced text as before, plus any inline **Sixel** image decoded to a native `Image` fit to the
+/// phone's width (design §"Codex Sixel width"). Detection is provider-neutral (any Sixel DCS; no `agent ==`
+/// branch). The common all-text case renders identically to pre-C2 (a single `Text`, no layout change).
+///
+/// Note the capture-pipeline reality documented in `SixelDecode.swift`: `capture-pane -p` strips Sixel, so
+/// a live Codex image does not reach here through today's non-attaching capture — this renders images the
+/// moment raw Sixel bytes *do* land in the pane text (a synthetic capture, or a future image-preserving
+/// capture/transcript path).
 private struct CapturePaneText: View {
     let text: String
+    /// Upper bound for inline image width (the pane width less padding); 0 = unmeasured → native size.
+    var maxImageWidth: CGFloat = 0
     @Environment(\.theme) private var theme: Theme
+
     var body: some View {
-        Text(text)
+        let runs = captureRuns(from: text)
+        // Fast/common path: an all-text frame renders exactly as pre-C2 (one Text, no VStack wrapping).
+        if runs.count == 1, case .text(let s) = runs[0] {
+            paneText(s)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(runs.indices, id: \.self) { idx in
+                    runView(runs[idx])
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func runView(_ run: CapturePaneRun) -> some View {
+        switch run {
+        case .text(let s):     paneText(s)
+        case .image(let cg):   imageView(cg)
+        case .imagePlaceholder: placeholder
+        }
+    }
+
+    private func paneText(_ s: String) -> some View {
+        Text(s)
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(theme.term)
             .textSelection(.enabled)
             .lineLimit(nil)
+    }
+
+    /// Draw the decoded image fit to the phone width. Codex sizes Sixel to the desktop window, so the
+    /// common case is *downscaling* to phone width; never upscale a small image past its native pixels.
+    private func imageView(_ cg: CGImage) -> some View {
+        let native = CGFloat(cg.width)
+        let cap = maxImageWidth > 0 ? min(maxImageWidth, native) : native
+        return Image(decorative: cg, scale: 1, orientation: .up)
+            .resizable()
+            .interpolation(.medium)
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: cap, alignment: .leading)
+            .accessibilityLabel("Inline image from the agent")
+    }
+
+    private var placeholder: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "photo").font(.caption)
+            Text("inline image").font(.caption2)
+        }
+        .foregroundStyle(theme.text3)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(theme.chip, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
