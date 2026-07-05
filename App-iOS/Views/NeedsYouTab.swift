@@ -10,6 +10,7 @@ import OrchestraUI
 struct NeedsYouTab: View {
     @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
+    @EnvironmentObject private var push: PushCoordinator
     @Environment(\.colorScheme) private var scheme
     @State private var route: NeedsYouRoute?
 
@@ -67,6 +68,17 @@ struct NeedsYouTab: View {
         .onChange(of: model.needsYouItems.map(\.id)) { _, ids in
             snooze.reconcile(activeIds: Set(ids))
         }
+        // A tapped push deep-links here: open the pushed card (Recovery for a died card, else the peek).
+        // Consume the id so it fires once. A died card routes to Recovery to match the row's own action.
+        .onChange(of: push.pendingCardId) { _, id in openDeepLink(id) }
+        .onAppear { openDeepLink(push.pendingCardId) }
+    }
+
+    /// Route a push deep-link to the right destination, then clear it so it doesn't re-fire.
+    private func openDeepLink(_ id: UUID?) {
+        guard let id else { return }
+        route = NeedsYouRoute.deepLink(cardId: id, status: card(id)?.status)
+        push.consumeDeepLink()
     }
 
     private func row(_ item: AttentionItem) -> some View {
@@ -84,6 +96,12 @@ enum NeedsYouRoute: Hashable, Identifiable {
     case peek(UUID)      // "Open card" → a read-only summary (full detail is M2's card-detail)
     case recover(UUID)   // "Recover" (died) → the Recovery view (M7 nav hook)
     var id: Self { self }
+
+    /// The destination a push deep-link opens for a card: a died card goes to Recovery (matching the
+    /// row's own action), everything else to the peek. Pure so the routing is unit-testable (N1 gate).
+    static func deepLink(cardId: UUID, status: AgentStatus?) -> NeedsYouRoute {
+        status == .dead ? .recover(cardId) : .peek(cardId)
+    }
 }
 
 // MARK: - Empty state

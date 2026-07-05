@@ -10,5 +10,10 @@
     <array>
         <string>$(AppIdentifierPrefix)com.orchestra.ios</string>
     </array>
+    <!-- N1: APNs push. `development` builds/signs against the sandbox gateway; a distribution build
+         flips this to `production`. Ignored when building unsigned (the compile-only gate); applied
+         when signed (device / a real APNs harness). -->
+    <key>aps-environment</key>
+    <string>development</string>
 </dict>
 </plist>

@@ -45,6 +45,10 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # N1: wake the app in the background to receive remote (APNs) notifications so a push can be
+        # handled + deep-linked even when the app isn't foreground.
+        UIBackgroundModes:
+          - remote-notification
     dependencies:
       - package: Orchestra
         product: OrchestraKit

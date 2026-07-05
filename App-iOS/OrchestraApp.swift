@@ -9,12 +9,17 @@ struct OrchestraiOSApp: App {
     // Client-local snooze/dismiss state for the Needs You queue (M3) — shared with the tab badge so both
     // agree on what's suppressed.
     @StateObject private var snooze = NeedsYouSnooze()
+    // Push (N1): remote-notification callbacks land on this delegate; UI-facing state flows through
+    // PushCoordinator.shared (device token → daemon registration; tapped push → Needs You deep-link).
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
+    @ObservedObject private var push = PushCoordinator.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
                 .environmentObject(snooze)
+                .environmentObject(push)
                 // Inject the iOS platform conformers so the shared UI resolves its per-OS bits.
                 // TerminalHost rides the Environment only (produced by a view, not called by BoardModel).
                 .environment(\.clipboard, IOSClipboard())
@@ -22,6 +27,11 @@ struct OrchestraiOSApp: App {
                 .environment(\.windowConfig, IOSWindowConfig())
                 .environment(\.terminalHost, IOSTerminalHost())
                 .task { await model.bootstrap() }
+                // Hand a freshly-registered APNs token to the daemon (and re-register on token rotation).
+                .onChange(of: push.deviceToken) { _, token in
+                    guard let token else { return }
+                    _Concurrency.Task { await model.registerForPush(token: token) }
+                }
                 #if DEBUG
                 .task { DebugSupport.exportPubkey() }
                 #endif
@@ -37,6 +47,7 @@ private struct RootView: View {
 
     @EnvironmentObject var model: BoardModel
     @EnvironmentObject var snooze: NeedsYouSnooze
+    @EnvironmentObject var push: PushCoordinator
     @AppStorage("orch_theme_mode") private var themeRaw = ThemeMode.system.rawValue
     @Environment(\.colorScheme) private var systemScheme
     // Initial tab is Board; `ORCH_INITIAL_TAB` / `ORCH_DEV_TAB` (board|needs|settings) can seed a
@@ -91,5 +102,11 @@ private struct RootView: View {
         }
         .tint(model.accent.color(dark: accentDark))
         .preferredColorScheme(themeMode.colorScheme)
+        // A tapped push deep-links to the card: switch to the Needs You tab, where NeedsYouTab consumes
+        // `pendingCardId` to open the card (or Recovery, if dead). Design §6: the in-app queue is what
+        // push notifications deep-link into.
+        .onChange(of: push.pendingCardId) { _, id in
+            if id != nil { tab = .needsYou }
+        }
     }
 }
