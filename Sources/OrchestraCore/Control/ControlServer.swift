@@ -184,6 +184,15 @@ public final class ControlServer: @unchecked Sendable {
             let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
+        case "changedNotes":
+            // The phone's Notes page (M6): the markdown notes this branch changed/added, WITH content,
+            // so the phone can render them in-app (the desktop's openNotes opens Obsidian, which the
+            // phone lacks). Internal + app-only — NOT a registry Command (agents read notes off disk).
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("changedNotes needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            return try JSONValue(encodable: try await service.changedNotes(task.id))
         case "agentTerminalOwner":
             // App/phone UI coordination — internal + app-only, NOT a registry Command (an agent must
             // never take over a terminal). Ephemeral lease; nothing is persisted to the task store.

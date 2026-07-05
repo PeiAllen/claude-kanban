@@ -137,6 +137,12 @@ public final class ControlClient: @unchecked Sendable {
                        as: CaptureResult.self)
     }
 
+    /// Typed convenience over the `changedNotes` verb — the markdown notes a card's branch changed/added,
+    /// each with content, for the phone's Notes page (M6). Empty for a non-worktree card.
+    public func changedNotes(_ ref: String) async throws -> [NoteFile] {
+        try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
+    }
+
     /// Send a constrained key chord to a card's tmux window (default `agent`). Convenience over the
     /// `send-keys` verb — encodes the typed chord to the wire form. Distinct from queuing to the inbox
     /// (`send`): live keystrokes, no implicit Enter (submitting needs an explicit `.named(.enter)`).
