@@ -9,11 +9,11 @@ import Foundation
 /// This lives in the client-safe core (Foundation only — no AppKit/UserNotifications) so the phone can
 /// persist prefs without APNs delivery, which is a backend follow-on (N1). The macOS notifier keeps its
 /// own `UNNotificationSound` mapping; this type owns only the scope/sound *storage* contract.
-public enum NotifyTrigger: String, CaseIterable, Sendable {
+public enum NotifyTrigger: String, CaseIterable, Codable, Sendable {
     case permission, needsYou, died
 }
 
-public enum NotifyScope: String, CaseIterable, Sendable {
+public enum NotifyScope: String, CaseIterable, Codable, Sendable {
     case off, background, always
 }
 
@@ -21,7 +21,7 @@ public enum NotifyScope: String, CaseIterable, Sendable {
 /// choices. A stored sound pref is one of these `rawValue`s. On the phone these are labels only until
 /// APNs delivery (N1) maps them to a push sound; on the Mac the notifier resolves them to a
 /// `UNNotificationSound`.
-public enum NotifySound: String, CaseIterable, Sendable {
+public enum NotifySound: String, CaseIterable, Codable, Sendable {
     case systemDefault = "default"
     case none
     case basso = "Basso", blow = "Blow", bottle = "Bottle", frog = "Frog", funk = "Funk"
