@@ -9,41 +9,14 @@ import OrchestraUI
 
 // The Terminal tab (T2) is now built — see `TerminalTab.swift`. Its stub lived here in M2.
 
-// MARK: - Recovery hook (→ M7)
+// MARK: - Recovery hook (→ M7, built)
 
-/// HOOK for the dead-card **Recovery** view (M7): design §3's recovery panel (why it died · preserved work
-/// · original prompt + Copy prompt · Start new / Try resume / Archive). M2 leaves the hook — it surfaces
-/// *why* the card died and marks where M7 builds — but does not implement the recovery actions.
+/// HOOK for the dead-card **Recovery** view: design §3's recovery panel (why it died · preserved work ·
+/// original prompt + Copy prompt · Start new / Try resume / Archive). Built in M7 — the real panel lives in
+/// `RecoveryView.swift`; this hook just points the dead-card path at it (the stable call site T3 renders).
 struct RecoveryHook: View {
     let task: Task
-    @Environment(\.theme) private var theme: Theme
-
-    private var reason: String {
-        switch task.deadReason {
-        case .agentExited:     return "The agent session exited."
-        case .sessionVanished: return "The session vanished (crash or external kill)."
-        case .rebootUnrevived: return "A reboot couldn't auto-revive the session."
-        case .resumeFailed:    return "A resume attempt failed." + (task.deadDetail.map { " \($0)" } ?? "")
-        case .none:            return "The session is no longer running."
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "bolt.slash.circle").font(.system(size: 44)).foregroundStyle(theme.red.dot)
-            Text("Card died").font(.title3.weight(.semibold)).foregroundStyle(theme.text)
-            Text(reason).font(.callout).foregroundStyle(theme.text2)
-                .multilineTextAlignment(.center).padding(.horizontal, 24)
-            Text("The worktree’s work is intact. The full Recovery view — preserved work, the original prompt with Copy, and Start new / Try resume / Archive — is built in M7.")
-                .font(.footnote).foregroundStyle(theme.text3)
-                .multilineTextAlignment(.center).padding(.horizontal, 28)
-            deferredBadge("M7", theme: theme)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.winBg)
-    }
+    var body: some View { RecoveryView(task: task) }
 }
 
 // MARK: - Notes page hook (→ M6)
