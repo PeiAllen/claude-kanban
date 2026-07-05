@@ -116,4 +116,44 @@ final class IOSAppTests: XCTestCase {
             cardBreadcrumb(repo: "", branch: "", cwd: "/Users/x/scratch/thing", origin: .borrowed),
             "…/scratch/thing")
     }
+
+    // MARK: - Sixel inline images (C2)
+
+    private static let esc = "\u{1b}"
+
+    func testCaptureRunsPlainTextIsSingleRun() {
+        // A pane with ANSI colour but no Sixel stays one text run — no false image detection, no decode.
+        let runs = captureRuns(from: "hello \u{1b}[31mred\u{1b}[0m world\nsecond line")
+        XCTAssertEqual(runs.count, 1)
+        if case .text = runs.first {} else { XCTFail("expected a single text run") }
+    }
+
+    func testCaptureRunsSplitsSixelFromSurroundingText() {
+        // A red 12×6 Sixel between two text runs → text · image · text, in order.
+        let sixel = Self.esc + "Pq#0;2;100;0;0#0" + String(repeating: "~", count: 12) + Self.esc + "\\"
+        let runs = captureRuns(from: "before\n" + sixel + "\nafter")
+        XCTAssertEqual(runs.count, 3)
+        if case .text(let t) = runs[0] { XCTAssertTrue(t.contains("before")) } else { XCTFail("run0 text") }
+        if case .image(let img) = runs[1] {
+            XCTAssertEqual(img.width, 12)
+            XCTAssertEqual(img.height, 6)
+        } else { XCTFail("run1 image") }
+        if case .text(let t) = runs[2] { XCTAssertTrue(t.contains("after")) } else { XCTFail("run2 text") }
+    }
+
+    func testSixelDecoderRGBAndBands() {
+        // Two 6px bands: green over blue, RLE-repeated 8 wide → an 8×12 image with the right corners.
+        let body = "#0;2;0;100;0#1;2;0;0;100#0!8~$-#1!8~"
+        let runs = captureRuns(from: Self.esc + "Pq" + body + Self.esc + "\\")
+        guard case .image(let img) = runs.first else { return XCTFail("expected an image run") }
+        XCTAssertEqual(img.width, 8)
+        XCTAssertEqual(img.height, 12)
+    }
+
+    func testNonSixelDCSIsNotTreatedAsImage() {
+        // A non-Sixel DCS (no `q` selector) must not be mis-parsed as an image.
+        let dcs = Self.esc + "P0$r0m" + Self.esc + "\\"   // a DECRQSS-style reply, not Sixel
+        let runs = captureRuns(from: "x" + dcs + "y")
+        XCTAssertFalse(runs.contains { if case .image = $0 { return true } else { return false } })
+    }
 }
