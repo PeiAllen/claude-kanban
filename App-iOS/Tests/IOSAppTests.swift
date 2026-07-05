@@ -74,4 +74,46 @@ final class IOSAppTests: XCTestCase {
         XCTAssertTrue(bundle.opener is IOSSystemOpener)
         XCTAssertTrue(bundle.window is IOSWindowConfig)
     }
+
+    // MARK: - Card detail (M2)
+
+    func testCardTabOrderMatchesDesign() {
+        // §3: the tab bar order is Agent · Terminal · Diff · Inbox · Info.
+        XCTAssertEqual(CardTab.allCases, [.agent, .terminal, .diff, .inbox, .info])
+        XCTAssertEqual(CardTab.allCases.map(\.title), ["Agent", "Terminal", "Diff", "Inbox", "Info"])
+    }
+
+    func testCardTabStubsAreAgentAndTerminal() {
+        // Agent (T3) + Terminal (T2) ship as stubs in M2; Diff/Inbox/Info are built here.
+        XCTAssertTrue(CardTab.agent.isStub)
+        XCTAssertTrue(CardTab.terminal.isStub)
+        XCTAssertFalse(CardTab.diff.isStub)
+        XCTAssertFalse(CardTab.inbox.isStub)
+        XCTAssertFalse(CardTab.info.isStub)
+    }
+
+    func testCardTabInitialDefaultsToAgent() {
+        // Absent the ORCH_DEV_CARD_TAB dev override, the detail lands on Agent (design-primary).
+        if ProcessInfo.processInfo.environment["ORCH_DEV_CARD_TAB"] == nil {
+            XCTAssertEqual(CardTab.initial, .agent)
+        }
+    }
+
+    func testDiffBaselinesGateParentOnStackedCards() {
+        // §3 Diff: Parent only appears for a stacked card carrying a parentBranch.
+        XCTAssertEqual(diffBaselines(parentBranch: nil), [.working, .branch])
+        XCTAssertEqual(diffBaselines(parentBranch: "main"), [.working, .branch, .parent])
+    }
+
+    func testCardBreadcrumbWorktreeVsFreeform() {
+        // Worktree: `repo/branch → …/dir`.
+        XCTAssertEqual(
+            cardBreadcrumb(repo: "/Users/x/Projects/claude-kanban", branch: "mobile/m2",
+                           cwd: "/Users/x/.orchestra/worktrees/claude-kanban/m2", origin: .worktree),
+            "claude-kanban/mobile/m2 → …/claude-kanban/m2")
+        // Freeform: the directory path alone — no branch is surfaced (§2a).
+        XCTAssertEqual(
+            cardBreadcrumb(repo: "", branch: "", cwd: "/Users/x/scratch/thing", origin: .borrowed),
+            "…/scratch/thing")
+    }
 }

@@ -1,0 +1,104 @@
+import SwiftUI
+import OrchestraKit
+import OrchestraUI
+
+/// The **card detail** (design §3): a tabbed full-screen surface pushed from a board card tap. A pinned
+/// header (title · status · model · context gauge · breadcrumb) sits above a five-tab bar
+/// **Agent · Terminal · Diff · Inbox · Info**. Agent/Terminal are clearly-marked stubs (T3/T2); Diff,
+/// Inbox, and Info are built here.
+///
+/// Keyed on the card **id**, not a snapshot: the live `Task` is resolved from `BoardModel` on every render
+/// so the header pill/gauge and the tabs stay reactive as the daemon streams events. If the card leaves
+/// the board (archived/removed elsewhere), the view shows a closed-state placeholder.
+struct CardDetailView: View {
+    let taskId: UUID
+    @EnvironmentObject private var model: BoardModel
+    @Environment(\.theme) private var theme: Theme
+
+    // Agent is the design-primary tab (§3); it ships as a stub in M2 but remains the honest landing tab.
+    // `CardTab.initial` honors an ORCH_DEV_CARD_TAB override for deterministic headless screenshots.
+    @State private var tab: CardTab = .initial
+
+    /// The live card, resolved fresh each render from the board (then the Done archive).
+    private var task: Task? {
+        model.tasks.first { $0.id == taskId } ?? model.archived.first { $0.id == taskId }
+    }
+
+    var body: some View {
+        Group {
+            if let task {
+                VStack(spacing: 0) {
+                    CardDetailHeader(task: task)
+                    CardTabBar(selection: $tab)
+                    Divider().overlay(theme.hair)
+                    tabBody(task)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                closedPlaceholder
+            }
+        }
+        .background(theme.winBg.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)   // full-screen: hide the app's bottom tab bar while in a card
+    }
+
+    @ViewBuilder private func tabBody(_ task: Task) -> some View {
+        switch tab {
+        case .agent:    AgentTabStub(task: task)
+        case .terminal: TerminalTabStub(task: task)
+        case .diff:     DiffTab(task: task)
+        case .inbox:    InboxTab(task: task)
+        case .info:     InfoTab(task: task)
+        }
+    }
+
+    private var closedPlaceholder: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "rectangle.on.rectangle.slash").font(.system(size: 40)).foregroundStyle(theme.text3)
+            Text("Card closed").font(.headline).foregroundStyle(theme.text)
+            Text("This card was archived or removed. Go back to the board.")
+                .font(.footnote).foregroundStyle(theme.text2).multilineTextAlignment(.center)
+        }
+        .padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Tab bar
+
+/// The five-tab segmented bar under the pinned header. Custom (not a native `Picker`) so it carries the
+/// Orchestra chip language + SF-symbol-over-label and fits five segments at phone width.
+private struct CardTabBar: View {
+    @Binding var selection: CardTab
+    @Environment(\.theme) private var theme: Theme
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(CardTab.allCases) { t in
+                let active = t == selection
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { selection = t }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: t.symbol).font(.system(size: 15, weight: active ? .semibold : .regular))
+                        Text(t.title).font(.system(size: 10, weight: active ? .semibold : .regular))
+                    }
+                    .foregroundStyle(active ? theme.accent : theme.text2)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(active ? theme.accent.opacity(0.12) : .clear,
+                               in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(alignment: .bottom) {
+                        if t.isStub {
+                            Circle().fill(theme.text3).frame(width: 3, height: 3).padding(.bottom, 3)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(t.title + (t.isStub ? " (coming soon)" : ""))
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(theme.card)
+    }
+}
