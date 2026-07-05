@@ -499,6 +499,21 @@ public final class BoardModel: ObservableObject {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
 
+    /// Non-attaching read of a card's agent pane (the phone Agent tab's v1 render source, D1). Just a
+    /// size-capped `capture-pane` snapshot — no attach, no resize pressure. `nil` on RPC failure so the
+    /// caller can keep showing the last good frame. `clientId` stays private to the shared model.
+    public func captureAgentPane(_ id: UUID, window: String = "agent") async -> CaptureResult? {
+        try? await client.capture(id.uuidString, window: window)
+    }
+
+    /// Send a constrained key chord to a card's agent window (the Agent tab's steer-bar key affordances,
+    /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which *queues* a message to the
+    /// inbox drained at turn-end. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link
+    /// is recoverable by tapping again, and the steer bar shouldn't error-toast on every miss.
+    public func sendKeysToAgent(_ id: UUID, _ chord: [KeyToken], window: String = "agent") async {
+        try? await client.sendKeys(ref: id.uuidString, chord, window: window)
+    }
+
     /// Inbox editor: list a card's pending messages (empty on any error).
     public func inboxPeek(_ id: UUID) async -> [InboxMessage] {
         (try? await client.call("inbox", .object(["ref": .string(id.uuidString)]))

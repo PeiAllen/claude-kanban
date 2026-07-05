@@ -4,8 +4,8 @@ import OrchestraUI
 
 /// The **card detail** (design §3): a tabbed full-screen surface pushed from a board card tap. A pinned
 /// header (title · status · model · context gauge · breadcrumb) sits above a five-tab bar
-/// **Agent · Terminal · Diff · Inbox · Info**. Agent/Terminal are clearly-marked stubs (T3/T2); Diff,
-/// Inbox, and Info are built here.
+/// **Agent · Terminal · Diff · Inbox · Info**. Agent is the primary read/steer surface (T3); Terminal is a
+/// clearly-marked stub (T2); Diff, Inbox, and Info are built here.
 ///
 /// Keyed on the card **id**, not a snapshot: the live `Task` is resolved from `BoardModel` on every render
 /// so the header pill/gauge and the tabs stay reactive as the daemon streams events. If the card leaves
@@ -45,7 +45,7 @@ struct CardDetailView: View {
 
     @ViewBuilder private func tabBody(_ task: Task) -> some View {
         switch tab {
-        case .agent:    AgentTabStub(task: task)
+        case .agent:    AgentTab(task: task)
         case .terminal: TerminalTabStub(task: task)
         case .diff:     DiffTab(task: task)
         case .inbox:    InboxTab(task: task)

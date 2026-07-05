@@ -83,9 +83,9 @@ final class IOSAppTests: XCTestCase {
         XCTAssertEqual(CardTab.allCases.map(\.title), ["Agent", "Terminal", "Diff", "Inbox", "Info"])
     }
 
-    func testCardTabStubsAreAgentAndTerminal() {
-        // Agent (T3) + Terminal (T2) ship as stubs in M2; Diff/Inbox/Info are built here.
-        XCTAssertTrue(CardTab.agent.isStub)
+    func testOnlyTerminalTabIsStub() {
+        // T3 built the Agent tab, so only Terminal (T2) remains a stub; Diff/Inbox/Info are built too.
+        XCTAssertFalse(CardTab.agent.isStub)
         XCTAssertTrue(CardTab.terminal.isStub)
         XCTAssertFalse(CardTab.diff.isStub)
         XCTAssertFalse(CardTab.inbox.isStub)

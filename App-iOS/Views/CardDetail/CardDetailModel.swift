@@ -6,8 +6,8 @@ import OrchestraKit
 // views (`CardDetailView`, `DiffTab`, …) render these decisions. Mirrors M1's `BoardPager.swift` split.
 
 /// The five card-detail tabs, in bar order: **Agent · Terminal · Diff · Inbox · Info** (design §3).
-/// Agent is the primary read/steer surface (T3); Terminal is the secondary escape hatch (T2); both ship
-/// as clearly-marked stubs in M2. Diff · Inbox · Info are built here.
+/// Agent is the primary read/steer surface (built in T3); Terminal is the secondary escape hatch, still a
+/// clearly-marked stub (T2). Diff · Inbox · Info are built here (M2).
 public enum CardTab: String, CaseIterable, Identifiable, Sendable {
     case agent, terminal, diff, inbox, info
 
@@ -35,9 +35,10 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Built here in M2 (Diff/Inbox/Info) vs a T2/T3 stub (Agent/Terminal). Drives the "coming soon"
-    /// stub chrome so the placeholder tabs read as intentionally-deferred, not broken.
-    public var isStub: Bool { self == .agent || self == .terminal }
+    /// Whether the tab is still a "coming soon" stub — only **Terminal** now (built in T2). Agent (T3),
+    /// Diff, Inbox, and Info are real. Drives the tab-bar dot so the one deferred tab reads as
+    /// intentionally-deferred, not broken.
+    public var isStub: Bool { self == .terminal }
 
     /// The detail's initial tab — **Agent** (design §3's primary surface). A dev/test override via the
     /// `ORCH_DEV_CARD_TAB` env (`agent|terminal|diff|inbox|info`) lets a headless Simulator screenshot a
