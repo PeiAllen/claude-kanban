@@ -591,6 +591,42 @@ public final class BoardModel: ObservableObject {
     public func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
     }
+
+    // MARK: - Terminal tab (T2): one-shot exec + phone-owned live shell
+
+    /// Run a one-shot command in the card's worktree (the phone Terminal tab's block-REPL default).
+    /// Returns `nil` on transport failure; a non-zero `exitCode` is still a *result*, not a failure.
+    public func exec(_ id: UUID, _ cmd: String) async -> ExecResult? {
+        try? await client.call("exec", .object(["ref": .string(id.uuidString), "cmd": .string(cmd)]))
+            .decode(ExecResult.self)
+    }
+
+    /// This install's deterministic phone-owned shell window name. Deterministic (derived from the
+    /// persistent client id) so a reconnect — even after an app relaunch — reuses the *same* window
+    /// rather than leaking a fresh one (design §"Reconnect churn"). `phone-`-prefixed so it is visibly
+    /// distinct from the desktop's `shell-N` windows and never collides with them.
+    public var phoneShellWindow: String { "phone-" + clientId.prefix(8) }
+
+    /// Open (idempotently) this card's phone-owned live shell window and return its full tmux target.
+    /// Reuses the window on every call, so re-attaching does not spawn a second window. `nil` on failure.
+    public func openPhoneShell(_ id: UUID) async -> TmuxTarget? {
+        let win = phoneShellWindow
+        guard let r = try? await client.call("shell", .object(["ref": .string(id.uuidString),
+                                                               "window": .string(win)])),
+              let session = r["session"]?.stringValue,
+              let window = r["window"]?.stringValue else { return nil }
+        let socket = r["socket"]?.stringValue ?? Config.tmuxSocket
+        return TmuxTarget(socket: socket, session: session, window: window, kind: .shell,
+                          target: "\(session):\(window)",
+                          attach: "tmux -L \(socket) attach -t \(session):\(window)")
+    }
+
+    /// Reap this card's phone-owned shell window (leave/detach). Leak-safe: kills the window and its
+    /// grouped view session on the daemon.
+    public func closePhoneShell(_ id: UUID) async {
+        _ = try? await client.call("closeShell", .object(["ref": .string(id.uuidString),
+                                                          "window": .string(phoneShellWindow)]))
+    }
     /// Rendered git patch for the inspector Diff view (axis 7). App-only internal endpoint — agents
     /// read a diff by running `git diff` in the card's cwd. `""` for non-git cards.
     public func diffText(_ id: UUID, base: String) async -> String {

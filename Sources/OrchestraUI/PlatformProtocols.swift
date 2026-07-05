@@ -38,6 +38,14 @@ import OrchestraKit
 /// Returns a type-erased view so the existential is storable in the Environment.
 @MainActor public protocol TerminalHost: Sendable {
     func attach(target: TmuxTarget) -> AnyView
+    /// T2's phone live-shell variant: `selectMode == true` disables terminal mouse reporting so touch
+    /// drags do native text selection instead of becoming TUI mouse input (the design's explicit
+    /// "Select mode"). Defaults to the plain `attach` — desktop/Noop hosts ignore the flag.
+    func attach(target: TmuxTarget, selectMode: Bool) -> AnyView
+}
+
+public extension TerminalHost {
+    func attach(target: TmuxTarget, selectMode: Bool) -> AnyView { attach(target: target) }
 }
 
 // MARK: - No-op defaults (previews, tests, and iOS-before-F3)

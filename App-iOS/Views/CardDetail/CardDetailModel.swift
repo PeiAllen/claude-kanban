@@ -35,9 +35,9 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Built here in M2 (Diff/Inbox/Info) vs a T2/T3 stub (Agent/Terminal). Drives the "coming soon"
-    /// stub chrome so the placeholder tabs read as intentionally-deferred, not broken.
-    public var isStub: Bool { self == .agent || self == .terminal }
+    /// Whether this tab is still a "coming soon" stub. Diff/Inbox/Info shipped in M2 and Terminal in T2;
+    /// only **Agent** (T3) remains a stub. Drives the stub dot so a deferred tab reads as intentional.
+    public var isStub: Bool { self == .agent }
 
     /// The detail's initial tab — **Agent** (design §3's primary surface). A dev/test override via the
     /// `ORCH_DEV_CARD_TAB` env (`agent|terminal|diff|inbox|info`) lets a headless Simulator screenshot a

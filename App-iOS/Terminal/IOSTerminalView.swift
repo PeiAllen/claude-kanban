@@ -15,6 +15,11 @@ struct IOSTerminalView: UIViewRepresentable {
     /// column/row size (so the PTY opens at the right size). Reused across reconnects.
     let makeChannel: () -> TerminalByteChannel
 
+    /// T2 "Select mode": when `true`, mouse reporting is disabled so a one-finger drag selects text
+    /// natively instead of being forwarded to a mouse-aware TUI. Applied on every update so the tab can
+    /// toggle it live. Defaults to `false` (normal live-terminal input).
+    var selectMode: Bool = false
+
     func makeCoordinator() -> Coordinator { Coordinator(makeChannel: makeChannel) }
 
     func makeUIView(context: Context) -> TerminalView {
@@ -30,7 +35,10 @@ struct IOSTerminalView: UIViewRepresentable {
         return term
     }
 
-    func updateUIView(_ uiView: TerminalView, context: Context) {}
+    func updateUIView(_ uiView: TerminalView, context: Context) {
+        // Select mode ⇒ no mouse reporting ⇒ drags select text natively (design §"Copy/selection").
+        uiView.allowMouseReporting = !selectMode
+    }
 
     static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
         coordinator.teardown()
