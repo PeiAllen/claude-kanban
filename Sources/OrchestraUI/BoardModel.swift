@@ -499,6 +499,15 @@ public final class BoardModel: ObservableObject {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
     }
 
+    /// Register this device for push (N1): hand the APNs device token + the current notification-pref
+    /// snapshot to the daemon over the shared `client`, so it can push attention alerts while the phone is
+    /// backgrounded. Call after `registerForRemoteNotifications` yields a token, and again whenever a
+    /// notification pref changes (a re-register replaces the prior entry). Best-effort — a failed
+    /// registration just means no push until the next attempt; the in-app Needs You queue still works.
+    public func registerForPush(token: String) async {
+        _ = try? await client.registerDevice(token: token, prefs: NotificationPrefs().snapshot())
+    }
+
     /// Non-attaching read of a card's agent pane (the phone Agent tab's v1 render source, D1). Just a
     /// size-capped `capture-pane` snapshot — no attach, no resize pressure. `nil` on RPC failure so the
     /// caller can keep showing the last good frame. `clientId` stays private to the shared model.

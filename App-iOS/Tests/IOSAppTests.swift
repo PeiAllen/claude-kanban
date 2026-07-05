@@ -105,6 +105,29 @@ final class IOSAppTests: XCTestCase {
         XCTAssertEqual(diffBaselines(parentBranch: "main"), [.working, .branch, .parent])
     }
 
+    // MARK: - Push deep-link (N1)
+
+    func testPushDeepLinkRoutesDiedToRecoveryElsePeek() {
+        let id = UUID()
+        // A died card deep-links to Recovery (matches the row's own Recover action).
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .dead), .recover(id))
+        // Everything else (waiting/running, or unknown) opens the card peek.
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .waiting), .peek(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .running), .peek(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: nil), .peek(id))
+    }
+
+    func testPushCoordinatorDeepLinkSetAndConsume() {
+        let coord = PushCoordinator.shared
+        coord.consumeDeepLink()                    // clean slate
+        XCTAssertNil(coord.pendingCardId)
+        let id = UUID()
+        coord.deepLink(cardId: id)
+        XCTAssertEqual(coord.pendingCardId, id)     // a tapped push exposes the target…
+        coord.consumeDeepLink()
+        XCTAssertNil(coord.pendingCardId)           // …and consuming it clears so it fires once
+    }
+
     func testCardBreadcrumbWorktreeVsFreeform() {
         // Worktree: `repo/branch → …/dir`.
         XCTAssertEqual(

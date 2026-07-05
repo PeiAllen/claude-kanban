@@ -1,13 +1,17 @@
 import SwiftUI
 import OrchestraKit
+import OrchestraUI
 
 /// Notifications settings: one row per attention trigger (🔐 Permission needed · 🙋 Needs you · 💀 Card
 /// died), each with a **scope dial** (Off / Background only / Always) and a **sound dial**. Prefs persist
 /// client-side through the shared `NotificationPrefs` (same UserDefaults keys the macOS notifier reads).
-/// Actual push delivery is a backend follow-on (N1); this screen owns the preference model only.
+/// Push delivery is wired in N1 (device registration → daemon → APNs); the scope/sound dials here gate it.
 struct NotificationsSettingsSection: View {
     @State private var refresh = 0   // bumped on write so the bindings re-read the store
     private let prefs = NotificationPrefs()
+    #if DEBUG
+    @EnvironmentObject private var model: BoardModel
+    #endif
 
     var body: some View {
         Section {
@@ -20,7 +24,37 @@ struct NotificationsSettingsSection: View {
             Text("Background-only alerts stay quiet while the app is open. Agents paused on background "
                  + "tasks never alert — only a genuine hand-off to you does.")
         }
+        #if DEBUG
+        simulationSection
+        #endif
     }
+
+    #if DEBUG
+    /// A labeled **simulation** stand-in for a real APNs push (which needs a device + auth key). Schedules
+    /// a LOCAL notification built from the same payload an attention transition would push, flowing through
+    /// the exact foreground-gate + deep-link handlers a remote push does — so the routing is verifiable on
+    /// the Simulator. NOT a real delivered push.
+    @ViewBuilder private var simulationSection: some View {
+        Section {
+            ForEach(NotifyTrigger.allCases, id: \.self) { trigger in
+                Button {
+                    let card = model.tasks.first
+                    PushCoordinator.shared.simulateLocalPush(
+                        trigger: trigger,
+                        cardId: card?.id ?? UUID(),
+                        cardTitle: card?.title ?? "Sample card")
+                } label: {
+                    Label("Simulate \(Self.title(trigger)) push", systemImage: "bell.badge")
+                }
+            }
+        } header: {
+            Text("Developer — push simulation")
+        } footer: {
+            Text("DEBUG only. Fires a LOCAL notification (no APNs server) so the foreground gate + "
+                 + "deep-link into the card can be verified on the Simulator.")
+        }
+    }
+    #endif
 
     @ViewBuilder
     private func triggerRow(_ trigger: NotifyTrigger) -> some View {

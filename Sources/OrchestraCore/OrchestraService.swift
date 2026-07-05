@@ -22,6 +22,9 @@ public actor OrchestraService {
     let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
+    /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
+    /// pushes; the phone populates it over the `registerDevice` RPC.
+    let devices: DeviceTokenStore
     /// The human-grant resolver (T2). Consulted by `grantTrust`; the production `SurfaceGrantResolver`
     /// only approves interactive surfaces and denies agent/daemon (autonomy-exemption + no self-grant).
     let grantResolver: any TrustGrantResolver
@@ -66,6 +69,7 @@ public actor OrchestraService {
                 resolver: PathResolver? = nil,
                 trust: TrustLedger? = nil,
                 inbox: Inbox? = nil,
+                devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
@@ -75,6 +79,7 @@ public actor OrchestraService {
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
         self.inbox = inbox ?? Inbox()
+        self.devices = devices ?? DeviceTokenStore()
         self.grantResolver = grantResolver
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)

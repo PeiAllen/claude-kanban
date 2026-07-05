@@ -26,6 +26,20 @@ do {
     exit(1)
 }
 
+// APNs push (N1): a second subscriber to the service event stream that turns attention transitions into
+// pushes for registered devices. Delivery is enabled only when APNs credentials are configured
+// (ORCH_APNS_* env); otherwise the sender is a documented no-op — push is wired, not exercised.
+let pushSender: PushSender
+if let apns = APNsConfig.from(env: ProcessInfo.processInfo.environment) {
+    pushSender = APNsHTTPSender(config: apns)
+    log("push: APNs delivery enabled (\(apns.host), topic \(apns.topic))")
+} else {
+    pushSender = DisabledPushSender()
+    log("push: APNs delivery disabled (no ORCH_APNS_* credentials) — registrations accepted, no send")
+}
+let pushNotifier = PushNotifier(service: service, sender: pushSender)
+_Concurrency.Task { await pushNotifier.run() }
+
 // Reboot/crash recovery — fired async so a slow revival never blocks the daemon coming up.
 // Sweep orphaned scratch dirs first (cards that died without a clean archive), then recover.
 _Concurrency.Task {
