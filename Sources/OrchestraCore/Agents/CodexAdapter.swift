@@ -68,6 +68,19 @@ public struct CodexAdapter: Adapter {
     /// (E1), never the rollout's own window. `seq` is the line timestamp (µs) so out-of-order/duplicate
     /// lines lose to the freshest via `report()`'s seq-gate. Any unrecognized line → nil (dropped).
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
+        // C1 · permission gate (hooksPush). Codex's `PermissionRequest` hook fires `_report --event
+        // permission`, which arrives here as a hooksPush. Classify it into the SAME neutral
+        // `waitReason == .permission` Claude reaches via its Notification/permission_prompt — so a
+        // blocked Codex card surfaces as a Needs-You 🔐 row (M3 renders it provider-neutrally). This is
+        // the adapter/capability seam: the Codex-specific mapping lives HERE, never as `if agent==` in
+        // core. Codex's OTHER hooks (SessionStart/Stop) carry no StatusReport — the daemon dispatches
+        // them (orientation, inbox drain) via the typed HookEvent — so they fall through to nil, and
+        // telemetry stays the rollout fileTail below.
+        if case let .hooksPush(kind, _) = raw {
+            return kind == HookEvent.permission.rawValue
+                ? StatusReport(status: .waiting, waitReason: .permission)
+                : nil
+        }
         guard case let .fileTail(line) = raw else { return nil }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let jv = try? JSONValue.parse(Data(trimmed.utf8)) else { return nil }

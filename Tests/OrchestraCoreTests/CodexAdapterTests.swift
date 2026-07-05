@@ -60,6 +60,45 @@ struct CodexAdapterArgvTests {
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
     }
 
+    // C1 · Codex permission gate. Codex's `PermissionRequest` hook fires `_report --event permission`,
+    // and THIS adapter classifies that hooksPush into the SAME `waitReason == .permission` Claude uses
+    // (via its Notification/permission_prompt), so a blocked Codex card surfaces as a Needs-You 🔐 row.
+    @Test("parse(permission hooksPush) → waiting/.permission (Codex PermissionRequest gate)")
+    func parsePermissionHook() {
+        let r = adapter.parse(.hooksPush(kind: "permission", payload: .object([:])))
+        #expect(r == StatusReport(status: .waiting, waitReason: .permission))
+    }
+
+    // The OTHER Codex hooks (SessionStart/Stop) carry NO StatusReport — the daemon dispatches them
+    // (orientation, inbox drain) via the typed HookEvent, and telemetry stays the rollout fileTail.
+    // Only PermissionRequest produces a report from a hooksPush, so those must remain nil (no churn).
+    @Test("parse(session/stop hooksPush) stays nil — only PermissionRequest reports from a push")
+    func parseNonPermissionHooksNil() {
+        #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
+        #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
+    }
+
+    // The permission push must not disturb the fileTail path: a completed turn is still humanTurn.
+    @Test("fileTail turn-complete still classifies humanTurn (permission push is additive)")
+    func fileTailUnaffected() {
+        let line = #"{"type":"turn_complete","timestamp":"2026-07-04T10:00:00Z"}"#
+        let r = adapter.parse(.fileTail(line: line))
+        #expect(r?.snapshot?.status == .waiting)
+        #expect(r?.snapshot?.waitReason == .humanTurn)
+    }
+
+    // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.
+    @Test("rendered Codex hooks wire PermissionRequest → `_report --event permission --agent codex`")
+    func rendersPermissionHook() throws {
+        let dest = NSTemporaryDirectory() + "codex-hooks-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: dest) }
+        _ = try HooksRenderer.renderCodex(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex", to: dest)
+        let json = try String(contentsOfFile: dest, encoding: .utf8)
+        #expect(json.contains("\"PermissionRequest\""))
+        #expect(json.contains("_report --event permission --agent codex"))
+        #expect(!json.contains("__AGENT_ID__"))   // fully substituted
+    }
+
     @Test("models() is non-empty (fallback when no vendored table)")
     func models() { #expect(!adapter.models().isEmpty) }
 

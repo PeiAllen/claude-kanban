@@ -10,6 +10,7 @@ public enum HookEvent: String, Sendable, Codable, CaseIterable {
     case preToolUse   = "pretool"
     case postToolUse  = "posttool"
     case notification = "notification"
+    case permission   = "permission"   // Codex "PermissionRequest" gate → waitReason == .permission (C1)
     case stop         = "stop"
     case sessionEnd   = "sessionend"
 }
