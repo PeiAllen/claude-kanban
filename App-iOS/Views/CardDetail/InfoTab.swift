@@ -6,9 +6,9 @@ import OrchestraUI
 ///
 /// Metadata: **Mode** (`CardOrigin`: worktree / borrowed / scratch) + **Access** (`CardAccess`), the
 /// session id, repo/branch/path. Actions: **Restart session** (`restart`), **Copy branch name** (via the
-/// injected `Clipboard`), **Archive** (confirm → `archive`), and **Open notes** — the Notes page itself is
-/// M6, so this is a navigation hook to a clearly-marked placeholder. Deliberately **no** "View changes in
-/// Zed" / "Reveal in Finder" (host-only, dropped — the Diff tab is the phone's view-changes path).
+/// injected `Clipboard`), **Archive** (confirm → `archive`), and **Open notes** — pushes the in-app
+/// **Notes page** (M6), which renders the markdown notes this branch changed. Deliberately **no** "View
+/// changes in Zed" / "Reveal in Finder" (host-only, dropped — the Diff tab is the phone's view-changes path).
 struct InfoTab: View {
     let task: Task
     @EnvironmentObject private var model: BoardModel
@@ -18,6 +18,7 @@ struct InfoTab: View {
 
     @State private var confirmArchive = false
     @State private var copied: String?   // transient "Copied ✓" feedback keyed by which row
+    @State private var showNotes = false  // pushes the Notes page (also driven by ORCH_DEV_OPEN_NOTES)
 
     var body: some View {
         List {
@@ -28,6 +29,11 @@ struct InfoTab: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(theme.winBg)
+        .navigationDestination(isPresented: $showNotes) { NotesPage(task: task) }
+        .onAppear {
+            // Dev-only headless deep-link into the pushed Notes page (mirrors ORCH_DEV_OPEN_CARD/_SPAWN).
+            if ProcessInfo.processInfo.environment["ORCH_DEV_OPEN_NOTES"] == "1" { showNotes = true }
+        }
         .confirmationDialog("Archive this card?", isPresented: $confirmArchive, titleVisibility: .visible) {
             Button("Archive", role: .destructive) {
                 _Concurrency.Task { await model.archive(task.id); dismiss() }
@@ -106,9 +112,9 @@ struct InfoTab: View {
                 }
             }
 
-            // Open notes — Notes page is M6; this pushes a clearly-marked placeholder (the hook).
-            NavigationLink {
-                NotesPageHook(task: task)
+            // Open notes — the in-app Notes page (M6): renders the markdown notes this branch changed.
+            Button {
+                showNotes = true
             } label: {
                 actionLabel("Open notes", systemImage: "note.text", tint: theme.text, chevron: false)
             }

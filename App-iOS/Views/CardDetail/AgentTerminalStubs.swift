@@ -4,8 +4,8 @@ import OrchestraUI
 
 // M2 shipped the Agent + Terminal tabs as clearly-marked stubs (design §3's three-tier
 // Agent/Terminal/Takeover model). The **Terminal** tab is now built — see `TerminalTab.swift` (T2). The
-// **Agent** tab remains a stub here until T3. This file also holds the other deferred hooks the detail
-// leaves open: **Recovery** (dead card → M7), **Takeover** (live TUI → T4), and the **Notes page** (M6).
+// **Agent** tab remains a stub here until T3. This file also holds the remaining deferred hook the detail
+// leaves open: **Recovery** (dead card → M7). The **Notes page** (M6) is now built — see `NotesPage.swift`.
 
 // MARK: - Agent tab (STUB → T3; also hosts the Recovery hook → M7)
 
@@ -84,32 +84,8 @@ struct RecoveryHook: View {
     }
 }
 
-// MARK: - Notes page hook (→ M6)
-
-/// HOOK for the **Notes page** (M6): design §3's in-app renderer of the markdown notes this branch
-/// changed (file switcher + rendered markdown). M2 leaves the navigation hook — Info's "Open notes" pushes
-/// here — and marks where M6 builds it.
-struct NotesPageHook: View {
-    let task: Task
-    @Environment(\.theme) private var theme: Theme
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "note.text").font(.system(size: 44)).foregroundStyle(theme.text3)
-            Text("Notes").font(.title3.weight(.semibold)).foregroundStyle(theme.text)
-            Text("Renders the markdown notes this branch changed — a file switcher over the changed/new `.md` files, each rendered in-app (no Obsidian on the phone). Built in M6.")
-                .font(.footnote).foregroundStyle(theme.text2)
-                .multilineTextAlignment(.center).padding(.horizontal, 28)
-            deferredBadge("M6", theme: theme)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.winBg)
-        .navigationTitle("Notes")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
+// The Notes page (M6) is now built — see `NotesPage.swift` (rendered in-app; Info's "Open notes" pushes
+// it). Its hook lived here in M2.
 
 // MARK: - Shared stub chrome
 
