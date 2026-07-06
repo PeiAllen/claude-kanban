@@ -34,11 +34,12 @@ struct DiffModelTests {
 
     @Test("old card with no diffStat/parentBranch decodes to nil (nil-default)")
     func oldCardDecodesToNil() throws {
-        // A card persisted before this feature: no diffStat / parentBranch keys.
+        // A card with no diffStat / parentBranch keys — both are Optional, so they decode to nil.
         let old = """
         {"id":"\(UUID().uuidString)","title":"x","titleProvisional":false,"desc":"",
          "repo":"/r/app","branch":"feat","cwd":"/wt/app/feat","origin":"worktree","access":"readWrite",
-         "agentId":"claude-code","model":"claude-opus-4-8","startIn":"impl","column":"impl","order":0,
+         "agentId":"claude-code","model":{"id":"claude-opus-4-8","displayName":"Opus","family":"claude"},
+         "startIn":"impl","column":"impl","order":0,
          "status":"running","ctxPct":0,"priorSessionIds":[],"initialPrompt":"go","archived":false,
          "createdAt":"2020-01-01T00:00:00Z","updatedAt":"2020-01-01T00:00:00Z"}
         """

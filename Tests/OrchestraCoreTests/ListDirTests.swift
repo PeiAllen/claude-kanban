@@ -3,8 +3,9 @@ import Testing
 @testable import OrchestraCore
 import OrchestraKit
 
-/// The remote directory browser's daemon RPC. `listDir` must never leak paths outside the browse roots
-/// ($HOME + the spawn allowlist), and must be symlink- / `..`-escape safe — this is the security crux.
+/// The remote directory browser's daemon RPC. `browseRoots` ($HOME + the spawn allowlist) are the
+/// starting points; from there the owner can browse anywhere the daemon user can read (no confinement —
+/// the same socket already exposes `exec`). Dotfiles are hidden as declutter; dirs sort before files.
 @Suite("listDir — the remote directory browser")
 struct ListDirTests {
 
@@ -46,46 +47,27 @@ struct ListDirTests {
         #expect(!listing.entries.contains { $0.name == ".hidden" })
     }
 
-    @Test("parent is bounded: set within a root, nil at a browse root")
-    func parentBounded() async throws {
+    @Test("parent is the filesystem parent (unconfined)")
+    func parentIsFilesystemParent() async throws {
         let (svc, base) = make()
         let proj = try seedProj(base)
-        // proj's parent is `base`, which is a browse root → included.
+        // proj's parent is `base`.
         let inner = try await svc.listDir(proj)
         #expect(inner.parent == base)
-        // base IS a browse root → its parent (outside the roots) is not offered.
+        // A browse root is no longer a ceiling: its parent is offered too (no confinement).
         let atRoot = try await svc.listDir(base)
-        #expect(atRoot.parent == nil)
+        #expect(atRoot.parent == PathResolver.canonical((base as NSString).deletingLastPathComponent))
     }
 
-    @Test("rejects a path outside every browse root")
-    func rejectsOutside() async throws {
+    @Test("browses outside the browse roots (no confinement)")
+    func browsesOutsideRoots() async throws {
         let (svc, _) = make()
         // A fresh temp tree that is NOT allowlisted and not under $HOME (/var/folders on macOS).
         let outside = PathResolver.canonical(NSTemporaryDirectory() + "orch-outside-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
-        await #expect(throws: OrchestraError.self) { try await svc.listDir(outside) }
-    }
-
-    @Test("rejects a symlink that escapes the browse roots")
-    func rejectsSymlinkEscape() async throws {
-        let (svc, base) = make()
-        let proj = try seedProj(base)
-        let outside = PathResolver.canonical(NSTemporaryDirectory() + "orch-outside-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(atPath: outside + "/secret", withIntermediateDirectories: true)
-        let link = proj + "/link"
-        try? FileManager.default.removeItem(atPath: link)
-        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: outside + "/secret")
-        await #expect(throws: OrchestraError.self) { try await svc.listDir(link) }
-    }
-
-    @Test("rejects a ../ escape that climbs out of a browse root")
-    func rejectsDotDotEscape() async throws {
-        let (svc, base) = make()
-        _ = try seedProj(base)
-        await #expect(throws: OrchestraError.self) {
-            try await svc.listDir(base + "/proj/../../orch-nope/secret")
-        }
+        try FileManager.default.createDirectory(atPath: outside + "/child", withIntermediateDirectories: true)
+        let listing = try await svc.listDir(outside)
+        #expect(listing.path == outside)
+        #expect(listing.entries.contains { $0.name == "child" && $0.isDir })
     }
 
     @Test("rejects a non-directory (file) path")

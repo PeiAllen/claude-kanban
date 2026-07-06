@@ -835,30 +835,18 @@ public actor OrchestraService {
         return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    /// The directories the phone's remote directory browser (`listDir`) may enumerate: the daemon's
-    /// `$HOME` plus the spawn allowlist roots, canonicalized and collapsed to top-most (a root under
-    /// another kept root is dropped). This is deliberately DISTINCT from the spawn allowlist — freeform
-    /// spawns skip the allowlist (any path is spawnable as borrowed), but the remote phone must not be
-    /// able to *enumerate* the whole daemon disk. `$HOME`'s dotfiles are hidden by `listDir`.
+    /// Convenient starting points for the phone's remote directory browser (`listDir`): the daemon's
+    /// `$HOME` plus the spawn allowlist roots, canonicalized and de-duplicated. These are UX affordances
+    /// (the synthetic root listing the browser opens on), NOT a confinement boundary — `listDir` can
+    /// enumerate any directory the daemon user can read (the same socket already exposes `exec`, so
+    /// confining *enumeration* would defend nothing while blocking the owner from real paths).
     var browseRoots: [String] {
-        let canon = ([Config.home] + config.allowedRoots)
-            .map { PathResolver.canonical($0) }
-            .filter { !$0.isEmpty }
-        var kept: [String] = []
-        for root in canon.sorted() {
-            if kept.contains(where: { isSubpath(root, of: $0) }) { continue }   // under a kept root
-            kept.removeAll { isSubpath($0, of: root) }                          // this one subsumes them
-            kept.append(root)
+        var seen = Set<String>()
+        var roots: [String] = []
+        for p in ([Config.home] + config.allowedRoots).map({ PathResolver.canonical($0) }) where !p.isEmpty {
+            if seen.insert(p).inserted { roots.append(p) }
         }
-        return kept
-    }
-
-    /// Component-wise "is `path` equal to or under `root`" (not a substring match — `/a/b-evil` is not
-    /// under `/a/b`). Mirrors `PathResolver.isPrefix`, which is private there.
-    private func isSubpath(_ path: String, of root: String) -> Bool {
-        if path == root { return true }
-        let rootSlash = root.hasSuffix("/") ? root : root + "/"
-        return path.hasPrefix(rootSlash)
+        return roots
     }
 
     /// Display label for a browse root in the synthetic root listing: "Home" for `$HOME`, else basename.
@@ -868,10 +856,11 @@ public actor OrchestraService {
     }
 
     /// List a directory's children for the phone's remote browser. The phone can't browse the daemon's
-    /// disk, so the daemon enumerates for it — but confined to `browseRoots` (never leaks paths outside
-    /// them; symlink- and `..`-escape safe via `PathResolver`). Dotfiles are hidden; directories sort
-    /// before files. `path` nil/empty → the synthetic *root listing* (the browse roots themselves).
-    /// App-only (NOT a registry Command): agents spawn via `spawn`, they never browse the daemon disk.
+    /// disk, so the daemon enumerates for it. `browseRoots` are the starting points; from there the owner
+    /// can browse anywhere the daemon user can read (no confinement — the same socket exposes `exec`).
+    /// Dotfiles are hidden as declutter; directories sort before files. `path` nil/empty → the synthetic
+    /// *root listing* (the browse roots themselves). App-only (NOT a registry Command): agents spawn via
+    /// `spawn`, they never browse the daemon disk.
     public func listDir(_ path: String?) throws -> DirListing {
         let roots = browseRoots
         guard let raw = path, !raw.isEmpty else {
@@ -879,8 +868,6 @@ public actor OrchestraService {
             return DirListing(path: "", parent: nil, entries: entries)
         }
         let real = PathResolver.canonical(raw)
-        let browse = PathResolver(allowedRoots: roots)
-        try browse.assertAllowed(real)   // throws pathNotAllowed on any escape (symlink / ..)
 
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -901,11 +888,9 @@ public actor OrchestraService {
         }
         dirs.sort(by: byName); files.sort(by: byName)
 
-        // Parent affordance, bounded: include it only if the parent also stays within a browse root
-        // (so "up" stops at a root — you can't climb out via `..`).
+        // "Up" affordance: the filesystem parent, nil only at the filesystem root.
         let parentPath = (real as NSString).deletingLastPathComponent
-        let parent: String? = (parentPath != real && (try? browse.assertAllowed(parentPath)) != nil)
-            ? PathResolver.canonical(parentPath) : nil
+        let parent: String? = parentPath != real ? PathResolver.canonical(parentPath) : nil
 
         return DirListing(path: real, parent: parent, entries: dirs + files)
     }
