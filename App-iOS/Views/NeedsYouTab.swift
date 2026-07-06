@@ -57,8 +57,20 @@ struct NeedsYouTab: View {
             .navigationTitle("Needs You")
             .navigationDestination(item: $route) { route in
                 switch route {
-                case .peek(let id):    CardPeekView(task: card(id))
-                case .recover(let id): RecoveryPlaceholder(task: card(id))
+                // "Open card" / peek → the real tabbed card detail (M2). It resolves the live card by
+                // id itself (and shows its own closed-state placeholder if the card is gone).
+                case .peek(let id):
+                    CardDetailView(taskId: id)
+                // "Recover" (died) → the real Recovery panel (M7). It needs a concrete `Task`; if the card
+                // has since resolved away, fall back to the gone-state note.
+                case .recover(let id):
+                    if let task = card(id) {
+                        RecoveryView(task: task)
+                            .navigationTitle("Recovery")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } else {
+                        CardGone()
+                    }
                 }
             }
         }
@@ -93,8 +105,8 @@ struct NeedsYouTab: View {
 /// Programmatic pushes out of the queue. Keyed by card id (Hashable) so a single
 /// `navigationDestination(item:)` covers both routes without a type collision.
 enum NeedsYouRoute: Hashable, Identifiable {
-    case peek(UUID)      // "Open card" → a read-only summary (full detail is M2's card-detail)
-    case recover(UUID)   // "Recover" (died) → the Recovery view (M7 nav hook)
+    case peek(UUID)      // "Open card" → the tabbed card detail (`CardDetailView`)
+    case recover(UUID)   // "Recover" (died) → the Recovery view (`RecoveryView`)
     var id: Self { self }
 
     /// The destination a push deep-link opens for a card: a died card goes to Recovery (matching the
@@ -365,44 +377,14 @@ private struct ActionButton: View {
 
 // MARK: - Pushed destinations (nav hooks)
 
-/// "Open card" summary — reuses the board card cell as a read-only preview. Deliberately light: the full
-/// 5-tab card detail is M2's job; this just lets the queue open a card in place.
-private struct CardPeekView: View {
-    let task: Task?
-    @Environment(\.theme) private var theme: Theme
-    var body: some View {
-        ScrollView {
-            if let task {
-                VStack(alignment: .leading, spacing: 14) {
-                    BoardCardCell(task: task)
-                    Text("Full card detail lives on the Board tab.")
-                        .font(.footnote).foregroundStyle(theme.text3)
-                }
-                .padding(16)
-            } else {
-                Text("This card no longer needs you.").foregroundStyle(theme.text2).padding()
-            }
-        }
-        .background(theme.winBg.ignoresSafeArea())
-        .navigationTitle("Card")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-/// **Recovery deep-link (M7 nav hook).** A died card routes here; M7 replaces this placeholder with the
-/// real Recovery panel (why · preserved work · Copy prompt · Start new / Resume / Archive — design §4).
-private struct RecoveryPlaceholder: View {
-    let task: Task?
+/// Shown when a `.recover` route resolves and the card has since left the board (resolved/removed
+/// elsewhere) — the peek route relies on `CardDetailView`'s own closed-state placeholder instead.
+private struct CardGone: View {
     @Environment(\.theme) private var theme: Theme
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "cross.case").font(.largeTitle).foregroundStyle(theme.red.dot)
-            Text(task?.title ?? "Card").font(.headline).foregroundStyle(theme.text)
-            if let r = task?.deadReason {
-                Text("Died: \(r.rawValue)").font(.subheadline).foregroundStyle(theme.text2)
-            }
-            Text("Recovery (Start new · Resume · Archive) arrives with M7.")
-                .font(.footnote).foregroundStyle(theme.text3).multilineTextAlignment(.center)
+            Image(systemName: "checkmark.circle").font(.largeTitle).foregroundStyle(theme.green.dot)
+            Text("This card no longer needs you.").foregroundStyle(theme.text2)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
