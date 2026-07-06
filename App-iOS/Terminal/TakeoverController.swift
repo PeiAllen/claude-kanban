@@ -76,8 +76,15 @@ final class TakeoverController: ObservableObject {
         }
     }
 
-    /// **Return to Desktop**: stop heartbeating and release the lease (epoch-guarded, so it can't clear a
-    /// newer owner). Idempotent.
+    /// Stop heartbeating and release the lease (epoch-guarded, so it can't clear a newer owner).
+    /// Idempotent. This is the ONE teardown path: the **Return to Desktop** button calls it, and the view
+    /// also calls it on `onDisappear` so a dismissal that isn't the button (swipe-down / programmatic
+    /// dismiss) still hands control back instead of stranding a heartbeat-less lease that goes stale in
+    /// ~30s while the surface still reads "You have control" (#8). There is no phone-side "suspend and
+    /// resume": the takeover surface is presented in a `fullScreenCover`, so a dismiss tears down this
+    /// `@StateObject` — a reopen builds a fresh controller that re-acquires from `.acquiring` via `begin()`.
+    /// The daemon's 30s stale window is the only grace, and it covers a hard kill where `onDisappear`
+    /// never runs.
     func returnToDesktop() async {
         heartbeat?.cancel(); heartbeat = nil
         guard !released else { return }
@@ -87,12 +94,5 @@ final class TakeoverController: ObservableObject {
         if isHolding {
             await model.releaseAgentTerminalAsPhone(cardId, epoch: epoch)
         }
-    }
-
-    /// View disappeared without an explicit Return (e.g. app backgrounded): stop heartbeating but DON'T
-    /// release — the lease lingers within the 30s stale window so a quick reopen resumes control, per the
-    /// design's "keep ownership for a short heartbeat window, then mark it stale".
-    func suspend() {
-        heartbeat?.cancel(); heartbeat = nil
     }
 }

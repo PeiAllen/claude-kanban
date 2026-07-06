@@ -298,6 +298,47 @@ final class IOSAppTests: XCTestCase {
         XCTAssertNotEqual(fp("A"), fp("B"))
         XCTAssertEqual(fp("A").count, 32)
     }
+
+    // MARK: - Takeover teardown (#8)
+
+    /// #8: the takeover surface now releases on ANY dismissal (`onDisappear` → `returnToDesktop()`), having
+    /// deleted the misleading `suspend()`/"quick reopen resumes control" path — a `fullScreenCover` dismiss
+    /// tears down the `@StateObject`, so a reopen builds a fresh controller that re-acquires from
+    /// `.acquiring`. There's no daemon in a unit test, so we can't reach `.holding`; these lock in the
+    /// *reachable* invariant the fix depends on: a non-held controller never claims control, and the new
+    /// unconditional `onDisappear` release is a safe, idempotent no-op (guarded by `if isHolding`) so it
+    /// can't fire a bogus release or crash on a dismiss during `.acquiring`/`.failed`.
+
+    func testTakeoverWithoutDaemonEndsFailedAndNotHolding() async {
+        let model = BoardModel(platform: .ios)   // never activated → no transport, RPCs fail fast
+        let controller = TakeoverController(cardId: UUID(), model: model)
+        await controller.begin()
+        XCTAssertFalse(controller.isHolding, "no lease granted ⇒ must not read as 'You have control'")
+        guard case .failed = controller.phase else {
+            return XCTFail("expected .failed without a daemon, got \(controller.phase)")
+        }
+    }
+
+    func testReturnToDesktopIsSafeAndIdempotentWhenNotHolding() async {
+        let model = BoardModel(platform: .ios)
+        let controller = TakeoverController(cardId: UUID(), model: model)
+        await controller.begin()                 // .failed (no daemon)
+        // The onDisappear path calls this unconditionally now; when we never held it must be a no-op — the
+        // `if isHolding` guard skips the release RPC — and idempotent on the button-then-onDisappear repeat.
+        await controller.returnToDesktop()
+        await controller.returnToDesktop()
+        XCTAssertFalse(controller.isHolding)
+    }
+
+    /// `suspend()` is gone: the only heartbeat-cancelling paths (`returnToDesktop`, `reconcile→.lostToDesktop`)
+    /// also transition the phase away from holding, so the heartbeat can never be silently cancelled while
+    /// the surface still shows control. Compile-time proof lives above (no call site references `suspend`);
+    /// this asserts the surviving teardown entrypoint stays reachable.
+    func testControllerExposesReturnToDesktopTeardown() async {
+        let controller = TakeoverController(cardId: UUID(), model: BoardModel(platform: .ios))
+        await controller.returnToDesktop()       // callable before any begin(); pure no-op, no crash
+        XCTAssertFalse(controller.isHolding)
+    }
 }
 
 /// In-memory `HostKeyPinStorage` for the TOFU tests — the unit-test bundle can't reach a real Keychain.
