@@ -42,14 +42,28 @@ public actor DeviceTokenStore {
         return devices
     }
 
-    /// Register (or update) a device. Replaces any prior entry with the same `clientId`.
+    /// Register (or update) a device. Replaces any prior entry with the same `clientId`. Rejects a
+    /// malformed token up front (#1) so a token with a space/newline/control char can never reach the
+    /// sender's `URL(string:)` and trap the daemon.
     @discardableResult
     public func register(_ reg: DeviceRegistration) throws -> DeviceRegistration {
+        guard Self.isValidToken(reg.token) else { throw PushError.badToken(reg.token) }
         ensureLoaded()
         devices.removeAll { $0.clientId == reg.clientId }
         devices.append(reg)
         try persist()
         return reg
+    }
+
+    /// A syntactically valid APNs device token: hex digits only (`^[0-9a-fA-F]+$`) and a plausible length.
+    /// Real APNs tokens are 64 hex chars; we accept 32–200 to tolerate provider/format variants while
+    /// still rejecting anything that isn't a bare hex string (whitespace, control chars, punctuation).
+    static func isValidToken(_ token: String) -> Bool {
+        let bytes = token.utf8
+        guard bytes.count >= 32, bytes.count <= 200 else { return false }
+        return bytes.allSatisfy { b in
+            (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+        }
     }
 
     /// Drop the registration for a client (e.g. the phone revoked notifications). Idempotent.

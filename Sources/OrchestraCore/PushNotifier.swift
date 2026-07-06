@@ -63,7 +63,29 @@ public actor PushNotifier {
             let entry = device.prefs.entry(for: intent.trigger)
             guard PushGate.shouldSend(scope: entry.scope) else { continue }   // drop .off at source
             let payload = APNsPayload.build(intent: intent, sound: entry.sound)
-            try? await sender.send(payload: payload, to: device.token)
+            do {
+                try await sender.send(payload: payload, to: device.token)
+            } catch {
+                await handleSendFailure(error, clientId: device.clientId)
+            }
         }
+    }
+
+    /// A send failed. If APNs reported the token is permanently invalid (410 Unregistered, or 400
+    /// BadDeviceToken) Apple *requires* we stop sending to it — drop the registration (#4). Any other
+    /// error is transient (network blip, 5xx): log it but keep the device, so a live token is never
+    /// evicted by a momentary failure.
+    private func handleSendFailure(_ error: Error, clientId: String) async {
+        if case let PushError.badStatus(code, body) = error, Self.isDeadToken(code, body) {
+            try? await service.unregisterDevice(clientId: clientId)
+        } else {
+            FileHandle.standardError.write(Data("push: send failed for client \(clientId): \(error)\n".utf8))
+        }
+    }
+
+    /// APNs statuses meaning "this token is permanently invalid — remove it": 410 Unregistered, or a 400
+    /// whose reason is BadDeviceToken.
+    static func isDeadToken(_ code: Int, _ body: String) -> Bool {
+        code == 410 || (code == 400 && body.contains("BadDeviceToken"))
     }
 }
