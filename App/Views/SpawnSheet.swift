@@ -72,17 +72,27 @@ struct SpawnSheet: View {
         return models.first?.id ?? ""
     }
 
-    /// Absolute paths of the git repositories under the configured repos root. The daemon only allows
-    /// spawning inside an allowlisted root, so the repo must be a real path — not a bare name.
-    private var repoCandidates: [String] {
-        let root = (model.config.reposRoot as NSString).expandingTildeInPath
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return [] }
-        return entries
-            .filter { !$0.hasPrefix(".") }
-            .map { "\(root)/\($0)" }
-            .filter { fm.fileExists(atPath: "\($0)/.git") }
-            .sorted { ($0 as NSString).lastPathComponent.localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending }
+    /// Absolute paths of the git repositories under the configured repos root — populated by an async
+    /// recursive scan (`loadRepoCandidates`). The daemon only allows spawning inside an allowlisted
+    /// root, so the repo must be a real path, not a bare name. The scan runs off the main thread: the
+    /// root defaults to `$HOME`, and a deep filesystem walk on the main thread would beachball the sheet.
+    @State private var repoCandidates: [String] = []
+    /// True while the recursive scan is in flight — drives the picker's "Scanning…" placeholder.
+    @State private var reposScanning = false
+
+    /// Kick off the recursive repo scan off the main thread, then publish results on the main actor and
+    /// default the repo selection to the first candidate if the user hasn't already picked one.
+    private func loadRepoCandidates() {
+        let root = model.config.reposRoot
+        reposScanning = true
+        _Concurrency.Task {
+            let found = await RepoScanner.discoverAsync(root: root)
+            await MainActor.run {
+                repoCandidates = found
+                reposScanning = false
+                if repo.isEmpty { repo = found.first ?? "" }
+            }
+        }
     }
     private var repoName: String { (repo as NSString).lastPathComponent }
 
@@ -306,7 +316,7 @@ struct SpawnSheet: View {
             }
             if let c = ProcessInfo.processInfo.environment["ORCH_SPAWN_CWD"], !c.isEmpty { cwd = c }
             #endif
-            if repo.isEmpty { repo = repoCandidates.first ?? "" }
+            loadRepoCandidates()
             if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
             // Guard against a stale/unknown default agent id (adapter disabled, etc.).
             if !agentOptions.contains(where: { $0.id == agentSel }) { agentSel = agentOptions.first?.id ?? "" }
@@ -411,7 +421,18 @@ struct SpawnSheet: View {
     /// can fuzzy-search the candidates by name. Falls back to a free-text absolute-path field when none
     /// are found (e.g. repos root unset or empty).
     @ViewBuilder private var repoPicker: some View {
-        if repoCandidates.isEmpty {
+        if reposScanning && repoCandidates.isEmpty {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 11, height: 11)
+                Text("Scanning repositories…").font(F.mono(12.5)).foregroundColor(theme.text3)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .background(theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if repoCandidates.isEmpty {
             monoInput($repo)
         } else {
             Button {

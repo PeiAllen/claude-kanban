@@ -50,7 +50,10 @@ public struct Config: Codable, Sendable, Equatable {
     public static var home: String {
         ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
     }
-    public static var defaultReposRoot: String { "\(home)/Documents/Projects" }
+    /// The home directory itself — setup-agnostic (works for any user's layout, not just a
+    /// `~/Documents/Projects` convention). Repo discovery scans recursively under this root
+    /// (see `RepoScanner`), pruning heavy/irrelevant trees so a broad root stays fast.
+    public static var defaultReposRoot: String { home }
     public static var defaultWorktreesRoot: String { "\(home)/.orchestra/worktrees" }
 
     /// Root for ephemeral scratch-card dirs (`~/.orchestra/scratch/<id>`), parallel to worktrees.
