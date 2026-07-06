@@ -94,6 +94,7 @@ launch_attach() {
   local label="$1"
   xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
   SIMCTL_CHILD_ORCH_SSH_TARGET="$USER_NAME@127.0.0.1:$PORT" \
+  SIMCTL_CHILD_ORCH_SSH_ALLOW_LOOPBACK="1" \
   SIMCTL_CHILD_ORCH_T1_SOCKET="$SOCK_TMUX" \
   SIMCTL_CHILD_ORCH_T1_SESSION="$BASE" \
   SIMCTL_CHILD_ORCH_T1_WINDOW="$WIN" \

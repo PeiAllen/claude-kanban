@@ -124,4 +124,19 @@ final class TransportTests: XCTestCase {
             XCTAssertNotNil(SSHEndpoint.tailnetRejectionReason(for: host))
         }
     }
+
+    func testLoopbackTestEscapeIsOptInAndLoopbackOnly() {
+        let on = ["ORCH_SSH_ALLOW_LOOPBACK": "1"]
+        // Opt-in flag set: only loopback hosts are allowed — the escape for the isolated verify harness.
+        for host in ["127.0.0.1", "localhost", "::1"] {
+            XCTAssertTrue(SSHEndpoint.isTestLoopbackAllowed(host, env: on), "expected \(host) allowed with flag")
+        }
+        // Even with the flag, it NEVER widens to a real LAN/public host — it's loopback-only.
+        for host in ["10.0.0.5", "192.168.1.10", "example.com", "100.64.0.1"] {
+            XCTAssertFalse(SSHEndpoint.isTestLoopbackAllowed(host, env: on), "escape must stay loopback-only: \(host)")
+        }
+        // Without the opt-in flag, loopback stays rejected (the default the guard enforces in prod).
+        XCTAssertFalse(SSHEndpoint.isTestLoopbackAllowed("127.0.0.1", env: [:]))
+        XCTAssertFalse(SSHEndpoint.isTestLoopbackAllowed("127.0.0.1", env: ["ORCH_SSH_ALLOW_LOOPBACK": "0"]))
+    }
 }

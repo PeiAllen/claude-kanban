@@ -210,6 +210,12 @@ private struct AttentionRow: View {
             .strokeBorder(sem.tint, lineWidth: 1))
         .shadow(color: theme.shadowCard, radius: 3, x: 0, y: 1)
         .opacity(task.status == .dead ? 0.85 : 1)
+        // Whole-card tap opens the peek (design §6: tapping a queue row opens the card). The nested
+        // action buttons, overflow menu, and reply field are `Button`/`TextField` controls, so SwiftUI
+        // hands them the tap inside their own bounds first — this fires only on the empty row area.
+        // `.contentShape(Rectangle())` makes the padded card (not just its content) hittable.
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen() }
     }
 
     // MARK: header — reason chip + waiting age + status

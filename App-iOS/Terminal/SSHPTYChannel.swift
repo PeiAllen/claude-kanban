@@ -203,7 +203,8 @@ final class SSHPTYChannel: TerminalByteChannel {
         // Tailscale-trust guard (review #5), defense-in-depth with `PinningHostKeyDelegate`'s host-key
         // pinning below: only ever connect to a tailnet target — refuse a LAN/localhost/public host
         // before connecting, so the pinned SSH channel is only ever established over the trusted tailnet.
-        if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host) {
+        if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host),
+           !SSHEndpoint.isTestLoopbackAllowed(endpoint.host) {
             state = .closed
             onEvent?(.failed(reason))
             return
