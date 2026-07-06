@@ -25,8 +25,15 @@ updated: 2026-07-06
 | 3 — Implementation | [[03-implementation]] | approved |
 | 3 — Tests | [[04-tests]] | approved |
 
-**All layers approved (2026-07-06).** **P1 done** (board over SSH — code + 16 unit tests green, iOS +
-macOS build clean; loopback e2e deferred to the end). Implementing **P2** next; P3–P4 to follow.
+**All layers approved (2026-07-06). Status:**
+- **P1 — board over SSH: DONE** (code + 16 unit tests, iOS + macOS build clean).
+- **P2 — config unification: DONE** (one connection drives board + terminals; `orch_ssh_target` deleted;
+  30/30 iOS tests). Session-multiplex fold deferred as an optimization.
+- **P3 — core DONE** (one-field "Add your Mac" + free-tier no-push entitlements). Guided onboarding
+  checklist = optional polish (the Connection editor already configures it).
+- **P4 — deferred** (real push, paid-only) — not pursued.
+- **Loopback e2e** (runtime board-over-SSH proof, no device) — remaining; a self-contained throwaway-sshd
+  harness (design in [[04-tests]]).
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
