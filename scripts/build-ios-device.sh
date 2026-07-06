@@ -17,6 +17,14 @@
 #   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to a connected iPhone
 #   ORCH_IOS_BUNDLE_ID=com.you.orchestra scripts/build-ios-device.sh   # override bundle id (free teams
 #                                                                        # often need a unique one)
+#
+# ⚠️ NOT YET VERIFIED ON METAL. The path/parsing bugs below were fixed by static reasoning + `xcodegen
+# generate` (project resolves, entitlements path resolves SRCROOT-relative). The signing + install steps
+# themselves — `xcodebuild ... -destination generic/platform=iOS -allowProvisioningUpdates` producing a
+# free-team-signed .app, and `devicectl device install` onto a paired iPhone — have NOT been run: this
+# needs a real device + an Apple ID logged into Xcode. Do that end-to-end before calling the lane "done".
+# Expected free-team gotchas to confirm on-device: bundle id may need to be unique per Apple ID
+# (ORCH_IOS_BUNDLE_ID), and the dev cert/profile expires every 7 days (re-run this script to resign).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
@@ -62,9 +70,15 @@ xcodebuild \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM" \
   CODE_SIGN_STYLE=Automatic \
-  CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements \
+  CODE_SIGN_ENTITLEMENTS=OrchestraiOS-nopush.entitlements \
   PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
   build
+# NOTE on CODE_SIGN_ENTITLEMENTS: Xcode resolves it relative to $(SRCROOT), which for this project is
+# App-iOS/ (the dir holding OrchestraiOS.xcodeproj). So it MUST be a bare basename — the file lives at
+# App-iOS/OrchestraiOS-nopush.entitlements. A leading `App-iOS/` here double-nests to
+# App-iOS/App-iOS/OrchestraiOS-nopush.entitlements (nonexistent) → signing silently uses the target's
+# default OrchestraiOS.entitlements (which HAS aps-environment) and free-team signing fails. project.yml's
+# own `CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements` (bare) confirms the SRCROOT-relative convention.
 
 APP="$(xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration "$CONFIG" \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM="$TEAM" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
@@ -77,7 +91,16 @@ echo "entitlements: $(codesign -d --entitlements :- "$APP" 2>/dev/null | tr -d '
 
 # --- optionally install to a connected iPhone -----------------------------------------------------
 if [[ "$INSTALL" == 1 ]]; then
-  DEVICE="$(xcrun devicectl list devices 2>/dev/null | awk '/connected/ && /iPhone/ {print $(NF-1); exit}')"
+  # Extract the device Identifier (a standard 8-4-4-4-12 UUID) from `devicectl list devices`, robustly.
+  # The old `awk '{print $(NF-1)}'` counted columns from the end, but Name ("Allen's iPhone") and Model
+  # ("iPhone 15 Pro") are multi-word, so NF-1 landed on a Model word (e.g. "15"), never the UUID. Instead
+  # we filter to connected-iPhone rows and grep the one field that has a fixed, unambiguous shape — the
+  # Identifier UUID — which is immune to column count. (The Hostname column is `<udid>.coredevice.local`,
+  # an 8hex-16hex form that does NOT match the full-UUID pattern, so it can't be picked by mistake.)
+  DEVICE="$(xcrun devicectl list devices 2>/dev/null \
+    | awk '/iPhone/ && /connected/' \
+    | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    | head -1)"
   [ -n "$DEVICE" ] || { echo "error: no connected iPhone found (xcrun devicectl list devices)" >&2; exit 1; }
   echo "=== install to $DEVICE ==="
   xcrun devicectl device install app --device "$DEVICE" "$APP"
