@@ -44,6 +44,67 @@ final class TransportTests: XCTestCase {
         XCTAssertNil(SSHEndpoint(target: "me@host.ts.net:70000"))   // out of 1…65535 range
     }
 
+    // MARK: - SSHEndpoint.resolve persistence precedence (M5)
+
+    /// A throwaway UserDefaults suite so a test never reads/writes the real `orch_ssh_target` pref.
+    private func scratchDefaults(_ name: String) -> UserDefaults {
+        let suite = "TransportTests.\(name)"
+        let d = UserDefaults(suiteName: suite)!
+        d.removePersistentDomain(forName: suite)
+        return d
+    }
+
+    func testResolvePrefersPersistedTargetOverEnv() {
+        let d = scratchDefaults("prefers-persisted")
+        d.set("me@persisted.ts.net", forKey: SSHEndpoint.targetDefaultsKey)
+        let ep = SSHEndpoint.resolve(env: ["ORCH_SSH_TARGET": "me@env.ts.net"], defaults: d)
+        XCTAssertEqual(ep, SSHEndpoint(host: "persisted.ts.net", port: 22, user: "me"))
+    }
+
+    func testResolveFallsBackToEnvWhenPersistedEmpty() {
+        let d = scratchDefaults("falls-back-to-env")
+        // No persisted value (and whitespace-only counts as empty) → the env/launch-arg path is used.
+        d.set("   ", forKey: SSHEndpoint.targetDefaultsKey)
+        let ep = SSHEndpoint.resolve(env: ["ORCH_SSH_TARGET": "me@env.ts.net"], defaults: d)
+        XCTAssertEqual(ep, SSHEndpoint(host: "env.ts.net", port: 22, user: "me"))
+    }
+
+    func testResolveReturnsNilWhenNeitherSet() {
+        let d = scratchDefaults("neither-set")
+        XCTAssertNil(SSHEndpoint.resolve(env: [:], defaults: d))
+    }
+
+    // MARK: - SSHEndpoint.settingsRejectionReason inline validation (M5)
+
+    func testSettingsRejectionReasonAcceptsTailnetTarget() {
+        XCTAssertNil(SSHEndpoint.settingsRejectionReason(for: "me@my-mac.tailnet.ts.net"))
+        XCTAssertNil(SSHEndpoint.settingsRejectionReason(for: "me@100.101.102.103:2222"))
+    }
+
+    func testSettingsRejectionReasonEmptyIsNotAnError() {
+        // Empty field = "unset", not a validation failure — the terminal shows its setup banner instead.
+        XCTAssertNil(SSHEndpoint.settingsRejectionReason(for: ""))
+        XCTAssertNil(SSHEndpoint.settingsRejectionReason(for: "   "))
+    }
+
+    func testSettingsRejectionReasonRejectsMalformedTarget() {
+        // Not a `user@host` shape at all.
+        XCTAssertNotNil(SSHEndpoint.settingsRejectionReason(for: "no-at-sign"))
+        XCTAssertNotNil(SSHEndpoint.settingsRejectionReason(for: "me@"))
+    }
+
+    func testSettingsRejectionReasonSurfacesTheTailnetReason() {
+        // A well-formed but non-tailnet target must surface the EXACT tailnet-guard reason (review #5).
+        let reason = SSHEndpoint.settingsRejectionReason(for: "me@10.0.0.5")
+        XCTAssertEqual(reason, SSHEndpoint.tailnetRejectionReason(for: "10.0.0.5"))
+    }
+
+    func testSettingsRejectionReasonRejectsLoopbackWithoutOptIn() {
+        // Mirrors the connect-time gate: loopback is refused unless the DEBUG opt-in flag is set.
+        XCTAssertNotNil(SSHEndpoint.settingsRejectionReason(for: "me@localhost", env: [:]))
+        XCTAssertNotNil(SSHEndpoint.settingsRejectionReason(for: "me@127.0.0.1", env: [:]))
+    }
+
     // MARK: - TerminalByteChannel framing / encoding (#10, via LoopbackChannel)
 
     func testLoopbackStartEmitsConnectedThenBannerWithCRLF() {
