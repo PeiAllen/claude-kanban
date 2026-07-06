@@ -94,6 +94,26 @@ extension SSHEndpoint {
              + "ORCH_SSH_TARGET at the Mac's tailnet name/IP (not a LAN IP, localhost, or public host)."
     }
 
+    /// DEBUG-only, opt-in escape from the tailnet guard for the **isolated verify harness** (the T1/T4
+    /// scripts point the terminal at a THROWAWAY loopback sshd on `127.0.0.1` whose host key the script
+    /// generates). It is gated behind BOTH a `#if DEBUG` build AND an explicit `ORCH_SSH_ALLOW_LOOPBACK=1`
+    /// env opt-in that only those scripts set — so a shipped Release app can never reach a non-tailnet
+    /// host, and an ordinary DEBUG run (incl. the `TransportTests` that assert loopback is rejected) is
+    /// unaffected. Kept OUT of `isTailnetHost`/`tailnetRejectionReason` so those stay pure and honest:
+    /// loopback genuinely is *not* a tailnet host; this is a test-transport allowance, not a redefinition.
+    /// Safe because the harness's sshd host key is still TOFU-pinned by `PinningHostKeyDelegate`, so the
+    /// tailnet invariant isn't what's protecting that channel.
+    static func isTestLoopbackAllowed(_ host: String,
+                                      env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        #if DEBUG
+        guard env["ORCH_SSH_ALLOW_LOOPBACK"] == "1" else { return false }
+        let h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        return h == "localhost" || h == "127.0.0.1" || h == "::1"
+        #else
+        return false
+        #endif
+    }
+
     /// Parse a strict dotted-quad IPv4 literal into its four octets, or nil if `s` isn't one (so a
     /// hostname like `example.com` or a partial `100.64` is not mistaken for an address).
     private static func ipv4Octets(_ s: String) -> [Int]? {
