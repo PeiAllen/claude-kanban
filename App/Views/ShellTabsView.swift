@@ -24,6 +24,10 @@ struct ShellTabsView: View {
     private var panelHeight: CGFloat { CGFloat(dragHeight ?? savedHeight) }
     private var windows: [String] { model.shellWindows[task.id] ?? [] }
     private var selectedWindow: String { model.selectedShell[task.id] ?? windows.first ?? "shell-1" }
+    // A `phone-<client>` window is owned by a phone: it's LISTED here (shell-sync) but the desktop must
+    // not live-attach it — a second client on the same tmux window resize-fights the phone (the grouped
+    // view session is keyed by window, not client). Selecting it shows an owned-elsewhere placeholder.
+    private func isPhoneOwned(_ w: String) -> Bool { ShellOwner(window: w).isPhone }
     // The ribbon doubles as a drag handle, but only when a panel is actually showing below it.
     private var resizable: Bool { !minimized && !windows.isEmpty }
 
@@ -31,18 +35,24 @@ struct ShellTabsView: View {
         VStack(spacing: 0) {
             ribbon
             if !minimized && !windows.isEmpty {
-                AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession,
-                                  window: selectedWindow, host: model.terminalHost,
-                                  background: theme.termBg, foreground: theme.term,
-                                  // A click into a shell counts as descending: mark the zone so the
-                                  // inspector focus ring / chip track it.
-                                  onFocused: {
-                                      model.focusZone = .shell
-                                      model.selectedShell[task.id] = selectedWindow
-                                  })
-                    // Re-create the terminal per shell tab (and per active connection) so each attaches to
-                    // its own tmux window against the right host.
-                    .id("\(model.connections.activeId)-\(task.tmuxSession):\(selectedWindow)")
+                Group {
+                    if isPhoneOwned(selectedWindow) {
+                        phonePanel(selectedWindow)
+                    } else {
+                        AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession,
+                                          window: selectedWindow, host: model.terminalHost,
+                                          background: theme.termBg, foreground: theme.term,
+                                          // A click into a shell counts as descending: mark the zone so the
+                                          // inspector focus ring / chip track it.
+                                          onFocused: {
+                                              model.focusZone = .shell
+                                              model.selectedShell[task.id] = selectedWindow
+                                          })
+                            // Re-create the terminal per shell tab (and per active connection) so each
+                            // attaches to its own tmux window against the right host.
+                            .id("\(model.connections.activeId)-\(task.tmuxSession):\(selectedWindow)")
+                    }
+                }
                     .frame(height: panelHeight)
                     .background(theme.termBg)
                     .overlay(alignment: .top) { Rectangle().fill(theme.hair).frame(height: 0.5) }
@@ -55,6 +65,22 @@ struct ShellTabsView: View {
                                           style: .continuous))
     }
 
+    /// Shown when a phone-owned shell tab is selected on the desktop. The desktop lists it (so the set
+    /// is consistent) but can't live-attach without resize-fighting the phone, so it renders an
+    /// owned-elsewhere note instead of an `AgentTerminalView`. Closing it from here is still fine.
+    private func phonePanel(_ window: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "iphone").font(.system(size: 26)).foregroundColor(theme.text3)
+            Text("Phone-owned shell").font(F.ui(12, .semibold)).foregroundColor(theme.text2)
+            Text(window).font(F.mono(10)).foregroundColor(theme.text3)
+            Text("This shell runs on a phone. It’s listed here so both surfaces stay in sync; open a new desktop shell with + to work here.")
+                .font(F.ui(11)).foregroundColor(theme.text3)
+                .multilineTextAlignment(.center).frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.termBg)
+    }
+
     private var ribbon: some View {
         HStack(spacing: 4) {
             ForEach(windows, id: \.self) { w in
@@ -62,7 +88,12 @@ struct ShellTabsView: View {
                 HStack(spacing: 3) {
                     Button { model.selectedShell[task.id] = w } label: {
                         HStack(spacing: 4) {
-                            Text("›_").font(F.mono(10))
+                            if isPhoneOwned(w) {
+                                Image(systemName: "iphone").font(F.ui(9))
+                                    .help("Owned by a phone")
+                            } else {
+                                Text("›_").font(F.mono(10))
+                            }
                             Text(w).font(F.mono(10, .medium))
                         }
                         .foregroundColor(active ? theme.text : theme.text2)

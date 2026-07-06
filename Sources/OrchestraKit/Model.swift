@@ -399,6 +399,29 @@ public struct ShellTab: Codable, Sendable, Equatable {
     public init(window: String, label: String, pwd: String) {
         self.window = window; self.label = label; self.pwd = pwd
     }
+    /// Which surface owns this shell — derived purely from its window name.
+    public var owner: ShellOwner { ShellOwner(window: window) }
+}
+
+/// Which surface owns a shell window, derived purely from its tmux window name — no stored state, so
+/// it survives a daemon restart. The phone opens a deterministic `phone-<client8>` window
+/// (`BoardModel.phoneShellWindow`); every other shell window (`shell-N`, an inspect shell) is
+/// desktop-owned. `agent` is never a shell. This is what lets both surfaces render one shared list
+/// while each still live-attaches only the windows it owns (per-client PTY size + stdin — see the
+/// shell-sync design note).
+public enum ShellOwner: Sendable, Equatable {
+    case desktop
+    case phone(clientPrefix: String)
+
+    public init(window: String) {
+        let prefix = "phone-"
+        if window.hasPrefix(prefix) {
+            self = .phone(clientPrefix: String(window.dropFirst(prefix.count)))
+        } else {
+            self = .desktop
+        }
+    }
+    public var isPhone: Bool { if case .phone = self { return true } else { return false } }
 }
 
 public struct ShellPanelState: Sendable, Equatable {
@@ -407,7 +430,17 @@ public struct ShellPanelState: Sendable, Equatable {
     public var isOpen: Bool { !windows.isEmpty }
 
     public init(targets: [TmuxTarget], previousSelection: String?) {
-        self.windows = targets.filter { $0.kind == .shell }.map(\.window)
+        self.init(windows: targets.filter { $0.kind == .shell }.map(\.window),
+                  previousSelection: previousSelection)
+    }
+
+    /// From a broadcast `ShellTab` set (the `shellsChanged` event) rather than a `sessions` poll.
+    public init(shells: [ShellTab], previousSelection: String?) {
+        self.init(windows: shells.map(\.window), previousSelection: previousSelection)
+    }
+
+    public init(windows: [String], previousSelection: String?) {
+        self.windows = windows
         if let previousSelection, windows.contains(previousSelection) {
             self.selected = previousSelection
         } else {
@@ -664,6 +697,22 @@ public enum Event: Codable, Sendable, Equatable {
     /// Ephemeral agent-terminal ownership change. Live-only — NOT ring-replayed (only `.activity`
     /// is). A (re)connecting client reconciles via `agentTerminalOwner(ref)`.
     case agentTerminalOwner(AgentTerminalOwnerState)
+    /// Ephemeral shell-window set for one card — broadcast whenever a shell opens/closes on any
+    /// surface so every client renders the same set (the shell-sync design). Live-only — NOT
+    /// ring-replayed; a (re)connecting client reconciles via the `sessions` RPC in
+    /// `refreshShellPanels`. NOT durable card state (`Task` is untouched).
+    case shellsChanged(ShellWindowsState)
+}
+
+/// The full set of a card's shell windows (excludes `agent`), carried by `Event.shellsChanged`. The
+/// daemon recomputes it from tmux (authoritative) after every shell open/close. Each `ShellTab`'s
+/// `owner` tells a client which surface owns it.
+public struct ShellWindowsState: Codable, Sendable, Equatable {
+    public let cardId: UUID
+    public let shells: [ShellTab]
+    public init(cardId: UUID, shells: [ShellTab]) {
+        self.cardId = cardId; self.shells = shells
+    }
 }
 
 // MARK: - Spawn input
