@@ -205,6 +205,13 @@ public final class ControlServer: @unchecked Sendable {
                 throw OrchestraError.invalidParams("spawnBranches needs repo")
             }
             return try JSONValue(encodable: await service.spawnBranches(repo: repo))
+        case "listDir":
+            // The phone's Spawn-sheet directory browser: a directory's children (subdirs + files),
+            // confined to the daemon's browse roots ($HOME + allowlist), dotfiles hidden. Internal +
+            // app-only — NOT a registry Command, so it never becomes an MCP tool (an agent spawns via
+            // `spawn`, it never browses the daemon's disk). nil/empty path → the root listing.
+            let listPath = req.params?.optString("path")
+            return try JSONValue(encodable: try await service.listDir(listPath))
         case "registerDevice":
             // The phone hands over its APNs device token + notification-pref snapshot (N1) so the daemon
             // can push attention alerts while the phone is backgrounded. Internal + app-only — NOT a

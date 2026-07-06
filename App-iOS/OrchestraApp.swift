@@ -118,9 +118,11 @@ private struct RootView: View {
         }
         #if DEBUG
         // Bug-3 verify hook: open the spawn sheet on launch so it can auto-submit (see SpawnSheet's
-        // ORCH_SPAWN_AUTOSUBMIT). DEBUG-only; production never sets this env.
+        // ORCH_SPAWN_AUTOSUBMIT). ORCH_SPAWN_BROWSE opens it (freeform) to auto-present the directory
+        // browser for a headless screenshot. DEBUG-only; production never sets these.
         .onAppear {
-            if ProcessInfo.processInfo.environment["ORCH_SPAWN_AUTOSUBMIT"] == "1" { model.showSpawn = true }
+            let env = ProcessInfo.processInfo.environment
+            if env["ORCH_SPAWN_AUTOSUBMIT"] == "1" || env["ORCH_SPAWN_BROWSE"] == "1" { model.showSpawn = true }
         }
         #endif
     }

@@ -156,6 +156,13 @@ public final class ControlClient: @unchecked Sendable {
         try await call("spawnBranches", .object(["repo": .string(repo)]), as: [String].self)
     }
 
+    /// Typed convenience over the `listDir` verb — a directory's children for the Spawn sheet's remote
+    /// directory browser (the phone can't browse the daemon's disk). Confined to the daemon's browse
+    /// roots. `path` nil/empty → the root listing. Throws `pathNotAllowed` if the path escapes the roots.
+    public func listDir(path: String?) async throws -> DirListing {
+        try await call("listDir", .object(["path": .string(path ?? "")]), as: DirListing.self)
+    }
+
     /// Send a constrained key chord to a card's tmux window (default `agent`). Convenience over the
     /// `send-keys` verb — encodes the typed chord to the wire form. Distinct from queuing to the inbox
     /// (`send`): live keystrokes, no implicit Enter (submitting needs an explicit `.named(.enter)`).

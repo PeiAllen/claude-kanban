@@ -499,6 +499,13 @@ public final class BoardModel: ObservableObject {
         (try? await client.spawnBranches(repo: repo)) ?? []
     }
 
+    /// List a directory's children for the Spawn sheet's remote directory browser. `path` nil/empty →
+    /// the root listing (browse roots). Returns `nil` on failure (e.g. an escaping path) so the browser
+    /// can surface an error / stay put rather than crash.
+    public func listDir(path: String?) async -> DirListing? {
+        try? await client.listDir(path: path)
+    }
+
     /// Spawn a card. Returns the created `Task` on success (so a caller — e.g. the phone's spawn sheet —
     /// can act on the new card id, such as auto-owning its terminal), or `nil` on failure. Callers that
     /// don't need it can ignore the result.
