@@ -49,7 +49,10 @@ struct AgentTakeoverView: View {
         .task { await controller.begin() }
         // Catch a desktop Retake that arrives as a live owner event *between* heartbeats.
         .onReceive(model.$agentOwners) { _ in controller.reconcile() }
-        .onDisappear { controller.suspend() }
+        // Any dismissal releases the lease — the Return-to-Desktop button (idempotent with its own call),
+        // a swipe-down, or a programmatic dismiss. Without this a non-button dismissal would strand a
+        // heartbeat-less lease that goes stale in ~30s while the surface still shows control (#8).
+        .onDisappear { _Concurrency.Task { await controller.returnToDesktop() } }
     }
 
     // MARK: owner bar

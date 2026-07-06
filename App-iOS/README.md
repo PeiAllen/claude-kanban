@@ -90,8 +90,11 @@ attaching the REAL agent TUI (Claude *or* Codex, provider-neutrally) under D4's 
   (CAS to `.phone`, epoch++, returns the `agent` `TmuxTarget`); heartbeat ~10s (well inside D4's 30s
   stale window); **drop** the attach when ownership flips away (a desktop Retake → `phoneStillHolds…`
   reads `false` via the pure `PhoneTakeoverPolicy.phoneTakeoverStatus`), caught both on a heartbeat reply
-  and on a live owner event; **Return to Desktop** releases (epoch-guarded). All RPCs route through
-  `BoardModel`'s phone methods, so `clientId` stays private to the shared model.
+  and on a live owner event; **any dismissal releases** the lease (epoch-guarded) — the Return-to-Desktop
+  button and `onDisappear` both call `returnToDesktop()` (idempotent), so a swipe-down / programmatic
+  dismiss can't strand a heartbeat-less lease that would go stale in ~30s while the surface still shows
+  control. A hard kill (no `onDisappear`) falls back to the daemon's 30s stale window. All RPCs route
+  through `BoardModel`'s phone methods, so `clientId` stays private to the shared model.
 - **Attach** — `IOSTerminalHost.takeoverAttach` runs `TmuxAttach.attachScript(takeover: true)`
   (`detach-client` first) so the phone is the *sole* client of the grouped `agent` view session (no
   resize-fight). Called only after the lease is held, so the desktop has already unmounted (D5).

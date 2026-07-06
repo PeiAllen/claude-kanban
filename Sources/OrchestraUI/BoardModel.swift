@@ -120,6 +120,14 @@ public final class BoardModel: ObservableObject {
     /// client's disconnect (D3/D4). Resolved once; the same id is reused for local and remote links.
     private let clientId = ClientIdentity.persistentId(at: Config.clientIdPath)
 
+    /// The last APNs device token handed to `registerForPush`, retained so a reconnect can re-assert the
+    /// registration (N1). The token routinely arrives before `bootstrap()` finishes connecting, and the
+    /// F3 dev transport can drop and rebuild `client` against a fresh socket (see `activate`); if the
+    /// token registration landed while the link was down it's lost for the session. We keep the token and
+    /// re-register on the `connectionState → .live` edge (`wireState`). `nil` until the phone hands one
+    /// over; stays `nil` on macOS (no push token path there). Internal for test visibility.
+    private(set) var pushToken: String?
+
     #if os(macOS)
     /// Owns the SSH tunnel for a remote connection; publishes tunnel state. Host-only: iOS reaches the
     /// daemon over the dev transport (F3), not an SSH master.
@@ -147,7 +155,11 @@ public final class BoardModel: ObservableObject {
             _Concurrency.Task { @MainActor in
                 self?.connectionState = s
                 switch s {
-                case .live: self?.connected = true
+                case .live:
+                    self?.connected = true
+                    // Re-assert push registration on the (re)connected link: the token may have arrived
+                    // before we were live, or a tunnel drop rebuilt `client` against a new socket.
+                    self?.reregisterPushOnConnect()
                 case .down: self?.connected = false
                 case .connecting, .retrying: break   // transient — don't flap the board offline
                 }
@@ -505,7 +517,21 @@ public final class BoardModel: ObservableObject {
     /// notification pref changes (a re-register replaces the prior entry). Best-effort — a failed
     /// registration just means no push until the next attempt; the in-app Needs You queue still works.
     public func registerForPush(token: String) async {
+        // Retain the token FIRST — before the best-effort RPC — so a registration that fails because the
+        // link is still connecting (or dropped) is re-attempted on the next `connectionState → .live` edge
+        // rather than lost for the whole session (#7).
+        pushToken = token
         _ = try? await client.registerDevice(token: token, prefs: NotificationPrefs().snapshot())
+    }
+
+    /// Re-assert push registration on the (re)connected link, if we hold a device token (#7). Called on
+    /// the `connectionState → .live` edge from `wireState`. Guarded to a no-op when no token is present
+    /// (macOS, or before the phone registers). Idempotent with the token-arrival path: the daemon keys
+    /// device registrations by `clientId` and REPLACES the prior entry (`DeviceTokenStore.register`), so
+    /// the two paths firing close together can't double-register harmfully — the store holds one entry.
+    func reregisterPushOnConnect() {
+        guard let token = pushToken else { return }
+        _Concurrency.Task { await self.registerForPush(token: token) }
     }
 
     /// Non-attaching read of a card's agent pane (the phone Agent tab's v1 render source, D1). Just a
