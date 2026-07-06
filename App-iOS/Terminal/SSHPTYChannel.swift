@@ -73,10 +73,12 @@ private final class PubkeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
     }
 }
 
-/// Host-key policy. T1 uses trust-on-first-use *accept* (the phone reaches a personal Mac over an
-/// SSH-over-Tailscale link the user already trusts). Strict per-host pinning is a device-hardening
-/// follow-on (documented in App-iOS/README.md) — swift-nio-ssh doesn't expose the host key's raw bytes
-/// for a stable fingerprint here without private API.
+/// Host-key policy. This accepts *any* host key — deliberately (review #5). The phone reaches a personal
+/// Mac over an SSH-over-Tailscale link the user already trusts; Tailscale's WireGuard layer authenticates
+/// the peer, so TOFU host-key pinning is not wanted. What makes that trust valid is enforced elsewhere:
+/// `SSHPTYChannel.start` refuses any non-tailnet target (`SSHEndpoint.isTailnetHost`) before connecting,
+/// so this delegate only ever sees keys from a tailnet peer. Strict per-host pinning is intentionally NOT
+/// added (swift-nio-ssh also doesn't expose the host key's raw bytes for a stable fingerprint here).
 private final class AcceptHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
         validationCompletePromise.succeed(())
@@ -165,6 +167,15 @@ final class SSHPTYChannel: TerminalByteChannel {
         bridge.onOutput = onOutput
         bridge.onEvent = onEvent
         onEvent?(.connecting)
+
+        // Tailscale-trust guard (review #5): we accept any host key (see `AcceptHostKeyDelegate`) ONLY
+        // because the target is reached over Tailscale. Enforce that invariant here — refuse a target
+        // that isn't a tailnet address rather than blindly trusting a stranger's host key.
+        if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host) {
+            state = .closed
+            onEvent?(.failed(reason))
+            return
+        }
 
         let key: NIOSSHPrivateKey
         do {
