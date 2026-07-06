@@ -55,6 +55,10 @@ is not Claude/Codex-specific). Layers:
   non-syncing). `authorizedKeyLine()` is the one line to add to the Mac's `~/.ssh/authorized_keys`.
 - `Terminal/IOSTerminalView.swift` — the SwiftTerm view + a `Coordinator` that owns the channel across
   SwiftUI re-renders (client half of reconnect idempotency) and reconnects with bounded backoff.
+- `Terminal/SSHHostKeyPinStore.swift` — **host-key pinning (TOFU)**: the first connect pins the server's
+  host key (SHA-256 of its canonical OpenSSH form) in the Keychain (`AfterFirstUnlockThisDeviceOnly`,
+  non-syncing, keyed by host); later connects compare and REFUSE a changed key as a possible MITM. The
+  Keychain persistence is behind a `HostKeyPinStorage` seam so the TOFU logic is unit-testable.
 
 The seam (`TerminalByteChannel`) is what lets **T2** (phone-owned shell), **T3** (Agent), and **T4**
 (takeover) reuse the same view with a differently-parameterised channel.
@@ -77,9 +81,12 @@ trusts it, starts a throwaway tmux window, then launches the app (DEBUG `Termina
 view session. The DEBUG-only `Terminal` tab + `DebugSupport` exist only to drive this before T2/T3/T4
 provide product surfaces; both compile out of Release.
 
-Host-key policy is trust-on-first-use *accept* (a personal Mac over a trusted Tailscale link); strict
-per-host pinning is a device-hardening follow-on (swift-nio-ssh doesn't expose the host key's raw bytes
-for a stable fingerprint without private API).
+Host-key policy is trust-on-first-use **pinning** (`SSHHostKeyPinStore`): the first connect to a host
+pins the presented key; a later *changed* key is refused as a possible MITM and surfaced as the distinct
+`.hostKeyChanged` terminal state (no silent accept, no reconnect loop). A deliberate server re-key isn't
+a dead end — **Settings ▸ Security ▸ Reset trusted host key** clears the pin so the next connect re-pins.
+The stable fingerprint comes from `String(openSSHPublicKey:)` (a public swift-nio-ssh API — no private
+API needed), hashed with SHA-256.
 
 ## Live takeover (T4)
 

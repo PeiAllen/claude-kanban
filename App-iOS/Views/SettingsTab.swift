@@ -12,6 +12,7 @@ struct SettingsTab: View {
         NavigationStack {
             List {
                 ConnectionSettingsSections()
+                SecuritySettingsSection()
                 NotificationsSettingsSection()
                 AppearanceSettingsSection()
                 aboutSection

@@ -73,13 +73,47 @@ private final class PubkeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
     }
 }
 
-/// Host-key policy. T1 uses trust-on-first-use *accept* (the phone reaches a personal Mac over an
-/// SSH-over-Tailscale link the user already trusts). Strict per-host pinning is a device-hardening
-/// follow-on (documented in App-iOS/README.md) — swift-nio-ssh doesn't expose the host key's raw bytes
-/// for a stable fingerprint here without private API.
-private final class AcceptHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
+/// Carries the host-key verdict from the NIO event loop (where `validateHostKey` runs) back to the main
+/// actor's connect-completion handler, so a pin mismatch is reported as the distinct `.hostKeyChanged`
+/// state exactly once (not also as a generic `.failed`).
+private final class HostKeyGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _changed = false
+    func markChanged() { lock.lock(); _changed = true; lock.unlock() }
+    var changed: Bool { lock.lock(); defer { lock.unlock() }; return _changed }
+}
+
+/// Host-key policy: **trust-on-first-use PINNING** (security #5). The first connect to a host pins the
+/// server key (SHA-256 of its canonical OpenSSH form) in the Keychain; every later connect compares the
+/// presented key to the pin and REFUSES on a mismatch — the terminal carries agent output *and* your
+/// keystrokes, so an accept-any policy is MITM-able. A changed key emits the distinct `.hostKeyChanged`
+/// event; a Keychain failure fails closed (we can't verify → don't connect). Reset a pin via Settings.
+private final class PinningHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
+    private let host: String
+    private let store: SSHHostKeyPinStore
+    private let bridge: TerminalCallbackBridge
+    private let gate: HostKeyGate
+
+    init(host: String, store: SSHHostKeyPinStore, bridge: TerminalCallbackBridge, gate: HostKeyGate) {
+        self.host = host; self.store = store; self.bridge = bridge; self.gate = gate
+    }
+
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        validationCompletePromise.succeed(())
+        let fingerprint = SSHHostKeyPinStore.fingerprint(of: hostKey)
+        do {
+            switch try store.evaluate(host: host, fingerprint: fingerprint) {
+            case .pinnedFirstUse, .matched:
+                validationCompletePromise.succeed(())
+            case .changed:
+                gate.markChanged()
+                bridge.event(.hostKeyChanged(host: host))
+                validationCompletePromise.fail(HostKeyChangedError(host: host))
+            }
+        } catch {
+            // Can't read/write the pin → we can't verify the host → fail closed. Surfaces via the
+            // connect-completion handler's generic `.failed` path (gate stays unset).
+            validationCompletePromise.fail(error)
+        }
     }
 }
 
@@ -177,12 +211,15 @@ final class SSHPTYChannel: TerminalByteChannel {
 
         let endpoint = self.endpoint, command = self.command, bridge = self.bridge
         let group = self.group
+        let pinStore = SSHHostKeyPinStore()
+        let gate = HostKeyGate()
 
         let bootstrap = ClientBootstrap(group: group)
             .channelInitializer { channel in
                 let config = SSHClientConfiguration(
                     userAuthDelegate: PubkeyAuthDelegate(username: endpoint.user, privateKey: key),
-                    serverAuthDelegate: AcceptHostKeyDelegate())
+                    serverAuthDelegate: PinningHostKeyDelegate(
+                        host: endpoint.host, store: pinStore, bridge: bridge, gate: gate))
                 return channel.pipeline.addHandler(
                     NIOSSHHandler(role: .client(config), allocator: channel.allocator,
                                   inboundChildChannelInitializer: nil))
@@ -217,7 +254,11 @@ final class SSHPTYChannel: TerminalByteChannel {
                     MainActor.assumeIsolated { self.attached(parent: parentB, child: childB) }
                 }
             case .failure(let error):
-                bridge.event(.failed(String(describing: error)))
+                // A host-key change already emitted the distinct `.hostKeyChanged` state — don't also
+                // report it as a generic connection failure (which would trigger a reconnect loop).
+                if !gate.changed {
+                    bridge.event(.failed(String(describing: error)))
+                }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         if self.state == .connecting { self.state = .closed }

@@ -179,4 +179,83 @@ final class IOSAppTests: XCTestCase {
         let runs = captureRuns(from: "x" + dcs + "y")
         XCTAssertFalse(runs.contains { if case .image = $0 { return true } else { return false } })
     }
+
+    // MARK: - SSH host-key pinning / TOFU (security #5)
+
+    private func pinStore() -> SSHHostKeyPinStore {
+        SSHHostKeyPinStore(storage: InMemoryHostKeyPinStorage())
+    }
+    private func fp(_ key: String) -> Data {
+        SSHHostKeyPinStore.fingerprint(openSSHKey: "ssh-ed25519 \(key)")
+    }
+
+    func testHostKeyFirstUsePinsTheKey() throws {
+        // TOFU: the first connect to a host has no record, so the presented key is pinned there and then.
+        let store = pinStore()
+        XCTAssertFalse(try store.hasPin(host: "mac.ts.net"))
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("A")), .pinnedFirstUse)
+        XCTAssertTrue(try store.hasPin(host: "mac.ts.net"))   // persisted for next time
+    }
+
+    func testHostKeyMatchingKeyIsAccepted() throws {
+        // A later connect presenting the SAME key matches the pin — the normal, safe path.
+        let store = pinStore()
+        _ = try store.evaluate(host: "mac.ts.net", fingerprint: fp("A"))   // first use pins
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("A")), .matched)
+    }
+
+    func testHostKeyChangedIsRejected() throws {
+        // A different key on a pinned host is a possible MITM → .changed (rejected), and the change must
+        // NOT overwrite the pin — the original key stays the trusted one.
+        let store = pinStore()
+        _ = try store.evaluate(host: "mac.ts.net", fingerprint: fp("A"))
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("EVIL")), .changed)
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("A")), .matched)
+    }
+
+    func testHostKeyResetReenablesTrustOnFirstUse() throws {
+        // Explicit reset clears the pin so a legitimate re-key re-pins on the next connect (no dead end).
+        let store = pinStore()
+        _ = try store.evaluate(host: "mac.ts.net", fingerprint: fp("A"))
+        try store.reset(host: "mac.ts.net")
+        XCTAssertFalse(try store.hasPin(host: "mac.ts.net"))
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("B")), .pinnedFirstUse)
+        XCTAssertEqual(try store.evaluate(host: "mac.ts.net", fingerprint: fp("B")), .matched)
+    }
+
+    func testHostKeyPinsAreScopedPerHost() throws {
+        // Pins are keyed by host: one host's key never validates (or masks) another's.
+        let store = pinStore()
+        _ = try store.evaluate(host: "host-a", fingerprint: fp("A"))
+        XCTAssertEqual(try store.evaluate(host: "host-b", fingerprint: fp("B")), .pinnedFirstUse)
+        XCTAssertEqual(try store.evaluate(host: "host-a", fingerprint: fp("A")), .matched)
+        XCTAssertEqual(try store.evaluate(host: "host-a", fingerprint: fp("B")), .changed)
+    }
+
+    func testHostKeyResetAllClearsEveryPin() throws {
+        let store = pinStore()
+        _ = try store.evaluate(host: "host-a", fingerprint: fp("A"))
+        _ = try store.evaluate(host: "host-b", fingerprint: fp("B"))
+        try store.resetAll()
+        XCTAssertFalse(try store.hasPin(host: "host-a"))
+        XCTAssertFalse(try store.hasPin(host: "host-b"))
+    }
+
+    func testHostKeyFingerprintIsStableAndKeyDependent() {
+        // Same key → same 32-byte SHA-256 pin (stable across connects); a different key → a different pin
+        // (so a substituted key is detectable).
+        XCTAssertEqual(fp("A"), fp("A"))
+        XCTAssertNotEqual(fp("A"), fp("B"))
+        XCTAssertEqual(fp("A").count, 32)
+    }
+}
+
+/// In-memory `HostKeyPinStorage` for the TOFU tests — the unit-test bundle can't reach a real Keychain.
+/// `@unchecked Sendable`: the tests drive it single-threaded on the main actor.
+private final class InMemoryHostKeyPinStorage: HostKeyPinStorage, @unchecked Sendable {
+    private var pins: [String: Data] = [:]
+    func loadPin(host: String) throws -> Data? { pins[host] }
+    func savePin(_ pin: Data, host: String) throws { pins[host] = pin }
+    func deletePin(host: String) throws { pins[host] = nil }
+    func deleteAllPins() throws { pins.removeAll() }
 }
