@@ -25,7 +25,8 @@ updated: 2026-07-06
 | 3 — Implementation | [[03-implementation]] | approved |
 | 3 — Tests | [[04-tests]] | approved |
 
-**All layers approved (2026-07-06).** Implementing P1; P2–P4 refined when reached.
+**All layers approved (2026-07-06).** **P1 done** (board over SSH — code + 16 unit tests green, iOS +
+macOS build clean; loopback e2e deferred to the end). Implementing **P2** next; P3–P4 to follow.
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
