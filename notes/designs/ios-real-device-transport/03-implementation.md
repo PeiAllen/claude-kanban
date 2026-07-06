@@ -29,7 +29,13 @@ Pure, dependency-free, fully unit-testable — build first.
 - `signalEOF()`: set EOF, `broadcast()`. On EOF **drop any incomplete trailing frame** (mirrors
   `LineReader` at `Sources/OrchestraKit/Control/UDSSocket.swift`).
 
-### P1.2 `IOSSSHSession` (new — `App-iOS/Terminal/IOSSSHSession.swift`)
+### P1.2 `IOSSSHSession` (new — `App-iOS/Terminal/IOSSSHSession.swift`) ✅ COMPILES
+> **Implemented.** Shared primitives extracted to `SSHClientPrimitives.swift` (`ChannelBox`,
+> `PubkeyAuthDelegate`, `HostKeyGate`, `PinningHostKeyDelegate` — the last generalized to an
+> `onHostKeyChanged` closure); `SSHPTYChannel` updated to use them. **Constraint hit:** `NIOSSHHandler`
+> is not `Sendable`, so the session stores only the parent `Channel` and fetches the handler on-demand in
+> `openChannel` (on the parent loop) — never crossing it through a future. iOS build green.
+
 Hoists the **connection half** of `SSHPTYChannel.start` (`:206–257`). Reuses `PubkeyAuthDelegate`,
 `PinningHostKeyDelegate`, `HostKeyGate`, `ChannelBox` **verbatim** (make them non-`private`/shared).
 - `connect()`: tailnet guard (`SSHEndpoint.tailnetRejectionReason` unless `isTestLoopbackAllowed`) →
@@ -44,7 +50,12 @@ Hoists the **connection half** of `SSHPTYChannel.start` (`:206–257`). Reuses `
 - **Host-key fan-out:** `PinningHostKeyDelegate` reports to the session's subscriber list (lock-guarded
   arrays), not a single terminal `bridge`. `onStateChange`/`onHostKeyChanged` append callbacks.
 
-### P1.3 `SSHControlTransport` (new — `App-iOS/Terminal/SSHControlTransport.swift`)
+### P1.3 `SSHControlTransport` (new — `App-iOS/Terminal/SSHControlTransport.swift`) ✅ COMPILES
+> **Implemented** with `ControlChannelHandler` + `bridgeCommand`. Tilde handling: a leading `~/` →
+> `"$HOME/…"` (double-quoted for the space in "Application Support") so it expands *and* survives
+> word-splitting in the remote shell; plain paths single-quoted. iOS build green. (iOS unit tests for
+> `bridgeCommand`/`open`-throws still pending.)
+
 - `open()`: `guard let s = session() else { throw }` → `try s.connect().wait()` (safe — off-loop) →
   `s.openChannel { ch in ch.setOption(.allowRemoteHalfClosure, true).flatMap { ch.pipeline.addHandler(ControlChannelHandler(command: bridgeCommand, buffer: buffer)) } }.wait()` → store `ChannelBox`.
 - `ControlChannelHandler: ChannelInboundHandler` (`InboundIn = SSHChannelData`): `channelActive` triggers

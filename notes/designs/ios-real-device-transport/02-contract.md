@@ -285,6 +285,22 @@ classDiagram
 | Host-key/state as multi-subscriber fan-out on the session | One connection, many consumers (was one terminal `bridge`) | Per-consumer delegate |
 | P1 board-only; terminals fold in P2 | Smaller P1, board unblocks everything | Migrate terminals in P1 too |
 
+## Refinement during implementation (2026-07-06)
+
+**Module boundary:** `BoardModel` (OrchestraUI) has **no NIOSSH dependency** — the SSH types live in
+`App-iOS`. So `BoardModel.activate` cannot directly build `SSHControlTransport`/`IOSConnectionController`.
+Resolved by **dependency inversion**:
+
+- New seam in OrchestraKit: `@MainActor protocol RemoteControlTransportProvider { func controlTransportFactory(for: Connection) -> (@Sendable () -> Transport)? }`.
+- `IOSConnectionController` (App-iOS) **conforms** to it; `configure`s the session and returns the factory.
+- **`OrchestraApp` (App-iOS) owns** the controller as a `@StateObject`, injects it into `BoardModel`
+  (as the provider), and wires `scenePhase` → `controller.onScenePhase`.
+- `BoardModel.activate`: `if let factory = provider?.controlTransportFactory(for: conn) { ControlClient(transport: factory) } else { …socketPath… }`.
+
+This *refines* "BoardModel owns the session" → **OrchestraApp owns the controller; BoardModel consumes it
+via the provider seam.** Ownership/lifecycle semantics are unchanged (controller still owns the session,
+lazy provider, `scenePhase` reconnect); only the wiring point moves to respect the module graph.
+
 ## Open questions — need your call
 
 - [ ] None blocking. Session ownership resolved → dedicated `IOSConnectionController` (see Decisions).

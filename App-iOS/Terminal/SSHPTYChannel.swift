@@ -29,93 +29,8 @@ private final class TerminalCallbackBridge: @unchecked Sendable {
     }
 }
 
-/// Confines a NIO `Channel` so the main actor can write to it (on the channel's own event loop).
-private final class ChannelBox: @unchecked Sendable {
-    let channel: Channel
-    init(_ channel: Channel) { self.channel = channel }
-
-    func sendBytes(_ bytes: [UInt8]) {
-        let channel = self.channel
-        channel.eventLoop.execute {
-            var buf = channel.allocator.buffer(capacity: bytes.count)
-            buf.writeBytes(bytes)
-            channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(buf)), promise: nil)
-        }
-    }
-    func windowChange(cols: Int, rows: Int) {
-        let channel = self.channel
-        channel.eventLoop.execute {
-            let ev = SSHChannelRequestEvent.WindowChangeRequest(
-                terminalCharacterWidth: cols, terminalRowHeight: rows,
-                terminalPixelWidth: 0, terminalPixelHeight: 0)
-            channel.triggerUserOutboundEvent(ev, promise: nil)
-        }
-    }
-    func close() { channel.close(promise: nil) }
-}
-
-/// Offers this device's Ed25519 public key for user auth (key-only; never a password prompt in-app).
-private final class PubkeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
-    let username: String
-    let privateKey: NIOSSHPrivateKey
-    init(username: String, privateKey: NIOSSHPrivateKey) {
-        self.username = username; self.privateKey = privateKey
-    }
-    func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-                                nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
-        guard availableMethods.contains(.publicKey) else {
-            nextChallengePromise.succeed(nil)   // nothing else we can offer
-            return
-        }
-        nextChallengePromise.succeed(
-            NIOSSHUserAuthenticationOffer(username: username, serviceName: "",
-                                          offer: .privateKey(.init(privateKey: privateKey))))
-    }
-}
-
-/// Carries the host-key verdict from the NIO event loop (where `validateHostKey` runs) back to the main
-/// actor's connect-completion handler, so a pin mismatch is reported as the distinct `.hostKeyChanged`
-/// state exactly once (not also as a generic `.failed`).
-private final class HostKeyGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _changed = false
-    func markChanged() { lock.lock(); _changed = true; lock.unlock() }
-    var changed: Bool { lock.lock(); defer { lock.unlock() }; return _changed }
-}
-
-/// Host-key policy: **trust-on-first-use PINNING** (security #5). The first connect to a host pins the
-/// server key (SHA-256 of its canonical OpenSSH form) in the Keychain; every later connect compares the
-/// presented key to the pin and REFUSES on a mismatch — the terminal carries agent output *and* your
-/// keystrokes, so an accept-any policy is MITM-able. A changed key emits the distinct `.hostKeyChanged`
-/// event; a Keychain failure fails closed (we can't verify → don't connect). Reset a pin via Settings.
-private final class PinningHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
-    private let host: String
-    private let store: SSHHostKeyPinStore
-    private let bridge: TerminalCallbackBridge
-    private let gate: HostKeyGate
-
-    init(host: String, store: SSHHostKeyPinStore, bridge: TerminalCallbackBridge, gate: HostKeyGate) {
-        self.host = host; self.store = store; self.bridge = bridge; self.gate = gate
-    }
-
-    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        let fingerprint = SSHHostKeyPinStore.fingerprint(of: hostKey)
-        do {
-            switch try store.evaluate(host: host, fingerprint: fingerprint) {
-            case .pinnedFirstUse, .matched:
-                validationCompletePromise.succeed(())
-            case .changed:
-                gate.markChanged()
-                bridge.event(.hostKeyChanged(host: host))
-                validationCompletePromise.fail(HostKeyChangedError(host: host))
-            }
-        } catch {
-            // Can't read/write the pin → we can't verify the host → fail closed. Surfaces via the
-            // connect-completion handler's generic `.failed` path (gate stays unset).
-            validationCompletePromise.fail(error)
-        }
-    }
-}
+// `ChannelBox`, `PubkeyAuthDelegate`, `HostKeyGate`, and `PinningHostKeyDelegate` moved to
+// `SSHClientPrimitives.swift` so the shared `IOSSSHSession` reuses them.
 
 /// The child-channel handler: requests a PTY, execs the attach command, and forwards remote bytes.
 private final class PTYChannelHandler: ChannelInboundHandler {
@@ -229,7 +144,9 @@ final class SSHPTYChannel: TerminalByteChannel {
                 let config = SSHClientConfiguration(
                     userAuthDelegate: PubkeyAuthDelegate(username: endpoint.user, privateKey: key),
                     serverAuthDelegate: PinningHostKeyDelegate(
-                        host: endpoint.host, store: pinStore, bridge: bridge, gate: gate))
+                        host: endpoint.host, store: pinStore,
+                        onHostKeyChanged: { [bridge] host in bridge.event(.hostKeyChanged(host: host)) },
+                        gate: gate))
                 return channel.pipeline.addHandler(
                     NIOSSHHandler(role: .client(config), allocator: channel.allocator,
                                   inboundChildChannelInitializer: nil))
