@@ -32,31 +32,8 @@ struct SSHEndpoint: Equatable {
         self.init(host: rest, port: port, user: user)
     }
 
-    /// UserDefaults key the in-app **Settings → Terminal** surface (M5) persists the SSH target under.
-    /// Single source of truth for both the settings binding and `resolve` below.
-    static let targetDefaultsKey = "orch_ssh_target"
-
-    /// Resolve the endpoint the terminal should SSH to. The persisted in-app setting (M5, keyed by
-    /// `targetDefaultsKey`) wins; when that is unset we fall back to `ORCH_SSH_TARGET` (env / Simulator
-    /// launch arg — mirrors how F3 wires `ORCH_DEV_SOCKET`), which keeps the dev/Simulator/verify-harness
-    /// path working with no in-app config. Returns nil when neither is set, so the terminal shows a
-    /// "configure SSH" banner rather than failing silently.
-    ///
-    /// The host must be a **tailnet** address — see `isTailnetHost` (review #5). The settings surface and
-    /// the env both carry the Mac's Tailscale name/IP; even on the Simulator (which shares the Mac's
-    /// network *and* its MagicDNS resolver) the target is the Mac's `*.ts.net` name or `100.x` address,
-    /// not `localhost`.
-    /// - **Simulator**: `<you>@my-mac.tailnet.ts.net` (or the `100.x` tailnet IP) — a live attach stays
-    ///   verifiable without a device, while still satisfying the Tailscale-trust guard.
-    /// - **Device**: the same Mac's Tailscale name/IP (phone-client 01-design: SSH-over-Tailscale), set
-    ///   once in Settings → Terminal.
-    static func resolve(env: [String: String] = ProcessInfo.processInfo.environment,
-                        defaults: UserDefaults = .standard) -> SSHEndpoint? {
-        let persisted = (defaults.string(forKey: targetDefaultsKey) ?? "").trimmingCharacters(in: .whitespaces)
-        let target = persisted.isEmpty ? (env["ORCH_SSH_TARGET"] ?? "") : persisted
-        guard !target.isEmpty else { return nil }
-        return SSHEndpoint(target: target)
-    }
+    // The SSH endpoint is now derived from the **active `Connection`** (unified config), not a standalone
+    // `orch_ssh_target` setting. See `SSHEndpoint.resolve(connection:env:)` in `Connection+SSHEndpoint.swift`.
 }
 
 // MARK: - Tailscale-target guard (review #5)

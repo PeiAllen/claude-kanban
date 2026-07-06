@@ -28,3 +28,17 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     }
     public var isLocal: Bool { kind == .local }
 }
+
+extension Connection {
+    /// Default Mac daemon socket, reachable inside the SSH exec shell (the `~` expands on the Mac).
+    public static let defaultMacSocketPath =
+        "~/Library/Application Support/Orchestra/orchestrad.sock"
+
+    /// The single "my Mac over Tailscale" connection the iOS app configures — a `.remote` connection
+    /// whose `sshTarget` is a tailnet host. The per-device SSH key is implicit (Keychain via
+    /// `SSHKeyStore`), so `identityFile` stays nil on iOS.
+    public static func mac(sshTarget: String, name: String = "My Mac",
+                           remoteSocketPath: String = defaultMacSocketPath) -> Connection {
+        Connection(name: name, kind: .remote, sshTarget: sshTarget, remoteSocketPath: remoteSocketPath)
+    }
+}

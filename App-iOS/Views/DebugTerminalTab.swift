@@ -64,7 +64,7 @@ struct DebugTerminalTab: View {
                             Button("Attach terminal") { attached = true }
                                 .disabled(session.isEmpty)
                         } footer: {
-                            Text("SSH target: \(SSHEndpoint.resolve().map { "\($0.user)@\($0.host):\($0.port)" } ?? "unset (ORCH_SSH_TARGET) — attach shows setup banner")")
+                            Text("SSH target: \(SSHEndpoint.resolve(connection: model.connections.active).map { "\($0.user)@\($0.host):\($0.port)" } ?? "unset — add a Mac connection or set ORCH_SSH_TARGET")")
                         }
                         // T3 wires the real Agent-tab "Take Over Agent Terminal" entry; this DEBUG button
                         // drives the same flow (lease → takeover attach → heartbeat) against a card id.

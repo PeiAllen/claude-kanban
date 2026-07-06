@@ -10,6 +10,7 @@ struct ConnectionSettingsSections: View {
     @EnvironmentObject var model: BoardModel
 
     @State private var editing: Connection?   // non-nil → editor sheet open
+    @State private var guidedSetup = false     // true → guided "connect your Mac" walkthrough open
     @State private var refresh = 0            // bumped after a store mutation to force a re-read
 
     var body: some View {
@@ -23,6 +24,9 @@ struct ConnectionSettingsSections: View {
             RemoteEditorView(connection: conn) { saved in
                 model.connections.upsert(saved); editing = nil; refresh += 1
             } onCancel: { editing = nil }
+        }
+        .sheet(isPresented: $guidedSetup) {
+            MacSetupView { guidedSetup = false; refresh += 1 }
         }
     }
 
@@ -77,15 +81,24 @@ struct ConnectionSettingsSections: View {
                 connectionRow(conn)
             }
             Button {
-                editing = Connection(name: "", kind: .remote, remoteTmuxSocket: "orchestra")
+                // Prefill the Mac daemon socket + name so adding your Mac is one field — the tailnet
+                // target. The board reaches it over SSH (P1); terminals/takeover use the same connection.
+                editing = Connection(name: "My Mac", kind: .remote,
+                                     remoteSocketPath: Connection.defaultMacSocketPath,
+                                     remoteTmuxSocket: "orchestra")
             } label: {
-                Label("Add remote…", systemImage: "plus.circle")
+                Label("Add your Mac…", systemImage: "plus.circle")
+            }
+            // The guided walkthrough — same three steps as first launch (target → trust key → test).
+            Button { guidedSetup = true } label: {
+                Label("Set up your Mac…", systemImage: "wand.and.stars")
             }
         } header: {
             Text("Connection")
         } footer: {
-            Text("Which daemon the board talks to. Run scripts/deploy-linux-daemon.sh on a Linux box, "
-                 + "then add its SSH target + socket path here.")
+            Text("Which daemon the board talks to. Add your Mac over Tailscale (its user@…​.ts.net "
+                 + "target) — the socket path is prefilled. The board, terminals, and takeover all use "
+                 + "this one connection.")
         }
     }
 
