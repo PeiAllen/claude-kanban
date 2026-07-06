@@ -209,8 +209,17 @@ private struct CapturePaneText: View {
     var maxImageWidth: CGFloat = 0
     @Environment(\.theme) private var theme: Theme
 
+    /// Decoded runs for the current frame, recomputed only when `text` actually changes (Sixel scan +
+    /// decode is otherwise re-run on every body eval — footer/`lastUpdated` ticks re-render this view).
+    @State private var runs: [CapturePaneRun] = []
+
     var body: some View {
-        let runs = captureRuns(from: text)
+        content
+            .onAppear { runs = captureRuns(from: text) }
+            .onChange(of: text) { _, t in runs = captureRuns(from: t) }
+    }
+
+    @ViewBuilder private var content: some View {
         // Fast/common path: an all-text frame renders exactly as pre-C2 (one Text, no VStack wrapping).
         if runs.count == 1, case .text(let s) = runs[0] {
             paneText(s)

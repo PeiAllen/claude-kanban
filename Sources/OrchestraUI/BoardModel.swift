@@ -135,7 +135,10 @@ public final class BoardModel: ObservableObject {
     }()
     #endif
 
-    public init(platform: PlatformUI = .noop) {
+    /// No `.noop` default on purpose: every construction site must pass its platform bundle (desktop
+    /// `MacPlatform.ui`, iOS `.ios`) so a future macOS call site can't silently no-op clipboard/settings/
+    /// focus. Tests pass an explicit spy bundle; `.noop` stays available for those that want it.
+    public init(platform: PlatformUI) {
         self.platform = platform
         client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()

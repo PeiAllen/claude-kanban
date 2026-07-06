@@ -29,7 +29,16 @@ enum SSHKeyStore {
             return try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }
         let key = Curve25519.Signing.PrivateKey()
-        try writeKey(key.rawRepresentation)
+        // Two concurrent first-use callers can each generate a *different* key here; only one
+        // `SecItemAdd` wins. `writeKey` returns false on `errSecDuplicateItem` — the loser must then
+        // re-read and return the STORED key, not its own unpersisted one, or it would authenticate with
+        // a pubkey the Mac never got in `authorized_keys` (auth fails).
+        if try writeKey(key.rawRepresentation) { return key }
+        if let raw = try readKey() {
+            return try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
+        }
+        // Duplicate reported but the item vanished before the re-read (extremely unlikely) — fall back
+        // to our freshly-generated key so callers always get a usable identity.
         return key
     }
 
@@ -72,7 +81,10 @@ enum SSHKeyStore {
         }
     }
 
-    private static func writeKey(_ data: Data) throws {
+    /// Persist `data` as the identity. Returns `true` if this call created the item, `false` if one
+    /// already existed (`errSecDuplicateItem` — a concurrent first-use caller won the race). Throws on
+    /// any other Keychain failure.
+    private static func writeKey(_ data: Data) throws -> Bool {
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -81,8 +93,10 @@ enum SSHKeyStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess || status == errSecDuplicateItem else {
-            throw KeychainError(status: status)
+        switch status {
+        case errSecSuccess:       return true
+        case errSecDuplicateItem: return false
+        default:                  throw KeychainError(status: status)
         }
     }
 }

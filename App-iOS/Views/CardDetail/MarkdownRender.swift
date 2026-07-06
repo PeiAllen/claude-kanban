@@ -11,25 +11,15 @@ import OrchestraUI
 
 // MARK: - Block model
 
-enum MarkdownBlock: Identifiable {
+enum MarkdownBlock {
     case heading(level: Int, text: String)
     case paragraph(String)
     case code(language: String?, code: String)
     case quote(String)
     case list(ListBlock)
     case thematicBreak
-
-    // Stable-enough id for ForEach: index is prepended by the renderer.
-    var id: String {
-        switch self {
-        case .heading(let l, let t): return "h\(l):\(t)"
-        case .paragraph(let t):      return "p:\(t)"
-        case .code(_, let c):        return "c:\(c.prefix(24))"
-        case .quote(let t):          return "q:\(t)"
-        case .list(let b):           return "l:\(b.items.count):\(b.items.first?.text ?? "")"
-        case .thematicBreak:         return "hr"
-        }
-    }
+    // No `Identifiable`: the renderer keys its `ForEach` on `\.offset` (block position), so a per-case
+    // id would be dead. Position is a fine key here — the whole list is rebuilt when the doc changes.
 }
 
 struct ListBlock {
@@ -177,7 +167,9 @@ struct MarkdownView: View {
     let markdown: String
     @Environment(\.theme) private var theme: Theme
 
-    private var blocks: [MarkdownBlock] { MarkdownParser.blocks(markdown) }
+    /// Parsed once on appear and re-parsed only when `markdown` actually changes — not on every body
+    /// eval (theme/layout invalidations would otherwise re-run the whole block parse each frame).
+    @State private var blocks: [MarkdownBlock] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -186,6 +178,8 @@ struct MarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { blocks = MarkdownParser.blocks(markdown) }
+        .onChange(of: markdown) { _, md in blocks = MarkdownParser.blocks(md) }
     }
 
     @ViewBuilder private func view(for block: MarkdownBlock) -> some View {
