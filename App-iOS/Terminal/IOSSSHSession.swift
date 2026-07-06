@@ -17,8 +17,8 @@ enum SSHSessionError: Error, CustomStringConvertible {
 
 /// The phone's shared, authenticated SSH connection to the Mac — the in-process analog of the desktop
 /// `SSHMaster`. One instance == one live SSH connection; it vends `.session` child channels to both the
-/// board's control transport and the terminals, so auth + the tailnet guard + TOFU host-key pinning
-/// happen exactly once (at connect) instead of per channel.
+/// board's control transport and the terminals, so auth + the tailnet-shape guard happen exactly once
+/// (at connect) instead of per channel.
 ///
 /// Lazy reconnect: `connect()` is idempotent and connect-once (concurrent callers share one in-flight
 /// attempt); on drop the connection resets so the next `connect()` re-establishes. The session never runs
@@ -30,7 +30,6 @@ final class IOSSSHSession: @unchecked Sendable {
     let endpoint: SSHEndpoint
     private let group: EventLoopGroup
     private let privateKey: NIOSSHPrivateKey
-    private let pinStore: SSHHostKeyPinStore
 
     private let lock = NSLock()
     private var _state: ConnectionState = .down
@@ -42,29 +41,20 @@ final class IOSSSHSession: @unchecked Sendable {
     /// connect() just filled, then serving that dead future to every caller forever).
     private var connectGen = 0
     private var stateSubs: [(ConnectionState) -> Void] = []
-    private var hostKeySubs: [(String) -> Void] = []
 
-    init(endpoint: SSHEndpoint, group: EventLoopGroup, privateKey: NIOSSHPrivateKey,
-         pinStore: SSHHostKeyPinStore = SSHHostKeyPinStore()) {
+    init(endpoint: SSHEndpoint, group: EventLoopGroup, privateKey: NIOSSHPrivateKey) {
         self.endpoint = endpoint; self.group = group
-        self.privateKey = privateKey; self.pinStore = pinStore
+        self.privateKey = privateKey
     }
 
     var state: ConnectionState { lock.lock(); defer { lock.unlock() }; return _state }
     func onStateChange(_ cb: @escaping (ConnectionState) -> Void) {
         lock.lock(); stateSubs.append(cb); lock.unlock()
     }
-    func onHostKeyChanged(_ cb: @escaping (String) -> Void) {
-        lock.lock(); hostKeySubs.append(cb); lock.unlock()
-    }
 
     private func setState(_ s: ConnectionState) {
         lock.lock(); _state = s; let subs = stateSubs; lock.unlock()
         subs.forEach { $0(s) }
-    }
-    private func fireHostKey(_ host: String) {
-        lock.lock(); let subs = hostKeySubs; lock.unlock()
-        subs.forEach { $0(host) }
     }
 
     /// Establish the connection once; concurrent callers share one in-flight attempt; `.live` returns
@@ -87,8 +77,9 @@ final class IOSSSHSession: @unchecked Sendable {
         lock.unlock()
         setState(.connecting)
 
-        // Tailnet-trust guard (defense-in-depth with host-key pinning): only ever connect to a tailnet
-        // target — refuse LAN/localhost/public hosts before connecting (DEBUG loopback allowance aside).
+        // Tailnet-shape guard: only ever connect to a tailnet target — refuse LAN/localhost/public hosts
+        // before connecting (DEBUG loopback allowance aside). This is what makes accept-any host-key
+        // acceptance safe: the peer is authenticated by Tailscale's WireGuard layer, not the SSH host key.
         if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host),
            !SSHEndpoint.isTestLoopbackAllowed(endpoint.host) {
             clearInFlight(gen)
@@ -97,14 +88,11 @@ final class IOSSSHSession: @unchecked Sendable {
             return promise.futureResult
         }
 
-        let gate = HostKeyGate()
-        let key = privateKey, endpoint = self.endpoint, pinStore = self.pinStore
+        let key = privateKey, endpoint = self.endpoint
         let bootstrap = ClientBootstrap(group: group).channelInitializer { channel in
             let config = SSHClientConfiguration(
                 userAuthDelegate: PubkeyAuthDelegate(username: endpoint.user, privateKey: key),
-                serverAuthDelegate: PinningHostKeyDelegate(
-                    host: endpoint.host, store: pinStore,
-                    onHostKeyChanged: { [weak self] h in self?.fireHostKey(h) }, gate: gate))
+                serverAuthDelegate: AcceptAnyHostKeyDelegate())
             return channel.pipeline.addHandler(
                 NIOSSHHandler(role: .client(config), allocator: channel.allocator,
                               inboundChildChannelInitializer: nil)
@@ -144,7 +132,7 @@ final class IOSSSHSession: @unchecked Sendable {
             }
             .flatMapErrorThrowing { [weak self] error in
                 self?.clearInFlight(gen)
-                if !gate.changed { self?.setState(.down) }   // a host-key change already surfaced distinctly
+                self?.setState(.down)
                 throw error
             }
 

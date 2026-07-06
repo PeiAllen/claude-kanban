@@ -137,11 +137,6 @@ struct IOSTerminalView: UIViewRepresentable {
             case .failed(let message):
                 feedStatus("[connection failed: \(message)]")
                 scheduleReconnect()
-            case .hostKeyChanged(let host):
-                // Possible MITM: show a persistent security warning and do NOT reconnect — hammering the
-                // host would only bury the warning. The user re-keys via Settings ▸ reset trusted key.
-                feedStatus("[⚠︎ host key CHANGED for \(host) — possible MITM. Connection refused. "
-                           + "If you deliberately re-keyed this server, reset its trusted key in Settings.]")
             case .closed:
                 guard !intentionalClose else { return }
                 feedStatus("[disconnected]")

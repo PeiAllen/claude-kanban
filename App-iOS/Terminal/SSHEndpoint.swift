@@ -41,7 +41,7 @@ struct SSHEndpoint: Equatable {
 extension SSHEndpoint {
     /// Is `host` an address that can only live inside this user's tailnet?
     ///
-    /// **Why this exists.** The iOS SSH client (`SSHPTYChannel`) uses `AcceptHostKeyDelegate`, which
+    /// **Why this exists.** The iOS SSH client (`IOSSSHSession`) uses `AcceptAnyHostKeyDelegate`, which
     /// accepts *any* host key. That is deliberate — the owner TRUSTS TAILSCALE and does not want TOFU
     /// host-key pinning (phone-client 01-design: SSH-over-Tailscale to a personal Mac). But blind
     /// host-key acceptance is only safe if the connection genuinely rides the tailnet: Tailscale's
@@ -107,8 +107,8 @@ extension SSHEndpoint {
     /// host, and an ordinary DEBUG run (incl. the `TransportTests` that assert loopback is rejected) is
     /// unaffected. Kept OUT of `isTailnetHost`/`tailnetRejectionReason` so those stay pure and honest:
     /// loopback genuinely is *not* a tailnet host; this is a test-transport allowance, not a redefinition.
-    /// Safe because the harness's sshd host key is still TOFU-pinned by `PinningHostKeyDelegate`, so the
-    /// tailnet invariant isn't what's protecting that channel.
+    /// Safe because the harness's throwaway sshd runs on the loopback interface of the same machine, so
+    /// there is no network path for a MITM to sit on regardless of host-key acceptance.
     static func isTestLoopbackAllowed(_ host: String,
                                       env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         #if DEBUG

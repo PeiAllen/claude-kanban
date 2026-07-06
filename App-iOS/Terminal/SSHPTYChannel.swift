@@ -37,8 +37,8 @@ private final class TerminalCallbackBridge: @unchecked Sendable {
     }
 }
 
-// `ChannelBox`, `PubkeyAuthDelegate`, `HostKeyGate`, and `PinningHostKeyDelegate` live in
-// `SSHClientPrimitives.swift`; the tailnet guard + TOFU pinning now happen inside `IOSSSHSession.connect`.
+// `ChannelBox`, `PubkeyAuthDelegate`, and `AcceptAnyHostKeyDelegate` live in `SSHClientPrimitives.swift`;
+// the tailnet-shape guard happens inside `IOSSSHSession.connect`.
 
 /// The child-channel handler: requests a PTY, execs the attach command, and forwards remote bytes.
 private final class PTYChannelHandler: ChannelInboundHandler {
@@ -155,8 +155,8 @@ final class SSHPTYChannel: TerminalByteChannel {
         onEvent?(.connecting)
 
         // Reuse the board's shared session when it targets this Mac; otherwise make a private one. Either
-        // way, `IOSSSHSession.connect()` performs the tailnet guard + TOFU host-key pinning once, and its
-        // failure surfaces here as `.failed` (or, for a host-key change, the distinct `.hostKeyChanged`).
+        // way, `IOSSSHSession.connect()` performs the tailnet-shape guard once, and its failure surfaces
+        // here as `.failed`.
         let session: IOSSSHSession
         if let shared = Self.sharedSessionIfMatching(sharedSession(), endpoint: endpoint) {
             session = shared
@@ -175,17 +175,6 @@ final class SSHPTYChannel: TerminalByteChannel {
             session = owned
         }
 
-        // Distinguish a host-key-change failure from a generic one so we don't ALSO emit `.failed` (which
-        // would drive a reconnect loop). We only subscribe on a session we own — a per-attach subscriber on
-        // the shared session would accumulate; a shared-session host-key change still surfaces via the
-        // connect failure below.
-        let gate = HostKeyGate()
-        if ownedSession != nil {
-            session.onHostKeyChanged { [bridge, gate] host in
-                gate.markChanged(); bridge.event(.hostKeyChanged(host: host), generation: gen)
-            }
-        }
-
         let command = self.command, bridge = self.bridge
         session.openChannel { child in
             child.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
@@ -200,7 +189,7 @@ final class SSHPTYChannel: TerminalByteChannel {
                     MainActor.assumeIsolated { self.attached(child: childB, generation: gen) }
                 }
             case .failure(let error):
-                if !gate.changed { bridge.event(.failed(String(describing: error)), generation: gen) }
+                bridge.event(.failed(String(describing: error)), generation: gen)
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard gen == self.generation else { return }   // a newer attempt already superseded us

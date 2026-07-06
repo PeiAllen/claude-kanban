@@ -63,8 +63,7 @@ xcrun simctl install "$UDID" "$APP"
 
 # 3. Pass 1 — launch the app once to generate the Keychain key + export the pubkey to the container.
 echo "=== pass 1: generate + export device pubkey ==="
-SIMCTL_CHILD_ORCH_RESET_HOSTKEY_PINS=1 \
-  xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
 sleep 6
 xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
 CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)"
