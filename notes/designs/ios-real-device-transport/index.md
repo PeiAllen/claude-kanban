@@ -32,8 +32,9 @@ updated: 2026-07-06
 - **P3 — core DONE** (one-field "Add your Mac" + free-tier no-push entitlements). Guided onboarding
   checklist = optional polish (the Connection editor already configures it).
 - **P4 — deferred** (real push, paid-only) — not pursued.
-- **Loopback e2e** (runtime board-over-SSH proof, no device) — remaining; a self-contained throwaway-sshd
-  harness (design in [[04-tests]]).
+- **Loopback e2e — DONE.** `scripts/ios-board-over-ssh-verify.sh` + `App-iOS/Tests/BoardOverSSHE2ETests.swift`
+  drive the real SSH path (throwaway `sshd` + isolated `orchestrad` + `nc -U`) and prove the board reaches
+  `.live`, round-trips a `version` RPC, and lazily reconnects after a session drop. 2/2 green, no device.
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 

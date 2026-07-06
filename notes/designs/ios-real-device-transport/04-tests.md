@@ -111,6 +111,18 @@ flowchart LR
 | Extend `TransportTests` + `t4`-style harness | Reuse established offline-XCTest + isolated-daemon infra | New bespoke test rig |
 | `FakeSession` seam for framing units | Deterministic `readLine` tests without a server | Real socket in unit tests |
 
+## Implementation notes (as built — deviations from the sketch)
+
+| What the sketch assumed | What shipped | Why |
+|-------------------------|--------------|-----|
+| "An XCTest gated on `ORCH_SSH_ALLOW_LOOPBACK=1`" — env just present | Config injected via the **`TEST_RUNNER_` prefix** (`xcodebuild` strips it into the Simulator test runner's env); the test **`XCTSkip`s** when `ORCH_E2E_SSH_TARGET`/`ORCH_E2E_DAEMON_SOCK` are unset | `xcodebuild test` has no other clean way to pass runtime env into a Simulator XCTest; skip keeps ordinary offline unit runs green |
+| Single test run | **Two-pass**: `build-for-testing` (ad-hoc **signed**, so the Keychain entitlement applies) → launch the app once to generate+export the device pubkey → `test-without-building` with no rebuild | The sshd's `authorized_keys` needs the device pubkey *before* the test connects; signing is required or `SecItem` returns `-34018` (per `t1-live-attach.sh`) |
+| `FakeSession` seam for framing units | Not needed — `ControlLineBuffer` is already directly unit-tested (`ControlLineBufferTests`, 6/6); the live pump is covered by the e2e | Avoided a redundant seam; the buffer's public API is testable as-is |
+| `ORCH_SSH_ALLOW_LOOPBACK` matches `.start()` | API is `ControlClient.connect()` (synchronous first open, throws on hard fail) | Matched the real client API |
+
+Files: `App-iOS/Tests/BoardOverSSHE2ETests.swift` (2 cases: live+version RPC; drop→retry→reconnect+RPC),
+`scripts/ios-board-over-ssh-verify.sh` (self-contained throwaway sshd + isolated `orchestrad`). **2/2 green.**
+
 ## Open questions — need your call
 
 - [ ] None blocking. Whether the loopback e2e runs in CI or dev-only depends on `sshd` availability on
