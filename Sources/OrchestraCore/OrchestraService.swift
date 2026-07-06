@@ -702,6 +702,41 @@ public actor OrchestraService {
         return config
     }
 
+    // MARK: - spawn targets (Spawn sheet enumeration; app-only, NOT an agent command)
+
+    /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
+    /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
+    /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
+    public func spawnRepos() -> SpawnRepos {
+        let root = (config.reposRoot as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+        let repos = entries
+            .filter { !$0.hasPrefix(".") }
+            .map { "\(root)/\($0)" }
+            .filter { fm.fileExists(atPath: "\($0)/.git") }
+            .sorted {
+                ($0 as NSString).lastPathComponent
+                    .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
+            }
+            .map { RepoCandidate(path: $0, name: ($0 as NSString).lastPathComponent) }
+        // Freeform dir candidates = the repo paths (running a read-only/freeform agent inside a repo is
+        // the common case). The client unions these with dirs derived from existing borrowed cards.
+        return SpawnRepos(repos: repos, dirs: repos.map(\.path))
+    }
+
+    /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).
+    /// Empty on any failure (bad repo, git missing, not a worktree) so the picker degrades to free-text
+    /// branch creation. Defense-in-depth: only runs git on an allowlisted repo path.
+    public func spawnBranches(repo: String) -> [String] {
+        guard !repo.isEmpty, let real = try? resolver.resolveRepo(repo) else { return [] }
+        guard let res = try? Proc.run(
+            ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
+             "--sort=-committerdate", "refs/heads"],
+            timeout: .seconds(5)), res.ok else { return [] }
+        return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
     // MARK: - helpers
 
     func require(_ id: UUID) async throws -> Task {
