@@ -64,7 +64,11 @@ PY
   up)                                            # build + start the isolated daemon in the background
     swift build --package-path "$REPO_ROOT" >&2
     mkdir -p "$DATA"
-    HOME="$HOME_DIR" ORCHESTRA_TMUX_SOCKET="$TMUX_SOCK" PATH="$RUN_PATH" \
+    # ORCH_TEST_EXTRA_PATH prepends a dir to the daemon's PATH — lets a test inject a stand-in agent
+    # binary (e.g. a `claude` shim that execs a live TUI) so a spawned card has a real agent window
+    # WITHOUT widening to the user's real (billable) agent. Empty by default → unchanged behavior.
+    UP_PATH="$RUN_PATH"; [ -n "${ORCH_TEST_EXTRA_PATH:-}" ] && UP_PATH="$ORCH_TEST_EXTRA_PATH:$RUN_PATH"
+    HOME="$HOME_DIR" ORCHESTRA_TMUX_SOCKET="$TMUX_SOCK" PATH="$UP_PATH" \
       "$DAEMON" > "$ROOT/daemon.log" 2>&1 &
     sleep 2
     if ! grep -q "listening" "$ROOT/daemon.log" 2>/dev/null; then

@@ -20,6 +20,14 @@ public struct Toast: Identifiable {
     public enum ToastColor { case green, blue, red }
 }
 
+/// A request to present the phone's live **takeover** surface for a card (see `BoardModel.phoneTakeoverRequest`).
+/// The card id doubles as the `Identifiable` id so a `fullScreenCover(item:)` presents (and re-presents for a
+/// different card) correctly.
+public struct PhoneTakeoverRequest: Identifiable, Equatable {
+    public let id: UUID
+    public init(cardId: UUID) { self.id = cardId }
+}
+
 /// The app's single source of view state. Subscribes to the daemon's event stream and drives all
 /// SwiftUI views; every mutation is a thin call to the daemon (no business logic here).
 @MainActor
@@ -41,6 +49,12 @@ public final class BoardModel: ObservableObject {
     @Published public var showActivity = false
     @Published public var showOnboarding = false
     @Published public var spawnDefaultColumn: Column = .plan
+    /// A request to drop straight into the phone's live **takeover** surface for a card. Set when the phone
+    /// SPAWNS a card (iOS): the phone that spawned it is the intended driver, so it auto-owns the agent
+    /// terminal instead of requiring a separate "Take Over" tap (App-iOS presents `AgentTakeoverView` on
+    /// this). `Identifiable` so a `fullScreenCover(item:)` drives it. Desktop leaves it nil (it owns
+    /// terminals directly), so this is inert there.
+    @Published public var phoneTakeoverRequest: PhoneTakeoverRequest?
 
     // Keyboard-navigation state (see notes/plans/2026-07-02-keyboard-shortcuts.md).
     @Published public var focusZone: FocusZone = .board {
@@ -465,9 +479,13 @@ public final class BoardModel: ObservableObject {
 
     // MARK: actions
 
+    /// Spawn a card. Returns the created `Task` on success (so a caller — e.g. the phone's spawn sheet —
+    /// can act on the new card id, such as auto-owning its terminal), or `nil` on failure. Callers that
+    /// don't need it can ignore the result.
+    @discardableResult
     public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
-               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async {
+               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async -> Task? {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
@@ -486,7 +504,8 @@ public final class BoardModel: ObservableObject {
                 ? "\((t.repo as NSString).lastPathComponent) · \(t.branch)"
                 : (t.cwd as NSString).lastPathComponent
             toast("Spawned “\(t.title)”", sub: sub)
-        } catch { toast("Spawn failed", sub: "\(error)", color: .red) }
+            return t
+        } catch { toast("Spawn failed", sub: "\(error)", color: .red); return nil }
     }
 
     public func move(_ id: UUID, to col: Column) async {

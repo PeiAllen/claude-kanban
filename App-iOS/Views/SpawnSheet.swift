@@ -319,6 +319,15 @@ struct SpawnSheet: View {
         let env = ProcessInfo.processInfo.environment
         if let m = env["ORCH_SPAWN_MODE"], let parsed = Mode(rawValue: m) { mode = parsed }
         if let c = env["ORCH_SPAWN_CWD"], !c.isEmpty { cwd = c }
+        // Bug-3 verify hook: auto-submit the sheet once fields have seeded, so the phone-spawn → auto-takeover
+        // flow can be driven headlessly (scripts/t4-phone-spawn-takeover-shot.sh). Scratch mode needs no
+        // repo/branch, so `canSpawn` is already true. DEBUG-only; production never sets this.
+        if env["ORCH_SPAWN_AUTOSUBMIT"] == "1" {
+            _Concurrency.Task { @MainActor in
+                try? await _Concurrency.Task.sleep(nanoseconds: 1_500_000_000)
+                if canSpawn { spawn() }
+            }
+        }
         #endif
         seedRepoIfNeeded()
         if agentSel.isEmpty { agentSel = model.config.defaultAgentId }
@@ -366,16 +375,24 @@ struct SpawnSheet: View {
         let m = modelSel.isEmpty ? nil : modelSel
         let a = agentSel.isEmpty ? nil : agentSel
         _Concurrency.Task {
+            let card: Task?
             switch mode {
             case .worktree:
-                await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn, agent: a)
+                card = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn, agent: a)
             case .freeform:
-                await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                  agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
+                card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                                         agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
             case .scratch:
-                await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                  agent: a, scratch: true)
+                card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                                         agent: a, scratch: true)
             }
+            // Auto-own on phone-spawn (Bug 3): the phone that spawned the card is its intended driver, so
+            // acquire the D4 takeover lease and drop straight into the live agent surface — no separate
+            // "Take Over" tap. The daemon creates the `agent` tmux window synchronously inside `spawn`
+            // (SessionManager.ensure) before returning the card, so the lease target already resolves. The
+            // sheet has dismissed by the time the RPC returns, so presenting the takeover cover doesn't
+            // collide with this sheet. A failed spawn (`nil`) simply routes nowhere.
+            if let card { model.phoneTakeoverRequest = PhoneTakeoverRequest(cardId: card.id) }
         }
         dismiss()
     }

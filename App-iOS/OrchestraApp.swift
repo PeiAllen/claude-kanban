@@ -33,7 +33,7 @@ struct OrchestraiOSApp: App {
                     _Concurrency.Task { await model.registerForPush(token: token) }
                 }
                 #if DEBUG
-                .task { DebugSupport.exportPubkey() }
+                .task { DebugSupport.exportPubkey(); DebugSupport.resetHostKeyPinsIfRequested() }
                 #endif
         }
     }
@@ -108,5 +108,20 @@ private struct RootView: View {
         .onChange(of: push.pendingCardId) { _, id in
             if id != nil { tab = .needsYou }
         }
+        // Auto-own on phone-spawn (Bug 3): a card spawned from the phone is the phone's to drive, so the
+        // spawn sheet sets `phoneTakeoverRequest` and we drop straight into the live takeover surface —
+        // no manual "Take Over" tap. Presented app-level so it covers whatever tab is showing; dismissing
+        // (Return to Desktop / retake) clears the request. The environment (model, platform conformers)
+        // is inherited by the presented view, as with the Agent tab's own takeover cover.
+        .fullScreenCover(item: $model.phoneTakeoverRequest) { req in
+            AgentTakeoverView(cardId: req.id, model: model) { model.phoneTakeoverRequest = nil }
+        }
+        #if DEBUG
+        // Bug-3 verify hook: open the spawn sheet on launch so it can auto-submit (see SpawnSheet's
+        // ORCH_SPAWN_AUTOSUBMIT). DEBUG-only; production never sets this env.
+        .onAppear {
+            if ProcessInfo.processInfo.environment["ORCH_SPAWN_AUTOSUBMIT"] == "1" { model.showSpawn = true }
+        }
+        #endif
     }
 }
