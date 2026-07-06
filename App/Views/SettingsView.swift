@@ -41,7 +41,7 @@ struct SettingsView: View {
                 header
 
                 section("Paths") {
-                    row("Repos root") { field($reposRoot, "~/Documents/Projects", focus: .repos) }
+                    row("Repos root") { field($reposRoot, "~", focus: .repos) }
                     rowDivider
                     row("Worktrees root") { field($worktreesRoot, "~/.orchestra/worktrees", focus: .worktrees) }
                 }
