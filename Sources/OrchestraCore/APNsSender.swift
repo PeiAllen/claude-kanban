@@ -41,6 +41,7 @@ public enum PushError: Error, Equatable {
     case unsupportedPlatform          // no CryptoKit (Linux/musl) — ES256 signing unavailable
     case keyUnreadable(String)
     case badStatus(Int, String)
+    case badToken(String)             // device token isn't a valid APNs token (would trap URL(string:))
 }
 
 /// Provider auth-token (JWT) construction for APNs. The base64url encoding + the unsigned
@@ -73,9 +74,19 @@ public enum APNsJWT {
 /// dependency-free offline-build invariant). The request construction is exercised by unit tests; the
 /// actual network POST to Apple's gateway is the part that requires a real auth key + device + is
 /// deferred (see the N1 architecture note).
-public final class APNsHTTPSender: PushSender {
+public actor APNsHTTPSender: PushSender {
     private let config: APNsConfig
     private let session: URLSession
+
+    #if canImport(CryptoKit)
+    /// The cached provider JWT and the unix time (`iat`) it was minted. Apple accepts a provider token
+    /// for up to 1h and throttles frequent re-mints (429 TooManyProviderTokenUpdates), so we reuse one
+    /// token for `tokenTTLSeconds` (~50 min) instead of signing on every send. Actor-isolated → race-free.
+    private var cachedToken: (jwt: String, mintedAt: Int)?
+    /// Re-sign only once the cached token is older than this. Well under Apple's 1h ceiling, comfortably
+    /// above their ~20-min minimum-reuse guidance.
+    static let tokenTTLSeconds = 50 * 60
+    #endif
 
     public init(config: APNsConfig, session: URLSession = .shared) {
         self.config = config
@@ -83,10 +94,13 @@ public final class APNsHTTPSender: PushSender {
     }
 
     /// Build the APNs `URLRequest` for a payload+token — headers, topic, push-type, priority, body.
-    /// Pure w.r.t. the network (no send), so a test can assert the request shape. The `authorization`
-    /// bearer is attached by `send` (it requires signing).
-    public func makeRequest(payload: JSONValue, token: String) throws -> URLRequest {
-        let url = URL(string: "https://\(config.host)/3/device/\(token)")!
+    /// `nonisolated` + pure (touches no actor state), so a test can assert the request shape synchronously.
+    /// A token that isn't URL-safe (space/newline/control char) would make `URL(string:)` return nil — we
+    /// throw `.badToken` rather than force-unwrap, so a malformed token can never trap the daemon (#1).
+    public nonisolated func makeRequest(payload: JSONValue, token: String) throws -> URLRequest {
+        guard let url = URL(string: "https://\(config.host)/3/device/\(token)") else {
+            throw PushError.badToken(token)
+        }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(config.topic, forHTTPHeaderField: "apns-topic")
@@ -99,7 +113,7 @@ public final class APNsHTTPSender: PushSender {
     public func send(payload: JSONValue, to token: String) async throws {
         #if canImport(CryptoKit)
         var req = try makeRequest(payload: payload, token: token)
-        let jwt = try signedProviderToken()
+        let jwt = try providerToken()
         req.setValue("bearer \(jwt)", forHTTPHeaderField: "authorization")
         // The live POST to Apple's gateway. Requires a real auth key + registered token + device;
         // deferred in this environment (no APNs credentials). The path is wired and type-checked.
@@ -114,9 +128,21 @@ public final class APNsHTTPSender: PushSender {
     }
 
     #if canImport(CryptoKit)
-    /// Sign a fresh provider JWT with the .p8 ES256 key. APNs accepts a token for up to 1h; a short-lived
-    /// token per burst is simplest and within Apple's rate guidance for low volumes.
-    func signedProviderToken(iat: Int? = nil) throws -> String {
+    /// The provider JWT to authenticate a send: reused from the cache while it's younger than
+    /// `tokenTTLSeconds`, re-signed (and re-cached) otherwise. Actor-isolated so the cache is race-free.
+    /// `now` is injectable so a test can drive the TTL boundary deterministically.
+    func providerToken(now: Int? = nil) throws -> String {
+        let t = now ?? Int(Date().timeIntervalSince1970)
+        if let c = cachedToken, t - c.mintedAt < Self.tokenTTLSeconds { return c.jwt }
+        let jwt = try signedProviderToken(iat: t)
+        cachedToken = (jwt, t)
+        return jwt
+    }
+
+    /// Sign a fresh provider JWT with the .p8 ES256 key. `nonisolated` + pure (touches no actor state),
+    /// so the key-load + signing round-trip stays synchronously testable; reuse is handled by
+    /// `providerToken`.
+    nonisolated func signedProviderToken(iat: Int? = nil) throws -> String {
         let unsigned = try APNsJWT.unsignedToken(keyId: config.keyId, teamId: config.teamId,
                                                  iat: iat ?? Int(Date().timeIntervalSince1970))
         let key = try Self.loadPrivateKey(path: config.keyPath)
