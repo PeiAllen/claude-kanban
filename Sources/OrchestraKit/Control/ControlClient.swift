@@ -143,6 +143,19 @@ public final class ControlClient: @unchecked Sendable {
         try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
     }
 
+    /// Typed convenience over the `spawnRepos` verb — git repos under the daemon's reposRoot + freeform
+    /// dir candidates, for the Spawn sheet's repo/dir pickers. The phone can't browse the daemon's disk,
+    /// so the daemon enumerates for it.
+    public func spawnRepos() async throws -> SpawnRepos {
+        try await call("spawnRepos", as: SpawnRepos.self)
+    }
+
+    /// Typed convenience over the `spawnBranches` verb — local git branches for `repo`, most-recent
+    /// first. Empty when the repo has no branches / isn't a git repo (the picker degrades to free text).
+    public func spawnBranches(repo: String) async throws -> [String] {
+        try await call("spawnBranches", .object(["repo": .string(repo)]), as: [String].self)
+    }
+
     /// Send a constrained key chord to a card's tmux window (default `agent`). Convenience over the
     /// `send-keys` verb — encodes the typed chord to the wire form. Distinct from queuing to the inbox
     /// (`send`): live keystrokes, no implicit Enter (submitting needs an explicit `.named(.enter)`).

@@ -193,6 +193,18 @@ public final class ControlServer: @unchecked Sendable {
             }
             let task = try await service.resolveRef(ref)
             return try JSONValue(encodable: try await service.changedNotes(task.id))
+        case "spawnRepos":
+            // The phone's Spawn sheet (repo/dir autofill): git repos under reposRoot + freeform dir
+            // candidates. Internal + app-only — NOT a registry Command, so it never becomes an MCP tool
+            // (an agent spawns via `spawn`, it doesn't browse the daemon's disk). The desktop reads its
+            // own disk directly; the phone can't, so the daemon enumerates for it.
+            return try JSONValue(encodable: await service.spawnRepos())
+        case "spawnBranches":
+            // Local git branches for a chosen repo (Spawn sheet branch autofill). Internal + app-only.
+            guard let p = req.params, let repo = p.optString("repo") else {
+                throw OrchestraError.invalidParams("spawnBranches needs repo")
+            }
+            return try JSONValue(encodable: await service.spawnBranches(repo: repo))
         case "registerDevice":
             // The phone hands over its APNs device token + notification-pref snapshot (N1) so the daemon
             // can push attention alerts while the phone is backgrounded. Internal + app-only — NOT a

@@ -5,9 +5,11 @@ import OrchestraUI
 /// The "Spawn a new agent" sheet (design §4) — the iOS reinterpretation of the desktop
 /// `App/Views/SpawnSheet.swift`. Same shared `BoardModel` contract (`spawn` / `trust` / `trustState`),
 /// same modes and trust flow; the desktop's AppKit chrome (`NSOpenPanel`, `.popover` combos) is replaced
-/// by native SwiftUI (`Form`, `Picker`, `Menu`) because the phone is a **remote client** — repo/dir
-/// paths live on the *daemon's* filesystem, so there's nothing local to browse. Repo/branch/dir entries
-/// are free text, seeded with suggestions derived from the board's existing cards.
+/// by native SwiftUI (`Form`, `Picker`, searchable pickers). The phone is a **remote client** — repo/dir
+/// paths live on the *daemon's* filesystem — so it can't browse that disk directly like the desktop's
+/// `NSOpenPanel`. Instead the daemon enumerates its own disk over the control plane (`spawnRepos` /
+/// `spawnBranches`), and each path field is a searchable picker populated from that list **unioned** with
+/// suggestions derived from the board's existing cards. Every field stays free-text-capable as a fallback.
 ///
 /// Layout: prompt · agent (Claude Code / Codex, only when >1) · model · **Card mode** three-way chip
 /// (Worktree · Freeform · Scratch) then the per-mode body. The **Read-only toggle** is a separate control
@@ -50,6 +52,10 @@ struct SpawnSheet: View {
     /// asynchronously, so `onAppear` can fire before any repo suggestion exists) — without clobbering a
     /// value the user has since typed.
     @State private var didSeedRepo = false
+    /// Daemon-supplied git branches for the currently-selected repo (most-recent-commit first). Loaded
+    /// lazily when the repo changes; empty until then / on failure (the picker falls back to card-derived
+    /// branches + free-text creation).
+    @State private var branchOptions: [String] = []
 
     // MARK: agents / models (sourced from the daemon; falls back to Claude Code when it hasn't answered)
 
@@ -77,7 +83,38 @@ struct SpawnSheet: View {
         return models.first?.id ?? ""
     }
 
-    // MARK: suggestions (the phone can't enumerate the daemon's disk — derive from the board's cards)
+    // MARK: suggestions — daemon-enumerated disk UNIONed with board-card-derived hints
+
+    /// Repos for the picker: the daemon's on-disk repos (any repo, carded or not) plus repos seen on
+    /// existing worktree cards. De-duplicated, sorted by repo name.
+    private var repoSuggestions: [String] {
+        sortedByName(dedup(model.spawnRepoCandidates.map(\.path) + knownRepos))
+    }
+    /// Branches for the picker: the daemon's live git branches for the chosen repo (recency order) then
+    /// any branches seen on that repo's cards. Order-preserving de-dup (recency first).
+    private var branchSuggestions: [String] {
+        dedup(branchOptions + knownBranches(in: repo))
+    }
+    /// Freeform dir candidates: the daemon's repo paths plus dirs seen on existing borrowed cards.
+    private var dirSuggestions: [String] {
+        dedup(model.spawnDirCandidates + knownDirs).sorted()
+    }
+
+    /// Order-preserving de-dup, dropping empties (keeps the daemon's recency/sort where it matters).
+    private func dedup(_ xs: [String]) -> [String] {
+        var seen = Set<String>(); var out: [String] = []
+        for x in xs where !x.isEmpty && seen.insert(x).inserted { out.append(x) }
+        return out
+    }
+    /// Sort paths by their last component (repo name), case-insensitively.
+    private func sortedByName(_ xs: [String]) -> [String] {
+        xs.sorted {
+            ($0 as NSString).lastPathComponent
+                .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
+        }
+    }
+
+    // MARK: card-derived hints (the phone's original suggestion source; still unioned in above)
 
     /// Distinct repos seen on worktree cards, by repo name. Seeds the repo menu.
     private var knownRepos: [String] {
@@ -135,11 +172,22 @@ struct SpawnSheet: View {
                 }
             }
             .onAppear(perform: seedDefaults)
+            // Pull the daemon's repo/dir list (the phone can't browse its disk), then seed the repo
+            // default from it and load that repo's branches.
+            .task {
+                await model.refreshSpawnTargets()
+                seedRepoIfNeeded()
+                await loadBranches()
+            }
             .onChange(of: agentSel) { modelSel = defaultModelForAgent() }
             .onChange(of: cwd) { keptReadOnly = false; refreshTrust() }
             .onChange(of: mode) { refreshTrust() }
+            // A new repo selection reloads its branch list from the daemon.
+            .onChange(of: repo) { _Concurrency.Task { await loadBranches() } }
             // The board's cards can arrive after this sheet mounts; seed the repo default once they do.
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
+            // Daemon repos can arrive after mount too; seed once they do.
+            .onChange(of: model.spawnRepoCandidates.count) { seedRepoIfNeeded() }
         }
     }
 
@@ -187,10 +235,12 @@ struct SpawnSheet: View {
     // MARK: Worktree
 
     @ViewBuilder private var worktreeBody: some View {
-        pathRow(label: "Repository", placeholder: "repo name or /path", text: $repo,
-                icon: "folder", suggestions: knownRepos, suggestionLabel: { ($0 as NSString).lastPathComponent })
-        pathRow(label: "Branch", placeholder: "new or existing branch", text: $branch,
-                icon: "arrow.triangle.branch", suggestions: knownBranches(in: repo), suggestionLabel: { $0 })
+        SpawnPickerField(label: "Repository", placeholder: "repo name or /path", text: $repo,
+                         icon: "folder", suggestions: repoSuggestions,
+                         display: { ($0 as NSString).lastPathComponent }, createVerb: "Use")
+        SpawnPickerField(label: "Branch", placeholder: "new or existing branch", text: $branch,
+                         icon: "arrow.triangle.branch", suggestions: branchSuggestions,
+                         display: { $0 }, createVerb: "Create branch")
 
         LabeledContent("Worktree") {
             Text(worktreePreview)
@@ -209,8 +259,8 @@ struct SpawnSheet: View {
     // MARK: Freeform
 
     @ViewBuilder private var freeformBody: some View {
-        pathRow(label: "Directory", placeholder: "/path/on/the/daemon", text: $cwd,
-                icon: "folder", suggestions: knownDirs, suggestionLabel: { $0 })
+        SpawnPickerField(label: "Directory", placeholder: "/path/on/the/daemon", text: $cwd,
+                         icon: "folder", suggestions: dirSuggestions, display: { $0 }, createVerb: "Use")
 
         trustNotice
 
@@ -283,33 +333,6 @@ struct SpawnSheet: View {
         }
     }
 
-    // MARK: - A free-text path field with a suggestions menu
-
-    /// A mono text field plus, when suggestions exist, a `Menu` to autofill one. Free text is always
-    /// allowed (the phone can't browse the daemon's disk, so entries can't be constrained to a list).
-    @ViewBuilder
-    private func pathRow(label: String, placeholder: String, text: Binding<String>, icon: String,
-                         suggestions: [String], suggestionLabel: @escaping (String) -> String) -> some View {
-        HStack(spacing: 8) {
-            TextField(placeholder, text: text)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .lineLimit(1).truncationMode(.head)
-            if !suggestions.isEmpty {
-                Menu {
-                    ForEach(suggestions, id: \.self) { s in
-                        Button(suggestionLabel(s)) { text.wrappedValue = s }
-                    }
-                } label: {
-                    Image(systemName: icon).foregroundStyle(theme.accent)
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(label)
-    }
-
     // MARK: - Actions
 
     private func seedDefaults() {
@@ -331,9 +354,19 @@ struct SpawnSheet: View {
     /// Fill the repo field from the first known repo — once, and only while it's still empty, so a
     /// late-arriving board (the phone loads `tasks` async) still seeds a default without clobbering typing.
     private func seedRepoIfNeeded() {
-        guard !didSeedRepo, repo.isEmpty, let first = knownRepos.first else { return }
+        guard !didSeedRepo, repo.isEmpty, let first = repoSuggestions.first else { return }
         repo = first
         didSeedRepo = true
+    }
+
+    /// Load the selected repo's git branches from the daemon (recency order). Stale-guarded against a
+    /// repo change mid-flight. Only meaningful for worktree mode.
+    private func loadBranches() async {
+        guard mode == .worktree, !repo.isEmpty else { branchOptions = []; return }
+        let r = repo
+        let list = await model.spawnBranches(forRepo: r)
+        guard r == repo else { return }   // ignore a stale result after the repo changed
+        branchOptions = list
     }
 
     /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. Stale-guarded.
@@ -378,5 +411,112 @@ struct SpawnSheet: View {
             }
         }
         dismiss()
+    }
+}
+
+// MARK: - Searchable path picker
+
+/// A free-text path field with an obvious, searchable picker. The mono `TextField` keeps direct typing
+/// (the free-text fallback); the bordered trailing button opens a searchable `List` of `suggestions`
+/// (daemon-enumerated ∪ card-derived). A top "create" row echoes the current query so anything typed —
+/// including a brand-new branch name the daemon can't know — is one tap away. Nothing is constrained to
+/// the list; the phone can't fully browse the daemon's disk, so typed input is always honored.
+private struct SpawnPickerField: View {
+    let label: String
+    let placeholder: String
+    @Binding var text: String
+    /// Leading glyph on the picker button (folder / branch).
+    let icon: String
+    let suggestions: [String]
+    /// Row title for a suggestion (repos show the basename; branches/dirs show the raw value).
+    let display: (String) -> String
+    /// Verb for the free-text row at the top of the picker ("Use" for repo/dir, "Create branch").
+    let createVerb: String
+
+    @Environment(\.theme) private var theme: Theme
+    @State private var showPicker = false
+    @State private var query = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField(placeholder, text: $text)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .lineLimit(1).truncationMode(.head)
+            Button {
+                query = text
+                showPicker = true
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: icon)
+                    Image(systemName: "chevron.down").font(.caption2)
+                }
+                .foregroundStyle(theme.accent)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel("Choose \(label.lowercased())")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+        .sheet(isPresented: $showPicker) { pickerSheet }
+    }
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var filtered: [String] {
+        let q = trimmedQuery
+        guard !q.isEmpty else { return suggestions }
+        return suggestions.filter {
+            display($0).localizedCaseInsensitiveContains(q) || $0.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    private var pickerSheet: some View {
+        NavigationStack {
+            List {
+                // Free-text / new-branch affordance: whatever's typed, appliable in one tap.
+                if !trimmedQuery.isEmpty, !suggestions.contains(trimmedQuery) {
+                    Button {
+                        text = trimmedQuery
+                        showPicker = false
+                    } label: {
+                        Label("\(createVerb) “\(trimmedQuery)”", systemImage: "plus.circle")
+                    }
+                }
+                Section {
+                    ForEach(filtered, id: \.self) { s in
+                        Button {
+                            text = s
+                            showPicker = false
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(display(s)).foregroundStyle(theme.text)
+                                if display(s) != s {
+                                    Text(s).font(.caption).foregroundStyle(theme.text2)
+                                        .lineLimit(1).truncationMode(.head)
+                                }
+                            }
+                        }
+                    }
+                    if filtered.isEmpty {
+                        Text(suggestions.isEmpty
+                             ? "No suggestions from the daemon yet — type a \(label.lowercased()) above."
+                             : "No match — type to create a new \(label.lowercased()).")
+                            .font(.footnote).foregroundStyle(theme.text2)
+                    }
+                }
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search or type a \(label.lowercased())")
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .navigationTitle(label)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showPicker = false } }
+            }
+        }
     }
 }
