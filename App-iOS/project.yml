@@ -64,6 +64,12 @@ targets:
         product: NIOPosix
       - package: SwiftCrypto
         product: Crypto
+    # Device signing (FREE personal team). CODE_SIGN_STYLE is in `settings.base` below (committed, visible).
+    # DEVELOPMENT_TEAM stays OUT of git — it comes from the optional include in DeviceSigning.xcconfig
+    # (a gitignored DeviceSigning.local.xcconfig) for GUI builds; build-ios-device.sh passes it on the CLI.
+    configFiles:
+      Debug: DeviceSigning.xcconfig
+      Release: DeviceSigning.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.orchestra.ios
@@ -72,8 +78,15 @@ targets:
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
         GENERATE_INFOPLIST_FILE: NO
+        # Automatic signing: free personal team ⇒ Xcode creates/refreshes the dev provisioning profile
+        # on the fly (`-allowProvisioningUpdates`). Harmless for Simulator / the CODE_SIGNING_ALLOWED=NO
+        # compile gate, which skip signing regardless.
+        CODE_SIGN_STYLE: Automatic
         # Keychain-access-group entitlement so SSHKeyStore can store the per-device SSH key. Ignored
         # when building unsigned (the compile-only gate); applied when signed (device / harness).
+        # This is the DEFAULT (has aps-environment, valid for Simulator/push). The free-team DEVICE build
+        # overrides it to OrchestraiOS-nopush.entitlements — see build-ios-device.sh (aps-environment must
+        # be stripped or free-team signing fails).
         CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements
       configs:
         Debug:

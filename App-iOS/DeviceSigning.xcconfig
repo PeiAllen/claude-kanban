@@ -1,0 +1,20 @@
+// DEVELOPMENT_TEAM for the FREE personal-team device lane — kept OUT of git.
+//
+// Wired into the OrchestraiOS target via project.yml `configFiles` so Xcode GUI device builds pick up
+// your team; build-ios-device.sh injects the same value on the xcodebuild command line for the scripted
+// lane (the CLI value overrides everything, so the script works even without a local file here).
+//
+// Put your 10-char Apple team id in the gitignored sibling override, App-iOS/DeviceSigning.local.xcconfig,
+// as a single line:
+//     DEVELOPMENT_TEAM = XXXXXXXXXX
+// Find it at https://developer.apple.com/account (Membership) or Xcode ▸ Settings ▸ Accounts ▸ your Apple
+// ID. A free Apple ID gets a "Personal Team" with a valid id. With no team set, a GUI device build fails
+// with "no team" (expected) — supply the local file, or just use build-ios-device.sh.
+//
+// NOTE: entitlements are NOT set here. The target's committed default is OrchestraiOS.entitlements (has
+// aps-environment, fine for Simulator/compile); the free-team DEVICE build must instead use
+// OrchestraiOS-nopush.entitlements, which build-ios-device.sh selects via a CODE_SIGN_ENTITLEMENTS CLI
+// override. An xcconfig value here would be overridden by the target's project.yml setting, so it can't
+// live in this file. GUI device builds that need the no-push variant should run build-ios-device.sh.
+
+#include? "DeviceSigning.local.xcconfig"
