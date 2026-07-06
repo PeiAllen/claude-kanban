@@ -1,6 +1,6 @@
 // Client-safe key-input value model for the constrained `send-keys` RPC. Lives in OrchestraKit
 // alongside the rest of the keyboard vocabulary (KeyChord/Direction/…) so the iOS client can build
-// chords; it stays free of Foundation.Process / AppKit / daemon types. Only the daemon's
+// chords; it stays free of process-spawning, AppKit, and daemon types. Only the daemon's
 // SessionManager reads `tmuxToken`.
 
 /// A named special key in the constrained send-keys vocabulary. The rawValue is the wire name the
