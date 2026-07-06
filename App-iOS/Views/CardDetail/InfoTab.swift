@@ -112,6 +112,28 @@ struct InfoTab: View {
                 }
             }
 
+            // Copy chat link — the desktop's "Copy chat link": the card ref (`orchestra://task/<shortId>-<slug>`).
+            // Identical string to the Mac app so the two are interchangeable.
+            Button {
+                clipboard.copy(task.ref())
+                flash("chatLink")
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } label: {
+                actionLabel(copied == "chatLink" ? "Copied ✓" : "Copy chat link",
+                            systemImage: "link", tint: theme.text)
+            }
+
+            // Copy tmux target — the desktop's "Copy tmux target": `orchestra-<uuid>:agent`, the exact
+            // `tmux attach -t` target for the agent window.
+            Button {
+                clipboard.copy("\(task.tmuxSession):agent")
+                flash("tmux")
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } label: {
+                actionLabel(copied == "tmux" ? "Copied ✓" : "Copy tmux target",
+                            systemImage: "terminal", tint: theme.text)
+            }
+
             // Open notes — the in-app Notes page (M6): renders the markdown notes this branch changed.
             Button {
                 showNotes = true
