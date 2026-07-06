@@ -15,9 +15,7 @@ import SwiftUI
 
 @MainActor final class SpyOpener: SystemOpener {
     private(set) var openSettingsCount = 0
-    private(set) var openedPaths: [String] = []
     func openSettings() { openSettingsCount += 1 }
-    func open(path: String) { openedPaths.append(path) }
 }
 
 @MainActor final class SpyWindow: WindowConfig {
@@ -34,7 +32,7 @@ final class PlatformProtocolTests: XCTestCase {
     func testNoopDefaultsAreInert() {
         // No crash, no observable effect — the point is that iOS-before-F3 / previews can construct them.
         let c = NoopClipboard(); c.copy("x")
-        let o = NoopSystemOpener(); o.openSettings(); o.open(path: "/tmp")
+        let o = NoopSystemOpener(); o.openSettings()
         let w = NoopWindowConfig(); w.resignInputFocus()
         XCTAssertTrue(w.enterTerminalFocus())   // benign default: "focus succeeded"
     }

@@ -138,7 +138,7 @@ struct InfoTab: View {
             Button {
                 showNotes = true
             } label: {
-                actionLabel("Open notes", systemImage: "note.text", tint: theme.text, chevron: false)
+                actionLabel("Open notes", systemImage: "note.text", tint: theme.text)
             }
 
             // Archive — confirmed, destructive.
@@ -182,7 +182,7 @@ struct InfoTab: View {
         .buttonStyle(.plain)
     }
 
-    private func actionLabel(_ title: String, systemImage: String, tint: Color, chevron: Bool = false) -> some View {
+    private func actionLabel(_ title: String, systemImage: String, tint: Color) -> some View {
         Label(title, systemImage: systemImage).foregroundStyle(tint)
     }
 

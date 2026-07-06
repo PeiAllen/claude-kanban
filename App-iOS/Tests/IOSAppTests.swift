@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import OrchestraiOS   // internal access to the app target's conformers
 import OrchestraUI
 import OrchestraKit
@@ -8,7 +9,7 @@ final class IOSAppTests: XCTestCase {
     func testClipboardRoundTrip() {
         let clip = IOSClipboard()
         clip.copy("orchestra-ios")
-        XCTAssertEqual(clip.string, "orchestra-ios")
+        XCTAssertEqual(UIPasteboard.general.string, "orchestra-ios")
     }
 
     // MARK: - Board pager (M1)
@@ -83,15 +84,6 @@ final class IOSAppTests: XCTestCase {
         XCTAssertEqual(CardTab.allCases.map(\.title), ["Agent", "Terminal", "Diff", "Inbox", "Info"])
     }
 
-    func testNoTabIsStub() {
-        // All five tabs are now built (Agent → T3, Terminal → T2, Diff/Inbox/Info → M2).
-        XCTAssertFalse(CardTab.agent.isStub)
-        XCTAssertFalse(CardTab.terminal.isStub)
-        XCTAssertFalse(CardTab.diff.isStub)
-        XCTAssertFalse(CardTab.inbox.isStub)
-        XCTAssertFalse(CardTab.info.isStub)
-    }
-
     func testCardTabInitialDefaultsToAgent() {
         // Absent the ORCH_DEV_CARD_TAB dev override, the detail lands on Agent (design-primary).
         if ProcessInfo.processInfo.environment["ORCH_DEV_CARD_TAB"] == nil {
@@ -126,9 +118,9 @@ final class IOSAppTests: XCTestCase {
         // And the button's real copy path (UIPasteboard via IOSClipboard) round-trips each value verbatim.
         let clip = IOSClipboard()
         clip.copy(chatLink)
-        XCTAssertEqual(clip.string, "orchestra://task/abcdef-fix-the-login-bug")
+        XCTAssertEqual(UIPasteboard.general.string, "orchestra://task/abcdef-fix-the-login-bug")
         clip.copy(tmuxTarget)
-        XCTAssertEqual(clip.string, "orchestra-abcdef12-3456-7890-abcd-ef1234567890:agent")
+        XCTAssertEqual(UIPasteboard.general.string, "orchestra-abcdef12-3456-7890-abcd-ef1234567890:agent")
     }
 
     // MARK: - Push deep-link (N1)

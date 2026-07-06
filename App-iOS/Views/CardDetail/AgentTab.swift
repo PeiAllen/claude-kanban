@@ -17,7 +17,7 @@ import OrchestraUI
 ///   • **Take Over** — the explicit **Take Over Agent Terminal** button (the ONLY attach path) presents
 ///     T4's `AgentTakeoverView` full-screen under the exclusive owner lease.
 ///
-/// A `dead` card renders M2's `RecoveryHook` (M7 builds the full recovery panel) instead of agent chrome.
+/// A `dead` card renders `RecoveryView` (the recovery panel) instead of agent chrome.
 /// Provider-neutral throughout: the capture render is a pane scrape (no `agent ==` branch).
 struct AgentTab: View {
     let task: Task
@@ -27,7 +27,7 @@ struct AgentTab: View {
 
     var body: some View {
         if task.status == .dead {
-            RecoveryHook(task: task)
+            RecoveryView(task: task)
         } else {
             VStack(spacing: 0) {
                 if let reason = task.status == .waiting ? task.waitReason : nil {

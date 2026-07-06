@@ -88,14 +88,9 @@ private struct CardTabBar: View {
                     .padding(.vertical, 7)
                     .background(active ? theme.accent.opacity(0.12) : .clear,
                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(alignment: .bottom) {
-                        if t.isStub {
-                            Circle().fill(theme.text3).frame(width: 3, height: 3).padding(.bottom, 3)
-                        }
-                    }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(t.title + (t.isStub ? " (coming soon)" : ""))
+                .accessibilityLabel(t.title)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)

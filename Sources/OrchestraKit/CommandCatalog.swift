@@ -4,18 +4,27 @@ import Foundation
 /// The daemon binds handlers to these in `CommandRegistry` (OrchestraCore); the MCP bridge builds
 /// tools from them; a phone client builds/validates requests from them. Single source of truth for
 /// command *shape* (the execution half lives in `OrchestraCore/CommandRegistry.swift`).
+/// Who a command is exposed to. `.all` = the daemon dispatches it AND the MCP bridge advertises it as a
+/// tool to agents. `.appOnly` = the daemon still dispatches it (the app uses it), but the MCP bridge does
+/// NOT advertise it — an agent's normal tool-use can't reach it. Used for the human-only primitives that
+/// must not be agent-drivable: `send-keys` (an agent could Enter-approve its own permission gate) and
+/// `capture` — the same boundary the app-only `listDir`/takeover methods keep by not being catalog commands.
+public enum CommandExposure: Sendable, Equatable { case all, appOnly }
+
 public struct CommandSchema: Sendable, Equatable {
     public let name: String
     public let summary: String
     public let params: JSONValue
-    public init(name: String, summary: String, params: JSONValue) {
-        self.name = name; self.summary = summary; self.params = params
+    public let exposure: CommandExposure
+    public init(name: String, summary: String, params: JSONValue, exposure: CommandExposure = .all) {
+        self.name = name; self.summary = summary; self.params = params; self.exposure = exposure
     }
 }
 
 public enum CommandCatalog {
-    public static func schema(_ name: String) -> CommandSchema? { byName[name] }
-    private static let byName = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
+    /// The commands the MCP bridge advertises as tools to agents — the `.appOnly` primitives (`send-keys`,
+    /// `capture`) are withheld so an agent's tool-use can't drive the human-only gates. See `CommandExposure`.
+    public static var mcpExposed: [CommandSchema] { all.filter { $0.exposure == .all } }
 
     // The canonical set. name/summary/params are copied verbatim from the original Commands.swift;
     // the handler bodies live alongside in OrchestraCore/CommandRegistry.swift, paired by name.
@@ -137,7 +146,8 @@ public enum CommandCatalog {
                       params: schema(["ref": refProp(),
                                       "window": strProp("Window to read: 'agent' (default) or a shell "
                                           + "window like 'shell-1'")],
-                                     required: ["ref"])),
+                                     required: ["ref"]),
+                      exposure: .appOnly),
 
         CommandSchema(name: "send-keys",
                       summary: "Send live keystrokes to a card's tmux window — an ordered chord of named "
@@ -152,7 +162,8 @@ public enum CommandCatalog {
                                   + "Right, Tab, Enter, C-c, PgUp, PgDn, Home, End) or {\"text\": <literal>}."),
                           ]),
                           "window": strProp("Target window (default 'agent')"),
-                      ], required: ["ref", "keys"])),
+                      ], required: ["ref", "keys"]),
+                      exposure: .appOnly),
 
         CommandSchema(name: "trustState",
                       summary: "Is a directory already trusted? Read-only ledger query for the spawn "

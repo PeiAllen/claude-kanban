@@ -125,7 +125,7 @@ struct WakeMergeWatchTests {
     // extra · the `wait` command is registered (MCP parity) and round-trips a conclusion.
     @Test("the `wait` command is registered and round-trips a conclusion")
     func waitCommandRoundtrips() async throws {
-        #expect(CommandRegistry().names.contains("wait"))
+        #expect(CommandRegistry().command("wait") != nil)
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))

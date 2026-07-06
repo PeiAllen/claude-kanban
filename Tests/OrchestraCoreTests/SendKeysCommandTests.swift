@@ -15,7 +15,7 @@ struct SendKeysCommandTests {
     func registered() throws {
         let cmd = command()
         #expect(cmd.name == "send-keys")
-        let required = cmd.params["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let required = cmd.schema.params["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
         #expect(required.contains("ref"))
         #expect(required.contains("keys"))
     }

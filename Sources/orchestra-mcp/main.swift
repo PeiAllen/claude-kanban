@@ -25,8 +25,10 @@ let server = Server(
 )
 
 // tools/list — generated from the canonical command vocabulary (schema only; no daemon handlers).
+// `.appOnly` commands (send-keys, capture) are withheld: they are human-only primitives the agent's
+// tool-use must not reach — see `CommandExposure`.
 _ = await server.withMethodHandler(ListTools.self) { _ in
-    let tools = CommandCatalog.all.map { s in
+    let tools = CommandCatalog.mcpExposed.map { s in
         Tool(name: s.name, description: s.summary, inputSchema: toMCPValue(s.params))
     }
     return ListTools.Result(tools: tools)

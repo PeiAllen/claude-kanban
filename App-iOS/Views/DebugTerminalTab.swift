@@ -66,14 +66,6 @@ struct DebugTerminalTab: View {
                         } footer: {
                             Text("SSH target: \(SSHEndpoint.resolve(connection: model.connections.active).map { "\($0.user)@\($0.host):\($0.port)" } ?? "unset — add a Mac connection or set ORCH_SSH_TARGET")")
                         }
-                        // T3 wires the real Agent-tab "Take Over Agent Terminal" entry; this DEBUG button
-                        // drives the same flow (lease → takeover attach → heartbeat) against a card id.
-                        Section("Takeover (T4)") {
-                            TextField("card id (UUID)", text: $cardId)
-                                .autocorrectionDisabled().textInputAutocapitalization(.never)
-                            Button("Take Over Agent Terminal") { takeover = true }
-                                .disabled(UUID(uuidString: cardId) == nil)
-                        }
                     }
                 }
             }

@@ -9,8 +9,6 @@ import OrchestraUI
 /// iOS clipboard via `UIPasteboard`.
 struct IOSClipboard: Clipboard {
     func copy(_ text: String) { UIPasteboard.general.string = text }
-    /// Not part of the `Clipboard` protocol (which is write-only) — a read accessor for round-trip tests.
-    var string: String? { UIPasteboard.general.string }
 }
 
 /// iOS "open a host affordance." On the phone, Settings is a tab (not a window) and Finder-reveal has no
@@ -18,7 +16,6 @@ struct IOSClipboard: Clipboard {
 /// keyboard-nav paths, which iOS does not wire.
 struct IOSSystemOpener: SystemOpener {
     func openSettings() {}
-    func open(path: String) {}
 }
 
 /// iOS has no key-window first responder to juggle, and terminal keyboard focus is *view-local* on

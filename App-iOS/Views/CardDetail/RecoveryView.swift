@@ -15,7 +15,7 @@ import OrchestraUI
 /// - **Actions** — **Start new session** (`restart`) · **Try resume** (`resume`, only when a session id
 ///   exists) · **Archive** (`archive`, then pop the detail).
 ///
-/// Rendered by `RecoveryHook` in `AgentTerminalStubs.swift` for a dead card in the Agent tab.
+/// Rendered by `AgentTab` for a dead card in the Agent tab.
 struct RecoveryView: View {
     let task: Task
     @EnvironmentObject private var model: BoardModel

@@ -7,8 +7,6 @@ public struct Command: Sendable {
     public let schema: CommandSchema
     public let run: @Sendable (OrchestraService, JSONValue, ActivitySource) async throws -> JSONValue
     public var name: String { schema.name }
-    public var summary: String { schema.summary }
-    public var params: JSONValue { schema.params }   // JSON schema (MCP inputSchema + CLI help)
 }
 
 public struct CommandRegistry: Sendable {
@@ -21,7 +19,6 @@ public struct CommandRegistry: Sendable {
     }
 
     public func command(_ name: String) -> Command? { byName[name] }
-    public var names: [String] { commands.map(\.name) }
 
     // MARK: - the handler table
 

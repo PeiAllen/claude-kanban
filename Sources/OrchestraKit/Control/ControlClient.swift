@@ -256,15 +256,9 @@ public final class ControlClient: @unchecked Sendable {
     /// after `registerForRemoteNotifications` yields a token, and re-called whenever prefs change. Keyed
     /// by `clientId` daemon-side; a re-register replaces the prior entry.
     @discardableResult
-    public func registerDevice(token: String, prefs: NotifyPrefsSnapshot,
-                               platform: String = "ios") async throws -> DeviceRegistration {
-        let reg = DeviceRegistration(token: token, clientId: clientId ?? "", platform: platform, prefs: prefs)
+    public func registerDevice(token: String, prefs: NotifyPrefsSnapshot) async throws -> DeviceRegistration {
+        let reg = DeviceRegistration(token: token, clientId: clientId ?? "", prefs: prefs)
         return try await call("registerDevice", try JSONValue(encodable: reg), as: DeviceRegistration.self)
-    }
-
-    /// Drop this device's push registration (notifications revoked / sign-out).
-    public func unregisterDevice() async throws {
-        _ = try await call("unregisterDevice", .object(["clientId": .string(clientId ?? "")]))
     }
 
     /// Subscribe to the daemon's event stream (task upserts/removals + activity). Sends the subscribe

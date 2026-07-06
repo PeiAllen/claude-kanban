@@ -271,4 +271,18 @@ final class SessionManagerTests {
             try sm.sendChord("orchestra-does-not-exist", tokens: [.named(.enter)], window: "agent")
         }
     }
+
+    @Test("sendChord + capture reject a window that would inject a tmux `-t` target")
+    func rejectsWindowInjection() throws {
+        // A `.`/`:`/space in `window` retargets a different pane/window via `-t "\(name):\(window)"`.
+        // The guard rejects it before any tmux work (no live session needed); `agent` + shell names pass.
+        for bad in ["agent.1", "other:sess", "a b", "a;b", ""] {
+            #expect(throws: OrchestraError.self) {
+                try sm.sendChord("orchestra-x", tokens: [.named(.enter)], window: bad)
+            }
+            #expect(throws: OrchestraError.self) {
+                _ = try sm.capture("orchestra-x", window: bad)
+            }
+        }
+    }
 }

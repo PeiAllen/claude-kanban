@@ -5,7 +5,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
     // Every catalog schema has exactly one handler, and vice-versa — prevents drift after the split.
     func testRegistryCoversExactlyTheCatalog() {
         let catalogNames = Set(CommandCatalog.all.map(\.name))
-        let registryNames = Set(CommandRegistry().names)
+        let registryNames = Set(CommandRegistry().commands.map(\.name))
         XCTAssertEqual(catalogNames, registryNames,
                        "CommandRegistry handlers and CommandCatalog schemas must match 1:1")
     }
@@ -16,8 +16,8 @@ final class CommandRegistryCatalogTests: XCTestCase {
         for schema in CommandCatalog.all {
             let cmd = reg.command(schema.name)
             XCTAssertNotNil(cmd, "missing handler for \(schema.name)")
-            XCTAssertEqual(cmd?.summary, schema.summary)
-            XCTAssertEqual(cmd?.params, schema.params)
+            XCTAssertEqual(cmd?.schema.summary, schema.summary)
+            XCTAssertEqual(cmd?.schema.params, schema.params)
         }
     }
 
