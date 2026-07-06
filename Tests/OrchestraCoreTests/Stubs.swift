@@ -60,11 +60,42 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         return (name, true)
     }
     func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }
-    func newShellWindow(_ name: String, cwd: String) throws -> String { "shell-1" }
+
+    /// Per-session shell windows (excludes `agent`), so `windows()` faithfully reflects opens/closes —
+    /// the shell-sync broadcast (`emitShells`) recomputes its set from here, so a canned single-agent
+    /// list would make every `shellsChanged` empty.
+    private var shellWins: [String: [String]] = [:]
+
+    func newShellWindow(_ name: String, cwd: String) throws -> String {
+        lock.lock(); defer { lock.unlock() }
+        var ws = shellWins[name] ?? []
+        var n = 1
+        while ws.contains("shell-\(n)") { n += 1 }
+        let win = "shell-\(n)"
+        ws.append(win); shellWins[name] = ws
+        return win
+    }
+    func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String {
+        guard SessionManager.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid shell window name: \(window)")
+        }
+        lock.lock(); defer { lock.unlock() }
+        var ws = shellWins[name] ?? []
+        if !ws.contains(window) { ws.append(window); shellWins[name] = ws }
+        return window
+    }
+    func closeShellWindow(_ name: String, window: String) throws {
+        guard window != "agent" else { return }
+        lock.lock(); shellWins[name]?.removeAll { $0 == window }; lock.unlock()
+    }
     func windows(_ name: String) throws -> [TmuxTarget] {
         guard try isAlive(name) else { return [] }
-        return [TmuxTarget(socket: "orchestra", session: name, window: "agent", kind: .agent,
-                           target: "\(name):agent", attach: "tmux -L orchestra attach -t \(name):agent")]
+        func t(_ window: String, _ kind: WindowKind) -> TmuxTarget {
+            TmuxTarget(socket: "orchestra", session: name, window: window, kind: kind,
+                       target: "\(name):\(window)", attach: "tmux -L orchestra attach -t \(name):\(window)")
+        }
+        lock.lock(); let ws = shellWins[name] ?? []; lock.unlock()
+        return [t("agent", .agent)] + ws.map { t($0, .shell) }
     }
     func list() throws -> [SessionInfo] { lock.lock(); defer { lock.unlock() }; return alive.map { SessionInfo(name: $0, running: true) } }
     func sendKeys(_ name: String, text: String, window: String) throws {
@@ -83,7 +114,7 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         let text = "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }
-    func kill(_ name: String) throws { lock.lock(); alive.remove(name); killed.append(name); lock.unlock() }
+    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
 }
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is

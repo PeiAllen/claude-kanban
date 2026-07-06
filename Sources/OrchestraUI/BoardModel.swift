@@ -403,6 +403,15 @@ public final class BoardModel: ObservableObject {
         }
     }
 
+    /// Reconcile the shared per-card shell list from a broadcast `shellsChanged` event so every surface
+    /// renders the same set — preserving the current selection when it survives. Internal (not private)
+    /// so it can be unit-tested without a live daemon. Events are LIVE-ONLY, so `refreshShellPanels`
+    /// still does the one-shot pull on (re)connect.
+    func ingestShellsChanged(_ state: ShellWindowsState) {
+        applyShellPanelState(ShellPanelState(shells: state.shells, previousSelection: selectedShell[state.cardId]),
+                             for: state.cardId)
+    }
+
     private func applyShellPanelState(_ state: ShellPanelState, for id: UUID) {
         if state.isOpen {
             shellWindows[id] = state.windows
@@ -480,6 +489,9 @@ public final class BoardModel: ObservableObject {
             // the render/acquire decisions read the owner kind out of it. Events are LIVE-ONLY (not ring-
             // replayed), so `refreshAgentOwners` reconciles current ownership on every (re)connect.
             agentOwners[state.cardId] = state
+        case .shellsChanged(let s):
+            // Live shell open/close from ANY surface (this client, another desktop, or the phone).
+            ingestShellsChanged(s)
         }
     }
 

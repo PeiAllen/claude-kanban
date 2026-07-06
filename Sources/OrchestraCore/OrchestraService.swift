@@ -551,7 +551,20 @@ public actor OrchestraService {
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
         let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
             ?? sessions.newShellWindow(name, cwd: t.cwd)
+        emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
+    }
+
+    /// Recompute the card's shell-window set from tmux (authoritative) and broadcast it so every
+    /// connected client — desktop or phone — renders the same set. Called after any shell open/close.
+    /// Best-effort: a `list-windows` failure (e.g. the session just died) emits an empty set, which is
+    /// the correct "no shells" state; the caller's own mutation already succeeded either way.
+    private func emitShells(_ t: Task) {
+        let name = sessions.sessionName(t.id)
+        let targets = (try? sessions.windows(name)) ?? []
+        let shells = targets.filter { $0.kind == .shell }
+            .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
+        emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)))
     }
 
     /// Open a shell tab in the card's worktree and launch a READ-ONLY claude in it (default mode,
@@ -577,12 +590,14 @@ public actor OrchestraService {
         // literal argv; sendKeys sends the line + Enter itself.
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
+        emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
+        emitShells(t)
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {

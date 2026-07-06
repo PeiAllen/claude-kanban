@@ -280,51 +280,111 @@ private struct LiveShellView: View {
     @Environment(\.theme) private var theme: Theme
     @Environment(\.terminalHost) private var terminalHost
 
-    @State private var target: TmuxTarget?
+    @State private var target: TmuxTarget?      // this phone's OWN shell attach target
     @State private var attaching = true
     @State private var selectMode = false
+    @State private var selected: String?        // which ribbon tab is showing
+
+    // The card's full shell set (broadcast from the daemon → shared BoardModel). Both surfaces render
+    // the same list; a phone live-attaches only its own `phone-<client>` window (attaching a desktop
+    // `shell-N` would resize-fight it — the grouped view session is keyed by window, not client).
+    private var windows: [String] { model.shellWindows[task.id] ?? [] }
+    private var myWindow: String { model.phoneShellWindow }
+    private var selectedWindow: String { selected ?? myWindow }
+    private var isMine: Bool { selectedWindow == myWindow }
+
+    /// The ribbon list — the broadcast set, plus this phone's own window optimistically while its open
+    /// RPC is still in flight (so the tab shows immediately instead of flashing in on the echo).
+    private var ribbonWindows: [String] {
+        var ws = windows
+        if (target != nil || attaching), !ws.contains(myWindow) { ws.insert(myWindow, at: 0) }
+        return ws
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            ownerBar
+            ribbon
+            Divider().overlay(theme.hair)
+            controlBar
             Divider().overlay(theme.hair)
             terminalBody
         }
         .task { await attach() }
     }
 
-    private var ownerBar: some View {
+    private var ribbon: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(ribbonWindows, id: \.self) { w in
+                    let active = w == selectedWindow
+                    let mine = w == myWindow
+                    Button { selected = w } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: mine ? "iphone" : "desktopcomputer").font(.system(size: 9))
+                            Text(w).font(.system(size: 11, design: .monospaced))
+                        }
+                        .foregroundStyle(active ? theme.text : theme.text2)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(Capsule().fill(active ? theme.card : theme.chip))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+        }
+    }
+
+    // Contextual controls: Select/Detach for the phone's own live shell; a "runs on desktop" note +
+    // Close for a desktop shell (closing from the phone is a legitimate reconcile — it broadcasts back).
+    private var controlBar: some View {
         HStack(spacing: 10) {
-            Circle().fill(theme.green.dot).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
+            if isMine {
+                Circle().fill(theme.green.dot).frame(width: 7, height: 7)
                 Text("Phone-owned shell").font(.caption.weight(.semibold)).foregroundStyle(theme.text)
-                Text(target?.window ?? model.phoneShellWindow)
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(theme.text3)
+                Spacer(minLength: 8)
+                Button { selectMode.toggle() } label: {
+                    Label("Select", systemImage: "selection.pin.in.out")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(selectMode ? theme.accent : theme.text2)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Capsule().fill(selectMode ? theme.accent.opacity(0.14) : theme.chip))
+                Button(action: detach) {
+                    Label("Detach", systemImage: "xmark").font(.caption.weight(.medium))
+                        .foregroundStyle(theme.text2)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Capsule().fill(theme.chip))
+            } else {
+                Image(systemName: "desktopcomputer").font(.caption2).foregroundStyle(theme.text3)
+                Text("Desktop shell").font(.caption.weight(.semibold)).foregroundStyle(theme.text2)
+                Spacer(minLength: 8)
+                Button { closeWindow(selectedWindow) } label: {
+                    Label("Close", systemImage: "xmark").font(.caption.weight(.medium))
+                        .foregroundStyle(theme.text2)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Capsule().fill(theme.chip))
             }
-            Spacer(minLength: 8)
-            Button {
-                selectMode.toggle()
-            } label: {
-                Label("Select", systemImage: "selection.pin.in.out")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(selectMode ? theme.accent : theme.text2)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Capsule().fill(selectMode ? theme.accent.opacity(0.14) : theme.chip))
-            Button(action: detach) {
-                Label("Detach", systemImage: "xmark").font(.caption.weight(.medium))
-                    .foregroundStyle(theme.text2)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Capsule().fill(theme.chip))
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
     @ViewBuilder private var terminalBody: some View {
-        if let target {
+        if !isMine {
+            centered {
+                VStack(spacing: 10) {
+                    Image(systemName: "desktopcomputer").font(.title).foregroundStyle(theme.text3)
+                    Text("Runs on the desktop").font(.callout).foregroundStyle(theme.text2)
+                    Text("This shell is owned by the desktop. It’s listed here so both surfaces stay in sync — tap your phone shell to type.")
+                        .font(.footnote).foregroundStyle(theme.text3)
+                        .multilineTextAlignment(.center).padding(.horizontal, 28)
+                }
+            }
+        } else if let target {
             terminalHost.attach(target: target, selectMode: selectMode)
                 .background(Color.black)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -346,12 +406,20 @@ private struct LiveShellView: View {
         attaching = true
         target = await model.openPhoneShell(task.id)
         attaching = false
+        if target != nil { selected = myWindow }
     }
 
     private func detach() {
         let id = task.id
         _Concurrency.Task { await model.closePhoneShell(id) }
         onDetach()
+    }
+
+    /// Close another surface's shell from the phone (a valid reconcile). Reselect the phone's own shell.
+    private func closeWindow(_ window: String) {
+        let id = task.id
+        selected = myWindow
+        _Concurrency.Task { await model.closeShell(id, window) }
     }
 
     @ViewBuilder private func centered<C: View>(@ViewBuilder _ c: () -> C) -> some View {

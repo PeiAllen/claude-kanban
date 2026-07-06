@@ -160,6 +160,15 @@ nowhere.
 open a new shell and a chevron to collapse. The shell panel height is drag-resizable (the ribbon is the
 handle) and persisted.
 
+**Cross-surface shell set.** A card's shell windows live in one shared tmux session, so the desktop and
+the phone show the **same set** of shells. The daemon broadcasts the window set (`Event.shellsChanged`,
+emitted by `openShell`/`closeShell`/`inspect`), and `BoardModel` reconciles it live into `shellWindows`
+— a shell opened on one surface appears on the other. Windows stay **per-owner** (the desktop's
+anonymous `shell-N` vs a phone's deterministic `phone-<client>`): each surface attaches its own grouped
+view session, so PTY sizes stay independent and the two never fight one shell's stdin. Owner is derived
+from the window name (`ShellOwner`); a surface live-attaches only the shells it owns and shows a
+foreign shell (the other surface's) as a listed, owner-tagged tab it can see and close but not drive.
+
 ## Keyboard navigation
 
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key

@@ -96,4 +96,41 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertEqual(win.enterCount, 1)
         XCTAssertEqual(model.focusZone, .terminal)
     }
+
+    // MARK: shell-sync (shellsChanged reconciliation)
+
+    func testShellsChangedPopulatesSharedListForBothSurfaces() {
+        let (model, _, _, _) = makeModel()
+        let t = planCard()
+        let shells = [ShellTab(window: "shell-1", label: "shell-1", pwd: t.cwd),
+                      ShellTab(window: "phone-abc123", label: "phone-abc123", pwd: t.cwd)]
+
+        model.ingestShellsChanged(ShellWindowsState(cardId: t.id, shells: shells))
+
+        // Both a desktop and a phone shell now appear in the one shared list — the sync fix.
+        XCTAssertEqual(model.shellWindows[t.id], ["shell-1", "phone-abc123"])
+        XCTAssertEqual(model.selectedShell[t.id], "shell-1")
+        XCTAssertTrue(model.shellOpen.contains(t.id))
+    }
+
+    func testShellsChangedPreservesSelectionAndReconcilesClose() {
+        let (model, _, _, _) = makeModel()
+        let t = planCard()
+        model.ingestShellsChanged(ShellWindowsState(cardId: t.id, shells: [
+            ShellTab(window: "shell-1", label: "shell-1", pwd: t.cwd),
+            ShellTab(window: "phone-abc123", label: "phone-abc123", pwd: t.cwd)]))
+        model.selectedShell[t.id] = "phone-abc123"
+
+        // A close on the OTHER surface drops shell-1; the surviving selection is preserved.
+        model.ingestShellsChanged(ShellWindowsState(cardId: t.id, shells: [
+            ShellTab(window: "phone-abc123", label: "phone-abc123", pwd: t.cwd)]))
+        XCTAssertEqual(model.shellWindows[t.id], ["phone-abc123"])
+        XCTAssertEqual(model.selectedShell[t.id], "phone-abc123")
+
+        // Closing the last shell clears the panel entirely.
+        model.ingestShellsChanged(ShellWindowsState(cardId: t.id, shells: []))
+        XCTAssertNil(model.shellWindows[t.id])
+        XCTAssertNil(model.selectedShell[t.id])
+        XCTAssertFalse(model.shellOpen.contains(t.id))
+    }
 }
