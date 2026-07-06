@@ -156,6 +156,15 @@ struct SpawnSheet: View {
     /// dir, or chosen) — otherwise the plain "Spawn agent".
     private var ctaLabel: String { (mode == .freeform && readOnly) ? "Spawn read-only agent" : "Spawn agent" }
 
+    /// DEBUG-only: auto-present the directory browser on appear (headless screenshot via ORCH_SPAWN_BROWSE).
+    private var debugAutoBrowse: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["ORCH_SPAWN_BROWSE"] == "1"
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -259,8 +268,11 @@ struct SpawnSheet: View {
     // MARK: Freeform
 
     @ViewBuilder private var freeformBody: some View {
-        SpawnPickerField(label: "Directory", placeholder: "/path/on/the/daemon", text: $cwd,
-                         icon: "folder", suggestions: dirSuggestions, display: { $0 }, createVerb: "Use")
+        // A real remote directory browser (not a flat picker): tap in/out of the daemon's folders,
+        // see sibling files, pick one as the cwd. The mono TextField stays as the free-text fallback
+        // (any path, trust-gated). Confined daemon-side to the browse roots ($HOME + allowlist).
+        DirBrowserField(cwd: $cwd, suggestions: dirSuggestions,
+                        list: { await model.listDir(path: $0) }, autoOpen: debugAutoBrowse)
 
         trustNotice
 
@@ -534,6 +546,202 @@ private struct SpawnPickerField: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showPicker = false } }
             }
+        }
+    }
+}
+
+// MARK: - Remote directory browser
+
+/// The freeform Directory field: a free-text mono `TextField` (the fallback — any path, trust-gated,
+/// exactly as before) plus a **Browse** button that opens a real navigable browser of the *daemon's*
+/// disk. The phone can't browse the daemon directly, so the browser drives the app-only `listDir` RPC
+/// (`list`), which is confined daemon-side to the browse roots ($HOME + allowlist) and hides dotfiles.
+/// Selecting a folder writes `cwd`, so the sheet's existing trust flow (`refreshTrust`) fires unchanged.
+private struct DirBrowserField: View {
+    @Binding var cwd: String
+    /// Recent freeform dirs + repos, surfaced as one-tap "Suggestions" at the browser's root level.
+    let suggestions: [String]
+    /// Fetch a directory listing from the daemon (nil path → the root listing). `nil` result = an
+    /// escaping/invalid path (the browser falls back to the roots).
+    let list: (String?) async -> DirListing?
+    /// DEBUG-only: auto-present the browser on appear (headless screenshot via ORCH_SPAWN_BROWSE).
+    var autoOpen: Bool = false
+
+    @Environment(\.theme) private var theme: Theme
+    @State private var showBrowser = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("/path/on/the/daemon", text: $cwd)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .lineLimit(1).truncationMode(.head)
+            Button { showBrowser = true } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "folder")
+                    Image(systemName: "chevron.down").font(.caption2)
+                }
+                .foregroundStyle(theme.accent)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel("Browse directories")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Directory")
+        .sheet(isPresented: $showBrowser) {
+            DirBrowserSheet(cwd: $cwd, suggestions: suggestions, list: list)
+        }
+        .onAppear { if autoOpen { showBrowser = true } }
+    }
+}
+
+/// A single-pane file browser over the daemon's disk. Up and down are symmetric (`currentPath` +
+/// refetch), not a stack of pushes: tap a folder to descend, the "up" row to climb (bounded at a
+/// browse root by the daemon), "Use this folder" to pick `currentPath` as the cwd. Files are shown
+/// (context) but disabled. Opens seeded at the current cwd so re-opening lands where you are — and you
+/// can climb out to see siblings. An escaping/invalid seed falls back to the root listing.
+private struct DirBrowserSheet: View {
+    @Binding var cwd: String
+    let suggestions: [String]
+    let list: (String?) async -> DirListing?
+
+    @Environment(\.theme) private var theme: Theme
+    @Environment(\.dismiss) private var dismiss
+
+    /// The directory currently shown. "" == the synthetic root listing (the browse roots).
+    @State private var currentPath = ""
+    @State private var listing: DirListing?
+    @State private var loading = false
+    @State private var loadFailed = false
+    @State private var query = ""
+
+    private var atRoot: Bool { currentPath.isEmpty }
+    private var title: String { atRoot ? "Directories" : (currentPath as NSString).lastPathComponent }
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func matches(_ name: String, _ path: String) -> Bool {
+        let q = trimmedQuery
+        return q.isEmpty || name.localizedCaseInsensitiveContains(q) || path.localizedCaseInsensitiveContains(q)
+    }
+    private var filteredEntries: [DirEntry] {
+        (listing?.entries ?? []).filter { matches($0.name, $0.path) }
+    }
+    private var filteredSuggestions: [String] {
+        suggestions.filter { matches(($0 as NSString).lastPathComponent, $0) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if atRoot, !filteredSuggestions.isEmpty { suggestionsSection }
+                if let parent = listing?.parent { upRow(parent) }
+                entriesSection
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Filter this folder")
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Use this folder") { cwd = currentPath; dismiss() }
+                        .disabled(atRoot)
+                        .fontWeight(.semibold)
+                }
+            }
+            .overlay { if loading { ProgressView().controlSize(.large) } }
+            .task { await load(cwd.isEmpty ? "" : cwd, fallbackToRoot: true) }
+        }
+    }
+
+    // MARK: rows
+
+    private var suggestionsSection: some View {
+        Section("Suggestions") {
+            ForEach(filteredSuggestions, id: \.self) { s in
+                Button { descend(s) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath").foregroundStyle(theme.text2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text((s as NSString).lastPathComponent).foregroundStyle(theme.text)
+                            Text(s).font(.caption).foregroundStyle(theme.text2)
+                                .lineLimit(1).truncationMode(.head)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(theme.text2)
+                    }
+                }
+            }
+        }
+    }
+
+    private func upRow(_ parent: String) -> some View {
+        Button { descend(parent) } label: {
+            Label {
+                Text("Up to “\((parent as NSString).lastPathComponent)”").foregroundStyle(theme.text)
+            } icon: {
+                Image(systemName: "arrow.turn.left.up").foregroundStyle(theme.accent)
+            }
+        }
+    }
+
+    @ViewBuilder private var entriesSection: some View {
+        Section {
+            ForEach(filteredEntries) { entry in
+                if entry.isDir {
+                    Button { descend(entry.path) } label: { entryRow(entry) }
+                } else {
+                    entryRow(entry).foregroundStyle(theme.text2)   // files: context only, not selectable
+                }
+            }
+            if !loading, filteredEntries.isEmpty {
+                Text(loadFailed ? "Couldn’t open this folder."
+                     : trimmedQuery.isEmpty ? "Empty folder." : "No match.")
+                    .font(.footnote).foregroundStyle(theme.text2)
+            }
+        } header: {
+            if !atRoot {
+                Text(currentPath).font(.system(.caption, design: .monospaced))
+                    .lineLimit(1).truncationMode(.head).textCase(nil)
+            }
+        }
+    }
+
+    private func entryRow(_ entry: DirEntry) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: entry.isDir ? "folder" : "doc")
+                .foregroundStyle(entry.isDir ? theme.accent : theme.text2)
+            Text(entry.name).foregroundStyle(entry.isDir ? theme.text : theme.text2)
+            Spacer(minLength: 4)
+            if entry.isDir {
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(theme.text2)
+            }
+        }
+    }
+
+    // MARK: load
+
+    private func descend(_ path: String) { _Concurrency.Task { await load(path) } }
+
+    /// Fetch `path` (empty → roots) and swap the pane on success. On failure, either fall back to the
+    /// root listing (used for the seed / suggestions) or leave the current pane and flag the error.
+    private func load(_ path: String, fallbackToRoot: Bool = false) async {
+        loading = true
+        let result = await list(path.isEmpty ? nil : path)
+        loading = false
+        if let result {
+            listing = result
+            currentPath = result.path   // daemon-canonical (symlinks resolved) — what "Use" will pick
+            query = ""
+            loadFailed = false
+        } else if fallbackToRoot, !path.isEmpty {
+            await load("", fallbackToRoot: false)   // escaping/invalid seed → show the roots
+        } else {
+            loadFailed = true                       // keep the current pane; show an inline notice
         }
     }
 }

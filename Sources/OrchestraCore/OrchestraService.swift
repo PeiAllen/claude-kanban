@@ -737,6 +737,81 @@ public actor OrchestraService {
         return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
+    /// The directories the phone's remote directory browser (`listDir`) may enumerate: the daemon's
+    /// `$HOME` plus the spawn allowlist roots, canonicalized and collapsed to top-most (a root under
+    /// another kept root is dropped). This is deliberately DISTINCT from the spawn allowlist — freeform
+    /// spawns skip the allowlist (any path is spawnable as borrowed), but the remote phone must not be
+    /// able to *enumerate* the whole daemon disk. `$HOME`'s dotfiles are hidden by `listDir`.
+    var browseRoots: [String] {
+        let canon = ([Config.home] + config.allowedRoots)
+            .map { PathResolver.canonical($0) }
+            .filter { !$0.isEmpty }
+        var kept: [String] = []
+        for root in canon.sorted() {
+            if kept.contains(where: { isSubpath(root, of: $0) }) { continue }   // under a kept root
+            kept.removeAll { isSubpath($0, of: root) }                          // this one subsumes them
+            kept.append(root)
+        }
+        return kept
+    }
+
+    /// Component-wise "is `path` equal to or under `root`" (not a substring match — `/a/b-evil` is not
+    /// under `/a/b`). Mirrors `PathResolver.isPrefix`, which is private there.
+    private func isSubpath(_ path: String, of root: String) -> Bool {
+        if path == root { return true }
+        let rootSlash = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(rootSlash)
+    }
+
+    /// Display label for a browse root in the synthetic root listing: "Home" for `$HOME`, else basename.
+    private func browseRootName(_ path: String) -> String {
+        if path == PathResolver.canonical(Config.home) { return "Home" }
+        return (path as NSString).lastPathComponent
+    }
+
+    /// List a directory's children for the phone's remote browser. The phone can't browse the daemon's
+    /// disk, so the daemon enumerates for it — but confined to `browseRoots` (never leaks paths outside
+    /// them; symlink- and `..`-escape safe via `PathResolver`). Dotfiles are hidden; directories sort
+    /// before files. `path` nil/empty → the synthetic *root listing* (the browse roots themselves).
+    /// App-only (NOT a registry Command): agents spawn via `spawn`, they never browse the daemon disk.
+    public func listDir(_ path: String?) throws -> DirListing {
+        let roots = browseRoots
+        guard let raw = path, !raw.isEmpty else {
+            let entries = roots.map { DirEntry(path: $0, name: browseRootName($0), isDir: true) }
+            return DirListing(path: "", parent: nil, entries: entries)
+        }
+        let real = PathResolver.canonical(raw)
+        let browse = PathResolver(allowedRoots: roots)
+        try browse.assertAllowed(real)   // throws pathNotAllowed on any escape (symlink / ..)
+
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: real, isDirectory: &isDir), isDir.boolValue else {
+            throw OrchestraError.invalidParams("listDir: not a directory: \(raw)")
+        }
+        var dirs: [DirEntry] = []
+        var files: [DirEntry] = []
+        for name in (try? fm.contentsOfDirectory(atPath: real)) ?? [] where !name.hasPrefix(".") {
+            let child = "\(real)/\(name)"
+            var childIsDir: ObjCBool = false
+            guard fm.fileExists(atPath: child, isDirectory: &childIsDir) else { continue }
+            let entry = DirEntry(path: child, name: name, isDir: childIsDir.boolValue)
+            if childIsDir.boolValue { dirs.append(entry) } else { files.append(entry) }
+        }
+        let byName: (DirEntry, DirEntry) -> Bool = {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        dirs.sort(by: byName); files.sort(by: byName)
+
+        // Parent affordance, bounded: include it only if the parent also stays within a browse root
+        // (so "up" stops at a root — you can't climb out via `..`).
+        let parentPath = (real as NSString).deletingLastPathComponent
+        let parent: String? = (parentPath != real && (try? browse.assertAllowed(parentPath)) != nil)
+            ? PathResolver.canonical(parentPath) : nil
+
+        return DirListing(path: real, parent: parent, entries: dirs + files)
+    }
+
     // MARK: - helpers
 
     func require(_ id: UUID) async throws -> Task {
