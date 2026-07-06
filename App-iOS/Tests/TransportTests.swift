@@ -1,5 +1,6 @@
 import XCTest
 @testable import OrchestraiOS   // internal access to the app target's transport/push types
+import OrchestraKit             // Connection (unified config source for SSHEndpoint.resolve)
 
 /// Server-free unit tests for the iOS SSH/PTY transport surface (review #10) and the Tailscale-target
 /// guard (review #5). NO live sshd / no device: every assertion is over pure parsing, framing, and
@@ -44,34 +45,23 @@ final class TransportTests: XCTestCase {
         XCTAssertNil(SSHEndpoint(target: "me@host.ts.net:70000"))   // out of 1…65535 range
     }
 
-    // MARK: - SSHEndpoint.resolve persistence precedence (M5)
+    // MARK: - SSHEndpoint.resolve derives from the active connection (unified config, P2)
 
-    /// A throwaway UserDefaults suite so a test never reads/writes the real `orch_ssh_target` pref.
-    private func scratchDefaults(_ name: String) -> UserDefaults {
-        let suite = "TransportTests.\(name)"
-        let d = UserDefaults(suiteName: suite)!
-        d.removePersistentDomain(forName: suite)
-        return d
+    func testResolvePrefersActiveConnectionOverEnv() {
+        let conn = Connection.mac(sshTarget: "me@my-mac.tailnet.ts.net")
+        let ep = SSHEndpoint.resolve(connection: conn, env: ["ORCH_SSH_TARGET": "me@env.ts.net"])
+        XCTAssertEqual(ep, SSHEndpoint(host: "my-mac.tailnet.ts.net", port: 22, user: "me"))
     }
 
-    func testResolvePrefersPersistedTargetOverEnv() {
-        let d = scratchDefaults("prefers-persisted")
-        d.set("me@persisted.ts.net", forKey: SSHEndpoint.targetDefaultsKey)
-        let ep = SSHEndpoint.resolve(env: ["ORCH_SSH_TARGET": "me@env.ts.net"], defaults: d)
-        XCTAssertEqual(ep, SSHEndpoint(host: "persisted.ts.net", port: 22, user: "me"))
-    }
-
-    func testResolveFallsBackToEnvWhenPersistedEmpty() {
-        let d = scratchDefaults("falls-back-to-env")
-        // No persisted value (and whitespace-only counts as empty) → the env/launch-arg path is used.
-        d.set("   ", forKey: SSHEndpoint.targetDefaultsKey)
-        let ep = SSHEndpoint.resolve(env: ["ORCH_SSH_TARGET": "me@env.ts.net"], defaults: d)
+    func testResolveFallsBackToEnvWhenNoConnectionTarget() {
+        // A local connection (no sshTarget) → the env/launch-arg path is used (dev/Simulator/loopback).
+        let ep = SSHEndpoint.resolve(connection: .local, env: ["ORCH_SSH_TARGET": "me@env.ts.net"])
         XCTAssertEqual(ep, SSHEndpoint(host: "env.ts.net", port: 22, user: "me"))
     }
 
     func testResolveReturnsNilWhenNeitherSet() {
-        let d = scratchDefaults("neither-set")
-        XCTAssertNil(SSHEndpoint.resolve(env: [:], defaults: d))
+        XCTAssertNil(SSHEndpoint.resolve(connection: .local, env: [:]))
+        XCTAssertNil(SSHEndpoint.resolve(connection: nil, env: [:]))
     }
 
     // MARK: - SSHEndpoint.settingsRejectionReason inline validation (M5)

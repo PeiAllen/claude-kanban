@@ -8,10 +8,15 @@ extension Connection {
 }
 
 extension SSHEndpoint {
-    /// Derive the endpoint from the active connection — the unified source that replaces the standalone
-    /// `orch_ssh_target` setting (which P2 removes). The legacy `resolve(env:defaults:)` stays for
-    /// terminals until they migrate in P2.
-    static func resolve(connection: Connection?) -> SSHEndpoint? {
-        connection?.sshEndpoint
+    /// Derive the endpoint the board + terminals SSH to from the **active connection** — the single
+    /// unified source (replaces the removed standalone `orch_ssh_target` setting). Falls back to
+    /// `ORCH_SSH_TARGET` (env / Simulator launch arg — mirrors how F3 wires `ORCH_DEV_SOCKET`), which keeps
+    /// the dev/Simulator/loopback-verify path working with no in-app config. Returns nil when neither is
+    /// set, so the terminal shows a "configure the Mac connection" banner rather than failing silently.
+    static func resolve(connection: Connection?,
+                        env: [String: String] = ProcessInfo.processInfo.environment) -> SSHEndpoint? {
+        if let ep = connection?.sshEndpoint { return ep }
+        let target = (env["ORCH_SSH_TARGET"] ?? "").trimmingCharacters(in: .whitespaces)
+        return target.isEmpty ? nil : SSHEndpoint(target: target)
     }
 }

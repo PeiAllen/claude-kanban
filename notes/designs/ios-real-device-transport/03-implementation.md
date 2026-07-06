@@ -195,13 +195,30 @@ sequenceDiagram
 | Entitlements split | **P3** (sketch below) |
 | Terminal fold | **P2** (sketch below) |
 
+## Sequencing decision during impl (2026-07-06): P3-config before P2-deletion
+
+P2's "delete `orch_ssh_target` + terminals from the unified connection" structurally **depends on a
+`Connection.mac` existing** — otherwise there's no target source and no session to fold terminals onto.
+That connection is created by P3's onboarding/settings. So the safe order is:
+1. **P3 core first** — a "Mac connection" settings section that creates + activates a `Connection.mac`,
+   making P1's board-over-SSH actually reachable (additive, low-risk).
+2. **Then P2** — fold terminals onto the shared session and delete `orch_ssh_target`.
+Deleting `orch_ssh_target` before P3 would leave a device with no way to set the target. Recorded so the
+plan stays truthful.
+
 ## P2–P4 sketch (refined when reached)
 
-- **P2 — terminals on the shared session:** refactor `SSHPTYChannel.start` to call
-  `controller.currentSession().openChannel { … PTYChannelHandler … }` instead of its own bootstrap;
-  drop the per-channel connect/auth/guard (now at session). Delete `orch_ssh_target`/`targetDefaultsKey`
-  + `TerminalTargetSettingsSection`; re-source `SecuritySettingsSection.host` from the active connection;
-  migrate terminals to `resolve(connection:)`. `IOSTerminalHost` reads the controller from the environment.
+- **P2 — config unification (DONE) + session multiplex (deferred):**
+  - ✅ **Config unification (the user-facing "no second setting"):** terminals + board now derive from the
+    **one active `Connection`**. Deleted `orch_ssh_target`/`targetDefaultsKey` + `TerminalTargetSettingsSection`;
+    `SSHEndpoint.resolve(connection:env:)` reads the active connection (env `ORCH_SSH_TARGET` fallback for
+    dev/loopback); `IOSTerminalHost` takes the `ConnectionStore`; `SecuritySettingsSection.host` +
+    `DebugTerminalTab` re-sourced. The existing Connection editor (`RemoteEditorView`) already creates the
+    `.remote` connection, so the board reaches SSH through it. iOS build green; 30/30 iOS tests green.
+  - ⏳ **Session multiplex (deferred optimization):** folding terminals onto the board's *single*
+    `IOSSSHSession` (`SSHPTYChannel` → `controller.openChannel`) so board + terminals share ONE auth. The
+    UX requirement is already met by config unification; the multiplex is an efficiency/elegance win whose
+    real proof needs the loopback e2e. Deferred to after P3/P4, with the e2e.
 - **P3 — onboarding + free device build:** `OnboardingModel` flow (prereqs → `authorizedKeyLine()` copy →
   target entry w/ `settingsRejectionReason` → Test via `IOSSSHSession.connect()` + `version` RPC → persist
   `Connection.mac`). Launch gate on "no configured connection" in `OrchestraApp` (none today). Settings

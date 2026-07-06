@@ -31,7 +31,7 @@ struct OrchestraiOSApp: App {
                 .environment(\.clipboard, IOSClipboard())
                 .environment(\.systemOpener, IOSSystemOpener())
                 .environment(\.windowConfig, IOSWindowConfig())
-                .environment(\.terminalHost, IOSTerminalHost())
+                .environment(\.terminalHost, IOSTerminalHost(connections: model.connections))
                 .task {
                     // Wire the SSH transport provider before the first activate() (in bootstrap).
                     model.remoteControlTransportProvider = connection
