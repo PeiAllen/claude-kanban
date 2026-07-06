@@ -137,6 +137,11 @@ public final class BoardModel: ObservableObject {
     /// Rebuilt whenever the active connection changes (a fresh transport per connection).
     private(set) var client: ControlClient
 
+    /// iOS only: supplies an SSH-backed control `Transport` for a `.remote` connection (the phone reaches
+    /// the Mac daemon over SSH, not a local socket). Set by the app at launch; `nil` on macOS (which uses
+    /// its own `connectionController`/SSH master). See `RemoteControlTransportProvider`.
+    public weak var remoteControlTransportProvider: RemoteControlTransportProvider?
+
     /// Stable per-install identity sent to the daemon so it can attribute ownership + detect this
     /// client's disconnect (D3/D4). Resolved once; the same id is reused for local and remote links.
     private let clientId = ClientIdentity.persistentId(at: Config.clientIdPath)
@@ -280,8 +285,14 @@ public final class BoardModel: ObservableObject {
     /// at the Mac's absolute socket path; a real device needs T1's SSH-forwarded socket).
     public func activate(_ conn: Connection) async {
         client.close()
-        let sockPath = ConnectionSocketResolver.socketPath(for: conn)
-        client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
+        // A `.remote` connection reaches the Mac daemon over SSH (the transport provider builds an
+        // `SSHControlTransport` from the shared session). Simulator/dev falls back to the direct-UDS path.
+        if let factory = remoteControlTransportProvider?.controlTransportFactory(for: conn) {
+            client = ControlClient(transport: factory, source: .app, clientId: clientId)
+        } else {
+            let sockPath = ConnectionSocketResolver.socketPath(for: conn)
+            client = ControlClient(socketPath: sockPath, source: .app, clientId: clientId)
+        }
         wireState()
         streamStarted = false
         await start()

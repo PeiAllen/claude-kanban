@@ -75,7 +75,9 @@ Hoists the **connection half** of `SSHPTYChannel.start` (`:206–257`). Reuses `
   Simulator). The board uses it; terminals keep the old `resolve(env:defaults:)`. **P2** deletes
   `orch_ssh_target` and migrates terminals.
 
-### P1.5 `IOSConnectionController` (new — `App-iOS/Terminal/IOSConnectionController.swift`)
+### P1.5 `IOSConnectionController` (new — `App-iOS/Terminal/IOSConnectionController.swift`) ✅ COMPILES
+> **Implemented** + `CurrentSessionBox`; conforms to `RemoteControlTransportProvider`.
+
 - `@MainActor ObservableObject`; owns a `CurrentSessionBox` (`@unchecked Sendable`, `NSLock` around
   `IOSSSHSession?`). `sessionProvider = { [box] in box.current() }`.
 - `configure(_ conn:)`: build `IOSSSHSession` from `conn.sshEndpoint!`, `box.set(session)`, wire
@@ -83,7 +85,12 @@ Hoists the **connection half** of `SSHPTYChannel.start` (`:206–257`). Reuses `
 - `onScenePhase(.active)`: if `state == .down`, `session.connect()`. `.background`: note (socket dies).
 - `teardown()`: `box.set(nil)` + `session.close()`.
 
-### P1.6 `BoardModel.activate` (iOS) + app wiring (`Sources/OrchestraUI/BoardModel.swift`, `App-iOS/OrchestraApp.swift`)
+### P1.6 `BoardModel.activate` (iOS) + app wiring (`Sources/OrchestraUI/BoardModel.swift`, `App-iOS/OrchestraApp.swift`) ✅ COMPILES (iOS + macOS)
+> **Implemented.** `BoardModel` gained `weak var remoteControlTransportProvider` (nil on macOS); iOS
+> `activate` uses the factory when present, else the dev-transport socket path. `OrchestraApp` owns
+> `IOSConnectionController` as `@StateObject`, injects it before `bootstrap()`, and wires
+> `.onChange(of: scenePhase)`. Verified: iOS `BUILD SUCCEEDED`; macOS `swift build` complete.
+
 - iOS `BoardModel` gains `controller: IOSConnectionController` (instantiated in the iOS init branch).
 - `activate` per [[02-contract]]: `.remote` + `sshEndpoint` → `controller.configure(conn)`, capture
   `controller.sessionProvider`, build `ControlClient(transport:)`; else the Simulator/dev `socketPath:` path.

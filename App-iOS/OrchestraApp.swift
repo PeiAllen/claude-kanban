@@ -6,6 +6,9 @@ struct OrchestraiOSApp: App {
     // The SHARED OrchestraUI.BoardModel (reconcile #3), constructed with the iOS platform bundle.
     // Its #if os(iOS) activate() drives the dev-transport connect path.
     @StateObject private var model = BoardModel(platform: .ios)
+    // Owns the shared SSH connection to the Mac (the phone's ConnectionController). Vends the board's
+    // control transport + (P2) terminal channels; observes scenePhase to reconnect on foreground.
+    @StateObject private var connection = IOSConnectionController()
     // Client-local snooze/dismiss state for the Needs You queue (M3) — shared with the tab badge so both
     // agree on what's suppressed.
     @StateObject private var snooze = NeedsYouSnooze()
@@ -13,6 +16,9 @@ struct OrchestraiOSApp: App {
     // PushCoordinator.shared (device token → daemon registration; tapped push → Needs You deep-link).
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     @ObservedObject private var push = PushCoordinator.shared
+    // Drives session reconnect when the app returns to the foreground (iOS suspends the socket while
+    // backgrounded).
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -26,7 +32,12 @@ struct OrchestraiOSApp: App {
                 .environment(\.systemOpener, IOSSystemOpener())
                 .environment(\.windowConfig, IOSWindowConfig())
                 .environment(\.terminalHost, IOSTerminalHost())
-                .task { await model.bootstrap() }
+                .task {
+                    // Wire the SSH transport provider before the first activate() (in bootstrap).
+                    model.remoteControlTransportProvider = connection
+                    await model.bootstrap()
+                }
+                .onChange(of: scenePhase) { _, phase in connection.onScenePhase(phase) }
                 // Hand a freshly-registered APNs token to the daemon (and re-register on token rotation).
                 .onChange(of: push.deviceToken) { _, token in
                     guard let token else { return }
