@@ -178,21 +178,61 @@ public final class BoardModel: ObservableObject {
         wireState()
     }
 
-    /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`).
+    /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`),
+    /// and install the reconnect re-assert hook. `onState` fires on EVERY (re)open; `onReconnect` fires
+    /// only on a genuine reconnect (drop → re-open), which is where the board must reconcile.
     private func wireState() {
         client.onState = { [weak self] s in
             _Concurrency.Task { @MainActor in
-                self?.connectionState = s
+                guard let self else { return }
+                let previous = self.connectionState
+                self.connectionState = s
                 switch s {
                 case .live:
-                    self?.connected = true
+                    self.offlineGraceToken &+= 1        // cancel any pending offline-grace
+                    self.connected = true
                     // Re-assert push registration on the (re)connected link: the token may have arrived
                     // before we were live, or a tunnel drop rebuilt `client` against a new socket.
-                    self?.reregisterPushOnConnect()
-                case .down: self?.connected = false
-                case .connecting, .retrying: break   // transient — don't flap the board offline
+                    self.reregisterPushOnConnect()
+                case .down:
+                    self.offlineGraceToken &+= 1
+                    self.connected = false
+                case .connecting:
+                    break                                // first-connect in progress — not yet offline
+                case .retrying:
+                    // The link dropped and is retrying. Don't flap offline instantly (a brief blip
+                    // usually recovers), but a DEAD daemon retries forever — so after a grace window,
+                    // if still retrying, publish offline (#2) instead of showing "connected" indefinitely.
+                    // Anchor the grace to the FIRST retrying transition: the reconnect loop re-emits
+                    // `.retrying` on every failed attempt (~backoff apart), and restarting the timer each
+                    // time would keep pushing it past the outage forever.
+                    if previous != .retrying { self.scheduleOfflineIfStillRetrying() }
                 }
             }
+        }
+        // The one "re-assert on reconnect" hook (#1). ControlClient reconnects transparently WITHOUT
+        // ending the event stream, so the stream consumer never re-runs `refresh()`; this fires on the
+        // reconnect edge to reconcile the board (task list + shell/owner state via `boardSnapshot`).
+        client.onReconnect = { [weak self] in
+            _Concurrency.Task { @MainActor in
+                guard let self else { return }
+                self.connected = true
+                await self.refresh()
+            }
+        }
+    }
+
+    /// After the offline grace, if the link is STILL retrying (same token — no `.live`/`.down` since),
+    /// publish offline so a dead daemon stops reading as connected (#2).
+    private func scheduleOfflineIfStillRetrying() {
+        offlineGraceToken &+= 1
+        let token = offlineGraceToken
+        let grace = offlineGrace
+        _Concurrency.Task { @MainActor [weak self] in
+            try? await _Concurrency.Task.sleep(for: grace)
+            guard let self, self.offlineGraceToken == token,
+                  self.connectionState == .retrying else { return }
+            self.connected = false
         }
     }
 
@@ -237,6 +277,20 @@ public final class BoardModel: ObservableObject {
     // MARK: lifecycle
 
     private var streamStarted = false
+
+    /// Bumped on every `activate()`/`start()`. Stamps the event-stream consumer + `handleStreamEnded`
+    /// so a superseded connection's late teardown can't clobber the current one's state (#6, the
+    /// activate() stale-teardown race). Also gates the offline-grace timer.
+    private var connGeneration = 0
+
+    /// Monotonic token for the "publish offline after a grace window" timer (#2). Bumped whenever the
+    /// link reaches `.live` or `.down` (which cancels any in-flight grace). A `.retrying` transition
+    /// captures the current token, waits the grace, then flips `connected = false` only if the token is
+    /// still current AND the link is still retrying — so a genuinely-dead daemon stops showing as
+    /// "connected forever", while a brief blip that recovers within the window never flaps the board.
+    private var offlineGraceToken = 0
+    /// How long a `.retrying` link may persist before the board is shown offline.
+    private let offlineGrace: Duration = .seconds(6)
 
     /// Launch-time bootstrap. We never install the background daemon implicitly — that's an explicit,
     /// approved step. Flow:
@@ -357,36 +411,62 @@ public final class BoardModel: ObservableObject {
     #endif
 
     public func start() async {
-        // Retry briefly — the daemon may still be binding its socket right after launch.
+        // Stamp this activation so a superseded connection's late stream teardown can't clobber us (#6).
+        connGeneration &+= 1
+        let gen = connGeneration
+        // Retry briefly — the daemon may still be binding its socket right after launch. `connectAsync`
+        // runs the (possibly slow SSH) first open OFF the @MainActor (#8), so an unreachable Mac never
+        // freezes the UI during this loop.
         connected = false
         for _ in 0..<25 {
-            do { try client.connect(); connected = true; break }
+            do { try await client.connectAsync(); connected = true; break }
             catch { try? await _Concurrency.Task.sleep(for: .milliseconds(200)) }
         }
+        guard gen == connGeneration else { return }   // a newer activate() superseded this one
         guard connected else { return }
-        await refresh()
-        // Live event stream. Re-wire it on every (re)connect: when the daemon restarts, the previous
-        // stream ends, so a one-shot subscribe would leave the board doing a single refresh and then
-        // going permanently silent. `streamStarted` only guards against double-subscribing while one
-        // is already live; it's reset when the stream ends (below).
-        guard !streamStarted else { return }
-        streamStarted = true
-        let stream = client.subscribe()
-        _Concurrency.Task { [weak self] in
-            for await event in stream { self?.apply(event) }
-            // Stream ended → the daemon connection dropped. Reflect offline and allow the next
-            // (re)connect to wire a fresh stream.
-            self?.handleStreamEnded()
+        // Subscribe FIRST, then snapshot (#5): the daemon registers us as a subscriber before we read the
+        // board, so an event racing the snapshot is either reflected in it or delivered live (apply is
+        // idempotent) — no startup gap. The stream persists across transport reconnects (ControlClient
+        // never ends it on a drop); `refresh()` is re-run on the reconnect edge by `onReconnect`, not by
+        // re-subscribing. `streamStarted` guards against double-subscribing within one activation.
+        if !streamStarted {
+            streamStarted = true
+            let stream = client.subscribe()
+            _Concurrency.Task { [weak self] in
+                for await event in stream {
+                    guard let self, self.connGeneration == gen else { break }
+                    self.apply(event)
+                }
+                self?.handleStreamEnded(gen: gen)
+            }
         }
+        await refresh()
     }
 
-    /// The event stream ended (daemon went away). Surface offline and re-arm subscription.
-    private func handleStreamEnded() {
+    /// The event stream ended (this client was `close()`d — a transport drop does NOT end it). Surface
+    /// offline + re-arm subscription, but only if this is still the current connection: a stale consumer
+    /// from a superseded `activate()` must not clobber the fresh connection's state (#6).
+    private func handleStreamEnded(gen: Int) {
+        guard gen == connGeneration else { return }
         connected = false
         streamStarted = false
     }
 
     public func refresh() async {
+        // One round trip for the whole board (#7): tasks + archived + config + models + agents + every
+        // card's shell sessions + owner. Falls back to the individual RPCs if the daemon predates
+        // `boardSnapshot` (version skew during an upgrade).
+        if let snap = try? await client.boardSnapshot() {
+            tasks = snap.tasks
+            archived = snap.archived
+            config = snap.config
+            models = snap.models
+            agents = snap.agents
+            applyBulkSessions(snap.sessions, activeCards: snap.tasks)
+            applyBulkOwners(snap.owners, activeCards: snap.tasks)
+            return
+        }
+        // Legacy fallback: piecemeal calls + the per-card N+1 fan-out.
         if let list = try? await client.call("list", .object([:])).decode([Task].self) {
             tasks = list
             await refreshShellPanels(for: list)
@@ -396,6 +476,29 @@ public final class BoardModel: ObservableObject {
         if let cfg = try? await client.call("getConfig").decode(Config.self) { config = cfg }
         if let ms = try? await client.call("models").decode([AgentModel].self) { models = ms }
         if let ag = try? await client.call("agents").decode([AgentInfo].self) { agents = ag }
+    }
+
+    /// Apply the bulk shell-session snapshot from `boardSnapshot` — the batched form of
+    /// `refreshShellPanels`: drop stale keys for gone cards, then set each card's panel from its sessions.
+    private func applyBulkSessions(_ sessions: [CardSessions], activeCards: [Task]) {
+        let activeIds = Set(activeCards.map(\.id))
+        var knownIds = shellOpen
+        knownIds.formUnion(shellWindows.keys)
+        knownIds.formUnion(selectedShell.keys)
+        for id in knownIds where !activeIds.contains(id) {
+            applyShellPanelState(ShellPanelState(targets: [], previousSelection: nil), for: id)
+        }
+        for s in sessions {
+            applyShellPanelState(ShellPanelState(targets: s.targets, previousSelection: selectedShell[s.id]),
+                                 for: s.id)
+        }
+    }
+
+    /// Apply the bulk owner snapshot from `boardSnapshot` — the batched form of `refreshAgentOwners`.
+    private func applyBulkOwners(_ owners: [AgentTerminalOwnerState], activeCards: [Task]) {
+        let activeIds = Set(activeCards.map(\.id))
+        for id in Array(agentOwners.keys) where !activeIds.contains(id) { agentOwners[id] = nil }
+        for state in owners { agentOwners[state.cardId] = state }
     }
 
     private func refreshShellPanels(for cards: [Task]) async {
@@ -451,7 +554,9 @@ public final class BoardModel: ObservableObject {
         }
     }
 
-    private func apply(_ event: Event) {
+    /// Apply one live event to the board. Internal (not private) so the dedup/reconcile branches can be
+    /// unit-tested without a live daemon — same rationale as `ingestShellsChanged`.
+    func apply(_ event: Event) {
         switch event {
         case .taskUpserted(let t):
             if t.archived {
@@ -493,6 +598,10 @@ public final class BoardModel: ObservableObject {
             // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
             shellOpen.remove(id); shellWindows[id] = nil; selectedShell[id] = nil
         case .activity(let item):
+            // Dedup by id (#3): the daemon replays its whole activity ring to EVERY `subscribe`, so each
+            // reconnect (which re-subscribes) would otherwise re-insert up to 200 items the board already
+            // has — duplicate `Identifiable` ids crash/scramble `ForEach`. Cheap: the feed is capped at 200.
+            guard !activity.contains(where: { $0.id == item.id }) else { break }
             activity.insert(item, at: 0)
             if activity.count > 200 { activity.removeLast(activity.count - 200) }
         case .agentTerminalOwner(let state):
@@ -811,11 +920,13 @@ public final class BoardModel: ObservableObject {
     }
 
     /// Whether the inspector should mount the live terminal or the "Taken over by phone" placeholder.
+    #if os(macOS)
     public func desktopTerminalDecision(for cardId: UUID) -> DesktopTerminalDecision {
         let owner = agentOwners[cardId]?.owner
         return OrchestraUI.desktopTerminalDecision(ownerKind: owner?.ownerKind,
                                                    isStale: agentOwnerStale(for: cardId))
     }
+    #endif
 
     /// Called when the desktop selects/mounts a card's terminal: claim `desktopOwned` unless the phone
     /// owns it or we already own it (the policy short-circuits both). Fire-and-forget; the authoritative

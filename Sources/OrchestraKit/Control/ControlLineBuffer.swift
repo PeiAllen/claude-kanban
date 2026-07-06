@@ -13,8 +13,13 @@ public final class ControlLineBuffer: @unchecked Sendable {
     private var pending = Data()       // bytes not yet terminated by a newline
     private var lines: [Data] = []     // complete frames, newline-stripped, FIFO
     private var eof = false
+    /// Max bytes for a single not-yet-terminated frame. A frame that exceeds it (a truncated/hostile
+    /// stream that never sends a newline, or a run-on write) is dropped and the buffer resyncs at the
+    /// next newline — so `pending` can't grow without bound (#11: it was unbounded).
+    private let maxPending: Int
+    private var overflowing = false    // discarding an over-long frame until the next newline resyncs us
 
-    public init() {}
+    public init(maxPending: Int = 8 * 1024 * 1024) { self.maxPending = maxPending }
 
     /// Append inbound bytes; extract any complete newline-terminated frames and wake a blocked reader.
     public func append(_ bytes: [UInt8]) {
@@ -23,8 +28,16 @@ public final class ControlLineBuffer: @unchecked Sendable {
         pending.append(contentsOf: bytes)
         while let nl = pending.firstIndex(of: 0x0A) {
             let line = pending.subdata(in: pending.startIndex..<nl)
-            lines.append(line)
+            // If we were dropping an over-long frame, this newline resyncs us — skip the partial and
+            // resume normal framing from here.
+            if overflowing { overflowing = false } else { lines.append(line) }
             pending.removeSubrange(pending.startIndex...nl)
+        }
+        // A single frame blew past the cap with no newline in sight → drop it and resync at the next
+        // newline instead of buffering unbounded.
+        if pending.count > maxPending {
+            pending.removeAll(keepingCapacity: false)
+            overflowing = true
         }
         cond.signal()
         cond.unlock()

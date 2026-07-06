@@ -52,6 +52,17 @@ struct ControlLineBufferTests {
         #expect(buf.readLine() == nil)
     }
 
+    @Test("an over-long frame (no newline past the cap) is dropped and the buffer resyncs (#11)")
+    func overLongFrameDroppedAndResyncs() {
+        let buf = ControlLineBuffer(maxPending: 16)
+        buf.append(b("ok\n"))
+        #expect(buf.readLine() == d("ok"))                 // a normal frame reads back
+        buf.append(b("this-frame-is-way-too-long-with-no-newline-in-sight"))  // > 16 bytes, no '\n'
+        buf.append(b("-still-going-and-going"))            // dropped, still resyncing
+        buf.append(b("\nnext\n"))                          // the newline resyncs framing
+        #expect(buf.readLine() == d("next"))               // the oversized frame was dropped; we resync cleanly
+    }
+
     @Test("EOF wakes a blocked reader with nil")
     func eofWakesBlockedReader() async {
         let buf = ControlLineBuffer()

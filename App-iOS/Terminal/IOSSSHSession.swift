@@ -36,6 +36,11 @@ final class IOSSSHSession: @unchecked Sendable {
     private var _state: ConnectionState = .down
     private var parent: Channel?
     private var inFlight: EventLoopFuture<Void>?
+    /// Monotonic attempt id. Every callback that clears `inFlight` (success, failure, later disconnect)
+    /// does so only if it still owns the latest attempt — so a stale completion can't wipe a newer
+    /// attempt's in-flight future (the #9 livelock: a sub-ms failure clearing an in-flight slot the next
+    /// connect() just filled, then serving that dead future to every caller forever).
+    private var connectGen = 0
     private var stateSubs: [(ConnectionState) -> Void] = []
     private var hostKeySubs: [(String) -> Void] = []
 
@@ -69,6 +74,15 @@ final class IOSSSHSession: @unchecked Sendable {
         lock.lock()
         if _state == .live, parent != nil { lock.unlock(); return group.any().makeSucceededVoidFuture() }
         if let f = inFlight { lock.unlock(); return f }
+        // Reserve the in-flight slot BEFORE any async work can complete (#9). The connect future's
+        // callbacks clear `inFlight`, and a sub-ms failure ("connection refused") can fire them before we
+        // ever store the future — leaving a stale failed future cached that every later connect() returns
+        // without re-dialing. So we hand callers a promise we own, publish it as `inFlight` up front, and
+        // cascade the real attempt into it. `gen` stamps this attempt; clears are generation-guarded.
+        connectGen += 1
+        let gen = connectGen
+        let promise = group.any().makePromise(of: Void.self)
+        inFlight = promise.futureResult
         _state = .connecting
         lock.unlock()
         setState(.connecting)
@@ -77,8 +91,10 @@ final class IOSSSHSession: @unchecked Sendable {
         // target — refuse LAN/localhost/public hosts before connecting (DEBUG loopback allowance aside).
         if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host),
            !SSHEndpoint.isTestLoopbackAllowed(endpoint.host) {
+            clearInFlight(gen)
             setState(.down)
-            return group.any().makeFailedFuture(SSHSessionError.rejected(reason))
+            promise.fail(SSHSessionError.rejected(reason))
+            return promise.futureResult
         }
 
         let gate = HostKeyGate()
@@ -104,25 +120,36 @@ final class IOSSSHSession: @unchecked Sendable {
             .map { [weak self] (parent: Channel) in
                 guard let self else { parent.close(promise: nil); return }
                 self.lock.lock()
+                // A close()/newer connect() bumped the generation while we were dialing → this attempt is
+                // stale; drop the freshly-opened parent instead of resurrecting a torn-down session.
+                guard self.connectGen == gen else {
+                    self.lock.unlock(); parent.close(promise: nil); return
+                }
                 self.parent = parent; self._state = .live; self.inFlight = nil
                 self.lock.unlock()
                 self.setState(.live)
                 parent.closeFuture.whenComplete { [weak self] _ in
                     guard let self else { return }
                     self.lock.lock()
-                    self.parent = nil; self._state = .down; self.inFlight = nil
+                    self.parent = nil; self._state = .down
+                    if self.connectGen == gen { self.inFlight = nil }
                     self.lock.unlock()
                     self.setState(.down)
                 }
             }
             .flatMapErrorThrowing { [weak self] error in
-                self?.lock.lock(); self?.inFlight = nil; self?.lock.unlock()
+                self?.clearInFlight(gen)
                 if !gate.changed { self?.setState(.down) }   // a host-key change already surfaced distinctly
                 throw error
             }
 
-        lock.lock(); inFlight = f; lock.unlock()
-        return f
+        f.cascade(to: promise)
+        return promise.futureResult
+    }
+
+    /// Clear the in-flight slot only if this attempt is still the latest (generation-guarded, #9).
+    private func clearInFlight(_ gen: Int) {
+        lock.lock(); if connectGen == gen { inFlight = nil }; lock.unlock()
     }
 
     /// Open a `.session` child channel on the live connection, installing `initializer`'s handler.
@@ -149,6 +176,9 @@ final class IOSSSHSession: @unchecked Sendable {
     func close() {
         lock.lock()
         let p = parent
+        // Invalidate any in-flight attempt so a late-completing dial can't resurrect a torn-down session
+        // (its gen-guarded callbacks become no-ops).
+        connectGen += 1
         parent = nil; _state = .down; inFlight = nil
         lock.unlock()
         p?.close(promise: nil)

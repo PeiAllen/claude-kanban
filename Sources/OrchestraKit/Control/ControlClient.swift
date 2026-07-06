@@ -20,10 +20,20 @@ public final class ControlClient: @unchecked Sendable {
     private var eventContinuation: AsyncStream<Event>.Continuation?
     private var subscribed = false
     private var stopping = false
+    /// Idempotency guard (#4): true once a `connect()`/`connectAsync()` has a live read/reconnect loop
+    /// running. A second connect while one is live is a no-op — without this, it would leak the current
+    /// transport and spawn a duplicate `runLoop`, delivering every event twice forever. Reset on a failed
+    /// first open (so `start()`'s retry loop can re-attempt) and on `close()`.
+    private var started = false
 
     public private(set) var state: ConnectionState = .down
     /// Observed by the UI. Fired on every state change (off the caller's thread — hop to your actor).
     public var onState: (@Sendable (ConnectionState) -> Void)?
+    /// Fired after a successful RE-connect (a drop → backoff → re-open, NOT the first connect), once the
+    /// re-subscribe has been issued. The one "re-assert on reconnect" hook (#1): the UI re-runs its full
+    /// `refresh()` here so a daemon restart / link drop reconciles the board instead of silently going
+    /// stale. Off the caller's thread — hop to your actor.
+    public var onReconnect: (@Sendable () -> Void)?
 
     /// Back-compat convenience: a UDS client by socket path.
     public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app,
@@ -46,23 +56,82 @@ public final class ControlClient: @unchecked Sendable {
 
     /// Connect + start the read/reconnect loop. The first connect is synchronous so callers still get an
     /// immediate throw on a hard first failure; after that, drops are handled transparently by the loop.
+    /// Idempotent (#4): a second call while a loop is already live is a no-op. Prefer `connectAsync()` on
+    /// the @MainActor — this blocks the caller through the (possibly slow SSH) first `open()`.
     public func connect() throws {
-        stateLock.withLock { stopping = false }
-        try openOnce()
-        DispatchQueue.global().async { [weak self] in self?.runLoop() }
+        guard beginConnect() else { return }
+        do { try openOnce() } catch { endFailedConnect(); throw error }
+        launchRunLoop()
     }
 
-    /// One connection attempt: mint a fresh transport, open it, publish `.live`. Throws on failure.
+    /// Async first-connect (#8): runs the blocking first `open()` — which for the SSH transport does two
+    /// NIO `.wait()`s (TCP+SSH handshake, then channel open) — OFF the caller's thread, so an unreachable
+    /// Mac never freezes the @MainActor (and onboarding "Test", which polls `state`, keeps updating).
+    /// Same idempotency + throw-on-first-failure semantics as `connect()`.
+    public func connectAsync() async throws {
+        guard beginConnect() else { return }
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global().async { [weak self] in
+                    guard let self else { cont.resume(throwing: OrchestraError.io("client deallocated")); return }
+                    do { try self.openOnce(); cont.resume() }
+                    catch { cont.resume(throwing: error) }
+                }
+            }
+        } catch { endFailedConnect(); throw error }
+        launchRunLoop()
+    }
+
+    /// Reserve the single-loop slot. Returns false (→ caller no-ops) if a loop is already live.
+    private func beginConnect() -> Bool {
+        stateLock.withLock {
+            if started { return false }
+            started = true; stopping = false
+            return true
+        }
+    }
+    /// Release the slot after a failed first `open()` so `start()`'s retry loop can re-attempt.
+    private func endFailedConnect() { stateLock.withLock { started = false } }
+    private func launchRunLoop() { DispatchQueue.global().async { [weak self] in self?.runLoop() } }
+
+    /// One connection attempt: mint a fresh transport, open it, verify a real daemon answers a `version`
+    /// probe, THEN publish `.live`. Throws on transport failure OR a live transport with a dead daemon
+    /// behind it (#10: "SSH up, daemon down" — the exec-bridge connects but the daemon socket refuses, so
+    /// the channel EOFs). Gating `.live` on the probe turns that into a clean open failure → backoff,
+    /// instead of flapping `.live`→`.retrying` forever with no diagnosable reason (and stops onboarding
+    /// "Test" from false-passing against a dead daemon).
     private func openOnce() throws {
         let t = makeTransport()
         setState(.connecting)
         try t.open()
+        do { try probeVersion(on: t) }
+        catch { t.close(); throw error }
         writeLock.withLock { transport = t }
         setState(.live)
     }
 
+    /// Synchronous `version` round-trip on a freshly-opened transport, BEFORE the shared read loop owns
+    /// it. Confirms a real daemon is behind the transport (not just an open socket / SSH channel). No
+    /// subscription is active yet, so no events can interleave; any non-matching frame is ignored, and a
+    /// closed stream (EOF before the reply) means the daemon never answered → throw.
+    private func probeVersion(on t: Transport) throws {
+        let id = stateLock.withLock { let i = nextId; nextId += 1; return i }
+        let req = RPCRequest(id: id, method: "version", params: nil, source: source.rawValue, clientId: clientId)
+        guard t.write(try RPCCodec.line(req)) else { throw OrchestraError.io("version probe write failed") }
+        while let line = t.readLine() {
+            guard !line.isEmpty,
+                  let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
+            if msg.id == id {
+                if let err = msg.error { throw err }
+                return                                  // daemon answered → it's alive
+            }
+            // ignore any other frame during the probe (nothing is subscribed yet)
+        }
+        throw OrchestraError.io("daemon did not answer version probe (connection closed)")
+    }
+
     public func close() {
-        stateLock.withLock { stopping = true }
+        stateLock.withLock { stopping = true; started = false }
         // Guard `transport` with writeLock so we never tear it down under an in-flight `write`. Closing it
         // also unblocks the reader (readLine → nil), so the loop can observe `stopping` and exit.
         let t: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
@@ -100,6 +169,14 @@ public final class ControlClient: @unchecked Sendable {
     public func call<T: Decodable>(_ method: String, _ params: JSONValue? = nil, as type: T.Type) async throws -> T {
         let result = try await call(method, params)
         return try result.decode(T.self)
+    }
+
+    /// One-round-trip board snapshot: tasks + archived + config + models + agents + every active card's
+    /// shell sessions + agent-terminal owner. The bulk form of `list`+`archivedList`+`getConfig`+`models`+
+    /// `agents` and the per-card `sessions`/`agentTerminalOwner` fan-out — collapsing ~2N round trips on
+    /// every (re)connect into one, and (issued right after `subscribe`) closing the snapshot/subscribe gap.
+    public func boardSnapshot() async throws -> BoardSnapshot {
+        try await call("boardSnapshot", .object([:]), as: BoardSnapshot.self)
     }
 
     // MARK: - Agent-terminal ownership (app/phone UI coordination)
@@ -225,7 +302,11 @@ public final class ControlClient: @unchecked Sendable {
                 do {
                     try openOnce()
                     attempt = 0
+                    // Re-subscribe FIRST (so the daemon re-registers us before we snapshot), then fire the
+                    // re-assert hook (#1) — the UI re-runs `refresh()` here, reconciling a board that would
+                    // otherwise stay silently stale after a daemon restart / link drop.
                     if stateLock.withLock({ subscribed }) { _Concurrency.Task { try? await self.call("subscribe") } }
+                    onReconnect?()
                     break
                 } catch { setState(.retrying); continue }
             }

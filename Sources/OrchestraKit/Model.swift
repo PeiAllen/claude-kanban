@@ -718,6 +718,30 @@ public struct ShellWindowsState: Codable, Sendable, Equatable {
     }
 }
 
+/// One atomic snapshot of everything a client needs to (re)paint the board — collapsing the old
+/// `list` + `archivedList` + `getConfig` + `models` + `agents` calls PLUS the per-card `sessions` +
+/// `agentTerminalOwner` fan-out (the N+1 that put ~2N round trips on every (re)connect, each shelling
+/// to tmux) into a SINGLE round trip. Taken server-side under one pass so shell/owner state is
+/// consistent with the task list, and — issued right after `subscribe` — it also closes the
+/// snapshot-then-subscribe gap: any event racing the snapshot is either reflected in it or delivered
+/// live (apply is idempotent).
+public struct BoardSnapshot: Codable, Sendable, Equatable {
+    public let tasks: [Task]
+    public let archived: [Task]
+    public let config: Config
+    public let models: [AgentModel]
+    public let agents: [AgentInfo]
+    /// Per active (non-archived) card, its shell/session snapshot — the bulk form of the `sessions` RPC.
+    public let sessions: [CardSessions]
+    /// Per active card, its current agent-terminal owner — the bulk form of `agentTerminalOwner`.
+    public let owners: [AgentTerminalOwnerState]
+    public init(tasks: [Task], archived: [Task], config: Config, models: [AgentModel],
+                agents: [AgentInfo], sessions: [CardSessions], owners: [AgentTerminalOwnerState]) {
+        self.tasks = tasks; self.archived = archived; self.config = config
+        self.models = models; self.agents = agents; self.sessions = sessions; self.owners = owners
+    }
+}
+
 // MARK: - Spawn input
 
 public struct SpawnInput: Codable, Sendable, Equatable {
