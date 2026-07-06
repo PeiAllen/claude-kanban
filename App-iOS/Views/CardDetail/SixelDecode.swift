@@ -111,93 +111,109 @@ enum SixelDecoder {
         let s = Array(body)
         let n = s.count
         guard n > 0 else { return nil }
+        let cap = SixelDecoder.maxDimension
 
-        var palette: [Int: (UInt8, UInt8, UInt8)] = [:]
-        var current = 0
-        var x = 0
-        var band = 0          // each band is 6 pixels tall
-        var maxX = -1
-        var maxY = -1
-        var pixels: [Int: (UInt8, UInt8, UInt8)] = [:]   // key = y * stride + x, stride = maxDimension
+        // The parse runs twice over the same input: pass 1 measures the (already-clamped) extent, pass 2
+        // fills a *dense* `w*h*4` RGBA buffer. Two properties make this hostile-safe, honouring the
+        // file-level "can't allocate an unbounded bitmap" guarantee:
+        //   • every plot coordinate is bounded by `cap` (maxDimension), so a `!Pn` run-length can never
+        //     spin the inner loop and never writes past the cap — even `!2000000000?` is ≤ cap iterations;
+        //   • storage is a dense array sized to the actual clamped image, not a sparse dictionary keyed by
+        //     `y*stride+x` — a 4096² raster is one bounded ~67 MB alloc, not tens of millions of dict keys.
+        // `parse` is deterministic (palette rebuilt identically each pass), so both passes agree on colour.
+        func parse(write: (_ x: Int, _ y: Int, _ rgb: (UInt8, UInt8, UInt8)) -> Void) -> (Int, Int) {
+            var palette: [Int: (UInt8, UInt8, UInt8)] = [:]
+            var current = 0
+            var x = 0
+            var band = 0          // each band is 6 pixels tall
+            var maxX = -1
+            var maxY = -1
 
-        func plot(_ bits: Int, repeat count: Int) {
-            let color = palette[current] ?? (255, 255, 255)
-            let reps = max(1, count)
-            for _ in 0..<reps {
-                if x <= SixelDecoder.maxDimension {
+            func plot(_ bits: Int, repeat count: Int) {
+                let color = palette[current] ?? (255, 255, 255)
+                // Clamp the repeat: a hostile `!Pn` must not iterate unbounded on the main thread.
+                let reps = min(max(1, count), cap)
+                var r = 0
+                while r < reps {
+                    if x >= cap { break }   // past the width cap → nothing left to plot in this run
                     var b = 0
                     while b < 6 {
                         if bits & (1 << b) != 0 {
                             let y = band * 6 + b
-                            if y <= SixelDecoder.maxDimension {
-                                pixels[y * SixelDecoder.maxDimension + x] = color
+                            if y < cap {
+                                write(x, y, color)
                                 if x > maxX { maxX = x }
                                 if y > maxY { maxY = y }
                             }
                         }
                         b += 1
                     }
+                    x += 1
+                    r += 1
                 }
-                x += 1
             }
-        }
 
-        var i = 0
-        func readInt() -> Int {
-            var v = 0
-            var any = false
-            while i < n, s[i].value >= 0x30, s[i].value <= 0x39 {
-                v = v * 10 + Int(s[i].value - 0x30); any = true; i += 1
-            }
-            return any ? v : 0
-        }
-
-        while i < n {
-            let c = s[i].value
-            switch c {
-            case 0x23:   // '#' colour register: #Pc  or  #Pc;Pu;Px;Py;Pz
-                i += 1
-                let pc = readInt()
-                if i < n, s[i].value == 0x3b {   // ';' → full colour definition
-                    i += 1; let pu = readInt()
-                    if i < n, s[i].value == 0x3b { i += 1 }; let px = readInt()
-                    if i < n, s[i].value == 0x3b { i += 1 }; let py = readInt()
-                    if i < n, s[i].value == 0x3b { i += 1 }; let pz = readInt()
-                    palette[pc] = SixelDecoder.color(system: pu, px, py, pz)
+            var i = 0
+            func readInt() -> Int {
+                var v = 0
+                var any = false
+                while i < n, s[i].value >= 0x30, s[i].value <= 0x39 {
+                    // Saturate at `cap` so a giant digit string can't trap on Int overflow; callers
+                    // (run-length count, dimensions) only care about values up to `cap`, and the colour
+                    // channels (≤ 360) are well under it.
+                    if v < cap { v = v * 10 + Int(s[i].value - 0x30) }
+                    any = true; i += 1
                 }
-                current = pc
-            case 0x21:   // '!' run-length: !Pn <data>
-                i += 1
-                let count = readInt()
-                if i < n {
-                    let d = s[i].value
-                    if d >= 0x3f, d <= 0x7e { plot(Int(d) - 0x3f, repeat: count) }
+                return any ? v : 0
+            }
+
+            while i < n {
+                let c = s[i].value
+                switch c {
+                case 0x23:   // '#' colour register: #Pc  or  #Pc;Pu;Px;Py;Pz
+                    i += 1
+                    let pc = readInt()
+                    if i < n, s[i].value == 0x3b {   // ';' → full colour definition
+                        i += 1; let pu = readInt()
+                        if i < n, s[i].value == 0x3b { i += 1 }; let px = readInt()
+                        if i < n, s[i].value == 0x3b { i += 1 }; let py = readInt()
+                        if i < n, s[i].value == 0x3b { i += 1 }; let pz = readInt()
+                        palette[pc] = SixelDecoder.color(system: pu, px, py, pz)
+                    }
+                    current = pc
+                case 0x21:   // '!' run-length: !Pn <data>
+                    i += 1
+                    let count = readInt()
+                    if i < n {
+                        let d = s[i].value
+                        if d >= 0x3f, d <= 0x7e { plot(Int(d) - 0x3f, repeat: count) }
+                        i += 1
+                    }
+                case 0x22:   // '"' raster attributes: "Pan;Pad;Ph;Pv — consume, we grow dynamically
+                    i += 1
+                    _ = readInt()
+                    while i < n, s[i].value == 0x3b { i += 1; _ = readInt() }
+                case 0x24:   // '$' graphics carriage return
+                    x = 0; i += 1
+                case 0x2d:   // '-' graphics newline
+                    x = 0; band += 1; i += 1
+                case 0x3f...0x7e:   // sixel data band
+                    plot(Int(c) - 0x3f, repeat: 1); i += 1
+                default:     // CR/LF/whitespace/unknown → ignore
                     i += 1
                 }
-            case 0x22:   // '"' raster attributes: "Pan;Pad;Ph;Pv — consume, we grow dynamically
-                i += 1
-                _ = readInt()
-                while i < n, s[i].value == 0x3b { i += 1; _ = readInt() }
-            case 0x24:   // '$' graphics carriage return
-                x = 0; i += 1
-            case 0x2d:   // '-' graphics newline
-                x = 0; band += 1; i += 1
-            case 0x3f...0x7e:   // sixel data band
-                plot(Int(c) - 0x3f, repeat: 1); i += 1
-            default:     // CR/LF/whitespace/unknown → ignore
-                i += 1
             }
+            return (maxX, maxY)
         }
 
+        // Pass 1: measure. Coordinates are clamped to < cap, so w,h are guaranteed ≤ cap.
+        let (maxX, maxY) = parse { _, _, _ in }
         guard maxX >= 0, maxY >= 0 else { return nil }
         let w = maxX + 1, h = maxY + 1
-        guard w > 0, h > 0, w <= SixelDecoder.maxDimension, h <= SixelDecoder.maxDimension else { return nil }
 
-        var buf = [UInt8](repeating: 0, count: w * h * 4)   // RGBA, transparent where unset
-        for (key, rgb) in pixels {
-            let y = key / SixelDecoder.maxDimension
-            let px = key % SixelDecoder.maxDimension
-            guard px < w, y < h else { continue }
+        // Pass 2: fill a dense RGBA buffer sized to the clamped image (transparent where unset).
+        var buf = [UInt8](repeating: 0, count: w * h * 4)
+        _ = parse { px, y, rgb in
             let o = (y * w + px) * 4
             buf[o] = rgb.0; buf[o + 1] = rgb.1; buf[o + 2] = rgb.2; buf[o + 3] = 255
         }

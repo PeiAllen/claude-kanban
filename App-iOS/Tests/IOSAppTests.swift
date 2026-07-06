@@ -179,4 +179,54 @@ final class IOSAppTests: XCTestCase {
         let runs = captureRuns(from: "x" + dcs + "y")
         XCTAssertFalse(runs.contains { if case .image = $0 { return true } else { return false } })
     }
+
+    // MARK: - Sixel decoder hardening (review #9)
+
+    func testSixelHostileRunLengthIsBoundedAndFast() {
+        // A hostile `!Pn` run-length used to feed `count` straight into `for _ in 0..<reps`, spinning
+        // ~2 billion times on the MAIN thread (captureRuns runs inside CapturePaneText.body). The repeat
+        // must clamp to maxDimension so decode stays bounded, and the image (if any) is clamped in width.
+        let hostile = Self.esc + "Pq#0;2;100;100;100!2000000000~" + Self.esc + "\\"
+        let start = Date()
+        let runs = captureRuns(from: hostile)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0, "hostile run-length must decode fast")
+        if case .image(let img) = runs.first {
+            XCTAssertLessThanOrEqual(img.width, SixelDecoder.maxDimension)
+            XCTAssertLessThanOrEqual(img.height, SixelDecoder.maxDimension)
+        }
+    }
+
+    func testSixelOverflowRunLengthDoesNotTrap() {
+        // A digit string too large for Int must saturate in readInt, not trap on integer overflow.
+        let hostile = Self.esc + "Pq#0;2;100;100;100!99999999999999999999999~" + Self.esc + "\\"
+        let runs = captureRuns(from: hostile)   // must not crash
+        XCTAssertFalse(runs.isEmpty)
+        if case .image(let img) = runs.first {
+            XCTAssertLessThanOrEqual(img.width, SixelDecoder.maxDimension)
+        }
+    }
+
+    func testSixelOversizedHeightIsClamped() {
+        // Thousands of graphics-newlines drive `band` far past the cap; height must clamp to
+        // maxDimension and the decode must stay bounded (each band plots a single 6px column).
+        let body = "#0;2;100;100;100" + String(repeating: "~-", count: 5000)   // ~30000px tall
+        let sixel = Self.esc + "Pq" + body + Self.esc + "\\"
+        let start = Date()
+        let runs = captureRuns(from: sixel)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0, "oversized raster must decode fast")
+        if case .image(let img) = runs.first {
+            XCTAssertLessThanOrEqual(img.height, SixelDecoder.maxDimension)
+            XCTAssertLessThanOrEqual(img.width, SixelDecoder.maxDimension)
+        }
+    }
+
+    func testSixelValidImageStillDecodesAfterHardening() {
+        // Regression guard for the dense two-pass rewrite: a normal small Sixel still decodes to the
+        // exact expected dimensions (a red 10×6 raster).
+        let sixel = Self.esc + "Pq#0;2;100;0;0#0" + String(repeating: "~", count: 10) + Self.esc + "\\"
+        let runs = captureRuns(from: sixel)
+        guard case .image(let img) = runs.first else { return XCTFail("expected an image run") }
+        XCTAssertEqual(img.width, 10)
+        XCTAssertEqual(img.height, 6)
+    }
 }
