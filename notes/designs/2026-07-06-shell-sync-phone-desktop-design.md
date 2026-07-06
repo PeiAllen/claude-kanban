@@ -1,6 +1,10 @@
 # Shell sync between phone and desktop
 
-**Status:** decided → implementing · **Card:** `65a7f2` · **Branch:** `fix/ios-shell-sync-phone-desktop`
+**Status:** implemented + verified · **Card:** `65a7f2` · **Branch:** `fix/ios-shell-sync-phone-desktop`
+
+> Verified on the isolated stack: a desktop-opened `shell-1` and the phone's own `phone-<client>`
+> shell both appear in the iPhone's Terminal ribbon (owner-tagged), and a two-client `ControlServer`
+> round-trip test proves a shell opened on one connection reaches the other's subscription.
 
 ## Problem
 
