@@ -31,25 +31,34 @@ final class BoardOverSSHE2ETests: XCTestCase {
         return v
     }
 
-    /// Build a `ControlClient` over the real SSH control transport, pointed at the harness's sshd + the
-    /// isolated daemon socket. Mirrors exactly what `BoardModel.activate` does on a device (via the
-    /// `RemoteControlTransportProvider`), but assembled directly so the test owns the lifecycle.
-    private func makeClientAndSession() throws -> (ControlClient, IOSSSHSession) {
+    /// The isolated daemon socket the bridge `nc -U`s (set by the harness).
+    private func daemonSock() throws -> String { try requireEnv("ORCH_E2E_DAEMON_SOCK") }
+
+    /// Build the shared `IOSSSHSession` for the harness's sshd, with a fresh TOFU pin. This is the ONE
+    /// authenticated connection the board's control transport (and, folded, terminals) multiplex over.
+    private func makeSession() throws -> IOSSSHSession {
         let target = try requireEnv("ORCH_E2E_SSH_TARGET")
-        let sock = try requireEnv("ORCH_E2E_DAEMON_SOCK")
         guard let endpoint = SSHEndpoint(target: target) else {
             throw XCTSkip("e2e: ORCH_E2E_SSH_TARGET '\(target)' is not user@host[:port]")
         }
         // Fresh TOFU: the throwaway sshd's host key is regenerated each run, so clear any pin left by a
         // prior run to 127.0.0.1 or the first connect would hit a `hostKeyChanged` refusal.
         try? SSHHostKeyPinStore().reset(host: endpoint.host)
-
         let privateKey = NIOSSHPrivateKey(ed25519Key: try SSHKeyStore.loadOrCreateIdentity())
-        let session = IOSSSHSession(endpoint: endpoint, group: TerminalRuntime.group, privateKey: privateKey)
-        let client = ControlClient(
-            transport: { SSHControlTransport(session: { session }, remoteSocketPath: sock) },
-            source: .app)
-        return (client, session)
+        return IOSSSHSession(endpoint: endpoint, group: TerminalRuntime.group, privateKey: privateKey)
+    }
+
+    /// A `ControlClient` over the real SSH control transport backed by `session`. Mirrors exactly what
+    /// `BoardModel.activate` does on a device (via the `RemoteControlTransportProvider`), but assembled
+    /// directly so the test owns the lifecycle.
+    private func makeClient(over session: IOSSSHSession, sock: String) -> ControlClient {
+        ControlClient(transport: { SSHControlTransport(session: { session }, remoteSocketPath: sock) },
+                      source: .app)
+    }
+
+    /// The daemon's `version`, round-tripped over an SSH-backed control client.
+    private func version(_ client: ControlClient) async throws -> String {
+        try await client.call("version").decode(VersionInfo.self).version
     }
 
     /// Poll `client.state` until it equals `want` or the timeout elapses. `ControlClient` publishes state
@@ -68,22 +77,23 @@ final class BoardOverSSHE2ETests: XCTestCase {
 
     /// Board reaches `.live` over SSH and a `version` RPC round-trips through the exec bridge.
     func testBoardGoesLiveOverSSHAndVersionRoundTrips() async throws {
-        let (client, session) = try makeClientAndSession()
+        let session = try makeSession()
+        let client = makeClient(over: session, sock: try daemonSock())
         defer { client.close(); session.close() }
 
         try client.connect()                                   // synchronous first open — throws on hard fail
         XCTAssertEqual(client.state, .live, "board did not reach .live over the SSH control bridge")
 
-        let version = try await client.call("version").decode(VersionInfo.self).version
-        XCTAssertFalse(version.isEmpty, "version RPC returned empty over SSH")
-        XCTAssertEqual(version, OrchestraVersion.current,
-                       "version over SSH must match the daemon build")
+        let v = try await version(client)
+        XCTAssertFalse(v.isEmpty, "version RPC returned empty over SSH")
+        XCTAssertEqual(v, OrchestraVersion.current, "version over SSH must match the daemon build")
     }
 
     /// Background→foreground: dropping the shared session forces `.retrying`, and the SAME session
     /// lazily reconnects to `.live` — the core "never cache the session" reconnect path.
     func testReconnectAfterSessionDrop() async throws {
-        let (client, session) = try makeClientAndSession()
+        let session = try makeSession()
+        let client = makeClient(over: session, sock: try daemonSock())
         defer { client.close(); session.close() }
 
         try client.connect()
@@ -96,7 +106,29 @@ final class BoardOverSSHE2ETests: XCTestCase {
                       "client should lazily reconnect the shared session to .live")
 
         // A live RPC after reconnect proves the fresh child channel actually works, not just the state flag.
-        let version = try await client.call("version").decode(VersionInfo.self).version
-        XCTAssertEqual(version, OrchestraVersion.current)
+        let v = try await version(client)
+        XCTAssertEqual(v, OrchestraVersion.current)
+    }
+
+    /// The **multiplex-fold proof**: ONE `IOSSSHSession` (one auth, one tailnet guard, one TOFU pin) vends
+    /// TWO independent control channels concurrently, both reaching `.live` and round-tripping `version`.
+    /// The board and a folded terminal are exactly two such consumers of the single shared session.
+    func testSessionMultiplexesTwoControlChannels() async throws {
+        let session = try makeSession()
+        let sock = try daemonSock()
+        let board = makeClient(over: session, sock: sock)      // stand-in for the board control channel
+        let aux = makeClient(over: session, sock: sock)        // stand-in for a folded terminal's channel
+        defer { board.close(); aux.close(); session.close() }
+
+        try board.connect()
+        try aux.connect()
+        XCTAssertEqual(board.state, .live)
+        XCTAssertEqual(aux.state, .live, "second channel on the SAME session failed to open — no multiplex")
+
+        // Both channels round-trip independently over the one authenticated connection.
+        let va = try await version(board)
+        let vb = try await version(aux)
+        XCTAssertEqual(va, OrchestraVersion.current)
+        XCTAssertEqual(vb, OrchestraVersion.current)
     }
 }

@@ -25,7 +25,9 @@ enum SSHSessionError: Error, CustomStringConvertible {
 /// its own reconnect loop — the controller (`scenePhase`) and `ControlClient` (its retry loop) drive
 /// re-`open()`, and each re-open awaits `connect()`, so the two never fight.
 final class IOSSSHSession: @unchecked Sendable {
-    private let endpoint: SSHEndpoint
+    /// The Mac this session authenticates to. Read by terminals to decide whether the shared session
+    /// matches their target (the multiplex fold) — see `SSHPTYChannel.sharedSessionIfMatching`.
+    let endpoint: SSHEndpoint
     private let group: EventLoopGroup
     private let privateKey: NIOSSHPrivateKey
     private let pinStore: SSHHostKeyPinStore

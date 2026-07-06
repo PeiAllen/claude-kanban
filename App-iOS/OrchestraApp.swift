@@ -31,7 +31,8 @@ struct OrchestraiOSApp: App {
                 .environment(\.clipboard, IOSClipboard())
                 .environment(\.systemOpener, IOSSystemOpener())
                 .environment(\.windowConfig, IOSWindowConfig())
-                .environment(\.terminalHost, IOSTerminalHost(connections: model.connections))
+                .environment(\.terminalHost, IOSTerminalHost(connections: model.connections,
+                                                             sessionProvider: connection.sessionProvider))
                 .task {
                     // Wire the SSH transport provider before the first activate() (in bootstrap).
                     model.remoteControlTransportProvider = connection
@@ -60,6 +61,10 @@ private struct RootView: View {
     @EnvironmentObject var snooze: NeedsYouSnooze
     @EnvironmentObject var push: PushCoordinator
     @AppStorage("orch_theme_mode") private var themeRaw = ThemeMode.system.rawValue
+    // First-launch guided Mac setup: shown once when no Mac is configured yet. Set after the sheet closes
+    // (success or "Later") so it never nags on subsequent launches; re-openable from Settings any time.
+    @AppStorage("orch_onboarding_done") private var onboardingDone = false
+    @State private var showSetup = false
     @Environment(\.colorScheme) private var systemScheme
     // Initial tab is Board; `ORCH_INITIAL_TAB` / `ORCH_DEV_TAB` (board|needs|settings) can seed a
     // different one so a headless screenshot gate lands deterministically. In DEBUG, `ORCH_T1_AUTOATTACH=1`
@@ -78,6 +83,16 @@ private struct RootView: View {
         case "settings":                       return .settings
         default:                               return .board
         }
+    }
+
+    /// Auto-present the first-launch setup only on a genuine fresh launch — never when a dev/screenshot
+    /// harness is driving the app via env (those pin a tab / target and a popped sheet would break them).
+    private static func shouldAutoPresentSetup() -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        let harnessKeys = ["ORCH_SSH_TARGET", "ORCH_DEV_SOCKET", "ORCH_INITIAL_TAB", "ORCH_DEV_TAB",
+                           "ORCH_T1_AUTOATTACH", "ORCH_T4_AUTOTAKEOVER", "ORCH_SPAWN_AUTOSUBMIT",
+                           "ORCH_SPAWN_BROWSE"]
+        return !harnessKeys.contains { env[$0] != nil }
     }
 
     /// The Needs You tab badge: the attention count with snoozed rows removed (0 renders no badge).
@@ -126,6 +141,16 @@ private struct RootView: View {
         // is inherited by the presented view, as with the Agent tab's own takeover cover.
         .fullScreenCover(item: $model.phoneTakeoverRequest) { req in
             AgentTakeoverView(cardId: req.id, model: model) { model.phoneTakeoverRequest = nil }
+        }
+        // First-launch guided setup — the one-time "connect your Mac" flow. Gated so a real fresh install
+        // sees it, but the DEBUG dev/screenshot harnesses (which drive a specific tab via env) don't.
+        .sheet(isPresented: $showSetup) {
+            MacSetupView { showSetup = false; onboardingDone = true }
+        }
+        .onAppear {
+            if !onboardingDone, model.connections.remotes.isEmpty, Self.shouldAutoPresentSetup() {
+                showSetup = true
+            }
         }
         #if DEBUG
         // Bug-3 verify hook: open the spawn sheet on launch so it can auto-submit (see SpawnSheet's

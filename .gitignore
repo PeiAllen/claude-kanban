@@ -23,3 +23,7 @@ Package.resolved
 *.sock
 .obsidian/
 .trash/
+
+# iOS device signing — your Apple team id stays out of git (see scripts/build-ios-device.sh)
+App-iOS/DeviceSigning.local.xcconfig
+*.local.xcconfig

@@ -106,6 +106,7 @@ echo "daemon sock: $DAEMON_SOCK"
 # runner via the TEST_RUNNER_ prefix (xcodebuild strips it and injects the rest into the runner's
 # environment). ORCH_SSH_ALLOW_LOOPBACK=1 opens the DEBUG-only tailnet-guard escape for 127.0.0.1.
 echo "=== pass 3: run BoardOverSSHE2ETests ==="
+rm -f "$LOG/ios-e2e-test.log"    # never let a stale prior-run log mask a build/test failure
 TEST_RUNNER_ORCH_SSH_ALLOW_LOOPBACK=1 \
 TEST_RUNNER_ORCH_E2E_SSH_TARGET="$USER_NAME@127.0.0.1:$PORT" \
 TEST_RUNNER_ORCH_E2E_DAEMON_SOCK="$DAEMON_SOCK" \

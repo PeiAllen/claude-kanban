@@ -18,6 +18,11 @@ struct IOSTerminalHost: TerminalHost {
     /// no separate `orch_ssh_target`). Defaults to a fresh store so DEBUG/test construction stays cheap.
     var connections: ConnectionStore = ConnectionStore()
 
+    /// The board's shared `IOSSSHSession` provider (P2 multiplex fold). When it targets the same Mac, a
+    /// terminal opens its PTY channel on this ONE authenticated connection instead of a second SSH auth.
+    /// Defaults to none — the DEBUG/T1 harness path, where `SSHPTYChannel` makes a private session.
+    var sessionProvider: @Sendable () -> IOSSSHSession? = { nil }
+
     /// Plain (additive) attach — the read-only view path used by DebugTerminalTab and the Agent tab's
     /// captured terminal. Non-exclusive (`takeover: false`), no Select.
     func attach(target: TmuxTarget) -> AnyView {
@@ -56,9 +61,11 @@ struct IOSTerminalHost: TerminalHost {
         let command = TmuxAttach.sshExecCommand(script: script)
         let group = TerminalRuntime.group
 
+        let sessionProvider = self.sessionProvider
         return AnyView(
             IOSTerminalView(makeChannel: {
-                SSHPTYChannel(endpoint: endpoint, command: command, group: group)
+                SSHPTYChannel(endpoint: endpoint, command: command, group: group,
+                              sharedSession: sessionProvider)
             }, control: control, selectMode: selectMode)
             // Stable identity per attach target so SwiftUI keeps ONE Coordinator (and one SSH session)
             // across re-renders — the client half of reconnect idempotency. `takeover` is part of the id so

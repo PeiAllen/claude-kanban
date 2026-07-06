@@ -25,16 +25,19 @@ updated: 2026-07-06
 | 3 — Implementation | [[03-implementation]] | approved |
 | 3 — Tests | [[04-tests]] | approved |
 
-**All layers approved (2026-07-06). Status:**
-- **P1 — board over SSH: DONE** (code + 16 unit tests, iOS + macOS build clean).
-- **P2 — config unification: DONE** (one connection drives board + terminals; `orch_ssh_target` deleted;
-  30/30 iOS tests). Session-multiplex fold deferred as an optimization.
-- **P3 — core DONE** (one-field "Add your Mac" + free-tier no-push entitlements). Guided onboarding
-  checklist = optional polish (the Connection editor already configures it).
+**All layers approved (2026-07-06). Status — every phase landed except P4 (paid-only, out of scope):**
+- **P1 — board over SSH: DONE** (code + unit tests, iOS + macOS build clean).
+- **P2 — config unification + session-multiplex fold: DONE.** One connection drives board + terminals;
+  `orch_ssh_target` deleted. Terminals now open their PTY child channel on the **shared `IOSSSHSession`**
+  (one auth for board + all terminals) when it targets the same Mac, else a private owned session (env/dev).
+- **P3 — DONE.** One-field "Add your Mac" + free-tier no-push entitlements **+ guided onboarding**
+  (`MacSetupView`: target → trust device key → test-to-`.live`; first-launch + Settings re-entry) **+ a
+  free-personal-team device build lane** (`scripts/build-ios-device.sh`, team id kept out of git).
 - **P4 — deferred** (real push, paid-only) — not pursued.
 - **Loopback e2e — DONE.** `scripts/ios-board-over-ssh-verify.sh` + `App-iOS/Tests/BoardOverSSHE2ETests.swift`
-  drive the real SSH path (throwaway `sshd` + isolated `orchestrad` + `nc -U`) and prove the board reaches
-  `.live`, round-trips a `version` RPC, and lazily reconnects after a session drop. 2/2 green, no device.
+  prove the real SSH path: board reaches `.live`, `version` RPC round-trips, lazy reconnect after a drop,
+  and **one session multiplexes two control channels** (the fold's core claim). 3/3 e2e green + t1 terminal
+  render (attach + reconnect idempotent) + 74 unit tests, no device.
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 

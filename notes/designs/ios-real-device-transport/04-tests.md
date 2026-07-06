@@ -120,8 +120,27 @@ flowchart LR
 | `FakeSession` seam for framing units | Not needed — `ControlLineBuffer` is already directly unit-tested (`ControlLineBufferTests`, 6/6); the live pump is covered by the e2e | Avoided a redundant seam; the buffer's public API is testable as-is |
 | `ORCH_SSH_ALLOW_LOOPBACK` matches `.start()` | API is `ControlClient.connect()` (synchronous first open, throws on hard fail) | Matched the real client API |
 
-Files: `App-iOS/Tests/BoardOverSSHE2ETests.swift` (2 cases: live+version RPC; drop→retry→reconnect+RPC),
-`scripts/ios-board-over-ssh-verify.sh` (self-contained throwaway sshd + isolated `orchestrad`). **2/2 green.**
+Files: `App-iOS/Tests/BoardOverSSHE2ETests.swift` (3 cases: live+version RPC; drop→retry→reconnect+RPC;
+**session multiplexes two control channels**), `scripts/ios-board-over-ssh-verify.sh` (self-contained
+throwaway sshd + isolated `orchestrad`). **3/3 e2e green.**
+
+### P2 session-multiplex fold — coverage
+
+| Claim | Covering test |
+|-------|---------------|
+| One `IOSSSHSession` vends N channels (board + terminals) | `BoardOverSSHE2ETests.testSessionMultiplexesTwoControlChannels` (one session → two live control clients) |
+| Terminal reuses the shared session only on an endpoint match, else owns one | `ControlTransportTests.testTerminalReusesSharedSessionOnlyWhenEndpointMatches` + `…DistinguishesPortWhenMatchingSharedSession` (pure `sharedSessionIfMatching`) |
+| Owned-session PTY terminal still attaches + reconnect is idempotent | `scripts/t1-live-attach.sh` (live `top` render; grouped view-session count = 1). Gotcha fixed: pins are keyed by host, so the loopback harness now resets the `127.0.0.1` pin to avoid a cross-harness `hostKeyChanged` collision. |
+
+### P3 onboarding — coverage
+
+`App-iOS/Tests/MacSetupTests.swift` (7 cases): target validation (blank = not-an-error, tailnet accepted,
+LAN/malformed rejected), trimming, `Connection.mac` shape (one field → Mac defaults), and `waitForLive`
+(`.live` → true; `.retrying` → false, never fabricate success). The connect itself is the loopback e2e.
+Device lane is a signed build (owner-run: `ORCH_IOS_TEAM_ID` + a device); its team-id resolution logic is
+shell-verified (env / gitignored xcconfig / clear error).
+
+**Totals: 74 iOS unit tests + 3 loopback e2e + t1 render, all green.**
 
 ## Open questions — need your call
 

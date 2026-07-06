@@ -65,6 +65,27 @@ final class ControlTransportTests: XCTestCase {
         XCTAssertNil(box.current())
     }
 
+    // MARK: SSHPTYChannel.sharedSessionIfMatching — the terminal multiplex-fold decision
+
+    func testTerminalReusesSharedSessionOnlyWhenEndpointMatches() {
+        let ep = SSHEndpoint(host: "a.tailnet.ts.net", user: "me")
+        let other = SSHEndpoint(host: "b.tailnet.ts.net", user: "me")
+        let shared = Self.makeSession(host: "a.tailnet.ts.net")
+        XCTAssertTrue(SSHPTYChannel.sharedSessionIfMatching(shared, endpoint: ep) === shared,
+                      "same endpoint → reuse the shared session (one auth for board + terminals)")
+        XCTAssertNil(SSHPTYChannel.sharedSessionIfMatching(shared, endpoint: other),
+                     "different endpoint → don't hijack the shared session; make a private one")
+        XCTAssertNil(SSHPTYChannel.sharedSessionIfMatching(nil, endpoint: ep),
+                     "no shared session (env/dev path) → make a private one")
+    }
+
+    func testTerminalDistinguishesPortWhenMatchingSharedSession() {
+        let shared = Self.makeSession(host: "a.tailnet.ts.net")   // default port 22
+        let ep2222 = SSHEndpoint(host: "a.tailnet.ts.net", port: 2222, user: "me")
+        XCTAssertNil(SSHPTYChannel.sharedSessionIfMatching(shared, endpoint: ep2222),
+                     "same host but different port is a different endpoint")
+    }
+
     private static func makeSession(host: String) -> IOSSSHSession {
         let key = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
         return IOSSSHSession(endpoint: SSHEndpoint(host: host, user: "me"),

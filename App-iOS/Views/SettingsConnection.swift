@@ -10,6 +10,7 @@ struct ConnectionSettingsSections: View {
     @EnvironmentObject var model: BoardModel
 
     @State private var editing: Connection?   // non-nil → editor sheet open
+    @State private var guidedSetup = false     // true → guided "connect your Mac" walkthrough open
     @State private var refresh = 0            // bumped after a store mutation to force a re-read
 
     var body: some View {
@@ -23,6 +24,9 @@ struct ConnectionSettingsSections: View {
             RemoteEditorView(connection: conn) { saved in
                 model.connections.upsert(saved); editing = nil; refresh += 1
             } onCancel: { editing = nil }
+        }
+        .sheet(isPresented: $guidedSetup) {
+            MacSetupView { guidedSetup = false; refresh += 1 }
         }
     }
 
@@ -84,6 +88,10 @@ struct ConnectionSettingsSections: View {
                                      remoteTmuxSocket: "orchestra")
             } label: {
                 Label("Add your Mac…", systemImage: "plus.circle")
+            }
+            // The guided walkthrough — same three steps as first launch (target → trust key → test).
+            Button { guidedSetup = true } label: {
+                Label("Set up your Mac…", systemImage: "wand.and.stars")
             }
         } header: {
             Text("Connection")

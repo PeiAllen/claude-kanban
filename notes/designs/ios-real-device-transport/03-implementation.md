@@ -215,15 +215,21 @@ plan stays truthful.
     dev/loopback); `IOSTerminalHost` takes the `ConnectionStore`; `SecuritySettingsSection.host` +
     `DebugTerminalTab` re-sourced. The existing Connection editor (`RemoteEditorView`) already creates the
     `.remote` connection, so the board reaches SSH through it. iOS build green; 30/30 iOS tests green.
-  - ⏳ **Session multiplex (deferred optimization):** folding terminals onto the board's *single*
-    `IOSSSHSession` (`SSHPTYChannel` → `controller.openChannel`) so board + terminals share ONE auth. The
-    UX requirement is already met by config unification; the multiplex is an efficiency/elegance win whose
-    real proof needs the loopback e2e. Deferred to after P3/P4, with the e2e.
-- **P3 — onboarding + free device build:** `OnboardingModel` flow (prereqs → `authorizedKeyLine()` copy →
-  target entry w/ `settingsRejectionReason` → Test via `IOSSSHSession.connect()` + `version` RPC → persist
-  `Connection.mac`). Launch gate on "no configured connection" in `OrchestraApp` (none today). Settings
-  "Mac connection" replaces `TerminalTargetSettingsSection`. **Entitlements split:** `OrchestraiOS-nopush.entitlements`
-  (no `aps-environment`) selected via a `project.yml` build config for the free personal-team device lane.
+  - ✅ **Session multiplex (DONE):** `SSHPTYChannel` now opens its PTY child channel on the board's shared
+    `IOSSSHSession` via `session.openChannel` when that session targets the SAME endpoint
+    (`SSHPTYChannel.sharedSessionIfMatching`, threaded from `IOSTerminalHost.sessionProvider` ←
+    `IOSConnectionController.sessionProvider`); otherwise it makes a **private owned session** for the
+    endpoint (the env/dev / T1-harness path). It closes only its own child channel + any owned session,
+    never the shared one. The per-terminal `ClientBootstrap` + duplicate tailnet-guard were deleted (the
+    guard + TOFU pin now live once in `IOSSSHSession.connect`). Proven by the loopback e2e's
+    `testSessionMultiplexesTwoControlChannels` (one session → two channels) + t1 terminal render (owned path).
+- **P3 — onboarding + free device build (DONE):** `MacSetupView` + `MacSetupModel` — a 3-step guided sheet
+  (target entry w/ `settingsRejectionReason` → `authorizedKeyLine()` copy → **Test** via `switchConnection`
+  + poll `connectionState` to `.live` → persist `Connection.mac`). Auto-presented first-launch when no remote
+  is configured (`orch_onboarding_done` @AppStorage; suppressed under dev-harness env), and re-openable from
+  Settings → Connection ("Set up your Mac…"). **Entitlements split:** `OrchestraiOS-nopush.entitlements`
+  (no `aps-environment`); **device lane** `scripts/build-ios-device.sh` signs with it + `DEVELOPMENT_TEAM`
+  from `$ORCH_IOS_TEAM_ID` or a gitignored `DeviceSigning.local.xcconfig` (team id never committed).
 - **P4 — real push (optional/deferred, paid-only):** `DaemonLifecycle.install()` + plist inject
   `EnvironmentVariables` (`ORCH_APNS_*`) + drop-point logging; re-add `aps-environment`; owner supplies `.p8`.
 

@@ -10,6 +10,12 @@ import Crypto
 // proxies no bytes" (phone-client 01-design). iOS apps can't fork/exec the system `ssh` binary, so the
 // SSH client is in-process (swift-nio-ssh, Apple's first-party implementation — provider-neutral).
 //
+// P2 multiplex fold: a terminal opens its PTY child channel on the **shared `IOSSSHSession`** (the same
+// authenticated connection the board's control transport uses) whenever that session targets the same
+// endpoint — so auth + the tailnet guard + TOFU pinning happen ONCE for the board and every terminal.
+// The env/dev path (no connection-backed shared session — e.g. `ORCH_SSH_TARGET` in the T1 harness) falls
+// back to a private, terminal-owned session for the same endpoint.
+//
 // Concurrency: NIO runs on its own event loops; SwiftTerm + the seam are `@MainActor`. All NIO objects
 // are confined behind small `@unchecked Sendable` boxes, and every byte/event is delivered to the main
 // actor **in order** via `DispatchQueue.main.async` (FIFO — `Task {}` would not preserve terminal byte
@@ -29,8 +35,8 @@ private final class TerminalCallbackBridge: @unchecked Sendable {
     }
 }
 
-// `ChannelBox`, `PubkeyAuthDelegate`, `HostKeyGate`, and `PinningHostKeyDelegate` moved to
-// `SSHClientPrimitives.swift` so the shared `IOSSSHSession` reuses them.
+// `ChannelBox`, `PubkeyAuthDelegate`, `HostKeyGate`, and `PinningHostKeyDelegate` live in
+// `SSHClientPrimitives.swift`; the tailnet guard + TOFU pinning now happen inside `IOSSSHSession.connect`.
 
 /// The child-channel handler: requests a PTY, execs the attach command, and forwards remote bytes.
 private final class PTYChannelHandler: ChannelInboundHandler {
@@ -87,11 +93,16 @@ final class SSHPTYChannel: TerminalByteChannel {
     private let endpoint: SSHEndpoint
     private let command: String
     private let group: EventLoopGroup
+    /// The board's shared session (nil in the env/dev path). Read fresh on each `start` — never cached —
+    /// so a reconnect after a connection switch picks up the current session.
+    private let sharedSession: @Sendable () -> IOSSSHSession?
     private let bridge = TerminalCallbackBridge()
 
     private var state: State = .idle
-    private var parentBox: ChannelBox?
     private var childBox: ChannelBox?
+    /// Non-nil only when THIS terminal created a private session (env/dev fallback). We close it on
+    /// `close()`; a shared session is never closed here (the board + other terminals still use it).
+    private var ownedSession: IOSSSHSession?
     private var size: (cols: Int, rows: Int) = (80, 24)
 
     /// - Parameters:
@@ -99,10 +110,23 @@ final class SSHPTYChannel: TerminalByteChannel {
     ///   - command: the remote command to exec under the PTY — a `/bin/sh`-runnable string, typically a
     ///     `TmuxAttach.attachScript(...)` wrapped with a PATH/locale prelude (see `RemoteTmuxCommand`).
     ///   - group: shared event-loop group (owned by the app so channels don't each spin up threads).
-    init(endpoint: SSHEndpoint, command: String, group: EventLoopGroup) {
+    ///   - sharedSession: the board's shared `IOSSSHSession` provider (defaults to none — the T1 harness /
+    ///     dev path, which makes a private session for `endpoint`).
+    init(endpoint: SSHEndpoint, command: String, group: EventLoopGroup,
+         sharedSession: @escaping @Sendable () -> IOSSSHSession? = { nil }) {
         self.endpoint = endpoint
         self.command = command
         self.group = group
+        self.sharedSession = sharedSession
+    }
+
+    /// Choose the session to back this terminal: the shared session when it targets the SAME endpoint
+    /// (production — one auth for board + all terminals), otherwise nil, meaning "make a private session"
+    /// (the env/dev path where no connection-backed shared session exists, or it targets a different Mac).
+    nonisolated static func sharedSessionIfMatching(_ shared: IOSSSHSession?,
+                                                    endpoint: SSHEndpoint) -> IOSSSHSession? {
+        guard let shared, shared.endpoint == endpoint else { return nil }
+        return shared
     }
 
     func start(cols: Int, rows: Int) {
@@ -115,77 +139,53 @@ final class SSHPTYChannel: TerminalByteChannel {
         bridge.onEvent = onEvent
         onEvent?(.connecting)
 
-        // Tailscale-trust guard (review #5), defense-in-depth with `PinningHostKeyDelegate`'s host-key
-        // pinning below: only ever connect to a tailnet target — refuse a LAN/localhost/public host
-        // before connecting, so the pinned SSH channel is only ever established over the trusted tailnet.
-        if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host),
-           !SSHEndpoint.isTestLoopbackAllowed(endpoint.host) {
-            state = .closed
-            onEvent?(.failed(reason))
-            return
+        // Reuse the board's shared session when it targets this Mac; otherwise make a private one. Either
+        // way, `IOSSSHSession.connect()` performs the tailnet guard + TOFU host-key pinning once, and its
+        // failure surfaces here as `.failed` (or, for a host-key change, the distinct `.hostKeyChanged`).
+        let session: IOSSSHSession
+        if let shared = Self.sharedSessionIfMatching(sharedSession(), endpoint: endpoint) {
+            session = shared
+            ownedSession = nil
+        } else {
+            let key: NIOSSHPrivateKey
+            do {
+                key = NIOSSHPrivateKey(ed25519Key: try SSHKeyStore.loadOrCreateIdentity())
+            } catch {
+                state = .closed
+                onEvent?(.failed("SSH key unavailable: \(error)"))
+                return
+            }
+            let owned = IOSSSHSession(endpoint: endpoint, group: group, privateKey: key)
+            ownedSession = owned
+            session = owned
         }
 
-        let key: NIOSSHPrivateKey
-        do {
-            key = NIOSSHPrivateKey(ed25519Key: try SSHKeyStore.loadOrCreateIdentity())
-        } catch {
-            state = .closed
-            onEvent?(.failed("SSH key unavailable: \(error)"))
-            return
-        }
-
-        let endpoint = self.endpoint, command = self.command, bridge = self.bridge
-        let group = self.group
-        let pinStore = SSHHostKeyPinStore()
+        // Distinguish a host-key-change failure from a generic one so we don't ALSO emit `.failed` (which
+        // would drive a reconnect loop). We only subscribe on a session we own — a per-attach subscriber on
+        // the shared session would accumulate; a shared-session host-key change still surfaces via the
+        // connect failure below.
         let gate = HostKeyGate()
-
-        let bootstrap = ClientBootstrap(group: group)
-            .channelInitializer { channel in
-                let config = SSHClientConfiguration(
-                    userAuthDelegate: PubkeyAuthDelegate(username: endpoint.user, privateKey: key),
-                    serverAuthDelegate: PinningHostKeyDelegate(
-                        host: endpoint.host, store: pinStore,
-                        onHostKeyChanged: { [bridge] host in bridge.event(.hostKeyChanged(host: host)) },
-                        gate: gate))
-                return channel.pipeline.addHandler(
-                    NIOSSHHandler(role: .client(config), allocator: channel.allocator,
-                                  inboundChildChannelInitializer: nil))
+        if ownedSession != nil {
+            session.onHostKeyChanged { [bridge, gate] host in
+                gate.markChanged(); bridge.event(.hostKeyChanged(host: host))
             }
+        }
 
-        // Connect → resolve the SSH handler → open a session child channel → install the PTY handler.
-        let childFuture: EventLoopFuture<(Channel, Channel)> = bootstrap
-            .connect(host: endpoint.host, port: endpoint.port)
-            .flatMap { parent -> EventLoopFuture<(Channel, Channel)> in
-                let childPromise = parent.eventLoop.makePromise(of: Channel.self)
-                parent.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
-                    switch result {
-                    case .failure(let e):
-                        childPromise.fail(e)
-                    case .success(let ssh):
-                        ssh.createChannel(childPromise, channelType: .session) { child, _ in
-                            child.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
-                                child.pipeline.addHandler(
-                                    PTYChannelHandler(command: command, cols: cols, rows: rows, bridge: bridge))
-                            }
-                        }
-                    }
-                }
-                return childPromise.futureResult.map { (parent, $0) }
+        let command = self.command, bridge = self.bridge
+        session.openChannel { child in
+            child.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
+                child.pipeline.addHandler(
+                    PTYChannelHandler(command: command, cols: cols, rows: rows, bridge: bridge))
             }
-
-        childFuture.whenComplete { result in
+        }.whenComplete { result in
             switch result {
-            case .success(let (parent, child)):
-                let parentB = ChannelBox(parent), childB = ChannelBox(child)
+            case .success(let child):
+                let childB = ChannelBox(child)
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self.attached(parent: parentB, child: childB) }
+                    MainActor.assumeIsolated { self.attached(child: childB) }
                 }
             case .failure(let error):
-                // A host-key change already emitted the distinct `.hostKeyChanged` state — don't also
-                // report it as a generic connection failure (which would trigger a reconnect loop).
-                if !gate.changed {
-                    bridge.event(.failed(String(describing: error)))
-                }
+                if !gate.changed { bridge.event(.failed(String(describing: error))) }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         if self.state == .connecting { self.state = .closed }
@@ -195,9 +195,8 @@ final class SSHPTYChannel: TerminalByteChannel {
         }
     }
 
-    private func attached(parent: ChannelBox, child: ChannelBox) {
-        guard state == .connecting else { child.close(); parent.close(); return }
-        parentBox = parent
+    private func attached(child: ChannelBox) {
+        guard state == .connecting else { child.close(); return }
         childBox = child
         state = .open
         onEvent?(.connected)
@@ -219,8 +218,9 @@ final class SSHPTYChannel: TerminalByteChannel {
     func close() {
         state = .closed
         childBox?.close()
-        parentBox?.close()
         childBox = nil
-        parentBox = nil
+        // Only tear down a session WE created. A shared session outlives this terminal (board + peers).
+        ownedSession?.close()
+        ownedSession = nil
     }
 }
