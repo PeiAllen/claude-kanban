@@ -92,10 +92,22 @@ public struct SessionManager: Sendable {
     /// same window instead of spawning a fresh one (phone-agent-terminal UX design, §"Reconnect churn").
     @discardableResult
     public func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String {
+        guard Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid shell window name: \(window)")
+        }
         if try windowNames(name).contains(window) { return window }
         let r = try tmux(["new-window", "-t", name, "-n", window, "-c", cwd])
         if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux new-window failed" : r.stderr) }
         return window
+    }
+
+    /// A client-supplied shell window name is restricted to `[A-Za-z0-9-]` and may never be the reserved
+    /// `agent` window (window 0). This stops a client from re-targeting the `"\(name):\(window)"` tmux
+    /// argument at another window/session (a `:`/`.` injection) or hijacking the agent window as its shell.
+    /// The phone's deterministic `phone-<clientId>` names (clientId is a lowercased UUID) satisfy this.
+    static func isValidShellWindowName(_ window: String) -> Bool {
+        guard window != "agent", !window.isEmpty else { return false }
+        return window.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 
     /// Close a shell window and its grouped view session. No-op for a missing window; refuses to

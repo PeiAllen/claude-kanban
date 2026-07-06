@@ -106,7 +106,8 @@ public final class BoardModel: ObservableObject {
 
     /// The platform seam — the three host UI operations (pasteboard, settings window, focus) that the
     /// desktop backs with AppKit and the iOS client backs with UIKit. Injected so `BoardModel` itself
-    /// stays AppKit-free. Defaults to `.noop` for previews / tests / the iOS client before it wires impls.
+    /// stays AppKit-free. Injected explicitly at every call site (no `.noop` default — see `init`); previews
+    /// and tests pass `.noop` or a spy bundle deliberately.
     public let platform: PlatformUI
 
     /// Client-local connection list + which one is active (local by default).
@@ -143,7 +144,10 @@ public final class BoardModel: ObservableObject {
     }()
     #endif
 
-    public init(platform: PlatformUI = .noop) {
+    /// No `.noop` default on purpose: every construction site must pass its platform bundle (desktop
+    /// `MacPlatform.ui`, iOS `.ios`) so a future macOS call site can't silently no-op clipboard/settings/
+    /// focus. Tests pass an explicit spy bundle; `.noop` stays available for those that want it.
+    public init(platform: PlatformUI) {
         self.platform = platform
         client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()

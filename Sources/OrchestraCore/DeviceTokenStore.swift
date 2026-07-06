@@ -81,10 +81,15 @@ public actor DeviceTokenStore {
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)
+        // Device tokens are a push-delivery capability — keep the file owner-only (0600). Set it on the
+        // temp file first (closes the umask window before the rename) and again on the final path, since
+        // `replaceItemAt` can carry over the destination inode's permissions.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
         if FileManager.default.fileExists(atPath: path) {
             _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
         } else {
             try FileManager.default.moveItem(at: tmp, to: url)
         }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
 }

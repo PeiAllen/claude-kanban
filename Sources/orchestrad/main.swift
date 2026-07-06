@@ -17,6 +17,10 @@ let server = ControlServer(service: service)
 server.onConfigChanged = { cfg in
     _ = try? ConfigStore.save(cfg)
 }
+// NB: `server.onClientDisconnect` is intentionally left unwired here. Ownership leases (D4) are
+// reaped purely by their 30s heartbeat timeout — a disconnected owner's lease simply goes stale — so
+// the daemon needs no disconnect→invalidate path. The hook (and `connectedClientIds()`) stays on
+// ControlServer as a tested seam for a future eager-reap, not as dead code the daemon relies on.
 
 do {
     try server.start()

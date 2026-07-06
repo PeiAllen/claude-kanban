@@ -11,7 +11,7 @@ import XCTest
 final class PushRegistrationReconnectTests: XCTestCase {
 
     func testRegisterForPushRetainsTokenForReconnect() async {
-        let model = BoardModel()               // .noop platform, never activated → no transport
+        let model = BoardModel(platform: .noop)   // never activated → no transport
         XCTAssertNil(model.pushToken)
         await model.registerForPush(token: "deadbeef")
         // Retained even though the best-effort RPC couldn't reach a daemon — this is exactly what lets the
@@ -20,14 +20,14 @@ final class PushRegistrationReconnectTests: XCTestCase {
     }
 
     func testReregisterOnConnectIsNoOpWithoutToken() {
-        let model = BoardModel()
+        let model = BoardModel(platform: .noop)
         // No token yet (macOS, or before the phone registers) → the reconnect hook is a guarded no-op.
         model.reregisterPushOnConnect()
         XCTAssertNil(model.pushToken)
     }
 
     func testReregisterOnConnectKeepsToken() async {
-        let model = BoardModel()
+        let model = BoardModel(platform: .noop)
         await model.registerForPush(token: "cafe")
         model.reregisterPushOnConnect()        // spawns a best-effort re-register; token stays put
         XCTAssertEqual(model.pushToken, "cafe")
