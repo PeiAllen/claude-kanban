@@ -8,6 +8,10 @@ import OrchestraUI
 /// Push delivery is wired in N1 (device registration → daemon → APNs); the scope/sound dials here gate it.
 struct NotificationsSettingsSection: View {
     @State private var refresh = 0   // bumped on write so the bindings re-read the store
+    // Observe the shared accent key directly so this section recomputes when the accent changes (this
+    // view doesn't hold the BoardModel in Release). Used only to re-key the `.menu` Sound picker below,
+    // which otherwise keeps its mount-time tint — same SwiftUI quirk fixed in SettingsAppearance.
+    @AppStorage("orch_accent") private var accentRaw = Accent.blue.rawValue
     private let prefs = NotificationPrefs()
     #if DEBUG
     @EnvironmentObject private var model: BoardModel
@@ -72,6 +76,7 @@ struct NotificationsSettingsSection: View {
             }
             .font(.subheadline)
             .disabled(scopeBinding(trigger).wrappedValue == .off)
+            .id(accentRaw)   // remount on accent change so the menu picker re-reads the current tint
         }
         .padding(.vertical, 4)
     }

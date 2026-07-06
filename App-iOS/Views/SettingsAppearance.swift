@@ -55,6 +55,13 @@ struct AppearanceSettingsSection: View {
             Picker("Theme", selection: themeBinding) {
                 ForEach(ThemeMode.allCases) { Text($0.label).tag($0) }
             }
+            // A `.menu`-style Picker captures the tint when its value label mounts and does NOT re-tint
+            // when an ancestor `.tint(...)` later changes — so the selected-value label + up/down chevron
+            // stay stuck on the old accent while the rest of the app re-tints. Re-key on the live accent
+            // to force a remount, which re-reads the current root tint. (Re-reads, doesn't recompute the
+            // color — the light/dark variant resolution at the root `.tint` is untouched.)
+            .id(model.accent)
+
             Picker("Accent", selection: accentBinding) {
                 ForEach(Accent.allCases) { accent in
                     Label {
@@ -65,6 +72,7 @@ struct AppearanceSettingsSection: View {
                     .tag(accent)
                 }
             }
+            .id(model.accent)
         }
     }
 }
