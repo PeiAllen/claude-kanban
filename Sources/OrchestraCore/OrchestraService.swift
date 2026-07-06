@@ -34,6 +34,9 @@ public actor OrchestraService {
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
+    /// Watchers with a live CLI `orchestra wait` process. A native-reinvoke card only defers wake to
+    /// wait-exit when this is present; MCP/tool watches register interest without a CLI process.
+    var activeWaitProcesses: [UUID: Int] = [:]
     /// Consecutive auto-injects per card since the last genuine user prompt — the F3 loop guard.
     /// `stop_hook_active` is informational on both agents, so Orchestra enforces the cap itself.
     var injectCounts: [UUID: Int] = [:]
@@ -46,8 +49,13 @@ public actor OrchestraService {
     var terminalOwnership = TerminalOwnershipStore()
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
-    // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout).
-    var resumeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout). Keyed by
+    // card id but TOKEN-tagged: two overlapping resume() for the same id must never silently clobber (and
+    // thus LEAK) the earlier continuation — the displaced waiter is resolved `.superseded`, and a stale
+    // timeout is ignored unless its token still owns the slot. See `awaitResume`/`resolveResume`.
+    var resumeWaiters: [UUID: (token: UInt64, cont: CheckedContinuation<ResumeOutcome, Never>)] = [:]
+    // Monotonic tag minted per awaitResume so a timeout only fires for the waiter it was scheduled for.
+    var resumeTokenSeq: UInt64 = 0
     // A SessionStart(resume) callback can arrive BEFORE `awaitResume` registers its waiter, because
     // resume()'s off-actor relaunch frees this reentrant actor to service `report()` mid-revival. We
     // remember such early confirmations here so the waiter consumes them instead of losing the wakeup
@@ -355,8 +363,9 @@ public actor OrchestraService {
     /// Enqueue a message to the card's durable inbox (F3), then `wake` the card (F2) so an *idle* agent
     /// drains it now instead of waiting for its next unprompted turn. Content is delivered by the inbox
     /// (Stop-hook drain / resume seed) — `wake` only starts a turn, and is idempotent/non-intrusive: it
-    /// no-ops on a card that already has a turn coming (running, mid-relaunch, or blocked on a background
-    /// `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one drains at its Stop.
+    /// no-ops on a card that already has a turn coming (running, mid-relaunch, or subscribed through a
+    /// native background `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one
+    /// drains at its Stop.
     public func send(_ id: UUID, _ message: String) async throws {
         let t = try await require(id)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the

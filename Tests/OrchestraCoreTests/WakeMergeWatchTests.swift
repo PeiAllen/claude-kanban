@@ -12,7 +12,7 @@ struct WakeMergeWatchTests {
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         try await env.svc.archive(child.id)
         let conc = await waiting.value
         #expect(conc?.cardId == child.id)
@@ -27,9 +27,9 @@ struct WakeMergeWatchTests {
         // Branch has no commits ahead of main (git merge-base would call it 'merged'); the card is alive.
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "ancestor"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        #expect(await env.svc.mergeWaiterCount() == 1)   // still blocked — real state, not git
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // still subscribed — real state, not git
         waiting.cancel(); _ = await waiting.value
     }
 
@@ -40,22 +40,22 @@ struct WakeMergeWatchTests {
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         waiting.cancel()
         #expect(await waiting.value == nil)
     }
 
     // 4 · subscriber, not git-poll: resolution is driven by the service marking terminal (archive),
-    //     and wait blocks until THEN even though nothing about git changed.
+    //     and wait remains subscribed until THEN even though nothing about git changed.
     @Test("watcher resolves only off the service's terminal transition, not any git state")
     func resolvesOffLifecycleEvent() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        #expect(await env.svc.mergeWaiterCount() == 1)          // no premature resolve
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1) // no premature resolve
         try await env.svc.archive(child.id)                    // the single authority marks terminal
         #expect(await waiting.value?.cardId == child.id)       // now it resolves
     }
@@ -68,12 +68,12 @@ struct WakeMergeWatchTests {
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: child.agentSessionId!)
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
         env.sessions.setAlive(child.id, false)
         await env.svc.reconcileLiveness()                      // → .dead sessionVanished (NOT a conclusion)
         try await _Concurrency.Task.sleep(for: .milliseconds(40))
-        #expect(await env.svc.mergeWaiterCount() == 1)         // crash alone did not conclude
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1) // crash alone did not conclude
 
         // Revive it.
         async let resumed = env.svc.resume(child.id)
@@ -81,7 +81,7 @@ struct WakeMergeWatchTests {
         try await env.svc.report(child.id, StatusReport(sessionSource: "resume"))
         _ = try await resumed
         try await _Concurrency.Task.sleep(for: .milliseconds(40))
-        #expect(await env.svc.mergeWaiterCount() == 1)         // revived → still not concluded
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1) // revived → still not concluded
         waiting.cancel(); _ = await waiting.value
     }
 
@@ -92,7 +92,7 @@ struct WakeMergeWatchTests {
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         try await env.svc.report(child.id, StatusReport(endReason: "exit"))
         #expect(await waiting.value?.kind == .exited)
     }
@@ -133,11 +133,210 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task {
             try await cmd.run(env.svc, .object(["refs": .array([.string(child.id.uuidString)])]), .agent)
         }
-        try await pollUntil { await env.svc.mergeWaiterCount() == 1 }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
         try await env.svc.archive(child.id)
         let result = try await waiting.value
         #expect(result["cardId"]?.stringValue?.lowercased() == child.id.uuidString.lowercased())
         #expect(result["kind"]?.stringValue == "done")
+    }
+
+    @Test("CLI wait process output is the conclusion notice, so it does not also enqueue one")
+    func cliWaitDoesNotDuplicateConclusionIntoInbox() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        try await env.svc.archive(child.id)
+
+        #expect(await waiting.value?.cardId == child.id)
+        #expect(try await env.svc.inboxPeek(parent.id).isEmpty)
+    }
+
+    @Test("MCP wait registers a watcher and returns immediately for Claude")
+    func mcpWaitRegistersAndReturnsImmediately() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let cmd = try #require(CommandRegistry().command("wait"))
+
+        let result = try await withThrowingTaskGroup(of: JSONValue.self) { group in
+            group.addTask {
+                try await cmd.run(env.svc, .object([
+                    "refs": .array([.string(child.id.uuidString)]),
+                    "watcher": .string(parent.id.uuidString),
+                ]), .mcp)
+            }
+            group.addTask {
+                try await _Concurrency.Task.sleep(for: .milliseconds(120))
+                throw OrchestraError.invalidParams("MCP wait did not return immediately")
+            }
+            let first = try await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        #expect(result["watching"]?.boolValue == true)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 0)
+        try await env.svc.archive(child.id)
+        #expect(try await env.svc.inboxPeek(parent.id).contains { $0.text.contains(child.shortId) })
+    }
+
+    @Test("MCP watch wakes an idle Claude watcher because no wait process will re-invoke it")
+    func mcpWatchWakesIdleClaudeWatcher() async throws {
+        let env = TestEnv.make(grace: 2)
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        env.adapter.writeTranscript(for: parent.agentSessionId!)
+        try await env.svc.report(parent.id, StatusReport(status: .waiting))
+        let name = env.sessions.sessionName(parent.id)
+
+        let cmd = try #require(CommandRegistry().command("wait"))
+        let result = try await cmd.run(env.svc, .object([
+            "refs": .array([.string(child.id.uuidString)]),
+            "watcher": .string(parent.id.uuidString),
+        ]), .mcp)
+        #expect(result["watching"]?.boolValue == true)
+
+        try await env.svc.archive(child.id)
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        let seed = try #require(env.sessions.ensureArgv[name]?.last)
+        #expect(seed.contains(child.shortId))
+        #expect(await env.svc.drainForStop(parent.id) == nil)
+    }
+
+    @Test("Codex task_complete concludes a watched read-only delegated child without archiving it")
+    func codexTaskCompleteConcludesReadOnlyDelegatedChild() async throws {
+        let base = NSTemporaryDirectory() + "orch-codex-complete-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: base + "/cwd", withIntermediateDirectories: true)
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [codex]))
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p", agentId: "codex"))
+        let child = try await env.svc.spawn(SpawnInput(
+            prompt: "what is 2+2",
+            agentId: "codex",
+            cwd: base + "/cwd",
+            access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(codex.parse(.fileTail(line: #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#)))
+        try await env.svc.report(child.id, report)
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("Claude TaskCompleted concludes a watched read-only delegated child without archiving it")
+    func claudeTaskCompletedConcludesReadOnlyDelegatedChild() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let repo = TestEnv.repo(env.base)
+        let cwd = env.base + "/borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "taskcompleted", payload: .object([:]))))
+        try await env.svc.report(child.id, report)
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("Claude stop still waits for the human and does not conclude")
+    func claudeStopDoesNotConclude() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let cwd = env.base + "/borrowed-stop"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "ask if unclear", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:]))))
+        try await env.svc.report(child.id, report)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
+    }
+
+    @Test("provider-neutral turn completion concludes a watched read-only delegated child")
+    func genericTurnCompletionConcludesReadOnlyDelegatedChild() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let cwd = env.base + "/generic-borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "answer briefly", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+
+        let conc = await waiting.value
+        #expect(conc?.cardId == child.id)
+        #expect(conc?.kind == .done)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .done)
+        #expect(after.archived == false)
+    }
+
+    @Test("ordinary worktree turn completion still waits for the human and does not conclude")
+    func worktreeTurnCompletionDoesNotConclude() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
+    }
+
+    @Test("idle notification still waits for the human and does not conclude")
+    func idleNotificationDoesNotConclude() async throws {
+        let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
+        let cwd = env.base + "/borrowed"
+        try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
+
+        let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(
+            kind: "notification",
+            payload: try JSONValue.parse(Data(#"{"notification_type":"idle_prompt","message":"done"}"#.utf8)))))
+        try await env.svc.report(child.id, report)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)
+        let after = try #require(await env.svc.list().first { $0.id == child.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .humanTurn)
+        waiting.cancel(); _ = await waiting.value
     }
 
     // extra · wait short-circuits on an already-concluded child (re-issue race).

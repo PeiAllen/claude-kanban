@@ -118,6 +118,14 @@ public struct CommandRegistry: Sendable {
                 }
                 var watcher: UUID? = nil
                 if let w = p.optString("watcher") { watcher = try await svc.resolveRef(w).id }
+                // MCP/tool watchers must NOT block their turn: register a durable watch and return
+                // immediately (an already-settled child returns inline). Only the CLI `wait` path suspends.
+                if src == .mcp, let watcher {
+                    if let conc = await svc.watch(watcher: watcher, refs: ids) {
+                        return try JSONValue(encodable: conc)
+                    }
+                    return .object(["watching": .bool(true)])
+                }
                 guard let conc = await svc.wait(watcher: watcher, refs: ids) else {
                     return .object(["cancelled": .bool(true)])
                 }

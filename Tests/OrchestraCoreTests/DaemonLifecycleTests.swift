@@ -76,6 +76,7 @@ struct DaemonLifecycleTests {
         // the event vocabulary is split (distinct notification/stop, pretool/posttool)
         #expect(s.contains("--event stop --agent claude-code"))
         #expect(s.contains("--event notification --agent claude-code"))
+        #expect(s.contains("--event taskcompleted --agent claude-code"))
         #expect(s.contains("--event pretool --agent claude-code"))
         #expect(s.contains("--event posttool --agent claude-code"))
         // valid JSON

@@ -17,6 +17,15 @@ struct CodexWakeTests {
         wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription)
 
+    /// The REAL Codex confirmation shape: `fileTail` telemetry + `.relaunchLiveness` — Codex emits NO
+    /// SessionStart(resume) marker, so the live relaunch must confirm the wake. (`relaunchCaps` above masks
+    /// the bug by advertising `.hooksPush` + hand-injecting a `sessionSource:"resume"` that Codex never sends.)
+    static let realCodexCaps = AgentCapabilities(
+        sessionId: .seeded, telemetry: .fileTail, contextUsage: .tokens,
+        wakeTransport: .relaunch, inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        resumeConfirmation: .relaunchLiveness)
+
     @Test("send resume-seeds an idle Codex card so the queued message lands now")
     func sendResumeSeedsIdleCodex() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
@@ -46,7 +55,7 @@ struct CodexWakeTests {
         let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
-        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a live `orchestra wait`
+        await env.svc.registerWatch(parent.id, [child.id])                    // parent has a durable watch
         try await env.svc.report(parent.id, StatusReport(status: .waiting))   // idle, but watching
         let name = env.sessions.sessionName(parent.id)
 
@@ -55,6 +64,34 @@ struct CodexWakeTests {
         try await env.svc.report(parent.id, StatusReport(sessionSource: "resume"))
 
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("POKE-CODEX") == true)
+    }
+
+    @Test("MCP wait also returns immediately for a Codex watcher")
+    func mcpWaitRegistersAndReturnsImmediatelyForCodex() async throws {
+        let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
+        let repo = TestEnv.repo(env.base)
+        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let cmd = try #require(CommandRegistry().command("wait"))
+
+        let result = try await withThrowingTaskGroup(of: JSONValue.self) { group in
+            group.addTask {
+                try await cmd.run(env.svc, .object([
+                    "refs": .array([.string(child.id.uuidString)]),
+                    "watcher": .string(parent.id.uuidString),
+                ]), .mcp)
+            }
+            group.addTask {
+                try await _Concurrency.Task.sleep(for: .milliseconds(120))
+                throw OrchestraError.invalidParams("MCP wait did not return immediately")
+            }
+            let first = try await group.next()!
+            group.cancelAll()
+            return first
+        }
+
+        #expect(result["watching"]?.boolValue == true)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 0)
     }
 
     @Test("send does NOT resume-seed a RUNNING Codex card (its Stop hook drains it at turn-end)")
@@ -71,5 +108,30 @@ struct CodexWakeTests {
         #expect(env.sessions.ensureCount == ensureBefore)                         // no relaunch
         #expect(env.sessions.killed.isEmpty)                                      // live turn untouched
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])    // durable → its Stop drains it
+    }
+
+    /// Regression (the fatal Codex symptom): a `send` to an idle Codex card KILLED it — `resume()` waited
+    /// `revivalGraceSeconds` for a `sessionSource=="resume"` hook that `codex resume` never emits, then
+    /// `failResume` → `.dead(resumeFailed)`. With `.relaunchLiveness` the live relaunch confirms, so the card
+    /// stays alive. This drives the REAL confirmation path — NO hand-injected `sessionSource:"resume"`.
+    @Test("send wakes an idle Codex card with NO resume hook — the live relaunch confirms; card stays alive")
+    func codexWakeConfirmsOnRelaunchLiveness() async throws {
+        let env = TestEnv.make(grace: 1, capabilities: Self.realCodexCaps)
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
+        try await env.svc.report(card.id, StatusReport(status: .waiting))                       // idle
+        let name = env.sessions.sessionName(card.id)
+
+        try await env.svc.send(card.id, "PING-CODEX")
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }     // relaunched
+        // Wait PAST the grace: before the fix the resume would time out and markDead by now.
+        try await _Concurrency.Task.sleep(for: .milliseconds(1300))
+
+        let after = try #require(await env.svc.list().first { $0.id == card.id })
+        #expect(after.status == .waiting)                     // alive — NOT .dead(resumeFailed)
+        #expect(after.status != .dead)
+        #expect(after.deadReason == nil)
+        #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("PING-CODEX") == true)  // seed rode in
     }
 }

@@ -195,4 +195,103 @@ struct RecoveryTests {
         #expect(env.sessions.peakConcurrentEnsure <= 3)
         #expect(env.sessions.peakConcurrentEnsure >= countBefore)
     }
+
+    /// The ONE place a `send` to an idle card is otherwise silently dropped: it lands in the `recovering`
+    /// grace window right after a prior resume, so `wake` no-ops at gate A — and unlike every other gate,
+    /// nothing else retries it (no running turn to Stop-drain, no reinvoke). The fix re-drives `wake` the
+    /// instant that window closes (`scheduleRecoveringRelease` → `wakeIfPending`), event-driven, no poll.
+    @Test("a send during the recovering grace window is delivered when the window closes")
+    func sendDuringRecoveringDeliveredOnRelease() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)
+        try await env.svc.report(card.id, StatusReport(status: .waiting))                       // idle
+        let name = env.sessions.sessionName(card.id)
+
+        // send A wakes → resume #1; confirm it so `recovering` is held for the grace window.
+        try await env.svc.send(card.id, "A")
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))   // resume #1 confirmed
+        try await env.svc.report(card.id, StatusReport(status: .waiting))          // idle again, still in grace
+        let ensureAfterA = env.sessions.ensureCount
+
+        // send B lands DURING the recovering window → wake no-ops at gate A, message stranded.
+        try await env.svc.send(card.id, "B")
+        try await _Concurrency.Task.sleep(for: .milliseconds(100))
+        #expect(env.sessions.ensureCount == ensureAfterA)                          // gate A no-op: not resumed yet
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])         // stranded
+
+        // When the window closes, releaseRecovering → wakeIfPending re-drives wake → resume #2 delivers B.
+        try await pollUntil { env.sessions.ensureCount > ensureAfterA }
+        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))   // confirm resume #2
+        #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("B") == true)   // B rode the seed
+        #expect(try await env.svc.inboxPeek(card.id).isEmpty)                      // drained
+    }
+
+    @Test("wakeIfPending leaves a RUNNING card alone (its Stop-drain owns delivery)")
+    func wakeIfPendingSkipsRunningCard() async throws {
+        let env = TestEnv.make(grace: 2)
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)
+        try await env.svc.send(card.id, "later")                         // queues (gate B), not delivered now
+        let ensureBefore = env.sessions.ensureCount
+
+        await env.svc.wakeIfPending(card.id)
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        #expect(env.sessions.ensureCount == ensureBefore)                // no relaunch — running turn untouched
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])   // stays for its Stop-drain
+    }
+
+    /// Regression: two overlapping `resume(id)` for the SAME card must never leak a continuation. The
+    /// second resume registers a waiter that (before the fix) OVERWROTE the first in `resumeWaiters[id]`
+    /// without resolving it — leaking the first `awaitResume` continuation, so `resume` #1 never returns,
+    /// its `defer`/`scheduleRecoveringRelease` never runs, and the card stays in `recovering` FOREVER →
+    /// `wake` gate A (`!recovering.contains(id)`) no-ops every future `send`, and the idle card can never
+    /// be woken again (the "idle Claude ignores a send / inbox add" bug). Overlap is reachable in the wild:
+    /// `resume`/`handoff`/`reopen` don't gate on `recovering`, and `recoverSessions` can race a send-wake.
+    @Test("overlapping resume(id): the superseded resume returns (no leaked continuation → recovering can't stick)")
+    func concurrentResumeNeverLeaks() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
+        try await env.svc.report(t.id, StatusReport(status: .waiting))                      // idle
+        let name = env.sessions.sessionName(t.id)
+
+        // Does `op` finish at all? A leaked continuation leaves it suspended FOREVER, so the bound only
+        // separates "returned" from "hung" — generous so heavy-load scheduler latency can't flake it.
+        func completes(_ op: @escaping @Sendable () async -> Void) async -> Bool {
+            await withTaskGroup(of: Bool.self) { g in
+                g.addTask { await op(); return true }
+                g.addTask { try? await _Concurrency.Task.sleep(for: .seconds(15)); return false }
+                let first = await g.next() ?? false
+                g.cancelAll()
+                return first
+            }
+        }
+
+        // Two resumes for the same card, overlapping.
+        async let c1 = completes { _ = try? await env.svc.resume(t.id) }
+        async let c2 = completes { _ = try? await env.svc.resume(t.id) }
+        // Both land a `--resume` relaunch; deliver ONE SessionStart(resume) to confirm the surviving waiter.
+        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
+
+        #expect(await c1)   // one is confirmed, the other superseded — BOTH must return, neither may hang
+        #expect(await c2)
+
+        // And the card must remain wakeable: it is idle+resumable and NOT stuck in `recovering`, so a
+        // fresh send resume-seeds it. (grace=1s must elapse first so the confirmed resume's release fires.)
+        let confirmed = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(confirmed.status != .dead)
+        try await _Concurrency.Task.sleep(for: .milliseconds(1100))   // let scheduleRecoveringRelease fire
+        try await env.svc.report(t.id, StatusReport(status: .waiting))
+        let ensureBefore = env.sessions.ensureCount
+        try await env.svc.send(t.id, "PING-AFTER-LEAK")
+        try await pollUntil { env.sessions.ensureCount > ensureBefore }   // stuck `recovering` → never fires
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // confirm the post-leak wake
+    }
 }

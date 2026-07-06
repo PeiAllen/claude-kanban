@@ -101,7 +101,7 @@ public struct CodexAdapter: Adapter {
         if any("turncomplete", "taskcomplete") {
             // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
             // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn)
+            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn, turnCompleted: true)
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less
@@ -335,7 +335,10 @@ public extension AgentCapabilities {
         inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
-        terminalImagePaste: .controlV)
+        terminalImagePaste: .controlV,
+        // `codex resume` emits no SessionStart(resume) marker (no rollout written at resume time), so the
+        // successful relaunch itself confirms — waiting for a hook would time out and kill a live idle card.
+        resumeConfirmation: .relaunchLiveness)
 }
 
 /// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).

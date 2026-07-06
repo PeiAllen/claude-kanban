@@ -1,5 +1,10 @@
 import Foundation
 
+/// The outcome of awaiting a resume relaunch's confirmation. `.superseded` is distinct from `.timedOut`
+/// so a resume displaced by a newer resume for the same card exits quietly (the survivor owns the card)
+/// instead of being treated as a failure and marked dead.
+enum ResumeOutcome: Sendable { case confirmed, timedOut, superseded }
+
 extension OrchestraService {
 
     /// Daemon-startup recovery pass. For every non-archived card whose tmux session is not alive
@@ -87,10 +92,27 @@ extension OrchestraService {
             return try await failResume(id, detail: "\(error)", source: source)
         }
 
-        // Await the SessionStart(resume) callback (resolved in report()) or time out.
-        let confirmed = await awaitResume(id, graceSeconds: grace)
-        guard confirmed else {
-            return try await failResume(id, detail: "no SessionStart callback in \(grace)s", source: source)
+        // Confirm the relaunch is alive — HOW depends on the agent (capability, never identity):
+        switch adapter.capabilities.resumeConfirmation {
+        case .sessionStartHook:
+            // Wait for the agent's own SessionStart(resume) telemetry (Claude), or time out.
+            switch await awaitResume(id, graceSeconds: grace) {
+            case .confirmed:
+                break
+            case .timedOut:
+                return try await failResume(id, detail: "no SessionStart callback in \(grace)s", source: source)
+            case .superseded:
+                // A newer resume(id) took over this card (overlapping kill+relaunch collapse to the latest).
+                // Exit quietly WITHOUT markDead or a status write — the surviving resume owns the outcome AND
+                // the `recovering` lifecycle (leave it set; do NOT schedule a release here).
+                keepRecoveringAfterReturn = true
+                return task
+            }
+        case .relaunchLiveness:
+            // No resume marker exists (e.g. `codex resume` writes no rollout at resume time); the successful
+            // `ensure` above IS the confirmation. Do NOT wait for a hook that never comes — that would time
+            // out and fail-DANGEROUSLY kill a live idle card. reconcileLiveness catches a relaunch that died.
+            break
         }
         keepRecoveringAfterReturn = true
         scheduleRecoveringRelease(id, after: grace)
@@ -258,7 +280,19 @@ extension OrchestraService {
         _Concurrency.Task { [weak self] in
             try? await _Concurrency.Task.sleep(for: .seconds(max(0, seconds)))
             await self?.releaseRecovering(id)
+            await self?.wakeIfPending(id)   // deliver a send that no-op'd at wake gate A during this window
         }
+    }
+
+    /// Deliver an inbox that a `send`/inbox-add queued WHILE this card was in the `recovering` grace window
+    /// — its `wake` no-op'd at gate A and, uniquely, nothing else retries it (a running card's Stop-drain,
+    /// a not-yet-resumable card's next turn, and a watching parent's reinvoke all cover their own gates).
+    /// Called once the window closes. `wake` re-checks every gate, so this is a no-op unless there is a
+    /// genuinely stranded message, and it self-terminates: the resumed turn drains the inbox.
+    func wakeIfPending(_ id: UUID) async {
+        guard let t = await store.get(id), t.status == .waiting, !t.archived,
+              !(await inbox.peek(id)).isEmpty else { return }
+        await wake(id)
     }
 
     func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {
@@ -269,26 +303,33 @@ extension OrchestraService {
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
     }
 
-    private func awaitResume(_ id: UUID, graceSeconds: Int) async -> Bool {
+    private func awaitResume(_ id: UUID, graceSeconds: Int) async -> ResumeOutcome {
         // The confirmation may already have landed while we were relaunching off-actor (see
         // `pendingResumeConfirmations`). Consume it synchronously — before registering a waiter —
         // so an early callback confirms instantly instead of waiting out (or timing out) the grace.
         // This block and the registration below run without an intervening `await`, so no callback
         // can slip between the check and the registration on this serialized actor.
-        if pendingResumeConfirmations.remove(id) != nil { return true }
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            resumeWaiters[id] = cont
+        if pendingResumeConfirmations.remove(id) != nil { return .confirmed }
+        resumeTokenSeq &+= 1
+        let token = resumeTokenSeq
+        return await withCheckedContinuation { (cont: CheckedContinuation<ResumeOutcome, Never>) in
+            // A second resume for this id must NEVER leak the earlier continuation: resolve the displaced
+            // waiter `.superseded` (the newer resume now owns the session + `recovering` lifecycle). Without
+            // this, `resumeWaiters[id] = …` would drop the old continuation unresumed → that resume() hangs
+            // forever → `recovering` sticks → `wake` no-ops every future send (the idle-Claude bug).
+            if let old = resumeWaiters[id] { old.cont.resume(returning: .superseded) }
+            resumeWaiters[id] = (token, cont)
             let grace = max(0, graceSeconds)
             _Concurrency.Task { [weak self] in
                 try? await _Concurrency.Task.sleep(for: .seconds(grace))
-                await self?.timeoutResume(id)
+                await self?.timeoutResume(id, token: token)
             }
         }
     }
 
     func resolveResume(_ id: UUID, _ ok: Bool) {
-        if let cont = resumeWaiters.removeValue(forKey: id) {
-            cont.resume(returning: ok)
+        if let w = resumeWaiters.removeValue(forKey: id) {
+            w.cont.resume(returning: ok ? .confirmed : .timedOut)
         } else if ok {
             // No waiter yet: `awaitResume` hasn't registered (resume() is still relaunching off-actor).
             // Remember this confirmation so the waiter picks it up rather than losing the wakeup.
@@ -296,7 +337,14 @@ extension OrchestraService {
         }
     }
 
-    private func timeoutResume(_ id: UUID) { resolveResume(id, false) }
+    /// Time out ONLY the waiter this timer was scheduled for. A newer resume that superseded it (or a
+    /// confirmation that already resolved it) advanced the slot's token, so a stale timer is a no-op —
+    /// it must never resolve an unrelated, still-pending waiter.
+    private func timeoutResume(_ id: UUID, token: UInt64) {
+        guard let w = resumeWaiters[id], w.token == token else { return }
+        resumeWaiters.removeValue(forKey: id)
+        w.cont.resume(returning: .timedOut)
+    }
 
     /// Run a synchronous (possibly slow: git/tmux/process-launch) closure off the actor so the actor
     /// keeps servicing `report` and parallel revivals genuinely overlap.

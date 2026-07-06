@@ -1,5 +1,16 @@
 # claude-kanban — project instructions
 
+## Design for every agent, not just the one you're testing
+Orchestra runs multiple agent backends. **Claude and Codex are the priority targets — a
+change must work for both** (and stay open to others behind the same seam). When building or
+changing anything that touches agent behavior — session lifecycle, spawn/restart/resume, diff
+baselines, monitoring/liveness, prompts, env, trust — design against the *general* agent
+contract, not one agent's quirks. Reach for a capability/adapter seam (per-agent config, a
+capability probe, a feature flag) instead of `if agent == "claude"` branches scattered through
+shared code; if something genuinely needs agent-specific handling, isolate it behind that
+boundary. Before calling a change done, sanity-check it against **at least Claude and Codex** —
+a fix that only works for the agent you happened to test is a regression for the rest.
+
 ## Scratch / experiments — keep them contained
 Do all throwaway work — probes, experiments, scratch scripts, dumped output, temporary
 files — inside **`./.scratch/`** (gitignored). Don't scatter temp files across the repo or

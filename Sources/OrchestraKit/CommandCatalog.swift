@@ -75,8 +75,8 @@ public enum CommandCatalog {
                                      required: ["ref", "ids"])),
 
         CommandSchema(name: "wait",
-                      summary: "Block until one of the watched cards concludes (Done or clean exit). "
-                          + "For the reactive fan-out — the caller re-issues on the cards that remain.",
+                      summary: "Subscribe to watched card conclusions (Done or clean exit) and wake/remind "
+                          + "the watcher when one fires. For reactive fan-out, re-issue on cards that remain.",
                       params: schema([
                           "refs": .object([
                               "type": .string("array"),
@@ -84,7 +84,7 @@ public enum CommandCatalog {
                               "description": .string("Card refs to watch — UUID/shortId/orchestra:// URI"),
                           ]),
                           "watcher": strProp("The watching card's ref; its inbox coalesces each conclusion "
-                              + "and it is woken (F2/F3). Omit for a bare block-and-return."),
+                              + "and it is woken (F2/F3). Omit for a CLI-style wait-and-return."),
                       ], required: ["refs"])),
 
         CommandSchema(name: "handoff",

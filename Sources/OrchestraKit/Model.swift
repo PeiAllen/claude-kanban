@@ -596,15 +596,17 @@ public struct SnapshotReport: Codable, Sendable, Equatable {
     public var desc: String?
     /// Why the card is waiting (permission vs human-turn) — set alongside `status = .waiting`.
     public var waitReason: WaitReason?
+    /// The agent reported a natural turn/task completion, not just an idle notification.
+    public var turnCompleted: Bool?
     /// A `/rename` mirror — applied only on a genuine change (see report) so it can't clobber the
     /// re-title-after-restart flow.
     public var sessionName: String?
     public init(seq: UInt64 = 0, ctxPct: Double? = nil, modelId: String? = nil,
                 modelDisplay: String? = nil, status: AgentStatus? = nil, desc: String? = nil,
-                waitReason: WaitReason? = nil, sessionName: String? = nil) {
+                waitReason: WaitReason? = nil, turnCompleted: Bool? = nil, sessionName: String? = nil) {
         self.seq = seq; self.ctxPct = ctxPct; self.modelId = modelId
         self.modelDisplay = modelDisplay; self.status = status; self.desc = desc
-        self.waitReason = waitReason; self.sessionName = sessionName
+        self.waitReason = waitReason; self.turnCompleted = turnCompleted; self.sessionName = sessionName
     }
 }
 
@@ -646,9 +648,10 @@ public struct StatusReport: Codable, Sendable, Equatable {
                 ctxPct: Double? = nil, modelId: String? = nil, modelDisplay: String? = nil,
                 sessionName: String? = nil, desc: String? = nil, status: AgentStatus? = nil,
                 waitReason: WaitReason? = nil,
+                turnCompleted: Bool? = nil,
                 promptText: String? = nil, sessionSource: String? = nil, endReason: String? = nil) {
         let hasSnapshot = seq != 0 || ctxPct != nil || modelId != nil || modelDisplay != nil
-            || sessionName != nil || desc != nil || status != nil || waitReason != nil
+            || sessionName != nil || desc != nil || status != nil || waitReason != nil || turnCompleted != nil
         let hasEvent = sessionId != nil || transcriptPath != nil || promptText != nil
             || sessionSource != nil || endReason != nil
         self.init(
@@ -657,7 +660,7 @@ public struct StatusReport: Codable, Sendable, Equatable {
                                           promptText: promptText) : nil,
             snapshot: hasSnapshot ? SnapshotReport(seq: seq, ctxPct: ctxPct, modelId: modelId,
                                                    modelDisplay: modelDisplay, status: status,
-                                                   desc: desc, waitReason: waitReason,
+                                                   desc: desc, waitReason: waitReason, turnCompleted: turnCompleted,
                                                    sessionName: sessionName) : nil)
     }
 }

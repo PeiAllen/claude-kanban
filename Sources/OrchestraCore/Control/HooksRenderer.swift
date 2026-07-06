@@ -78,6 +78,7 @@ public enum HooksRenderer {
         "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event pretool --agent __AGENT_ID__" }] }],
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event posttool --agent __AGENT_ID__" }] }],
         "Notification": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event notification --agent __AGENT_ID__" }] }],
+        "TaskCompleted": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event taskcompleted --agent __AGENT_ID__" }] }],
         "Stop": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event stop --agent __AGENT_ID__" }] }],
         "SessionEnd": [{ "hooks": [{ "type": "command", "command": "__ORCHESTRA_BIN__ _report --event sessionend --agent __AGENT_ID__" }] }]
       }

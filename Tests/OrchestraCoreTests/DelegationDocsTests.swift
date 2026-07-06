@@ -85,6 +85,38 @@ struct DelegationDocsTests {
         #expect(skill.contains("Task"))
     }
 
+    @Test("the Claude skill routes wait through Claude Code background execution")
+    func claudeWaitUsesNativeBackgroundExecution() throws {
+        let skill = try #require(DelegationDocs.load(.claudeSkill))
+        #expect(skill.contains("orchestra wait <refs>"))
+        #expect(skill.contains("run_in_background: true"))
+        #expect(skill.contains("Monitor"))
+        #expect(skill.contains("MCP `wait`"))
+        #expect(skill.contains("not the native Claude"))
+        #expect(skill.contains("background-task wake path"))
+    }
+
+    @Test("the Codex AGENTS variant does not claim a send-keys wait wake")
+    func codexWaitDoesNotPromiseSendKeysWake() throws {
+        let agents = try #require(DelegationDocs.load(.codexAgents))
+        #expect(!agents.lowercased().contains("send-keys"))
+        #expect(agents.contains("Orchestra records the durable watch"))
+        #expect(agents.contains("resumes you when a"))
+    }
+
+    @Test("delegation docs tell agents to choose one child completion return channel")
+    func docsChooseOneCompletionChannel() throws {
+        for doc in [try #require(DelegationDocs.load(.claudeSkill)),
+                    try #require(DelegationDocs.load(.codexAgents))] {
+            #expect(doc.contains("Choose one completion return channel"))
+            #expect(doc.contains("If you subscribe with `wait`"))
+            #expect(doc.contains("do not also ask those same children to `send`"))
+            #expect(doc.contains("If you need a child-authored result message"))
+            #expect(doc.contains("in your inbox"))
+            #expect(doc.contains("do not also `wait` on that child"))
+        }
+    }
+
     // MARK: install() — load + materialize to a destination path (the seed-injection launch step)
 
     @Test("install writes the agent's variant to the destination, creating parent dirs")
