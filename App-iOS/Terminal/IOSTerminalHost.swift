@@ -36,7 +36,8 @@ struct IOSTerminalHost: TerminalHost {
 
     private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool) -> AnyView {
         // No SSH target configured → render a live terminal that explains setup instead of hanging on a
-        // black rectangle. (A real settings surface for the endpoint is M5's; T1 reads ORCH_SSH_TARGET.)
+        // black rectangle. Set it in Settings → Terminal (M5); `resolve` also honors ORCH_SSH_TARGET for
+        // the dev/Simulator path.
         guard let endpoint = SSHEndpoint.resolve() else {
             let banner = Self.setupBanner()
             return AnyView(
@@ -61,14 +62,14 @@ struct IOSTerminalHost: TerminalHost {
             .id("\(endpoint.user)@\(endpoint.host):\(target.session):\(target.window):\(takeover)"))
     }
 
-    /// Instructions shown when `ORCH_SSH_TARGET` is unset — including this device's public key line to
+    /// Instructions shown when no SSH target is configured — including this device's public key line to
     /// paste into the Mac's `~/.ssh/authorized_keys` (per-device SSH key, phone-client 01-design).
     private static func setupBanner() -> String {
         var lines = [
             "Terminal not configured.",
             "",
-            "Set ORCH_SSH_TARGET=<user>@<host> (Simulator: <you>@localhost with Remote Login on;",
-            "device: the Mac's Tailscale name).",
+            "Set the Mac's SSH target in Settings → Terminal:",
+            "the Mac's Tailscale name (you@my-mac.tailnet.ts.net) or a 100.64.0.0/10 tailnet IP.",
             "",
         ]
         if let key = try? SSHKeyStore.authorizedKeyLine() {

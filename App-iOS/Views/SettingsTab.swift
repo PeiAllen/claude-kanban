@@ -12,6 +12,7 @@ struct SettingsTab: View {
         NavigationStack {
             List {
                 ConnectionSettingsSections()
+                TerminalTargetSettingsSection()
                 SecuritySettingsSection()
                 NotificationsSettingsSection()
                 AppearanceSettingsSection()

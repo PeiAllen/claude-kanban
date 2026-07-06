@@ -32,20 +32,30 @@ struct SSHEndpoint: Equatable {
         self.init(host: rest, port: port, user: user)
     }
 
-    /// Resolve the endpoint the terminal should SSH to, from `ORCH_SSH_TARGET` (env / Simulator launch
-    /// arg — mirrors how F3 wires `ORCH_DEV_SOCKET`). Returns nil when unconfigured, so the terminal
-    /// shows a "configure SSH" banner rather than failing silently.
+    /// UserDefaults key the in-app **Settings → Terminal** surface (M5) persists the SSH target under.
+    /// Single source of truth for both the settings binding and `resolve` below.
+    static let targetDefaultsKey = "orch_ssh_target"
+
+    /// Resolve the endpoint the terminal should SSH to. The persisted in-app setting (M5, keyed by
+    /// `targetDefaultsKey`) wins; when that is unset we fall back to `ORCH_SSH_TARGET` (env / Simulator
+    /// launch arg — mirrors how F3 wires `ORCH_DEV_SOCKET`), which keeps the dev/Simulator/verify-harness
+    /// path working with no in-app config. Returns nil when neither is set, so the terminal shows a
+    /// "configure SSH" banner rather than failing silently.
     ///
-    /// The host must be a **tailnet** address — see `isTailnetHost` (review #5). Both surfaces below use
-    /// the Mac's Tailscale name/IP; even on the Simulator (which shares the Mac's network *and* its
-    /// MagicDNS resolver) the target is the Mac's `*.ts.net` name or `100.x` address, not `localhost`.
+    /// The host must be a **tailnet** address — see `isTailnetHost` (review #5). The settings surface and
+    /// the env both carry the Mac's Tailscale name/IP; even on the Simulator (which shares the Mac's
+    /// network *and* its MagicDNS resolver) the target is the Mac's `*.ts.net` name or `100.x` address,
+    /// not `localhost`.
     /// - **Simulator**: `<you>@my-mac.tailnet.ts.net` (or the `100.x` tailnet IP) — a live attach stays
     ///   verifiable without a device, while still satisfying the Tailscale-trust guard.
-    /// - **Device**: the same Mac's Tailscale name/IP (phone-client 01-design: SSH-over-Tailscale). A real
-    ///   settings surface for this is M5's; T1 reads the env.
-    static func resolve(env: [String: String] = ProcessInfo.processInfo.environment) -> SSHEndpoint? {
-        guard let t = env["ORCH_SSH_TARGET"], !t.isEmpty else { return nil }
-        return SSHEndpoint(target: t)
+    /// - **Device**: the same Mac's Tailscale name/IP (phone-client 01-design: SSH-over-Tailscale), set
+    ///   once in Settings → Terminal.
+    static func resolve(env: [String: String] = ProcessInfo.processInfo.environment,
+                        defaults: UserDefaults = .standard) -> SSHEndpoint? {
+        let persisted = (defaults.string(forKey: targetDefaultsKey) ?? "").trimmingCharacters(in: .whitespaces)
+        let target = persisted.isEmpty ? (env["ORCH_SSH_TARGET"] ?? "") : persisted
+        guard !target.isEmpty else { return nil }
+        return SSHEndpoint(target: target)
     }
 }
 
@@ -92,6 +102,25 @@ extension SSHEndpoint {
              + "server's host key only because the target is reached over Tailscale, so the target must "
              + "be a tailnet address — a 100.64.0.0/10 IP or a *.ts.net MagicDNS name. Point "
              + "ORCH_SSH_TARGET at the Mac's tailnet name/IP (not a LAN IP, localhost, or public host)."
+    }
+
+    /// Validate a user-entered `user@host[:port]` target for the **Settings → Terminal** surface (M5),
+    /// returning nil when it is usable and a user-facing reason otherwise. This MIRRORS the connect-time
+    /// gate in `SSHPTYChannel.start` — same `tailnetRejectionReason` unless `isTestLoopbackAllowed` — so
+    /// Settings never accepts a target the terminal would then silently refuse. An empty field is "unset"
+    /// (nil), not an error: the terminal shows its setup banner and `resolve` falls back to the env.
+    static func settingsRejectionReason(for target: String,
+                                        env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        let trimmed = target.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        guard let endpoint = SSHEndpoint(target: trimmed) else {
+            return "Enter the target as user@host — e.g. me@my-mac.tailnet.ts.net or me@100.101.102.103."
+        }
+        if let reason = tailnetRejectionReason(for: endpoint.host),
+           !isTestLoopbackAllowed(endpoint.host, env: env) {
+            return reason
+        }
+        return nil
     }
 
     /// DEBUG-only, opt-in escape from the tailnet guard for the **isolated verify harness** (the T1/T4
