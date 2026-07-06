@@ -34,16 +34,14 @@ final class BoardOverSSHE2ETests: XCTestCase {
     /// The isolated daemon socket the bridge `nc -U`s (set by the harness).
     private func daemonSock() throws -> String { try requireEnv("ORCH_E2E_DAEMON_SOCK") }
 
-    /// Build the shared `IOSSSHSession` for the harness's sshd, with a fresh TOFU pin. This is the ONE
-    /// authenticated connection the board's control transport (and, folded, terminals) multiplex over.
+    /// Build the shared `IOSSSHSession` for the harness's sshd. This is the ONE authenticated connection
+    /// the board's control transport (and, folded, terminals) multiplex over. Host keys are accept-any
+    /// (the connection rides the loopback/tailnet), so the throwaway sshd's regenerated key just works.
     private func makeSession() throws -> IOSSSHSession {
         let target = try requireEnv("ORCH_E2E_SSH_TARGET")
         guard let endpoint = SSHEndpoint(target: target) else {
             throw XCTSkip("e2e: ORCH_E2E_SSH_TARGET '\(target)' is not user@host[:port]")
         }
-        // Fresh TOFU: the throwaway sshd's host key is regenerated each run, so clear any pin left by a
-        // prior run to 127.0.0.1 or the first connect would hit a `hostKeyChanged` refusal.
-        try? SSHHostKeyPinStore().reset(host: endpoint.host)
         let privateKey = NIOSSHPrivateKey(ed25519Key: try SSHKeyStore.loadOrCreateIdentity())
         return IOSSSHSession(endpoint: endpoint, group: TerminalRuntime.group, privateKey: privateKey)
     }
@@ -110,7 +108,7 @@ final class BoardOverSSHE2ETests: XCTestCase {
         XCTAssertEqual(v, OrchestraVersion.current)
     }
 
-    /// The **multiplex-fold proof**: ONE `IOSSSHSession` (one auth, one tailnet guard, one TOFU pin) vends
+    /// The **multiplex-fold proof**: ONE `IOSSSHSession` (one auth, one tailnet guard) vends
     /// TWO independent control channels concurrently, both reaching `.live` and round-tripping `version`.
     /// The board and a folded terminal are exactly two such consumers of the single shared session.
     func testSessionMultiplexesTwoControlChannels() async throws {
