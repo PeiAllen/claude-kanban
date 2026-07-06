@@ -81,10 +81,58 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertEqual(order, ["perm", "died", "human-old", "human-new", "ctx"])
     }
 
-    // MARK: gate chords
+    // MARK: gate chords — now agent-capability facts, not neutral-layer constants (#4)
 
-    func testGateChordsAreSingleKeystrokes() {
-        XCTAssertEqual(NeedsYouQueue.approveChord, [.named(.enter)])
-        XCTAssertEqual(NeedsYouQueue.denyChord, [.named(.esc)])
+    func testGateChordsLiveOnAgentCapabilities() {
+        // The Claude TUI layout: Enter accepts the pre-highlighted "Yes", Esc cancels. These moved OFF
+        // the provider-neutral NeedsYouQueue ONTO the capability so each adapter states its own gate keys.
+        XCTAssertEqual(AgentCapabilities.claudeCode.approveChord, [.named(.enter)])
+        XCTAssertEqual(AgentCapabilities.claudeCode.denyChord, [.named(.esc)])
+    }
+
+    // MARK: permission gate — state guard + per-adapter chord routing (#4)
+
+    @MainActor
+    private func modelWith(_ tasks: [Task], agents: [AgentInfo] = []) -> BoardModel {
+        let m = BoardModel(platform: .noop)
+        m.tasks = tasks
+        m.agents = agents
+        return m
+    }
+
+    @MainActor
+    func testGateFiresOnlyWhileWaitingOnPermission() {
+        // Only a card STILL blocked on a permission prompt yields a chord; anything else is a no-op so an
+        // approve/deny keystroke can't land in a now-live REPL and submit the composer.
+        let perm = card("perm", status: .waiting, wait: .permission)
+        let humanTurn = card("human", status: .waiting, wait: .humanTurn)
+        let running = card("run", status: .running)
+        let dead = card("dead", status: .dead, dead: .agentExited)
+        let m = modelWith([perm, humanTurn, running, dead])
+
+        XCTAssertEqual(m.permissionGateChord(perm.id, \.approveChord), [.named(.enter)])
+        XCTAssertEqual(m.permissionGateChord(perm.id, \.denyChord), [.named(.esc)])
+        XCTAssertNil(m.permissionGateChord(humanTurn.id, \.approveChord))
+        XCTAssertNil(m.permissionGateChord(running.id, \.approveChord))
+        XCTAssertNil(m.permissionGateChord(dead.id, \.approveChord))
+        XCTAssertNil(m.permissionGateChord(UUID(), \.approveChord))   // unknown card
+    }
+
+    @MainActor
+    func testGateChordComesFromTheCardsAgentCapability() {
+        // Prove the chord is routed per-adapter: a card whose agent advertises a DIFFERENT chord uses it,
+        // not a hardcoded Enter/Esc. (An empty chord means "no send-keys gate" → no-op.)
+        let tabCaps = AgentCapabilities(
+            sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
+            wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
+            authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
+        let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
+                              models: [AgentModel(id: "m")], capabilities: tabCaps)
+        var t = card("perm", status: .waiting, wait: .permission)
+        t.agentId = "tabber"
+        let m = modelWith([t], agents: [agent])
+
+        XCTAssertEqual(m.permissionGateChord(t.id, \.approveChord), [.named(.tab)])
+        XCTAssertNil(m.permissionGateChord(t.id, \.denyChord))   // empty chord → no send-keys gate
     }
 }

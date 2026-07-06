@@ -74,8 +74,20 @@ extension OrchestraService {
         // apply. The cursor is monotonic — it never moves backward.
         if let snap = patch.snapshot {
             let lastSeq = lastSeqStore[id] ?? 0
-            let allowed = snap.seq == 0 || snap.seq > lastSeq
-            if snap.seq > lastSeq { lastSeqStore[id] = snap.seq }
+            // Permission-fence for fileTail agents (Codex): a `PermissionRequest` hook arrives as a
+            // seq==0 push ("naturally ordered, always apply") but does NOT advance the cursor — leaving
+            // `.waiting/.permission` open to being clobbered by a rollout line the agent wrote µs before
+            // it blocked (the tool-call line → `.running`, seq = its timestamp) that the polling tailer
+            // delivers a tick LATER and that sails past the `seq > lastSeq` gate. That flips the card back
+            // to `.running`: no Needs-You row, no push, silently blocked. So a hook-pushed blocking wait
+            // on a fileTail agent FENCES the cursor to "now" in the tailer's own µs clock space — dropping
+            // the already-stale pre-block line while still admitting genuinely-later post-approval lines
+            // (their timestamps exceed now). Claude has no fileTail, so its seq==0 hooks are unaffected
+            // (and its statusline seq lives in a different clock space — fencing there could wrongly drop
+            // its reports, which is exactly why this is capability-gated, not global).
+            let effectiveSeq = fencedSeq(for: snap, taskAgentId: task.agentId, lastSeq: lastSeq)
+            let allowed = effectiveSeq == 0 || effectiveSeq > lastSeq
+            if effectiveSeq > lastSeq { lastSeqStore[id] = effectiveSeq }
             if allowed {
                 if let c = snap.ctxPct { task.ctxPct = max(0, min(100, c)) }
                 if let d = snap.desc { task.desc = d }
@@ -144,6 +156,21 @@ extension OrchestraService {
         if turnCompletionConcluded {
             await concludeCard(id, .done)
         }
+    }
+
+    /// The seq a snapshot is gated with. Normally the snapshot's own seq. The one exception is the
+    /// fileTail permission-fence (see the call site): a seq==0 hook that opens a blocking permission wait
+    /// on a `.fileTail` agent is stamped with a synthetic "now" in the tailer's µs clock space so a
+    /// late-delivered pre-block rollout line can't clobber it. Everything else is unchanged.
+    private func fencedSeq(for snap: SnapshotReport, taskAgentId: String, lastSeq: UInt64) -> UInt64 {
+        guard snap.seq == 0, snap.status == .waiting, snap.waitReason == .permission,
+              (try? registry.get(taskAgentId))?.capabilities.telemetry == .fileTail else {
+            return snap.seq
+        }
+        // Epoch µs — the SAME scale `CodexAdapter.rolloutSeq` stamps tail lines with. `max(_, lastSeq+1)`
+        // guarantees we advance the cursor even under an improbable clock stall.
+        let nowMicros = UInt64(max(0, Date().timeIntervalSince1970 * 1_000_000))
+        return max(nowMicros, lastSeq &+ 1)
     }
 
     /// Read-only freeform/scratch cards are the durable-card form of a one-shot delegation: they have no

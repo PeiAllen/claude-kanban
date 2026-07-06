@@ -92,11 +92,23 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let terminalImagePaste: TerminalImagePaste
     public let resumeConfirmation: ResumeConfirmation
 
+    /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
+    /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
+    /// TUI accepts the pre-highlighted "Yes" with `Enter` and cancels with `Esc`. They live on the
+    /// capability (not on the neutral Needs-You queue) so each adapter states its own gate keys — a
+    /// structured-approval agent (Codex's `PermissionRequest`) overrides these per-adapter instead of
+    /// inheriting Claude's keystrokes. An empty chord means "this agent has no send-keys gate" and the
+    /// gate is a no-op (its approval rides a different channel).
+    public let approveChord: [KeyToken]
+    public let denyChord: [KeyToken]
+
     public init(sessionId: SessionId, telemetry: Telemetry, contextUsage: ContextUsage,
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
-                resumeConfirmation: ResumeConfirmation = .sessionStartHook) {
+                resumeConfirmation: ResumeConfirmation = .sessionStartHook,
+                approveChord: [KeyToken] = [.named(.enter)],
+                denyChord: [KeyToken] = [.named(.esc)]) {
         self.sessionId = sessionId
         self.telemetry = telemetry
         self.contextUsage = contextUsage
@@ -106,6 +118,8 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
         self.resumeConfirmation = resumeConfirmation
+        self.approveChord = approveChord
+        self.denyChord = denyChord
     }
 }
 

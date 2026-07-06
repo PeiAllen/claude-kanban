@@ -84,4 +84,42 @@ struct PathResolverTests {
             try r.assertAllowed(t.repos + "/myrepo/sub/../feature")
         }
     }
+
+    // MARK: - #8 bare repo names resolve against reposRoot
+
+    @Test("a bare repo name resolves under reposRoot (the phone's 'repo name' input)")
+    func bareRepoNameResolvesUnderReposRoot() throws {
+        let t = try makeTree()   // <repos>/myrepo exists
+        let r = PathResolver(allowedRoots: [t.repos], reposRoot: t.repos)
+        // "myrepo" alone would otherwise canonicalize against the daemon's cwd and fail the allowlist.
+        #expect(try r.resolveRepo("myrepo") == t.repos + "/myrepo")
+        // Whitespace from the phone keyboard is trimmed.
+        #expect(try r.resolveRepo("  myrepo ") == t.repos + "/myrepo")
+    }
+
+    @Test("a nested bare name resolves under reposRoot (recursive repo discovery)")
+    func nestedBareNameResolvesUnderReposRoot() throws {
+        let t = try makeTree()
+        try FileManager.default.createDirectory(atPath: t.repos + "/team/proj",
+                                                withIntermediateDirectories: true)
+        let r = PathResolver(allowedRoots: [t.repos], reposRoot: t.repos)
+        #expect(try r.resolveRepo("team/proj") == t.repos + "/team/proj")
+    }
+
+    @Test("an absolute repo path is unaffected by reposRoot resolution")
+    func absolutePathBypassesReposRoot() throws {
+        let t = try makeTree()
+        // reposRoot is `outside`, but an absolute path under `repos` still resolves to itself (and is
+        // allowed because `repos` is in the allowlist) — bare-name resolution never touches absolute paths.
+        let r = PathResolver(allowedRoots: [t.repos], reposRoot: t.outside)
+        #expect(try r.resolveRepo(t.repos + "/myrepo") == t.repos + "/myrepo")
+    }
+
+    @Test("without reposRoot, resolution is unchanged (browse-only PathResolver)")
+    func noReposRootPreservesOldBehavior() throws {
+        let t = try makeTree()
+        let r = PathResolver(allowedRoots: [t.repos])   // reposRoot defaults to "" → disabled
+        // A bare name is NOT rewritten; it canonicalizes as-is and fails the allowlist (old behavior).
+        #expect(throws: OrchestraError.self) { try r.resolveRepo("myrepo") }
+    }
 }

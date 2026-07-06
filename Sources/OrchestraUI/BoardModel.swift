@@ -154,6 +154,13 @@ public final class BoardModel: ObservableObject {
     /// over; stays `nil` on macOS (no push token path there). Internal for test visibility.
     private(set) var pushToken: String?
 
+    /// Retains the `.orchNotificationPrefsChanged` observer so it can be removed on `deinit` (the closure
+    /// captures `self` weakly, but the token must still be released to stop NotificationCenter retaining
+    /// it — matters for the many short-lived `BoardModel`s tests create). `nonisolated(unsafe)` so the
+    /// nonisolated `deinit` can read it: written once in `init`, read once in `deinit` (happens-after all
+    /// uses), and `removeObserver` is itself thread-safe. `nil` until `init` wires it.
+    private nonisolated(unsafe) var notificationPrefsObserver: NSObjectProtocol?
+
     #if os(macOS)
     /// Owns the SSH tunnel for a remote connection; publishes tunnel state. Host-only: iOS reaches the
     /// daemon over the dev transport (F3), not an SSH master.
@@ -176,6 +183,13 @@ public final class BoardModel: ObservableObject {
         self.platform = platform
         client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()
+        wireNotificationPrefsObserver()   // N1: re-register push on a notification-pref change
+    }
+
+    deinit {
+        if let notificationPrefsObserver {
+            NotificationCenter.default.removeObserver(notificationPrefsObserver)
+        }
     }
 
     /// Mirror the client's connection state onto the main actor (drives `connectionState` + `connected`).
@@ -589,12 +603,19 @@ public final class BoardModel: ObservableObject {
     /// backgrounded. Call after `registerForRemoteNotifications` yields a token, and again whenever a
     /// notification pref changes (a re-register replaces the prior entry). Best-effort — a failed
     /// registration just means no push until the next attempt; the in-app Needs You queue still works.
+    /// The pref snapshot most recently handed to `registerDevice`, recorded BEFORE the best-effort RPC so
+    /// it reflects registration *intent* even when the link is down. Lets a pref-change re-register be
+    /// verified (and a redundant re-send skipped). `nil` until the first registration. Internal for tests.
+    private(set) var lastRegisteredPrefs: NotifyPrefsSnapshot?
+
     public func registerForPush(token: String) async {
         // Retain the token FIRST — before the best-effort RPC — so a registration that fails because the
         // link is still connecting (or dropped) is re-attempted on the next `connectionState → .live` edge
         // rather than lost for the whole session (#7).
         pushToken = token
-        _ = try? await client.registerDevice(token: token, prefs: NotificationPrefs().snapshot())
+        let snapshot = NotificationPrefs().snapshot()
+        lastRegisteredPrefs = snapshot   // record intent before the best-effort RPC (survives a down link)
+        _ = try? await client.registerDevice(token: token, prefs: snapshot)
     }
 
     /// Re-assert push registration on the (re)connected link, if we hold a device token (#7). Called on
@@ -605,6 +626,22 @@ public final class BoardModel: ObservableObject {
     func reregisterPushOnConnect() {
         guard let token = pushToken else { return }
         _Concurrency.Task { await self.registerForPush(token: token) }
+    }
+
+    /// Observe `.orchNotificationPrefsChanged` (posted by the iOS Settings screen on every scope/sound
+    /// write) and re-register the device so the daemon's snapshot tracks the change (N1). Without this a
+    /// pref changed while foregrounded never reaches the daemon — a backgrounded phone keeps getting
+    /// pushes for a trigger just turned Off. A no-op on macOS / before the phone registers (no token).
+    /// Installed once from `init`; the token is removed on `deinit`.
+    private func wireNotificationPrefsObserver() {
+        // `queue: nil` → the block runs synchronously on the posting thread; it immediately hops to the
+        // MainActor via the Task, so it's correct from any thread and doesn't depend on a main run-loop
+        // being pumped (which keeps the re-register deterministic under test).
+        notificationPrefsObserver = NotificationCenter.default.addObserver(
+            forName: .orchNotificationPrefsChanged, object: nil, queue: nil
+        ) { [weak self] _ in
+            _Concurrency.Task { @MainActor in self?.reregisterPushOnConnect() }
+        }
     }
 
     /// Non-attaching read of a card's agent pane (the phone Agent tab's v1 render source, D1). Just a

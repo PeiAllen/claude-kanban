@@ -11,13 +11,20 @@ import Musl
 /// Symlink-escape safe (it resolves the real path before the prefix check).
 public struct PathResolver: Sendable {
     public let allowedRoots: [String]
+    /// The root a **bare** (non-absolute, non-`~`) repo name resolves against — `Config.reposRoot`. The
+    /// phone's Spawn sheet invites a "repo name" (its placeholder), but a relative name otherwise
+    /// canonicalizes against the *daemon's* process cwd and fails the allowlist with `pathNotAllowed`.
+    /// Empty disables bare-name resolution (relative paths stay cwd-relative — the pre-existing behavior
+    /// for the browse-only `PathResolver(allowedRoots:)`).
+    public let reposRoot: String
 
-    public init(allowedRoots: [String]) {
+    public init(allowedRoots: [String], reposRoot: String = "") {
         self.allowedRoots = allowedRoots.map { Self.canonical($0) }
+        self.reposRoot = reposRoot.isEmpty ? "" : Self.canonical(reposRoot)
     }
 
     public init(config: Config) {
-        self.init(allowedRoots: config.allowedRoots)
+        self.init(allowedRoots: config.allowedRoots, reposRoot: config.reposRoot)
     }
 
     /// realpath(3), falling back to a lexical normalization when the path doesn't exist yet (e.g. a
@@ -54,11 +61,24 @@ public struct PathResolver: Sendable {
         }
     }
 
-    /// Resolve a repo path and assert it is allowed.
+    /// Resolve a repo path and assert it is allowed. A bare repo name (no path separator, not absolute or
+    /// `~`) is resolved against `reposRoot` first (see `resolveBareRepo`) so the phone's "repo name" input
+    /// works; absolute / tilde / path-like inputs are canonicalized as given.
     public func resolveRepo(_ repo: String) throws -> String {
-        let real = Self.canonical(repo)
+        let real = Self.canonical(resolveBareRepo(repo))
         try assertAllowed(real)
         return real
+    }
+
+    /// A bare repo name is resolved under `reposRoot`. "Bare" = trimmed, non-empty, and neither absolute
+    /// (`/…`) nor home-relative (`~…`) — i.e. exactly the "repo name or a nested `name/sub`" the phone's
+    /// Spawn placeholder invites. Absolute/tilde/empty inputs (and any `PathResolver` with no `reposRoot`)
+    /// pass through untouched, so existing absolute-path callers are unaffected.
+    private func resolveBareRepo(_ repo: String) -> String {
+        guard !reposRoot.isEmpty else { return repo }
+        let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.hasPrefix("~") else { return repo }
+        return (reposRoot as NSString).appendingPathComponent(trimmed)
     }
 
     /// Throws `pathNotAllowed` unless `absPath` is equal to or sits under an allowlisted root.

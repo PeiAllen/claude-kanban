@@ -47,6 +47,27 @@ final class PushNotifierTests: XCTestCase {
         func attemptCount() -> Int { attempts }
     }
 
+    /// Simulates the #3 race: while an OLD-token send is in flight, the phone re-registers a FRESH token
+    /// under the SAME clientId (the store keys by clientId + REPLACES), then the old send fails 410.
+    /// Token-matched eviction must keep the fresh registration rather than evicting it by clientId.
+    actor ReregisterThenFailSender: PushSender {
+        let service: OrchestraService
+        let clientId: String
+        let freshToken: String
+        let prefsSnap: NotifyPrefsSnapshot
+        private var fired = false
+        init(service: OrchestraService, clientId: String, freshToken: String, prefs: NotifyPrefsSnapshot) {
+            self.service = service; self.clientId = clientId; self.freshToken = freshToken; self.prefsSnap = prefs
+        }
+        func send(payload: JSONValue, to token: String) async throws {
+            guard !fired else { return }
+            fired = true
+            _ = try await service.registerDevice(
+                DeviceRegistration(token: freshToken, clientId: clientId, prefs: prefsSnap))
+            throw PushError.badStatus(410, "Unregistered")   // the OLD token's in-flight send now fails
+        }
+    }
+
     /// A syntactically valid 64-hex APNs device token, seeded by `n` so tests can tell devices apart.
     private func validToken(_ n: Int) -> String { String(format: "%064x", n) }
 
@@ -84,7 +105,8 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(sends.count, 1)
         XCTAssertEqual(sends.first?.token, tokA)
         XCTAssertEqual(sends.first?.payload["trigger"]?.stringValue, "permission")
-        XCTAssertEqual(sends.first?.payload["aps"]?["sound"]?.stringValue, "Glass.aiff")
+        // Named macOS sounds aren't bundled on iOS → mapped to the system default (#2).
+        XCTAssertEqual(sends.first?.payload["aps"]?["sound"]?.stringValue, "default")
     }
 
     func testOffScopeDeviceGetsNoPush() async throws {
@@ -193,6 +215,27 @@ final class PushNotifierTests: XCTestCase {
 
         let remaining = await service.registeredDevices()
         XCTAssertTrue(remaining.isEmpty, "a 400 BadDeviceToken must drop the dead token")
+    }
+
+    func testDeadTokenEvictionIsTokenMatched() async throws {
+        // The classic 410 race (#3): the phone re-registered a fresh token under the same clientId, then
+        // an in-flight send against the OLD token fails 410. Eviction must MATCH the failed token — an
+        // unregister-by-clientId would delete the brand-new valid registration.
+        let service = makeService()
+        let oldTok = validToken(0x01), newTok = validToken(0x02)
+        try await service.registerDevice(
+            DeviceRegistration(token: oldTok, clientId: "cA", prefs: prefs(.always)))
+        let sender = ReregisterThenFailSender(service: service, clientId: "cA",
+                                              freshToken: newTok, prefs: prefs(.always))
+        let notifier = PushNotifier(service: service, sender: sender)
+
+        let id = UUID()
+        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
+        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .permission)))
+
+        let remaining = await service.registeredDevices()
+        XCTAssertEqual(remaining.map(\.token), [newTok],
+                       "a 410 for a token already replaced must keep the fresh registration")
     }
 
     func testTransientErrorKeepsToken() async throws {
