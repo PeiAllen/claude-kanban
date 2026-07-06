@@ -105,6 +105,32 @@ final class IOSAppTests: XCTestCase {
         XCTAssertEqual(diffBaselines(parentBranch: "main"), [.working, .branch, .parent])
     }
 
+    /// §3 Info: the "Copy chat link" / "Copy tmux target" buttons must copy the *exact* strings the
+    /// desktop copies, so a value yanked on the phone is interchangeable with one yanked on the Mac.
+    /// The desktop's source of truth is `BoardModel.copySelected` (`t.ref()` / `"\(t.tmuxSession):agent"`)
+    /// and the InspectorView breadcrumb — both call these same shared `Task` accessors, which we pin here.
+    func testInfoTabCopyStringsMatchDesktopExactly() {
+        let task = Task(id: UUID(uuidString: "ABCDEF12-3456-7890-ABCD-EF1234567890")!,
+                        title: "Fix the Login Bug!", repo: "/r", branch: "feat/x", cwd: "/r/x",
+                        model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                        order: 0, initialPrompt: "x")
+
+        // Chat link — identical to the desktop's "Copy chat link" (`Task.ref()`): shortId + title slug.
+        let chatLink = task.ref()
+        XCTAssertEqual(chatLink, "orchestra://task/abcdef-fix-the-login-bug")
+
+        // Tmux target — identical to the desktop's "Copy tmux target": the agent-window attach target.
+        let tmuxTarget = "\(task.tmuxSession):agent"
+        XCTAssertEqual(tmuxTarget, "orchestra-abcdef12-3456-7890-abcd-ef1234567890:agent")
+
+        // And the button's real copy path (UIPasteboard via IOSClipboard) round-trips each value verbatim.
+        let clip = IOSClipboard()
+        clip.copy(chatLink)
+        XCTAssertEqual(clip.string, "orchestra://task/abcdef-fix-the-login-bug")
+        clip.copy(tmuxTarget)
+        XCTAssertEqual(clip.string, "orchestra-abcdef12-3456-7890-abcd-ef1234567890:agent")
+    }
+
     // MARK: - Push deep-link (N1)
 
     func testPushDeepLinkRoutesDiedToRecoveryElsePeek() {
