@@ -107,7 +107,15 @@ xcrun simctl io "$UDID" screenshot "$SHOTS/t4-takeover.png" >/dev/null 2>&1
 echo "screenshot: $SHOTS/t4-takeover.png"
 
 echo "=== daemon owner state (proves the phone holds the lease) ==="
-ORCH_TEST_NAME=$NAME $T rpc agentTerminalOwner "{\"ref\":\"aaaaaa\"}" 2>/dev/null
+OWNER_JSON=$(ORCH_TEST_NAME=$NAME $T rpc agentTerminalOwner "{\"ref\":\"aaaaaa\"}" 2>/dev/null)
+echo "$OWNER_JSON"
+# Gate the regression: the owner must actually be a PHONE (not just "some owner printed"). A takeover
+# that silently fell back to desktop-owned / available would still print a line — assert on ownerKind.
+if echo "$OWNER_JSON" | grep -q '"ownerKind"[[:space:]]*:[[:space:]]*"phone"'; then
+  echo "ASSERT ok: agent terminal is phone-owned"
+else
+  echo "ASSERT FAIL: expected ownerKind==phone, got: $OWNER_JSON"; exit 1
+fi
 echo "=== grouped view sessions on the agent window (attach happened) ==="
 ORCH_TEST_NAME=$NAME $T tmux list-sessions 2>/dev/null | grep -E "$SESSION" || true
 echo "=== sshd auth ==="; grep -iE "Accepted|error|fatal" "$D/sshd.log" | tail -5

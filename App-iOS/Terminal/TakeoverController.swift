@@ -42,10 +42,21 @@ final class TakeoverController: ObservableObject {
     func begin() async {
         guard case .acquiring = phase else { return }
         guard let result = await model.takeOverAgentTerminalAsPhone(cardId) else {
-            phase = .failed("Couldn't take over the agent terminal — the daemon didn't grant the lease.")
+            // A dismissal that raced the acquire (returnToDesktop ran at `.acquiring`, which held nothing to
+            // release) leaves nothing to clean up when the grant itself failed — just don't overwrite the
+            // teardown with a `.failed` cover the user can no longer see.
+            if !released { phase = .failed("Couldn't take over the agent terminal — the daemon didn't grant the lease.") }
             return
         }
         epoch = result.state.epoch
+        // #2: the surface may have been dismissed while this acquire RPC was in flight. `returnToDesktop()`
+        // ran at `.acquiring`, where `isHolding` was false, so it released NOTHING — the just-granted lease
+        // would otherwise be orphaned (a heartbeat nobody watches, stale in ~30s). Now that we know the
+        // epoch, release it instead of entering `.holding`.
+        guard !released else {
+            await model.releaseAgentTerminalAsPhone(cardId, epoch: epoch)
+            return
+        }
         phase = .holding(result.target)
         startHeartbeat()
     }

@@ -135,7 +135,17 @@ echo "spawned card id: ${NEWID:-<none found>}"
 
 echo "=== daemon owner state for the SPAWNED card (proves auto-own) ==="
 if [ -n "$NEWID" ]; then
-  ORCH_TEST_NAME=$NAME $T rpc agentTerminalOwner "{\"ref\":\"$NEWID\"}" 2>/dev/null
+  OWNER_JSON=$(ORCH_TEST_NAME=$NAME $T rpc agentTerminalOwner "{\"ref\":\"$NEWID\"}" 2>/dev/null)
+  echo "$OWNER_JSON"
+  # Gate the regression: auto-own must leave the spawned card PHONE-owned. A silent fallback to
+  # desktop/available would still print a line — assert on ownerKind so it can't pass unnoticed.
+  if echo "$OWNER_JSON" | grep -q '"ownerKind"[[:space:]]*:[[:space:]]*"phone"'; then
+    echo "ASSERT ok: spawned card is phone-owned"
+  else
+    echo "ASSERT FAIL: expected ownerKind==phone for spawned card, got: $OWNER_JSON"; exit 1
+  fi
+else
+  echo "ASSERT FAIL: no spawned card id found"; exit 1
 fi
 echo "=== grouped view sessions (attach happened) ==="
 ORCH_TEST_NAME=$NAME $T tmux list-sessions 2>/dev/null | grep -E "__agent" || echo "(no grouped view-session yet)"

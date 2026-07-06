@@ -47,6 +47,9 @@ public actor OrchestraService {
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
     // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
     var terminalOwnership = TerminalOwnershipStore()
+    // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
+    // changed nothing but `updatedAt` doesn't re-emit and re-render the whole board hierarchy (#4).
+    private var lastEmittedOwnerSig: [UUID: OwnerEmitSig] = [:]
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
     // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout). Keyed by
@@ -658,6 +661,29 @@ public actor OrchestraService {
 
     // MARK: - Agent-terminal ownership (ephemeral UI coordination)
 
+    /// The owner-visible identity of a snapshot — everything a client renders EXCEPT `updatedAt`. Two
+    /// snapshots with the same signature look identical to every consumer, so re-broadcasting one is pure
+    /// churn (a whole-hierarchy re-render on the 10s heartbeat cadence — #4 / Lens-3 LOW).
+    private struct OwnerEmitSig: Equatable {
+        let kind: AgentTerminalOwnerKind?
+        let clientId: String?
+        let epoch: Int
+        let stale: Bool
+        init(_ s: AgentTerminalOwnerState) {
+            kind = s.owner?.ownerKind; clientId = s.owner?.clientId; epoch = s.epoch; stale = s.stale
+        }
+    }
+
+    /// Broadcast an owner event only when it changed something a client would render. takeOver (epoch++)
+    /// and release (owner→nil) always differ, so they always emit; a steady heartbeat (same owner, same
+    /// epoch, still fresh) is suppressed — which is exactly the "emit on heartbeat, skip if unchanged" of #4.
+    private func emitOwnerIfChanged(_ state: AgentTerminalOwnerState) {
+        let sig = OwnerEmitSig(state)
+        guard lastEmittedOwnerSig[state.cardId] != sig else { return }
+        lastEmittedOwnerSig[state.cardId] = sig
+        emit(.agentTerminalOwner(state))
+    }
+
     /// Current owner of the card's `agent` terminal (owner + epoch + stale/fresh). Read-only.
     public func agentTerminalOwner(_ ref: String) async throws -> AgentTerminalOwnerState {
         let t = try await resolveRef(ref)
@@ -666,16 +692,23 @@ public actor OrchestraService {
 
     /// Compare-and-set acquisition of the card's `agent` terminal: bump the epoch, set the owner,
     /// emit an owner event, and return the tmux attach target. Always wins (desktop Retake / takeover).
+    ///
+    /// Resolve the attach target FIRST, commit the CAS LAST (#1): the target lookup throws for a card
+    /// whose `agent` window is dead, and if the CAS/emit ran before it, a *failed* takeover would steal a
+    /// lease nobody can hold and strand the desktop on the placeholder (the owner event already unmounted
+    /// it). Ordering the throwing work ahead of the mutation makes a failed takeover a no-op.
     public func takeOverAgentTerminal(_ ref: String, clientId: String,
                                       kind: AgentTerminalOwnerKind) async throws -> TakeOverResult {
         let t = try await resolveRef(ref)
+        // Throwing work first — if the window is gone, we bail before touching ownership.
+        let target = try await agentTarget(t.id)
+        // Commit the lease only now that the attach is guaranteed to have a target. (The old
+        // `detachAgentViewClients` belt-and-suspenders is gone — it could kick the desktop's own
+        // just-connected client on first select (#8); the D5 desktop unmount + the phone's exclusive
+        // `detach-client` recipe already handle the single-client invariant.)
         let state = terminalOwnership.takeOver(cardId: t.id, ref: t.ref(), clientId: clientId,
                                                kind: kind, now: Date())
-        // Belt-and-suspenders: drop any existing clients of the agent view session so the new owner's
-        // PTY drives the window size. Authoritative unmount is D5 (it consumes this event).
-        try? sessions.detachAgentViewClients(sessions.sessionName(t.id))
-        emit(.agentTerminalOwner(state))
-        let target = try await agentTarget(t.id)
+        emitOwnerIfChanged(state)
         return TakeOverResult(state: state, target: target)
     }
 
@@ -686,17 +719,36 @@ public actor OrchestraService {
         let t = try await resolveRef(ref)
         let state = try terminalOwnership.release(cardId: t.id, ref: t.ref(),
                                                   clientId: clientId, epoch: epoch, now: Date())
-        emit(.agentTerminalOwner(state))
+        emitOwnerIfChanged(state)
         return state
     }
 
-    /// Refresh a takeover across reconnects — succeeds ONLY for the current epoch + clientId; throws
-    /// otherwise. Keepalive: does NOT emit (staleness is derived from `updatedAt` by consumers).
+    /// Refresh a takeover across reconnects — succeeds ONLY for the current epoch + clientId.
+    ///
+    /// A denied beat (a desktop retook, bumping the epoch) is NOT surfaced as an error (#3): the store
+    /// throws on the CAS miss, but the phone that lost the lease needs the *current* owner back so its
+    /// mirror can correct (drop "You have control") instead of `try?`-swallowing the throw and sitting on
+    /// a stale `.holding`. So on denial we return the live snapshot — matching what callers already assume.
+    ///
+    /// On success we EMIT the refreshed owner state (#4) so the desktop mirror stays fresh and its
+    /// placeholder stops falsely claiming "phone unreachable" ~30s into a healthy takeover. `emitOwnerIfChanged`
+    /// suppresses the event when nothing owner-visible changed, so a steady 10s heartbeat doesn't re-render
+    /// the whole board hierarchy every beat.
     public func heartbeatAgentTerminal(_ ref: String, clientId: String,
                                        epoch: Int) async throws -> AgentTerminalOwnerState {
         let t = try await resolveRef(ref)
-        return try terminalOwnership.heartbeat(cardId: t.id, ref: t.ref(),
-                                               clientId: clientId, epoch: epoch, now: Date())
+        let now = Date()
+        do {
+            let state = try terminalOwnership.heartbeat(cardId: t.id, ref: t.ref(),
+                                                        clientId: clientId, epoch: epoch, now: now)
+            emitOwnerIfChanged(state)
+            return state
+        } catch let error as OrchestraError {
+            if case .ownershipDenied = error {
+                return terminalOwnership.snapshot(cardId: t.id, ref: t.ref(), now: now)
+            }
+            throw error
+        }
     }
 
     /// Test hook: shrink/enlarge the ownership heartbeat window (default 30s) so staleness tests

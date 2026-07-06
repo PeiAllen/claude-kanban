@@ -24,8 +24,14 @@ struct IOSTerminalView: UIViewRepresentable {
     /// toggle it live. Defaults to `false`. (Takeover drives Select via `control` instead; either wins.)
     var selectMode: Bool = false
 
+    /// Gate consulted before each automatic reconnect. Takeover wires this to `TakeoverController.isHolding`
+    /// so a reconnect NEVER re-runs the exclusive `detach-client` recipe after the phone has already lost the
+    /// lease to a desktop retake (#7) — that would kick the rightful owner. Defaults to always-reconnect for
+    /// the non-exclusive attaches (read-only / T2 shell), which have no lease to respect.
+    var shouldReconnect: () -> Bool = { true }
+
     func makeCoordinator() -> Coordinator {
-        let c = Coordinator(makeChannel: makeChannel)
+        let c = Coordinator(makeChannel: makeChannel, shouldReconnect: shouldReconnect)
         control?.attach(coordinator: c)
         return c
     }
@@ -66,19 +72,25 @@ struct IOSTerminalView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate {
         private let makeChannel: () -> TerminalByteChannel
+        private let shouldReconnect: () -> Bool
         weak var terminal: TerminalView?
         private var channel: TerminalByteChannel?
         private var started = false
         private var intentionalClose = false
         private var reconnects = 0
         private let maxReconnects = 5
+        /// A reconnect timer is already scheduled — so the `.failed`+`.closed` pair a single drop produces
+        /// (or a stray later event) can't stack a second timer (#6).
+        private var reconnectPending = false
         // Sticky-Ctrl state for soft-keyboard input (set from the accessory bar's Ctrl key via the control
         // handle). One-shot unless locked; consumed on the next typed keystroke.
         private var pendingCtrl = false
         private var ctrlLocked = false
 
-        init(makeChannel: @escaping () -> TerminalByteChannel) {
+        init(makeChannel: @escaping () -> TerminalByteChannel,
+             shouldReconnect: @escaping () -> Bool = { true }) {
             self.makeChannel = makeChannel
+            self.shouldReconnect = shouldReconnect
         }
 
         func teardown() {
@@ -121,6 +133,7 @@ struct IOSTerminalView: UIViewRepresentable {
                 feedStatus("[connecting…]")
             case .connected:
                 reconnects = 0
+                reconnectPending = false
             case .failed(let message):
                 feedStatus("[connection failed: \(message)]")
                 scheduleReconnect()
@@ -141,22 +154,58 @@ struct IOSTerminalView: UIViewRepresentable {
         /// unreachable host doesn't spin forever.
         private func scheduleReconnect() {
             guard !intentionalClose, started, let term = terminal else { return }
-            guard reconnects < maxReconnects else {
-                feedStatus("[giving up after \(maxReconnects) attempts — pull to retry]")
+            // #7: a takeover attach must NOT re-run its exclusive `detach-client` recipe once the phone has
+            // lost the lease — reconnecting then would kick the desktop that just retook control. Drop the
+            // channel instead and let the surface show its "desktop retook control" state.
+            guard shouldReconnect() else {
+                intentionalClose = true
+                channel?.close()
+                feedStatus("[control returned to desktop — disconnected]")
                 return
             }
+            // #6: one drop emits at most one reconnect. Never stack a second timer.
+            guard !reconnectPending else { return }
+            guard reconnects < maxReconnects else {
+                // Give up — but tear the channel down so an owned SSH session isn't left leaking (#5); the
+                // scenePhase-active reset (`retryConnection`) is the way back.
+                intentionalClose = true
+                channel?.close()
+                feedStatus("[giving up after \(maxReconnects) attempts — reopen or foreground to retry]")
+                return
+            }
+            reconnectPending = true
             reconnects += 1
             let delay = Double(min(8, 1 << (reconnects - 1)))   // 1,2,4,8,8…
             let cols = term.getTerminal().cols, rows = term.getTerminal().rows
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, !self.intentionalClose else { return }
+                self.reconnectPending = false
                 self.feedStatus("[reconnecting…]")
                 // close() first: a remote-initiated drop leaves the channel non-idle, so start() would
                 // no-op on its idempotency guard. close() resets it to a restartable state; the new SSH
-                // link re-attaches the SAME server-side view session (recipe is idempotent).
+                // link re-attaches the SAME server-side view session (recipe is idempotent). The channel
+                // generation-stamps this fresh attempt, so the close()'s own `.closed` can't drive a reflap.
                 self.channel?.close()
                 self.channel?.start(cols: cols, rows: rows)
             }
+        }
+
+        /// Reset the reconnect budget and re-establish after a give-up / lease-loss disconnect. Wired to the
+        /// owning view's `scenePhase == .active` so foregrounding the app retries a dead terminal (the "pull
+        /// to retry" affordance the copy used to promise but never had a gesture for — LOW).
+        func retryConnection() {
+            guard let term = terminal, started else { return }
+            guard intentionalClose || reconnects >= maxReconnects else { return }   // only revive a dead one
+            // Never revive a takeover terminal we no longer hold the lease for — that would re-run the
+            // exclusive recipe and kick the current owner (#7 again, via the manual retry path).
+            guard shouldReconnect() else { return }
+            intentionalClose = false
+            reconnectPending = false
+            reconnects = 0
+            let cols = term.getTerminal().cols, rows = term.getTerminal().rows
+            feedStatus("[reconnecting…]")
+            channel?.close()
+            channel?.start(cols: cols, rows: rows)
         }
 
         private func feedStatus(_ text: String) {
