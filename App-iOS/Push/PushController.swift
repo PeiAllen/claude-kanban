@@ -26,7 +26,21 @@ final class PushCoordinator: ObservableObject {
 
     private init() {}
 
-    func setToken(_ hex: String) { deviceToken = hex }
+    /// Hex-encode a raw APNs device token exactly as the daemon's registration RPC expects it:
+    /// lowercase, zero-padded, two hex digits per byte, no separators.
+    static func hexToken(from data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Publish a freshly-registered token. Deduplicated: APNs re-delivers the *same* token on every cold
+    /// launch, so re-publishing an unchanged token is a no-op — `OrchestraApp` only re-registers with the
+    /// daemon when the token actually changed. Returns whether it changed.
+    @discardableResult
+    func setToken(_ hex: String) -> Bool {
+        guard hex != deviceToken else { return false }
+        deviceToken = hex
+        return true
+    }
     func deepLink(cardId: UUID) { pendingCardId = cardId }
     func consumeDeepLink() { pendingCardId = nil }
 
@@ -80,7 +94,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// APNs handed us a device token → hex-encode and publish for daemon registration.
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        let hex = PushCoordinator.hexToken(from: deviceToken)
         _Concurrency.Task { @MainActor in PushCoordinator.shared.setToken(hex) }
     }
 

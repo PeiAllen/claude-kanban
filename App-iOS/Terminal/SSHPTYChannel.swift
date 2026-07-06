@@ -200,6 +200,15 @@ final class SSHPTYChannel: TerminalByteChannel {
         bridge.onEvent = onEvent
         onEvent?(.connecting)
 
+        // Tailscale-trust guard (review #5), defense-in-depth with `PinningHostKeyDelegate`'s host-key
+        // pinning below: only ever connect to a tailnet target — refuse a LAN/localhost/public host
+        // before connecting, so the pinned SSH channel is only ever established over the trusted tailnet.
+        if let reason = SSHEndpoint.tailnetRejectionReason(for: endpoint.host) {
+            state = .closed
+            onEvent?(.failed(reason))
+            return
+        }
+
         let key: NIOSSHPrivateKey
         do {
             key = NIOSSHPrivateKey(ed25519Key: try SSHKeyStore.loadOrCreateIdentity())
