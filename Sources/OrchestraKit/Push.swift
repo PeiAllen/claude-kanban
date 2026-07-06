@@ -149,14 +149,18 @@ public enum APNsPayload {
         }
     }
 
-    /// The APNs `sound` string: `.systemDefault` → `"default"`; `.none` → `nil` (silent, field omitted);
-    /// a named system sound → `"<Name>.aiff"` (the same file convention the macOS notifier uses).
+    /// The APNs `sound` string for the *iOS* device that receives the push. `.none` → `nil` (silent,
+    /// field omitted); everything else → `"default"`.
+    ///
+    /// The named choices (Hero, Submarine, …) are macOS **system** files in `/System/Library/Sounds`;
+    /// on iOS a custom push sound must be a `.caf`/`.aiff` **bundled in the app**, and none of these are.
+    /// A push naming e.g. `"Submarine.aiff"` finds no such file on the phone and APNs silently drops the
+    /// sound entirely — a named pref would be *quieter* than Default. So until bundled sounds exist we
+    /// map every audible pref to the system default: the user's Off/On (`.none`) choice is honored, and a
+    /// sound actually plays. (The macOS `AgentNotifier` keeps its own `UNNotificationSound` mapping and is
+    /// unaffected — this field is only the APNs → iOS payload.)
     public static func soundField(_ sound: NotifySound) -> String? {
-        switch sound {
-        case .none:          return nil
-        case .systemDefault: return "default"
-        default:             return "\(sound.rawValue).aiff"
-        }
+        sound == .none ? nil : "default"
     }
 
     /// The full push payload for `intent`, sounded per `sound`.

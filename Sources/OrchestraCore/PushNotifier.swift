@@ -66,7 +66,7 @@ public actor PushNotifier {
             do {
                 try await sender.send(payload: payload, to: device.token)
             } catch {
-                await handleSendFailure(error, clientId: device.clientId)
+                await handleSendFailure(error, clientId: device.clientId, token: device.token)
             }
         }
     }
@@ -75,12 +75,25 @@ public actor PushNotifier {
     /// BadDeviceToken) Apple *requires* we stop sending to it — drop the registration (#4). Any other
     /// error is transient (network blip, 5xx): log it but keep the device, so a live token is never
     /// evicted by a momentary failure.
-    private func handleSendFailure(_ error: Error, clientId: String) async {
-        if case let PushError.badStatus(code, body) = error, Self.isDeadToken(code, body) {
-            try? await service.unregisterDevice(clientId: clientId)
-        } else {
+    ///
+    /// **Token-matched eviction**: the store keys devices by `clientId` and a re-register REPLACES the
+    /// entry, so an in-flight send against an OLD token can fail 410 *after* the phone has already
+    /// registered a fresh token under the same clientId. Unregistering by clientId alone would then evict
+    /// the brand-new valid registration. So we only drop the entry when the currently-stored token still
+    /// equals the one that just failed; if it has already been replaced, we leave the fresh token alone
+    /// (it will self-heal or fail on its own next send).
+    private func handleSendFailure(_ error: Error, clientId: String, token: String) async {
+        guard case let PushError.badStatus(code, body) = error, Self.isDeadToken(code, body) else {
             FileHandle.standardError.write(Data("push: send failed for client \(clientId): \(error)\n".utf8))
+            return
         }
+        let current = await service.registeredDevices().first { $0.clientId == clientId }
+        guard current?.token == token else {
+            FileHandle.standardError.write(Data(
+                "push: 410/bad-token for client \(clientId) but token already replaced — keeping fresh registration\n".utf8))
+            return
+        }
+        try? await service.unregisterDevice(clientId: clientId)
     }
 
     /// APNs statuses meaning "this token is permanently invalid — remove it": 410 Unregistered, or a 400

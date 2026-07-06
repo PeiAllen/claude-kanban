@@ -338,7 +338,13 @@ public extension AgentCapabilities {
         terminalImagePaste: .controlV,
         // `codex resume` emits no SessionStart(resume) marker (no rollout written at resume time), so the
         // successful relaunch itself confirms — waiting for a hook would time out and kill a live idle card.
-        resumeConfirmation: .relaunchLiveness)
+        resumeConfirmation: .relaunchLiveness,
+        // Codex's permission gate is a TUI prompt whose default option is accepted with Enter / cancelled
+        // with Esc — the same keystrokes Claude uses — so the interim send-keys gate carries Enter/Esc.
+        // This is the per-adapter seam C1 refines: when Codex's structured `PermissionRequest` reply is
+        // wired, replace these with an empty chord so the gate routes through that channel, not keystrokes.
+        approveChord: [.named(.enter)],
+        denyChord: [.named(.esc)])
 }
 
 /// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).

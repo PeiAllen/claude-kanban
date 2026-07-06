@@ -85,11 +85,21 @@ struct NotificationsSettingsSection: View {
 
     private func scopeBinding(_ t: NotifyTrigger) -> Binding<NotifyScope> {
         Binding(get: { prefs.scope(t) },
-                set: { prefs.setScope($0, for: t); refresh += 1 })
+                set: { prefs.setScope($0, for: t); refresh += 1; prefsChanged() })
     }
     private func soundBinding(_ t: NotifyTrigger) -> Binding<NotifySound> {
         Binding(get: { prefs.sound(t) },
-                set: { prefs.setSound($0, for: t); refresh += 1 })
+                set: { prefs.setSound($0, for: t); refresh += 1; prefsChanged() })
+    }
+
+    /// A written pref must **re-register** the device so the daemon's scope/sound snapshot tracks it (N1).
+    /// The daemon can't read this phone's UserDefaults; it only holds the snapshot handed over at
+    /// registration. Posting drives `BoardModel` to re-register with the fresh snapshot — without it a
+    /// backgrounded phone keeps receiving pushes for a trigger just turned Off (the foreground
+    /// `willPresent` gate never runs for a background delivery, so it can't save you). This is decoupled
+    /// via NotificationCenter so the section needs no `BoardModel` reference in Release.
+    private func prefsChanged() {
+        NotificationCenter.default.post(name: .orchNotificationPrefsChanged, object: nil)
     }
 
     // MARK: - labels

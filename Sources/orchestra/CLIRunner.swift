@@ -126,25 +126,16 @@ enum CLIRunner {
                 exit(res.exitCode)
 
             case "send-keys":
-                let ref = flags.positional(0) ?? flags.require("ref")
-                let window = flags.value("window") ?? "agent"
-                // Each positional after the ref is one chord element: a known key name (Esc, Up, C-c,
-                // …) becomes a named key; anything else is sent as literal text. Use --text to force a
-                // token to be treated as literal even if it looks like a key name.
-                var keys: [JSONValue] = []
-                if let forced = flags.value("text") {
-                    keys.append(.object(["text": .string(forced)]))
-                }
-                for tok in flags.positionalsFrom(1) {
-                    if KeyName(rawValue: tok) != nil {
-                        keys.append(.object(["key": .string(tok)]))
-                    } else {
-                        keys.append(.object(["text": .string(tok)]))
-                    }
-                }
-                guard !keys.isEmpty else { die("send-keys needs at least one key or --text") }
+                // Parse the chord in ARGV ORDER (see SendKeysArgv): `send-keys <ref> Enter --text y`
+                // sends Enter THEN the literal `y`. A known key name (Esc, Up, C-c, …) becomes a named
+                // key; anything else is literal text; `--text` forces a literal at its position; `--`
+                // makes the rest literal text.
+                let parsed = SendKeysArgv.parse(args)
+                let ref = parsed.ref ?? flags.require("ref")
+                guard !parsed.tokens.isEmpty else { die("send-keys needs at least one key or --text") }
+                let keys = try parsed.tokens.map { try JSONValue(encodable: $0) }
                 _ = try await client.call("send-keys", .object([
-                    "ref": .string(ref), "keys": .array(keys), "window": .string(window),
+                    "ref": .string(ref), "keys": .array(keys), "window": .string(parsed.window),
                 ]))
                 print("sent-keys")
 

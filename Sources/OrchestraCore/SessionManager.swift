@@ -191,12 +191,19 @@ public struct SessionManager: Sendable {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         let target = "\(name):\(window)"
         for token in tokens {
+            let r: ProcResult
             switch token {
             case .named(let key):
-                _ = try tmux(["send-keys", "-t", target, key.tmuxToken])
+                r = try tmux(["send-keys", "-t", target, key.tmuxToken])
             case .text(let text):
                 // `-l` = literal; `--` ends option parsing so text starting with `-` isn't swallowed.
-                _ = try tmux(["send-keys", "-t", target, "-l", "--", text])
+                r = try tmux(["send-keys", "-t", target, "-l", "--", text])
+            }
+            // A failed send-keys must NOT report success: the Needs-You gate's "Approve" would otherwise
+            // return ok while the agent stays blocked (the keystroke never reached the pane — e.g. the
+            // window vanished between the liveness check and the send). Surface it so the caller can retry.
+            guard r.ok else {
+                throw OrchestraError.io(r.stderr.isEmpty ? "tmux send-keys failed for \(target)" : r.stderr)
             }
         }
     }

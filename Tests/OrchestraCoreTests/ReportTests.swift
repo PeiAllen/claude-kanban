@@ -59,6 +59,35 @@ struct ReportTests {
         #expect(after.waitReason == nil)
     }
 
+    @Test("fileTail permission hook fences a late stale .running rollout line (#10 C1 race)")
+    func fileTailPermissionFence() async throws {
+        // A fileTail agent (Codex): telemetry == .fileTail, so the permission fence is active.
+        let env = TestEnv.make(capabilities: .codex)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+
+        // The PermissionRequest hook arrives as a seq==0 push → the card blocks on permission.
+        try await env.svc.report(t.id, StatusReport(status: .waiting, waitReason: .permission))
+        var after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .permission)
+
+        // The tool-call rollout line the agent wrote µs BEFORE it blocked (→ .running, seq = its
+        // timestamp) is delivered a poll-tick LATER by the tailer. Its seq is far below "now", so the
+        // fence (cursor advanced to now-µs by the hook) drops it — the permission wait survives. Pre-fix
+        // this seq (> 0) sailed past the gate and flipped the card back to .running: no Needs-You, no push.
+        try await env.svc.report(t.id, StatusReport(seq: 1_000, status: .running))
+        after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == .waiting, "a late pre-block .running line must not un-block the permission wait")
+        #expect(after.waitReason == .permission)
+
+        // A genuinely-later line (timestamp AFTER the fence, i.e. post-approval work) still applies.
+        let future = UInt64(Date().timeIntervalSince1970 * 1_000_000) + 5_000_000
+        try await env.svc.report(t.id, StatusReport(seq: future, status: .running))
+        after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == .running, "a genuinely-later line still advances the card past permission")
+    }
+
     @Test("Notification permission_prompt → waiting/.permission")
     func classifyPermission() {
         let r = parse("notification", #"{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)

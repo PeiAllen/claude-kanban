@@ -134,13 +134,18 @@ final class PushCoreTests: XCTestCase {
         let aps = payload["aps"]
         XCTAssertEqual(aps?["alert"]?["title"]?.stringValue, "Fix auth")
         XCTAssertEqual(aps?["alert"]?["body"]?.stringValue, "Agent needs your approval")
-        XCTAssertEqual(aps?["sound"]?.stringValue, "Hero.aiff")
+        // A named macOS sound (Hero) isn't bundled on iOS, so it maps to the system default (not
+        // "Hero.aiff", which the phone has no file for → APNs would drop the sound silently). See #2.
+        XCTAssertEqual(aps?["sound"]?.stringValue, "default")
     }
 
     func testPayloadSoundFieldVariants() {
         XCTAssertEqual(APNsPayload.soundField(.systemDefault), "default")
         XCTAssertNil(APNsPayload.soundField(.none))
-        XCTAssertEqual(APNsPayload.soundField(.submarine), "Submarine.aiff")
+        // Named macOS system sounds don't exist in the iOS bundle → map to "default" so a sound actually
+        // plays (a bare "Submarine.aiff" would be silently dropped by APNs). #2.
+        XCTAssertEqual(APNsPayload.soundField(.submarine), "default")
+        XCTAssertEqual(APNsPayload.soundField(.hero), "default")
         // .none → the sound field is omitted entirely.
         let intent = NotificationIntent(trigger: .died, cardId: UUID(), cardTitle: "x", cardRef: "x")
         XCTAssertNil(APNsPayload.build(intent: intent, sound: .none)["aps"]?["sound"])

@@ -84,16 +84,6 @@ public enum NeedsYouQueue {
                 : $0.task.updatedAt < $1.task.updatedAt
         }
     }
-
-    // MARK: - Permission gate key chords (the v1 send-keys mechanism)
-
-    /// **Approve** a permission prompt: `Enter` accepts the prompt's default option. On a fresh,
-    /// human-untouched Claude permission prompt that default is "Yes" (option 1 is pre-highlighted), so
-    /// one keystroke approves. See the "Gates" discussion in the phone-agent-terminal-ux design.
-    public static let approveChord: [KeyToken] = [.named(.enter)]
-
-    /// **Deny** a permission prompt: `Esc` cancels it (Claude's option 3, "No, and tell Claude…").
-    public static let denyChord: [KeyToken] = [.named(.esc)]
 }
 
 public extension BoardModel {
@@ -102,12 +92,36 @@ public extension BoardModel {
 
     /// **Approve** a card's pending permission prompt — the concrete v1 gate mechanism (design §6 +
     /// phone-terminal-ux "Gates"): a captured-prompt key-send delivered to the card's live `agent` pane
-    /// over the shipped `send-keys` RPC. Provider-neutral here; C1 refines Codex's structured
-    /// `PermissionRequest` path onto the same `waitReason == .permission` surface.
-    func approvePermission(_ id: UUID) async { await sendAgentKeys(id, NeedsYouQueue.approveChord) }
+    /// over the shipped `send-keys` RPC. The chord is the card's *agent capability* (not a neutral-layer
+    /// constant), so Codex's structured approval overrides Claude's keystrokes per-adapter.
+    ///
+    /// **State-guarded**: only fires while the card is still `.waiting/.permission`. Without the guard, a
+    /// prompt the human just answered (from another surface, or a race) means the approve `Enter` lands in
+    /// the now-live REPL and submits whatever sits in the composer. A just-answered card no longer waiting
+    /// makes this a safe no-op.
+    func approvePermission(_ id: UUID) async {
+        guard let chord = permissionGateChord(id, \.approveChord) else { return }
+        await sendAgentKeys(id, chord)
+    }
 
-    /// **Deny** a card's pending permission prompt (the `send-keys` deny chord). See `approvePermission`.
-    func denyPermission(_ id: UUID) async { await sendAgentKeys(id, NeedsYouQueue.denyChord) }
+    /// **Deny** a card's pending permission prompt (the agent's deny chord). Same state guard as
+    /// `approvePermission` — never sends into a card that has left `.waiting/.permission`.
+    func denyPermission(_ id: UUID) async {
+        guard let chord = permissionGateChord(id, \.denyChord) else { return }
+        await sendAgentKeys(id, chord)
+    }
+
+    /// The approve/deny chord for a card that is STILL blocked on a permission prompt, or `nil` if the
+    /// card is unknown, no longer `.waiting/.permission`, or its agent has no send-keys gate (empty chord
+    /// → structured-approval agent). Centralizes the state guard + per-capability chord lookup for both
+    /// gate verbs. Internal (not private) so the guard + per-adapter routing is unit-testable.
+    func permissionGateChord(_ id: UUID,
+                             _ key: KeyPath<AgentCapabilities, [KeyToken]>) -> [KeyToken]? {
+        guard let t = tasks.first(where: { $0.id == id }),
+              t.status == .waiting, t.waitReason == .permission else { return nil }
+        let chord = capabilities(for: t.agentId)[keyPath: key]
+        return chord.isEmpty ? nil : chord
+    }
 
     /// Deliver a constrained key chord to a card's `agent` pane. Thin wrapper over the shipped
     /// `send-keys` RPC (reaching the module-internal `client`), exposed so the iOS Needs You queue can

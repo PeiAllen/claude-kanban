@@ -56,6 +56,11 @@ struct SpawnSheet: View {
     /// lazily when the repo changes; empty until then / on failure (the picker falls back to card-derived
     /// branches + free-text creation).
     @State private var branchOptions: [String] = []
+    /// Monotonic generation for trust lookups. Bumped whenever a new trust check OR a grant starts, so a
+    /// slow in-flight `trustState` reply that lands after a faster grant can be recognized as stale and
+    /// dropped — a `path == cwd` guard alone can't order two concurrent trust operations on the SAME dir,
+    /// and the slow reply would otherwise overwrite the just-granted state (#7).
+    @State private var trustGen = 0
 
     // MARK: agents / models (sourced from the daemon; falls back to Claude Code when it hasn't answered)
 
@@ -190,7 +195,13 @@ struct SpawnSheet: View {
             }
             .onChange(of: agentSel) { modelSel = defaultModelForAgent() }
             .onChange(of: cwd) { keptReadOnly = false; refreshTrust() }
-            .onChange(of: mode) { refreshTrust() }
+            // Flipping mode re-evaluates BOTH trust (freeform) and the branch list (worktree). Without the
+            // branch load, entering via the Freeform page then switching to Worktree left `branchOptions`
+            // empty forever — `loadBranches()` had only ever run on `.task`/repo-change while in worktree.
+            .onChange(of: mode) {
+                refreshTrust()
+                _Concurrency.Task { await loadBranches() }
+            }
             // A new repo selection reloads its branch list from the daemon.
             .onChange(of: repo) { _Concurrency.Task { await loadBranches() } }
             // The board's cards can arrive after this sheet mounts; seed the repo default once they do.
@@ -390,28 +401,35 @@ struct SpawnSheet: View {
         branchOptions = list
     }
 
-    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. Stale-guarded.
+    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. Guarded against both
+    /// a dir change (`path == cwd`) and a superseding trust op (`gen == trustGen`) mid-flight.
     private func refreshTrust() {
         guard mode == .freeform, !cwd.isEmpty else { cwdTrusted = nil; return }
         let path = cwd
+        trustGen += 1
+        let gen = trustGen
         _Concurrency.Task {
             let trusted = await model.trustState(path: path)
-            guard path == cwd else { return }   // ignore a stale result after the dir changed
+            guard gen == trustGen, path == cwd else { return }   // stale (dir changed OR a grant superseded)
             cwdTrusted = trusted
             if !trusted { readOnly = true }
         }
     }
 
     /// Grant the human's trust for the current freeform cwd. On success the dir is trusted, so we clear
-    /// the read-only lock and default the card to read-write — the user asked to enable writes.
+    /// the read-only lock and default the card to read-write — the user asked to enable writes. Bumps
+    /// `trustGen` so any in-flight `refreshTrust()` reply is recognized as stale and can't overwrite the
+    /// grant (#7).
     private func grantTrust() {
         guard !cwd.isEmpty, !granting else { return }
         let path = cwd
         granting = true
+        trustGen += 1
+        let gen = trustGen
         _Concurrency.Task {
             let ok = await model.trust(path: path)
             granting = false
-            guard path == cwd else { return }   // ignore a stale result after the dir changed
+            guard gen == trustGen, path == cwd else { return }   // stale (dir changed OR superseded)
             if ok { cwdTrusted = true; readOnly = false; keptReadOnly = false }
         }
     }

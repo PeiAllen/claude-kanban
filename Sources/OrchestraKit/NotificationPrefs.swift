@@ -80,3 +80,14 @@ public struct NotificationPrefs {
         defaults.set(sound.rawValue, forKey: Self.soundKey(t))
     }
 }
+
+public extension Notification.Name {
+    /// Posted (client-side) right after a notification pref — scope or sound — is written, so the push
+    /// layer can **re-register the device** with the daemon (N1). The daemon holds the per-device
+    /// scope/sound snapshot taken *at registration time*; without a re-register a pref the user changes
+    /// while the app is foregrounded never reaches the daemon, so a backgrounded phone keeps getting
+    /// pushes for a trigger the user just turned Off (the foreground `willPresent` gate can't suppress a
+    /// delivery that arrives while the app isn't running). `BoardModel` observes this and re-registers
+    /// with the fresh snapshot; the macOS notifier ignores it (it reads prefs live).
+    static let orchNotificationPrefsChanged = Notification.Name("orchNotificationPrefsChanged")
+}
