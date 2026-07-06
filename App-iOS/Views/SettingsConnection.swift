@@ -77,15 +77,20 @@ struct ConnectionSettingsSections: View {
                 connectionRow(conn)
             }
             Button {
-                editing = Connection(name: "", kind: .remote, remoteTmuxSocket: "orchestra")
+                // Prefill the Mac daemon socket + name so adding your Mac is one field — the tailnet
+                // target. The board reaches it over SSH (P1); terminals/takeover use the same connection.
+                editing = Connection(name: "My Mac", kind: .remote,
+                                     remoteSocketPath: Connection.defaultMacSocketPath,
+                                     remoteTmuxSocket: "orchestra")
             } label: {
-                Label("Add remote…", systemImage: "plus.circle")
+                Label("Add your Mac…", systemImage: "plus.circle")
             }
         } header: {
             Text("Connection")
         } footer: {
-            Text("Which daemon the board talks to. Run scripts/deploy-linux-daemon.sh on a Linux box, "
-                 + "then add its SSH target + socket path here.")
+            Text("Which daemon the board talks to. Add your Mac over Tailscale (its user@…​.ts.net "
+                 + "target) — the socket path is prefilled. The board, terminals, and takeover all use "
+                 + "this one connection.")
         }
     }
 

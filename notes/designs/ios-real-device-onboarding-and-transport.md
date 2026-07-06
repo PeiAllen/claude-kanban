@@ -176,10 +176,12 @@ To install P1–P3 on a real iPhone, add a **free-personal-team device build var
 | Profile lifetime | **7 days** — re-deploy from Xcode weekly; no TestFlight | 1 year; TestFlight/App Store |
 | Distribution | Xcode → device (cable/Wi-Fi) | TestFlight / App Store |
 
-**Concrete change:** the single `App-iOS/OrchestraiOS.entitlements` hardcodes `aps-environment` today.
-Split it so the device build can select a **no-push entitlements file** (or an xcconfig/`project.yml`
-variant). Keep the Simulator lane (`CODE_SIGNING_ALLOWED=NO`) and the paid lane intact. Background mode
-`remote-notification` is a plist declaration (no paid entitlement) — harmless to keep or drop.
+**Concrete change (done):** `App-iOS/OrchestraiOS.entitlements` hardcodes `aps-environment`. A **no-push
+variant** now exists — `App-iOS/OrchestraiOS-nopush.entitlements` (keychain only). For a free-account
+device build, sign with your personal team + `CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements`
+(a device build lane wiring this is P4/owner-supplied — needs your team id). The Simulator lane
+(`CODE_SIGNING_ALLOWED=NO`, aps-environment ignored) and the paid lane stay intact. Background mode
+`remote-notification` is a plist declaration (no paid entitlement) — harmless to keep.
 
 ### Push provisioning — OPTIONAL (paid-only, deferred)
 
