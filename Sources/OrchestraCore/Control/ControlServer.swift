@@ -225,6 +225,12 @@ public final class ControlServer: @unchecked Sendable {
             }
             try await service.unregisterDevice(clientId: clientId)
             return .object(["ok": .bool(true)])
+        case "boardSnapshot":
+            // Bulk board (re)paint in one round trip: tasks + archived + config + models + agents PLUS
+            // every active card's shell sessions + agent-terminal owner. Collapses the client's
+            // per-(re)connect fan-out (~2N round trips for N cards). Internal + app-only — NOT a registry
+            // Command (agents poll `list`, not the whole board). Read-only; not logged (like `list`).
+            return try JSONValue(encodable: await service.boardSnapshot())
         case "agentTerminalOwner":
             // App/phone UI coordination — internal + app-only, NOT a registry Command (an agent must
             // never take over a terminal). Ephemeral lease; nothing is persisted to the task store.

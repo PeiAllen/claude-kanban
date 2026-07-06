@@ -133,4 +133,23 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertNil(model.selectedShell[t.id])
         XCTAssertFalse(model.shellOpen.contains(t.id))
     }
+
+    // MARK: activity feed dedup (#3)
+
+    func testActivityFeedDedupsByIdOnResubscribe() {
+        let (model, _, _, _) = makeModel()
+        // The daemon replays its whole activity ring to EVERY subscribe, so a reconnect re-delivers items
+        // the board already holds. Without client-side dedup these become duplicate Identifiable ids in
+        // ForEach. The same item delivered twice must land once.
+        let item = ActivityItem(taskId: nil, ref: nil, source: .daemon, kind: .command, text: "spawned card")
+        model.apply(.activity(item))
+        model.apply(.activity(item))                       // ring re-replay on reconnect
+        XCTAssertEqual(model.activity.count, 1)
+        XCTAssertEqual(model.activity.filter { $0.id == item.id }.count, 1)
+
+        // A genuinely different item (distinct id) is still appended.
+        let other = ActivityItem(taskId: nil, ref: nil, source: .daemon, kind: .moved, text: "moved card")
+        model.apply(.activity(other))
+        XCTAssertEqual(model.activity.count, 2)
+    }
 }

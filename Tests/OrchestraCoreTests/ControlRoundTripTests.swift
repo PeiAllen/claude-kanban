@@ -55,6 +55,29 @@ struct ControlRoundTripTests {
         #expect(events.contains { if case .activity(let a) = $0 { return a.kind == .spawned } else { return false } })
     }
 
+    @Test("boardSnapshot returns tasks + config + models + agents + per-card sessions/owners in one call (#7)")
+    func boardSnapshotRoundTrip() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let path = Self.sock()
+        let server = ControlServer(service: env.svc, socketPath: path)
+        try server.start(); defer { server.stop() }
+        let client = ControlClient(socketPath: path, source: .app)
+        try client.connect(); defer { client.close() }
+
+        let task = try await client.call("spawn", .object([
+            "prompt": .string("Snapshot me"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
+
+        let snap = try await client.boardSnapshot()
+        // The bulk snapshot carries the spawned card plus a session + owner entry for it — the N+1 the
+        // client used to fan out per card, now one round trip.
+        #expect(snap.tasks.contains { $0.id == task.id })
+        #expect(snap.sessions.contains { $0.id == task.id })
+        #expect(snap.owners.contains { $0.cardId == task.id })
+        // An available (never-taken-over) card reports a nil owner in its snapshot entry.
+        #expect(snap.owners.first { $0.cardId == task.id }?.owner == nil)
+    }
+
     @Test("a fresh subscribe backfills the recent activity ring buffer")
     func ringReplay() async throws {
         let env = TestEnv.make()

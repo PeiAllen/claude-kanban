@@ -619,6 +619,28 @@ public actor OrchestraService {
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)
     }
 
+    /// One-round-trip board snapshot: the full task/config/models/agents state PLUS every active card's
+    /// shell sessions + agent-terminal owner. Replaces the client's `list`+`archivedList`+`getConfig`+
+    /// `models`+`agents` calls AND the per-card `sessions`/`agentTerminalOwner` fan-out on every
+    /// (re)connect. The per-card work stays serial (each `sessions` shells to tmux) but rides one RPC, so
+    /// a 25-card board costs one round trip instead of ~50 — live events no longer wait seconds behind it.
+    public func boardSnapshot() async -> BoardSnapshot {
+        let active = await list(nil)
+        let archived = await archivedTasks()
+        let now = Date()
+        var sessionsList: [CardSessions] = []
+        var owners: [AgentTerminalOwnerState] = []
+        sessionsList.reserveCapacity(active.count)
+        owners.reserveCapacity(active.count)
+        for card in active {
+            if let s = try? await sessions(card.id) { sessionsList.append(s) }
+            owners.append(terminalOwnership.snapshot(cardId: card.id, ref: card.ref(), now: now))
+        }
+        return BoardSnapshot(tasks: active, archived: archived, config: config,
+                             models: models(agentId: nil), agents: agents(),
+                             sessions: sessionsList, owners: owners)
+    }
+
     public func sessions(_ id: UUID) async throws -> CardSessions {
         let t = try await require(id)
         let adapter = try registry.get(t.agentId)
