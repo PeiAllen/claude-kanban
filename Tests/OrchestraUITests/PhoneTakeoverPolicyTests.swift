@@ -45,4 +45,22 @@ final class PhoneTakeoverStatusTests: XCTestCase {
         let o = owner(.phone, client: me, epoch: 4)
         XCTAssertEqual(phoneTakeoverStatus(myClientId: me, myEpoch: 5, owner: o), .lost)
     }
+
+    /// The lease-blind-reconnect guard (#7): `IOSTerminalView.shouldReconnect` is wired to
+    /// `TakeoverController.isHolding`, which is exactly `phoneTakeoverStatus(...) == .holding`. So a
+    /// takeover attach must reconnect while we hold the lease and must STOP the moment a desktop retake
+    /// flips ownership away — otherwise the reconnect re-runs the exclusive `detach-client` recipe and
+    /// kicks the desktop that just took control. This drives that holding→lost transition.
+    func testReconnectGuardStopsAfterDesktopRetake() {
+        func shouldReconnect(_ o: AgentTerminalOwner?) -> Bool {
+            phoneTakeoverStatus(myClientId: me, myEpoch: 5, owner: o) == .holding
+        }
+        // Still ours → auto-reconnect is allowed (a real transport blip should re-attach).
+        XCTAssertTrue(shouldReconnect(owner(.phone, client: me, epoch: 5)))
+        // A late-arriving desktop retake bumped the epoch and flipped ownership → reconnect must NOT run.
+        XCTAssertFalse(shouldReconnect(owner(.desktop, client: "desktop-1", epoch: 6)))
+        // Same for another phone, or a release.
+        XCTAssertFalse(shouldReconnect(owner(.phone, client: "phone-other", epoch: 6)))
+        XCTAssertFalse(shouldReconnect(nil))
+    }
 }

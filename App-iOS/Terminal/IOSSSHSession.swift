@@ -107,7 +107,12 @@ final class IOSSSHSession: @unchecked Sendable {
                     onHostKeyChanged: { [weak self] h in self?.fireHostKey(h) }, gate: gate))
             return channel.pipeline.addHandler(
                 NIOSSHHandler(role: .client(config), allocator: channel.allocator,
-                              inboundChildChannelInitializer: nil))
+                              inboundChildChannelInitializer: nil)
+            ).flatMap {
+                // Tail handler: an unhandled SSH-handshake error (unauthorized key / non-sshd endpoint)
+                // must close the parent so `connect()` fails instead of hanging + leaking the TCP conn (#5).
+                channel.pipeline.addHandler(SSHErrorCloseHandler())
+            }
         }
 
         let f: EventLoopFuture<Void> = bootstrap

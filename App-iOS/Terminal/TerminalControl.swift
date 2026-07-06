@@ -38,6 +38,13 @@ final class TerminalControl: ObservableObject {
         c.onCtrlConsumed = { [weak self] in self?.ctrl = false }
     }
 
+    /// Revive a terminal that gave up reconnecting (or was dropped on a lease loss). Safe to call any time —
+    /// a no-op unless the channel is actually dead. Wired to the takeover surface's `scenePhase == .active`
+    /// so foregrounding the app retries a dead terminal (the "reopen or foreground to retry" affordance).
+    func retry() {
+        coordinator?.retryConnection()
+    }
+
     /// Send a special key (Esc/Tab/arrows/Page…). Consumes a primed one-shot Ctrl if set (so Ctrl then a
     /// tapped key composes), matching a hardware Ctrl chord.
     func send(_ key: TerminalKey) {

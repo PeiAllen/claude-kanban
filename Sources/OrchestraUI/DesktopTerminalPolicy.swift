@@ -19,10 +19,12 @@ public enum DesktopTerminalDecision: Equatable {
 /// Render decision: a phone owner means the desktop shows the placeholder and must NOT attach to the same
 /// tmux `agent` window (a tmux window has one size — two attached clients at different sizes resize-fight).
 ///
-/// `isStale` does **not** change mount-vs-placeholder: a stale phone owner is still the placeholder. The
+/// Staleness deliberately does **not** enter here: a stale phone owner is still the placeholder. The
 /// desktop recovers via an explicit Retake, never by silently stealing the lease (the fail-safe default).
-/// The staleness only shifts the placeholder's copy/affordance (Retake → Force Retake) in the view.
-public func desktopTerminalDecision(ownerKind: AgentTerminalOwnerKind?, isStale: Bool) -> DesktopTerminalDecision {
+/// Staleness only shifts the placeholder's copy/affordance (Retake → Force Retake) in the view, and it is
+/// now taken straight from the daemon's `stale` flag (kept fresh by the heartbeat emit, #4) rather than
+/// re-derived client-side against a `updatedAt` that live events never advanced.
+public func desktopTerminalDecision(ownerKind: AgentTerminalOwnerKind?) -> DesktopTerminalDecision {
     ownerKind == .phone ? .placeholder : .mount
 }
 
@@ -41,13 +43,7 @@ public func shouldAcquireDesktopOwnership(ownerKind: AgentTerminalOwnerKind?,
     }
 }
 
-/// How long after an owner's last heartbeat the desktop treats it as stale. D4's server reports its own
-/// `stale` in query/event snapshots; this constant lets the desktop derive staleness locally too, so the
-/// Force-Retake affordance appears without waiting for a fresh server snapshot.
-public let agentTerminalStaleTimeout: TimeInterval = 30
-
-/// Local staleness derivation for a phone owner: stale if the server already says so, OR the owner's last
-/// update is older than `agentTerminalStaleTimeout`. Pure (takes `now`) so it is deterministically testable.
-public func isAgentTerminalStale(updatedAt: Date, serverStale: Bool, now: Date) -> Bool {
-    serverStale || now.timeIntervalSince(updatedAt) > agentTerminalStaleTimeout
-}
+// Staleness is no longer derived on the client. The daemon owns the `stale` flag (it has the authoritative
+// `updatedAt`) and now re-broadcasts it on every heartbeat (#4), so a client that re-derived staleness from
+// a live-event `updatedAt` the heartbeat never advanced — firing a false "phone unreachable" ~30s into
+// every healthy takeover — is gone. Consumers read `AgentTerminalOwnerState.stale` directly.

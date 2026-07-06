@@ -39,18 +39,26 @@ struct IOSTerminalHost: TerminalHost {
     /// Takes a `TerminalControl` so the takeover chrome (accessory bar, arming, font, Select) can drive it.
     /// Call this only *after* acquiring the lease (`takeOverAgentTerminalAsPhone`) so the desktop has
     /// already unmounted per D5.
-    func takeoverAttach(target: TmuxTarget, control: TerminalControl) -> AnyView {
-        terminalView(target: target, takeover: true, control: control, selectMode: false)
+    ///
+    /// `shouldReconnect` gates automatic reconnects on the phone still holding the lease (#7): once a desktop
+    /// retake flips ownership away, re-running the exclusive `detach-client` recipe would kick the desktop
+    /// that just took control — so a lease-blind reconnect must not happen.
+    func takeoverAttach(target: TmuxTarget, control: TerminalControl,
+                        shouldReconnect: @escaping () -> Bool = { true }) -> AnyView {
+        terminalView(target: target, takeover: true, control: control, selectMode: false,
+                     shouldReconnect: shouldReconnect)
     }
 
-    private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool) -> AnyView {
+    private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool,
+                              shouldReconnect: @escaping () -> Bool = { true }) -> AnyView {
         // No Mac connection configured → render a live terminal that explains setup instead of hanging on
         // a black rectangle. Set it in Settings → Connection; `resolve` also honors ORCH_SSH_TARGET for the
         // dev/Simulator path.
         guard let endpoint = SSHEndpoint.resolve(connection: connections.active) else {
             let banner = Self.setupBanner()
             return AnyView(
-                IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control, selectMode: selectMode)
+                IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control,
+                                selectMode: selectMode, shouldReconnect: shouldReconnect)
                     .id("unconfigured:\(target.session):\(target.window)"))
         }
 
@@ -66,7 +74,7 @@ struct IOSTerminalHost: TerminalHost {
             IOSTerminalView(makeChannel: {
                 SSHPTYChannel(endpoint: endpoint, command: command, group: group,
                               sharedSession: sessionProvider)
-            }, control: control, selectMode: selectMode)
+            }, control: control, selectMode: selectMode, shouldReconnect: shouldReconnect)
             // Stable identity per attach target so SwiftUI keeps ONE Coordinator (and one SSH session)
             // across re-renders — the client half of reconnect idempotency. `takeover` is part of the id so
             // switching modes rebuilds the session with the right recipe.

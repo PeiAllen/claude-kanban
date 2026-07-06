@@ -19,6 +19,7 @@ struct AgentTakeoverView: View {
     var onClose: () -> Void
 
     @EnvironmentObject private var model: BoardModel
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var control = TerminalControl()
     @StateObject private var controller: TakeoverController
 
@@ -49,6 +50,9 @@ struct AgentTakeoverView: View {
         .task { await controller.begin() }
         // Catch a desktop Retake that arrives as a live owner event *between* heartbeats.
         .onReceive(model.$agentOwners) { _ in controller.reconcile() }
+        // Foregrounding revives a terminal that gave up reconnecting while backgrounded (LOW — the "reopen
+        // or foreground to retry" affordance). No-op unless the channel is actually dead.
+        .onChange(of: scenePhase) { _, phase in if phase == .active { control.retry() } }
         // Any dismissal releases the lease — the Return-to-Desktop button (idempotent with its own call),
         // a swipe-down, or a programmatic dismiss. Without this a non-button dismissal would strand a
         // heartbeat-less lease that goes stale in ~30s while the surface still shows control (#8).
@@ -123,7 +127,10 @@ struct AgentTakeoverView: View {
             Color.black
             switch controller.phase {
             case .holding(let target):
-                host.takeoverAttach(target: target, control: control)
+                // Lease-blind reconnect guard (#7): only auto-reconnect while THIS phone still holds the
+                // lease — a reconnect after a desktop retake would re-run `detach-client` and kick the desktop.
+                host.takeoverAttach(target: target, control: control,
+                                    shouldReconnect: { [weak controller] in controller?.isHolding ?? false })
                 if !control.armed { startTypingScrim }
             case .acquiring:
                 overlay(icon: "arrow.triangle.2.circlepath", title: "Taking over…",

@@ -21,17 +21,19 @@ import Crypto
 // actor **in order** via `DispatchQueue.main.async` (FIFO — `Task {}` would not preserve terminal byte
 // order).
 
-/// Carries the MainActor UI closures across the NIO boundary with ordered, main-thread delivery.
+/// Carries the MainActor UI closures across the NIO boundary with ordered, main-thread delivery. Events
+/// are generation-stamped: the child handler tags each event with the connection attempt that produced it
+/// so `SSHPTYChannel` can drop events from a superseded attempt (the reconnect anti-flap guard, #6).
 private final class TerminalCallbackBridge: @unchecked Sendable {
     // Written only on the main actor (in `SSHPTYChannel.start`); read only inside `assumeIsolated`.
     var onOutput: (([UInt8]) -> Void)?
-    var onEvent: ((TerminalChannelEvent) -> Void)?
+    var onEvent: ((TerminalChannelEvent, Int) -> Void)?
 
     func data(_ bytes: [UInt8]) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onOutput?(bytes) } }
     }
-    func event(_ e: TerminalChannelEvent) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onEvent?(e) } }
+    func event(_ e: TerminalChannelEvent, generation: Int) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.onEvent?(e, generation) } }
     }
 }
 
@@ -46,9 +48,14 @@ private final class PTYChannelHandler: ChannelInboundHandler {
     private let cols: Int
     private let rows: Int
     private let bridge: TerminalCallbackBridge
+    private let generation: Int
+    /// Set once `errorCaught` has reported `.failed` and closed us — so the `channelInactive` that follows
+    /// (the SAME failure) doesn't ALSO emit `.closed` and schedule a second reconnect timer (#6).
+    private var erroredOut = false
 
-    init(command: String, cols: Int, rows: Int, bridge: TerminalCallbackBridge) {
-        self.command = command; self.cols = cols; self.rows = rows; self.bridge = bridge
+    init(command: String, cols: Int, rows: Int, bridge: TerminalCallbackBridge, generation: Int) {
+        self.command = command; self.cols = cols; self.rows = rows
+        self.bridge = bridge; self.generation = generation
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -71,12 +78,13 @@ private final class PTYChannelHandler: ChannelInboundHandler {
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        bridge.event(.closed)
+        if !erroredOut { bridge.event(.closed, generation: generation) }
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        bridge.event(.failed(String(describing: error)))
+        erroredOut = true
+        bridge.event(.failed(String(describing: error)), generation: generation)
         context.close(promise: nil)
     }
 }
@@ -104,6 +112,10 @@ final class SSHPTYChannel: TerminalByteChannel {
     /// `close()`; a shared session is never closed here (the board + other terminals still use it).
     private var ownedSession: IOSSSHSession?
     private var size: (cols: Int, rows: Int) = (80, 24)
+    /// Monotonic connection-attempt counter. Every `start()` bumps it; events are stamped with the attempt
+    /// that produced them, so a late event from a superseded child (a stale `.closed` after a reconnect
+    /// already began) is dropped instead of flapping the reconnect loop forever (#6).
+    private var generation = 0
 
     /// - Parameters:
     ///   - endpoint: the Mac to SSH to.
@@ -133,10 +145,13 @@ final class SSHPTYChannel: TerminalByteChannel {
         // Idempotent: no-op while already connecting/open. A fresh start is allowed from idle/closed,
         // which is exactly the reconnect path (server-side the attach recipe is idempotent too).
         guard state == .idle || state == .closed else { return }
+        generation += 1
+        let gen = generation
         state = .connecting
         size = (cols, rows)
         bridge.onOutput = onOutput
-        bridge.onEvent = onEvent
+        // Filter bridge events through generation + intentional-close awareness before they reach the UI.
+        bridge.onEvent = { [weak self] e, g in self?.handleBridgeEvent(e, generation: g) }
         onEvent?(.connecting)
 
         // Reuse the board's shared session when it targets this Mac; otherwise make a private one. Either
@@ -167,7 +182,7 @@ final class SSHPTYChannel: TerminalByteChannel {
         let gate = HostKeyGate()
         if ownedSession != nil {
             session.onHostKeyChanged { [bridge, gate] host in
-                gate.markChanged(); bridge.event(.hostKeyChanged(host: host))
+                gate.markChanged(); bridge.event(.hostKeyChanged(host: host), generation: gen)
             }
         }
 
@@ -175,28 +190,43 @@ final class SSHPTYChannel: TerminalByteChannel {
         session.openChannel { child in
             child.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
                 child.pipeline.addHandler(
-                    PTYChannelHandler(command: command, cols: cols, rows: rows, bridge: bridge))
+                    PTYChannelHandler(command: command, cols: cols, rows: rows, bridge: bridge, generation: gen))
             }
         }.whenComplete { result in
             switch result {
             case .success(let child):
                 let childB = ChannelBox(child)
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self.attached(child: childB) }
+                    MainActor.assumeIsolated { self.attached(child: childB, generation: gen) }
                 }
             case .failure(let error):
-                if !gate.changed { bridge.event(.failed(String(describing: error))) }
+                if !gate.changed { bridge.event(.failed(String(describing: error)), generation: gen) }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        guard gen == self.generation else { return }   // a newer attempt already superseded us
                         if self.state == .connecting { self.state = .closed }
+                        // #5: a failed child-open on a session WE created would otherwise leak its parent TCP
+                        // connection (one per attempt). The shared board session is never ours to close.
+                        self.ownedSession?.close()
+                        self.ownedSession = nil
                     }
                 }
             }
         }
     }
 
-    private func attached(child: ChannelBox) {
-        guard state == .connecting else { child.close(); return }
+    /// Route a generation-stamped bridge event to the UI, dropping the ones a healthy channel must not see.
+    private func handleBridgeEvent(_ e: TerminalChannelEvent, generation gen: Int) {
+        guard gen == generation else { return }   // #6: stale attempt — drop (don't reconnect on its echo)
+        // A `.closed` while we're already `.closed` is the tail of OUR OWN close()/reconnect teardown, not
+        // a remote drop — surfacing it would drive yet another reconnect (the self-inflicted flap).
+        if case .closed = e, state == .closed { return }
+        onEvent?(e)
+    }
+
+    private func attached(child: ChannelBox, generation gen: Int) {
+        // A stale success (its reconnect already superseded) must not resurrect an old child (#6).
+        guard gen == generation, state == .connecting else { child.close(); return }
         childBox = child
         state = .open
         onEvent?(.connected)

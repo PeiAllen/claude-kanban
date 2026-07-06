@@ -7,17 +7,15 @@ import OrchestraKit
 /// does about it. They take primitives (not D4's RPC struct) so they stay AppKit-free and unit-testable.
 final class DesktopTerminalDecisionTests: XCTestCase {
     func testAvailableMounts() {
-        XCTAssertEqual(desktopTerminalDecision(ownerKind: nil, isStale: false), .mount)
+        XCTAssertEqual(desktopTerminalDecision(ownerKind: nil), .mount)
     }
     func testDesktopOwnerMounts() {
-        XCTAssertEqual(desktopTerminalDecision(ownerKind: .desktop, isStale: false), .mount)
+        XCTAssertEqual(desktopTerminalDecision(ownerKind: .desktop), .mount)
     }
-    func testFreshPhoneOwnerShowsPlaceholder() {
-        XCTAssertEqual(desktopTerminalDecision(ownerKind: .phone, isStale: false), .placeholder)
-    }
-    func testStalePhoneOwnerStillShowsPlaceholder() {
-        // A stale phone owner is NOT auto-stolen — the desktop recovers via an explicit Retake.
-        XCTAssertEqual(desktopTerminalDecision(ownerKind: .phone, isStale: true), .placeholder)
+    func testPhoneOwnerShowsPlaceholder() {
+        // A phone owner — fresh or stale — is the placeholder; the desktop recovers via an explicit
+        // Retake, never by silently stealing the lease. Staleness only shifts the placeholder's copy.
+        XCTAssertEqual(desktopTerminalDecision(ownerKind: .phone), .placeholder)
     }
 }
 
@@ -38,23 +36,5 @@ final class ShouldAcquireDesktopOwnershipTests: XCTestCase {
     func testPhoneOwnedNeverAutoAcquires() {
         // Never auto-steal from a phone; Retake is an explicit button.
         XCTAssertFalse(shouldAcquireDesktopOwnership(ownerKind: .phone, ownerClientId: "phone-1", desktopClientId: me))
-    }
-}
-
-final class AgentTerminalStaleTests: XCTestCase {
-    func testServerStaleWins() {
-        let now = Date(timeIntervalSince1970: 1000)
-        // Even a fresh heartbeat is stale if the server says so.
-        XCTAssertTrue(isAgentTerminalStale(updatedAt: now, serverStale: true, now: now))
-    }
-    func testWithinTimeoutIsFresh() {
-        let base = Date(timeIntervalSince1970: 1000)
-        XCTAssertFalse(isAgentTerminalStale(updatedAt: base, serverStale: false,
-                                            now: base.addingTimeInterval(agentTerminalStaleTimeout - 1)))
-    }
-    func testPastTimeoutIsStale() {
-        let base = Date(timeIntervalSince1970: 1000)
-        XCTAssertTrue(isAgentTerminalStale(updatedAt: base, serverStale: false,
-                                           now: base.addingTimeInterval(agentTerminalStaleTimeout + 1)))
     }
 }

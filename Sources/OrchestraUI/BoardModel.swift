@@ -948,20 +948,18 @@ public final class BoardModel: ObservableObject {
     /// The current owner of a card's agent terminal, or nil when available.
     public func agentOwner(for cardId: UUID) -> AgentTerminalOwner? { agentOwners[cardId]?.owner }
 
-    /// Whether the card's phone owner has gone stale — derived locally (`updatedAt + timeout`) OR taken
-    /// from the daemon's own `stale` flag. Drives the placeholder's Force-Retake copy; never affects
+    /// Whether the card's phone owner has gone stale — taken straight from the daemon's `stale` flag, which
+    /// the heartbeat emit (#4) keeps fresh. Drives the placeholder's Force-Retake copy; never affects
     /// mount-vs-placeholder (a stale phone owner is still the placeholder — see the policy).
     public func agentOwnerStale(for cardId: UUID) -> Bool {
-        guard let s = agentOwners[cardId], let owner = s.owner else { return false }
-        return isAgentTerminalStale(updatedAt: owner.updatedAt, serverStale: s.stale, now: Date())
+        guard let s = agentOwners[cardId], s.owner != nil else { return false }
+        return s.stale
     }
 
     /// Whether the inspector should mount the live terminal or the "Taken over by phone" placeholder.
     #if os(macOS)
     public func desktopTerminalDecision(for cardId: UUID) -> DesktopTerminalDecision {
-        let owner = agentOwners[cardId]?.owner
-        return OrchestraUI.desktopTerminalDecision(ownerKind: owner?.ownerKind,
-                                                   isStale: agentOwnerStale(for: cardId))
+        OrchestraUI.desktopTerminalDecision(ownerKind: agentOwners[cardId]?.owner?.ownerKind)
     }
     #endif
 

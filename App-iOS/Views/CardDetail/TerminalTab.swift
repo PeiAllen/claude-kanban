@@ -284,6 +284,7 @@ private struct LiveShellView: View {
     @State private var attaching = true
     @State private var selectMode = false
     @State private var selected: String?        // which ribbon tab is showing
+    @State private var sawMyWindow = false       // our window has appeared in the broadcast at least once
 
     // The card's full shell set (broadcast from the daemon → shared BoardModel). Both surfaces render
     // the same list; a phone live-attaches only its own `phone-<client>` window (attaching a desktop
@@ -310,6 +311,18 @@ private struct LiveShellView: View {
             terminalBody
         }
         .task { await attach() }
+        // Reconcile the live attach against the broadcast shell set (TerminalTab #407): once our window has
+        // appeared in the shared list, its later DISAPPEARANCE means another surface (the desktop) closed
+        // it — so drop the now-dead attach instead of freezing on a terminal whose tmux window is gone. The
+        // `sawMyWindow` gate avoids clearing during the optimistic-open window before the first echo lands.
+        .onChange(of: windows) { _, ws in
+            if ws.contains(myWindow) {
+                sawMyWindow = true
+            } else if sawMyWindow, target != nil, !attaching {
+                target = nil
+                sawMyWindow = false
+            }
+        }
     }
 
     private var ribbon: some View {
