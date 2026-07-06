@@ -75,20 +75,23 @@ flowchart TD
 **One `MacConnection` config → one SSH session → all features.** The tailnet guard + host-key pin move to
 **session establishment** (enforced once), instead of only at terminal-attach.
 
-### 3a. Reaching the daemon UDS over SSH — the one real decision
+### 3a. Reaching the daemon UDS over SSH — the one real decision **[RESOLVED → A]**
 
-swift-nio-ssh has `directTCPIP` but **not** `direct-streamlocal` (UDS forwarding) out of the box. Three ways
-to bridge the SSH connection to the daemon's UNIX socket:
+**Verified against the vendored checkout:** swift-nio-ssh's `SSHChannelType` is a *closed* enum —
+`.session`, `.directTCPIP`, `.forwardedTCPIP` only. There is **no `direct-streamlocal`** and no way to open
+an arbitrary channel type; Option B is therefore **a nio-ssh fork**, not a light upgrade. That reshapes the
+menu and settles the decision on the exec-bridge:
 
 | Option | How | Verdict |
 |---|---|---|
-| **A. exec-bridge** *(recommended v1)* | Open a **session channel** that execs `nc -U <daemonSock>` (macOS ships `/usr/bin/nc` with `-U`; `socat` fallback). Channel stdio = the NDJSON control stream. | **No daemon change**, reuses the exec-session path `SSHPTYChannel` already has. Ship this first. |
-| B. direct-streamlocal | Open a custom `direct-streamlocal@openssh.com` child channel to the daemon sock. | Cleanest/most native, but a custom channel type in swift-nio-ssh = more work. Good P2 upgrade. |
-| C. directTCPIP + daemon TCP | Daemon also binds `127.0.0.1:<port>`; phone forwards via first-class `directTCPIP`. | Needs a **daemon change** (new listener) — avoid; conflicts with "UDS-only daemon, no new surface". |
+| **A. exec-bridge** ✅ **CHOSEN** | A `.session` channel execs `/usr/bin/nc -U <daemonSock>` (always present on macOS; **`socat` fallback**). Channel stdio = the NDJSON control stream. | **No daemon change, no nio-ssh fork.** Reuses the exec-session path `SSHPTYChannel` already drives. Ship in P1. |
+| B. direct-streamlocal | Fork nio-ssh to add a custom `direct-streamlocal@openssh.com` child channel. | Most native, but a **forked transport dependency** to maintain. Not justified for v1; if `nc` ever proves flaky, prefer the daemon-side change (C) over a fork. |
+| C. directTCPIP + daemon TCP | Daemon also binds `127.0.0.1:<port>`; phone forwards via first-class `directTCPIP`. | Needs a **daemon change** (new listener) — conflicts with "UDS-only daemon, no new surface". |
 
-Recommendation: **A now, B as a later hardening.** `SSHControlTransport.readLine()` gets a small NDJSON
-line-buffer over inbound channel bytes (the `UDSTransport` uses `LineReader` over an fd; here we buffer
-`SSHChannelData`). No `ControlClient` change.
+**Decision: A (exec-bridge, `nc -U` primary + `socat` fallback).** `SSHControlTransport.readLine()` gets a
+small NDJSON line-buffer over inbound `SSHChannelData` (mirrors `UDSTransport`'s `LineReader`-over-fd; here we
+buffer channel bytes). `write()` sends one newline-terminated frame; `open()/close()` bracket the channel.
+No `ControlClient` change — only the iOS `BoardModel.activate` call site swaps to the `transport:` factory init.
 
 ## 4. Unified configuration (kills the second setting)
 
@@ -152,15 +155,57 @@ existing Connection editor into one coherent surface — exactly one place to co
 **Unchanged (do not touch)**: `orchestrad` (stays UDS-only), the takeover lease/heartbeat path, the
 `Transport`/`ControlClient` protocols, `TmuxAttach` recipe.
 
-## 7. Non-code / operational (required for "on my phone")
+## 7. Non-code / operational + push (required for "on my phone")
 
-- **Code signing**: an Apple Developer team + provisioning profile; register the device (or TestFlight). The
-  build scripts currently use `CODE_SIGNING_ALLOWED=NO`/ad-hoc for the Simulator — add a signed device build
-  lane (`scripts/build-ios-app.sh` device variant).
-- **Entitlements**: keychain-sharing (present), add `aps-environment` for real push, background modes
-  (remote-notification; consider background-fetch for reconnect).
-- **APNs (real push, feature-complete)**: a `.p8` APNs auth key configured in the daemon's push sender; the
-  device token already registers over the control channel. Can land as a fast-follow after board+terminal.
+> **Decision (2026-07-06): no paid Apple Developer membership.** The owner installs on a physical
+> device with a **free Apple ID (Personal Team)**. Consequence: **real APNs push is out of scope** —
+> free tier can't mint a `.p8` or enable the Push capability. Needs-you alerts are covered by the
+> **Claude and Codex mobile apps' own notifications**, so Orchestra's own push is deprioritized. The
+> P4 push plumbing below is retained as **optional / paid-only**, unblocked only if a membership is
+> bought later. Board + terminals + takeover (P1–P3) do **not** need it.
+
+### Device build lane — the free path (part of P1–P3, not P4)
+
+To install P1–P3 on a real iPhone, add a **free-personal-team device build variant**:
+
+| Item | Free variant (default) | Paid signed lane (optional) |
+|------|------------------------|------------------------------|
+| Signing | Personal Team, automatic | Apple Developer team + provisioning profile |
+| Entitlements | **strip `aps-environment`**; keep `keychain-access-groups` | add `aps-environment` back for push |
+| `aps-environment` present | ❌ removed — else **free signing fails** | ✅ `development`/`production` |
+| Profile lifetime | **7 days** — re-deploy from Xcode weekly; no TestFlight | 1 year; TestFlight/App Store |
+| Distribution | Xcode → device (cable/Wi-Fi) | TestFlight / App Store |
+
+**Concrete change:** the single `App-iOS/OrchestraiOS.entitlements` hardcodes `aps-environment` today.
+Split it so the device build can select a **no-push entitlements file** (or an xcconfig/`project.yml`
+variant). Keep the Simulator lane (`CODE_SIGNING_ALLOWED=NO`) and the paid lane intact. Background mode
+`remote-notification` is a plist declaration (no paid entitlement) — harmless to keep or drop.
+
+### Push provisioning — OPTIONAL (paid-only, deferred)
+
+> Only relevant **if a paid membership is later obtained.** Retained so the work is scoped, not lost.
+> The **send + receive halves are already proven**; what's missing is the transport (P1) and this
+> provisioning path. "Drop in a `.p8`" is *not* enough — there's a real code gap. Broken into three parts:
+
+| # | Gap | Fix / requirement |
+|---|-----|-------------------|
+| 1 | **Code gap** — no path gets `ORCH_APNS_*` into the launchd daemon | `orchestrad` reads creds via `APNsConfig.from(env:)` (`ORCH_APNS_KEY_PATH/_KEY_ID/_TEAM_ID/_TOPIC`), but the LaunchAgent plist (`Sources/OrchestraCore/Resources/com.orchestra.daemon.plist`) has **no `EnvironmentVariables`**, `DaemonLifecycle.install()` injects none, and a GUI LaunchAgent doesn't inherit shell env. **Fix (~30 lines):** `install()` + plist template inject an `EnvironmentVariables` block from the stored key path, plus **drop-point logging** (DisabledPushSender used / 0 devices / send OK\|err). Without this, a valid `.p8` on disk still yields silent no-delivery. |
+| 2 | **Env-match gotcha** | `aps-environment` must match `ORCH_APNS_ENV`: dev-signed → sandbox token → daemon `ORCH_APNS_ENV=sandbox` (default); TestFlight/App Store → `production`. Mismatch → APNs `BadDeviceToken` → daemon drops the token → silent no-delivery. |
+| 3 | **Hard prereqs (owner-supplied)** | Paid Apple Developer membership ($99/yr) — free tier can't create a `.p8` or enable Push. Push capability enabled on the `com.orchestra.ios` App ID. **Sending daemon must be macOS** (ES256/CryptoKit; a Linux daemon returns `.unsupportedPlatform`). |
+
+**Already proven — do NOT re-verify in P4:**
+- Daemon send-decision: 15/15 `PushNotifierTests` — running→waiting fans out exactly one push to the
+  registered token with correct trigger+sound; `.off` dropped; 410/400 dead-token → unregister; ES256
+  JWT sign+cache.
+- iOS receive + foreground gate + backgrounded delivery: proven via `xcrun simctl push` — `died(.always)`
+  fg → banner; `needsYou(.background)` fg → suppressed; `needsYou` backgrounded → banner. Bodies match
+  `APNsPayload.body(for:)` verbatim.
+- Registration/deep-link is correct; the token registers **over the control channel** — which is exactly
+  why **P1 (this transport) is the hard prerequisite**: no token crosses the network on a device today.
+
+> **Scoping note on the "no daemon change" non-goal:** it holds for the *transport* (P1–P2 add no
+> daemon listener/RPC). P4's push plumbing (part 1) is a deliberate, ~30-line **exception** — env
+> injection + logging in `DaemonLifecycle.install()`/the plist, not a new network surface.
 
 ## 8. Verification
 
@@ -178,17 +223,47 @@ existing Connection editor into one coherent surface — exactly one place to co
   wiring. Board goes live on a device. *(Biggest chunk; unblocks everything.)*
 - **P2 — Terminals on the shared session**: `SSHPTYChannel`/`IOSTerminalHost` reuse `IOSSSHSession`;
   `resolve()` derives from the connection; **delete `orch_ssh_target`**. Takeover works on a device.
-- **P3 — Onboarding + re-setup UX**: first-launch flow, "Mac connection" settings, prereq checks.
-- **P4 — Device build + real push**: signing lane, `aps-environment`, APNs `.p8`.
+- **P3 — Onboarding + re-setup UX + free device build**: first-launch flow, "Mac connection" settings,
+  prereq checks, **and the free-personal-team device build variant** (§7) so P1–P3 install on a real
+  iPhone without a paid membership. This is the last phase needed for the owner's target.
+- **P4 — Real push (OPTIONAL, paid-only)**: paid signing lane, re-add `aps-environment`, daemon
+  `ORCH_APNS_*` env-injection + drop-logging, APNs `.p8`. **Deferred** — not being pursued (no paid
+  membership; needs-you alerts come via the Claude/Codex apps). Kept scoped for later.
 
-## 10. Open decisions (for the card owner)
+## 10. Decisions — **RESOLVED** (card `a52b9e`, 2026-07-06)
 
-1. **Control bridge**: `nc -U` (zero-install, but relies on macOS `nc`) vs bundle a tiny `socat` recipe vs
-   go straight to `direct-streamlocal` (Option B). *Recommend `nc -U` for P1, B as hardening.*
-2. **Connection model**: extend the existing `Connection` (add "this is my Mac over SSH" as a first-class
-   local-over-tailnet kind) vs a new `MacConnection`. *Recommend extending `Connection` — reuse the desktop
-   model and its editor.*
-3. **Prereq detection depth**: how much can the app auto-detect (Tailscale up? Remote Login reachable?)
-   before falling back to "here's the command, then press Test".
-4. **Reconnect policy** across backgrounding / tailnet IP changes / sleep — reuse `ControlClient`'s loop but
-   decide session-level backoff + when to surface "Disconnected" vs silently retry.
+1. **Control bridge → A. exec-bridge, `nc -U` primary + `socat` fallback.** `direct-streamlocal` would be a
+   nio-ssh fork (§3a), so it's off the v1 path. No daemon change.
+2. **Connection model → extend the existing `Connection`, reuse the `.remote` kind.** iOS "my Mac" = a
+   `.remote` `Connection` with a tailnet `sshTarget` + defaulted `remoteSocketPath`; the platform `#if`
+   already carries "reach the daemon over SSH". No new type/editor. (`identityFile` stays unused on iOS —
+   the device key lives in `SSHKeyStore`/Keychain.)
+3. **Prereq detection → best-effort, never blocking.** Auto-detect where cheap (the `version` RPC on Test
+   proves SSH+Remote-Login+tailnet in one shot; optionally a pre-flight TCP reachability probe). Always show
+   the copy-paste `authorized_keys` line + a manual **Test** button; a failed auto-probe never blocks setup.
+4. **Reconnect policy → reuse `ControlClient`'s loop + session-level backoff, grace before "Disconnected".**
+   Silent retry with backoff at the session layer; reconnect eagerly on foreground; only surface
+   "Disconnected" after a short grace window (fail-safe default).
+
+### Branch base (resolved before P1)
+This branch was **reset onto the takeover-fix tip** (`fix/ios-phone-takeover-ssh-target` @ `b018d50`),
+inheriting the `Transport` seam, tailnet guard, host-key pinning, `SSHKeyStore`, and the `orch_ssh_target`
+setting P2 removes. main's 8 newer daemon commits reconcile at final merge-to-main (they're unrelated to iOS
+transport). This design doc is now tracked on the feature branch.
+
+### Verified corrections to earlier assumptions (from the seam-confirmation pass)
+- The **"real device needs the SSH-forwarded socket" comment lives in `BoardModel.activate` (iOS)**, *not* in
+  `ConnectionSocketResolver`. The resolver has no device branch and returns a dead sandbox path today — the
+  device fix belongs at the `activate` call site (build an `SSHControlTransport`), which may make
+  `ConnectionSocketResolver` untouched for the control path.
+- `TerminalTargetSettingsSection` is defined in **`App-iOS/Views/SettingsSecurity.swift`** (L9–42), not
+  `SettingsTab.swift` (which only references it). Deleting it also requires reworking `SecuritySettingsSection`'s
+  `host` derivation (currently `SSHEndpoint.resolve()?.host`) to re-source from the active `Connection`.
+- `SSHKeyStore` is an **`enum`** (`loadOrCreateIdentity()`, `authorizedKeyLine()`); `SSHHostKeyPinStore` is a
+  **`struct`**. Both key + host-key stores are Keychain-backed and already exist.
+- `ControlClient` **already** exposes the designated `init(transport: @Sendable () -> Transport, …)` with the
+  reconnect/resubscribe loop — the only control-path change is the iOS `BoardModel.activate` call site.
+- Every terminal currently opens its **own** `ClientBootstrap` SSH connection in `SSHPTYChannel.start` (per
+  channel), with the tailnet guard + host-key validation inline there. P2's fold = establish one parent SSH
+  connection once (guard + pin at session establishment), then per terminal only `createChannel(.session)` +
+  install `PTYChannelHandler`.
