@@ -35,11 +35,18 @@ struct SpawnSheet: View {
     /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none). Sourced from the
     /// same `branchSuggestions` as the branch picker. BT6 will extend it with remote/PR entries.
     @State private var base = ""
+    /// BT6: a REMOTE parent to branch from — `origin/<branch>` or `pr#<N>`. The daemon fetches + watches
+    /// it. Non-empty ⇒ it wins over the local base picker.
+    @State private var remoteBase = ""
 
     /// The base to actually send: `nil` unless chosen AND the branch is newly created — the daemon
-    /// ignores base for an existing branch, so we don't send it there.
+    /// ignores base for an existing branch, so we don't send it there. A typed remote parent
+    /// (pr#N / origin/branch) takes precedence over the local base picker.
     private var effectiveBase: String? {
-        (base.isEmpty || branchSuggestions.contains(branch)) ? nil : base
+        if branchSuggestions.contains(branch) { return nil }
+        let rb = remoteBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rb.isEmpty { return rb }
+        return base.isEmpty ? nil : base
     }
     @State private var agentSel = ""
     @State private var modelSel = ""
@@ -277,6 +284,14 @@ struct SpawnSheet: View {
             Picker("Base branch", selection: $base) {
                 Text("None (branch from HEAD)").tag("")
                 ForEach(branchSuggestions, id: \.self) { Text($0).tag($0) }
+            }
+            // BT6: remote parent — pr#<N> or origin/<branch>; fetched + watched by the daemon.
+            LabeledContent("Remote parent") {
+                TextField("pr#12 or origin/branch", text: $remoteBase)
+                    .font(.system(.footnote, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
             }
         }
 
