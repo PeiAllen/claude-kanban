@@ -19,8 +19,14 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     func path(repo: String, branch: String) -> String {
         "\(root)/\((repo as NSString).lastPathComponent)/\(branch)"
     }
-    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool) {
-        lock.lock(); ensured.append("\(repo)#\(branch)"); let existed = existingBranches.contains(branch); lock.unlock()
+    private(set) var ensuredBases: [String: String?] = [:]   // branch -> base ensure() saw
+    func ensure(repo: String, branch: String, base: String?) throws
+        -> (worktree: String, created: Bool, branchExisted: Bool) {
+        lock.lock()
+        ensured.append("\(repo)#\(branch)")
+        ensuredBases[branch] = base
+        let existed = existingBranches.contains(branch)
+        lock.unlock()
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return (wt, true, existed)

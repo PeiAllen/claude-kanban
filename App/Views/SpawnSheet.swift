@@ -17,6 +17,16 @@ struct SpawnSheet: View {
     @State private var prompt = ""
     @State private var repo = ""
     @State private var branch = ""
+    /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none = today's HEAD
+    /// behavior). Sourced from the same `branches` list as the branch combo. BT6 will extend the picker
+    /// with remote/PR entries.
+    @State private var base = ""
+
+    /// The base to actually send: `nil` unless a base is chosen AND the branch is newly created — the
+    /// daemon ignores base for an existing branch, so we neither send nor preview it there.
+    private var effectiveBase: String? {
+        (base.isEmpty || branches.contains(branch)) ? nil : base
+    }
     @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
@@ -124,7 +134,8 @@ struct SpawnSheet: View {
     private var cliPreview: String {
         switch mode {
         case .worktree:
-            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
+            let baseFlag = effectiveBase.map { " --base \($0)" } ?? ""
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch)\(baseFlag) --col \(startIn.column.rawValue)"
         case .freeform:
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
         case .scratch:
@@ -181,6 +192,11 @@ struct SpawnSheet: View {
                     HStack(spacing: 11) {
                         field("Repository") { repoPicker }
                         field("Branch") { branchPicker }
+                    }
+                    // Base only applies when the branch is newly created; hide it for a branch that
+                    // already exists (the daemon ignores base there anyway).
+                    if !branches.contains(branch) {
+                        field("Base branch (optional)") { basePicker }
                     }
                 case .freeform:
                     field("Directory") { directoryPicker }
@@ -283,7 +299,7 @@ struct SpawnSheet: View {
                         switch mode {
                         case .worktree:
                             await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
-                                              agent: a)
+                                              agent: a, base: effectiveBase)
                         case .freeform:
                             await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                               agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
@@ -330,6 +346,7 @@ struct SpawnSheet: View {
         .onChange(of: repo) {
             branches = gitBranches(in: repo)
             if branch.isEmpty || !branches.contains(branch) { branch = "" }
+            if !base.isEmpty && !branches.contains(base) { base = "" }
         }
         .onChange(of: cwd) { refreshTrust() }
         .onChange(of: mode) { refreshTrust() }
@@ -613,6 +630,40 @@ struct SpawnSheet: View {
         guard !v.isEmpty else { return }
         branch = v
         showBranchPopover = false
+    }
+
+    // MARK: Base combo (BT2)
+
+    /// A compact picker for the optional base branch: "None (branch from HEAD)" plus every existing
+    /// local branch. Reuses `branches` (the same source as the branch combo). BT6 extends this with
+    /// remote/PR entries — keep the "None" row first so the default stays today's behavior.
+    private var basePicker: some View {
+        Menu {
+            Button("None (branch from HEAD)") { base = "" }
+            if !branches.isEmpty { Divider() }
+            ForEach(branches, id: \.self) { b in
+                Button(b) { base = b }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11)).foregroundColor(theme.text2)
+                Text(base.isEmpty ? "None (branch from HEAD)" : base)
+                    .font(F.mono(12.5)).foregroundColor(base.isEmpty ? theme.text3 : theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(theme.text2)
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .background(theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
     }
 
     /// Case-insensitive subsequence ("fuzzy") match — every char of `query` appears in order in `text`.

@@ -49,6 +49,10 @@ public enum CommandCatalog {
                           "col": colProp(startInOnly: true),
                           "seed": strProp("Fork/fan-out context (the parent slice / handoff summary) the "
                               + "fresh card opens on — folded ahead of `prompt` into the launch turn."),
+                          "base": strProp("Parent branch to create this card's branch ON TOP OF (an "
+                              + "existing local branch). The new branch starts at the base's tip and its "
+                              + "parent link is recorded. Ignored when the branch already exists. Omit for "
+                              + "today's HEAD behavior."),
                       ], required: ["prompt"])),
 
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
@@ -191,7 +195,7 @@ public enum CommandCatalog {
         CommandSchema(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
                       params: schema(["tasks": .object([
                           "type": .string("array"),
-                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?}"),
+                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, base?}"),
                       ])], required: ["tasks"])),
 
         CommandSchema(name: "trust",
