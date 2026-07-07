@@ -48,13 +48,18 @@ struct TreeCommandTests {
         #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
     }
 
-    @Test("set-parent mode 'move' is rejected in BT1")
-    func moveRejected() async throws {
+    @Test("set-parent mode 'move' repoints the lineage and marks restack-needed (BT5)")
+    func moveRepoints() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let updated = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "move")
+        #expect(updated.parentBranch == "parent")
+        #expect(updated.treeStat?.state == .restackNeeded)
+        #expect(await BranchLineage().read(repo: repo, branch: "child")?.parent == "parent")
+        // invalid mode is still rejected
         await #expect(throws: OrchestraError.self) {
-            _ = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "move")
+            _ = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "teleport")
         }
     }
 

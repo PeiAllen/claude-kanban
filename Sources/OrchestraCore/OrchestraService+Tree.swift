@@ -12,13 +12,39 @@ extension OrchestraService {
         guard t.origin == .worktree else {
             throw OrchestraError.invalidParams("only worktree cards have a branch to re-parent")
         }
-        guard mode == "adopt" else {
-            throw OrchestraError.invalidParams("mode must be 'adopt' (move is not yet available)")
+        guard mode == "adopt" || mode == "move" else {
+            throw OrchestraError.invalidParams("mode must be 'adopt' or 'move'")
         }
         let trimmed = parent?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let p = trimmed, !p.isEmpty {
             guard p != t.branch else {
                 throw OrchestraError.invalidParams("a branch cannot be its own parent: \(p)")
+            }
+            if mode == "move" {
+                // MOVE: repoint the lineage but KEEP the recorded base — it is the rebase anchor the agent
+                // replays from (`rebase --onto <new-parent> <recorded-base>`). Fall back to the merge-base
+                // only when there is no prior link to preserve. The daemon never rewrites the branch; it
+                // marks restack-needed and nudges the owning card to do the rebase in its own worktree.
+                // Validate the target exists — adopt gets this implicitly via merge-base, but move keeps the
+                // prior base and would otherwise accept a typo'd parent (leaving a nudge to rebase onto a
+                // ref that isn't there). Local refs only in BT5; remote parents are BT6.
+                guard treeTip(repo: t.repo, p) != nil else {
+                    throw OrchestraError.invalidParams("parent branch not found: \(p)")
+                }
+                let existing = await lineage.read(repo: t.repo, branch: t.branch)
+                let anchor = try existing?.base ?? mergeBaseOID(repo: t.repo, t.branch, p)
+                try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
+                let updated = try await store.update(t.id) {
+                    $0.parentBranch = p
+                    $0.treeStat = TreeStat(state: .restackNeeded)
+                }
+                emit(.taskUpserted(updated))
+                try? await inbox.enqueue(t.id,
+                    "parent moved to \(p) — commit WIP, then `git rebase --onto \(p) \(anchor)`, "
+                    + "then `orchestra synced \(updated.shortId)`")
+                await wake(t.id)
+                emitActivity(.command, updated, source, "moved parent → \(p)")
+                return updated
             }
             let base = try mergeBaseOID(repo: t.repo, t.branch, p)
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
@@ -76,6 +102,86 @@ extension OrchestraService {
         await recomputeTreeStat(t.id)
         emitActivity(.command, t, source, "synced parent \(link.parent)")
         return (await store.get(t.id)) ?? t
+    }
+
+    /// `shipped` — post-merge bookkeeping, run once a child branch has been merged into its parent
+    /// (by the parent's agent for a live parent, or by the child borrowing a bare parent). The daemon
+    /// performs NO git surgery here — only lineage config writes + inbox nudges. Three steps, idempotent:
+    ///   (a) NOTIFY the parent's card (active card owning `repo` + the child's recorded parent branch) that
+    ///       the child landed; no such card ⇒ a warning-level activity item (bare parent, nothing to wake).
+    ///   (b) RETARGET the child's OWN children onto the grandparent (the child's parent): repoint each
+    ///       child's lineage parent, KEEP its recorded base (the rebase anchor), set `treeStat =
+    ///       restackNeeded`, and nudge it to `rebase --onto <grandparent> <recorded-base>` + wake.
+    ///   (c) CLEAR the shipped child's own lineage so a second `shipped` is a pure no-op: its parent lookup
+    ///       finds nothing (no duplicate notify) and `children(of: child)` is empty because they now point
+    ///       at the grandparent (no duplicate nudges).
+    @discardableResult
+    public func shipped(ref: String, source: ActivitySource = .daemon) async throws -> Task {
+        let child = try await resolveRef(ref)
+        guard child.origin == .worktree else {
+            throw OrchestraError.invalidParams("only worktree cards can be shipped")
+        }
+        let link = await lineage.read(repo: child.repo, branch: child.branch)
+        let grandparent = link?.parent
+
+        // (a) notify the parent's card, if one owns the parent branch.
+        if let parent = grandparent {
+            let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+            if let parentCard = active.first(where: { $0.repo == child.repo && $0.branch == parent }) {
+                try? await inbox.enqueue(parentCard.id,
+                    "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now")
+                await wake(parentCard.id)
+            } else {
+                emitActivity(.warning, child, source,
+                    "shipped \(child.branch): no active card owns parent \(parent) to notify")
+            }
+        } else {
+            emitActivity(.warning, child, source,
+                "shipped \(child.branch): no recorded parent link — nothing to notify or retarget")
+        }
+
+        // (b) retarget the child's own children onto the grandparent (keep each one's recorded base).
+        if let grandparent {
+            let grandchildren = await lineage.children(repo: child.repo, of: child.branch)
+            let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+            for gcBranch in grandchildren {
+                guard let gcLink = await lineage.read(repo: child.repo, branch: gcBranch) else { continue }
+                // Repoint parent; KEEP the recorded base — it is the rebase anchor the agent replays from.
+                // Gate the card update on the config write SUCCEEDING: if `set` rejects (cycle guard on a
+                // pathological tree), leave `Task.parentBranch`/`treeStat` alone so they never disagree with
+                // git-config, and surface a warning instead of silently desyncing.
+                do {
+                    try await lineage.set(repo: child.repo, branch: gcBranch,
+                                          link: ParentLink(parent: grandparent, base: gcLink.base))
+                } catch {
+                    emitActivity(.warning, child, source,
+                        "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent)")
+                    continue
+                }
+                // The grandchild's recorded base (old shipped-branch tip) is not an ancestor of the
+                // grandparent, so a later `recomputeTreeStat` independently agrees on `restackNeeded` — the
+                // report funnel will not silently downgrade this signal before the agent runs `synced`.
+                if let card = active.first(where: { $0.repo == child.repo && $0.branch == gcBranch }) {
+                    if let saved = try? await store.update(card.id, {
+                        $0.parentBranch = grandparent
+                        $0.treeStat = TreeStat(state: .restackNeeded)
+                    }) {
+                        emit(.taskUpserted(saved))
+                    }
+                    try? await inbox.enqueue(card.id,
+                        "parent \(child.branch) shipped — commit WIP, then `git rebase --onto "
+                        + "\(grandparent) \(gcLink.base)`, then `orchestra synced \(card.shortId)`")
+                    await wake(card.id)
+                }
+            }
+        }
+
+        // (c) clear the shipped child's own lineage → re-run is a no-op; treeStat clears on next recompute.
+        try? await lineage.clear(repo: child.repo, branch: child.branch)
+        let updated = (try? await store.update(child.id, { $0.parentBranch = nil; $0.treeStat = nil })) ?? child
+        emit(.taskUpserted(updated))
+        emitActivity(.command, updated, source, "shipped \(child.branch)")
+        return updated
     }
 
     /// `tree` — a lineage snapshot for a scope: one card (`ref`), a `repo`, or all active cards.

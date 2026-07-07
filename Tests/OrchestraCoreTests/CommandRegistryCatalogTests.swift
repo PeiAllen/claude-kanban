@@ -27,7 +27,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
             "list", "spawn", "move", "send", "inbox", "inbox-edit", "inbox-remove",
             "inbox-reorder", "wait", "handoff", "status", "archive", "reopen", "restart",
             "resume", "shell", "inspect", "closeShell", "exec", "sessions", "capture", "send-keys",
-            "trustState", "batch-spawn", "trust", "set-parent", "tree", "synced",
+            "trustState", "batch-spawn", "trust", "set-parent", "tree", "synced", "shipped",
         ])
     }
 }

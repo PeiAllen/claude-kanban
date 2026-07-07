@@ -110,12 +110,15 @@ public enum CommandCatalog {
                       ], required: ["ref", "context"])),
 
         CommandSchema(name: "set-parent",
-                      summary: "Set or clear a card branch's parent link. With `parent`: adopt it "
-                          + "(records parent + merge-base, history untouched). Omit `parent` to clear.",
+                      summary: "Set or clear a card branch's parent link. With `parent`: 'adopt' (default) "
+                          + "records parent + merge-base (history untouched); 'move' repoints and keeps the "
+                          + "recorded base as the rebase anchor, marking restack-needed. Omit `parent` to clear.",
                       params: schema([
                           "ref": refProp(),
-                          "parent": strProp("Parent branch ref to adopt (local name). Omit to clear the link."),
-                          "mode": strProp("'adopt' (default): metadata-only relink; base = merge-base."),
+                          "parent": strProp("Parent branch ref (local name). Omit to clear the link."),
+                          "mode": strProp("'adopt' (default): metadata-only relink, base = merge-base. "
+                              + "'move': repoint + keep recorded base; marks restack-needed and nudges the "
+                              + "owner to `git rebase --onto <new-parent> <recorded-base>`."),
                       ], required: ["ref"])),
 
         CommandSchema(name: "tree",
@@ -129,6 +132,12 @@ public enum CommandCatalog {
         CommandSchema(name: "synced",
                       summary: "Report that this card merged/restacked its parent down: record the "
                           + "parent's current tip as the sync base and clear the stale/behind signal.",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "shipped",
+                      summary: "Post-merge bookkeeping after a child branch was merged into its parent: "
+                          + "notify the parent's card and retarget the child's own children onto the "
+                          + "grandparent (keeping each one's recorded base) with a restack nudge. Idempotent.",
                       params: schema(["ref": refProp()], required: ["ref"])),
 
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",
