@@ -3,7 +3,7 @@ project: claude-kanban
 feature: parent-card-branch-linking
 layer: 3
 title: Test Design
-status: in-review
+status: approved
 created: 2026-07-07
 updated: 2026-07-07
 links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]

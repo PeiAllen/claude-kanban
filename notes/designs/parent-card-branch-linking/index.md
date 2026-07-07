@@ -39,8 +39,8 @@ related:
 |-------|----------|--------|
 | 1 — Initial design | [[01-design]] | **approved** (2026-07-06 gate) |
 | 2 — Contract | [[02-contract]] | **approved** (2026-07-07 gate) |
-| 3 — Implementation | [[03-implementation]] | in-review |
-| 3 — Tests | [[04-tests]] | in-review |
+| 3 — Implementation | [[03-implementation]] | **approved** (2026-07-07 gate) |
+| 3 — Tests | [[04-tests]] | **approved** (2026-07-07 gate) |
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
@@ -87,7 +87,7 @@ flowchart TD
 
 ## Open questions (rolled up)
 
-All L1 questions resolved at the 2026-07-06 gate (see [[01-design]] §Open questions): footer stat
-parent-relative only · stale badge + inbox nudge default (auto-sync per-card opt-in) · squash at
-ship-into-parent · remote v1 read-only tier · tree publishing hidden-by-default (root PR or full
-stacked PRs) · renamed to **branch tree**.
+**None — all four layers approved** (L1 2026-07-06; L2+L3 2026-07-07). Gate resolutions live in
+each doc's Open-questions section. Implementation proceeds as the BT1–BT7 main-based PR sequence
+([[03-implementation]] §Sequencing), staged first onto `plan/parent-card-branch-linking` via
+orchestrated child cards (owner directive, 2026-07-07).

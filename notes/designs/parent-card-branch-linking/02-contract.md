@@ -270,7 +270,7 @@ classDiagram
     class OrchestraServiceTree {
       +recomputeTreeStat(id)
       +shipped(ref)
-      +setParent(ref, parent?, watch?)
+      +setParent(ref, parent?, mode, watch?)
       +tree(scope) TreeSnapshot
       +synced(ref)
     }
