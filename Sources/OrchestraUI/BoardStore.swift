@@ -647,7 +647,8 @@ public class BoardStore: ObservableObject {
     @discardableResult
     public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
-               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async -> Task? {
+               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
+               base: String? = nil) async -> Task? {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
@@ -658,6 +659,8 @@ public class BoardStore: ObservableObject {
         if let cwd { p["cwd"] = .string(cwd); p["access"] = .string(access.rawValue) }
         // Scratch card: a fresh throwaway dir the daemon mkdir's (and rm -rf's on archive).
         if scratch { p["scratch"] = .bool(true) }
+        // Spawn-with-base (BT2): create the worktree branch on top of an existing local branch.
+        if let base, !base.isEmpty { p["base"] = .string(base) }
         do {
             let t = try await client.call("spawn", .object(p)).decode(Task.self)
             apply(.taskUpserted(t))   // show the card immediately; the event stream is idempotent
