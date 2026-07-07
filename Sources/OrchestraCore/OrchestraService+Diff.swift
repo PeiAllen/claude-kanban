@@ -50,8 +50,10 @@ extension OrchestraService {
         return newStat
     }
 
-    /// Recompute + return the stat (the `diffStat` endpoint / on-selection path). Unknown card → throws.
-    public func diffStat(_ id: UUID, base: DiffBase = .branch) async throws -> DiffStat? {
+    /// Recompute + return the stat (the `diffStat` endpoint / on-selection path). A nil `base` means
+    /// "use the card's default baseline" — parent-relative for a stacked card, branch-relative otherwise
+    /// — so the persisted footer stays consistent with the report-funnel path. Unknown card → throws.
+    public func diffStat(_ id: UUID, base: DiffBase? = nil) async throws -> DiffStat? {
         _ = try await require(id)
         return await recomputeDiffStat(id, base: base)
     }
