@@ -82,7 +82,8 @@ struct DiffTab: View {
                 HStack(spacing: 8) {
                     Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.caption2.weight(.semibold)).foregroundStyle(theme.text3).frame(width: 10)
-                    filePath(file.title).lineLimit(1).truncationMode(.middle)
+                    filePath(file.title, dir: .footnote, name: .footnote.weight(.semibold), theme: theme)
+                        .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
                     if file.additions > 0 { statPill("+\(file.additions)", theme.green) }
                     if file.deletions > 0 { statPill("−\(file.deletions)", theme.red) }
@@ -162,15 +163,6 @@ struct DiffTab: View {
     }
 
     /// Path styled as a dimmed directory + bold filename.
-    private func filePath(_ path: String) -> Text {
-        guard let slash = path.lastIndex(of: "/") else {
-            return Text(path).font(.footnote.weight(.semibold)).foregroundColor(theme.text)
-        }
-        let dir = String(path[...slash]); let name = String(path[path.index(after: slash)...])
-        return Text(dir).font(.footnote).foregroundColor(theme.text3)
-             + Text(name).font(.footnote.weight(.semibold)).foregroundColor(theme.text)
-    }
-
     private func load() async {
         loading = true
         let text = await model.diffText(task.id, base: base.rawValue)
@@ -178,7 +170,4 @@ struct DiffTab: View {
         loading = false
     }
 
-    @ViewBuilder private func centered<C: View>(@ViewBuilder _ c: () -> C) -> some View {
-        VStack { Spacer(); c(); Spacer() }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }

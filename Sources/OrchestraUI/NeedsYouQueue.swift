@@ -101,14 +101,14 @@ public extension BoardStore {
     /// makes this a safe no-op.
     func approvePermission(_ id: UUID) async {
         guard let chord = permissionGateChord(id, \.approveChord) else { return }
-        await sendAgentKeys(id, chord)
+        await sendKeysToAgent(id, chord)
     }
 
     /// **Deny** a card's pending permission prompt (the agent's deny chord). Same state guard as
     /// `approvePermission` — never sends into a card that has left `.waiting/.permission`.
     func denyPermission(_ id: UUID) async {
         guard let chord = permissionGateChord(id, \.denyChord) else { return }
-        await sendAgentKeys(id, chord)
+        await sendKeysToAgent(id, chord)
     }
 
     /// The approve/deny chord for a card that is STILL blocked on a permission prompt, or `nil` if the
@@ -123,10 +123,4 @@ public extension BoardStore {
         return chord.isEmpty ? nil : chord
     }
 
-    /// Deliver a constrained key chord to a card's `agent` pane. Thin wrapper over the shipped
-    /// `send-keys` RPC (reaching the module-internal `client`), exposed so the iOS Needs You queue can
-    /// drive gates without a live terminal attach. Distinct from `send` (which queues to the inbox).
-    func sendAgentKeys(_ id: UUID, _ chord: [KeyToken]) async {
-        _ = try? await client.sendKeys(ref: id.uuidString, chord)
-    }
 }

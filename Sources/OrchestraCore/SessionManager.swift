@@ -33,7 +33,11 @@ public struct SessionManager: Sendable {
     /// it. Each client instead attaches to its own grouped view session: same shared window list,
     /// but an independent active window. The double underscore can't collide with a session name
     /// (those are `orchestra-<uuid>`, no underscores) so prefix matching in `kill` is unambiguous.
-    public static func viewSession(_ base: String, _ window: String) -> String { "\(base)__\(window)" }
+    public static func viewSession(_ base: String, _ window: String) -> String {
+        // Delegate to the single source of truth in OrchestraKit (shared with the desktop/iOS terminal
+        // clients) rather than re-spelling `"\(base)__\(window)"`. TmuxAttachTests pins them equal.
+        TmuxAttach.viewSession(base: base, window: window)
+    }
 
     private func base() -> [String] {
         var b = ["tmux", "-L", socket]

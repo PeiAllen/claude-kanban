@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraKit
 
 // Design tokens for the Orchestra board. Moved verbatim from `App/Theme.swift` into the shared
 // OrchestraUI target (F2) so the future iOS client renders with the same palette; the only change is
@@ -129,6 +130,9 @@ extension Theme {
         default:        return "Idle"
         }
     }
+    /// Typed convenience over the string form — the one place status → display label lives, so the
+    /// board cell / detail header / takeover chrome no longer each carry their own copy of this switch.
+    public func statusLabel(_ status: AgentStatus) -> String { statusLabel(status.rawValue) }
 }
 
 // MARK: - Fonts

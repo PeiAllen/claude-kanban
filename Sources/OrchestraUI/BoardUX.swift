@@ -1,6 +1,12 @@
 import SwiftUI
 import OrchestraKit
 
+/// The inspector's Agent vs Diff pane, tracked per card by `BoardUX.inspectorModeByCard` and by the
+/// desktop `InspectorView`. A pure value type in the board's public API (`CopyTarget`/`GoTarget` are the
+/// OrchestraKit-side siblings); folded here from the former 6-line BoardModelTypes.swift. Left outside the
+/// `#if os(macOS)` fence to preserve its unconditional visibility.
+public enum InspectorMode { case agent, diff }
+
 // The DESKTOP-ONLY UX layer split out of the old 1,159-line BoardModel (Lens-1 HIGH). `BoardStore` is the
 // cross-platform daemon sync core; `BoardUX` adds the macOS keyboard navigation, command palette, link
 // hints, `/` search, and `UserDefaults` pane-resize — all dead weight on the phone, so the whole type is

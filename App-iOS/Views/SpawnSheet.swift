@@ -90,19 +90,23 @@ struct SpawnSheet: View {
 
     // MARK: suggestions — daemon-enumerated disk UNIONed with board-card-derived hints
 
-    /// Repos for the picker: the daemon's on-disk repos (any repo, carded or not) plus repos seen on
-    /// existing worktree cards. De-duplicated, sorted by repo name.
+    /// Repos for the picker: the daemon's on-disk repos (any repo under reposRoot, carded or not),
+    /// sorted by repo name. A worktree card's repo is under reposRoot too, so it's already in this list —
+    /// no separate card-derived repo hint is needed.
     private var repoSuggestions: [String] {
-        sortedByName(dedup(model.spawnRepoCandidates.map(\.path) + knownRepos))
+        sortedByName(dedup(model.spawnRepoCandidates))
     }
-    /// Branches for the picker: the daemon's live git branches for the chosen repo (recency order) then
-    /// any branches seen on that repo's cards. Order-preserving de-dup (recency first).
+    /// Branches for the picker: the daemon's live git branches for the chosen repo (recency order). A
+    /// card's branch is a real local branch in that repo, so it's already in this list — no card-derived
+    /// branch hint needed.
     private var branchSuggestions: [String] {
-        dedup(branchOptions + knownBranches(in: repo))
+        dedup(branchOptions)
     }
-    /// Freeform dir candidates: the daemon's repo paths plus dirs seen on existing borrowed cards.
+    /// Freeform dir candidates: the daemon's repo paths plus dirs seen on existing borrowed cards. The
+    /// borrowed dirs are the one hint the daemon *can't* supply (an arbitrary dir the user pointed at,
+    /// not under reposRoot), so `knownDirs` stays.
     private var dirSuggestions: [String] {
-        dedup(model.spawnDirCandidates + knownDirs).sorted()
+        dedup(model.spawnRepoCandidates + knownDirs).sorted()
     }
 
     /// Order-preserving de-dup, dropping empties (keeps the daemon's recency/sort where it matters).
@@ -119,21 +123,11 @@ struct SpawnSheet: View {
         }
     }
 
-    // MARK: card-derived hints (the phone's original suggestion source; still unioned in above)
+    // MARK: card-derived hint — only the one the daemon can't supply
 
-    /// Distinct repos seen on worktree cards, by repo name. Seeds the repo menu.
-    private var knownRepos: [String] {
-        let repos = model.tasks.filter { $0.origin == .worktree }.map(\.repo)
-        return Array(Set(repos)).sorted {
-            ($0 as NSString).lastPathComponent.localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-        }
-    }
-    /// Distinct existing branches seen on the chosen repo's worktree cards. Seeds the branch menu.
-    private func knownBranches(in repoPath: String) -> [String] {
-        let branches = model.tasks.filter { $0.origin == .worktree && $0.repo == repoPath }.map(\.branch)
-        return Array(Set(branches)).sorted()
-    }
-    /// Distinct directories seen on freeform cards. Seeds the directory menu.
+    /// Distinct directories seen on freeform (borrowed) cards. The daemon's spawn answers cover repos and
+    /// branches already; a borrowed dir the user pointed at (not under reposRoot) is the one thing they
+    /// don't, so this is the sole surviving card-derived hint. Seeds the directory menu.
     private var knownDirs: [String] {
         Array(Set(model.tasks.filter { $0.origin == .borrowed }.map(\.cwd))).sorted()
     }
@@ -366,7 +360,7 @@ struct SpawnSheet: View {
         if let m = env["ORCH_SPAWN_MODE"], let parsed = Mode(rawValue: m) { mode = parsed }
         if let c = env["ORCH_SPAWN_CWD"], !c.isEmpty { cwd = c }
         // Bug-3 verify hook: auto-submit the sheet once fields have seeded, so the phone-spawn → auto-takeover
-        // flow can be driven headlessly (scripts/t4-phone-spawn-takeover-shot.sh). Scratch mode needs no
+        // flow can be driven headlessly (scripts/t4-takeover-shot.sh --spawn). Scratch mode needs no
         // repo/branch, so `canSpawn` is already true. DEBUG-only; production never sets this.
         if env["ORCH_SPAWN_AUTOSUBMIT"] == "1" {
             _Concurrency.Task { @MainActor in

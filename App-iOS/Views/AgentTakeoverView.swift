@@ -20,6 +20,7 @@ struct AgentTakeoverView: View {
 
     @EnvironmentObject private var model: BoardModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.theme) private var theme: Theme
     @StateObject private var control = TerminalControl()
     @StateObject private var controller: TakeoverController
 
@@ -89,7 +90,7 @@ struct AgentTakeoverView: View {
                     Text(connectionLabel).foregroundStyle(.white.opacity(0.6))
                     if let s = card?.status {
                         Text("·").foregroundStyle(.white.opacity(0.3))
-                        Text(statusLabel(s)).foregroundStyle(.white.opacity(0.6))
+                        Text(theme.statusLabel(s)).foregroundStyle(.white.opacity(0.6))
                     }
                 }
                 .font(.caption2)
@@ -115,11 +116,6 @@ struct AgentTakeoverView: View {
         case .down: return "Offline"
         }
     }
-    private func statusLabel(_ s: AgentStatus) -> String {
-        switch s { case .running: return "Running"; case .waiting: return "Waiting"
-                   case .done: return "Done"; case .dead: return "Dead" }
-    }
-
     // MARK: terminal region + overlays
 
     private var terminalRegion: some View {

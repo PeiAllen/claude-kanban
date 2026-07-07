@@ -8,14 +8,12 @@ struct CommandsTests {
     @Test("registry exposes the full command set with param schemas")
     func fullSet() {
         let reg = CommandRegistry()
-        let expected = ["list", "spawn", "move", "send", "status", "archive", "reopen",
-                        "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions",
-                        "capture", "send-keys", "batch-spawn",
-                        "wait", "handoff", "trust", "trustState",
-                        "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
-        #expect(Set(reg.commands.map(\.name)) == Set(expected))
+        // The command *set* is pinned once in CommandRegistryCatalogTests (registry == catalog, and the
+        // catalog against a literal) — no second hand-maintained name list to drift here. This test's
+        // unique job: the registry is non-empty and every command it exposes carries an object param
+        // schema with properties.
+        #expect(!reg.commands.isEmpty)
         for c in reg.commands {
-            // every command has an object JSON schema for params
             #expect(c.schema.params["type"]?.stringValue == "object")
             #expect(c.schema.params["properties"] != nil)
         }

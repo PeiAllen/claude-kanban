@@ -10,17 +10,18 @@ struct TerminalKeyBytesTests {
 
     @Test("special keys encode as xterm sequences")
     func specialKeys() {
-        #expect(TerminalKey.esc.bytes == [0x1b])
-        #expect(TerminalKey.tab.bytes == [0x09])
-        #expect(TerminalKey.enter.bytes == [0x0d])
-        #expect(TerminalKey.up.bytes == [0x1b, 0x5b, 0x41])
-        #expect(TerminalKey.down.bytes == [0x1b, 0x5b, 0x42])
-        #expect(TerminalKey.right.bytes == [0x1b, 0x5b, 0x43])
-        #expect(TerminalKey.left.bytes == [0x1b, 0x5b, 0x44])
-        #expect(TerminalKey.pageUp.bytes == [0x1b, 0x5b, 0x35, 0x7e])
-        #expect(TerminalKey.pageDown.bytes == [0x1b, 0x5b, 0x36, 0x7e])
-        #expect(TerminalKey.home.bytes == [0x1b, 0x5b, 0x48])
-        #expect(TerminalKey.end.bytes == [0x1b, 0x5b, 0x46])
+        #expect(KeyName.esc.bytes == [0x1b])
+        #expect(KeyName.tab.bytes == [0x09])
+        #expect(KeyName.enter.bytes == [0x0d])
+        #expect(KeyName.ctrlC.bytes == [0x03])
+        #expect(KeyName.up.bytes == [0x1b, 0x5b, 0x41])
+        #expect(KeyName.down.bytes == [0x1b, 0x5b, 0x42])
+        #expect(KeyName.right.bytes == [0x1b, 0x5b, 0x43])
+        #expect(KeyName.left.bytes == [0x1b, 0x5b, 0x44])
+        #expect(KeyName.pageUp.bytes == [0x1b, 0x5b, 0x35, 0x7e])
+        #expect(KeyName.pageDown.bytes == [0x1b, 0x5b, 0x36, 0x7e])
+        #expect(KeyName.home.bytes == [0x1b, 0x5b, 0x48])
+        #expect(KeyName.end.bytes == [0x1b, 0x5b, 0x46])
     }
 
     @Test("sticky Ctrl folds a letter to its control code")
@@ -41,7 +42,7 @@ struct TerminalKeyBytesTests {
     func ctrlPassThrough() {
         // Digits and already-escape sequences aren't remapped (a real Ctrl doesn't either).
         #expect(applyControlModifier(to: Array("1".utf8)) == Array("1".utf8))
-        #expect(applyControlModifier(to: TerminalKey.up.bytes) == TerminalKey.up.bytes)
+        #expect(applyControlModifier(to: KeyName.up.bytes) == KeyName.up.bytes)
         #expect(applyControlModifier(to: []) == [])
     }
 

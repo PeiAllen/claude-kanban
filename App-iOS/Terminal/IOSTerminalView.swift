@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 import SwiftTerm
-import OrchestraKit   // TerminalKey + applyControlModifier (sticky-Ctrl transform)
+import OrchestraKit   // KeyName.bytes + applyControlModifier (sticky-Ctrl transform)
 
 /// A live SwiftTerm iOS terminal bound to a `TerminalByteChannel`. This is the one place the phone
 /// runs a real terminal emulator; T2 (phone-owned shell) and T4 (agent takeover) reuse it verbatim,

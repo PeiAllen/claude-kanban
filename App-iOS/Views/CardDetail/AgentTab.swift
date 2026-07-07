@@ -151,7 +151,7 @@ private struct CaptureRender: View {
                 Text("·").foregroundStyle(theme.text3)
             }
             Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 9))
-            Text(lastUpdated.map { "captured " + relativeDetailAge($0) } ?? "reading…")
+            Text(lastUpdated.map { "captured " + relativeAge($0) } ?? "reading…")
                 .font(.system(size: 10, design: .monospaced))
         }
         .foregroundStyle(theme.text3)

@@ -435,7 +435,4 @@ private struct LiveShellView: View {
         _Concurrency.Task { await model.closeShell(id, window) }
     }
 
-    @ViewBuilder private func centered<C: View>(@ViewBuilder _ c: () -> C) -> some View {
-        VStack { Spacer(); c(); Spacer() }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
