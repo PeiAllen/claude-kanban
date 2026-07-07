@@ -1,0 +1,32 @@
+# Working in a branch tree
+
+Your branch may have a **parent branch** (spawned on top of it, or linked via `set-parent`). Orchestra tracks that link and a recorded **base** — the parent tip at your last sync. Resolve your position with `orchestra tree` (or `orchestra tree <you>`) before acting: it reports your parent, its recorded base, whether a live card owns the parent, and your `treeStat`.
+
+## Sync — pull the parent's new work down
+
+When `orchestra tree` shows you `stale` / behind N:
+
+1. Commit WIP so your tree is clean.
+2. `git merge <parent>` (merge the parent INTO you).
+3. Resolve conflicts, commit the merge.
+4. `orchestra synced <you>`.
+
+## Restack — the parent moved out from under you
+
+When `treeStat` is `restackNeeded` (parent rebased, re-parented via `set-parent move`, or **shipped** so your link was retargeted onto its grandparent):
+
+1. **Commit your WIP first.** A restack rewrites history and refuses a dirty tree. **Never autostash.**
+2. `git rebase --onto <new-parent> <recorded-base>` — `<recorded-base>` is the OID Orchestra kept as your rebase anchor (in the nudge, and in `orchestra tree`). `--onto` with the recorded base transplants ONLY your own commits, so work already in the new parent (a squash-merged parent) is not re-applied — no phantom conflicts.
+3. On conflict resolve + `git rebase --continue`; if it goes wrong `git rebase --abort` and report.
+4. `orchestra synced <you>`.
+
+## Ship — merge your branch up the tree
+
+Resolve the parent via `orchestra tree` and take the matching path:
+
+- **Parent has a live card** → you cannot advance a branch checked out in another worktree. `orchestra send <parent-ref> "merge-request: squash-merge <you> into <parent>"` and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`.
+- **Bare local parent (no card)** → borrow it ephemerally: check the parent out in a throwaway worktree, `git merge --squash <you>`, commit, remove the worktree, then `orchestra shipped <you>`.
+- **Parent is `main`** → today's ship flow is unchanged; do not call `orchestra shipped`.
+- **Remote parent (`origin/…` / a PR)** → out of scope for now (BT6).
+
+After `orchestra shipped <you>` runs, the daemon notifies the parent card and retargets any children of yours onto the grandparent — you then archive as usual.
