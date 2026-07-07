@@ -53,6 +53,13 @@ public enum AgentsFileComposer {
         let start = startMarker(name), end = endMarker(name)
         let block = "\(start)\n\(content)\n\(end)"
         var text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        // Legacy reset: a file with NO Orchestra section markers at all was written by the pre-composition
+        // installer, which fully overwrote this Orchestra-owned AGENTS.md with a single bare doc. Appending
+        // a marked section below it would strand that markerless copy forever (a permanent duplicate on
+        // every launch). Since Orchestra owns the file (never the user's project AGENTS.md), start fresh —
+        // no worse than the full-overwrite it replaces. A file that already carries markers is composed in
+        // place below (idempotent, sibling sections preserved).
+        if !text.contains("<!-- orchestra:section:") { text = "" }
         if let existing = sectionRange(name, in: text) {
             text.replaceSubrange(existing, with: block)
         } else {

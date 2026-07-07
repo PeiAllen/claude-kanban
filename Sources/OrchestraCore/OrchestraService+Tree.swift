@@ -25,6 +25,12 @@ extension OrchestraService {
                 // replays from (`rebase --onto <new-parent> <recorded-base>`). Fall back to the merge-base
                 // only when there is no prior link to preserve. The daemon never rewrites the branch; it
                 // marks restack-needed and nudges the owning card to do the rebase in its own worktree.
+                // Validate the target exists — adopt gets this implicitly via merge-base, but move keeps the
+                // prior base and would otherwise accept a typo'd parent (leaving a nudge to rebase onto a
+                // ref that isn't there). Local refs only in BT5; remote parents are BT6.
+                guard treeTip(repo: t.repo, p) != nil else {
+                    throw OrchestraError.invalidParams("parent branch not found: \(p)")
+                }
                 let existing = await lineage.read(repo: t.repo, branch: t.branch)
                 let anchor = try existing?.base ?? mergeBaseOID(repo: t.repo, t.branch, p)
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
@@ -141,8 +147,20 @@ extension OrchestraService {
             for gcBranch in grandchildren {
                 guard let gcLink = await lineage.read(repo: child.repo, branch: gcBranch) else { continue }
                 // Repoint parent; KEEP the recorded base — it is the rebase anchor the agent replays from.
-                try? await lineage.set(repo: child.repo, branch: gcBranch,
-                                       link: ParentLink(parent: grandparent, base: gcLink.base))
+                // Gate the card update on the config write SUCCEEDING: if `set` rejects (cycle guard on a
+                // pathological tree), leave `Task.parentBranch`/`treeStat` alone so they never disagree with
+                // git-config, and surface a warning instead of silently desyncing.
+                do {
+                    try await lineage.set(repo: child.repo, branch: gcBranch,
+                                          link: ParentLink(parent: grandparent, base: gcLink.base))
+                } catch {
+                    emitActivity(.warning, child, source,
+                        "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent)")
+                    continue
+                }
+                // The grandchild's recorded base (old shipped-branch tip) is not an ancestor of the
+                // grandparent, so a later `recomputeTreeStat` independently agrees on `restackNeeded` — the
+                // report funnel will not silently downgrade this signal before the agent runs `synced`.
                 if let card = active.first(where: { $0.repo == child.repo && $0.branch == gcBranch }) {
                     if let saved = try? await store.update(card.id, {
                         $0.parentBranch = grandparent

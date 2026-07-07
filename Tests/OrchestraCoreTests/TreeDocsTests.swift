@@ -83,6 +83,28 @@ struct TreeDocsTests {
         try? FileManager.default.removeItem(atPath: base)
     }
 
+    @Test("composing over a legacy markerless AGENTS.md resets it (no duplicate delegation block)")
+    func legacyMarkerlessReset() throws {
+        let base = NSTemporaryDirectory() + "agents-legacy-\(UUID().uuidString)"
+        let path = "\(base)/AGENTS.md"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        // Simulate the pre-BT5 installer: a full overwrite with the bare delegation doc (NO markers).
+        let deleg = try #require(DelegationDocs.forAgent("codex"))
+        let tree = try #require(TreeDocs.forAgent("codex"))
+        try deleg.write(toFile: path, atomically: true, encoding: .utf8)
+
+        // Now compose (as CodexAdapter.prepareToLaunch does).
+        AgentsFileComposer.upsert(section: "delegation", content: deleg, at: path)
+        AgentsFileComposer.upsert(section: "tree", content: tree, at: path)
+
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        // The delegation body appears EXACTLY once (legacy bare copy discarded), inside its markers.
+        #expect(text.components(separatedBy: deleg).count == 2)
+        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
+        #expect(text.contains(tree))
+        try? FileManager.default.removeItem(atPath: base)
+    }
+
     @Test("upsert replaces a section's body in place without touching its neighbor")
     func upsertReplacesInPlace() throws {
         let base = NSTemporaryDirectory() + "agents-replace-\(UUID().uuidString)"

@@ -54,4 +54,12 @@ struct SetParentMoveTests {
             try await svc.setParent(ref: child.ref(), parent: "other", mode: "teleport")
         }
     }
+
+    @Test("move to a nonexistent parent is rejected (even with a prior link)")
+    func moveToGhostParentRejected() async throws {
+        let (svc, _, child, _) = try await Self.env()   // child already linked to `parent`
+        await #expect(throws: OrchestraError.self) {
+            try await svc.setParent(ref: child.ref(), parent: "ghost", mode: "move")
+        }
+    }
 }
