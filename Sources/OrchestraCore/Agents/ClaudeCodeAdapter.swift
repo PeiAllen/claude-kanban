@@ -151,6 +151,10 @@ public struct ClaudeCodeAdapter: Adapter {
         // no global ~/.claude install. Best-effort (never throws); content is keyed via forAgent(id), so
         // there's no `if claude` here.
         DelegationDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-delegation/SKILL.md")
+        // Branch-tree guidance (sync / restack / tree-aware ship) as a SECOND, independent project skill —
+        // its own dir, so it composes with (never clobbers) the delegation skill. Best-effort, keyed via
+        // forAgent(id) — no `if claude` here. Installed on every spawn + recovery (this runs from both).
+        TreeDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-tree/SKILL.md")
     }
 
     private func modelFlag(_ model: String?) -> [String] {

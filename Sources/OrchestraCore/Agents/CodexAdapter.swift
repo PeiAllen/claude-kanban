@@ -211,7 +211,17 @@ public struct CodexAdapter: Adapter {
         // precedence, merged ABOVE any project AGENTS.md. Orchestra owns CODEX_HOME, so this never
         // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
         // content keyed via forAgent(id), so there's no `if codex` here.
-        DelegationDocs.install(agentId: id, at: "\(codexHome)/AGENTS.md")
+        // Codex reads ONE AGENTS.md per scope, so delegation and tree guidance must COMPOSE into it, not
+        // overwrite each other. Upsert each as a named, marker-delimited section (rewrite-idempotent): a
+        // relaunch/recovery refreshes both in place without duplication. Best-effort; content keyed via
+        // forAgent(id), so no `if codex` here.
+        let agentsPath = "\(codexHome)/AGENTS.md"
+        if let deleg = DelegationDocs.forAgent(id) {
+            AgentsFileComposer.upsert(section: "delegation", content: deleg, at: agentsPath)
+        }
+        if let tree = TreeDocs.forAgent(id) {
+            AgentsFileComposer.upsert(section: "tree", content: tree, at: agentsPath)
+        }
         // Render + install the managed Codex hooks file (per-launch; the daemon renders nothing), pointing
         // at the live orchestra binary with `--agent codex` baked in. Two hooks: SessionStart→`session`
         // (column/mode/self-id orientation) and Stop→`stop` (drain the durable inbox at turn-end, parity
