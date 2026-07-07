@@ -35,11 +35,6 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Whether this tab is still a "coming soon" stub. All five tabs are now real (Agent → T3,
-    /// Terminal → T2, Diff/Inbox/Info → M2), so nothing is a stub — kept as an API hook for the tab-bar
-    /// dot in case a future tab ships deferred.
-    public var isStub: Bool { false }
-
     /// The detail's initial tab — **Agent** (design §3's primary surface). A dev/test override via the
     /// `ORCH_DEV_CARD_TAB` env (`agent|terminal|diff|inbox|info`) lets a headless Simulator screenshot a
     /// specific tab deterministically. Absent env ⇒ Agent (no behavior change).

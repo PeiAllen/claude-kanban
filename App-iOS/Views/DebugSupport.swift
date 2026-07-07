@@ -19,15 +19,5 @@ enum DebugSupport {
             print("ORCHESTRA_IOS_PUBKEY_ERROR \(error)")
         }
     }
-
-    /// Clear all TOFU host-key pins when `ORCH_RESET_HOSTKEY_PINS=1` — so a verify harness that points the
-    /// terminal at a THROWAWAY sshd (whose host key is freshly generated each run) starts from a clean
-    /// trust-on-first-use state instead of hitting a `hostKeyChanged` refusal against a pin left by a prior
-    /// run to the same host (e.g. 127.0.0.1). DEBUG-only; production never sets this env.
-    static func resetHostKeyPinsIfRequested() {
-        guard ProcessInfo.processInfo.environment["ORCH_RESET_HOSTKEY_PINS"] == "1" else { return }
-        do { try SSHHostKeyPinStore().resetAll(); print("ORCHESTRA_IOS_HOSTKEY_PINS_RESET") }
-        catch { print("ORCHESTRA_IOS_HOSTKEY_PINS_RESET_ERROR \(error)") }
-    }
 }
 #endif

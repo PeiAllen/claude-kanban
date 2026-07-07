@@ -50,11 +50,7 @@ xcrun simctl install "$UDID" "$APP"
 
 # 3. Launch pass 1 → generate Keychain key + export pubkey to the app container.
 echo "=== pass 1: generate + export device pubkey ==="
-# Also clear any stale TOFU host-key pin for 127.0.0.1 (pins are keyed by host, so a prior loopback-sshd
-# harness — e.g. the board-over-SSH e2e on a different port — would otherwise trip a hostKeyChanged
-# refusal here). No attach races this launch, so the reset lands before pass 2 connects.
-SIMCTL_CHILD_ORCH_RESET_HOSTKEY_PINS="1" \
-  xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+xcrun simctl launch "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
 sleep 6
 xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
 CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null)"
@@ -99,7 +95,6 @@ launch_attach() {
   xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
   SIMCTL_CHILD_ORCH_SSH_TARGET="$USER_NAME@127.0.0.1:$PORT" \
   SIMCTL_CHILD_ORCH_SSH_ALLOW_LOOPBACK="1" \
-  SIMCTL_CHILD_ORCH_RESET_HOSTKEY_PINS="1" \
   SIMCTL_CHILD_ORCH_T1_SOCKET="$SOCK_TMUX" \
   SIMCTL_CHILD_ORCH_T1_SESSION="$BASE" \
   SIMCTL_CHILD_ORCH_T1_WINDOW="$WIN" \

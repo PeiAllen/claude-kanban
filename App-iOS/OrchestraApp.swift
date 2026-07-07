@@ -45,7 +45,7 @@ struct OrchestraiOSApp: App {
                     _Concurrency.Task { await model.registerForPush(token: token) }
                 }
                 #if DEBUG
-                .task { DebugSupport.exportPubkey(); DebugSupport.resetHostKeyPinsIfRequested() }
+                .task { DebugSupport.exportPubkey() }
                 #endif
         }
     }

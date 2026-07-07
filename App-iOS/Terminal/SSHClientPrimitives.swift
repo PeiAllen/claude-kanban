@@ -3,9 +3,11 @@ import Foundation
 @preconcurrency import NIOSSH
 
 // Shared swift-nio-ssh client primitives, used by BOTH the per-terminal `SSHPTYChannel` and the shared
-// `IOSSSHSession` (the board's control transport). Extracted so auth, the host-key pinning policy, and
-// the write box exist once. `PinningHostKeyDelegate` reports a host-key change via a plain closure so it
-// is agnostic to who consumes the verdict (a terminal's bridge, or the session's fan-out).
+// `IOSSSHSession` (the board's control transport). Extracted so auth, the host-key policy, and the write
+// box exist once. Host-key acceptance is intentionally accept-any (`AcceptAnyHostKeyDelegate`): the
+// connection rides Tailscale's WireGuard layer, which already authenticates the peer, so the SSH host key
+// adds nothing. The tailnet-shape guard (`SSHEndpoint.isTailnetHost`) enforces the invariant that makes
+// that safe — the target must be a tailnet address — before any connect.
 
 /// Confines a NIO `Channel` so the main actor can write to it (on the channel's own event loop).
 final class ChannelBox: @unchecked Sendable {
@@ -72,43 +74,12 @@ final class SSHErrorCloseHandler: ChannelInboundHandler {
     }
 }
 
-/// Carries the host-key verdict from the NIO event loop back to the connect-completion handler, so a pin
-/// mismatch is reported as the distinct "host key changed" state exactly once (not also as `.failed`).
-final class HostKeyGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _changed = false
-    func markChanged() { lock.lock(); _changed = true; lock.unlock() }
-    var changed: Bool { lock.lock(); defer { lock.unlock() }; return _changed }
-}
-
-/// Host-key policy: **trust-on-first-use PINNING**. The first connect to a host pins the server key in
-/// the Keychain; later connects refuse on a mismatch (the channel carries agent output *and* keystrokes,
-/// so accept-any is MITM-able). A changed key invokes `onHostKeyChanged`; a Keychain failure fails closed.
-final class PinningHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
-    private let host: String
-    private let store: SSHHostKeyPinStore
-    private let onHostKeyChanged: @Sendable (String) -> Void
-    private let gate: HostKeyGate
-
-    init(host: String, store: SSHHostKeyPinStore,
-         onHostKeyChanged: @escaping @Sendable (String) -> Void, gate: HostKeyGate) {
-        self.host = host; self.store = store
-        self.onHostKeyChanged = onHostKeyChanged; self.gate = gate
-    }
-
+/// Host-key policy: **accept any host key**. The connection rides Tailscale's WireGuard layer, which
+/// already authenticates and encrypts the peer, so the SSH host key adds nothing — and the tailnet-shape
+/// guard (`SSHEndpoint.isTailnetHost`) refuses any non-tailnet target before we ever connect, which is
+/// what keeps blind acceptance safe. See `SSHEndpoint`'s guard for the full rationale.
+final class AcceptAnyHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        let fingerprint = SSHHostKeyPinStore.fingerprint(of: hostKey)
-        do {
-            switch try store.evaluate(host: host, fingerprint: fingerprint) {
-            case .pinnedFirstUse, .matched:
-                validationCompletePromise.succeed(())
-            case .changed:
-                gate.markChanged()
-                onHostKeyChanged(host)
-                validationCompletePromise.fail(HostKeyChangedError(host: host))
-            }
-        } catch {
-            validationCompletePromise.fail(error)   // can't verify → fail closed
-        }
+        validationCompletePromise.succeed(())
     }
 }

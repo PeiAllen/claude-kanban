@@ -77,13 +77,14 @@ final class DeviceTokenStoreTests: XCTestCase {
         XCTAssertTrue(after.isEmpty)
     }
 
-    // Fix #1(a) — a malformed token (non-hex / wrong length) is rejected at the store boundary, so it
-    // can never reach the sender's `URL(string:)`. Valid variants (64 hex, and the accepted 32–200 range)
-    // are admitted.
+    // Fix #1(a) — a malformed token (non-hex / not exactly 64 chars) is rejected at the store boundary,
+    // so it can never reach the sender's `URL(string:)`. Only the real APNs format (64 hex) is admitted —
+    // the owner's phone is the only registrant, and it always sends 64 hex chars.
     func testRejectsMalformedTokenAtRegistration() async throws {
         let store = DeviceTokenStore(path: tempPath())
         for bad in ["", "xyz", "aa", "g".repeated(64), "abcd ef01" + String(repeating: "0", count: 56),
-                    String(repeating: "a", count: 31), String(repeating: "a", count: 201)] {
+                    String(repeating: "a", count: 63), String(repeating: "a", count: 65),
+                    String(repeating: "a", count: 32), String(repeating: "f", count: 200)] {
             do {
                 try await store.register(reg(client: "c", token: bad))
                 XCTFail("expected badToken for \(bad.debugDescription)")
@@ -91,8 +92,8 @@ final class DeviceTokenStoreTests: XCTestCase {
         }
         let stored = await store.all()
         XCTAssertTrue(stored.isEmpty, "no malformed token was stored")
-        // Valid: 64 hex, and the lower/upper bounds of the accepted length window.
-        for good in [validToken(0xdeadbeef), String(repeating: "A", count: 32), String(repeating: "f", count: 200)] {
+        // Valid: exactly 64 hex chars (upper- and lower-case both accepted).
+        for good in [validToken(0xdeadbeef), String(repeating: "A", count: 64), String(repeating: "f", count: 64)] {
             XCTAssertTrue(DeviceTokenStore.isValidToken(good), "\(good.prefix(8))… should be valid")
         }
     }

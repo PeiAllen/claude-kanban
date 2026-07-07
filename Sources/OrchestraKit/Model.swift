@@ -59,8 +59,6 @@ public struct ModelFlags: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-/// Decodes from EITHER the structured object OR a bare `"<id>"` string, so existing `tasks.json`
-/// files (which stored `model` as a plain string) migrate transparently on first read.
 public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     public let id: String          // launch id, passed to the adapter
     public var displayName: String // human label
@@ -78,24 +76,6 @@ public struct AgentModel: Codable, Sendable, Equatable, Identifiable, Hashable {
     /// This is the UNKNOWN-MODEL FALLBACK: no contextWindow, no flags.
     public init(id: String) {
         self.init(id: id, displayName: AgentModel.humanize(id), family: AgentModel.detectFamily(id))
-    }
-
-    public init(from decoder: Decoder) throws {
-        // Legacy form: a bare string id. (Assign members directly — can't delegate to `init(id:)`
-        // here because the object branch below assigns the `let id` directly.)
-        if let single = try? decoder.singleValueContainer(), let s = try? single.decode(String.self) {
-            self.id = s
-            self.displayName = AgentModel.humanize(s)
-            self.family = AgentModel.detectFamily(s)
-            return
-        }
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let id = try c.decode(String.self, forKey: .id)
-        self.id = id
-        self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? AgentModel.humanize(id)
-        self.family = try c.decodeIfPresent(String.self, forKey: .family) ?? AgentModel.detectFamily(id)
-        self.contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow)
-        self.flags = try c.decodeIfPresent(ModelFlags.self, forKey: .flags)
     }
 
     /// Context-window usage percent (0…100) for a token count, using this model's OFFLINE
@@ -284,78 +264,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decode(UUID.self, forKey: .id)
-        self.title = try c.decode(String.self, forKey: .title)
-        self.titleProvisional = try c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
-        self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
-        self.repo = try c.decode(String.self, forKey: .repo)
-        self.branch = try c.decode(String.self, forKey: .branch)
-        // MIGRATION: prefer new `cwd`; fall back to the old `worktree` string.
-        let legacyWorktree = try c.decodeIfPresent(String.self, forKey: .worktree)
-        self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? legacyWorktree ?? ""
-        self.origin = try c.decodeIfPresent(CardOrigin.self, forKey: .origin) ?? .worktree
-        self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
-        self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
-        self.model = try c.decode(AgentModel.self, forKey: .model)
-        self.startIn = try c.decode(StartIn.self, forKey: .startIn)
-        self.column = try c.decode(Column.self, forKey: .column)
-        self.order = try c.decode(Int.self, forKey: .order)
-        self.status = try c.decodeIfPresent(AgentStatus.self, forKey: .status) ?? .running
-        self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
-        self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
-        self.waitReason = try c.decodeIfPresent(WaitReason.self, forKey: .waitReason)
-        self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
-        self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
-        self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
-        self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
-        self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
-        self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
-        self.archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
-        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
-        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
-    }
-
-    // `worktree` stays here as a decode-only key (migration); it is no longer a stored property and is
-    // never encoded — `encode(to:)` writes `cwd`/`origin` instead. (An extra CodingKey with no matching
-    // property defeats synthesized Encodable, so the encoder is spelled out explicitly.)
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id)
-        try c.encode(title, forKey: .title)
-        try c.encode(titleProvisional, forKey: .titleProvisional)
-        try c.encode(desc, forKey: .desc)
-        try c.encode(repo, forKey: .repo)
-        try c.encode(branch, forKey: .branch)
-        try c.encode(cwd, forKey: .cwd)
-        try c.encode(origin, forKey: .origin)
-        try c.encode(access, forKey: .access)
-        try c.encode(agentId, forKey: .agentId)
-        try c.encode(model, forKey: .model)
-        try c.encode(startIn, forKey: .startIn)
-        try c.encode(column, forKey: .column)
-        try c.encode(order, forKey: .order)
-        try c.encode(status, forKey: .status)
-        try c.encodeIfPresent(deadReason, forKey: .deadReason)
-        try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
-        try c.encodeIfPresent(waitReason, forKey: .waitReason)
-        try c.encode(ctxPct, forKey: .ctxPct)
-        try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
-        try c.encode(priorSessionIds, forKey: .priorSessionIds)
-        try c.encode(initialPrompt, forKey: .initialPrompt)
-        try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
-        try c.encodeIfPresent(diffStat, forKey: .diffStat)
-        try c.encode(archived, forKey: .archived)
-        try c.encode(createdAt, forKey: .createdAt)
-        try c.encode(updatedAt, forKey: .updatedAt)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, worktree, origin, access, agentId, model,
-             startIn, column, order, status, deadReason, deadDetail, waitReason, ctxPct, diffStat, agentSessionId,
-             priorSessionIds, initialPrompt, archived, createdAt, updatedAt
-    }
 
     // Card reference — the agent-facing handle ("Copy chat link" copies `ref`).
     public var shortId: String { String(id.uuidString.prefix(6)).lowercased() }

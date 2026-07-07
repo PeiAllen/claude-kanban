@@ -55,12 +55,12 @@ public actor DeviceTokenStore {
         return reg
     }
 
-    /// A syntactically valid APNs device token: hex digits only (`^[0-9a-fA-F]+$`) and a plausible length.
-    /// Real APNs tokens are 64 hex chars; we accept 32–200 to tolerate provider/format variants while
-    /// still rejecting anything that isn't a bare hex string (whitespace, control chars, punctuation).
+    /// A syntactically valid APNs device token: exactly 64 hex chars — the real APNs format, and the only
+    /// thing the owner's phone ever sends. Rejecting anything else keeps a token with whitespace/control
+    /// chars from reaching the sender's `URL(string:)` and trapping the daemon (#1).
     static func isValidToken(_ token: String) -> Bool {
         let bytes = token.utf8
-        guard bytes.count >= 32, bytes.count <= 200 else { return false }
+        guard bytes.count == 64 else { return false }
         return bytes.allSatisfy { b in
             (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
         }
@@ -81,15 +81,10 @@ public actor DeviceTokenStore {
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)
-        // Device tokens are a push-delivery capability — keep the file owner-only (0600). Set it on the
-        // temp file first (closes the umask window before the rename) and again on the final path, since
-        // `replaceItemAt` can carry over the destination inode's permissions.
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
         if FileManager.default.fileExists(atPath: path) {
             _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
         } else {
             try FileManager.default.moveItem(at: tmp, to: url)
         }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
 }

@@ -6,9 +6,6 @@ enum TerminalChannelEvent: Equatable {
     case connecting
     case connected
     case failed(String)
-    /// The server's host key no longer matches the pinned one — a possible MITM. Distinct from `.failed`
-    /// so the UI can show a security warning and NOT auto-reconnect (retrying a MITM is pointless).
-    case hostKeyChanged(host: String)
     case closed
 }
 

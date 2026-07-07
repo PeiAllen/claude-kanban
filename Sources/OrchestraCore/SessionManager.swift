@@ -194,6 +194,12 @@ public struct SessionManager: Sendable {
     /// as tmux key tokens (`Escape`, `Up`, `C-c`, …) and text as raw bytes; there is NO implicit Enter,
     /// so submitting requires an explicit `.named(.enter)` token.
     public func sendChord(_ name: String, tokens: [KeyToken], window: String = "agent") throws {
+        // Validate the window before it is interpolated into the tmux `-t "\(name):\(window)"` target —
+        // an unvalidated `window` (e.g. `agent.1`, `other:sess`) would retarget a different pane/window.
+        // The reserved `agent` window is a legitimate target here (unlike `ensureShellWindow`).
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         let target = "\(name):\(window)"
         for token in tokens {
@@ -220,6 +226,11 @@ public struct SessionManager: Sendable {
     /// `agent` window and any `shell-N` window. Throws if the target window/pane doesn't exist.
     public func capture(_ name: String, window: String = "agent",
                         maxChars: Int = 256 * 1024) throws -> CaptureResult {
+        // Validate the window before it is interpolated into the tmux `-t "\(name):\(window)"` target —
+        // an unvalidated `window` would let a caller read a different pane. `agent` is a valid target here.
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
         let target = "\(name):\(window)"
         let r = try tmux(["capture-pane", "-p", "-t", target])
         guard r.ok else {

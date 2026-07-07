@@ -37,13 +37,11 @@ struct ModelTableAgentModelTests {
                     .ctxPct(usedTokens: 1000) == nil)
     }
 
-    @Test("legacy bare-string + object model still decode (defaulted fields absent)")
-    func backwardCompatDecode() throws {
-        let bare = try OrchestraJSON.decoder.decode(AgentModel.self, from: Data("\"claude-opus-4-8\"".utf8))
-        #expect(bare.id == "claude-opus-4-8")
-        #expect(bare.contextWindow == nil)
+    @Test("object model decodes with optional fields absent")
+    func objectModelDecode() throws {
         let obj = try OrchestraJSON.decoder.decode(
             AgentModel.self, from: Data("{\"id\":\"m\",\"displayName\":\"M\",\"family\":\"claude\"}".utf8))
+        #expect(obj.id == "m")
         #expect(obj.contextWindow == nil)
     }
 }

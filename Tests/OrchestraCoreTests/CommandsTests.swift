@@ -13,11 +13,11 @@ struct CommandsTests {
                         "capture", "send-keys", "batch-spawn",
                         "wait", "handoff", "trust", "trustState",
                         "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
-        #expect(Set(reg.names) == Set(expected))
+        #expect(Set(reg.commands.map(\.name)) == Set(expected))
         for c in reg.commands {
             // every command has an object JSON schema for params
-            #expect(c.params["type"]?.stringValue == "object")
-            #expect(c.params["properties"] != nil)
+            #expect(c.schema.params["type"]?.stringValue == "object")
+            #expect(c.schema.params["properties"] != nil)
         }
     }
 

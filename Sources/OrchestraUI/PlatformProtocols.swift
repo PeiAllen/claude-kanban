@@ -19,9 +19,6 @@ import OrchestraKit
 @MainActor public protocol SystemOpener: Sendable {
     /// `BoardModel.goTo(.settings)` — surfaces the app's Settings window. [F2-required]
     func openSettings()
-    /// Reserved for later (revealing a path in Finder is a daemon RPC today). macOS = `NSWorkspace`;
-    /// iOS = no-op. Not called by the shared `BoardModel` in F2.
-    func open(path: String)
 }
 
 /// Window / input-focus chrome. macOS = key-window first responder; iOS = no-op.
@@ -62,7 +59,6 @@ public struct NoopClipboard: Clipboard {
 public struct NoopSystemOpener: SystemOpener {
     public nonisolated init() {}
     public func openSettings() {}
-    public func open(path: String) {}
 }
 
 public struct NoopWindowConfig: WindowConfig {

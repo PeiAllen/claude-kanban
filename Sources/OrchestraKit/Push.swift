@@ -127,10 +127,9 @@ public extension NotificationPrefs {
 public struct DeviceRegistration: Codable, Sendable, Equatable {
     public var token: String
     public var clientId: String
-    public var platform: String   // "ios"
     public var prefs: NotifyPrefsSnapshot
-    public init(token: String, clientId: String, platform: String = "ios", prefs: NotifyPrefsSnapshot) {
-        self.token = token; self.clientId = clientId; self.platform = platform; self.prefs = prefs
+    public init(token: String, clientId: String, prefs: NotifyPrefsSnapshot) {
+        self.token = token; self.clientId = clientId; self.prefs = prefs
     }
 }
 

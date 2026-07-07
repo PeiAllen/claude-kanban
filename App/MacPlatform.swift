@@ -25,9 +25,6 @@ struct AppKitSystemOpener: SystemOpener {
     func openSettings() {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
-    func open(path: String) {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-    }
 }
 
 struct AppKitWindowConfig: WindowConfig {
@@ -40,23 +37,6 @@ struct AppKitWindowConfig: WindowConfig {
     }
 }
 
-/// Mounts the live desktop agent terminal for a tmux target. Defined and injected so F3's iOS
-/// placeholder and T1's SSH-PTY have a real seam; the existing desktop terminal call sites
-/// (`InspectorView`, `ShellTabsView`) are left untouched in F2 and are rewired through this by T1.
-struct MacTerminalHost: TerminalHost {
-    nonisolated init() {}
-    func attach(target: TmuxTarget) -> AnyView {
-        let theme = Theme(scheme: .light, accent: .blue)
-        return AnyView(AgentTerminalView(
-            socket: target.socket,
-            session: target.session,
-            window: target.window,
-            host: .local,
-            background: theme.termBg,
-            foreground: theme.term))
-    }
-}
-
 /// The desktop's platform bundle — the three UI ops `BoardModel` calls directly.
 enum MacPlatform {
     static let ui = PlatformUI(clipboard: AppKitClipboard(),
@@ -65,12 +45,13 @@ enum MacPlatform {
 }
 
 extension View {
-    /// Inject the four desktop platform implementations into the SwiftUI Environment so any view
-    /// (now, and F3's terminal placeholder later) can read them. Applied at both Scene roots.
+    /// Inject the desktop platform implementations into the SwiftUI Environment so any view can read
+    /// them. Applied at both Scene roots. (The macOS agent terminal mounts via `AgentTerminalView`
+    /// directly, not the `\.terminalHost` seam — that Environment key is the phone's, defaulting to a
+    /// no-op host here.)
     func platformUI() -> some View {
         environment(\.clipboard, MacPlatform.ui.clipboard)
             .environment(\.systemOpener, MacPlatform.ui.opener)
             .environment(\.windowConfig, MacPlatform.ui.window)
-            .environment(\.terminalHost, MacTerminalHost())
     }
 }

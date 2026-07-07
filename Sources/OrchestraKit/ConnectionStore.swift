@@ -14,11 +14,11 @@ public final class ConnectionStore {
         self.defaults = defaults; self.key = key; self.activeKey = activeKey
     }
 
-    /// Persisted remotes (the built-in local is never stored).
+    /// Persisted remotes (the built-in local is never stored — `upsert` refuses it).
     public var remotes: [Connection] {
         guard let data = defaults.data(forKey: key),
               let list = try? OrchestraJSON.decoder.decode([Connection].self, from: data) else { return [] }
-        return list.filter { !$0.isLocal }
+        return list
     }
     /// The full selectable list: built-in local first, then the persisted remotes.
     public var all: [Connection] { [.local] + remotes }
