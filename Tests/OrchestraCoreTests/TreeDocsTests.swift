@@ -46,6 +46,16 @@ struct TreeDocsTests {
         }
     }
 
+    @Test("both variants document the remote publish + restack path (BT6)")
+    func remoteGuidancePresent() throws {
+        for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
+            #expect(doc.contains("gh pr create --base"))
+            #expect(doc.contains("force-with-lease"))
+            #expect(doc.contains("push -u origin"))
+            #expect(doc.contains("pr#"))          // canonical remote form documented
+        }
+    }
+
     // MARK: Claude install — its own skill dir
 
     @Test("Claude install writes the skill under .claude/skills/orchestra-tree/, creating parents")

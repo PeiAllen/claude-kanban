@@ -18,14 +18,20 @@ struct SpawnSheet: View {
     @State private var repo = ""
     @State private var branch = ""
     /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none = today's HEAD
-    /// behavior). Sourced from the same `branches` list as the branch combo. BT6 will extend the picker
-    /// with remote/PR entries.
+    /// behavior). Sourced from the same `branches` list as the branch combo.
     @State private var base = ""
+    /// BT6: a REMOTE parent to branch from — `origin/<branch>` (same-repo remote branch) or `pr#<N>`
+    /// (pull request). The daemon fetches + watches it. Non-empty ⇒ it wins over the local base picker.
+    @State private var remoteBase = ""
 
     /// The base to actually send: `nil` unless a base is chosen AND the branch is newly created — the
-    /// daemon ignores base for an existing branch, so we neither send nor preview it there.
+    /// daemon ignores base for an existing branch, so we neither send nor preview it there. A typed remote
+    /// parent (pr#N / origin/branch) takes precedence over the local base picker.
     private var effectiveBase: String? {
-        (base.isEmpty || branches.contains(branch)) ? nil : base
+        if branches.contains(branch) { return nil }
+        let rb = remoteBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rb.isEmpty { return rb }
+        return base.isEmpty ? nil : base
     }
     @State private var agentSel = ""
     @State private var modelSel = ""
@@ -197,6 +203,7 @@ struct SpawnSheet: View {
                     // already exists (the daemon ignores base there anyway).
                     if !branches.contains(branch) {
                         field("Base branch (optional)") { basePicker }
+                        field("Remote parent (optional — pr#12 or origin/branch)") { remoteBaseField }
                     }
                 case .freeform:
                     field("Directory") { directoryPicker }
@@ -664,6 +671,23 @@ struct SpawnSheet: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+    }
+
+    /// BT6: free-text remote parent entry. `pr#<N>` (pull request) or `origin/<branch>` (remote branch);
+    /// the daemon fetches it into a private ref and watches it for merges. Empty = no remote parent.
+    private var remoteBaseField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "cloud")
+                .font(.system(size: 11)).foregroundColor(theme.text2)
+            TextField("pr#12  or  origin/feature-x", text: $remoteBase)
+                .textFieldStyle(.plain)
+                .font(F.mono(12.5)).foregroundColor(theme.text)
+        }
+        .padding(.horizontal, 11).frame(height: 34)
+        .frame(maxWidth: .infinity)
+        .background(theme.field)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Case-insensitive subsequence ("fuzzy") match — every char of `query` appears in order in `text`.

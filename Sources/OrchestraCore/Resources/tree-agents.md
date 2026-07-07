@@ -27,6 +27,10 @@ Resolve the parent via `orchestra tree` and take the matching path:
 - **Parent has a live card** → you cannot advance a branch checked out in another worktree. `orchestra send <parent-ref> "merge-request: squash-merge <you> into <parent>"` and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`.
 - **Bare local parent (no card)** → borrow it ephemerally: check the parent out in a throwaway worktree, `git merge --squash <you>`, commit, remove the worktree, then `orchestra shipped <you>`.
 - **Parent is `main`** → today's ship flow is unchanged; do not call `orchestra shipped`.
-- **Remote parent (`origin/…` / a PR)** → out of scope for now (BT6).
+- **Remote parent (`origin/<branch>` or `pr#<N>`)** → do NOT merge locally. Publish a stacked PR: `git push -u origin <your-branch>`, then `gh pr create --base <parentHeadRef>` (target the parent's head branch, not `main`). Do NOT call `orchestra shipped` — Orchestra watches the parent PR and redirects you when it merges.
 
 After `orchestra shipped <you>` runs, the daemon notifies the parent card and retargets any children of yours onto the grandparent — you then archive as usual.
+
+## Restack after a REMOTE parent merges
+
+When your remote parent merges, Orchestra redirects your link onto the parent's base and nudges you. Then: commit WIP (never autostash); `git rebase --onto <new-base> <recorded-base>` (only your commits move — squash-proof); `git push --force-with-lease` (never a bare `--force`); `orchestra synced <you>`. Orchestra best-effort repairs your PR base; if it didn't, `gh pr edit <your-pr> --base <new-base>`.

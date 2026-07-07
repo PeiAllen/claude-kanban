@@ -41,13 +41,22 @@ public struct WorktreeManager: Sendable {
             var a = ["git", "-C", realRepo, "worktree", "add", "-b", branch, wt]
             if let base = base?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
                 // Validate the start-point BEFORE `worktree add`, so an unknown base leaves no dir.
-                guard branchExists(repo: realRepo, branch: base) else {
-                    throw OrchestraError.invalidParams("base branch not found: \(base)")
+                if base.hasPrefix("refs/") {
+                    // A fully-qualified ref (a fetched remote private ref, refs/orch/parents/…, BT6).
+                    // Use it verbatim as the start-point — no refs/heads/ pinning.
+                    guard refExists(repo: realRepo, ref: base) else {
+                        throw OrchestraError.invalidParams("base ref not found: \(base)")
+                    }
+                    a.append(base)
+                } else {
+                    // Local branch base (BT2). Pin to the LOCAL branch ref: a bare `base` would
+                    // disambiguate to a same-named tag (git's rev precedence), starting the child off the
+                    // wrong commit — or failing outright on an ambiguous ref.
+                    guard branchExists(repo: realRepo, branch: base) else {
+                        throw OrchestraError.invalidParams("base branch not found: \(base)")
+                    }
+                    a.append("refs/heads/\(base)")
                 }
-                // Pin to the LOCAL branch ref: BT2 parents are local branches, and a bare `base` would
-                // disambiguate to a same-named tag (git's rev precedence), starting the child off the
-                // wrong commit — or failing outright on an ambiguous ref.
-                a.append("refs/heads/\(base)")
             }
             argv = a
         }
@@ -84,6 +93,12 @@ public struct WorktreeManager: Sendable {
 
     func branchExists(repo: String, branch: String) -> Bool {
         let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"])
+        return r?.ok ?? false
+    }
+
+    /// Does a fully-qualified ref resolve? (Used for a remote private-ref start-point, refs/orch/parents/…)
+    func refExists(repo: String, ref: String) -> Bool {
+        let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
         return r?.ok ?? false
     }
 
