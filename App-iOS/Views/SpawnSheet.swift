@@ -32,6 +32,9 @@ struct SpawnSheet: View {
     @State private var prompt = ""
     @State private var repo = ""
     @State private var branch = ""
+    /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none). Sourced from the
+    /// same `branchSuggestions` as the branch picker. BT6 will extend it with remote/PR entries.
+    @State private var base = ""
     @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
@@ -203,7 +206,7 @@ struct SpawnSheet: View {
                 _Concurrency.Task { await loadBranches() }
             }
             // A new repo selection reloads its branch list from the daemon.
-            .onChange(of: repo) { _Concurrency.Task { await loadBranches() } }
+            .onChange(of: repo) { base = ""; _Concurrency.Task { await loadBranches() } }
             // The board's cards can arrive after this sheet mounts; seed the repo default once they do.
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
             // Daemon repos can arrive after mount too; seed once they do.
@@ -261,6 +264,15 @@ struct SpawnSheet: View {
         SpawnPickerField(label: "Branch", placeholder: "new or existing branch", text: $branch,
                          icon: "arrow.triangle.branch", suggestions: branchSuggestions,
                          display: { $0 }, createVerb: "Create branch")
+
+        // Base only applies to a NEWLY-created branch; the daemon ignores it for an existing one. BT6
+        // extends this with remote/PR entries — keep the "None" tag first so the default is HEAD.
+        if !branchSuggestions.contains(branch) {
+            Picker("Base branch", selection: $base) {
+                Text("None (branch from HEAD)").tag("")
+                ForEach(branchSuggestions, id: \.self) { Text($0).tag($0) }
+            }
+        }
 
         LabeledContent("Worktree") {
             Text(worktreePreview)
@@ -441,7 +453,8 @@ struct SpawnSheet: View {
             let card: Task?
             switch mode {
             case .worktree:
-                card = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn, agent: a)
+                card = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
+                                         agent: a, base: base.isEmpty ? nil : base)
             case .freeform:
                 card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                          agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
