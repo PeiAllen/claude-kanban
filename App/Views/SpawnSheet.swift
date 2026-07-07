@@ -25,13 +25,13 @@ struct SpawnSheet: View {
     @State private var cwd = ""
     @State private var readOnly = false
 
-    /// T1 trust state for the freeform cwd (nil = unknown/unchecked). An untrusted borrowed dir runs
-    /// read-only (sandboxed) until the human grants trust — which they can do right here via
-    /// "Trust this directory" (the app is a human grant surface, so it flips the dir read-write) or
-    /// out-of-band with the `trust` tool / `orchestra trust`.
-    @State private var cwdTrusted: Bool? = nil
-    /// True while the in-sheet trust grant is in flight (disables the button, shows progress).
-    @State private var granting = false
+    /// The freeform cwd's trust state machine (T1 lookup + T2 grant), shared with the iOS spawn sheet via
+    /// OrchestraUI so the two can't drift. It owns `cwdTrusted` and the generation race guard; this sheet
+    /// keeps its own view (checkbox + amber banner) and `readOnly` side effects. An untrusted borrowed dir
+    /// runs read-only (sandboxed) until the human grants trust — which they can do right here via "Trust
+    /// this directory" (the app is a human grant surface, so it flips the dir read-write) or out-of-band
+    /// with the `trust` tool / `orchestra trust`.
+    @StateObject private var trust = FreeformTrustModel()
 
     /// Existing local branches in the selected repo (most-recently-committed first), loaded on appear
     /// and whenever the repo changes. Used to power the branch combo's fuzzy search.
@@ -246,7 +246,7 @@ struct SpawnSheet: View {
                     }
                     .toggleStyle(.checkbox)
                     // An untrusted borrowed dir is forced read-only (can't be unchecked here).
-                    .disabled(cwdTrusted == false)
+                    .disabled(trust.cwdTrusted == false)
 
                     trustNotice
                 }
@@ -344,7 +344,7 @@ struct SpawnSheet: View {
     ///     (sandboxed) until the human grants trust — clicking the button *is* that human grant (the app
     ///     is a grant surface), which records the dir in the ledger and flips the card read-write.
     @ViewBuilder private var trustNotice: some View {
-        if !cwd.isEmpty, let trusted = cwdTrusted {
+        if !cwd.isEmpty, let trusted = trust.cwdTrusted {
             if trusted {
                 HStack(spacing: 5) {
                     Image(systemName: "checkmark.shield").font(.system(size: 10, weight: .semibold))
@@ -363,7 +363,7 @@ struct SpawnSheet: View {
                     }
                     Button(action: grantTrust) {
                         HStack(spacing: 5) {
-                            if granting {
+                            if trust.granting {
                                 ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 11, height: 11)
                             } else {
                                 Image(systemName: "checkmark.shield").font(.system(size: 10, weight: .semibold))
@@ -376,7 +376,7 @@ struct SpawnSheet: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(granting)
+                    .disabled(trust.granting)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10).padding(.vertical, 8)
@@ -385,36 +385,24 @@ struct SpawnSheet: View {
         }
     }
 
-    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted.
+    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. The generation +
+    /// path guard (shared with iOS) lives in `FreeformTrustModel`, so a stale reply can't clobber a newer
+    /// result — the desktop now has the grant-vs-refresh race guard it previously lacked (bug #7).
     private func refreshTrust() {
-        guard mode == .freeform, !cwd.isEmpty else { cwdTrusted = nil; return }
+        guard mode == .freeform, !cwd.isEmpty else { trust.reset(); return }
         let path = cwd
         _Concurrency.Task {
-            let trusted = await model.trustState(path: path)
-            await MainActor.run {
-                guard path == cwd else { return }   // ignore a stale result after the dir changed
-                cwdTrusted = trusted
-                if !trusted { readOnly = true }
-            }
+            let outcome = await trust.refresh(path: path) { await model.trustState(path: $0) }
+            if outcome == .untrusted { await MainActor.run { readOnly = true } }
         }
     }
 
     /// Grant the human's trust for the current freeform cwd (T2). On success the dir is trusted, so we
     /// clear the read-only lock and default the card to read-write — the user asked to enable writes.
     private func grantTrust() {
-        guard !cwd.isEmpty, !granting else { return }
-        let path = cwd
-        granting = true
         _Concurrency.Task {
-            let ok = await model.trust(path: path)
-            await MainActor.run {
-                granting = false
-                guard path == cwd else { return }   // ignore a stale result after the dir changed
-                if ok {
-                    cwdTrusted = true
-                    readOnly = false
-                }
-            }
+            let outcome = await trust.grant { await model.trust(path: $0) }
+            if outcome == .granted { await MainActor.run { readOnly = false } }
         }
     }
 

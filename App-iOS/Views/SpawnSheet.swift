@@ -40,11 +40,12 @@ struct SpawnSheet: View {
     @State private var cwd = ""
     @State private var readOnly = false
 
-    /// Trust state for the freeform cwd (nil = unknown/unchecked). An untrusted borrowed dir is forced
-    /// read-only until the human grants trust — doable right here via "Trust & allow writes".
-    @State private var cwdTrusted: Bool? = nil
-    /// True while the in-sheet trust grant is in flight (disables the button, shows progress).
-    @State private var granting = false
+    /// The freeform cwd's trust state machine (trust lookup + grant), shared with the desktop spawn sheet
+    /// via OrchestraUI so the two can't drift. It owns `cwdTrusted` and the generation race guard (#7);
+    /// this sheet keeps its own view (collapse chip + "Trust & allow writes"/"Keep read-only") and its
+    /// `readOnly` / `keptReadOnly` side effects. An untrusted borrowed dir is forced read-only until the
+    /// human grants trust — doable right here via "Trust & allow writes".
+    @StateObject private var trust = FreeformTrustModel()
     /// The human chose "Keep read-only" — collapses the amber prompt to a compact acknowledgment while
     /// leaving the read-only lock in place (Trust is still reachable). Reset when the dir changes.
     @State private var keptReadOnly = false
@@ -56,11 +57,6 @@ struct SpawnSheet: View {
     /// lazily when the repo changes; empty until then / on failure (the picker falls back to card-derived
     /// branches + free-text creation).
     @State private var branchOptions: [String] = []
-    /// Monotonic generation for trust lookups. Bumped whenever a new trust check OR a grant starts, so a
-    /// slow in-flight `trustState` reply that lands after a faster grant can be recognized as stale and
-    /// dropped — a `path == cwd` guard alone can't order two concurrent trust operations on the SAME dir,
-    /// and the slow reply would otherwise overwrite the just-granted state (#7).
-    @State private var trustGen = 0
 
     // MARK: agents / models (sourced from the daemon; falls back to Claude Code when it hasn't answered)
 
@@ -289,13 +285,13 @@ struct SpawnSheet: View {
             }
         }
         // An untrusted borrowed dir is forced read-only (can't be unchecked until trust is granted).
-        .disabled(cwdTrusted == false)
+        .disabled(trust.cwdTrusted == false)
     }
 
     /// The freeform trust indicator (reads the daemon's trust ledger via `trustState`). Untrusted dirs
     /// show an amber "Directory not trusted" notice with **Trust & allow writes** / **Keep read-only**.
     @ViewBuilder private var trustNotice: some View {
-        if !cwd.isEmpty, let trusted = cwdTrusted {
+        if !cwd.isEmpty, let trusted = trust.cwdTrusted {
             if trusted {
                 Label("Trusted directory", systemImage: "checkmark.shield")
                     .font(.footnote).foregroundStyle(theme.green.text)
@@ -319,17 +315,17 @@ struct SpawnSheet: View {
                     HStack(spacing: 10) {
                         Button(action: grantTrust) {
                             HStack(spacing: 5) {
-                                if granting { ProgressView().controlSize(.mini) }
+                                if trust.granting { ProgressView().controlSize(.mini) }
                                 else { Image(systemName: "checkmark.shield") }
                                 Text("Trust & allow writes")
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(granting)
+                        .disabled(trust.granting)
 
                         Button("Keep read-only") { keptReadOnly = true }
                             .buttonStyle(.bordered)
-                            .disabled(granting)
+                            .disabled(trust.granting)
                     }
                     .font(.footnote)
                 }
@@ -395,36 +391,27 @@ struct SpawnSheet: View {
         branchOptions = list
     }
 
-    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. Guarded against both
-    /// a dir change (`path == cwd`) and a superseding trust op (`gen == trustGen`) mid-flight.
+    /// Re-check trust for the current freeform cwd, forcing read-only when untrusted. The generation +
+    /// path guard (shared with the desktop) lives in `FreeformTrustModel`, so a slow in-flight reply that
+    /// lands after a faster grant is recognized as stale and dropped (#7).
     private func refreshTrust() {
-        guard mode == .freeform, !cwd.isEmpty else { cwdTrusted = nil; return }
+        guard mode == .freeform, !cwd.isEmpty else { trust.reset(); return }
         let path = cwd
-        trustGen += 1
-        let gen = trustGen
         _Concurrency.Task {
-            let trusted = await model.trustState(path: path)
-            guard gen == trustGen, path == cwd else { return }   // stale (dir changed OR a grant superseded)
-            cwdTrusted = trusted
-            if !trusted { readOnly = true }
+            if await trust.refresh(path: path, check: { await model.trustState(path: $0) }) == .untrusted {
+                readOnly = true
+            }
         }
     }
 
     /// Grant the human's trust for the current freeform cwd. On success the dir is trusted, so we clear
-    /// the read-only lock and default the card to read-write — the user asked to enable writes. Bumps
-    /// `trustGen` so any in-flight `refreshTrust()` reply is recognized as stale and can't overwrite the
-    /// grant (#7).
+    /// the read-only lock and default the card to read-write — the user asked to enable writes. The shared
+    /// model bumps its generation so any in-flight `refreshTrust()` reply can't overwrite the grant (#7).
     private func grantTrust() {
-        guard !cwd.isEmpty, !granting else { return }
-        let path = cwd
-        granting = true
-        trustGen += 1
-        let gen = trustGen
         _Concurrency.Task {
-            let ok = await model.trust(path: path)
-            granting = false
-            guard gen == trustGen, path == cwd else { return }   // stale (dir changed OR superseded)
-            if ok { cwdTrusted = true; readOnly = false; keptReadOnly = false }
+            if await trust.grant(perform: { await model.trust(path: $0) }) == .granted {
+                readOnly = false; keptReadOnly = false
+            }
         }
     }
 
