@@ -117,6 +117,11 @@ enum CLIRunner {
                 let r = try await client.call("tree", .object(params))
                 printJSON(r)
 
+            case "synced":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let task = try await client.call("synced", .object(["ref": .string(ref)]))
+                printRef(task)
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))

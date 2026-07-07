@@ -151,6 +151,11 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: snap)
             },
 
+            "synced": { svc, p, src in
+                let updated = try await svc.synced(ref: try p.string("ref"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
             "status": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
                 let st = try await svc.status(t.id)

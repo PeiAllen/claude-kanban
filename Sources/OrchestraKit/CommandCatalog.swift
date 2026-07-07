@@ -126,6 +126,11 @@ public enum CommandCatalog {
                           "repo": strProp("Limit to cards in this repo root."),
                       ], required: [])),
 
+        CommandSchema(name: "synced",
+                      summary: "Report that this card merged/restacked its parent down: record the "
+                          + "parent's current tip as the sync base and clear the stale/behind signal.",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",
                       params: schema(["ref": refProp()], required: ["ref"])),
 

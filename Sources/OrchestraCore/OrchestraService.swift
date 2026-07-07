@@ -73,6 +73,12 @@ public actor OrchestraService {
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
     // activity burst off the normalized `report()` funnel — NOT a periodic poll.
     var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    // Per-card coalescing debounce for the TreeStat recompute (branch-tree, BT4). Twin of
+    // `diffStatDebounce` — a one-shot per activity burst off the `report()` funnel, not a poll.
+    var treeStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    // Per-parent coalescing debounce for the child fan-out (branch-tree, BT4). Keeps the `git config
+    // --get-regexp` child lookup OFF the hot report path — one lookup per activity burst, not per report.
+    var childFanoutDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
     public init(config: Config,
                 store: TaskStore? = nil,

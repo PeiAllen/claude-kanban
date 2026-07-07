@@ -75,9 +75,32 @@ struct BoardCardCell: View {
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            treeBadge
             Spacer(minLength: 6)
             if let pct = ctxPct { CtxMiniGauge(pct: pct, theme: theme) }
             meta
+        }
+    }
+
+    /// Lineage status (branch-tree): `↓N` when the parent advanced (stale), a restack glyph when a
+    /// restack is needed. Mirrors the desktop `treeBadge`; hidden when in-sync / untracked.
+    @ViewBuilder private var treeBadge: some View {
+        if let ts = task.treeStat {
+            switch ts.state {
+            case .stale:
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.down")
+                    Text("\(ts.behind)")
+                }
+                .font(.system(.caption2, design: .monospaced).weight(.medium))
+                .foregroundStyle(theme.amber.text)
+            case .restackNeeded, .parentMerged:
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(theme.red.text)
+            case .inSync:
+                EmptyView()
+            }
         }
     }
 
