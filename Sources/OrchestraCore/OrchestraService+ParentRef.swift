@@ -10,6 +10,9 @@ import Foundation
 extension OrchestraService {
     func resolvedParentRef(_ task: Task) -> String? {
         guard let pb = task.parentBranch, !pb.isEmpty else { return nil }
+        // Remote parents (origin/<b>, pr#<N>) baseline against their fetched private ref; a local parent
+        // is its own branch name (identity — byte-identical to pre-remote behavior).
+        if let remote = RemoteParentRef.parse(pb) { return remote.privateRef }
         return pb
     }
 }
