@@ -74,6 +74,13 @@ extension OrchestraService {
         guard new != old else { return }                       // no delta → no persist, no emit
         guard let saved = try? await store.update(id, { $0.treeStat = new }) else { return }
         emit(.taskUpserted(saved))
+        // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale,
+        // never on a first compute that lands on stale). Enqueue + wake — the `concludeCard` idiom.
+        if old?.state == .inSync, new?.state == .stale, let parent = link?.parent {
+            try? await inbox.enqueue(id, "parent \(parent) moved ahead — merge it down, then run "
+                + "`orchestra synced \(saved.shortId)`")
+            await wake(id)
+        }
     }
 
     /// Coalescing per-card trigger for `recomputeTreeStat` — a one-shot debounce off the report funnel,
