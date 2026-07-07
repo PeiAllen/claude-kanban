@@ -47,6 +47,7 @@ _Concurrency.Task { await pushNotifier.run() }
 _Concurrency.Task {
     await service.sweepOrphanScratch()
     await service.recoverSessions()
+    await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
 }
 
 // Background poll: continuous liveness reconcile (safety net for crashes / tmux kill).

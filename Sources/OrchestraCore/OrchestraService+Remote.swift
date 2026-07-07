@@ -103,6 +103,53 @@ extension OrchestraService {
         emitActivity(.command, t, .daemon, "remote parent PR merged — redirected onto \(grandparent)")
     }
 
+    // MARK: - watch loop lifecycle
+
+    func setRemoteWatchIntervals(active: Duration, idle: Duration) { remoteWatchIntervals = (active, idle) }
+    func remoteWatchActive(_ id: UUID) -> Bool { remoteWatch[id] != nil }
+
+    /// Start (or restart) the per-card watch loop. Each tick runs `remoteMergeStep`; the backoff is the
+    /// `active` interval right after the tip moved (poll faster while the parent is churning) and `idle`
+    /// otherwise. Cancellation-safe: a re-start cancels the prior Task first. The loop exits once the card
+    /// leaves the remote tier (archived/cleared/local parent) — a redirect onto `origin/<base>` keeps it
+    /// running (harmless; a base branch never "merges") so the child keeps a fresh stale badge.
+    func startRemoteWatch(cardId: UUID) {
+        remoteWatch[cardId]?.cancel()
+        remoteWatch[cardId] = _Concurrency.Task { [weak self] in
+            guard let self else { return }
+            while !_Concurrency.Task.isCancelled {
+                if await self.shouldStopRemoteWatch(cardId) { break }
+                let outcome = await self.remoteMergeStep(cardId: cardId)
+                let (active, idle) = await self.remoteWatchIntervals
+                let delay = (outcome == .fetched) ? active : idle    // movement ⇒ poll faster; steady ⇒ idle
+                try? await _Concurrency.Task.sleep(for: delay)
+            }
+            await self.clearRemoteWatch(cardId)
+        }
+    }
+
+    private func shouldStopRemoteWatch(_ id: UUID) async -> Bool {
+        guard let t = await store.get(id), !t.archived, t.origin == .worktree,
+              let link = await lineage.read(repo: t.repo, branch: t.branch),
+              RemoteParentRef.parse(link.parent) != nil, link.watch else { return true }
+        return false
+    }
+
+    /// Cancel + drop a card's watch loop (archive / clear / retarget-to-local).
+    func stopRemoteWatch(_ id: UUID) { remoteWatch[id]?.cancel(); remoteWatch[id] = nil }
+    private func clearRemoteWatch(_ id: UUID) { remoteWatch[id] = nil }
+
+    /// Daemon-startup reconstruction: for every LIVE worktree card whose lineage records a watched remote
+    /// parent, (re)start its watch. No global repo scan — only live cards' config.
+    public func rebuildRemoteWatches() async {
+        let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+        for t in active {
+            guard let link = await lineage.read(repo: t.repo, branch: t.branch),
+                  link.watch, RemoteParentRef.parse(link.parent) != nil else { continue }
+            startRemoteWatch(cardId: t.id)
+        }
+    }
+
     // MARK: - small git helpers (local, non-hanging)
 
     private func privateRefOID(repo: String, ref: RemoteParentRef) -> String? {

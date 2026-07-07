@@ -377,6 +377,11 @@ public actor OrchestraService {
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
             emitActivity(.warning, created, source, warn.message)
         }
+
+        // BT6: a card spawned onto a remote base (recorded lineage says `watch`) starts its merge-watch.
+        if RemoteParentRef.parse(derivedParentBranch ?? "") != nil {
+            startRemoteWatch(cardId: id)
+        }
         return created
     }
 
@@ -562,6 +567,7 @@ public actor OrchestraService {
 
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
+        stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
         try? sessions.kill(sessions.sessionName(id))
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
