@@ -123,6 +123,7 @@ private struct StatusPill: View {
     let sem: SemColor
     let updatedAt: Date
     let live: Bool
+    @Environment(\.theme) private var theme: Theme
 
     var body: some View {
         HStack(spacing: 6) {
@@ -141,14 +142,7 @@ private struct StatusPill: View {
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(sem.tint))
     }
-    private var label: String {
-        switch status {
-        case .running: return "Running"
-        case .waiting: return "Waiting"
-        case .done:    return "Done"
-        case .dead:    return "Dead"
-        }
-    }
+    private var label: String { theme.statusLabel(status) }
 }
 
 /// A breathing pulse dot while the card is live (running/waiting), static otherwise.
@@ -227,10 +221,3 @@ private struct CtxMiniGauge: View {
 }
 
 /// Relative age like the desktop's `3s`/`4m`/`2h`/`1d`.
-private func relativeAge(_ date: Date, now: Date = Date()) -> String {
-    let s = Int(max(0, now.timeIntervalSince(date)))
-    if s < 60 { return "\(s)s" }
-    let m = s / 60; if m < 60 { return "\(m)m" }
-    let h = m / 60; if h < 24 { return "\(h)h" }
-    return "\(h / 24)d"
-}

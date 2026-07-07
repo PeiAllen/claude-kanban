@@ -59,13 +59,14 @@ private struct DetailStatusPill: View {
     let sem: SemColor
     let updatedAt: Date
     let live: Bool
+    @Environment(\.theme) private var theme: Theme
 
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(sem.dot).frame(width: 7, height: 7)
             if live {
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    Text(label + " · " + relativeDetailAge(updatedAt, now: ctx.date))
+                    Text(label + " · " + relativeAge(updatedAt, now: ctx.date))
                 }
             } else {
                 Text(label)
@@ -77,14 +78,7 @@ private struct DetailStatusPill: View {
         .background(Capsule().fill(sem.tint))
         .fixedSize()
     }
-    private var label: String {
-        switch status {
-        case .running: return "Running"
-        case .waiting: return "Waiting"
-        case .done:    return "Done"
-        case .dead:    return "Dead"
-        }
-    }
+    private var label: String { theme.statusLabel(status) }
 }
 
 /// The model handle as a display chip (family-accented). Model *switching* is not a shipped RPC, so this
@@ -165,13 +159,4 @@ private struct CtxGauge: View {
         }
         .accessibilityLabel("Context \(Int(pct)) percent full")
     }
-}
-
-/// Relative age like the board cell's `3s`/`4m`/`2h`/`1d`.
-func relativeDetailAge(_ date: Date, now: Date = Date()) -> String {
-    let s = Int(max(0, now.timeIntervalSince(date)))
-    if s < 60 { return "\(s)s" }
-    let m = s / 60; if m < 60 { return "\(m)m" }
-    let h = m / 60; if h < 24 { return "\(h)h" }
-    return "\(h / 24)d"
 }

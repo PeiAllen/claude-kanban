@@ -201,15 +201,6 @@ struct CardView: View {
 
     // MARK: - Age formatting
 
-    private func relativeAge(_ date: Date, now: Date = Date()) -> String {
-        let s = Int(max(0, now.timeIntervalSince(date)))
-        if s < 60 { return "\(s)s" }
-        let m = s / 60
-        if m < 60 { return "\(m)m" }
-        let h = m / 60
-        if h < 24 { return "\(h)h" }
-        return "\(h / 24)d"
-    }
 }
 
 // MARK: - Helpers
