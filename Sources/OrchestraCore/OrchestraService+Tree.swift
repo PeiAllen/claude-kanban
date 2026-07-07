@@ -132,9 +132,12 @@ extension OrchestraService {
 
     private func clearChildFanoutDebounce(_ id: UUID) { childFanoutDebounce[id] = nil }
 
-    /// Recompute the TreeStat of each LIVE child card of `id`'s branch — a card whose branch records that
-    /// branch as its parent. Runs off the debounced fan-out (a parent card's activity may have advanced
-    /// its tip, staling its children). The child lookup + recompute are already idempotent.
+    /// Schedule a TreeStat recompute for each LIVE child card of `id`'s branch — a card whose branch
+    /// records that branch as its parent. Runs off the debounced fan-out (a parent card's activity may
+    /// have advanced its tip, staling its children). Routes through `scheduleTreeStat` — NOT a direct
+    /// `recomputeTreeStat` — so the child's own self-schedule and this fan-out collapse into the single
+    /// `treeStatDebounce[child]` slot; a direct recompute here would race the child's slot across
+    /// `recomputeTreeStat`'s `lineage.read` suspension and fire a duplicate stale nudge.
     func fanOutChildTreeStats(_ id: UUID) async {
         guard let t = await store.get(id), t.origin == .worktree else { return }
         let childBranches = await lineage.children(repo: t.repo, of: t.branch)
@@ -142,7 +145,7 @@ extension OrchestraService {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         for child in childBranches {
             if let card = active.first(where: { $0.repo == t.repo && $0.branch == child }) {
-                await recomputeTreeStat(card.id)
+                scheduleTreeStat(card.id)
             }
         }
     }

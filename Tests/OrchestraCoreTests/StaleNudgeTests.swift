@@ -50,11 +50,17 @@ struct StaleNudgeTests {
         await env.svc.recomputeTreeStat(child.id)                   // inSync baseline
         try TreeStatTests.advanceParent(repo, 1)                    // parent tip moves in git
 
-        // The parent card reports activity → funnel schedules the child's TreeStat recompute.
+        // The parent card reports activity → funnel schedules the child's TreeStat recompute. The path
+        // debounces twice (fan-out 750ms → child recompute 750ms), so poll with headroom past ~1.5s.
         try await env.svc.report(parentCard.id, StatusReport(desc: "did work", status: .running))
-        try await pollUntil {
-            (try? await env.svc.inboxPeek(child.id))?.isEmpty == false
+        var nudged = false
+        for _ in 0..<400 {   // ≈ 4s ceiling — comfortably past the two 750ms debounce hops
+            if (try? await env.svc.inboxPeek(child.id))?.isEmpty == false { nudged = true; break }
+            try await _Concurrency.Task.sleep(for: .milliseconds(10))
         }
-        #expect(try await env.svc.inboxPeek(child.id).first?.text.contains("moved ahead") == true)
+        #expect(nudged)
+        let msgs = try await env.svc.inboxPeek(child.id)
+        #expect(msgs.count == 1)                                    // fan-out coalesced ⇒ exactly one nudge
+        #expect(msgs.first?.text.contains("moved ahead") == true)
     }
 }
