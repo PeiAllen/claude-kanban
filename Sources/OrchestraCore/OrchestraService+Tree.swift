@@ -12,13 +12,33 @@ extension OrchestraService {
         guard t.origin == .worktree else {
             throw OrchestraError.invalidParams("only worktree cards have a branch to re-parent")
         }
-        guard mode == "adopt" else {
-            throw OrchestraError.invalidParams("mode must be 'adopt' (move is not yet available)")
+        guard mode == "adopt" || mode == "move" else {
+            throw OrchestraError.invalidParams("mode must be 'adopt' or 'move'")
         }
         let trimmed = parent?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let p = trimmed, !p.isEmpty {
             guard p != t.branch else {
                 throw OrchestraError.invalidParams("a branch cannot be its own parent: \(p)")
+            }
+            if mode == "move" {
+                // MOVE: repoint the lineage but KEEP the recorded base — it is the rebase anchor the agent
+                // replays from (`rebase --onto <new-parent> <recorded-base>`). Fall back to the merge-base
+                // only when there is no prior link to preserve. The daemon never rewrites the branch; it
+                // marks restack-needed and nudges the owning card to do the rebase in its own worktree.
+                let existing = await lineage.read(repo: t.repo, branch: t.branch)
+                let anchor = try existing?.base ?? mergeBaseOID(repo: t.repo, t.branch, p)
+                try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
+                let updated = try await store.update(t.id) {
+                    $0.parentBranch = p
+                    $0.treeStat = TreeStat(state: .restackNeeded)
+                }
+                emit(.taskUpserted(updated))
+                try? await inbox.enqueue(t.id,
+                    "parent moved to \(p) — commit WIP, then `git rebase --onto \(p) \(anchor)`, "
+                    + "then `orchestra synced \(updated.shortId)`")
+                await wake(t.id)
+                emitActivity(.command, updated, source, "moved parent → \(p)")
+                return updated
             }
             let base = try mergeBaseOID(repo: t.repo, t.branch, p)
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
