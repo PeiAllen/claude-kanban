@@ -121,4 +121,33 @@ struct TreeStatTests {
         await env.svc.recomputeTreeStat(card.id)
         #expect(await treeStat(env, card.id) == nil)
     }
+
+    // MARK: synced round-trip
+
+    @Test("synced records the parent tip as the base ⇒ back to inSync, base advanced")
+    func syncedRoundTrip() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let base0 = try Self.git(repo, "rev-parse", "parent")
+        let card = try await Self.linkedChild(env, repo: repo, base: base0)
+        let tip2 = try Self.advanceParent(repo, 2)                  // parent 2 ahead
+        await env.svc.recomputeTreeStat(card.id)
+        #expect(await treeStat(env, card.id)?.state == .stale)
+
+        _ = try await env.svc.synced(ref: card.ref())              // "I merged the parent down"
+        #expect(await treeStat(env, card.id)?.state == .inSync)
+        #expect(await treeStat(env, card.id)?.behind == 0)
+        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        #expect(link.base == tip2)                                 // recorded base advanced to parent tip
+    }
+
+    @Test("synced on a card with no parent link throws invalidParams")
+    func syncedNoLink() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "solo", repo: repo, branch: "solo"))
+        await #expect(throws: OrchestraError.self) {
+            _ = try await env.svc.synced(ref: card.ref())
+        }
+    }
 }

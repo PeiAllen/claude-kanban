@@ -14,6 +14,7 @@ enum CLIHelp {
       move <ref> --col <plan|impl|review>        Move a card
       set-parent <ref> [parent] [--mode adopt]   Set/clear a card branch's parent link (omit parent to clear)
       tree [ref] [--repo <r>]                     Lineage snapshot (parent/children per card, JSON)
+      synced <ref>                                Record you merged/restacked the parent down (clears the stale signal)
       send <ref> <message...>                    Message the agent (inbox queue)
       send-keys <ref> <key|text...> [--text <literal>] [--window <w>]
                                                  Send live keystrokes (Esc, Up, C-c, Enter, text …)

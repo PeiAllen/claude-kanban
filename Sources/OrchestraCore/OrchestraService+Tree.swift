@@ -35,6 +35,26 @@ extension OrchestraService {
         }
     }
 
+    /// `synced` — the agent's "I merged/restacked the parent down" report: record the parent's current
+    /// tip as the new recorded base and recompute (→ `inSync`). Idempotent.
+    @discardableResult
+    public func synced(ref: String, source: ActivitySource = .daemon) async throws -> Task {
+        let t = try await resolveRef(ref)
+        guard t.origin == .worktree else {
+            throw OrchestraError.invalidParams("only worktree cards have a parent to sync")
+        }
+        guard let link = await lineage.read(repo: t.repo, branch: t.branch) else {
+            throw OrchestraError.invalidParams("card has no parent link to sync")
+        }
+        guard let tip = treeTip(repo: t.repo, link.parent) else {
+            throw OrchestraError.invalidParams("parent ref not found: \(link.parent)")
+        }
+        try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: tip)
+        await recomputeTreeStat(t.id)
+        emitActivity(.command, t, source, "synced parent \(link.parent)")
+        return (await store.get(t.id)) ?? t
+    }
+
     /// `tree` — a lineage snapshot for a scope: one card (`ref`), a `repo`, or all active cards.
     /// Feeds MCP/CLI (and BT7's board grouping). `treeStat` rides through as-is (nil in BT1).
     public func tree(ref: String?, repo: String?) async throws -> TreeSnapshot {
