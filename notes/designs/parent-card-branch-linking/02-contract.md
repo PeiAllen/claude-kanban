@@ -114,7 +114,13 @@ CLIRunner "spawn" case += --base flag; BoardStore.spawn(..., base: String?)
 ### New registry commands (catalog + registry pairs, exposure `.all`)
 
 ```swift
-"set-parent" {ref, parent?, watch?}   // set/re-parent (base := merge-base(parent, HEAD)) or clear (parent omitted)
+"set-parent" {ref, parent?, mode?, watch?}
+    // parent omitted ⇒ clear. mode: "adopt" (default) = metadata-only relink,
+    //   base := merge-base(parent, HEAD), history untouched.
+    // mode "move" = TRANSPLANT the branch's commits onto the new parent:
+    //   daemon repoints lineage + TreeStat := restackNeeded + nudges the owning
+    //   agent, which runs `rebase --onto <new-parent> <recorded-old-base>` in its
+    //   own tree and reports `synced`. Children cascade (same as `shipped` (b)).
 "tree"       {ref? | repo?}           // lineage query: parents/children/TreeStat per card — feeds MCP/CLI/UI
 "synced"     {ref}                    // agent reports completed sync/restack → updateBase(parent tip) + recompute TreeStat
 "shipped"    {ref}                    // post-merge bookkeeping — see ship choreography
@@ -283,6 +289,7 @@ classDiagram
 | 2 Spawn on a branch (4 surfaces) | Spawn threading + base picker + catalog auto-MCP + CLI case |
 | 3 Sync + stale signal | `TreeStat` maintenance + stale nudge + `synced` + TreeDocs sync section |
 | 4 Merge redirection | `shipped` step (b) retarget + restack nudge; remote: watch ladder → same path |
+| 4b Manual re-parenting (owner, 2026-07-06) | `set-parent mode:"move"` — the redirect primitive with a user-chosen target |
 | 5 Ship into parent | Ship choreography (parent-merges / ephemeral-borrow / publish) |
 | 6 Child informs parent | `shipped` step (a) derived-lookup inbox+wake |
 | 7 Board affordances | parent chip, ↓N badge, jump-to-parent, tree grouping, `tree` command |
@@ -299,6 +306,7 @@ classDiagram
 | `tree`/`set-parent`/`synced`/`shipped` exposure `.all` | agents need them (MCP) and CLI mirrors registry by house rule | app-only ControlServer arms (agents locked out) |
 | Watch loop = per-card `Task` while-loop + cancellation dict | no timer machinery exists; matches `diffStatDebounce` state pattern | daemon-global poller (couples cards, complicates lifecycle) |
 | Codex installer generalized to compose `AGENTS.md` sections | second doc (TreeDocs) must not clobber delegation doc | separate AGENTS.md files (Codex reads one per scope) |
+| Re-parenting = `set-parent` modes, `adopt` default | move rewrites history — explicit intent; adopt is non-destructive | separate `reparent` command (verb sprawl); move-by-default (surprising rewrite) |
 
 ## Open questions — need your call
 
