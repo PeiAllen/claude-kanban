@@ -39,6 +39,9 @@ public actor OrchestraService {
     /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
     /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
     var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    /// Per-card watch generation — bumped on every start/stop so a cancelled loop's terminal cleanup can't
+    /// null out a newer loop installed by a restart (see `startRemoteWatch`).
+    var remoteWatchGen: [UUID: Int] = [:]
     /// Injectable poll cadence — short values in tests avoid real 60s/300s sleeps. (active, idle).
     var remoteWatchIntervals: (active: Duration, idle: Duration) = (.seconds(60), .seconds(300))
     /// The `gh` boundary (FakeGh in tests). Default: the real capability-probing client.
@@ -378,8 +381,11 @@ public actor OrchestraService {
             emitActivity(.warning, created, source, warn.message)
         }
 
-        // BT6: a card spawned onto a remote base (recorded lineage says `watch`) starts its merge-watch.
-        if RemoteParentRef.parse(derivedParentBranch ?? "") != nil {
+        // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
+        // link's `watch` flag (a fresh remote-base spawn sets it true; a churn re-spawn onto an existing
+        // branch with watch=false must not start one) rather than relying on the loop to bail on tick 1.
+        if RemoteParentRef.parse(derivedParentBranch ?? "") != nil,
+           await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
             startRemoteWatch(cardId: id)
         }
         return created

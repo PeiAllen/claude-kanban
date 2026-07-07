@@ -51,17 +51,17 @@ extension OrchestraService {
             return .warnedGone
         }
 
-        // (c) merge-commit ancestry — proof-POSITIVE only, and only against a FRESH parent tip. It fires
-        // solely when the parent just advanced (`moved`) to CONTAIN the child's OWN commits: the child must
-        // have diverged past its recorded base (else `childTip == base` sits trivially under any forward
-        // parent — a fast-forward, not a merge). That guard is what keeps a still-open parent from reading
-        // as merged.
+        // (c) merge-commit ancestry — proof-POSITIVE only, and WARN-only. Against a FRESH parent tip
+        // (`moved`), observe that the parent now CONTAINS the child's OWN committed work (`childTip` is its
+        // ancestor, and the child diverged past its recorded base so this isn't a trivial fast-forward).
+        // That is a positive signal that a merge happened around this branch, but it is NOT authoritative
+        // about which way or onto which base — the correct redirect target is the PR's `baseRefName`, which
+        // only `gh` (tier a, already checked above) can supply. So we NEVER auto-redirect here; we surface a
+        // warning for the human to confirm with `set-parent`. (This tier rarely fires for a PR parent on
+        // real GitHub — `refs/pull/N/head` doesn't advance on merge — so gh/gone carry PR detection; it is
+        // the degraded, gh-absent signal for a plain remote-branch parent that fast-forwarded.)
         if moved, let parentTip = fetchedTip, let childTip = localBranchOID(repo: t.repo, branch: t.branch),
            childTip != link.base, isAncestor(repo: t.repo, ancestor: childTip, of: parentTip) {
-            if let pr = link.prNumber, gh.available, let st = gh.prState(repo: t.repo, number: pr) {
-                await applyRemoteRedirect(cardId: cardId, link: link, grandparent: st.baseRefName, childHead: t.branch)
-                return .redirected(grandparent: st.baseRefName)
-            }
             emitActivity(.warning, t, .daemon,
                 "parent \(link.parent) appears merged (ancestry) — confirm and `set-parent` a new base")
             return .warnedAncestry
@@ -74,7 +74,9 @@ extension OrchestraService {
     /// recorded base as the rebase anchor, refresh the new parent's private ref, mark restackNeeded, nudge
     /// + wake, and best-effort repair a published child PR's base. Idempotent (safe to re-enter).
     private func applyRemoteRedirect(cardId: UUID, link: ParentLink, grandparent: String, childHead: String) async {
-        guard let t = await store.get(cardId) else { return }
+        // Re-read across the ladder's awaits: the card may have been archived / re-pointed since the tick
+        // began. Bail rather than write lineage onto a gone card.
+        guard let t = await store.get(cardId), !t.archived, t.origin == .worktree else { return }
         let newRef = RemoteParentRef.branch(grandparent)                 // origin/<baseRefName>
         _ = try? await remoteParents.fetch(repo: t.repo, newRef)         // make refs/orch/parents/<gp> resolvable
         let anchor = link.base
@@ -115,6 +117,12 @@ extension OrchestraService {
     /// running (harmless; a base branch never "merges") so the child keeps a fresh stale badge.
     func startRemoteWatch(cardId: UUID) {
         remoteWatch[cardId]?.cancel()
+        // Generation token: `startRemoteWatch` runs to completion on the actor with no `await`, so this
+        // cancel+bump+install is atomic. A cancelled prior loop's terminal `clearRemoteWatch(gen:)` then
+        // hops back onto the actor with its OLD gen and no-ops instead of nulling out THIS newer Task — the
+        // restart race that would otherwise orphan the live loop (uncancellable, wrong `remoteWatchActive`).
+        let gen = (remoteWatchGen[cardId] ?? 0) + 1
+        remoteWatchGen[cardId] = gen
         remoteWatch[cardId] = _Concurrency.Task { [weak self] in
             guard let self else { return }
             while !_Concurrency.Task.isCancelled {
@@ -124,7 +132,7 @@ extension OrchestraService {
                 let delay = (outcome == .fetched) ? active : idle    // movement ⇒ poll faster; steady ⇒ idle
                 try? await _Concurrency.Task.sleep(for: delay)
             }
-            await self.clearRemoteWatch(cardId)
+            await self.clearRemoteWatch(cardId, gen: gen)
         }
     }
 
@@ -135,9 +143,19 @@ extension OrchestraService {
         return false
     }
 
-    /// Cancel + drop a card's watch loop (archive / clear / retarget-to-local).
-    func stopRemoteWatch(_ id: UUID) { remoteWatch[id]?.cancel(); remoteWatch[id] = nil }
-    private func clearRemoteWatch(_ id: UUID) { remoteWatch[id] = nil }
+    /// Cancel + drop a card's watch loop (archive / clear / retarget-to-local). Bumping the generation
+    /// invalidates any in-flight terminal cleanup from a loop we just cancelled, so it can't null a Task a
+    /// later `startRemoteWatch` may install.
+    func stopRemoteWatch(_ id: UUID) {
+        remoteWatch[id]?.cancel()
+        remoteWatch[id] = nil
+        remoteWatchGen[id] = (remoteWatchGen[id] ?? 0) + 1
+    }
+    /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
+    /// in `startRemoteWatch`).
+    private func clearRemoteWatch(_ id: UUID, gen: Int) {
+        if remoteWatchGen[id] == gen { remoteWatch[id] = nil }
+    }
 
     /// Daemon-startup reconstruction: for every LIVE worktree card whose lineage records a watched remote
     /// parent, (re)start its watch. No global repo scan — only live cards' config.

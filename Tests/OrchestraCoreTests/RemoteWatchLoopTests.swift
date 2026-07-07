@@ -38,6 +38,23 @@ struct RemoteWatchLoopTests {
         #expect(await svc.remoteWatchActive(card.id) == false)
     }
 
+    @Test("a restart then stop leaves the watch inactive (no orphaned loop)")
+    func restartThenStopIsInactive() async throws {
+        let (svc, _, card) = try await Self.remoteChild()
+        await svc.setRemoteWatchIntervals(active: .milliseconds(10), idle: .milliseconds(10))
+        // Restart several times; the prior loop's terminal cleanup must not clear a newer generation.
+        for _ in 0..<5 {
+            await svc.startRemoteWatch(cardId: card.id)
+            #expect(await svc.remoteWatchActive(card.id) == true)
+        }
+        // Let cancelled loops run their terminal cleanup, which must no-op against the current generation.
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        #expect(await svc.remoteWatchActive(card.id) == true)   // still active after all the cleanups
+        await svc.stopRemoteWatch(card.id)
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        #expect(await svc.remoteWatchActive(card.id) == false)  // stop wins; no orphan revives it
+    }
+
     @Test("the loop redirects on a MERGED PR (short intervals, no busy-loop)")
     func loopRedirects() async throws {
         let (svc, repo, card) = try await Self.remoteChild()
