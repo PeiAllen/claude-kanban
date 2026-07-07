@@ -136,7 +136,11 @@ extension OrchestraService {
         // Code review on the board (axis 7): any per-card activity that lands here (a normalized
         // StatusReport — no tool_name) coalesces into a re-stat of the footer diffstat. Adapter-
         // agnostic by construction; the debounce + idempotent recompute bound the cost.
-        if saved.origin == .worktree { scheduleDiffStat(id) }
+        if saved.origin == .worktree {
+            scheduleDiffStat(id)
+            scheduleTreeStat(id)                                    // this card's own parent may have moved
+            await scheduleChildTreeStats(repo: saved.repo, of: saved.branch)  // a moved parent stales children
+        }
 
         // Activity only on a real status transition (waiting<->running) or dead.
         if let tr = statusTransition, tr.from != tr.to {

@@ -38,4 +38,23 @@ struct StaleNudgeTests {
         #expect(await env.svc.list().first { $0.id == card.id }?.treeStat?.state == .stale)
         #expect(try await env.svc.inboxPeek(card.id).isEmpty)       // no nudge without the inSync→stale edge
     }
+
+    @Test("a parent card's report fans out ⇒ its live child recomputes, goes stale, and is nudged")
+    func funnelStalesLiveChild() async throws {
+        let env = TestEnv.make()
+        let repo = try TreeStatTests.repoWithParent(env.base)
+        let base0 = try TreeStatTests.git(repo, "rev-parse", "parent")
+        // A live parent card owning branch "parent", plus the linked child.
+        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TreeStatTests.linkedChild(env, repo: repo, base: base0)
+        await env.svc.recomputeTreeStat(child.id)                   // inSync baseline
+        try TreeStatTests.advanceParent(repo, 1)                    // parent tip moves in git
+
+        // The parent card reports activity → funnel schedules the child's TreeStat recompute.
+        try await env.svc.report(parentCard.id, StatusReport(desc: "did work", status: .running))
+        try await pollUntil {
+            (try? await env.svc.inboxPeek(child.id))?.isEmpty == false
+        }
+        #expect(try await env.svc.inboxPeek(child.id).first?.text.contains("moved ahead") == true)
+    }
 }

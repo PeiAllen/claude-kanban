@@ -97,6 +97,20 @@ extension OrchestraService {
 
     private func clearTreeStatDebounce(_ id: UUID) { treeStatDebounce[id] = nil }
 
+    /// Schedule a TreeStat recompute for each LIVE child card of `branch` — a card whose branch records
+    /// `branch` as its parent. Called from the report funnel: a parent card's activity may have advanced
+    /// its tip, staling its children.
+    func scheduleChildTreeStats(repo: String, of branch: String) async {
+        let childBranches = await lineage.children(repo: repo, of: branch)
+        guard !childBranches.isEmpty else { return }
+        let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+        for child in childBranches {
+            if let card = active.first(where: { $0.repo == repo && $0.branch == child }) {
+                scheduleTreeStat(card.id)
+            }
+        }
+    }
+
     /// Derive a child's `TreeStat` from its lineage link using only local git. Parent tip gone
     /// (branch deleted / bad ref) or an empty recorded base ⇒ `restackNeeded`. Otherwise `behind` =
     /// commits in `base..tip`; if the base is no longer the tip's ancestor (parent rewrote/rebased) ⇒
