@@ -84,10 +84,12 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # Keychain-access-group entitlement so SSHKeyStore can store the per-device SSH key. Ignored
         # when building unsigned (the compile-only gate); applied when signed (device / harness).
-        # This is the DEFAULT (has aps-environment, valid for Simulator/push). The free-team DEVICE build
-        # overrides it to OrchestraiOS-nopush.entitlements — see build-ios-device.sh (aps-environment must
-        # be stripped or free-team signing fails).
-        CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements
+        # DEFAULT is the no-push variant so a plain Xcode GUI "Run" on a FREE personal team signs cleanly:
+        # aps-environment requires a PAID Apple Developer membership and makes free-team signing fail.
+        # Real APNs push is out of scope on the free tier (board/terminals/takeover need none of it).
+        # To restore push on a PAID account: point this back at OrchestraiOS.entitlements (which carries
+        # aps-environment). build-ios-device.sh also passes -nopush explicitly (now redundant, still valid).
+        CODE_SIGN_ENTITLEMENTS: OrchestraiOS-nopush.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
