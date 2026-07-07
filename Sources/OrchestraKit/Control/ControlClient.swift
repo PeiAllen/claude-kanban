@@ -222,11 +222,11 @@ public final class ControlClient: @unchecked Sendable {
         try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
     }
 
-    /// Typed convenience over the `spawnRepos` verb — git repos under the daemon's reposRoot + freeform
-    /// dir candidates, for the Spawn sheet's repo/dir pickers. The phone can't browse the daemon's disk,
-    /// so the daemon enumerates for it.
-    public func spawnRepos() async throws -> SpawnRepos {
-        try await call("spawnRepos", as: SpawnRepos.self)
+    /// Typed convenience over the `spawnRepos` verb — absolute paths to the git repos under the daemon's
+    /// reposRoot, which also serve as the freeform dir candidates, for the Spawn sheet's repo/dir pickers.
+    /// The phone can't browse the daemon's disk, so the daemon enumerates for it.
+    public func spawnRepos() async throws -> [String] {
+        try await call("spawnRepos", as: [String].self)
     }
 
     /// Typed convenience over the `spawnBranches` verb — local git branches for `repo`, most-recent

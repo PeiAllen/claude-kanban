@@ -50,11 +50,10 @@ public class BoardStore: ObservableObject {
     @Published public var connecting = false
     @Published public var toasts: [Toast] = []
 
-    // Spawn-sheet autofill: repos/dirs the daemon can spawn into (enumerated from its disk, which a
-    // remote client can't see). Refreshed when the Spawn sheet opens; branches are fetched lazily per
-    // repo via `spawnBranches(forRepo:)`.
-    @Published public var spawnRepoCandidates: [RepoCandidate] = []
-    @Published public var spawnDirCandidates: [String] = []
+    // Spawn-sheet autofill: absolute paths to the repos the daemon can spawn into (enumerated from its
+    // disk, which a remote client can't see). These double as the freeform dir candidates. Refreshed when
+    // the Spawn sheet opens; branches are fetched lazily per repo via `spawnBranches(forRepo:)`.
+    @Published public var spawnRepoCandidates: [String] = []
 
     // Sheet / popover UI state.
     @Published public var showSpawn = false
@@ -623,9 +622,8 @@ public class BoardStore: ObservableObject {
     /// Refresh the Spawn sheet's daemon-backed repo/dir candidates. The daemon enumerates its own disk
     /// (the phone can't). Best-effort: on failure the sheet still has its card-derived suggestions.
     public func refreshSpawnTargets() async {
-        guard let t = try? await client.spawnRepos() else { return }
-        spawnRepoCandidates = t.repos
-        spawnDirCandidates = t.dirs
+        guard let repos = try? await client.spawnRepos() else { return }
+        spawnRepoCandidates = repos
     }
 
     /// Local git branches for a repo, most-recent first (lazy, on repo selection). Empty on failure so

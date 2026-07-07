@@ -93,7 +93,7 @@ struct SpawnSheet: View {
     /// Repos for the picker: the daemon's on-disk repos (any repo, carded or not) plus repos seen on
     /// existing worktree cards. De-duplicated, sorted by repo name.
     private var repoSuggestions: [String] {
-        sortedByName(dedup(model.spawnRepoCandidates.map(\.path) + knownRepos))
+        sortedByName(dedup(model.spawnRepoCandidates + knownRepos))
     }
     /// Branches for the picker: the daemon's live git branches for the chosen repo (recency order) then
     /// any branches seen on that repo's cards. Order-preserving de-dup (recency first).
@@ -102,7 +102,7 @@ struct SpawnSheet: View {
     }
     /// Freeform dir candidates: the daemon's repo paths plus dirs seen on existing borrowed cards.
     private var dirSuggestions: [String] {
-        dedup(model.spawnDirCandidates + knownDirs).sorted()
+        dedup(model.spawnRepoCandidates + knownDirs).sorted()
     }
 
     /// Order-preserving de-dup, dropping empties (keeps the daemon's recency/sort where it matters).
