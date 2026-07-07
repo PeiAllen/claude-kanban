@@ -3,6 +3,7 @@
 // Consolidated here (D9) from per-view copies that had begun to drift; keep new copies out.
 
 import SwiftUI
+import OrchestraKit
 
 /// Relative age like the board's `3s`/`4m`/`2h`/`1d` — the compact "time since" stamp shown on cards,
 /// the activity feed, and the agent capture line. One implementation for every surface (was copied
@@ -35,6 +36,84 @@ public func filePath(_ path: String, dir dirFont: Font, name nameFont: Font, the
     let name = String(path[path.index(after: slash)...])
     return Text(dir).font(dirFont).foregroundColor(theme.text3)
          + Text(name).font(nameFont).foregroundColor(theme.text)
+}
+
+// MARK: - Shared chips & gauges
+
+/// The card's origin chip — `sparkles`/Scratch (gray) or `folder`/Freeform (indigo). One view for the
+/// board cell and the detail header (their capsules were byte-identical). `.worktree` reads as Freeform,
+/// matching the pre-consolidation behavior; call sites decide whether to show it at all.
+public struct ModeChip: View {
+    let origin: CardOrigin
+    @Environment(\.theme) private var theme: Theme
+    public init(origin: CardOrigin) { self.origin = origin }
+    private var label: String { origin == .scratch ? "Scratch" : "Freeform" }
+    private var sem: SemColor { origin == .scratch ? theme.gray : theme.indigo }
+    public var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: origin == .scratch ? "sparkles" : "folder")
+            Text(label)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(sem.text)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(sem.tint))
+    }
+}
+
+/// The orthogonal read-only badge (`lock` + "Read-only"), separate from the mode chip. Shared by the
+/// board cell and detail header.
+public struct ReadOnlyBadge: View {
+    @Environment(\.theme) private var theme: Theme
+    public init() {}
+    public var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "lock")
+            Text("Read-only")
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(theme.text3)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Capsule().fill(theme.chip))
+    }
+}
+
+/// The context-window gauge — a fill bar greening → ambering → reddening as the window fills, optionally
+/// with the percent spelled out. One parameterized view collapsing the board cell's mini-gauge
+/// (`width: 30, showPercent: false`) and the detail header's wider gauge (the defaults). The default
+/// dimensions match the header so its call site reads `CtxGauge(pct:theme:)` unchanged.
+public struct CtxGauge: View {
+    let pct: Double
+    let theme: Theme
+    var width: CGFloat
+    var height: CGFloat
+    var minFill: CGFloat
+    var showPercent: Bool
+    public init(pct: Double, theme: Theme, width: CGFloat = 54, height: CGFloat = 6,
+                minFill: CGFloat = 3, showPercent: Bool = true) {
+        self.pct = pct; self.theme = theme; self.width = width
+        self.height = height; self.minFill = minFill; self.showPercent = showPercent
+    }
+    private var color: Color {
+        if pct >= 90 { return theme.red.dot }
+        if pct >= 70 { return theme.amber.dot }
+        return theme.green.dot
+    }
+    public var body: some View {
+        HStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                Capsule().fill(theme.chip).frame(width: width, height: height)
+                Capsule().fill(color)
+                    .frame(width: max(minFill, width * CGFloat(min(100, max(0, pct)) / 100)), height: height)
+            }
+            if showPercent {
+                Text("\(Int(pct))%")
+                    .font(.system(.caption2, design: .monospaced).weight(.medium))
+                    .foregroundStyle(theme.text2)
+            }
+        }
+        .accessibilityLabel("Context \(Int(pct)) percent" + (showPercent ? " full" : ""))
+    }
 }
 
 public extension String {

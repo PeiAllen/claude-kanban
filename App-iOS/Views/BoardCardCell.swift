@@ -76,7 +76,7 @@ struct BoardCardCell: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 6)
-            if let pct = ctxPct { CtxMiniGauge(pct: pct, theme: theme) }
+            if let pct = ctxPct { CtxGauge(pct: pct, theme: theme, width: 30, height: 5, minFill: 2, showPercent: false) }
             meta
         }
     }
@@ -160,64 +160,6 @@ private struct StatusDot: View {
     }
 }
 
-// MARK: - Freeform chrome
-
-/// The freeform mode chip — the user-facing label (`Freeform`/`Scratch`); the underlying `.borrowed`
-/// origin is never surfaced (§2a).
-private struct ModeChip: View {
-    let origin: CardOrigin
-    @Environment(\.theme) private var theme: Theme
-    private var label: String { origin == .scratch ? "Scratch" : "Freeform" }
-    private var sem: SemColor { origin == .scratch ? theme.gray : theme.indigo }
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: origin == .scratch ? "sparkles" : "folder")
-            Text(label)
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(sem.text)
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(sem.tint))
-    }
-}
-
-/// The orthogonal Read-only badge (`CardAccess.readOnly`) — separate from the mode chip (§2a).
-private struct ReadOnlyBadge: View {
-    @Environment(\.theme) private var theme: Theme
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "lock")
-            Text("Read-only")
-        }
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(theme.text3)
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .background(Capsule().fill(theme.chip))
-    }
-}
-
-// MARK: - Context mini-gauge
-
-/// A compact context-window bar: fill proportional to `pct`, greening→ambering→reddening as it fills.
-private struct CtxMiniGauge: View {
-    let pct: Double
-    let theme: Theme
-    private var color: Color {
-        if pct >= 90 { return theme.red.dot }
-        if pct >= 70 { return theme.amber.dot }
-        return theme.green.dot
-    }
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(theme.chip)
-                Capsule().fill(color)
-                    .frame(width: max(2, geo.size.width * CGFloat(min(100, max(0, pct)) / 100)))
-            }
-        }
-        .frame(width: 30, height: 5)
-        .accessibilityLabel("Context \(Int(pct)) percent")
-    }
-}
-
-/// Relative age like the desktop's `3s`/`4m`/`2h`/`1d`.
+// The freeform mode chip, read-only badge, and context mini-gauge are now shared views in
+// OrchestraUI/SharedUI.swift (used by the detail header too). See `ModeChip` / `ReadOnlyBadge` /
+// `CtxGauge`.

@@ -109,54 +109,15 @@ private struct ModelChip: View {
 }
 
 /// Freeform mode + read-only chips (a freeform card has no `repo/branch`, so the header surfaces its
-/// mode/access instead — §2a language, reused in the detail header).
+/// mode/access instead — §2a language). Composed from the shared `ModeChip` / `ReadOnlyBadge`
+/// (OrchestraUI); the wider percent gauge is the shared `CtxGauge`'s default configuration.
 private struct ModeAccessChips: View {
     let origin: CardOrigin
     let access: CardAccess
-    @Environment(\.theme) private var theme: Theme
     var body: some View {
         HStack(spacing: 6) {
-            let scratch = origin == .scratch
-            HStack(spacing: 4) {
-                Image(systemName: scratch ? "sparkles" : "folder")
-                Text(scratch ? "Scratch" : "Freeform")
-            }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle((scratch ? theme.gray : theme.indigo).text)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill((scratch ? theme.gray : theme.indigo).tint))
-            if access == .readOnly {
-                HStack(spacing: 3) { Image(systemName: "lock"); Text("Read-only") }
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(theme.text3)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(theme.chip))
-            }
+            ModeChip(origin: origin)
+            if access == .readOnly { ReadOnlyBadge() }
         }
-    }
-}
-
-/// The header's context-window gauge — a wider take on the board cell's mini-gauge, with the percent
-/// spelled out (greening → ambering → reddening as the window fills).
-private struct CtxGauge: View {
-    let pct: Double
-    let theme: Theme
-    private var color: Color {
-        if pct >= 90 { return theme.red.dot }
-        if pct >= 70 { return theme.amber.dot }
-        return theme.green.dot
-    }
-    var body: some View {
-        HStack(spacing: 6) {
-            ZStack(alignment: .leading) {
-                Capsule().fill(theme.chip).frame(width: 54, height: 6)
-                Capsule().fill(color)
-                    .frame(width: max(3, 54 * CGFloat(min(100, max(0, pct)) / 100)), height: 6)
-            }
-            Text("\(Int(pct))%")
-                .font(.system(.caption2, design: .monospaced).weight(.medium))
-                .foregroundStyle(theme.text2)
-        }
-        .accessibilityLabel("Context \(Int(pct)) percent full")
     }
 }
