@@ -402,10 +402,6 @@ private struct CardGone: View {
 
 // MARK: - Helpers
 
-private extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
-}
-
 /// Relative age like the board's `3s`/`4m`/`2h`/`1d`.
 private func relativeAge(_ date: Date, now: Date = Date()) -> String {
     let s = Int(max(0, now.timeIntervalSince(date)))

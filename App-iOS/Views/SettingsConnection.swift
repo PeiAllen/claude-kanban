@@ -208,7 +208,3 @@ private struct RemoteEditorView: View {
         Binding(get: { connection[keyPath: key] ?? "" }, set: { connection[keyPath: key] = $0 })
     }
 }
-
-private extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespaces) }
-}

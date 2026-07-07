@@ -161,10 +161,6 @@ private struct HeaderBar: View {
     }
 }
 
-private extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
-}
-
 // MARK: - Inbox editor
 
 /// The inbox editor popover: list the card's durable queued messages with per-row reorder
