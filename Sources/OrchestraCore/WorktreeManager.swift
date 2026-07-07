@@ -17,8 +17,11 @@ public struct WorktreeManager: Sendable {
     }
 
     /// Ensure a worktree exists for repo + branch. Idempotent. Returns (worktree, created, branchExisted).
+    /// `base` (BT2) is the start-point for a NEWLY-created branch only — an existing branch ignores it.
+    /// An unknown `base` throws `.invalidParams` *before* any worktree is cut (no half-created dir).
     @discardableResult
-    public func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool) {
+    public func ensure(repo: String, branch: String, base: String? = nil)
+        throws -> (worktree: String, created: Bool, branchExisted: Bool) {
         let realRepo = try resolver.resolveRepo(repo)
         let wt = path(repo: realRepo, branch: branch)
         try resolver.assertAllowed(wt)
@@ -33,9 +36,17 @@ public struct WorktreeManager: Sendable {
         let exists = branchExists(repo: realRepo, branch: branch)
         let argv: [String]
         if exists {
-            argv = ["git", "-C", realRepo, "worktree", "add", wt, branch]
+            argv = ["git", "-C", realRepo, "worktree", "add", wt, branch]   // existing branch ignores `base`
         } else {
-            argv = ["git", "-C", realRepo, "worktree", "add", "-b", branch, wt]
+            var a = ["git", "-C", realRepo, "worktree", "add", "-b", branch, wt]
+            if let base = base?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
+                // Validate the start-point BEFORE `worktree add`, so an unknown base leaves no dir.
+                guard branchExists(repo: realRepo, branch: base) else {
+                    throw OrchestraError.invalidParams("base branch not found: \(base)")
+                }
+                a.append(base)
+            }
+            argv = a
         }
         let r = try Proc.run(argv)
         if !r.ok {

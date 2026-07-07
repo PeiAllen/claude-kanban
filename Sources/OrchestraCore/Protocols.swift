@@ -7,9 +7,21 @@ public protocol WorktreeManaging: Sendable {
     func path(repo: String, branch: String) -> String
     /// `branchExisted` = the branch was already present (so the worktree checked it out rather than
     /// cutting a fresh `-b` branch). Lets callers skip work that only applies to pre-existing branches
-    /// (e.g. deriving lineage from git config) without a second git query.
-    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool)
+    /// (e.g. deriving lineage from git config) without a second git query. `base` (BT2) is git's
+    /// start-point for a NEWLY-created branch (`git worktree add -b <branch> <wt> <base>`); it is
+    /// **ignored** when the branch already exists. nil ⇒ today's HEAD behavior.
+    func ensure(repo: String, branch: String, base: String?) throws
+        -> (worktree: String, created: Bool, branchExisted: Bool)
     func remove(worktree: String, force: Bool) throws
+}
+
+public extension WorktreeManaging {
+    /// Convenience for callers that never branch-from-a-base (recovery/rebuild): defaults `base` to nil.
+    @discardableResult
+    func ensure(repo: String, branch: String) throws
+        -> (worktree: String, created: Bool, branchExisted: Bool) {
+        try ensure(repo: repo, branch: branch, base: nil)
+    }
 }
 
 public protocol SessionManaging: Sendable {

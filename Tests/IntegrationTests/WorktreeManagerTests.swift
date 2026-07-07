@@ -81,4 +81,61 @@ struct WorktreeManagerTests {
             try wm.ensure(repo: "/etc", branch: "x")
         }
     }
+
+    // MARK: - ensure(base:) — BT2 spawn-with-base
+
+    @Test("ensure with a base starts a NEW branch at the base's tip")
+    func ensureNewBranchAtBase() throws {
+        let (repo, config) = try makeRepo()
+        // A second commit on a `base` branch so its tip differs from main's first commit.
+        try Proc.checked(["git", "-C", repo, "branch", "base"])
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "base"])
+        try "more".write(toFile: repo + "/B.md", atomically: true, encoding: .utf8)
+        try Proc.checked(["git", "-C", repo, "add", "."])
+        try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "on base"])
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "main"])
+        let baseTip = try Proc.checked(["git", "-C", repo, "rev-parse", "base"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let wm = WorktreeManager(config: config)
+        let (wt, created, branchExisted) = try wm.ensure(repo: repo, branch: "child", base: "base")
+        #expect(created)
+        #expect(!branchExisted)   // child is a fresh -b branch
+        let childTip = try Proc.checked(["git", "-C", wt, "rev-parse", "HEAD"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(childTip == baseTip)   // started AT the base tip, not main
+    }
+
+    @Test("ensure on an EXISTING branch ignores base")
+    func ensureExistingIgnoresBase() throws {
+        let (repo, config) = try makeRepo()
+        // `existing` sits at main's tip; `base` has an extra commit ahead of it.
+        try Proc.checked(["git", "-C", repo, "branch", "existing"])
+        let existingTip = try Proc.checked(["git", "-C", repo, "rev-parse", "existing"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try Proc.checked(["git", "-C", repo, "branch", "base"])
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "base"])
+        try "x".write(toFile: repo + "/C.md", atomically: true, encoding: .utf8)
+        try Proc.checked(["git", "-C", repo, "add", "."])
+        try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "ahead"])
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "main"])
+
+        let wm = WorktreeManager(config: config)
+        let (wt, _, branchExisted) = try wm.ensure(repo: repo, branch: "existing", base: "base")
+        #expect(branchExisted)
+        let head = try Proc.checked(["git", "-C", wt, "rev-parse", "HEAD"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(head == existingTip)   // still at existing's own tip — base was ignored
+    }
+
+    @Test("ensure with an unknown base throws and leaves no worktree dir")
+    func ensureUnknownBaseThrows() throws {
+        let (repo, config) = try makeRepo()
+        let wm = WorktreeManager(config: config)
+        let wt = wm.path(repo: repo, branch: "child")
+        #expect(throws: OrchestraError.self) {
+            try wm.ensure(repo: repo, branch: "child", base: "nope")
+        }
+        #expect(!FileManager.default.fileExists(atPath: wt))   // no half-created worktree
+    }
 }
