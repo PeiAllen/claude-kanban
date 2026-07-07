@@ -32,6 +32,19 @@ Do NOT blindly ship to main. Resolve the parent via `orchestra tree` and take th
 - **Parent has a live card** → you cannot advance a branch checked out in another worktree, and the owning agent must merge it. `orchestra send <parent-ref> "merge-request: squash-merge <you> into <parent>"` and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`. Do not `cd` into the parent's worktree.
 - **Bare local parent (no card owns it)** → borrow it ephemerally: check the parent branch out in a throwaway worktree, `git merge --squash <you>`, commit, remove the worktree, then `orchestra shipped <you>`.
 - **Parent is `main`** → today's `/ship` flow is unchanged (commit → merge to main → relaunch → archive). Do not call `orchestra shipped`.
-- **Remote parent (`origin/…` / a PR)** → out of scope for now (BT6). Do not attempt a local merge.
+- **Remote parent (`origin/<branch>` or `pr#<N>`)** → do NOT merge locally. **Publish** your branch as a stacked PR:
+  1. `git push -u origin <your-branch>`
+  2. `gh pr create --base <parentHeadRef>` — target the PARENT's head branch (the branch behind the parent PR / `origin/<branch>`), NOT `main`, so your PR shows only your commits.
+  Do NOT call `orchestra shipped`. Orchestra watches the parent PR; when it merges, it redirects your card onto the parent's base and nudges you to restack.
 
 After `orchestra shipped <you>` runs, the daemon notifies the parent card and retargets any children of yours onto the grandparent — you then archive as usual.
+
+## Restack after a REMOTE parent merges
+
+When your remote parent (`origin/…` / `pr#N`) merges, Orchestra redirects your link onto the parent's base and sends a nudge. Then:
+
+1. **Commit your WIP first** (never autostash).
+2. `git rebase --onto <new-base> <recorded-base>` — `<recorded-base>` is the anchor in the nudge / `orchestra tree`; only YOUR commits move (squash-proof — no phantom conflicts).
+3. `git push --force-with-lease` — **never a bare `--force`** (force-with-lease refuses to clobber an unseen remote update).
+4. `orchestra synced <you>`.
+5. Orchestra best-effort repairs your PR's base; if it didn't, `gh pr edit <your-pr> --base <new-base>`.
