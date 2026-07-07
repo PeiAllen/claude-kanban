@@ -3,7 +3,7 @@ project: claude-kanban
 feature: parent-card-branch-linking
 layer: 1
 title: Initial Design
-status: in-review
+status: approved
 created: 2026-07-06
 updated: 2026-07-06
 links: ["[[index]]"]
@@ -23,9 +23,14 @@ a local card builds on a colleague's open PR. Without first-class parents, the d
 the parent's work as the child's, ship targets the wrong branch, and a merged parent silently
 strands its children on a dead base.
 
-The foundational call is already made ([[../stacked-branches-and-guardian-handoff|stacked-branches]]):
-enforced 1:1 card↔worktree, one card per branch, stacks = one card per stack entry. This design
-finalizes the parent link itself and everything that hangs off it.
+The foundational call is already made ([[../stacked-branches-and-guardian-handoff|stacked-branches
+note]], whose feature this supersedes under the name **branch tree**): enforced 1:1 card↔worktree,
+one card per branch — a branch tree is one card per tree node. This design finalizes the parent
+link itself and everything that hangs off it.
+
+> **Terminology.** The topology is a **tree**, so we say *branch tree* / *parent link* /
+> *parent card / child card* — never "stacked branches" (implies linear). "Stacked PRs" survives
+> only as GitHub's own name for the remote publishing workflow.
 
 ## The model (resolved with owner, 2026-07-06)
 
@@ -45,7 +50,7 @@ finalizes the parent link itself and everything that hangs off it.
 
 1. **Parent-relative diffs everywhere** — inspector diff, "View changes" (Zed multi-diff),
    open-notes changed-set, and the card-footer `Nf +X −Y` stat all reflect only the child's own
-   work (merge-base vs parent), for stacked cards.
+   work (merge-base vs parent), for child cards.
 2. **Spawn on a branch** — new card based on any existing branch (local or remote parent), from
    desktop UI, iOS UI, MCP, and CLI; lineage recorded at spawn.
 3. **Parent→child sync** — children learn the parent moved (stale signal + inbox nudge) and
@@ -55,7 +60,7 @@ finalizes the parent link itself and everything that hangs off it.
 5. **Ship into parent** — a stacked card's ship targets its parent branch, not `main`.
 6. **Child informs parent** — on ship, the parent branch's owning card (derived lookup) gets an
    F3 inbox message; no card ⇒ no-op (pure-git degradation).
-7. **Board affordances** — stack grouping/indentation on the card, jump-to-parent, stale badge.
+7. **Board affordances** — tree grouping/indentation on the card, jump-to-parent, stale badge.
 8. **Remote PR parents** — a remote PR branch as parent: read-only baseline for diff/spawn,
    opt-in merge watch (`gh` ladder), publish-child-as-stacked-PR; push-into-parent where allowed.
 
@@ -118,7 +123,7 @@ rewriting docs/ship flows for non-stacked cards (unchanged defaults).
   an attended one leaves it to the user's timing.
 
 ### Ship + notify + redirect (goals 4, 5, 6)
-- `/ship` on a stacked card targets the **parent**: squash-merge child into parent branch
+- `/ship` on a child card targets the **parent**: squash-merge child into parent branch
   (ephemeral checkout if the parent has no worktree), then archive as today.
 - Ship then: (a) inbox message to the parent's owning card, if any — "child <branch> merged
   into you: <summary>"; (b) for each of the child's own children: repoint git-config lineage to
@@ -139,6 +144,18 @@ rewriting docs/ship flows for non-stacked cards (unchanged defaults).
   and repair the child PR's base (GitHub's auto-retarget is unreliable via API deletion).
 - `gh` is a **capability probe** (like Zed today): absent ⇒ degrade to pure-git tier (ls-remote,
   branch-deleted heuristic); never a hard dependency.
+
+### Publishing a fully-owned tree (resolved 2026-07-06)
+
+Publishing is **per-tree policy**, orthogonal to lineage. Two supported modes:
+
+| Mode | How it works | When |
+|---|---|---|
+| **Hidden tree, publish at the root** (default) | Interior branches stay local; children squash-ship into parents; only the main-based root branch becomes a PR when ready | Solo decomposition; minimum churn |
+| **Full stacked PRs** (opt-in, GitHub's term) | Every branch pushed, PR base = parent branch (GitHub accepts tree-shaped bases). Children never merge into parents; a *root* PR merges (`/ship` = `gh pr merge --squash`, still an Orchestra act) and descendants retarget/restack via the normal redirect flow | Slice-by-slice review/CI; incremental landing |
+
+"Only the topmost as PR" is ruled out — one blob PR loses incremental review, landing, and the
+stack structure itself.
 
 ### Degradation table (the card-optional thread)
 
@@ -194,7 +211,7 @@ flowchart LR
     PARENT -.->|derived lookup| INBOX
 ```
 
-### Detailed — stacked card lifecycle
+### Detailed — child card lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -222,17 +239,20 @@ stateDiagram-v2
 | Remote parents in `refs/orch/parents/…`, never local branches | read-only by construction; fork-safe; no namespace pollution | `gh pr checkout` (materializes branches); remote-tracking refs (same-repo only) |
 | `gh` behind a capability probe | works without it (degraded tier); agent-agnostic seam rule | hard gh dependency |
 
-## Open questions — need your call
+## Open questions — resolved at the L1 gate (2026-07-06)
 
-- [ ] **Footer diffstat for stacked cards:** switch the card's `Nf +X −Y` to parent-relative
-      (recommended — "this card's own work"), or show both (`vs parent · vs main`)?
-- [ ] **Sync nudge default:** stale badge only, badge + inbox nudge (recommended), or
-      auto-merge-down for unattended cards? (Per-card toggle proposed; what's the default?)
-- [ ] **Ship-into-parent = squash** — confirmed as the default? (Current `/ship` to main uses a
-      merge commit; stacked ship would differ deliberately.)
-- [ ] **Remote-parent v1 scope:** include push-into-parent for write-permitted same-repo
-      branches, or keep v1 read-only (baseline + watch + stacked-PR publish)? (Recommend the
-      latter — smaller, and stacked-PR publish covers the real workflow.)
+- [x] **Footer diffstat for child cards:** parent-relative only — the card shows *its own work*.
+- [x] **Sync nudge default:** stale badge (a `↓N` behind-parent indicator on the card face)
+      **plus** an inbox nudge; auto-merge-down remains a per-card opt-in.
+- [x] **Ship-into-parent = squash.** Keeps merges one-directional (unique merge-bases — parent
+      diffs stay correct), erases sync-merge clutter, one clean commit per landed slice. `/ship`
+      to `main` keeps today's merge-commit behavior.
+- [x] **Remote-parent v1 = read-only tier:** fetch-baseline + merge watch + publish-child-as-
+      stacked-PR. Direct push-into-parent (someone else's PR branch) deferred.
+- [x] **Tree publishing modes:** hidden-by-default / publish deliberately (root PR, or full
+      stacked PRs opt-in). Topmost-only-PR ruled out. See *Publishing a fully-owned tree*.
+- [x] **Naming:** the feature is the **branch tree** (parent link / parent–child cards), not
+      "stacked branches" — the topology is a tree, "stack" implies linear.
 
 ## Traceability
 

@@ -14,10 +14,12 @@ related:
 
 # Parent Card / Branch Linking — Design Index
 
-> Stacked & DAG branches for Orchestra: a card's branch based on another branch (card-optional
-> parent), parent-relative diffs, spawn-on-branch across UI/MCP/CLI, parent→child sync, merge
-> redirection, ship-into-parent, child-informs-parent, and remote PR-branch parents.
-> Finalizes [[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2.
+> **Branch trees** for Orchestra: a card's branch based on another branch (card-optional parent),
+> parent-relative diffs, spawn-on-branch across UI/MCP/CLI, parent→child sync, merge redirection,
+> ship-into-parent, child-informs-parent, and remote PR-branch parents.
+> Finalizes [[../stacked-branches-and-guardian-handoff|stacked-branches-and-guardian-handoff]] §2
+> — renamed: the topology is a **tree** (parent/child cards), not a linear stack; "stacked PRs"
+> survives only as GitHub's name for the remote publishing workflow.
 
 ## Resolved framing (2026-07-06, with owner)
 
@@ -35,8 +37,8 @@ related:
 
 | Layer | Document | Status |
 |-------|----------|--------|
-| 1 — Initial design | [[01-design]] | in-review |
-| 2 — Contract | [[02-contract]] | not started |
+| 1 — Initial design | [[01-design]] | **approved** (2026-07-06 gate) |
+| 2 — Contract | [[02-contract]] | draft |
 | 3 — Implementation | [[03-implementation]] | not started |
 | 3 — Tests | [[04-tests]] | not started |
 
@@ -66,7 +68,7 @@ flowchart TD
 
 ## Open questions (rolled up)
 
-- [ ] Footer diffstat for stacked cards: parent-relative only, or both baselines?
-- [ ] Sync nudge default: badge only vs badge+inbox (rec.) vs auto-merge?
-- [ ] Ship-into-parent = squash — confirm.
-- [ ] Remote-parent v1: read-only tier only (rec.), or include push-into-parent?
+All L1 questions resolved at the 2026-07-06 gate (see [[01-design]] §Open questions): footer stat
+parent-relative only · stale badge + inbox nudge default (auto-sync per-card opt-in) · squash at
+ship-into-parent · remote v1 read-only tier · tree publishing hidden-by-default (root PR or full
+stacked PRs) · renamed to **branch tree**.
