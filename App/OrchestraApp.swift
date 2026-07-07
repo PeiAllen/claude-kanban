@@ -261,7 +261,7 @@ private struct DebugLaunchHook: ViewModifier {
         if n > 0 {
             model.shellWindows[mock.id] = (1...n).map { "shell-\($0)" }
             model.selectedShell[mock.id] = "shell-1"
-            model.shellOpen.insert(mock.id)
+            // `shellOpen` is derived from `shellWindows` — setting the windows above is sufficient.
         }
         // ORCH_FOCUS=terminal|shell descends the keyboard into the terminal box so its accent focus
         // ring can be screenshotted (board zone = no ring; terminal/shell zone = ring).

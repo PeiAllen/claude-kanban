@@ -144,11 +144,17 @@ public struct SessionManager: Sendable {
         return r.stdout.split(whereSeparator: \.isNewline).map(String.init)
     }
 
-    /// All attachable windows as `TmuxTarget`s (agent + shells). `[]` if the session is dead.
+    /// All attachable windows as `TmuxTarget`s (agent + shells). THROWS when it can't obtain an
+    /// authoritative listing — a dead/unreachable session or a `list-windows` failure. Callers that
+    /// broadcast this (`emitShells`) rely on the distinction: a SUCCESSFUL listing with no `shell`
+    /// windows (only the `agent` window) is a genuine "no shells" state worth broadcasting, whereas a
+    /// FAILURE must NOT be flattened to an empty set — doing so would wholesale-wipe every client's
+    /// shell panel on a transient tmux hiccup. (`try?` at a call site recovers the old `?? []` behaviour
+    /// where a caller genuinely wants "empty on any failure".)
     public func windows(_ name: String) throws -> [TmuxTarget] {
-        guard try isAlive(name) else { return [] }
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         let r = try tmux(["list-windows", "-t", name, "-F", "#{window_index} #{window_name}"])
-        guard r.ok else { return [] }
+        guard r.ok else { throw OrchestraError.io(r.stderr.isEmpty ? "tmux list-windows failed" : r.stderr) }
         var targets: [TmuxTarget] = []
         for line in r.stdout.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: " ", maxSplits: 1)

@@ -62,7 +62,9 @@ final class SessionManagerTests {
 
         try sm.kill(name)
         #expect(try !sm.isAlive(name))
-        #expect(try sm.windows(name).isEmpty)
+        // A dead session can't yield an authoritative window listing, so `windows()` THROWS rather than
+        // masking it as `[]` — that distinction is what lets `emitShells` skip (not wipe) on a failure.
+        #expect(throws: (any Error).self) { try sm.windows(name) }
     }
 
     @Test("newShellWindow adds shell-N windows; windows() returns agent + shells")
