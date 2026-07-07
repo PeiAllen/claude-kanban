@@ -366,7 +366,7 @@ struct SpawnSheet: View {
         if let m = env["ORCH_SPAWN_MODE"], let parsed = Mode(rawValue: m) { mode = parsed }
         if let c = env["ORCH_SPAWN_CWD"], !c.isEmpty { cwd = c }
         // Bug-3 verify hook: auto-submit the sheet once fields have seeded, so the phone-spawn → auto-takeover
-        // flow can be driven headlessly (scripts/t4-phone-spawn-takeover-shot.sh). Scratch mode needs no
+        // flow can be driven headlessly (scripts/t4-takeover-shot.sh --spawn). Scratch mode needs no
         // repo/branch, so `canSpawn` is already true. DEBUG-only; production never sets this.
         if env["ORCH_SPAWN_AUTOSUBMIT"] == "1" {
             _Concurrency.Task { @MainActor in
