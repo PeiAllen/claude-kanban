@@ -60,6 +60,75 @@ extension OrchestraService {
         return TreeSnapshot(nodes: nodes)
     }
 
+    // MARK: - TreeStat maintenance (BT4)
+
+    /// Recompute the card's `TreeStat` from its lineage link; persist + emit **only when it changed**
+    /// (idempotent — safe to call freely from the report funnel), exactly like `recomputeDiffStat`. A
+    /// card with no parent link resolves to `nil`. Local parents only (BT4 scope); `parentMerged`
+    /// (BT5 `shipped`) and remote tips (BT6) are layered on later.
+    func recomputeTreeStat(_ id: UUID) async {
+        guard let t = await store.get(id), t.origin == .worktree else { return }
+        let link = await lineage.read(repo: t.repo, branch: t.branch)
+        let old = t.treeStat
+        let new = link.map { computeTreeStat(repo: t.repo, link: $0) }
+        guard new != old else { return }                       // no delta → no persist, no emit
+        guard let saved = try? await store.update(id, { $0.treeStat = new }) else { return }
+        emit(.taskUpserted(saved))
+    }
+
+    /// Coalescing per-card trigger for `recomputeTreeStat` — a one-shot debounce off the report funnel,
+    /// twin of `scheduleDiffStat`.
+    func scheduleTreeStat(_ id: UUID) {
+        treeStatDebounce[id]?.cancel()
+        treeStatDebounce[id] = _Concurrency.Task { [weak self] in
+            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+            if _Concurrency.Task.isCancelled { return }
+            await self?.recomputeTreeStat(id)
+            await self?.clearTreeStatDebounce(id)
+        }
+    }
+
+    private func clearTreeStatDebounce(_ id: UUID) { treeStatDebounce[id] = nil }
+
+    /// Derive a child's `TreeStat` from its lineage link using only local git. Parent tip gone
+    /// (branch deleted / bad ref) or an empty recorded base ⇒ `restackNeeded`. Otherwise `behind` =
+    /// commits in `base..tip`; if the base is no longer the tip's ancestor (parent rewrote/rebased) ⇒
+    /// `restackNeeded`, else `inSync` (behind 0) / `stale` (behind > 0).
+    private func computeTreeStat(repo: String, link: ParentLink) -> TreeStat {
+        guard !link.base.isEmpty, let tip = treeTip(repo: repo, link.parent) else {
+            return TreeStat(state: .restackNeeded)
+        }
+        let behind = treeBehind(repo: repo, base: link.base, tip: tip)
+        if !treeBaseIsAncestor(repo: repo, base: link.base, tip: tip) {
+            return TreeStat(state: .restackNeeded, behind: behind)
+        }
+        return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind)
+    }
+
+    /// `git rev-parse --verify --quiet <ref>` — nil when the ref can't be resolved (parent deleted).
+    private func treeTip(repo: String, _ ref: String) -> String? {
+        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]),
+              r.ok else { return nil }
+        let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return oid.isEmpty ? nil : oid
+    }
+
+    /// Commit count in `base..tip` (how far the parent advanced past the recorded base). 0 on error.
+    private func treeBehind(repo: String, base: String, tip: String) -> Int {
+        guard let r = try? Proc.run(["git", "-C", repo, "rev-list", "--count", "\(base)..\(tip)"]),
+              r.ok, let n = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return 0 }
+        return n
+    }
+
+    /// True iff `base` is an ancestor of `tip` (exit 0). Exit 1 = not an ancestor; any other failure is
+    /// treated as not-an-ancestor so a broken base surfaces as `restackNeeded` rather than silently inSync.
+    private func treeBaseIsAncestor(repo: String, base: String, tip: String) -> Bool {
+        guard let r = try? Proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", base, tip]) else {
+            return false
+        }
+        return r.ok
+    }
+
     /// `git merge-base <a> <b>` in `repo`, or `.invalidParams` if there is none (e.g. unknown parent).
     private func mergeBaseOID(repo: String, _ a: String, _ b: String) throws -> String {
         let r = try Proc.run(["git", "-C", repo, "merge-base", a, b])

@@ -73,6 +73,9 @@ public actor OrchestraService {
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
     // activity burst off the normalized `report()` funnel — NOT a periodic poll.
     var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    // Per-card coalescing debounce for the TreeStat recompute (branch-tree, BT4). Twin of
+    // `diffStatDebounce` — a one-shot per activity burst off the `report()` funnel, not a poll.
+    var treeStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
     public init(config: Config,
                 store: TaskStore? = nil,
