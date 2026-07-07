@@ -64,6 +64,7 @@ struct TransportReconnectTests {
                 if let r { return r }
             }
         }
+        func shutdown() { close() }   // fake has no fd: EOF the reader, same as UDSTransport.shutdown()
         func close() { lock.withLock { eofFlag = true }; sema.signal() }
     }
 

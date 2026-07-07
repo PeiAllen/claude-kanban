@@ -17,7 +17,14 @@ public protocol Transport: AnyObject, Sendable {
     func write(_ data: Data) -> Bool
     /// Block for the next inbound NDJSON line (without trailing '\n'); `nil` on EOF/close.
     func readLine() -> Data?
-    /// Tear down the connection.
+    /// Wake any thread blocked in `readLine()` by half-closing the link, WITHOUT releasing the fd — so
+    /// `readLine()` returns `nil` and the reader loop exits. Idempotent. The *reader* owns `close()`:
+    /// teardown/other threads call `shutdown()` to unblock the reader, then the reader closes. This
+    /// avoids (a) a leaked reader thread on Linux, where `close(2)` does not wake a blocked `read(2)`,
+    /// and (b) recycled-fd cross-wiring, where closing an fd a reader still holds lets a new connection
+    /// reuse the number under the zombie reader.
+    func shutdown()
+    /// Tear down the connection (release the fd). Called by the reader once its loop has exited.
     func close()
 }
 
@@ -43,6 +50,11 @@ public final class UDSTransport: Transport, @unchecked Sendable {
     }
 
     public func readLine() -> Data? { reader?.next() }
+
+    /// Wake a blocked `readLine()` (half-close) without releasing the fd — the reader owns `close()`.
+    public func shutdown() {
+        lock.withLock { if fd >= 0 { shutdownFD(fd) } }
+    }
 
     public func close() {
         lock.withLock {

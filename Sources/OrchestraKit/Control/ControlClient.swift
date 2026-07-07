@@ -132,10 +132,12 @@ public final class ControlClient: @unchecked Sendable {
 
     public func close() {
         stateLock.withLock { stopping = true; started = false }
-        // Guard `transport` with writeLock so we never tear it down under an in-flight `write`. Closing it
-        // also unblocks the reader (readLine → nil), so the loop can observe `stopping` and exit.
-        let t: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
-        t?.close()
+        // Wake the reader by SHUTTING DOWN the transport, NOT closing it: on Linux `close(2)` won't
+        // unblock a thread parked in `read(2)` (→ leaked reader thread), and closing an fd the reader
+        // still holds risks recycled-fd cross-wiring. The runLoop reader owns the actual `close()` (see
+        // `closeTransport()`), so we leave `transport` set here — the reader must still find and close it.
+        let t = writeLock.withLock { transport }
+        t?.shutdown()
         stateLock.withLock {
             for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }
             pending.removeAll()
@@ -282,17 +284,20 @@ public final class ControlClient: @unchecked Sendable {
     private func runLoop() {
         var attempt = 0
         while true {
-            if stateLock.withLock({ stopping }) { return }
+            // The runLoop thread OWNS the current transport's close (reader-owns-close). Every exit path
+            // closes whatever transport is live so a `close()` that only `shutdown()`s can't leak the fd —
+            // including the case where `stopping` was set before this loop began reading.
+            if stateLock.withLock({ stopping }) { closeTransport(); return }
             readUntilEOF()                                   // returns when the current transport hits EOF
             failPending()
-            if stateLock.withLock({ stopping }) { return }   // close() already published .down
+            if stateLock.withLock({ stopping }) { return }   // readUntilEOF already closed the transport
             setState(.retrying)
             // Backoff-reconnect until success or an explicit close().
             while true {
-                if stateLock.withLock({ stopping }) { setState(.down); return }
+                if stateLock.withLock({ stopping }) { closeTransport(); setState(.down); return }
                 let ms = Self.backoffMillis(attempt); attempt += 1
                 Thread.sleep(forTimeInterval: Double(ms) / 1000.0)
-                if stateLock.withLock({ stopping }) { setState(.down); return }
+                if stateLock.withLock({ stopping }) { closeTransport(); setState(.down); return }
                 do {
                     try openOnce()
                     attempt = 0
@@ -325,7 +330,16 @@ public final class ControlClient: @unchecked Sendable {
                 }
             }
         }
-        // EOF: drop the dead transport so the next openOnce() replaces it cleanly.
+        // EOF: the reader owns the close. Drop the dead transport so the next openOnce() replaces it
+        // cleanly, and release its fd HERE (on the reader thread) — never from a writer/teardown thread.
+        closeTransport()
+    }
+
+    /// Reader-owned teardown of the current transport: atomically take it out of the shared slot and
+    /// `close()` it. Idempotent (nil-safe; `Transport.close()` guards a already-closed fd). Only the
+    /// runLoop (reader) thread calls this — teardown/writer threads call `Transport.shutdown()` instead,
+    /// which wakes the reader so IT reaches here and closes.
+    private func closeTransport() {
         let dead: Transport? = writeLock.withLock { let x = transport; transport = nil; return x }
         dead?.close()
     }

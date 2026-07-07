@@ -71,7 +71,8 @@ public final class ControlServer: @unchecked Sendable {
             }
             _Concurrency.Task { [weak self] in await self?.handle(req, conn) }
         }
-        handleDisconnect(conn)
+        // The reader loop has ended (EOF): this thread owns the close.
+        handleReaderEOF(conn)
     }
 
     // MARK: - dispatch
@@ -108,7 +109,7 @@ public final class ControlServer: @unchecked Sendable {
         case "subscribe":
             conn.onBroken = { [weak self, weak conn] in
                 guard let self, let conn else { return }
-                self.handleDisconnect(conn)
+                self.handleBrokenWrite(conn)
             }
             // Register + replay the ring under one lock (paired with handleEvent's lock) so live
             // delivery and history replay can't duplicate or reorder. enqueue() only appends to the
@@ -290,11 +291,21 @@ public final class ControlServer: @unchecked Sendable {
 
     private func removeSubscriber(_ conn: PeerConnection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
 
-    /// Single teardown path for a dropped connection: drop it as a subscriber and close it. Reached from
-    /// the read-loop EOF and from a broken write; both steps are idempotent, so the double-call is safe.
-    private func handleDisconnect(_ conn: PeerConnection) {
+    /// Reader (`serve`) EOF path: drop the subscriber and CLOSE the fd. The reader thread owns the close,
+    /// so the fd is released only once nothing is reading it — no recycled-fd cross-wiring.
+    private func handleReaderEOF(_ conn: PeerConnection) {
         removeSubscriber(conn)
         conn.close()
+    }
+
+    /// Broken-write / `onBroken` path (runs on the connection's writer queue, NOT the reader). Drop the
+    /// subscriber so the event pump stops writing to it, then `shutdownRead()` to WAKE the blocked reader
+    /// — which then reaches `handleReaderEOF` and owns the close. Never closes the fd here: closing an fd
+    /// the reader still holds is exactly the recycled-fd cross-wiring this fix removes. Idempotent with
+    /// the reader path (both guard on `closed`/`didShutdown`), so the two racing calls are safe.
+    private func handleBrokenWrite(_ conn: PeerConnection) {
+        removeSubscriber(conn)
+        conn.shutdownRead()
     }
 }
 
@@ -310,6 +321,7 @@ final class PeerConnection: @unchecked Sendable {
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var closed = false
+    private var didShutdown = false
     private var broken = false
     private var _clientId: String?
 
@@ -341,6 +353,18 @@ final class PeerConnection: @unchecked Sendable {
                 if first { self.onBroken?() }
             }
         }
+    }
+
+    /// Wake the connection's blocked reader (`serve`'s `LineReader.next`) by half-closing the socket,
+    /// WITHOUT releasing the fd. Called from the writer/`onBroken` path so the reader observes EOF and
+    /// reaches its own `close()`. Idempotent; a no-op once closed. Never closing the fd here is what
+    /// prevents recycled-fd cross-wiring: on Linux `closeFD` wouldn't even wake the reader, and on Darwin
+    /// closing an fd the reader still holds lets a fresh `accept()` reuse the number under the zombie reader.
+    func shutdownRead() {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, !didShutdown else { return }
+        didShutdown = true
+        shutdownFD(fd)
     }
 
     func close() {
