@@ -581,17 +581,14 @@ public class BoardStore: ObservableObject {
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }
-                // Genuine transitions → the matching notification trigger. `prev == nil` (fresh card)
-                // and the post-reconnect wholesale set (which bypasses `apply`) never fire.
+                // Genuine transitions → the matching notification trigger, decided by the SHARED
+                // `AttentionTransition` core (the same mapping the phone's push path uses) so the macOS
+                // banner can't drift from the phone push. `prev == nil` (fresh card) and the
+                // post-reconnect wholesale set (which bypasses `apply`) yield nil and never fire.
                 // Host-only: the macOS notifier surfaces these as system banners; iOS notifications are N1.
                 #if os(macOS)
-                if let prev {
-                    if prev != .waiting, t.status == .waiting {
-                        notifier.notify(t.waitReason == .permission ? .permission : .needsYou, task: t)
-                    }
-                    if prev != .dead, t.status == .dead {
-                        notifier.notify(.died, task: t)
-                    }
+                if let trigger = AttentionTransition.trigger(prev: prev, task: t) {
+                    notifier.notify(trigger, task: t)
                 }
                 #endif
             }

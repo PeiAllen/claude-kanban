@@ -1,38 +1,29 @@
 #if os(macOS)
 import AppKit
 import UserNotifications
-import OrchestraCore
+import OrchestraKit
 
-/// macOS notifications for cards that need the human. Client-local, driven by `BoardModel.apply`
-/// observing the daemon event stream. Three independently-configurable triggers, each with a focus
-/// **scope** (off / background / always) and a **sound** (default / none / a named system sound). The
-/// sound rides on the notification's own `content.sound` — no separate audio player.
+/// macOS notifications for cards that need the human. Client-local, driven by `BoardStore.apply`
+/// observing the daemon event stream.
 ///
-/// Prefs are per-Mac `UserDefaults` (keys `orch_notify_<trigger>_scope` / `_sound`), read live so the
-/// Settings panel and the notifier never drift. Clicking a banner brings Orchestra forward + selects
-/// the card.
+/// **Single source of truth (Lens-1 HIGH #2):** this consumes the shared, provider-neutral push core in
+/// OrchestraKit rather than duplicating it — `NotificationPrefs` (the `orch_notify_*` scope/sound storage
+/// + defaults), `PushGate` (delivery gating), `AttentionTransition` (which status transition warrants
+/// which trigger — applied in `BoardStore.apply`), and `APNsPayload.body` (the alert wording). The only
+/// macOS-specific bit left here is mapping a stored `NotifySound` to a `UNNotificationSound`, which the
+/// client-safe core can't name. So "add a trigger" is now one edit to the shared core and the Mac banner +
+/// phone push move together — they can no longer silently diverge.
+///
+/// Prefs are per-Mac `UserDefaults` (keys `orch_notify_<trigger>_scope` / `_sound`), read live via a fresh
+/// `NotificationPrefs` so the Settings panel and the notifier never drift. Clicking a banner brings
+/// Orchestra forward + selects the card.
 @MainActor
 public final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
 
-    public enum NotifyTrigger: String { case permission, needsYou, died }
-    public enum NotifyScope: String, CaseIterable { case off, background, always }
+    /// Live per-trigger scope + sound, from the shared client-safe store (same `orch_notify_*` keys).
+    private let prefs = NotificationPrefs()
 
-    /// The 14 built-in macOS sounds (files in /System/Library/Sounds), resolvable by name.
-    public static let soundNames = ["Basso","Blow","Bottle","Frog","Funk","Glass","Hero","Morse",
-                                    "Ping","Pop","Purr","Sosumi","Submarine","Tink"]
-
-    public static func scopeKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_scope" }
-    public static func soundKey(_ t: NotifyTrigger) -> String { "orch_notify_\(t.rawValue)_sound" }
-
-    public static func defaultScope(_ t: NotifyTrigger) -> NotifyScope {
-        switch t { case .permission: return .always; case .needsYou: return .background; case .died: return .always }
-    }
-    /// `"default"` (system) / `"none"` (silent) / a name from `soundNames`.
-    public static func defaultSound(_ t: NotifyTrigger) -> String {
-        switch t { case .permission: return "Hero"; case .needsYou: return "Submarine"; case .died: return "Basso" }
-    }
-
-    /// Wired by `BoardModel`: select a card when its banner is clicked.
+    /// Wired by `BoardStore`: select a card when its banner is clicked.
     var onSelect: ((UUID) -> Void)?
 
     override init() {
@@ -47,51 +38,31 @@ public final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - firing
 
-    /// A trigger fired for `task`. Decide whether to surface it (per scope + app focus) and, if so,
-    /// post a macOS notification with the trigger's configured sound.
+    /// A trigger fired for `task`. Decide whether to surface it (per scope + app focus, via the shared
+    /// `PushGate`) and, if so, post a macOS notification with the shared body text + the trigger's sound.
     func notify(_ trigger: NotifyTrigger, task: Task) {
-        guard Self.shouldFire(scope(for: trigger), isActive: NSApp.isActive) else { return }
+        guard PushGate.shouldPresent(scope: prefs.scope(trigger), appForeground: NSApp.isActive) else { return }
         let content = UNMutableNotificationContent()
         content.title = task.title
-        content.body = Self.body(for: trigger)
-        content.sound = Self.sound(forPref: soundPref(for: trigger))
+        content.body = APNsPayload.body(for: trigger)
+        content.sound = Self.sound(for: prefs.sound(trigger))
         content.userInfo = ["taskId": task.id.uuidString]
         let req = UNNotificationRequest(identifier: task.id.uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
     }
 
-    // MARK: - pure decision helpers
+    // MARK: - macOS-specific sound mapping (the one thing the client-safe core can't name)
 
-    static func shouldFire(_ scope: NotifyScope, isActive: Bool) -> Bool {
-        switch scope { case .off: return false; case .always: return true; case .background: return !isActive }
-    }
-
-    /// Map a stored sound pref to a notification sound. `default` → system; `none` → silent; else a
-    /// named built-in (resolved from the Sounds search paths, which include /System/Library/Sounds).
-    static func sound(forPref pref: String) -> UNNotificationSound? {
-        switch pref {
-        case "none": return nil
-        case "default": return .default
-        default: return UNNotificationSound(named: UNNotificationSoundName("\(pref).aiff"))
+    /// Map a stored `NotifySound` to a `UNNotificationSound`. `.none` → silent (nil); `.systemDefault` →
+    /// the system default; else a named built-in (resolved from the Sounds search paths, which include
+    /// /System/Library/Sounds). Internal for unit-test visibility. `nonisolated` — a pure value mapping
+    /// touching no main-actor state, so it's callable from any context (incl. a sync test).
+    nonisolated static func sound(for sound: NotifySound) -> UNNotificationSound? {
+        switch sound {
+        case .none:          return nil
+        case .systemDefault: return .default
+        default:             return UNNotificationSound(named: UNNotificationSoundName("\(sound.rawValue).aiff"))
         }
-    }
-
-    static func body(for trigger: NotifyTrigger) -> String {
-        switch trigger {
-        case .permission: return "Agent needs your approval"
-        case .needsYou:   return "Agent finished — waiting on you"
-        case .died:       return "Agent session ended — needs recovery"
-        }
-    }
-
-    // MARK: - prefs
-
-    private func scope(for t: NotifyTrigger) -> NotifyScope {
-        let raw = UserDefaults.standard.string(forKey: Self.scopeKey(t))
-        return raw.flatMap(NotifyScope.init(rawValue:)) ?? Self.defaultScope(t)
-    }
-    private func soundPref(for t: NotifyTrigger) -> String {
-        UserDefaults.standard.string(forKey: Self.soundKey(t)) ?? Self.defaultSound(t)
     }
 
     // MARK: - UNUserNotificationCenterDelegate
