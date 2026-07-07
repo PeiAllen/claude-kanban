@@ -47,6 +47,11 @@ final class SSHControlTransport: Transport, @unchecked Sendable {
 
     func readLine() -> Data? { buffer.readLine() }
 
+    /// Wake a blocked `readLine()` without tearing the channel down — the reader owns `close()`. The NIO
+    /// side has no blocking fd to `shutdown(2)`; signalling EOF on the buffer wakes the parked reader
+    /// (which returns `nil` and then closes), mirroring `UDSTransport.shutdown()`.
+    func shutdown() { buffer.signalEOF() }
+
     /// Close only THIS control channel — never the shared session (terminals may still use it).
     func close() {
         lock.lock(); let box = childBox; childBox = nil; closed = true; lock.unlock()
