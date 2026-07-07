@@ -97,6 +97,12 @@ final class IOSAppTests: XCTestCase {
         XCTAssertEqual(diffBaselines(parentBranch: "main"), [.working, .branch, .parent])
     }
 
+    func testDiffDefaultBaselinePrefersParentWhenStacked() {
+        // §3 Diff (BT3): a stacked card opens on Parent; a non-stacked card opens on Branch.
+        XCTAssertEqual(diffDefaultBaseline(parentBranch: nil), .branch)
+        XCTAssertEqual(diffDefaultBaseline(parentBranch: "main-feature"), .parent)
+    }
+
     /// §3 Info: the "Copy chat link" / "Copy tmux target" buttons must copy the *exact* strings the
     /// desktop copies, so a value yanked on the phone is interchangeable with one yanked on the Mac.
     /// The desktop's source of truth is `BoardModel.copySelected` (`t.ref()` / `"\(t.tmuxSession):agent"`)

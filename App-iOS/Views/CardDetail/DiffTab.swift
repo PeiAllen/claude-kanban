@@ -12,10 +12,17 @@ struct DiffTab: View {
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
-    @State private var base: DiffBase = .branch
+    @State private var base: DiffBase
     @State private var files: [DiffFileSection] = []
     @State private var loading = true
     @State private var collapsed: Set<String> = []
+
+    init(task: Task) {
+        self.task = task
+        // BT3: a stacked card opens on Parent (its own work vs its parent), else Branch — same default
+        // the desktop inspector uses.
+        _base = State(initialValue: diffDefaultBaseline(parentBranch: task.parentBranch))
+    }
 
     private var baselines: [DiffBase] { diffBaselines(parentBranch: task.parentBranch) }
     private var reloadKey: String { "\(task.id.uuidString)-\(base.rawValue)" }
