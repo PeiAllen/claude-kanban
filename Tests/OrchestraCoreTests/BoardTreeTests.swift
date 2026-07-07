@@ -5,9 +5,11 @@ final class BoardTreeTests: XCTestCase {
     /// A worktree board card. `parent` seeds `parentBranch`; `branch` defaults to the id.
     private func card(_ id: String, _ col: Column, order: Int,
                       parent: String? = nil, branch: String? = nil,
-                      repo: String = "/r", archived: Bool = false) -> Task {
+                      repo: String = "/r", archived: Bool = false,
+                      origin: CardOrigin = .worktree) -> Task {
         var t = Task(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!,
                      title: id, repo: repo, branch: branch ?? id, cwd: "\(repo)/\(id)",
+                     origin: origin,
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: col,
                      order: order, status: .running, initialPrompt: id)
         t.parentBranch = parent
@@ -47,6 +49,14 @@ final class BoardTreeTests: XCTestCase {
                   card("03", .plan, order: 2, parent: "02"),
                   card("04", .plan, order: 3)]
         XCTAssertEqual(BoardTree.ordered(ts).map(\.title), ["01", "02", "03", "04"])
+    }
+
+    func test_ordered_child_above_parent_is_pulled_below_it() {
+        // Child sits at a LOWER order than its parent: the flatten must still place the parent
+        // first and the child directly after it (the reorder-inversion branch).
+        let ts = [card("02", .plan, order: 0, parent: "01"),
+                  card("01", .plan, order: 1)]
+        XCTAssertEqual(BoardTree.ordered(ts).map(\.title), ["01", "02"])
     }
 
     func test_ordered_siblings_keep_original_order() {
@@ -125,6 +135,14 @@ final class BoardTreeTests: XCTestCase {
     func test_parentCard_nil_when_no_matching_branch() {
         let child = card("02", .impl, order: 0, parent: "ghost")
         XCTAssertNil(BoardTree.parentCard([child], of: child))
+    }
+
+    func test_parentCard_nil_when_parent_is_freeform() {
+        // A non-worktree (borrowed/scratch) card on the parent branch is not a jump target —
+        // the chip must stay a no-op (contract: bare/borrowed parent ⇒ nil).
+        let parent = card("01", .plan, order: 0, origin: .borrowed)
+        let child  = card("02", .impl, order: 0, parent: "01")
+        XCTAssertNil(BoardTree.parentCard([parent, child], of: child))
     }
 
     func test_parentCard_respects_repo() {
