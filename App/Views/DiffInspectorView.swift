@@ -34,9 +34,8 @@ struct DiffInspectorView: View {
     }
 
     /// `.parent` is only offered once the card carries a parent branch (stacked-branches sets it).
-    private var baselines: [DiffBase] {
-        task.parentBranch != nil ? [.working, .branch, .parent] : [.working, .branch]
-    }
+    /// Shared with the phone Diff tab — see OrchestraKit `diffBaselines`.
+    private var baselines: [DiffBase] { diffBaselines(parentBranch: task.parentBranch) }
     private var reloadKey: String { "\(task.id.uuidString)-\(base.rawValue)" }
     private var allCollapsed: Bool { !files.isEmpty && files.allSatisfy { collapsedFiles.contains($0.id) } }
     private let splitDividerWidth: CGFloat = 0.5
@@ -55,7 +54,7 @@ struct DiffInspectorView: View {
         HStack(spacing: 8) {
             if preview == nil {
                 Picker("", selection: $base) {
-                    ForEach(baselines, id: \.self) { Text(label($0)).tag($0) }
+                    ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -71,7 +70,7 @@ struct DiffInspectorView: View {
             } else {
                 // Snapshot-only: a native segmented Picker won't render in ImageRenderer, so draw a
                 // faithful faux-segmented control for the headless screenshot.
-                fauxSegments(items: baselines.map { (label($0), $0 == base) })
+                fauxSegments(items: baselines.map { (diffBaselineLabel($0), $0 == base) })
                 fauxSegments(items: [(layoutLabel(.unified), layout == .unified),
                                      (layoutLabel(.split), layout == .split)])
             }
@@ -330,13 +329,6 @@ struct DiffInspectorView: View {
     }
 
     /// Path styled as a dimmed directory + bold filename, e.g. `App/Views/` + **DiffInspectorView.swift**.
-    private func label(_ b: DiffBase) -> String {
-        switch b {
-        case .working: return "Working"
-        case .branch:  return "Branch"
-        case .parent:  return "Parent"
-        }
-    }
 
     private func layoutLabel(_ l: DiffLayout) -> String {
         switch l {

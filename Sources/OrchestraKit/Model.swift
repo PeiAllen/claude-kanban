@@ -151,6 +151,23 @@ public struct DiffStat: Codable, Sendable, Equatable {
 /// until `Task.parentBranch` is set. See `notes/designs/code-review-on-board`.
 public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
 
+/// The diff baselines a card offers (design §3 Diff): **Working · Branch · Parent** — `.parent` only for a
+/// stacked card that carries a `parentBranch` (falls back to Branch until stacked-branches sets it). Pure
+/// so the Diff tab and its tests agree on when Parent appears. Shared by the desktop DiffInspectorView and
+/// the phone DiffTab (both used to carry their own copy).
+public func diffBaselines(parentBranch: String?) -> [DiffBase] {
+    parentBranch != nil ? [.working, .branch, .parent] : [.working, .branch]
+}
+
+/// Human label for a diff baseline (segmented control).
+public func diffBaselineLabel(_ base: DiffBase) -> String {
+    switch base {
+    case .working: return "Working"
+    case .branch:  return "Branch"
+    case .parent:  return "Parent"
+    }
+}
+
 // MARK: - Notes (the phone's Notes page)
 
 /// Whether a changed note is modified vs the branch base (`M`) or newly added (`A`). Deletions never

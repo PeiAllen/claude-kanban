@@ -43,22 +43,6 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// The diff baselines a card offers (design §3 Diff): **Working · Branch · Parent** — `.parent` only for a
-/// stacked card that carries a `parentBranch` (falls back to Branch until stacked-branches sets it). Pure
-/// so the Diff tab and its tests agree on when Parent appears.
-public func diffBaselines(parentBranch: String?) -> [DiffBase] {
-    parentBranch != nil ? [.working, .branch, .parent] : [.working, .branch]
-}
-
-/// Human label for a diff baseline (segmented control).
-public func diffBaselineLabel(_ base: DiffBase) -> String {
-    switch base {
-    case .working: return "Working"
-    case .branch:  return "Branch"
-    case .parent:  return "Parent"
-    }
-}
-
 /// The pinned-header worktree breadcrumb (design §3). A worktree card reads `repo/branch → …/dir`; a
 /// freeform/scratch card has no branch, so it reads its directory path alone. Pure string shaping so the
 /// header stays declarative and the format is testable.
