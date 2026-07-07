@@ -31,6 +31,19 @@ struct DiffProviderTests {
         try s.write(toFile: dir + "/" + rel, atomically: true, encoding: .utf8)
     }
 
+    /// `makeRepo` extended with a parent branch that has its OWN commit, then a child forked from it.
+    /// Layout: main(a.txt) → parent(+p.txt) → feat=HEAD(+c.txt). Returns the repo path on `feat`.
+    static func makeParentChild() throws -> String {
+        let dir = try makeRepo()
+        try git(dir, "checkout", "-q", "-b", "parent")
+        try write(dir, "p.txt", "parent work\n")
+        try git(dir, "add", "-A"); try git(dir, "commit", "-q", "-m", "parent work")
+        try git(dir, "checkout", "-q", "-b", "feat")
+        try write(dir, "c.txt", "child work\n")
+        try git(dir, "add", "-A"); try git(dir, "commit", "-q", "-m", "child work")
+        return dir
+    }
+
     // MARK: stat
 
     @Test("zero changes → nil stat")
@@ -101,6 +114,30 @@ struct DiffProviderTests {
         let parent = try provider.stat(worktree: dir, base: .parent, parentBranch: nil)
         let branch = try provider.stat(worktree: dir, base: .branch, parentBranch: nil)
         #expect(parent == branch)
+    }
+
+    @Test(".parent excludes the parent's own work (merge-base baseline)")
+    func parentExcludesParentWork() throws {
+        let dir = try Self.makeParentChild()
+        let parent = try #require(try provider.stat(worktree: dir, base: .parent, parentBranch: "parent"))
+        #expect(parent.filesChanged == 1)   // c.txt only — NOT the parent's p.txt
+        // vs .branch (against main), which sees BOTH the parent's and the child's files.
+        let branch = try #require(try provider.stat(worktree: dir, base: .branch, parentBranch: "parent"))
+        #expect(branch.filesChanged == 2)
+    }
+
+    @Test("after a merge-sync the parent merge-base advances; diff still shows only the child's work")
+    func mergeSyncAdvancesMergeBase() throws {
+        let dir = try Self.makeParentChild()
+        // Parent gains a NEW commit; child merges parent down (sync). Triple-dot: the merge-base moves
+        // forward to include the parent's new work, so it is never re-counted as the child's.
+        try Self.git(dir, "checkout", "-q", "parent")
+        try Self.write(dir, "p2.txt", "more parent work\n")
+        try Self.git(dir, "add", "-A"); try Self.git(dir, "commit", "-q", "-m", "parent work 2")
+        try Self.git(dir, "checkout", "-q", "feat")
+        try Self.git(dir, "merge", "-q", "--no-edit", "parent")   // sync parent into child
+        let s = try #require(try provider.stat(worktree: dir, base: .parent, parentBranch: "parent"))
+        #expect(s.filesChanged == 1)   // still c.txt only; p.txt + p2.txt are the parent's, excluded
     }
 
     @Test(".branch bases on the LOCAL default branch, not a stale origin/main")

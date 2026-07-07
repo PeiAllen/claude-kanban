@@ -40,7 +40,7 @@ public struct Launcher: Sendable {
     ///
     /// Returns `(opened:` tabs seeded, ≤ cap `, total:` changed `.md` count `)` for the caller's toast.
     @discardableResult
-    public func openNotes(_ worktree: String) throws -> (opened: Int, total: Int) {
+    public func openNotes(_ worktree: String, parentRef: String?) throws -> (opened: Int, total: Int) {
         #if !os(macOS)
         throw OrchestraError.io("opening notes in Obsidian is a macOS-only convenience")
         #else
@@ -51,7 +51,7 @@ public struct Launcher: Sendable {
 
         // Seed the changed notes as tabs BEFORE the script opens the vault, so Obsidian restores them
         // on load. Capped so a large diff doesn't seed dozens of tabs.
-        let all = changedNotes(worktree: worktree)          // vault-relative paths
+        let all = changedNotes(worktree: worktree, parentRef: parentRef)   // vault-relative paths
         let opened = Array(all.prefix(Self.openNotesTabCap))
         if !opened.isEmpty { seedWorkspaceTabs(worktree: worktree, relPaths: opened) }
 
@@ -94,8 +94,8 @@ public struct Launcher: Sendable {
     /// the Zed "View changes" diff, filtered to notes/docs (`.md`) and excluding deletions (a deleted
     /// file can't be opened). Returns worktree-RELATIVE paths (what `workspace.json` leaves reference).
     /// Empty when nothing changed, the base can't be resolved, or the card isn't a git worktree.
-    func changedNotes(worktree: String) -> [String] {
-        changedMarkdown(worktree: worktree).map { $0.path }
+    func changedNotes(worktree: String, parentRef: String?) -> [String] {
+        changedMarkdown(worktree: worktree, parentRef: parentRef).map { $0.path }
     }
 
     /// A changed markdown note: its worktree-relative path + whether it's modified vs base or newly
@@ -106,8 +106,8 @@ public struct Launcher: Sendable {
     /// The changed/new markdown notes with their M/A status — the exact "which notes did this branch
     /// touch" set the desktop's Open-notes uses, before dropping status. Empty when nothing changed, the
     /// base can't be resolved, or the card isn't a git worktree.
-    func changedMarkdown(worktree: String) -> [ChangedNote] {
-        guard let base = mergeBase(worktree: worktree) else { return [] }
+    func changedMarkdown(worktree: String, parentRef: String?) -> [ChangedNote] {
+        guard let base = mergeBase(worktree: worktree, parentRef: parentRef) else { return [] }
         return changedFiles(worktree: worktree, base: base)
             .filter { $0.status != .deleted && $0.newPath.lowercased().hasSuffix(".md") }
             .map { ChangedNote(path: $0.newPath, added: $0.status == .added) }
@@ -117,8 +117,8 @@ public struct Launcher: Sendable {
     /// (M6) renders in-app (it has no Obsidian). Same branch-vs-base set as `changedNotes`, each note's
     /// live file content attached (UTF-8, capped for a pathological note). A note whose file can't be
     /// read is skipped. Not `#if os(macOS)`-gated — the git/file work runs on the Linux daemon too.
-    func changedNoteFiles(worktree: String) -> [NoteFile] {
-        changedMarkdown(worktree: worktree).compactMap { note in
+    func changedNoteFiles(worktree: String, parentRef: String?) -> [NoteFile] {
+        changedMarkdown(worktree: worktree, parentRef: parentRef).compactMap { note in
             let abs = (worktree as NSString).appendingPathComponent(note.path)
             guard let data = FileManager.default.contents(atPath: abs) else { return nil }
             var content = String(decoding: data, as: UTF8.self)
@@ -129,7 +129,7 @@ public struct Launcher: Sendable {
         }
     }
 
-    public func openInZed(_ worktree: String) throws {
+    public func openInZed(_ worktree: String, parentRef: String?) throws {
         #if !os(macOS)
         throw OrchestraError.io("opening in Zed is a macOS-only convenience")
         #else
@@ -158,7 +158,7 @@ public struct Launcher: Sendable {
         // `old`, and `new` as three separate paths (an empty `--diff` buffer + two folders). So the
         // `--diff old new` flag MUST come before the worktree positional.
         var argv = ["zed", "-n"]
-        if let dirs = try? branchDiffDirs(worktree: worktree) {
+        if let dirs = try? branchDiffDirs(worktree: worktree, parentRef: parentRef) {
             argv += ["--diff", dirs.old, dirs.new]
         }
         argv.append(worktree)
@@ -185,8 +185,8 @@ public struct Launcher: Sendable {
     /// Hardlinks (not symlinks) because Zed renders a symlinked diff side as empty; a hardlink reads as
     /// the real file. The multibuffer is for review — to *edit*, use the worktree project that opens in
     /// the same window (Zed saves atomically, so edits in the diff don't reliably reach the worktree).
-    func branchDiffDirs(worktree: String) throws -> (old: String, new: String)? {
-        guard let base = mergeBase(worktree: worktree) else { return nil }
+    func branchDiffDirs(worktree: String, parentRef: String?) throws -> (old: String, new: String)? {
+        guard let base = mergeBase(worktree: worktree, parentRef: parentRef) else { return nil }
         let changes = changedFiles(worktree: worktree, base: base)
         guard !changes.isEmpty else { return nil }
 
@@ -227,10 +227,18 @@ public struct Launcher: Sendable {
         return (oldRoot.path, newRoot.path)
     }
 
-    /// The merge-base of HEAD and the repo's default branch: the commit this branch forked from. `nil`
-    /// if no base branch is found or git fails. Base-ref resolution (local default branch preferred over a
-    /// stale `origin/main`) is shared with the board diffstat via `DiffBaseline.defaultBaseRef`.
-    private func mergeBase(worktree: String) -> String? {
+    /// The commit this branch's diff baselines against: the merge-base of HEAD and either the card's
+    /// PARENT branch (a stacked card — its OWN work only) or, when there's no parent, the repo's default
+    /// branch (today's behavior). A set-but-unresolvable parent (e.g. the branch is missing) falls back
+    /// to the default-branch merge-base, exactly like `DiffBaseline.range(.parent)`. `nil` when neither
+    /// resolves or git fails. Base-ref resolution (local default branch preferred over a stale
+    /// `origin/main`) is shared with the board diffstat via `DiffBaseline.defaultBaseRef`.
+    private func mergeBase(worktree: String, parentRef: String?) -> String? {
+        if let parentRef, !parentRef.isEmpty,
+           let r = try? Proc.run(["git", "merge-base", "HEAD", parentRef], cwd: worktree), r.ok {
+            let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sha.isEmpty { return sha }
+        }
         guard let baseRef = DiffBaseline.defaultBaseRef(worktree: worktree),
               let r = try? Proc.run(["git", "merge-base", "HEAD", baseRef], cwd: worktree), r.ok
         else { return nil }
