@@ -115,6 +115,16 @@ struct LineageTests {
         #expect(await lin.children(repo: repo, of: "q") == ["other"])
     }
 
+    @Test("children matches only the orchestra-parent key, never orchestra-parent-base of equal value")
+    func childrenAnchorExcludesSiblingKeys() async throws {
+        // A child whose recorded base OID string coincidentally equals the parent name would double-
+        // count if `children`'s key match leaked past the `orchestra-parent` anchor onto `-base`.
+        let repo = try Self.makeRepo()
+        let lin = BranchLineage()
+        try await lin.set(repo: repo, branch: "c1", link: ParentLink(parent: "target", base: "target"))
+        #expect(await lin.children(repo: repo, of: "target") == ["c1"])   // once, from the parent key only
+    }
+
     @Test("ancestors walks the parent chain nearest-first")
     func ancestorsChain() async throws {
         let repo = try Self.makeRepo()

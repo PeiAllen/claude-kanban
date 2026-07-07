@@ -57,8 +57,13 @@ public actor BranchLineage {
                           watch: get(repo, branch, Self.kWatch) == "true")
     }
 
-    /// Write the link's keys. Rejects self-parent and cycles (via `ancestors`) with `.invalidParams`.
+    /// Write the link's keys. Rejects an empty parent, self-parent, and cycles (via `ancestors`) with
+    /// `.invalidParams`. The parent key is written LAST — `read` keys on it, so a mid-write failure
+    /// leaves NO link rather than a partial one.
     public func set(repo: String, branch: String, link: ParentLink) throws {
+        guard !link.parent.isEmpty else {
+            throw OrchestraError.invalidParams("parent ref must not be empty")
+        }
         guard link.parent != branch else {
             throw OrchestraError.invalidParams("a branch cannot be its own parent: \(branch)")
         }
@@ -66,12 +71,14 @@ public actor BranchLineage {
         if ancestors(repo: repo, of: link.parent).contains(branch) {
             throw OrchestraError.invalidParams("parent link would create a cycle: \(branch) → \(link.parent)")
         }
-        try setKey(repo, branch, Self.kParent, link.parent)
+        // Satellite keys first; the `orchestra-parent` key (read's existence marker) is the last write,
+        // so a failure partway through never leaves a branch reporting a link with a stale/absent base.
         try setKey(repo, branch, Self.kBase, link.base)
         if let pr = link.prNumber { try setKey(repo, branch, Self.kPr, String(pr)) }
         else { unset(repo, branch, Self.kPr) }
         if link.watch { try setKey(repo, branch, Self.kWatch, "true") }
         else { unset(repo, branch, Self.kWatch) }
+        try setKey(repo, branch, Self.kParent, link.parent)
     }
 
     /// Remove every `orchestra-*` lineage key for `branch` (tolerates already-unset keys).
