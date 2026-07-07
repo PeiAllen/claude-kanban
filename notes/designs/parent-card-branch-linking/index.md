@@ -38,9 +38,9 @@ related:
 | Layer | Document | Status |
 |-------|----------|--------|
 | 1 — Initial design | [[01-design]] | **approved** (2026-07-06 gate) |
-| 2 — Contract | [[02-contract]] | in-review |
-| 3 — Implementation | [[03-implementation]] | not started |
-| 3 — Tests | [[04-tests]] | not started |
+| 2 — Contract | [[02-contract]] | **approved** (2026-07-07 gate) |
+| 3 — Implementation | [[03-implementation]] | in-review |
+| 3 — Tests | [[04-tests]] | in-review |
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 

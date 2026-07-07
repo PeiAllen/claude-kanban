@@ -3,7 +3,7 @@ project: claude-kanban
 feature: parent-card-branch-linking
 layer: 2
 title: Contractual Design
-status: in-review
+status: approved
 created: 2026-07-06
 updated: 2026-07-06
 links: ["[[index]]", "[[01-design]]"]
@@ -308,14 +308,13 @@ classDiagram
 | Codex installer generalized to compose `AGENTS.md` sections | second doc (TreeDocs) must not clobber delegation doc | separate AGENTS.md files (Codex reads one per scope) |
 | Re-parenting = `set-parent` modes, `adopt` default | move rewrites history — explicit intent; adopt is non-destructive | separate `reparent` command (verb sprawl); move-by-default (surprising rewrite) |
 
-## Open questions — need your call
+## Open questions — resolved at the L2 gate (2026-07-07, owner approved all)
 
-- [ ] **Ship-when-parent-is-live = parent merges child** (merge-request inbox → parent agent
-      squash-merges, then `shipped`). This resolves goal 6's "or perhaps the parent merges it"
-      as *yes, when a parent card exists*. Confirm this over "child waits for parent to
-      archive/free the branch"?
-- [ ] **Command names:** `set-parent` / `tree` / `synced` / `shipped` — happy with these verbs?
-- [ ] **Remote watch defaults:** off unless the card was spawned with a remote base (then on,
-      60s active / 5min idle backoff). OK?
-- [ ] **Tree grouping on the board:** children indent under their parent *within the same
-      column* only (cross-column stays flat, chip+jump covers it). Enough for v1?
+- [x] **Ship-when-parent-is-live = parent merges child** (merge-request inbox → parent agent
+      squash-merges, then `shipped`) — confirmed; resolves goal 6's "or perhaps the parent
+      merges it" as *yes, when a parent card exists*.
+- [x] **Command names** `set-parent` / `tree` / `synced` / `shipped` — confirmed.
+- [x] **Remote watch defaults** — off; auto-on for cards spawned with a remote base
+      (60 s active / 5 min idle backoff).
+- [x] **Tree grouping v1** — children indent under their parent within the same column only.
+- [x] **Re-parenting** — `set-parent mode: adopt|move` (owner request, 2026-07-06).
