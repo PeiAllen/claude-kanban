@@ -92,7 +92,7 @@ struct NotesPage: View {
     private func fileHeader(_ file: NoteFile) -> some View {
         HStack(spacing: 8) {
             statusBadge(file.status)
-            filePath(file.path)
+            filePath(file.path, dir: .footnote, name: .footnote.weight(.semibold), theme: theme)
             Spacer(minLength: 0)
         }
     }
@@ -105,15 +105,6 @@ struct NotesPage: View {
             .frame(width: 18, height: 18)
             .background(c.tint)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-    }
-
-    private func filePath(_ path: String) -> Text {
-        guard let slash = path.lastIndex(of: "/") else {
-            return Text(path).font(.footnote.weight(.semibold)).foregroundColor(theme.text)
-        }
-        let dir = String(path[...slash]); let name = String(path[path.index(after: slash)...])
-        return Text(dir).font(.footnote).foregroundColor(theme.text3)
-             + Text(name).font(.footnote.weight(.semibold)).foregroundColor(theme.text)
     }
 
     private func filename(_ path: String) -> String {
@@ -130,7 +121,4 @@ struct NotesPage: View {
         loading = false
     }
 
-    @ViewBuilder private func centered<C: View>(@ViewBuilder _ c: () -> C) -> some View {
-        VStack { Spacer(); c(); Spacer() }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
