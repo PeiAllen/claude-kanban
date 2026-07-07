@@ -47,7 +47,7 @@ final class TerminalControl: ObservableObject {
 
     /// Send a special key (Esc/Tab/arrows/Page…). Consumes a primed one-shot Ctrl if set (so Ctrl then a
     /// tapped key composes), matching a hardware Ctrl chord.
-    func send(_ key: TerminalKey) {
+    func send(_ key: KeyName) {
         let withCtrl = ctrl ? applyControlModifier(to: key.bytes) : key.bytes
         coordinator?.sendBytes(withCtrl)
         consumeOneShotCtrl()

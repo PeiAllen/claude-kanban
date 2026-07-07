@@ -36,6 +36,28 @@ public enum KeyName: String, Sendable, Codable, CaseIterable, Equatable {
         case .end:      return "End"
         }
     }
+
+    /// The raw byte sequence to write into a live PTY for this key — the standard xterm/VT encodings an
+    /// `xterm-256color` TUI (Claude or Codex — provider-neutral) understands, so a tapped key is
+    /// indistinguishable from a hardware key. Used by the iOS takeover accessory bar (PR T4); one
+    /// vocabulary with `tmuxToken`/`rawValue` rather than a parallel `TerminalKey` enum. Unit-tested by
+    /// `TerminalKeyBytesTests`.
+    public var bytes: [UInt8] {
+        switch self {
+        case .esc:      return [0x1b]
+        case .tab:      return [0x09]
+        case .enter:    return [0x0d]           // CR — the Return key (tmux/agents translate as needed)
+        case .ctrlC:    return [0x03]           // Ctrl-C → SIGINT
+        case .up:       return [0x1b, 0x5b, 0x41]   // ESC [ A
+        case .down:     return [0x1b, 0x5b, 0x42]   // ESC [ B
+        case .right:    return [0x1b, 0x5b, 0x43]   // ESC [ C
+        case .left:     return [0x1b, 0x5b, 0x44]   // ESC [ D
+        case .pageUp:   return [0x1b, 0x5b, 0x35, 0x7e]   // ESC [ 5 ~
+        case .pageDown: return [0x1b, 0x5b, 0x36, 0x7e]   // ESC [ 6 ~
+        case .home:     return [0x1b, 0x5b, 0x48]   // ESC [ H
+        case .end:      return [0x1b, 0x5b, 0x46]   // ESC [ F
+        }
+    }
 }
 
 /// One element of a key chord: either a named special key or a run of literal text. A `send-keys`
