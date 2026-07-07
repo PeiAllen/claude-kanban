@@ -569,11 +569,15 @@ public actor OrchestraService {
 
     /// Recompute the card's shell-window set from tmux (authoritative) and broadcast it so every
     /// connected client — desktop or phone — renders the same set. Called after any shell open/close.
-    /// Best-effort: a `list-windows` failure (e.g. the session just died) emits an empty set, which is
-    /// the correct "no shells" state; the caller's own mutation already succeeded either way.
+    /// Distinguishes "session genuinely has no shell windows" from "couldn't list the windows": a
+    /// SUCCESSFUL listing that happens to contain only the `agent` window is a real, broadcastable
+    /// "no shells" state, but a `windows()` FAILURE (transient tmux hiccup / unreachable server) is
+    /// SKIPPED rather than broadcast as empty — emitting `[]` on a hiccup would wholesale-wipe every
+    /// client's shell panel/selection until the next reconnect. The caller's own mutation already
+    /// succeeded, and the next successful open/close (or reconnect reconcile) re-broadcasts the truth.
     private func emitShells(_ t: Task) {
         let name = sessions.sessionName(t.id)
-        let targets = (try? sessions.windows(name)) ?? []
+        guard let targets = try? sessions.windows(name) else { return }
         let shells = targets.filter { $0.kind == .shell }
             .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
         emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)))

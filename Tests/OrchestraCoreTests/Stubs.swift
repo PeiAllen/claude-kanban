@@ -89,7 +89,9 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); shellWins[name]?.removeAll { $0 == window }; lock.unlock()
     }
     func windows(_ name: String) throws -> [TmuxTarget] {
-        guard try isAlive(name) else { return [] }
+        // Mirror the real SessionManager contract: a dead session can't yield an authoritative
+        // listing, so THROW rather than return `[]` (so `emitShells` skips instead of wiping).
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         func t(_ window: String, _ kind: WindowKind) -> TmuxTarget {
             TmuxTarget(socket: "orchestra", session: name, window: window, kind: kind,
                        target: "\(name):\(window)", attach: "tmux -L orchestra attach -t \(name):\(window)")

@@ -105,9 +105,21 @@ public final class BoardModel: ObservableObject {
     @AppStorage("orch_onboarded") public var onboarded = false
 
     // Per-card shell state (keyed by task id so it survives selecting away and back).
-    @Published public var shellOpen: Set<UUID> = []
     @Published public var shellWindows: [UUID: [String]] = [:]
     @Published public var selectedShell: [UUID: String] = [:]
+
+    /// Cards with at least one open shell window. DERIVED from `shellWindows` (a card is "open" iff it
+    /// has windows) rather than tracked as a third stored `@Published` — the single-writer
+    /// `applyShellPanelState` keeps `shellWindows` authoritative (nil when a card has no shells), so a
+    /// redundant `Set` would only re-introduce the four insert/remove sites that raced the
+    /// `shellsChanged` broadcast. Reads are unchanged (`.contains`); it just can't be mutated directly.
+    public var shellOpen: Set<UUID> { Set(shellWindows.keys) }
+
+    /// Per-card monotonic counter bumped every time a live `shellsChanged` broadcast reconciles a card.
+    /// The (re)connect `refreshShellPanels` snapshots this per card BEFORE its suspending `sessions()`
+    /// pull and skips the write if a fresher broadcast landed meanwhile — an older poll snapshot must
+    /// never clobber a newer event. Not published: pure ordering bookkeeping, no view depends on it.
+    private var shellsBroadcastEpoch: [UUID: Int] = [:]
 
     /// Daemon-authoritative agent-terminal ownership (PR D4), mirrored per card so the inspector can
     /// render the live terminal vs the "Taken over by phone" placeholder (PR D5). Ephemeral UI
@@ -525,7 +537,12 @@ public final class BoardModel: ObservableObject {
         }
 
         for card in cards {
+            // Snapshot the card's broadcast epoch BEFORE the suspending pull. `sessions()` awaits a
+            // round-trip, during which a live `shellsChanged` can reconcile this card to a FRESHER set;
+            // if that happens the poll result is stale, so drop it rather than clobber the newer event.
+            let epoch = shellsBroadcastEpoch[card.id, default: 0]
             guard let sessions = await sessions(card.id) else { continue }
+            if shellsBroadcastEpoch[card.id, default: 0] != epoch { continue }
             let state = ShellPanelState(targets: sessions.targets, previousSelection: selectedShell[card.id])
             applyShellPanelState(state, for: card.id)
         }
@@ -536,19 +553,22 @@ public final class BoardModel: ObservableObject {
     /// so it can be unit-tested without a live daemon. Events are LIVE-ONLY, so `refreshShellPanels`
     /// still does the one-shot pull on (re)connect.
     func ingestShellsChanged(_ state: ShellWindowsState) {
+        // Mark this card freshly reconciled from a live event so an in-flight `refreshShellPanels`
+        // poll (older snapshot) can detect it and not clobber us.
+        shellsBroadcastEpoch[state.cardId, default: 0] += 1
         applyShellPanelState(ShellPanelState(shells: state.shells, previousSelection: selectedShell[state.cardId]),
                              for: state.cardId)
     }
 
     private func applyShellPanelState(_ state: ShellPanelState, for id: UUID) {
+        // Single writer of per-card shell state. `shellOpen` is derived from `shellWindows`, so setting
+        // `shellWindows` (non-nil when open, nil when closed) is all that's needed to flip open-ness.
         if state.isOpen {
             shellWindows[id] = state.windows
             selectedShell[id] = state.selected
-            shellOpen.insert(id)
         } else {
             shellWindows[id] = nil
             selectedShell[id] = nil
-            shellOpen.remove(id)
         }
     }
 
@@ -610,7 +630,8 @@ public final class BoardModel: ObservableObject {
             if selectedId == id { selectedId = nil }
             if archiveConfirm == id { archiveConfirm = nil }
             // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
-            shellOpen.remove(id); shellWindows[id] = nil; selectedShell[id] = nil
+            // (`shellOpen` is derived from `shellWindows`, so clearing that clears it too.)
+            shellWindows[id] = nil; selectedShell[id] = nil
         case .activity(let item):
             // Dedup by id (#3): the daemon replays its whole activity ring to EVERY `subscribe`, so each
             // reconnect (which re-subscribes) would otherwise re-insert up to 200 items the board already
@@ -824,38 +845,27 @@ public final class BoardModel: ObservableObject {
         return r["window"]?.stringValue
     }
 
-    /// Open a new shell window for a card and track it (the one place that mutates shell state).
+    /// Open a new shell window for a card. Broadcast-only: the daemon fires a `shellsChanged` event
+    /// (recomputed authoritatively from tmux) after the open, and `ingestShellsChanged` is the SINGLE
+    /// writer of shell state. Optimistically appending the window here used to race that event —
+    /// response-vs-event ordering produced duplicate window entries → duplicate `ForEach` IDs. The iOS
+    /// path was already broadcast-only; this matches it.
     public func newShell(_ id: UUID) async {
-        if let w = await openShell(id) {
-            shellWindows[id, default: []].append(w)
-            selectedShell[id] = w
-            shellOpen.insert(id)
-        }
+        _ = await openShell(id)
     }
 
-    /// Open a read-only inspect shell for a card (read-only claude in its worktree) and track its
-    /// window like a normal shell tab.
+    /// Open a read-only inspect shell for a card (read-only claude in its worktree). Broadcast-only —
+    /// same single-writer rationale as `newShell`: the daemon's `shellsChanged` delivers the new tab.
     public func inspect(_ id: UUID) async {
-        guard let r = try? await client.call("inspect", .object(["ref": .string(id.uuidString)])),
-              let w = r["window"]?.stringValue else { return }
-        shellWindows[id, default: []].append(w)
-        selectedShell[id] = w
-        shellOpen.insert(id)
+        _ = try? await client.call("inspect", .object(["ref": .string(id.uuidString)]))
     }
 
-    /// Close one shell window, dropping it from the daemon and the per-card state. Selects a
-    /// neighbouring tab if the closed one was active; hides the strip once the last shell is gone.
+    /// Close one shell window. Broadcast-only — same single-writer rationale as `newShell`: the daemon
+    /// recomputes and broadcasts the shell set (with the closed window dropped) after the close, and
+    /// `ingestShellsChanged` reconciles it (re-selecting a surviving tab when the closed one was active).
     public func closeShell(_ id: UUID, _ window: String) async {
         _ = try? await client.call("closeShell", .object(["ref": .string(id.uuidString),
                                                           "window": .string(window)]))
-        var ws = shellWindows[id] ?? []
-        guard let idx = ws.firstIndex(of: window) else { return }
-        ws.remove(at: idx)
-        shellWindows[id] = ws.isEmpty ? nil : ws
-        if selectedShell[id] == window {
-            selectedShell[id] = ws.isEmpty ? nil : ws[min(idx, ws.count - 1)]
-        }
-        if ws.isEmpty { shellOpen.remove(id) }
     }
     public func sessions(_ id: UUID) async -> CardSessions? {
         try? await client.call("sessions", .object(["ref": .string(id.uuidString)])).decode(CardSessions.self)
