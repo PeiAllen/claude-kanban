@@ -38,7 +38,7 @@ related:
 | Layer | Document | Status |
 |-------|----------|--------|
 | 1 — Initial design | [[01-design]] | **approved** (2026-07-06 gate) |
-| 2 — Contract | [[02-contract]] | draft |
+| 2 — Contract | [[02-contract]] | in-review |
 | 3 — Implementation | [[03-implementation]] | not started |
 | 3 — Tests | [[04-tests]] | not started |
 
@@ -48,14 +48,33 @@ related:
 
 ```mermaid
 flowchart TD
-    Spawn[spawn --on branch / UI / MCP / CLI] --> Child[child card + worktree]
-    Child -->|branch.child.orchestra-parent| Parent[(parent branch ref)]
-    Parent -.->|derived lookup| PCard[parent card, if any]
-    Child -->|diff vs merge-base parent| Diff[parent-relative diff + footer stat]
-    Child -->|ship| Merge[merge into parent, not main]
-    Merge -->|F3 inbox| PCard
-    Merge -->|retarget| GChild[grandchildren repointed]
-    Remote[(remote PR branch)] -.->|goal 8: gh-based watch| Parent
+    subgraph Kit[OrchestraKit]
+        CAT[CommandCatalog: spawn+base, set-parent, tree, synced, shipped]
+        MODEL[Task.parentBranch + TreeStat / SpawnInput.base / ParentLink]
+    end
+    subgraph Core[OrchestraCore]
+        LIN[BranchLineage: git-config CRUD]
+        WT[WorktreeManager.ensure base]
+        TS[TreeStat: report-funnel hook]
+        SHIP[shipped: notify+retarget]
+        REM[RemoteParents: fetch/watch/ladder]
+        GH[GhProbe]
+        DOCS[TreeDocs → Claude skill / Codex AGENTS.md]
+        INBOX[(F3 inbox + wake)]
+    end
+    subgraph Clients
+        UI[chip/badge · tree grouping · base picker]
+        MCP[MCP: auto from catalog]
+        CLI[CLI cases]
+    end
+    CAT --> SHIP & LIN
+    LIN --> WT
+    TS --> INBOX
+    SHIP --> INBOX & LIN
+    REM --> GH
+    REM --> TS
+    MODEL --> UI
+    CLI & MCP --> CAT
 ```
 
 ## Investigation verdicts (2026-07-06)
