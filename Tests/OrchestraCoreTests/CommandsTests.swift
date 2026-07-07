@@ -12,7 +12,8 @@ struct CommandsTests {
                         "restart", "resume", "shell", "inspect", "closeShell", "exec", "sessions",
                         "capture", "send-keys", "batch-spawn",
                         "wait", "handoff", "trust", "trustState",
-                        "inbox", "inbox-edit", "inbox-remove", "inbox-reorder"]
+                        "inbox", "inbox-edit", "inbox-remove", "inbox-reorder",
+                        "set-parent", "tree"]
         #expect(Set(reg.commands.map(\.name)) == Set(expected))
         for c in reg.commands {
             // every command has an object JSON schema for params
