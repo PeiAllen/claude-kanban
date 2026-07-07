@@ -155,6 +155,7 @@ struct CardView: View {
                     .help("Read-only")
             }
             worktreeBadge
+            treeBadge
             Spacer(minLength: 6)
             meta
                 .frame(maxWidth: 148, alignment: .trailing)
@@ -173,6 +174,29 @@ struct CardView: View {
             }
             .foregroundStyle(theme.text3)
             .help(model.worktreeSiblingsHelp(of: task))
+        }
+    }
+
+    /// Lineage status (branch-tree): `↓N` when the parent has advanced past the recorded base (stale),
+    /// a restack glyph when the branch needs re-basing (parent rewrote/shipped). Styled like the diffstat
+    /// pill; hidden when in-sync or untracked (`treeStat == nil`). Reads `Task` directly — no store plumbing.
+    @ViewBuilder private var treeBadge: some View {
+        if let ts = task.treeStat {
+            switch ts.state {
+            case .stale:
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.down").font(F.ui(8.5))
+                    Text("\(ts.behind)").font(F.mono(10, .medium))
+                }
+                .foregroundStyle(theme.amber.text)
+                .help("Parent is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead — merge it down, then run `orchestra synced`")
+            case .restackNeeded, .parentMerged:
+                Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.red.text)
+                    .help("Parent history changed — restack this branch")
+            case .inSync:
+                EmptyView()
+            }
         }
     }
 
