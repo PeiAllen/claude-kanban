@@ -25,13 +25,15 @@ struct WorktreeManagerTests {
     func ensureNewBranch() throws {
         let (repo, config) = try makeRepo()
         let wm = WorktreeManager(config: config)
-        let (wt, created) = try wm.ensure(repo: repo, branch: "feature-x")
+        let (wt, created, branchExisted) = try wm.ensure(repo: repo, branch: "feature-x")
         #expect(created)
+        #expect(!branchExisted)   // a fresh `-b` branch did not pre-exist
         #expect(wt == wm.path(repo: repo, branch: "feature-x"))
         #expect(FileManager.default.fileExists(atPath: wt))
-        // second ensure is a no-op
-        let (wt2, created2) = try wm.ensure(repo: repo, branch: "feature-x")
+        // second ensure is a no-op; the branch now exists
+        let (wt2, created2, branchExisted2) = try wm.ensure(repo: repo, branch: "feature-x")
         #expect(!created2)
+        #expect(branchExisted2)
         #expect(wt2 == wt)
     }
 
@@ -40,8 +42,9 @@ struct WorktreeManagerTests {
         let (repo, config) = try makeRepo()
         try Proc.checked(["git", "-C", repo, "branch", "existing"])
         let wm = WorktreeManager(config: config)
-        let (wt, created) = try wm.ensure(repo: repo, branch: "existing")
+        let (wt, created, branchExisted) = try wm.ensure(repo: repo, branch: "existing")
         #expect(created)
+        #expect(branchExisted)   // checked out a pre-existing branch
         let head = try Proc.checked(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
         #expect(head.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "existing")
     }
@@ -63,7 +66,7 @@ struct WorktreeManagerTests {
     func removeKeepsBranch() throws {
         let (repo, config) = try makeRepo()
         let wm = WorktreeManager(config: config)
-        let (wt, _) = try wm.ensure(repo: repo, branch: "feature-y")
+        let (wt, _, _) = try wm.ensure(repo: repo, branch: "feature-y")
         try wm.remove(worktree: wt)
         #expect(!FileManager.default.fileExists(atPath: wt))
         // branch still exists

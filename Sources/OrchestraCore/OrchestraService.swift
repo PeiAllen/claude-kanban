@@ -31,6 +31,9 @@ public actor OrchestraService {
     /// Conclusion-watch for the reactive fan-out (F2). A subscriber to this service's terminal
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
+    /// Branch-tree lineage store (git-config parent links). The single writer; `Task.parentBranch`
+    /// is a cache derived from it at spawn / set-parent.
+    let lineage = BranchLineage()
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -227,6 +230,7 @@ public actor OrchestraService {
         let realRepo: String
         let cwd: String
         let origin: CardOrigin
+        var derivedParentBranch: String? = nil
         if input.scratch {
             cwd = Config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -239,8 +243,16 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
-            (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            cwd = ensured.worktree
             origin = .worktree
+            // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
+            // link survives card archival), so re-derive the parentBranch cache only then — gated on
+            // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
+            // `git config` read on the hot path.
+            if ensured.branchExisted {
+                derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
+            }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
         // (Claude) gets its id minted pre-launch; a `.discovered` agent is left nil and reads its id
@@ -287,7 +299,8 @@ public actor OrchestraService {
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
-            ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt
+            ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
+            parentBranch: derivedParentBranch
         )
         let created = try await store.create(task)
 
