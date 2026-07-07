@@ -35,6 +35,27 @@ extension OrchestraService {
         }
     }
 
+    /// BT2 spawn-with-base (local parents): record lineage for a card whose branch was just CREATED on
+    /// top of `base`. The recorded base OID is `base`'s tip at creation — the redirect anchor for later
+    /// restack/sync. Returns the canonical parent ref stored on `Task.parentBranch` (the local base name
+    /// in BT2; BT6 will canonicalize remote forms). Throws `.invalidParams` if `base` can't be resolved
+    /// (defense-in-depth — `WorktreeManager.ensure` already validated it before cutting the worktree).
+    func recordSpawnBase(repo: String, branch: String, base: String) async throws -> String {
+        let oid = try revParseOID(repo: repo, ref: base)
+        try await lineage.set(repo: repo, branch: branch, link: ParentLink(parent: base, base: oid))
+        return base
+    }
+
+    /// `git rev-parse --verify <ref>` in `repo`, or `.invalidParams` if it doesn't resolve.
+    private func revParseOID(repo: String, ref: String) throws -> String {
+        let r = try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
+        let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard r.ok, !oid.isEmpty else {
+            throw OrchestraError.invalidParams("base branch not found: \(ref)")
+        }
+        return oid
+    }
+
     /// `tree` — a lineage snapshot for a scope: one card (`ref`), a `repo`, or all active cards.
     /// Feeds MCP/CLI (and BT7's board grouping). `treeStat` rides through as-is (nil in BT1).
     public func tree(ref: String?, repo: String?) async throws -> TreeSnapshot {

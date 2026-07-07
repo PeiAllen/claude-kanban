@@ -44,7 +44,8 @@ public struct CommandRegistry: Sendable {
                     cwd: p.optString("cwd"),
                     access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite,
                     scratch: p["scratch"]?.boolValue ?? false,
-                    seed: p.optString("seed"))
+                    seed: p.optString("seed"),
+                    base: p.optString("base"))
                 let task = try await svc.spawn(input, source: src)
                 return try JSONValue(encodable: task)
             },
@@ -261,7 +262,8 @@ public struct CommandRegistry: Sendable {
                         prompt: try item.string("prompt"), repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),
-                        seed: item.optString("seed")))
+                        seed: item.optString("seed"),
+                        base: item.optString("base")))
                 }
                 let result = await svc.batchSpawn(inputs, source: src)
                 return try JSONValue(encodable: result)

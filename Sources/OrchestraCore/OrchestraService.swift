@@ -243,7 +243,7 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
-            let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch, base: input.base)
             cwd = ensured.worktree
             origin = .worktree
             // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
@@ -251,7 +251,12 @@ public actor OrchestraService {
             // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
             // `git config` read on the hot path.
             if ensured.branchExisted {
+                // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
                 derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
+            } else if let base = input.base?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
+                // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
+                // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
+                derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
             }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
