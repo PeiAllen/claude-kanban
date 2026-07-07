@@ -8,6 +8,7 @@ import OrchestraUI
 /// context mini-gauge, diffstat, current-activity line.
 struct BoardCardCell: View {
     let task: Task
+    @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
     private var isFreeform: Bool { task.origin != .worktree }
@@ -76,6 +77,7 @@ struct BoardCardCell: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             treeBadge
+            parentChip
             Spacer(minLength: 6)
             if let pct = ctxPct { CtxMiniGauge(pct: pct, theme: theme) }
             meta
@@ -101,6 +103,29 @@ struct BoardCardCell: View {
             case .inSync:
                 EmptyView()
             }
+        }
+    }
+
+    /// Parent-branch chip: `⤴ <parent>` when the card has a parent branch. Tapping navigates to the
+    /// live parent card's detail (sets `selectedId`); a no-op when no live card owns the branch.
+    @ViewBuilder private var parentChip: some View {
+        if let parent = task.parentBranch {
+            let target = model.parentCard(of: task)
+            Button {
+                if let target { model.selectedId = target.id }
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.turn.left.up")
+                    Text(parent).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(target != nil ? theme.accent : theme.text3)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(theme.chip))
+            }
+            .buttonStyle(.plain)
+            .disabled(target == nil)
+            .frame(maxWidth: 130, alignment: .leading)
         }
     }
 
