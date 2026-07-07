@@ -115,10 +115,15 @@ public enum CommandCatalog {
                           + "recorded base as the rebase anchor, marking restack-needed. Omit `parent` to clear.",
                       params: schema([
                           "ref": refProp(),
-                          "parent": strProp("Parent branch ref (local name). Omit to clear the link."),
+                          "parent": strProp("Parent branch ref: a local name, or a remote form "
+                              + "'origin/<branch>' (same-repo remote branch) / 'pr#<N>' (pull request). "
+                              + "Omit to clear the link."),
                           "mode": strProp("'adopt' (default): metadata-only relink, base = merge-base. "
                               + "'move': repoint + keep recorded base; marks restack-needed and nudges the "
-                              + "owner to `git rebase --onto <new-parent> <recorded-base>`."),
+                              + "owner to `git rebase --onto <new-parent> <recorded-base>`. Ignored for a "
+                              + "remote parent (no local history to rebase yet)."),
+                          "watch": boolProp("Remote parents only: poll the PR/branch and auto-redirect this "
+                              + "card onto the parent's base when it merges. Default off."),
                       ], required: ["ref"])),
 
         CommandSchema(name: "tree",

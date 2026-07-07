@@ -107,6 +107,7 @@ enum CLIRunner {
                     params["parent"] = .string(parent)
                 }
                 if let mode = flags.value("mode") { params["mode"] = .string(mode) }
+                if flags.has("watch") { params["watch"] = .bool(true) }
                 let task = try await client.call("set-parent", .object(params))
                 printRef(task)
 

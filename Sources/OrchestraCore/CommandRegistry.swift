@@ -141,6 +141,7 @@ public struct CommandRegistry: Sendable {
                     ref: try p.string("ref"),
                     parent: p.optString("parent"),
                     mode: p.optString("mode") ?? "adopt",
+                    watch: p.optBool("watch") ?? false,
                     source: src)
                 return try JSONValue(encodable: updated)
             },

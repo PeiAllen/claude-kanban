@@ -6,7 +6,7 @@ extension OrchestraService {
     /// with `base := merge-base(branch, parent)` — a metadata-only relink, history untouched.
     /// `mode` other than "adopt" (i.e. "move", which transplants commits) is deferred to a later PR.
     @discardableResult
-    public func setParent(ref: String, parent: String?, mode: String = "adopt",
+    public func setParent(ref: String, parent: String?, mode: String = "adopt", watch: Bool = false,
                           source: ActivitySource = .daemon) async throws -> Task {
         let t = try await resolveRef(ref)
         guard t.origin == .worktree else {
@@ -19,6 +19,23 @@ extension OrchestraService {
         if let p = trimmed, !p.isEmpty {
             guard p != t.branch else {
                 throw OrchestraError.invalidParams("a branch cannot be its own parent: \(p)")
+            }
+            // BT6: a remote parent (origin/<b>, pr#<N>) is fetched into a private ref, recorded with its
+            // canonical form + prNumber, and watched per the flag (default off). `mode` doesn't apply —
+            // there is no local history to rebase yet; the child restacks only once the remote parent moves.
+            if let remote = RemoteParentRef.parse(p) {
+                let oid = try await remoteParents.fetch(repo: t.repo, remote)
+                let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
+                try await lineage.set(repo: t.repo, branch: t.branch,
+                    link: ParentLink(parent: remote.canonical, base: oid, prNumber: pr, watch: watch))
+                let updated = try await store.update(t.id) {
+                    $0.parentBranch = remote.canonical
+                    $0.treeStat = TreeStat(state: .inSync, parentIsRemote: true)
+                }
+                emit(.taskUpserted(updated))
+                if watch { startRemoteWatch(cardId: t.id) } else { stopRemoteWatch(t.id) }
+                emitActivity(.command, updated, source, "set remote parent → \(remote.canonical)")
+                return updated
             }
             if mode == "move" {
                 // MOVE: repoint the lineage but KEEP the recorded base — it is the rebase anchor the agent
@@ -53,6 +70,7 @@ extension OrchestraService {
             emitActivity(.command, updated, source, "set parent → \(p)")
             return updated
         } else {
+            stopRemoteWatch(t.id)   // BT6: clearing a remote parent tears down its merge-watch
             try await lineage.clear(repo: t.repo, branch: t.branch)
             let updated = try await store.update(t.id) { $0.parentBranch = nil }
             emit(.taskUpserted(updated))

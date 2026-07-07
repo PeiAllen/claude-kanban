@@ -80,6 +80,7 @@ public enum JSONValue: Codable, Sendable, Equatable {
     }
     public func optString(_ key: String) -> String? { self[key]?.stringValue }
     public func optInt(_ key: String) -> Int? { self[key]?.intValue }
+    public func optBool(_ key: String) -> Bool? { self[key]?.boolValue }
 
     public static func ok() -> JSONValue { .object(["ok": .bool(true)]) }
 }
