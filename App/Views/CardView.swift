@@ -154,6 +154,7 @@ struct CardView: View {
                     .foregroundStyle(theme.text3)
                     .help("Read-only")
             }
+            parentChip
             worktreeBadge
             treeBadge
             Spacer(minLength: 6)
@@ -174,6 +175,32 @@ struct CardView: View {
             }
             .foregroundStyle(theme.text3)
             .help(model.worktreeSiblingsHelp(of: task))
+        }
+    }
+
+    /// Parent-branch chip: shows `⤴ <parent>` whenever the card has a parent branch. Clicking jumps to
+    /// the live parent card (select + enter its terminal); a no-op with an explanatory tooltip when no
+    /// live card owns that branch. Reads `Task` + the store's derived lookup — no new plumbing.
+    @ViewBuilder private var parentChip: some View {
+        if let parent = task.parentBranch {
+            let target = model.parentCard(of: task)
+            Button {
+                if let target { model.selectAndEnterTerminal(target.id) }
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.turn.left.up").font(F.ui(8))
+                    Text(parent).font(F.mono(9.5)).lineLimit(1).truncationMode(.middle)
+                }
+                .foregroundStyle(target != nil ? theme.accent : theme.text3)
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(Capsule(style: .continuous).fill(theme.chip))
+            }
+            .buttonStyle(.plain)
+            .disabled(target == nil)
+            .frame(maxWidth: 120, alignment: .leading)
+            .help(target != nil
+                  ? "Jump to parent card on \(parent)"
+                  : "No card on parent branch \(parent)")
         }
     }
 
