@@ -337,15 +337,42 @@ public actor OrchestraService {
     /// `.scratch` card. Covers a scratch card that died without a clean archive (so its `rm -rf` never
     /// ran). Run once at daemon startup. Like the archive arm, this only ever deletes under the scratch
     /// root (the entries are children of `Config.scratchRoot`).
-    public func sweepOrphanScratch() async {
+    ///
+    /// Deleting a dir is destructive and a live agent's cwd, so a mismatch here breaks a running card
+    /// mid-turn (its `posix_spawn '/bin/sh'` starts failing with ENOENT). The store snapshot can diverge
+    /// from the set of actually-live cards — a load hiccup returns `[]` (see `TaskStore.load`), and
+    /// overlapping/relaunched daemons can sweep a lagging `tasks.json` while the prior daemon still owns
+    /// live sessions. So a dir is deleted ONLY on POSITIVE evidence of orphan-hood, gated three ways:
+    ///  (c) abort the whole sweep if the store came back empty — never read empty as "all orphaned";
+    ///  (a) never touch a dir whose tmux session is live (agent-agnostic — rides `sessions.list()`);
+    ///  (b) never touch a dir modified within the mtime grace window — a just-spawned dir whose card /
+    ///      session hasn't registered yet must survive the race.
+    public func sweepOrphanScratch(root: String = Config.scratchRoot,
+                                   graceInterval: TimeInterval = 300) async {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: Config.scratchRoot) else { return }
-        let liveScratchDirs = Set(await store.all()
+        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return }
+
+        // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
+        // "nothing is live" — bail rather than delete every scratch dir, live ones included.
+        let cards = await store.all()
+        guard !cards.isEmpty else { return }
+        let liveScratchDirs = Set(cards
             .filter { $0.origin == .scratch && !$0.archived }
             .map { $0.cwd })
+
+        // (a) Dir names are lowercase UUIDs; `UUID(uuidString:)` is case-insensitive, so `sessionName`
+        // matches the live tmux set even though the id's canonical form is uppercase.
+        let liveSessions = Set((try? sessions.list())?.filter(\.running).map(\.name) ?? [])
+        let now = Date()
+
         for name in entries {
-            let path = "\(Config.scratchRoot)/\(name)"
-            if !liveScratchDirs.contains(path) { try? fm.removeItem(atPath: path) }
+            let path = "\(root)/\(name)"
+            if liveScratchDirs.contains(path) { continue }
+            if let id = UUID(uuidString: name), liveSessions.contains(sessions.sessionName(id)) { continue }
+            // (b) Skip anything modified within the grace window (freshly created / actively touched).
+            if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
+               now.timeIntervalSince(mtime) < graceInterval { continue }
+            try? fm.removeItem(atPath: path)
         }
     }
 
