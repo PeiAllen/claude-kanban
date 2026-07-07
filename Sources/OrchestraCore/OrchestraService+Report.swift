@@ -139,7 +139,7 @@ extension OrchestraService {
         if saved.origin == .worktree {
             scheduleDiffStat(id)
             scheduleTreeStat(id)                                    // this card's own parent may have moved
-            await scheduleChildTreeStats(repo: saved.repo, of: saved.branch)  // a moved parent stales children
+            scheduleChildFanout(id)                                 // a moved parent stales children (debounced)
         }
 
         // Activity only on a real status transition (waiting<->running) or dead.

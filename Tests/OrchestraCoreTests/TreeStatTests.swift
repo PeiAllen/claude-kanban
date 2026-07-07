@@ -122,6 +122,15 @@ struct TreeStatTests {
         #expect(await treeStat(env, card.id) == nil)
     }
 
+    @Test("an empty recorded base ⇒ restackNeeded (can't validate the anchor)")
+    func emptyBaseRestack() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let card = try await Self.linkedChild(env, repo: repo, base: "")
+        await env.svc.recomputeTreeStat(card.id)
+        #expect(await treeStat(env, card.id)?.state == .restackNeeded)
+    }
+
     // MARK: synced round-trip
 
     @Test("synced records the parent tip as the base ⇒ back to inSync, base advanced")
@@ -146,6 +155,18 @@ struct TreeStatTests {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
         let card = try await env.svc.spawn(SpawnInput(prompt: "solo", repo: repo, branch: "solo"))
+        await #expect(throws: OrchestraError.self) {
+            _ = try await env.svc.synced(ref: card.ref())
+        }
+    }
+
+    @Test("synced when the parent ref is gone throws invalidParams")
+    func syncedMissingParent() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let tip = try Self.git(repo, "rev-parse", "parent")
+        let card = try await Self.linkedChild(env, repo: repo, base: tip)
+        try Self.git(repo, "branch", "-D", "parent")               // main is already checked out
         await #expect(throws: OrchestraError.self) {
             _ = try await env.svc.synced(ref: card.ref())
         }

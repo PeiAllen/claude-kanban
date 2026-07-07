@@ -117,16 +117,32 @@ extension OrchestraService {
 
     private func clearTreeStatDebounce(_ id: UUID) { treeStatDebounce[id] = nil }
 
-    /// Schedule a TreeStat recompute for each LIVE child card of `branch` — a card whose branch records
-    /// `branch` as its parent. Called from the report funnel: a parent card's activity may have advanced
-    /// its tip, staling its children.
-    func scheduleChildTreeStats(repo: String, of branch: String) async {
-        let childBranches = await lineage.children(repo: repo, of: branch)
+    /// Coalescing per-parent trigger for the child fan-out — a one-shot debounce off the report funnel,
+    /// like `scheduleTreeStat`. Debounced (not inline on the funnel) so the `git config --get-regexp`
+    /// child lookup runs once per activity burst instead of once per report on the hot path.
+    func scheduleChildFanout(_ id: UUID) {
+        childFanoutDebounce[id]?.cancel()
+        childFanoutDebounce[id] = _Concurrency.Task { [weak self] in
+            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+            if _Concurrency.Task.isCancelled { return }
+            await self?.fanOutChildTreeStats(id)
+            await self?.clearChildFanoutDebounce(id)
+        }
+    }
+
+    private func clearChildFanoutDebounce(_ id: UUID) { childFanoutDebounce[id] = nil }
+
+    /// Recompute the TreeStat of each LIVE child card of `id`'s branch — a card whose branch records that
+    /// branch as its parent. Runs off the debounced fan-out (a parent card's activity may have advanced
+    /// its tip, staling its children). The child lookup + recompute are already idempotent.
+    func fanOutChildTreeStats(_ id: UUID) async {
+        guard let t = await store.get(id), t.origin == .worktree else { return }
+        let childBranches = await lineage.children(repo: t.repo, of: t.branch)
         guard !childBranches.isEmpty else { return }
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         for child in childBranches {
-            if let card = active.first(where: { $0.repo == repo && $0.branch == child }) {
-                scheduleTreeStat(card.id)
+            if let card = active.first(where: { $0.repo == t.repo && $0.branch == child }) {
+                await recomputeTreeStat(card.id)
             }
         }
     }
