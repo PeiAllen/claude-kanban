@@ -9,10 +9,12 @@ import Foundation
 public enum BoardNavigator {
     private static let order: [Column] = [.plan, .impl, .review]
 
-    /// The board cards in a column, in display order (matches `BoardModel.cards(in:)`).
+    /// The board cards in a column, in display order (matches `BoardModel.cards(in:)`) — tree-grouped
+    /// so keyboard `hjkl` walks the same order the board draws.
     public static func columnCards(_ tasks: [Task], _ col: Column) -> [Task] {
-        tasks.filter { $0.column == col && !$0.archived && $0.origin == .worktree }
-             .sorted { $0.order < $1.order }
+        BoardTree.ordered(
+            tasks.filter { $0.column == col && !$0.archived && $0.origin == .worktree }
+                 .sorted { $0.order < $1.order })
     }
 
     /// The freeform-dock cards (non-worktree, non-archived), in display order (matches
