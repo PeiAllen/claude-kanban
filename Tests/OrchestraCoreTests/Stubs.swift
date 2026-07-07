@@ -279,4 +279,29 @@ enum TestEnv {
         try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         return p
     }
+
+    /// A service wired with the REAL `WorktreeManager` (git worktrees actually cut) — needed for the
+    /// remote-tier tests, where a spawn's start-point must resolve against a real fetched ref. Everything
+    /// else (store/trust/inbox/adapter) is stubbed as in `make`. Returns the service + its allowlisted base
+    /// (the git working repo + its bare origin are created UNDER `base` by `makeRemoteRepo`).
+    static func makeReal(capabilities: AgentCapabilities = .claudeCode)
+        -> (svc: OrchestraService, sessions: StubSessions, adapter: StubAdapter, base: String) {
+        let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-rsvc-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
+        let config = Config(reposRoot: base + "/repos",
+                            worktreesRoot: base + "/worktrees",
+                            allowlist: [base])
+        let resolver = PathResolver(config: config)
+        let sessions = StubSessions()
+        let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
+        let store = TaskStore(path: base + "/tasks.json")
+        let trust = TrustLedger(path: base + "/trust-ledger.json")
+        let inbox = Inbox(path: base + "/inbox.json")
+        let worktrees = WorktreeManager(config: config, resolver: resolver)
+        let svc = OrchestraService(config: config, store: store,
+                                   registry: AgentRegistry(adapters: [adapter]),
+                                   worktrees: worktrees, sessions: sessions, resolver: resolver,
+                                   trust: trust, inbox: inbox)
+        return (svc, sessions, adapter, base)
+    }
 }

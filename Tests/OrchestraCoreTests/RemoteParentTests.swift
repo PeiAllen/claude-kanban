@@ -19,10 +19,12 @@ struct RemoteParentTests {
     }
 
     /// A working repo with a bare `origin`, plus a hand-minted `refs/pull/7/head` and a `feature-b`
-    /// branch on the bare side. Returns (working repo path, bare path). No network.
-    static func makeOriginWithPR() throws -> (repo: String, bare: String) {
+    /// branch on the bare side. Returns (working repo path, bare path). No network. `repoDir` lets a
+    /// caller place the working repo somewhere allowlisted (the real-service tests); the bare origin is
+    /// always a sibling temp dir (its location is irrelevant to the allowlist — only fetch reads it).
+    static func makeOriginWithPR(repoDir: String? = nil) throws -> (repo: String, bare: String) {
         let tmp = NSTemporaryDirectory()
-        let repo = tmp + "orch-rem-\(UUID().uuidString)"
+        let repo = repoDir ?? (tmp + "orch-rem-\(UUID().uuidString)")
         let bare = tmp + "orch-bare-\(UUID().uuidString).git"
         try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
         try git(repo, "init", "-q", "-b", "main")
