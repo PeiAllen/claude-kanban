@@ -57,6 +57,38 @@ struct SpawnBaseTests {
         #expect(link.parent == "other")   // not overwritten by base
     }
 
+    @Test("recorded base OID is the LOCAL branch tip even when a same-named tag exists")
+    func recordedBaseIsLocalBranchNotTag() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        func git(_ a: String...) throws { #expect(try Proc.run(["git", "-C", repo] + a).ok) }
+        // Advance `parent` one commit, then add a TAG `parent` at main (a different OID). Plain
+        // `rev-parse parent` would resolve to the tag; recordSpawnBase must record the branch tip.
+        try git("checkout", "-q", "parent")
+        try "more\n".write(toFile: repo + "/b.txt", atomically: true, encoding: .utf8)
+        try git("add", "-A"); try git("commit", "-q", "-m", "advance parent")
+        let branchTip = try Proc.run(["git", "-C", repo, "rev-parse", "refs/heads/parent"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try git("checkout", "-q", "main")
+        try git("tag", "parent", "main")
+
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        #expect(t.parentBranch == "parent")
+        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        #expect(link.base == branchTip)   // the branch tip, not the tag's OID
+    }
+
+    @Test("base is ignored for a scratch spawn (no worktree branch to base)")
+    func scratchIgnoresBase() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let t = try await withScratchLock {
+            try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "", scratch: true, base: "parent"))
+        }
+        #expect(t.origin == .scratch)
+        #expect(t.parentBranch == nil)   // base never consulted off the worktree arm
+    }
+
     @Test("no base → no lineage, parentBranch nil (today's behavior)")
     func noBaseNoLineage() async throws {
         let env = TestEnv.make()

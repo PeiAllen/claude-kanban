@@ -41,7 +41,9 @@ extension OrchestraService {
     /// in BT2; BT6 will canonicalize remote forms). Throws `.invalidParams` if `base` can't be resolved
     /// (defense-in-depth — `WorktreeManager.ensure` already validated it before cutting the worktree).
     func recordSpawnBase(repo: String, branch: String, base: String) async throws -> String {
-        let oid = try revParseOID(repo: repo, ref: base)
+        // Resolve the LOCAL branch ref (not a bare `base`, which would disambiguate to a same-named
+        // tag) so the recorded OID matches the start-point `WorktreeManager.ensure` cut the child at.
+        let oid = try revParseOID(repo: repo, ref: "refs/heads/\(base)")
         try await lineage.set(repo: repo, branch: branch, link: ParentLink(parent: base, base: oid))
         return base
     }

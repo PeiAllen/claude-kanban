@@ -35,6 +35,12 @@ struct SpawnSheet: View {
     /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none). Sourced from the
     /// same `branchSuggestions` as the branch picker. BT6 will extend it with remote/PR entries.
     @State private var base = ""
+
+    /// The base to actually send: `nil` unless chosen AND the branch is newly created — the daemon
+    /// ignores base for an existing branch, so we don't send it there.
+    private var effectiveBase: String? {
+        (base.isEmpty || branchSuggestions.contains(branch)) ? nil : base
+    }
     @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
@@ -454,7 +460,7 @@ struct SpawnSheet: View {
             switch mode {
             case .worktree:
                 card = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
-                                         agent: a, base: base.isEmpty ? nil : base)
+                                         agent: a, base: effectiveBase)
             case .freeform:
                 card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                          agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)

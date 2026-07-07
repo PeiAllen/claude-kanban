@@ -128,6 +128,29 @@ struct WorktreeManagerTests {
         #expect(head == existingTip)   // still at existing's own tip — base was ignored
     }
 
+    @Test("ensure resolves base as a LOCAL branch even when a same-named tag exists")
+    func ensureBasePrefersLocalBranchOverTag() throws {
+        let (repo, config) = try makeRepo()
+        // A branch `dup` (with its own commit) and a TAG `dup` pointing at main's first commit.
+        // Plain `git rev-parse dup` would disambiguate to the tag; the local-parents contract must
+        // start the child at the BRANCH.
+        try Proc.checked(["git", "-C", repo, "branch", "dup"])
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "dup"])
+        try "z".write(toFile: repo + "/D.md", atomically: true, encoding: .utf8)
+        try Proc.checked(["git", "-C", repo, "add", "."])
+        try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "on dup"])
+        let branchTip = try Proc.checked(["git", "-C", repo, "rev-parse", "refs/heads/dup"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "main"])
+        try Proc.checked(["git", "-C", repo, "tag", "dup", "main"])   // tag `dup` at main's tip
+
+        let wm = WorktreeManager(config: config)
+        let (wt, _, _) = try wm.ensure(repo: repo, branch: "child", base: "dup")
+        let childTip = try Proc.checked(["git", "-C", wt, "rev-parse", "HEAD"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(childTip == branchTip)   // started at the BRANCH `dup`, not the tag
+    }
+
     @Test("ensure with an unknown base throws and leaves no worktree dir")
     func ensureUnknownBaseThrows() throws {
         let (repo, config) = try makeRepo()

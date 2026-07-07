@@ -21,6 +21,12 @@ struct SpawnSheet: View {
     /// behavior). Sourced from the same `branches` list as the branch combo. BT6 will extend the picker
     /// with remote/PR entries.
     @State private var base = ""
+
+    /// The base to actually send: `nil` unless a base is chosen AND the branch is newly created — the
+    /// daemon ignores base for an existing branch, so we neither send nor preview it there.
+    private var effectiveBase: String? {
+        (base.isEmpty || branches.contains(branch)) ? nil : base
+    }
     @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
@@ -128,7 +134,7 @@ struct SpawnSheet: View {
     private var cliPreview: String {
         switch mode {
         case .worktree:
-            let baseFlag = base.isEmpty ? "" : " --base \(base)"
+            let baseFlag = effectiveBase.map { " --base \($0)" } ?? ""
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch)\(baseFlag) --col \(startIn.column.rawValue)"
         case .freeform:
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
@@ -293,7 +299,7 @@ struct SpawnSheet: View {
                         switch mode {
                         case .worktree:
                             await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
-                                              agent: a, base: base.isEmpty ? nil : base)
+                                              agent: a, base: effectiveBase)
                         case .freeform:
                             await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                               agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)

@@ -44,7 +44,10 @@ public struct WorktreeManager: Sendable {
                 guard branchExists(repo: realRepo, branch: base) else {
                     throw OrchestraError.invalidParams("base branch not found: \(base)")
                 }
-                a.append(base)
+                // Pin to the LOCAL branch ref: BT2 parents are local branches, and a bare `base` would
+                // disambiguate to a same-named tag (git's rev precedence), starting the child off the
+                // wrong commit — or failing outright on an ambiguous ref.
+                a.append("refs/heads/\(base)")
             }
             argv = a
         }
