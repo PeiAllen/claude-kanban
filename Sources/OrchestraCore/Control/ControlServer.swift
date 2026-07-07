@@ -178,7 +178,9 @@ public final class ControlServer: @unchecked Sendable {
                 throw OrchestraError.invalidParams("diffStat needs ref")
             }
             let task = try await service.resolveRef(ref)
-            let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
+            // No explicit base ⇒ the card's default baseline (parent-relative when stacked), matching the
+            // report-funnel path so both writers persist a consistent footer stat.
+            let base = p.optString("base").flatMap(DiffBase.init(rawValue:))
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
         case "changedNotes":

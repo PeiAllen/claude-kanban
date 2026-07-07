@@ -799,7 +799,7 @@ public actor OrchestraService {
 
     public func openInZed(_ id: UUID) async throws {
         let t = try await require(id)
-        try launcher.openInZed(t.cwd)
+        try launcher.openInZed(t.cwd, parentRef: resolvedParentRef(t))
     }
 
     /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
@@ -807,7 +807,7 @@ public actor OrchestraService {
     @discardableResult
     public func openNotes(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        return try launcher.openNotes(t.cwd)
+        return try launcher.openNotes(t.cwd, parentRef: resolvedParentRef(t))
     }
 
     // MARK: - config

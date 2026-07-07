@@ -50,6 +50,13 @@ public func diffBaselines(parentBranch: String?) -> [DiffBase] {
     parentBranch != nil ? [.working, .branch, .parent] : [.working, .branch]
 }
 
+/// The baseline a card's Diff tab opens on (design §3 Diff, BT3): **Parent** for a stacked card so it
+/// shows the card's OWN work vs its parent, else **Branch** (vs the default branch). Pure so the Diff
+/// tab and its tests agree on the default.
+public func diffDefaultBaseline(parentBranch: String?) -> DiffBase {
+    parentBranch != nil ? .parent : .branch
+}
+
 /// Human label for a diff baseline (segmented control).
 public func diffBaselineLabel(_ base: DiffBase) -> String {
     switch base {

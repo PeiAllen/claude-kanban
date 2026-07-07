@@ -28,6 +28,67 @@ struct DiffServiceTests {
         try "one\ntwo\nthree\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
     }
 
+    /// Turn `dir` into a real repo with topology: main(base) → parent(parent's own commit) →
+    /// child=HEAD(child's own file). `.parent` should see only the child's file; `.branch` (vs main)
+    /// sees both the parent's and the child's changes.
+    private func gitParentChild(_ dir: String) throws {
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        func git(_ a: String...) { #expect((try? Proc.run(["git"] + a, cwd: dir))?.ok == true) }
+        git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+        try "base\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+        git("add", "-A"); git("commit", "-q", "-m", "base")
+        git("checkout", "-q", "-b", "parent")
+        try "base\nPARENT\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+        git("commit", "-q", "-am", "parent work")
+        git("checkout", "-q", "-b", "child")
+        try "child\n".write(toFile: dir + "/b.txt", atomically: true, encoding: .utf8)
+        git("add", "-A"); git("commit", "-q", "-m", "child work")
+    }
+
+    /// main(a.txt) → parent(+parent.md) → child=HEAD(+child.md). Once the card baselines against its
+    /// parent, only `child.md` counts as the card's changed note.
+    private func gitParentChildNotes(_ dir: String) throws {
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        func git(_ a: String...) { #expect((try? Proc.run(["git"] + a, cwd: dir))?.ok == true) }
+        git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+        try "base\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+        git("add", "-A"); git("commit", "-q", "-m", "base")
+        git("checkout", "-q", "-b", "parent")
+        try "# parent\n".write(toFile: dir + "/parent.md", atomically: true, encoding: .utf8)
+        git("add", "-A"); git("commit", "-q", "-m", "parent note")
+        git("checkout", "-q", "-b", "child")
+        try "# child\n".write(toFile: dir + "/child.md", atomically: true, encoding: .utf8)
+        git("add", "-A"); git("commit", "-q", "-m", "child note")
+    }
+
+    @Test("footer diffstat auto-selects the parent baseline for a card with a parent")
+    func footerSelectsParentBaseline() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "task", repo: repo, branch: "child"))
+        try gitParentChild(t.cwd)
+        _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
+
+        // No explicit base ⇒ the funnel/default path. Parent-relative ⇒ only the child's own file.
+        let s = try #require(await env.svc.recomputeDiffStat(t.id))
+        #expect(s.filesChanged == 1)   // b.txt only — NOT the parent's a.txt change
+
+        // The .branch baseline (vs main) instead includes the parent's work too (a.txt + b.txt).
+        let branchStat = try #require(await env.svc.recomputeDiffStat(t.id, base: .branch))
+        #expect(branchStat.filesChanged == 2)
+    }
+
+    @Test("changedNotes baselines against the parent — the parent's note is excluded")
+    func changedNotesUsesParentBaseline() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "task", repo: repo, branch: "child"))
+        try gitParentChildNotes(t.cwd)
+        _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
+        let notes = try await env.svc.changedNotes(t.id)
+        #expect(notes.map(\.path) == ["child.md"])   // parent.md excluded
+    }
+
     @Test("recomputeDiffStat sets the stat + emits; a no-change recompute does not re-emit")
     func recomputeEmitsOnChange() async throws {
         let (env, t) = try await worktreeCardWithRepo()

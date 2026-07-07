@@ -15,7 +15,7 @@ struct DiffInspectorView: View {
     /// daemon, so the shipping view renders faithfully with no control socket. nil in production.
     var preview: String? = nil
 
-    @State private var base: DiffBase = .branch
+    @State private var base: DiffBase
     @State private var layout: DiffLayout = .unified
     @State private var text = ""
     @State private var files: [DiffFileSection] = []
@@ -31,6 +31,8 @@ struct DiffInspectorView: View {
         _files = State(initialValue: preview.map(DiffFileParser.parse) ?? [])
         _loading = State(initialValue: preview == nil)
         _layout = State(initialValue: split ? .split : .unified)
+        // BT3: a stacked card opens on Parent (its own work vs its parent), else Branch.
+        _base = State(initialValue: task.parentBranch != nil ? .parent : .branch)
     }
 
     /// `.parent` is only offered once the card carries a parent branch (stacked-branches sets it).
