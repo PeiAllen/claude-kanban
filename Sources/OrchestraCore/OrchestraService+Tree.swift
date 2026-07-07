@@ -74,6 +74,18 @@ extension OrchestraService {
         return base
     }
 
+    /// BT6 remote spawn-with-base: record lineage for a card whose branch was CREATED on a fetched remote
+    /// private ref. Stores the canonical remote form (`origin/<b>` / `pr#<N>`) + prNumber, and opts the
+    /// card into watching by default (owner: auto-on for a remote-base spawn). `oid` is the fetched tip —
+    /// the redirect/restack anchor. Returns the canonical string for `Task.parentBranch`.
+    func recordSpawnRemoteBase(repo: String, branch: String,
+                               ref: RemoteParentRef, oid: String) async throws -> String {
+        let pr: Int? = { if case .pullRequest(let n) = ref { return n }; return nil }()
+        try await lineage.set(repo: repo, branch: branch,
+                              link: ParentLink(parent: ref.canonical, base: oid, prNumber: pr, watch: true))
+        return ref.canonical
+    }
+
     /// `git rev-parse --verify <ref>` in `repo`, or `.invalidParams` if it doesn't resolve.
     private func revParseOID(repo: String, ref: String) throws -> String {
         let r = try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
