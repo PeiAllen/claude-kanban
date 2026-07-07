@@ -7,16 +7,23 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var removed: [String] = []
     private(set) var ensured: [String] = []   // repo+branch pairs ensure() was called for
+    private var existingBranches: Set<String> = []   // branches ensure() should report as pre-existing
     init(root: String) { self.root = root }
+
+    /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
+    /// re-spawn onto a branch whose worktree was removed but whose branch + lineage config remain).
+    func markBranchExists(_ branch: String) {
+        lock.lock(); existingBranches.insert(branch); lock.unlock()
+    }
 
     func path(repo: String, branch: String) -> String {
         "\(root)/\((repo as NSString).lastPathComponent)/\(branch)"
     }
-    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool) {
-        lock.lock(); ensured.append("\(repo)#\(branch)"); lock.unlock()
+    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool) {
+        lock.lock(); ensured.append("\(repo)#\(branch)"); let existed = existingBranches.contains(branch); lock.unlock()
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
-        return (wt, true)
+        return (wt, true, existed)
     }
     func remove(worktree: String, force: Bool) throws {
         lock.lock(); removed.append(worktree); lock.unlock()

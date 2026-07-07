@@ -16,15 +16,15 @@ public struct WorktreeManager: Sendable {
         config.worktreePath(repo: repo, branch: branch)
     }
 
-    /// Ensure a worktree exists for repo + branch. Idempotent. Returns (worktree, created).
+    /// Ensure a worktree exists for repo + branch. Idempotent. Returns (worktree, created, branchExisted).
     @discardableResult
-    public func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool) {
+    public func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool) {
         let realRepo = try resolver.resolveRepo(repo)
         let wt = path(repo: realRepo, branch: branch)
         try resolver.assertAllowed(wt)
 
         if FileManager.default.fileExists(atPath: wt) {
-            return (wt, false)
+            return (wt, false, true)   // a live worktree implies the branch already exists
         }
         try FileManager.default.createDirectory(
             atPath: (wt as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
@@ -45,7 +45,7 @@ public struct WorktreeManager: Sendable {
             }
             throw OrchestraError.io(r.stderr.isEmpty ? "git worktree add failed" : r.stderr)
         }
-        return (wt, true)
+        return (wt, true, exists)
     }
 
     /// Remove a worktree directory (keeps the branch). Guards a dirty tree unless `force`.

@@ -151,6 +151,25 @@ public struct DiffStat: Codable, Sendable, Equatable {
 /// until `Task.parentBranch` is set. See `notes/designs/code-review-on-board`.
 public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
 
+// MARK: - Tree (branch-tree lineage)
+
+/// A child card's lineage state relative to its parent branch. Daemon-maintained like `DiffStat`;
+/// nil until the parent-tree machinery (BT4) computes it. `inSync` = recorded base == parent tip;
+/// `stale` = parent advanced (the `↓N` badge); `restackNeeded` = recorded base is no longer the
+/// parent tip's ancestor (parent rewrote/shipped); `parentMerged` = parent landed, awaiting restack.
+public enum TreeState: String, Codable, Sendable { case inSync, stale, restackNeeded, parentMerged }
+
+/// Per-child tree status for the card face (the `↓N` badge + restack signal). Small + persisted on
+/// `Task`, exactly like `DiffStat`.
+public struct TreeStat: Codable, Sendable, Equatable {
+    public var state: TreeState
+    public var behind: Int            // commits the parent is ahead of the recorded base (the ↓N badge)
+    public var parentIsRemote: Bool
+    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false) {
+        self.state = state; self.behind = behind; self.parentIsRemote = parentIsRemote
+    }
+}
+
 // MARK: - Notes (the phone's Notes page)
 
 /// Whether a changed note is modified vs the branch base (`M`) or newly added (`A`). Deletions never
@@ -199,6 +218,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var waitReason: WaitReason?  // set with `status = .waiting`; cleared when status leaves `.waiting`
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
+    public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
     public var initialPrompt: String  // the spawn prompt, persisted verbatim (title seed + Recovery panel)
@@ -231,6 +251,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         initialPrompt: String,
         parentBranch: String? = nil,
         diffStat: DiffStat? = nil,
+        treeStat: TreeStat? = nil,
         archived: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -259,6 +280,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.initialPrompt = initialPrompt
         self.parentBranch = parentBranch
         self.diffStat = diffStat
+        self.treeStat = treeStat
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -380,6 +402,33 @@ public struct BatchSpawnFailure: Codable, Sendable, Equatable {
     public init(index: Int, prompt: String, error: String) {
         self.index = index; self.prompt = prompt; self.error = error
     }
+}
+
+// MARK: - Tree snapshot (the `tree` command payload)
+
+/// One card's lineage view: its parent ref (from git config), the derived parent *card* id (active
+/// card on that branch, if any), and its child branch names. `treeStat` is nil until BT4 computes it.
+public struct TreeNode: Codable, Sendable, Equatable {
+    public let ref: String
+    public let cardId: UUID
+    public let repo: String
+    public let branch: String
+    public let parent: String?         // parent ref string from lineage config; nil = no parent link
+    public let parentCardId: UUID?     // derived: active card whose repo+branch == this parent ref
+    public let children: [String]      // child branch names (durable, card-optional)
+    public let treeStat: TreeStat?     // nil in BT1
+    public init(ref: String, cardId: UUID, repo: String, branch: String, parent: String?,
+                parentCardId: UUID?, children: [String], treeStat: TreeStat?) {
+        self.ref = ref; self.cardId = cardId; self.repo = repo; self.branch = branch
+        self.parent = parent; self.parentCardId = parentCardId
+        self.children = children; self.treeStat = treeStat
+    }
+}
+
+/// The `tree` command result — a lineage snapshot over the requested scope.
+public struct TreeSnapshot: Codable, Sendable, Equatable {
+    public let nodes: [TreeNode]
+    public init(nodes: [TreeNode]) { self.nodes = nodes }
 }
 
 // MARK: - Debug handles (the `sessions` command)
@@ -672,13 +721,18 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// ahead of `prompt` into the single launch positional in `OrchestraService.spawn` (F1's `ctx.seed`
     /// is the resume-only carrier; a fresh start delivers the seed as the initial prompt). nil ⇒ no seed.
     public var seed: String?
+    /// Parent ref to branch from when the card's branch is *created* (BT2 threads it into
+    /// `WorktreeManager.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
+    /// carries the field on the model; the spawn threading lands in BT2.
+    public var base: String?
     public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,
                 startIn: StartIn? = nil, agentId: String? = nil,
                 cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
-                seed: String? = nil) {
+                seed: String? = nil, base: String? = nil) {
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
         self.cwd = cwd; self.access = access; self.scratch = scratch; self.seed = seed
+        self.base = base
     }
 
     public init(from decoder: Decoder) throws {
@@ -693,5 +747,6 @@ public struct SpawnInput: Codable, Sendable, Equatable {
         self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
         self.scratch = try c.decodeIfPresent(Bool.self, forKey: .scratch) ?? false
         self.seed = try c.decodeIfPresent(String.self, forKey: .seed)
+        self.base = try c.decodeIfPresent(String.self, forKey: .base)
     }
 }

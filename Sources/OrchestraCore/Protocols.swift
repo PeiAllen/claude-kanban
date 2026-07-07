@@ -5,7 +5,10 @@ import Foundation
 
 public protocol WorktreeManaging: Sendable {
     func path(repo: String, branch: String) -> String
-    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool)
+    /// `branchExisted` = the branch was already present (so the worktree checked it out rather than
+    /// cutting a fresh `-b` branch). Lets callers skip work that only applies to pre-existing branches
+    /// (e.g. deriving lineage from git config) without a second git query.
+    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool, branchExisted: Bool)
     func remove(worktree: String, force: Bool) throws
 }
 

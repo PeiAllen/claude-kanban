@@ -99,6 +99,23 @@ enum CLIRunner {
                 let r = try await client.call("trust", .object(["path": .string(path)]))
                 if try r.decode(TrustGrantResult.self).granted { print("trusted \(path)") }
 
+            case "set-parent":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                var params: [String: JSONValue] = ["ref": .string(ref)]
+                if let parent = flags.value("parent") ?? flags.positional(1) {
+                    params["parent"] = .string(parent)
+                }
+                if let mode = flags.value("mode") { params["mode"] = .string(mode) }
+                let task = try await client.call("set-parent", .object(params))
+                printRef(task)
+
+            case "tree":
+                var params: [String: JSONValue] = [:]
+                if let ref = flags.value("ref") ?? flags.positional(0) { params["ref"] = .string(ref) }
+                if let repo = flags.value("repo") { params["repo"] = .string(repo) }
+                let r = try await client.call("tree", .object(params))
+                printJSON(r)
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))

@@ -105,6 +105,23 @@ public enum CommandCatalog {
                               + "clean-context session opens on (folded ahead of any queued inbox messages)."),
                       ], required: ["ref", "context"])),
 
+        CommandSchema(name: "set-parent",
+                      summary: "Set or clear a card branch's parent link. With `parent`: adopt it "
+                          + "(records parent + merge-base, history untouched). Omit `parent` to clear.",
+                      params: schema([
+                          "ref": refProp(),
+                          "parent": strProp("Parent branch ref to adopt (local name). Omit to clear the link."),
+                          "mode": strProp("'adopt' (default): metadata-only relink; base = merge-base."),
+                      ], required: ["ref"])),
+
+        CommandSchema(name: "tree",
+                      summary: "Lineage snapshot — parent/children per card. Scope by `ref` or `repo`; "
+                          + "omit both for all active cards.",
+                      params: schema([
+                          "ref": refProp(),
+                          "repo": strProp("Limit to cards in this repo root."),
+                      ], required: [])),
+
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",
                       params: schema(["ref": refProp()], required: ["ref"])),
 

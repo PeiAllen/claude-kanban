@@ -135,6 +135,21 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: updated)
             },
 
+            "set-parent": { svc, p, src in
+                let updated = try await svc.setParent(
+                    ref: try p.string("ref"),
+                    parent: p.optString("parent"),
+                    mode: p.optString("mode") ?? "adopt",
+                    source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "tree": { svc, p, _ in
+                // Read-only lineage query (like `list`): not logged, to keep the activity feed clean.
+                let snap = try await svc.tree(ref: p.optString("ref"), repo: p.optString("repo"))
+                return try JSONValue(encodable: snap)
+            },
+
             "status": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
                 let st = try await svc.status(t.id)
