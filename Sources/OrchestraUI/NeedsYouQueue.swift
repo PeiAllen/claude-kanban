@@ -3,7 +3,7 @@ import OrchestraKit
 
 // Pure, view-free logic for the Needs You attention queue (mobile design §6). Kept in OrchestraUI (not
 // App-iOS) so `swift test` exercises the filtering / reason-derivation / sort without an iOS Simulator,
-// and so the `send-keys` gate wrapper below can reach `BoardModel`'s module-internal `client`. The
+// and so the `send-keys` gate wrapper below can reach `BoardStore`'s module-internal `client`. The
 // SwiftUI view (`App-iOS/Views/NeedsYouTab.swift`) only renders these decisions.
 
 /// Why a card is in the Needs You queue. Each case maps to a *real* daemon signal — there is no
@@ -86,7 +86,7 @@ public enum NeedsYouQueue {
     }
 }
 
-public extension BoardModel {
+public extension BoardStore {
     /// The Needs You attention queue (design §6) computed off the live board — most-urgent-first.
     var needsYouItems: [AttentionItem] { NeedsYouQueue.build(from: tasks) }
 

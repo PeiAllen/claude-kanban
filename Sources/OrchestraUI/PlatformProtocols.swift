@@ -45,6 +45,41 @@ public extension TerminalHost {
     func attach(target: TmuxTarget, selectMode: Bool) -> AnyView { attach(target: target) }
 }
 
+/// Connection activation seam. Pointing the board at a `Connection` diverges by platform — macOS spins an
+/// SSH master (via `ConnectionController`) and honours the local-daemon onboarding/install flow; iOS
+/// builds an SSH-backed (or dev-transport) `ControlClient` directly. Rather than two `#if os(...)`
+/// `activate()` bodies on the store, each platform supplies a `ConnectionActivator` that resolves the
+/// transport, builds the `ControlClient`, and tells the store how to proceed. `BoardStore.activate` is
+/// then a single shared method that drives the returned `ClientActivation`. Testable in isolation with a
+/// fake activator.
+@MainActor public protocol ConnectionActivator: Sendable {
+    /// Resolve `conn`'s transport, build its `ControlClient`, and return what the store should do next.
+    /// `onboarded` is the store's current first-run flag (macOS uses it to decide welcome vs offline);
+    /// `onTunnelExit` is invoked when the platform's tunnel drops (macOS remote), so the store can
+    /// re-activate. Throws to signal a hard connect failure (the store toasts + goes offline).
+    func activate(_ conn: Connection, clientId: String, onboarded: Bool,
+                  onTunnelExit: @escaping @Sendable () -> Void) async throws -> ClientActivation
+}
+
+/// The outcome of a `ConnectionActivator.activate`: the freshly-built client plus the next step. The
+/// client is always rebuilt (even for `.offline`/`.onboarding`) so a later banner/onboarding action drives
+/// the correct socket — matching the pre-split behaviour where every `activate()` path rebuilt + rewired
+/// the client before branching.
+public struct ClientActivation: Sendable {
+    public enum Next: Sendable {
+        case connect      // connect + stream now
+        case onboarding   // first run, local daemon not installed — show the welcome/install screen
+        case offline      // returning user, daemon down — stay disconnected
+    }
+    public let client: ControlClient
+    public let next: Next
+    /// macOS local-attach success marks the user onboarded (skips the welcome screen next launch).
+    public let markOnboarded: Bool
+    public init(client: ControlClient, next: Next, markOnboarded: Bool = false) {
+        self.client = client; self.next = next; self.markOnboarded = markOnboarded
+    }
+}
+
 // MARK: - No-op defaults (previews, tests, and iOS-before-F3)
 
 // The inits are `nonisolated` so the Environment-key defaults and `PlatformUI.noop` can construct
