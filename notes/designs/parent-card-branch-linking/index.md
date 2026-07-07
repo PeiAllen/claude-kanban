@@ -88,6 +88,14 @@ flowchart TD
 ## Open questions (rolled up)
 
 **None — all four layers approved** (L1 2026-07-06; L2+L3 2026-07-07). Gate resolutions live in
-each doc's Open-questions section. Implementation proceeds as the BT1–BT7 main-based PR sequence
-([[03-implementation]] §Sequencing), staged first onto `plan/parent-card-branch-linking` via
-orchestrated child cards (owner directive, 2026-07-07).
+each doc's Open-questions section.
+
+## Implementation status (2026-07-07)
+
+**All seven PRs (BT1–BT7) are implemented and merged onto `plan/parent-card-branch-linking`**
+via orchestrated child cards, each with its own plan (`notes/plans/2026-07-07-bt*.md`), TDD
+pass, and ≥1 review-fix round. Final gate: 631 tests / 126 suites — green except the
+pre-existing environmental PTY-exhaustion flake in the two real-tmux suites (untouched by this
+work; see memory `swift-test-tmux-pty-exhaustion`). Remaining step: merge this branch to `main`
+after `mobile-impl-orchestration` lands (the original main-based-PRs plan collapses to one
+integration merge).
