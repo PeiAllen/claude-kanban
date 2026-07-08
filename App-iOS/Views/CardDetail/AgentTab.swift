@@ -24,6 +24,9 @@ struct AgentTab: View {
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
     @State private var takeover = false
+    /// Composer focus, hoisted here so the capture/preview area (a sibling of the SteerBar) can resign it
+    /// on tap-off. `SteerBar` binds to it via `.focused(...)`; the keyboard has no natural dismiss otherwise.
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         if task.status == .dead {
@@ -34,8 +37,13 @@ struct AgentTab: View {
                     WaitBanner(reason: reason, theme: theme)
                 }
                 CaptureRender(cardId: task.id)
+                    // Tap-off + swipe-down dismissal for the composer keyboard. Additive container-level
+                    // modifiers only — the capture ScrollView internals are left untouched.
+                    .scrollDismissesKeyboard(.interactively)
+                    .contentShape(Rectangle())
+                    .onTapGesture { composerFocused = false }
                 Divider().overlay(theme.hair)
-                SteerBar(cardId: task.id)
+                SteerBar(cardId: task.id, composerFocused: $composerFocused)
                 takeOverButton
             }
             .background(theme.winBg)
@@ -204,6 +212,9 @@ private struct CapturePaneText: View {
 /// joins the tmux window.
 private struct SteerBar: View {
     let cardId: UUID
+    /// Bound from `AgentTab` so both the keyboard-toolbar "Done" button here and a tap-off on the sibling
+    /// capture area resign the same field. Mirrors `TerminalTab`'s `@FocusState` composer idiom.
+    @FocusState.Binding var composerFocused: Bool
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
@@ -225,7 +236,16 @@ private struct SteerBar: View {
                     .background(theme.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(theme.fieldBorder, lineWidth: 0.5))
                     .submitLabel(.send)
+                    .focused($composerFocused)
                     .onSubmit(queue)
+                    // Explicit dismissal from the keyboard accessory bar — the field is `.vertical`, so
+                    // Return inserts a newline rather than closing; "Done" gives a guaranteed way out.
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { composerFocused = false }
+                        }
+                    }
 
                 Button(action: queue) {
                     Image(systemName: justQueued ? "checkmark" : "paperplane.fill")
