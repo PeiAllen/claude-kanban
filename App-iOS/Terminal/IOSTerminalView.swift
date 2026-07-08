@@ -24,6 +24,16 @@ struct IOSTerminalView: UIViewRepresentable {
     /// toggle it live. Defaults to `false`. (Takeover drives Select via `control` instead; either wins.)
     var selectMode: Bool = false
 
+    /// Swipe-to-scroll the tmux history without the takeover's arming chrome — the Terminal-tab live shell
+    /// (T2). Like the takeover, the live shell is a `tmux attach`, so SwiftTerm sits on the *alternate*
+    /// buffer with no local scrollback (the history lives in tmux, `mouse on`, 50k lines). A plain
+    /// one-finger swipe is therefore forwarded to tmux as mouse-wheel events (`Coordinator.handleWheelPan`)
+    /// so tmux copy-mode scrolls — the same mechanism the desktop live shell uses. Unlike the takeover
+    /// there's no `armed` state: scroll is one-finger always and SwiftTerm's own touch→mouse forwarding is
+    /// kept off so a swipe can't double-fire as a tmux mouse-drag. Defaults to `false` (the takeover drives
+    /// its wheel-pan through `control` instead; the read-only attach wants neither).
+    var forwardScroll: Bool = false
+
     /// Gate consulted before each automatic reconnect. Takeover wires this to `TakeoverController.isHolding`
     /// so a reconnect NEVER re-runs the exclusive `detach-client` recipe after the phone has already lost the
     /// lease to a desktop retake (#7) — that would kick the rightful owner. Defaults to always-reconnect for
@@ -50,22 +60,25 @@ struct IOSTerminalView: UIViewRepresentable {
         // user starts typing. SwiftTerm's own single-tap already calls `becomeFirstResponder` (raising the
         // keyboard); this observer just keeps the takeover chrome's `armed` state — and hence mouse
         // reporting — in sync with that. It recognises simultaneously and doesn't cancel touches, so it
-        // never steals a scroll pan, a selection long-press, or SwiftTerm's own tap handling.
+        // never steals a scroll pan, a selection long-press, or SwiftTerm's own tap handling. The live
+        // shell (`forwardScroll`, no `control`) has no arming, so it skips this.
         if control != nil {
             let armTap = UITapGestureRecognizer(target: context.coordinator,
                                                 action: #selector(Coordinator.handleArmTap))
             armTap.delegate = context.coordinator
             armTap.cancelsTouchesInView = false
             term.addGestureRecognizer(armTap)
+        }
 
-            // "Scroll the program" pan. tmux presents the takeover as a full-screen (alternate-screen) app
-            // the whole time, so there's no local SwiftTerm scrollback — a swipe must be forwarded to tmux /
-            // the agent as mouse-wheel events (the iOS port of the desktop's `ScrollableTerminalView
-            // .handleScroll`). Finger policy mirrors the local-scroll pan (`updateUIView` sets the count):
-            // ONE finger when disarmed — a plain swipe scrolls, like a mobile page — and TWO when armed, so a
-            // one-finger drag still reaches the TUI mouse while typing. It stands down during Select mode so
-            // a one-finger drag selects text instead. On the normal buffer it no-ops and the built-in
-            // UIScrollView pan scrolls the local scrollback.
+        // "Scroll the program" pan — for BOTH tmux-attached surfaces: the takeover (`control`) and the live
+        // shell (`forwardScroll`). Both run `tmux attach`, which switches SwiftTerm to the full-screen
+        // (alternate-screen) buffer, so there's no local SwiftTerm scrollback — a swipe must be forwarded to
+        // tmux as mouse-wheel events (the iOS port of the desktop's `ScrollableTerminalView.handleScroll`),
+        // and tmux (`mouse on`) scrolls its own 50k-line history. `handleWheelPan` self-gates on
+        // `isCurrentBufferAlternate && mouseMode != .off`, so on a normal buffer it no-ops. Finger policy is
+        // set in `updateUIView`: the takeover toggles 1↔2 fingers with `armed`; the live shell is always one
+        // finger (it has no arming). It stands down during Select mode so a one-finger drag selects text.
+        if control != nil || forwardScroll {
             let wheelPan = UIPanGestureRecognizer(target: context.coordinator,
                                                   action: #selector(Coordinator.handleWheelPan))
             wheelPan.delegate = context.coordinator
@@ -74,7 +87,7 @@ struct IOSTerminalView: UIViewRepresentable {
             context.coordinator.wheelPan = wheelPan
 
             // The alternate screen fills the viewport exactly (rows == visible), so the built-in pan would
-            // rubber-band the whole terminal while the two-finger wheel-pan forwards. Kill the bounce.
+            // rubber-band the whole terminal while the wheel-pan forwards. Kill the bounce.
             term.bounces = false
         }
         return term
@@ -93,23 +106,41 @@ struct IOSTerminalView: UIViewRepresentable {
         // takeover terminal is a look/scroll surface — reporting off means SwiftTerm's UIScrollView pan
         // scrolls the scrollback (a plain swipe, like a mobile page) and a tap arms instead of firing a
         // stray mouse click into the agent. While ARMED, reporting is on so the agent's TUI mouse works.
-        // Select mode always forces it off so a drag selects text. Non-takeover attaches pass no `control`
-        // (armed defaults on), so their behaviour is unchanged.
+        // Select mode always forces it off so a drag selects text.
+        //
+        // The live shell (`forwardScroll`, no `control`) keeps reporting OFF unconditionally: a plain
+        // one-finger swipe scrolls tmux's history via the wheel-pan, so SwiftTerm's own touch→mouse
+        // forwarding must stand down or a swipe would double-fire as a tmux mouse-drag / selection. Tapping
+        // still raises the keyboard (SwiftTerm's single-tap falls through to `becomeFirstResponder` when
+        // reporting is off), and Select mode drives text selection through SwiftTerm's selection path. The
+        // read-only attach passes no `control` and no `forwardScroll`, so its `armed`-defaults-on behaviour
+        // is unchanged.
         let armed = control?.armed ?? true
-        uiView.allowMouseReporting = armed && !((control?.selectMode ?? false) || selectMode)
+        uiView.allowMouseReporting = forwardScroll
+            ? false
+            : armed && !((control?.selectMode ?? false) || selectMode)
 
-        // Scroll finger policy, applied to BOTH the local-scrollback pan (SwiftTerm's built-in UIScrollView
-        // pan, used on the normal buffer) and the wheel-forward pan (`handleWheelPan`, used on the alternate
-        // screen — i.e. the whole takeover). DISARMED: one finger, so a plain swipe scrolls like a mobile
-        // page. ARMED: two fingers, so a one-finger drag still reaches the agent's TUI mouse while two
-        // fingers scroll without dropping the keyboard. `selectModeActive` lets the wheel-pan stand down so a
-        // one-finger drag can select text. Cap SwiftTerm's own mouse/selection pans (added lazily on mouse
-        // mode) at one finger so a two-finger scroll can't double-fire as a mouse drag — but never the
-        // wheel-pan itself. Re-applied every update since those pans can appear mid-session.
+        // Scroll finger policy, applied to BOTH the built-in UIScrollView pan and the wheel-forward pan
+        // (`handleWheelPan`). Cap SwiftTerm's own mouse/selection pans (added lazily on mouse mode) at one
+        // finger so a two-finger scroll can't double-fire as a mouse drag — but never the wheel-pan itself.
+        // Re-applied every update since those pans can appear mid-session.
         if control != nil {
+            // Takeover. DISARMED: one finger, so a plain swipe scrolls like a mobile page. ARMED: two
+            // fingers, so a one-finger drag still reaches the agent's TUI mouse while two fingers scroll
+            // without dropping the keyboard.
             uiView.panGestureRecognizer.minimumNumberOfTouches = armed ? 2 : 1
             context.coordinator.wheelPan?.minimumNumberOfTouches = armed ? 2 : 1
             context.coordinator.selectModeActive = (control?.selectMode ?? false) || selectMode
+            for g in uiView.gestureRecognizers ?? []
+            where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
+                (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1
+            }
+        } else if forwardScroll {
+            // Live shell: no arming, so a plain ONE-finger swipe always scrolls the history. Select mode
+            // lets the wheel-pan stand down so a one-finger drag selects text instead.
+            uiView.panGestureRecognizer.minimumNumberOfTouches = 1
+            context.coordinator.wheelPan?.minimumNumberOfTouches = 1
+            context.coordinator.selectModeActive = selectMode
             for g in uiView.gestureRecognizers ?? []
             where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
                 (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1

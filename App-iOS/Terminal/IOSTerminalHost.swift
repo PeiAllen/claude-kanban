@@ -30,8 +30,12 @@ struct IOSTerminalHost: TerminalHost {
     }
 
     /// T2 Terminal-tab live shell: additive `selectMode` overload (non-exclusive, no takeover chrome).
+    /// `forwardScroll` turns on swipe-to-scroll: the live shell is a `tmux attach` (alternate screen, no
+    /// SwiftTerm scrollback), so a one-finger swipe is forwarded to tmux as wheel events and tmux scrolls
+    /// its own history — the same mechanism the desktop live shell uses (`IOSTerminalView.forwardScroll`).
     func attach(target: TmuxTarget, selectMode: Bool) -> AnyView {
-        terminalView(target: target, takeover: false, control: nil, selectMode: selectMode)
+        terminalView(target: target, takeover: false, control: nil, selectMode: selectMode,
+                     forwardScroll: true)
     }
 
     /// **Exclusive takeover attach** (PR T4). Runs the `takeover` recipe (`detach-client` first) so the
@@ -50,6 +54,7 @@ struct IOSTerminalHost: TerminalHost {
     }
 
     private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool,
+                              forwardScroll: Bool = false,
                               shouldReconnect: @escaping () -> Bool = { true }) -> AnyView {
         // No Mac connection configured → render a live terminal that explains setup instead of hanging on
         // a black rectangle. Set it in Settings → Connection; `resolve` also honors ORCH_SSH_TARGET for the
@@ -58,7 +63,8 @@ struct IOSTerminalHost: TerminalHost {
             let banner = Self.setupBanner()
             return AnyView(
                 IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control,
-                                selectMode: selectMode, shouldReconnect: shouldReconnect)
+                                selectMode: selectMode, forwardScroll: forwardScroll,
+                                shouldReconnect: shouldReconnect)
                     .id("unconfigured:\(target.session):\(target.window)"))
         }
 
@@ -74,7 +80,8 @@ struct IOSTerminalHost: TerminalHost {
             IOSTerminalView(makeChannel: {
                 SSHPTYChannel(endpoint: endpoint, command: command, group: group,
                               sharedSession: sessionProvider)
-            }, control: control, selectMode: selectMode, shouldReconnect: shouldReconnect)
+            }, control: control, selectMode: selectMode, forwardScroll: forwardScroll,
+            shouldReconnect: shouldReconnect)
             // Stable identity per attach target so SwiftUI keeps ONE Coordinator (and one SSH session)
             // across re-renders — the client half of reconnect idempotency. `takeover` is part of the id so
             // switching modes rebuilds the session with the right recipe.
