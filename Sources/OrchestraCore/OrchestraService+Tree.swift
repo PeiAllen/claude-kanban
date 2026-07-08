@@ -69,12 +69,19 @@ extension OrchestraService {
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
             let updated = try await store.update(t.id) { $0.parentBranch = p }
             emit(.taskUpserted(updated))
+            // S2-7: recompute against the NEW parent (else a badge from the previous parent lingers on an
+            // idle card) and tear down any remote watch left from a prior remote parent (adopting a local
+            // one takes the card off the remote tier).
+            stopRemoteWatch(t.id)
+            scheduleTreeStat(t.id)
             emitActivity(.command, updated, source, "set parent → \(p)")
             return updated
         } else {
             stopRemoteWatch(t.id)   // BT6: clearing a remote parent tears down its merge-watch
             try await lineage.clear(repo: t.repo, branch: t.branch)
-            let updated = try await store.update(t.id) { $0.parentBranch = nil }
+            // S2-7: clear the badge too (compare `shipped`, which nils both) — else `tree` reports a nil
+            // parent alongside a stale non-nil treeStat.
+            let updated = try await store.update(t.id) { $0.parentBranch = nil; $0.treeStat = nil }
             emit(.taskUpserted(updated))
             emitActivity(.command, updated, source, "cleared parent link")
             return updated
