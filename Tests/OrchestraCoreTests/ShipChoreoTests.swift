@@ -55,6 +55,40 @@ struct ShipChoreoTests {
         #expect(warnings.contains { $0.text.contains("parent") })
     }
 
+    // S1-2 goal-4: a ROOT card (no parent link) shipping to main must still retarget its children
+    // onto the default branch — otherwise the child shows inSync-forever against a dead parent.
+    @Test("root ship (no parent link) retargets children onto the default branch — goal-4")
+    func rootShipRetargetsChildren() async throws {
+        let env = TestEnv.make()
+        // main → A → B; A is a ROOT (no parent link), ships to main.
+        let repo = TestEnv.repo(env.base)
+        try TreeStatTests.git(repo, "init", "-q", "-b", "main")
+        try TreeStatTests.git(repo, "config", "user.email", "t@t")
+        try TreeStatTests.git(repo, "config", "user.name", "t")
+        try TreeStatTests.write(repo, "a.txt", "0\n"); try TreeStatTests.git(repo, "add", "-A")
+        try TreeStatTests.git(repo, "commit", "-q", "-m", "base")
+        try TreeStatTests.git(repo, "checkout", "-q", "-b", "A", "main")
+        try TreeStatTests.write(repo, "A.txt", "a\n"); try TreeStatTests.git(repo, "add", "-A")
+        try TreeStatTests.git(repo, "commit", "-q", "-m", "A work")
+        let aTip = try TreeStatTests.git(repo, "rev-parse", "A")
+        try TreeStatTests.git(repo, "branch", "B", "A")
+        try TreeStatTests.git(repo, "checkout", "-q", "main")
+
+        let a = try await env.svc.spawn(SpawnInput(prompt: "A", repo: repo, branch: "A"))   // no link
+        let b = try await env.svc.spawn(SpawnInput(prompt: "B", repo: repo, branch: "B"))
+        try await BranchLineage().set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
+
+        try await env.svc.shipped(ref: a.ref())
+
+        // B retargeted onto the default branch (main), recorded base KEPT, restackNeeded + nudged.
+        let lB = try #require(await BranchLineage().read(repo: repo, branch: "B"))
+        #expect(lB.parent == "main")
+        #expect(lB.base == aTip)
+        #expect(await env.svc.list().first { $0.id == b.id }?.treeStat?.state == .restackNeeded)
+        let nB = try await env.svc.inboxPeek(b.id)
+        #expect(nB.first?.text.contains("rebase --onto main \(aTip)") == true)
+    }
+
     // (b) two children retargeted to grandparent, base preserved, restackNeeded, nudged; idempotent
     @Test("shipping a mid branch retargets its two children onto the grandparent (base kept), once")
     func retargetsGrandchildren() async throws {

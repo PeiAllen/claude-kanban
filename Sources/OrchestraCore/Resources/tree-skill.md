@@ -31,7 +31,7 @@ Do NOT blindly ship to main. Resolve the parent via `orchestra tree` and take th
 
 - **Parent has a live card** → you cannot advance a branch checked out in another worktree, and the owning agent must merge it. `orchestra send <parent-ref> "merge-request: squash-merge <you> into <parent>"` and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`. Do not `cd` into the parent's worktree.
 - **Bare local parent (no card owns it)** → borrow it ephemerally: check the parent branch out in a throwaway worktree, `git merge --squash <you>`, commit, remove the worktree, then `orchestra shipped <you>`.
-- **Parent is `main`** → today's `/ship` flow is unchanged (commit → merge to main → relaunch → archive). Do not call `orchestra shipped`.
+- **Parent is `main`** → the standard `/ship` flow (commit → merge to main → relaunch → archive). **If `orchestra tree <you>` shows you have children**, run `orchestra shipped <you>` after the merge lands so the daemon retargets them onto `main` and nudges each to restack — otherwise a stacked child strands on your now-merged branch and shows `inSync` forever. No children ⇒ skip `shipped`.
 - **Remote parent (`origin/<branch>` or `pr#<N>`)** → do NOT merge locally. **Publish** your branch as a stacked PR:
   1. `git push -u origin <your-branch>`
   2. `gh pr create --base <parentHeadRef>` — target the PARENT's head branch (the branch behind the parent PR / `origin/<branch>`), NOT `main`, so your PR shows only your commits.

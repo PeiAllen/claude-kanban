@@ -154,10 +154,15 @@ extension OrchestraService {
             throw OrchestraError.invalidParams("only worktree cards can be shipped")
         }
         let link = await lineage.read(repo: child.repo, branch: child.branch)
-        let grandparent = link?.parent
+        // S1-2 (goal-4): the retarget target is the shipped child's parent, OR — for a ROOT card that
+        // shipped straight to main — the repo's default branch, so its children never strand on a dead
+        // parent (inSync-forever). A root ship is not an anomaly (no "no recorded parent link" warning).
+        let hadParentLink = link?.parent != nil
+        let grandparent = link?.parent ?? defaultBranch(repo: child.repo)
 
-        // (a) notify the parent's card, if one owns the parent branch.
-        if let parent = grandparent {
+        // (a) notify the parent's card, if one owns the parent branch (only when there WAS a parent link
+        // — a root ship merged to main via the standard flow, there is no parent card to wake).
+        if hadParentLink, let parent = link?.parent {
             let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
             if let parentCard = active.first(where: { $0.repo == child.repo && $0.branch == parent }) {
                 try? await inbox.enqueue(parentCard.id,
@@ -167,13 +172,10 @@ extension OrchestraService {
                 emitActivity(.warning, child, source,
                     "shipped \(child.branch): no active card owns parent \(parent) to notify")
             }
-        } else {
-            emitActivity(.warning, child, source,
-                "shipped \(child.branch): no recorded parent link — nothing to notify or retarget")
         }
 
         // (b) retarget the child's own children onto the grandparent (keep each one's recorded base).
-        if let grandparent {
+        do {
             let grandchildren = await lineage.children(repo: child.repo, of: child.branch)
             let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
             for gcBranch in grandchildren {
@@ -329,6 +331,21 @@ extension OrchestraService {
             return TreeStat(state: .restackNeeded, behind: behind, parentIsRemote: isRemote)
         }
         return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind, parentIsRemote: isRemote)
+    }
+
+    /// The repo's LOCAL default branch name (`main`/`master`) — the root-ship retarget target (S1-2).
+    /// Prefers `origin/HEAD`'s short name when a local branch of that name exists, else falls back to
+    /// `main`/`master`. Never returns a remote-tracking ref (`origin/…`), which would be mis-parsed as a
+    /// remote parent by `RemoteParentRef.parse`.
+    func defaultBranch(repo: String) -> String {
+        if let ref = DiffBaseline.defaultBaseRef(worktree: repo),
+           RemoteParentRef.parse(ref) == nil, treeTip(repo: repo, "refs/heads/\(ref)") != nil {
+            return ref
+        }
+        for name in ["main", "master"] where treeTip(repo: repo, "refs/heads/\(name)") != nil {
+            return name
+        }
+        return "main"
     }
 
     /// `git rev-parse --verify --quiet <ref>` — nil when the ref can't be resolved (parent deleted).
