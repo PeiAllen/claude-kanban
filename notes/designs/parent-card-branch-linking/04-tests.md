@@ -57,7 +57,7 @@ pushes, can mint `refs/pull/N/head`) · `FakeGh(state:)`.
 | Redirect mechanics | scripted `rebase --onto grandparent <recorded-base>` in fixture ⇒ only child's own commits transplanted (squash-merged parent, the phantom-conflict case) |
 | `RemoteParents.fetch` | PR ref lands in `refs/orch/parents/pr-N` · force-refspec survives remote rewrite · `GIT_TERMINAL_PROMPT=0` in env |
 | `lsRemoteTip` | tip OID · deleted branch ⇒ nil |
-| Detection ladder | FakeGh MERGED ⇒ redirect fired with PR baseRefName · gh absent + branch deleted ⇒ warning tier · ancestry true ⇒ merged (merge-commit case) · ancestry false + squash ⇒ NOT treated as unmerged when gh says MERGED |
+| Detection ladder | FakeGh MERGED ⇒ redirect fired with PR baseRefName · gh absent + branch deleted ⇒ warning tier · ancestry true ⇒ WARN-only (proof-positive; never auto-redirects — only gh names the base) · ancestry false + squash ⇒ NOT treated as unmerged when gh says MERGED |
 | `GhProbe` | toolExists gate · JSON decode of state/mergedAt/baseRefName · malformed/auth-error ⇒ nil + classified |
 | Catalog/registry pairing | `CommandRegistryCatalogTests` extends automatically to the 4 new commands (pairing is asserted by the existing test) |
 | Spawn param | `SpawnInput` decode with/without `base` (back-compat) · registry handler threads `base` |
@@ -66,7 +66,8 @@ pushes, can mint `refs/pull/N/head`) · `FakeGh(state:)`.
 ## Integration / end-to-end tests
 
 - **Spawn-with-base:** `spawn(base: parent)` ⇒ worktree HEAD == parent tip, lineage keys
-  written, `task.parentBranch` set, treeStat inSync.
+  written, `task.parentBranch` set. (treeStat is nil until the first report recompute — spawn does
+  not compute it.)
 - **Churn derivation (the owner's requirement):** spawn child w/ base → archive → respawn same
   branch *without* base ⇒ `parentBranch` re-derived from config; diff baseline still parent.
 - **Sync round-trip:** parent card commits (report funnel fired) ⇒ child treeStat stale +

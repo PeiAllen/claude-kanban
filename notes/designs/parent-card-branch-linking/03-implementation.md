@@ -19,7 +19,7 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]"]
 ### 1. Model additions (`Sources/OrchestraKit/Model.swift`)
 
 - `TreeStat { state: TreeState, behind: Int, parentIsRemote: Bool }`, `TreeState` enum
-  (`inSync/stale/restackNeeded/parentMerged`) — next to `DiffStat` (`:158`).
+  (`inSync/stale/restackNeeded/mergeRequested`) — next to `DiffStat` (`:158`).
 - `Task.treeStat: TreeStat?` — decode-with-default `nil` (the `diffStat` migration pattern,
   docs/03 §schema-migration). `Task.parentBranch` already exists (`:187`).
 - `SpawnInput.base: String?` — plus the manual `init(from:)` default (`:684-696`).
@@ -51,8 +51,8 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]"]
 - `OrchestraService.spawn` (`OrchestraService.swift:212`): before `worktrees.ensure` —
   remote base ⇒ `RemoteParents.fetch` (get OID); after task build: `base` given ⇒
   `lineage.set` + `task.parentBranch = canonical`; no `base` but branch pre-existed ⇒
-  `task.parentBranch = lineage.read()?.parent` (**churn derivation**). Then
-  `scheduleTreeStat(id)`.
+  `task.parentBranch = lineage.read()?.parent` (**churn derivation**). Spawn does NOT compute a
+  treeStat — it stays nil until the card's first report drives `scheduleTreeStat` off the funnel.
 - CLI (`CLIRunner.swift:24`): `--base` flag. `BoardStore.spawn` (`BoardStore.swift:648`):
   `base: String?` param. MCP: free via catalog.
 - Spawn sheets: desktop (`App/Views/SpawnSheet.swift`) + iOS (`App-iOS/Views/SpawnSheet.swift`)

@@ -136,9 +136,11 @@ rewriting docs/ship flows for non-stacked cards (unchanged defaults).
 - Parent may be `origin`-relative: a same-repo branch or a PR number (covers fork PRs via
   `refs/pull/N/head`). Fetched read-only into `refs/orch/parents/…` with force-refspec.
 - **Merge detection ladder** (opt-in watch, stop at first hit): `gh pr view … state==MERGED`
-  (authoritative, squash-proof) → fetch-prune branch-deleted heuristic ("probably shipped") →
-  `merge-base --is-ancestor` (proof-positive only). Detection fires the same redirect flow as a
-  local ship, with new base = the PR's `baseRefName` target.
+  (authoritative, squash-proof) → branch-`.gone` heuristic (gh-aware wording) →
+  `merge-base --is-ancestor` (proof-positive only). **Only the authoritative gh MERGED tier
+  auto-redirects** (new base = the PR's `baseRefName`); the gone + ancestry tiers are **warn-only**
+  — they surface an activity for the human to confirm with `set-parent`, never auto-redirect on a
+  guess (as implemented; only gh can name the correct base).
 - Ship for a remote-parented child: publish as **stacked PR** (`gh pr create --base <parent>`);
   direct push-into-parent only for same-repo, write-permitted branches. On parent merge, verify
   and repair the child PR's base (GitHub's auto-retarget is unreliable via API deletion).
