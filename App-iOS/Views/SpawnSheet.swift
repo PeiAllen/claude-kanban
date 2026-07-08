@@ -231,6 +231,9 @@ struct SpawnSheet: View {
             }
             // A new repo selection reloads its branch list from the daemon.
             .onChange(of: repo) { base = ""; remoteBase = ""; _Concurrency.Task { await loadBranches() } }
+            // S3-2: a remote parent wins over the local base — clear `base` so the disabled Picker's
+            // selection matches its "ignored" tag (no SwiftUI invalid-selection warning / blank render).
+            .onChange(of: remoteActive) { if remoteActive { base = "" } }
             // The board's cards can arrive after this sheet mounts; seed the repo default once they do.
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
             // Daemon repos can arrive after mount too; seed once they do.

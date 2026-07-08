@@ -142,8 +142,32 @@ public enum CommandCatalog {
 
         CommandSchema(name: "shipped",
                       summary: "Post-merge bookkeeping after a child branch was merged into its parent: "
-                          + "notify the parent's card and retarget the child's own children onto the "
-                          + "grandparent (keeping each one's recorded base) with a restack nudge. Idempotent.",
+                          + "notify + wake the shipped child, retarget the child's own children onto the "
+                          + "grandparent (keeping each one's recorded base) with a restack nudge. Idempotent. "
+                          + "Refuses if the parent tip hasn't advanced past the recorded base (nothing "
+                          + "merged) unless `force`.",
+                      params: schema([
+                          "ref": refProp(),
+                          "force": boolProp("Skip the parent-tip-advanced sanity check (use for a genuinely "
+                              + "empty/no-op squash). Default off."),
+                      ], required: ["ref"])),
+
+        CommandSchema(name: "merge-request",
+                      summary: "Ask this card's LIVE parent card to squash-merge it up the tree: the daemon "
+                          + "composes the request, nudges the parent card, and marks this card 'merge "
+                          + "requested' (a waiting badge) until the parent runs `shipped`. Dedups re-sends.",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "borrow",
+                      summary: "Cut a throwaway worktree checking out this card's BARE parent branch (no "
+                          + "live card owns it) so you can squash-merge into it, then `shipped`. Returns the "
+                          + "worktree path. Refuses a remote parent (publish a PR) or a live-card parent "
+                          + "(send a merge-request).",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "release",
+                      summary: "Tear down this card's borrow worktree (the daemon also sweeps it on archive "
+                          + "and at startup).",
                       params: schema(["ref": refProp()], required: ["ref"])),
 
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",

@@ -104,6 +104,11 @@ extension OrchestraService {
         // Re-read across the ladder's awaits: the card may have been archived / re-pointed since the tick
         // began. Bail rather than write lineage onto a gone card.
         guard let t = await store.get(cardId), !t.archived, t.origin == .worktree else { return }
+        // S1-5 hardening: gh is now a real ≤20 s suspension, so a `set-parent` can land mid-tick — it
+        // cancels the watch but cannot stop THIS running tick. Re-read the lineage link and bail if it is
+        // no longer the PR we started redirecting (parent/base/pr changed), so we never revert the user's
+        // fresh re-parent or re-anchor on a stale base (lost-update guard).
+        guard let current = await lineage.read(repo: t.repo, branch: t.branch), current == link else { return }
         let newRef = RemoteParentRef.branch(remote: "origin", name: grandparent)   // origin/<baseRefName> (PR base)
         _ = try? await remoteParents.fetch(repo: t.repo, newRef)         // make refs/orch/parents/<gp> resolvable
         let anchor = link.base

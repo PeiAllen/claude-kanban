@@ -45,8 +45,10 @@ extension OrchestraService {
                 "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
                 + "worktree, then `orchestra shipped \(child.shortId)`")
             await wake(parentCard.id)
-            startMergeRequestNudge(childId: child.id)
         }
+        // Always (re-)arm the re-nudge timer — a re-send after the loop already stopped (e.g. the parent
+        // card had briefly vanished) must restart it, not silently leave the badge un-nudged (review B#4).
+        startMergeRequestNudge(childId: child.id)
         emitActivity(.command, child, source, "merge-request → \(link.parent)")
         return (await store.get(child.id)) ?? child
     }
@@ -76,7 +78,13 @@ extension OrchestraService {
               child.treeStat?.state == .mergeRequested,
               let link = await lineage.read(repo: child.repo, branch: child.branch) else { return true }
         let active = await store.all()
-        guard let parentCard = derivedCard(repo: child.repo, branch: link.parent, among: active) else { return true }
+        guard let parentCard = derivedCard(repo: child.repo, branch: link.parent, among: active) else {
+            // Review B#3: the parent card vanished without shipping — clear the sticky waiting badge so it
+            // doesn't linger; the child recomputes its true state (the archive path also nudged it).
+            _ = try? await store.update(childId) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
+            await recomputeTreeStat(childId)
+            return true
+        }
         try? await inbox.enqueue(parentCard.id,
             "reminder — merge-request still pending: squash-merge \(child.branch) (\(child.shortId)) into "
             + "\(link.parent), then `orchestra shipped \(child.shortId)`")

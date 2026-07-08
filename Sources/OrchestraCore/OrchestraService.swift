@@ -646,9 +646,10 @@ public actor OrchestraService {
         if t.origin == .worktree {
             let childBranches = await lineage.children(repo: t.repo, of: t.branch)
             if !childBranches.isEmpty {
-                let active = await store.all().filter { !$0.archived && $0.origin == .worktree && $0.id != id }
+                let active = await store.all().filter { $0.id != id }
                 for cb in childBranches {
-                    if let card = active.first(where: { $0.repo == t.repo && $0.branch == cb }) {
+                    // S2-6: deterministic (oldest) live child, not an arbitrary co-located sibling.
+                    if let card = derivedCard(repo: t.repo, branch: cb, among: active) {
                         try? await inbox.enqueue(card.id,
                             "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship")
                         await wake(card.id)

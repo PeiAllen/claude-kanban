@@ -204,7 +204,7 @@ extension OrchestraService {
         // empty/no-op squash).
         if !force, let link, !link.base.isEmpty,
            let parentTip = treeTip(repo: child.repo, resolvableRef(link, repo: child.repo)),
-           treeBehind(repo: child.repo, base: link.base, tip: parentTip) == 0 {
+           treeBehindStrict(repo: child.repo, base: link.base, tip: parentTip) == 0 {
             throw OrchestraError.invalidParams(
                 "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
                 + "nothing appears merged. Merge first, or re-run with force if the squash was genuinely empty.")
@@ -494,8 +494,15 @@ extension OrchestraService {
 
     /// Commit count in `base..tip` (how far the parent advanced past the recorded base). 0 on error.
     private func treeBehind(repo: String, base: String, tip: String) -> Int {
+        treeBehindStrict(repo: repo, base: base, tip: tip) ?? 0
+    }
+
+    /// Like `treeBehind` but returns `nil` on a `rev-list` failure (e.g. a GC'd/unresolvable base) rather
+    /// than conflating it with a genuine 0 — the S2-2 gate needs to distinguish "nothing merged" (real 0)
+    /// from "couldn't verify" (nil ⇒ don't refuse a legit ship).
+    private func treeBehindStrict(repo: String, base: String, tip: String) -> Int? {
         guard let r = try? Proc.run(["git", "-C", repo, "rev-list", "--count", "\(base)..\(tip)"]),
-              r.ok, let n = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return 0 }
+              r.ok, let n = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         return n
     }
 
