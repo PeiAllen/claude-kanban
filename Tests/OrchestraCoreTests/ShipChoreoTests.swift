@@ -55,6 +55,37 @@ struct ShipChoreoTests {
         #expect(warnings.contains { $0.text.contains("parent") })
     }
 
+    // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now
+    // bare, and a stopped child would otherwise wait on a rotted inbox forever.
+    @Test("archiving a parent card nudges its live children (parent branch now bare)")
+    func archiveNudgesLiveChildren() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage().set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
+
+        try await env.svc.archive(parentCard.id)
+
+        let msgs = try await env.svc.inboxPeek(child.id)
+        #expect(msgs.contains { $0.text.contains("archived") })
+    }
+
+    // S3-5: an archived card must not get a post-archive treeStat rewrite even if a recompute fires.
+    @Test("recompute on an archived card is a no-op")
+    func archivedCardNoRecompute() async throws {
+        let env = TestEnv.make()
+        let repo = try TreeStatTests.repoWithParent(env.base)
+        let tip = try TreeStatTests.git(repo, "rev-parse", "parent")
+        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage().set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: tip))
+        try await env.svc.archive(card.id)
+        await env.svc.recomputeTreeStat(card.id)
+        #expect(await env.svc.list(includeArchived: true).first { $0.id == card.id }?.treeStat == nil)
+    }
+
     // S1-3: the shipped child (a stopped card waiting on its live parent) must be TOLD its merge
     // landed — else it's a zombie card forever. And the parent that performed the merge must not get
     // a wasted self-echo.

@@ -574,6 +574,25 @@ public actor OrchestraService {
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
         stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
+        // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
+        // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
+        treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil
+        childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
+        // S2-5: a worktree card's branch goes bare on archive — nudge its live children so a stopped child
+        // re-evaluates its ship path instead of waiting on the archived card's (now dead) inbox.
+        if t.origin == .worktree {
+            let childBranches = await lineage.children(repo: t.repo, of: t.branch)
+            if !childBranches.isEmpty {
+                let active = await store.all().filter { !$0.archived && $0.origin == .worktree && $0.id != id }
+                for cb in childBranches {
+                    if let card = active.first(where: { $0.repo == t.repo && $0.branch == cb }) {
+                        try? await inbox.enqueue(card.id,
+                            "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship")
+                        await wake(card.id)
+                    }
+                }
+            }
+        }
         try? sessions.kill(sessions.sessionName(id))
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
