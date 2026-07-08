@@ -16,6 +16,9 @@ struct OrchestraiOSApp: App {
     // PushCoordinator.shared (device token → daemon registration; tapped push → Needs You deep-link).
     @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     @ObservedObject private var push = PushCoordinator.shared
+    // Per-card Terminal-tab sessions (notebook history + live-shell attach), held above the navigation stack
+    // so a card's terminal survives tab switches and leaving/returning to the card (see TerminalTab).
+    @StateObject private var terminalSessions = TerminalSessionStore()
     // Drives session reconnect when the app returns to the foreground (iOS suspends the socket while
     // backgrounded).
     @Environment(\.scenePhase) private var scenePhase
@@ -26,6 +29,7 @@ struct OrchestraiOSApp: App {
                 .environmentObject(model)
                 .environmentObject(snooze)
                 .environmentObject(push)
+                .environmentObject(terminalSessions)
                 // Inject the iOS platform conformers so the shared UI resolves its per-OS bits.
                 // TerminalHost rides the Environment only (produced by a view, not called by BoardModel).
                 .environment(\.clipboard, IOSClipboard())
