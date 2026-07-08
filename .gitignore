@@ -40,3 +40,9 @@ Package.resolved
 # Local-only DEBUG demo/screenshot overrides (real paths kept out of the repo; see
 # App/DemoConfig.swift + App/DemoConfig.local.json.example).
 App/DemoConfig.local.json
+.obsidian/
+.trash/
+
+# iOS device signing — your Apple team id stays out of git (see scripts/build-ios-device.sh)
+App-iOS/DeviceSigning.local.xcconfig
+*.local.xcconfig

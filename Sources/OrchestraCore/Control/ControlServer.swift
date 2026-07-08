@@ -71,13 +71,14 @@ public final class ControlServer: @unchecked Sendable {
             }
             _Concurrency.Task { [weak self] in await self?.handle(req, conn) }
         }
-        removeSubscriber(conn)
-        conn.close()
+        // The reader loop has ended (EOF): this thread owns the close.
+        handleReaderEOF(conn)
     }
 
     // MARK: - dispatch
 
     private func handle(_ req: RPCRequest, _ conn: PeerConnection) async {
+        if let cid = req.clientId { conn.setClientId(cid) }
         let source = ActivitySource(rawValue: req.source ?? "app") ?? .app
         do {
             let result = try await dispatch(req, conn, source: source)
@@ -106,10 +107,9 @@ public final class ControlServer: @unchecked Sendable {
         case "ping":    return .object(["ok": .bool(true)])
         case "version": return .object(["version": .string(OrchestraVersion.current)])
         case "subscribe":
-            conn.isSubscriber = true
             conn.onBroken = { [weak self, weak conn] in
                 guard let self, let conn else { return }
-                self.removeSubscriber(conn); conn.close()
+                self.handleBrokenWrite(conn)
             }
             // Register + replay the ring under one lock (paired with handleEvent's lock) so live
             // delivery and history replay can't duplicate or reorder. enqueue() only appends to the
@@ -181,6 +181,82 @@ public final class ControlServer: @unchecked Sendable {
             let base = DiffBase(rawValue: p.optString("base") ?? "branch") ?? .branch
             let stat = try await service.diffStat(task.id, base: base)
             return try stat.map { try JSONValue(encodable: $0) } ?? .null
+        case "changedNotes":
+            // The phone's Notes page (M6): the markdown notes this branch changed/added, WITH content,
+            // so the phone can render them in-app (the desktop's openNotes opens Obsidian, which the
+            // phone lacks). Internal + app-only — NOT a registry Command (agents read notes off disk).
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("changedNotes needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            return try JSONValue(encodable: try await service.changedNotes(task.id))
+        case "spawnRepos":
+            // The phone's Spawn sheet (repo/dir autofill): git repos under reposRoot + freeform dir
+            // candidates. Internal + app-only — NOT a registry Command, so it never becomes an MCP tool
+            // (an agent spawns via `spawn`, it doesn't browse the daemon's disk). The desktop reads its
+            // own disk directly; the phone can't, so the daemon enumerates for it.
+            return try JSONValue(encodable: await service.spawnRepos())
+        case "spawnBranches":
+            // Local git branches for a chosen repo (Spawn sheet branch autofill). Internal + app-only.
+            guard let p = req.params, let repo = p.optString("repo") else {
+                throw OrchestraError.invalidParams("spawnBranches needs repo")
+            }
+            return try JSONValue(encodable: await service.spawnBranches(repo: repo))
+        case "listDir":
+            // The phone's Spawn-sheet directory browser: a directory's children (subdirs + files),
+            // confined to the daemon's browse roots ($HOME + allowlist), dotfiles hidden. Internal +
+            // app-only — NOT a registry Command, so it never becomes an MCP tool (an agent spawns via
+            // `spawn`, it never browses the daemon's disk). nil/empty path → the root listing.
+            let listPath = req.params?.optString("path")
+            return try JSONValue(encodable: try await service.listDir(listPath))
+        case "registerDevice":
+            // The phone hands over its APNs device token + notification-pref snapshot (N1) so the daemon
+            // can push attention alerts while the phone is backgrounded. Internal + app-only — NOT a
+            // registry Command (agents never register for push). Keyed by clientId; re-register replaces.
+            guard let p = req.params else { throw OrchestraError.invalidParams("registerDevice needs a registration") }
+            let reg = try p.decode(DeviceRegistration.self)
+            return try JSONValue(encodable: try await service.registerDevice(reg))
+        case "unregisterDevice":
+            guard let p = req.params, let clientId = p.optString("clientId") else {
+                throw OrchestraError.invalidParams("unregisterDevice needs clientId")
+            }
+            try await service.unregisterDevice(clientId: clientId)
+            return .object(["ok": .bool(true)])
+        case "boardSnapshot":
+            // Bulk board (re)paint in one round trip: tasks + archived + config + models + agents PLUS
+            // every active card's shell sessions + agent-terminal owner. Collapses the client's
+            // per-(re)connect fan-out (~2N round trips for N cards). Internal + app-only — NOT a registry
+            // Command (agents poll `list`, not the whole board). Read-only; not logged (like `list`).
+            return try JSONValue(encodable: await service.boardSnapshot())
+        case "agentTerminalOwner":
+            // App/phone UI coordination — internal + app-only, NOT a registry Command (an agent must
+            // never take over a terminal). Ephemeral lease; nothing is persisted to the task store.
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("agentTerminalOwner needs ref")
+            }
+            return try JSONValue(encodable: await service.agentTerminalOwner(ref))
+        case "takeOverAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"),
+                  let kind = p.optString("kind").flatMap(AgentTerminalOwnerKind.init(rawValue:)) else {
+                throw OrchestraError.invalidParams("takeOverAgentTerminal needs ref, clientId, kind")
+            }
+            return try JSONValue(encodable:
+                await service.takeOverAgentTerminal(ref, clientId: clientId, kind: kind))
+        case "releaseAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"), let epoch = p.optInt("epoch") else {
+                throw OrchestraError.invalidParams("releaseAgentTerminal needs ref, clientId, epoch")
+            }
+            return try JSONValue(encodable:
+                try await service.releaseAgentTerminal(ref, clientId: clientId, epoch: epoch))
+        case "heartbeatAgentTerminal":
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let clientId = p.optString("clientId"), let epoch = p.optInt("epoch") else {
+                throw OrchestraError.invalidParams("heartbeatAgentTerminal needs ref, clientId, epoch")
+            }
+            return try JSONValue(encodable:
+                try await service.heartbeatAgentTerminal(ref, clientId: clientId, epoch: epoch))
         default:
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")
@@ -214,6 +290,23 @@ public final class ControlServer: @unchecked Sendable {
     }
 
     private func removeSubscriber(_ conn: PeerConnection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }
+
+    /// Reader (`serve`) EOF path: drop the subscriber and CLOSE the fd. The reader thread owns the close,
+    /// so the fd is released only once nothing is reading it — no recycled-fd cross-wiring.
+    private func handleReaderEOF(_ conn: PeerConnection) {
+        removeSubscriber(conn)
+        conn.close()
+    }
+
+    /// Broken-write / `onBroken` path (runs on the connection's writer queue, NOT the reader). Drop the
+    /// subscriber so the event pump stops writing to it, then `shutdownRead()` to WAKE the blocked reader
+    /// — which then reaches `handleReaderEOF` and owns the close. Never closes the fd here: closing an fd
+    /// the reader still holds is exactly the recycled-fd cross-wiring this fix removes. Idempotent with
+    /// the reader path (both guard on `closed`/`didShutdown`), so the two racing calls are safe.
+    private func handleBrokenWrite(_ conn: PeerConnection) {
+        removeSubscriber(conn)
+        conn.shutdownRead()
+    }
 }
 
 /// A single client connection with a serial, non-blocking writer. All writes (responses + events)
@@ -221,7 +314,6 @@ public final class ControlServer: @unchecked Sendable {
 /// backs up its own queue — never the shared event pump.
 final class PeerConnection: @unchecked Sendable {
     let fd: Int32
-    var isSubscriber = false
     /// Fired once, off the event pump, when a queued write fails — lets the server drop a dead
     /// subscriber without ever blocking on it.
     var onBroken: (@Sendable () -> Void)?
@@ -229,7 +321,17 @@ final class PeerConnection: @unchecked Sendable {
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var closed = false
+    private var didShutdown = false
     private var broken = false
+    private var _clientId: String?
+
+    /// The caller's stable per-install identity (D3). Set once from the first request that carries a
+    /// clientId; nil for anonymous CLI/MCP connections. Read by the ownership lease (D4).
+    var clientId: String? { lock.withLock { _clientId } }
+
+    /// Record the connection's clientId. Idempotent: a client sends the same id on every request, so
+    /// only the first non-nil set sticks.
+    func setClientId(_ id: String) { lock.withLock { if _clientId == nil { _clientId = id } } }
 
     init(fd: Int32) {
         self.fd = fd
@@ -251,6 +353,18 @@ final class PeerConnection: @unchecked Sendable {
                 if first { self.onBroken?() }
             }
         }
+    }
+
+    /// Wake the connection's blocked reader (`serve`'s `LineReader.next`) by half-closing the socket,
+    /// WITHOUT releasing the fd. Called from the writer/`onBroken` path so the reader observes EOF and
+    /// reaches its own `close()`. Idempotent; a no-op once closed. Never closing the fd here is what
+    /// prevents recycled-fd cross-wiring: on Linux `closeFD` wouldn't even wake the reader, and on Darwin
+    /// closing an fd the reader still holds lets a fresh `accept()` reuse the number under the zombie reader.
+    func shutdownRead() {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, !didShutdown else { return }
+        didShutdown = true
+        shutdownFD(fd)
     }
 
     func close() {

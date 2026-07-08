@@ -1,0 +1,104 @@
+import Foundation
+import OrchestraKit
+
+/// Delivers a built APNs payload to one device token. Abstracted so the daemon can wire a real
+/// `APNsHTTPSender`, a `DisabledPushSender` (no credentials configured), or a mock in tests — the
+/// `PushNotifier` fan-out never changes.
+public protocol PushSender: Sendable {
+    /// Deliver `payload` to `token`. Throws on a delivery failure (bad token, transport error). A
+    /// disabled sender returns without doing anything.
+    func send(payload: JSONValue, to token: String) async throws
+}
+
+/// The no-op sender used when no APNs credentials are configured. Push is wired end-to-end but delivery
+/// is a documented no-op — the honest boundary when the environment has no auth key / topic.
+public struct DisabledPushSender: PushSender {
+    public init() {}
+    public func send(payload: JSONValue, to token: String) async throws { /* no APNs config — drop */ }
+}
+
+/// The daemon-side push emitter (N1). Subscribes to the service event stream, runs each task transition
+/// through the shared `AttentionTracker` to get a `NotificationIntent`, then fans it out to every
+/// registered device whose per-trigger scope allows a send (`PushGate.shouldSend`) — building the APNs
+/// payload with that device's configured sound. Mirrors the macOS `AgentNotifier`, but daemon-side so a
+/// backgrounded (disconnected) phone still gets pushed.
+///
+/// The mapping/gating live in the pure `OrchestraKit` core (unit-tested there + here via a mock sender);
+/// this actor is only the plumbing: subscribe → observe → gate → send.
+public actor PushNotifier {
+    private let tracker = AttentionTracker()
+    private let service: OrchestraService
+    private let sender: PushSender
+
+    public init(service: OrchestraService, sender: PushSender) {
+        self.service = service
+        self.sender = sender
+    }
+
+    /// Consume the service event stream until it ends. Wired as a second subscriber alongside the
+    /// ControlServer's event pump.
+    public func run() async {
+        for await event in await service.subscribe() {
+            await handle(event)
+        }
+    }
+
+    /// Process one event: a genuine attention transition fans out a push; a removed card is forgotten so
+    /// a re-created id starts fresh. Public so the fan-out is unit-testable without a live stream.
+    public func handle(_ event: Event) async {
+        switch event {
+        case .taskUpserted(let task):
+            guard let intent = tracker.observe(task) else { return }
+            await deliver(intent)
+        case .taskRemoved(let id):
+            tracker.forget(id)
+        default:
+            break
+        }
+    }
+
+    /// Fan an intent out to every registered device, honoring each device's per-trigger scope + sound.
+    private func deliver(_ intent: NotificationIntent) async {
+        for device in await service.registeredDevices() {
+            let entry = device.prefs.entry(for: intent.trigger)
+            guard PushGate.shouldSend(scope: entry.scope) else { continue }   // drop .off at source
+            let payload = APNsPayload.build(intent: intent, sound: entry.sound)
+            do {
+                try await sender.send(payload: payload, to: device.token)
+            } catch {
+                await handleSendFailure(error, clientId: device.clientId, token: device.token)
+            }
+        }
+    }
+
+    /// A send failed. If APNs reported the token is permanently invalid (410 Unregistered, or 400
+    /// BadDeviceToken) Apple *requires* we stop sending to it — drop the registration (#4). Any other
+    /// error is transient (network blip, 5xx): log it but keep the device, so a live token is never
+    /// evicted by a momentary failure.
+    ///
+    /// **Token-matched eviction**: the store keys devices by `clientId` and a re-register REPLACES the
+    /// entry, so an in-flight send against an OLD token can fail 410 *after* the phone has already
+    /// registered a fresh token under the same clientId. Unregistering by clientId alone would then evict
+    /// the brand-new valid registration. So we only drop the entry when the currently-stored token still
+    /// equals the one that just failed; if it has already been replaced, we leave the fresh token alone
+    /// (it will self-heal or fail on its own next send).
+    private func handleSendFailure(_ error: Error, clientId: String, token: String) async {
+        guard case let PushError.badStatus(code, body) = error, Self.isDeadToken(code, body) else {
+            FileHandle.standardError.write(Data("push: send failed for client \(clientId): \(error)\n".utf8))
+            return
+        }
+        let current = await service.registeredDevices().first { $0.clientId == clientId }
+        guard current?.token == token else {
+            FileHandle.standardError.write(Data(
+                "push: 410/bad-token for client \(clientId) but token already replaced — keeping fresh registration\n".utf8))
+            return
+        }
+        try? await service.unregisterDevice(clientId: clientId)
+    }
+
+    /// APNs statuses meaning "this token is permanently invalid — remove it": 410 Unregistered, or a 400
+    /// whose reason is BadDeviceToken.
+    static func isDeadToken(_ code: Int, _ body: String) -> Bool {
+        code == 410 || (code == 400 && body.contains("BadDeviceToken"))
+    }
+}

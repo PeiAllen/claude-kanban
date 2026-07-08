@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 
 /// The archive confirmation dialog. Raised only by the keyboard `a` shortcut (deliberate UI actions —
 /// the inspector / recovery buttons and the command palette — archive directly), so an accidental

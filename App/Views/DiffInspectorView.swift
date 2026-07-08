@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// Read-only in-app diff for a card (axis 7 — code review on the board). Parses the daemon's git
@@ -33,9 +34,8 @@ struct DiffInspectorView: View {
     }
 
     /// `.parent` is only offered once the card carries a parent branch (stacked-branches sets it).
-    private var baselines: [DiffBase] {
-        task.parentBranch != nil ? [.working, .branch, .parent] : [.working, .branch]
-    }
+    /// Shared with the phone Diff tab — see OrchestraKit `diffBaselines`.
+    private var baselines: [DiffBase] { diffBaselines(parentBranch: task.parentBranch) }
     private var reloadKey: String { "\(task.id.uuidString)-\(base.rawValue)" }
     private var allCollapsed: Bool { !files.isEmpty && files.allSatisfy { collapsedFiles.contains($0.id) } }
     private let splitDividerWidth: CGFloat = 0.5
@@ -54,7 +54,7 @@ struct DiffInspectorView: View {
         HStack(spacing: 8) {
             if preview == nil {
                 Picker("", selection: $base) {
-                    ForEach(baselines, id: \.self) { Text(label($0)).tag($0) }
+                    ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -70,7 +70,7 @@ struct DiffInspectorView: View {
             } else {
                 // Snapshot-only: a native segmented Picker won't render in ImageRenderer, so draw a
                 // faithful faux-segmented control for the headless screenshot.
-                fauxSegments(items: baselines.map { (label($0), $0 == base) })
+                fauxSegments(items: baselines.map { (diffBaselineLabel($0), $0 == base) })
                 fauxSegments(items: [(layoutLabel(.unified), layout == .unified),
                                      (layoutLabel(.split), layout == .split)])
             }
@@ -140,7 +140,7 @@ struct DiffInspectorView: View {
                         .font(F.ui(9, .semibold))
                         .foregroundStyle(theme.text3)
                         .frame(width: 10)
-                    filePath(file.title)
+                    filePath(file.title, dir: F.ui(12), name: F.ui(12, .semibold), theme: theme)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 8)
@@ -329,23 +329,6 @@ struct DiffInspectorView: View {
     }
 
     /// Path styled as a dimmed directory + bold filename, e.g. `App/Views/` + **DiffInspectorView.swift**.
-    private func filePath(_ path: String) -> Text {
-        guard let slash = path.lastIndex(of: "/") else {
-            return Text(path).font(F.ui(12, .semibold)).foregroundColor(theme.text)
-        }
-        let dir = String(path[...slash])
-        let name = String(path[path.index(after: slash)...])
-        return Text(dir).font(F.ui(12)).foregroundColor(theme.text3)
-             + Text(name).font(F.ui(12, .semibold)).foregroundColor(theme.text)
-    }
-
-    private func label(_ b: DiffBase) -> String {
-        switch b {
-        case .working: return "Working"
-        case .branch:  return "Branch"
-        case .parent:  return "Parent"
-        }
-    }
 
     private func layoutLabel(_ l: DiffLayout) -> String {
         switch l {
@@ -365,10 +348,6 @@ struct DiffInspectorView: View {
         text = await model.diffText(task.id, base: base.rawValue)
         files = DiffFileParser.parse(text)
         loading = false
-    }
-
-    @ViewBuilder private func centered<C: View>(@ViewBuilder _ c: () -> C) -> some View {
-        VStack { Spacer(); c(); Spacer() }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func fauxSegments(items: [(String, Bool)]) -> some View {

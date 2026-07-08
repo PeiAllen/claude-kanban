@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 
 /// A small toolbar pill showing which surface currently owns the keyboard (focus-as-mode indicator).
 /// Answers "am I about to type into the agent?" at a glance — an amber dot means a terminal is focused.

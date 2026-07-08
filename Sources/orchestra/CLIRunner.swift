@@ -125,6 +125,20 @@ enum CLIRunner {
                 if !res.stderr.isEmpty { FileHandle.standardError.write(Data(res.stderr.utf8)) }
                 exit(res.exitCode)
 
+            case "send-keys":
+                // Parse the chord in ARGV ORDER (see SendKeysArgv): `send-keys <ref> Enter --text y`
+                // sends Enter THEN the literal `y`. A known key name (Esc, Up, C-c, …) becomes a named
+                // key; anything else is literal text; `--text` forces a literal at its position; `--`
+                // makes the rest literal text.
+                let parsed = SendKeysArgv.parse(args)
+                let ref = parsed.ref ?? flags.require("ref")
+                guard !parsed.tokens.isEmpty else { die("send-keys needs at least one key or --text") }
+                let keys = try parsed.tokens.map { try JSONValue(encodable: $0) }
+                _ = try await client.call("send-keys", .object([
+                    "ref": .string(ref), "keys": .array(keys), "window": .string(parsed.window),
+                ]))
+                print("sent-keys")
+
             case "sessions":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("sessions", .object(["ref": .string(ref)]))

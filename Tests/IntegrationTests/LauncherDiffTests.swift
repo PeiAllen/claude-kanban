@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import OrchestraKit
 
 /// `Launcher.branchDiffDirs` — the two mirror directories that drive Zed's single multi-diff view.
 @Suite("Launcher — branch-vs-base diff", .enabled(if: IntegrationSupport.gitAvailable))
@@ -154,6 +155,36 @@ struct LauncherDiffTests {
         let dir = IntegrationSupport.tempDir("ln0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
         #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir)).isEmpty)
+    }
+
+    @Test("changedNoteFiles returns each changed .md with correct M/A status + live content")
+    func changedNoteFilesContent() throws {
+        let (wt, launcher) = try makeNotesWorktree()
+        // Keyed by path so the assertion doesn't depend on git's enumeration order.
+        let byPath = Dictionary(uniqueKeysWithValues:
+            launcher.changedNoteFiles(worktree: wt).map { ($0.path, $0) })
+
+        #expect(Set(byPath.keys) == ["notes/keep.md", "notes/added.md", "docs/superpowers/spec.md"])
+
+        // committed modify → M, content is the branch (live) version.
+        #expect(byPath["notes/keep.md"]?.status == .modified)
+        #expect(byPath["notes/keep.md"]?.content == "feature\n")
+        // untracked adds → A, with their live content.
+        #expect(byPath["notes/added.md"]?.status == .added)
+        #expect(byPath["notes/added.md"]?.content == "new\n")
+        #expect(byPath["docs/superpowers/spec.md"]?.status == .added)
+        #expect(byPath["docs/superpowers/spec.md"]?.content == "spec\n")
+
+        // gone.md was deleted (nothing to show); main.swift is not markdown — both excluded.
+        #expect(byPath["docs/gone.md"] == nil)
+        #expect(byPath["main.swift"] == nil)
+    }
+
+    @Test("changedNoteFiles is empty for a non-git directory (no base)")
+    func changedNoteFilesNonGit() throws {
+        let dir = IntegrationSupport.tempDir("lnf0")
+        let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
+        #expect(launcher.changedNoteFiles(worktree: PathResolver.canonical(dir)).isEmpty)
     }
 
     @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")

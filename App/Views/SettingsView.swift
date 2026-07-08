@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// Settings, styled to match the rest of the app (themed surfaces, not the native grey Form). Edits
@@ -224,7 +225,12 @@ struct SettingsView: View {
 
     // MARK: - Notification rows (per-trigger scope + sound)
 
-    private func notifyRow(_ trigger: AgentNotifier.NotifyTrigger, _ label: String, _ desc: String) -> some View {
+    // The named system sounds (everything except Default/None), for the sound picker — derived from the
+    // shared `NotifySound` enum so the list can't drift from what the notifier resolves.
+    private static let namedSounds: [NotifySound] =
+        NotifySound.allCases.filter { $0 != .systemDefault && $0 != .none }
+
+    private func notifyRow(_ trigger: NotifyTrigger, _ label: String, _ desc: String) -> some View {
         let scope = currentScope(trigger)
         let sound = currentSound(trigger)
         return HStack(alignment: .top, spacing: 10) {
@@ -235,16 +241,16 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             menu(scopeLabel(scope), width: 148) {
-                ForEach(AgentNotifier.NotifyScope.allCases, id: \.self) { s in
+                ForEach(NotifyScope.allCases, id: \.self) { s in
                     Button(scopeLabel(s)) { setScope(trigger, s) }
                 }
             }
-            menu(soundLabel(sound), width: 116) {
-                Button("Default") { setSound(trigger, "default") }
-                Button("None") { setSound(trigger, "none") }
+            menu(sound.label, width: 116) {
+                Button("Default") { setSound(trigger, .systemDefault) }
+                Button("None") { setSound(trigger, .none) }
                 Divider()
-                ForEach(AgentNotifier.soundNames, id: \.self) { name in
-                    Button(name) { setSound(trigger, name); NSSound(named: name)?.play() }
+                ForEach(Self.namedSounds, id: \.self) { s in
+                    Button(s.label) { setSound(trigger, s); NSSound(named: s.rawValue)?.play() }
                 }
             }
         }
@@ -252,24 +258,18 @@ struct SettingsView: View {
         .id(notifyTick)   // re-render this row when a pick lands
     }
 
-    private func currentScope(_ t: AgentNotifier.NotifyTrigger) -> AgentNotifier.NotifyScope {
-        UserDefaults.standard.string(forKey: AgentNotifier.scopeKey(t))
-            .flatMap(AgentNotifier.NotifyScope.init(rawValue:)) ?? AgentNotifier.defaultScope(t)
+    // Read/write the per-trigger prefs through the shared `NotificationPrefs` (same `orch_notify_*` keys +
+    // defaults the macOS notifier and the phone both consume).
+    private func currentScope(_ t: NotifyTrigger) -> NotifyScope { NotificationPrefs().scope(t) }
+    private func currentSound(_ t: NotifyTrigger) -> NotifySound { NotificationPrefs().sound(t) }
+    private func setScope(_ t: NotifyTrigger, _ s: NotifyScope) {
+        NotificationPrefs().setScope(s, for: t); notifyTick += 1
     }
-    private func currentSound(_ t: AgentNotifier.NotifyTrigger) -> String {
-        UserDefaults.standard.string(forKey: AgentNotifier.soundKey(t)) ?? AgentNotifier.defaultSound(t)
+    private func setSound(_ t: NotifyTrigger, _ s: NotifySound) {
+        NotificationPrefs().setSound(s, for: t); notifyTick += 1
     }
-    private func setScope(_ t: AgentNotifier.NotifyTrigger, _ s: AgentNotifier.NotifyScope) {
-        UserDefaults.standard.set(s.rawValue, forKey: AgentNotifier.scopeKey(t)); notifyTick += 1
-    }
-    private func setSound(_ t: AgentNotifier.NotifyTrigger, _ name: String) {
-        UserDefaults.standard.set(name, forKey: AgentNotifier.soundKey(t)); notifyTick += 1
-    }
-    private func scopeLabel(_ s: AgentNotifier.NotifyScope) -> String {
+    private func scopeLabel(_ s: NotifyScope) -> String {
         switch s { case .off: return "Off"; case .background: return "Background only"; case .always: return "Always" }
-    }
-    private func soundLabel(_ s: String) -> String {
-        switch s { case "default": return "Default"; case "none": return "None"; default: return s }
     }
 
     // MARK: - Load / save

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- SSHKeyStore stores the per-device Ed25519 SSH identity in the Keychain (phone-client
+         01-design: per-device SSH keys). An app needs a keychain-access-group entitlement to reach
+         the Keychain; without one, SecItem returns errSecMissingEntitlement (-34018). Xcode expands
+         $(AppIdentifierPrefix) from the signing team on device; on the Simulator it resolves empty. -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.orchestra.ios</string>
+    </array>
+    <!-- N1: APNs push. `development` builds/signs against the sandbox gateway; a distribution build
+         flips this to `production`. Ignored when building unsigned (the compile-only gate); applied
+         when signed (device / a real APNs harness). -->
+    <key>aps-environment</key>
+    <string>development</string>
+</dict>
+</plist>

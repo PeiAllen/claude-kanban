@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import AppKit
 
 /// The `:` command palette — a fuzzy list of every board action with its shortcut shown inline (so the

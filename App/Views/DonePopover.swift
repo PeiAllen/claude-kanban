@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 
 /// The "Done" / Archive popover listing archived tasks. ui-spec §3.8 / §4.9.

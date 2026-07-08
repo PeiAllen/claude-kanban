@@ -60,17 +60,63 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         return (name, true)
     }
     func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }
-    func newShellWindow(_ name: String, cwd: String) throws -> String { "shell-1" }
+
+    /// Per-session shell windows (excludes `agent`), so `windows()` faithfully reflects opens/closes —
+    /// the shell-sync broadcast (`emitShells`) recomputes its set from here, so a canned single-agent
+    /// list would make every `shellsChanged` empty.
+    private var shellWins: [String: [String]] = [:]
+
+    func newShellWindow(_ name: String, cwd: String) throws -> String {
+        lock.lock(); defer { lock.unlock() }
+        var ws = shellWins[name] ?? []
+        var n = 1
+        while ws.contains("shell-\(n)") { n += 1 }
+        let win = "shell-\(n)"
+        ws.append(win); shellWins[name] = ws
+        return win
+    }
+    func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String {
+        guard SessionManager.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid shell window name: \(window)")
+        }
+        lock.lock(); defer { lock.unlock() }
+        var ws = shellWins[name] ?? []
+        if !ws.contains(window) { ws.append(window); shellWins[name] = ws }
+        return window
+    }
+    func closeShellWindow(_ name: String, window: String) throws {
+        guard window != "agent" else { return }
+        lock.lock(); shellWins[name]?.removeAll { $0 == window }; lock.unlock()
+    }
     func windows(_ name: String) throws -> [TmuxTarget] {
-        guard try isAlive(name) else { return [] }
-        return [TmuxTarget(socket: "orchestra", session: name, window: "agent", kind: .agent,
-                           target: "\(name):agent", attach: "tmux -L orchestra attach -t \(name):agent")]
+        // Mirror the real SessionManager contract: a dead session can't yield an authoritative
+        // listing, so THROW rather than return `[]` (so `emitShells` skips instead of wiping).
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        func t(_ window: String, _ kind: WindowKind) -> TmuxTarget {
+            TmuxTarget(socket: "orchestra", session: name, window: window, kind: kind,
+                       target: "\(name):\(window)", attach: "tmux -L orchestra attach -t \(name):\(window)")
+        }
+        lock.lock(); let ws = shellWins[name] ?? []; lock.unlock()
+        return [t("agent", .agent)] + ws.map { t($0, .shell) }
     }
     func list() throws -> [SessionInfo] { lock.lock(); defer { lock.unlock() }; return alive.map { SessionInfo(name: $0, running: true) } }
     func sendKeys(_ name: String, text: String, window: String) throws {
         lock.lock(); sentKeys.append((name, text)); lock.unlock()
     }
-    func kill(_ name: String) throws { lock.lock(); alive.remove(name); killed.append(name); lock.unlock() }
+    /// Records a chord's rendered wire form (`key:<name>` / raw text) so command tests can assert
+    /// what would reach tmux without a real server. Throws if the session isn't alive, mirroring the
+    /// real manager's guard.
+    private(set) var sentChords: [(name: String, tokens: [KeyToken])] = []
+    func sendChord(_ name: String, tokens: [KeyToken], window: String) throws {
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        lock.lock(); sentChords.append((name, tokens)); lock.unlock()
+    }
+    func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        let text = "stub-pane:\(name):\(window)"
+        return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
+    }
+    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
 }
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is
@@ -140,6 +186,9 @@ actor EventCollector {
     }
     var upserts: [Task] {
         events.compactMap { if case .taskUpserted(let t) = $0 { return t } else { return nil } }
+    }
+    var ownerStates: [AgentTerminalOwnerState] {
+        events.compactMap { if case .agentTerminalOwner(let s) = $0 { return s } else { return nil } }
     }
 }
 

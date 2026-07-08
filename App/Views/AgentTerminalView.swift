@@ -1,4 +1,5 @@
 import SwiftUI
+import OrchestraUI
 import OrchestraCore
 #if canImport(SwiftTerm)
 import SwiftTerm
@@ -156,14 +157,10 @@ struct AgentTerminalView: NSViewRepresentable {
     /// the window list but holds its own active window, keeping the panes disjoint. The view session
     /// is reused if it already exists (e.g. after deselect/reselect).
     private func attachScript() -> String {
-        let view = SessionManager.viewSession(session, window)
-        func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let sock = q(socket), v = q(view), base = q(session), win = q("\(view):\(window)")
-        return """
-        tmux -L \(sock) new-session -d -s \(v) -t \(base) 2>/dev/null
-        tmux -L \(sock) select-window -t \(win) 2>/dev/null
-        exec tmux -L \(sock) attach -t \(v)
-        """
+        // The grouped "view session" attach recipe (non-exclusive) — one source of truth in
+        // `TmuxAttach`, shared verbatim with the iOS terminal host so phone and desktop attach
+        // identically. See TmuxAttach.attachScript for the step-by-step rationale.
+        TmuxAttach.attachScript(socket: socket, session: session, window: window)
     }
 
     final class Coordinator: NSObject, LocalProcessTerminalViewDelegate {

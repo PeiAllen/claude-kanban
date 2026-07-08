@@ -22,6 +22,10 @@
 # all blocked by the Bash sandbox.
 set -euo pipefail
 
+# ORCH_TEST_NAME isolates parallel runs: several cards each running this script at once would
+# otherwise clobber a shared /tmp/orch-test dir + `orch-test` tmux server. Set it per-card (e.g.
+# ORCH_TEST_NAME=om2) so ROOT and the tmux socket are unique. Default keeps the old single-instance path.
+NAME="${ORCH_TEST_NAME:-orch-test}"
 # Canonical, symlink-resolved ROOT is LOAD-BEARING for the resume/wake/inbox paths.
 # On macOS /tmp is a symlink to /private/tmp. The daemon stores a card's cwd VERBATIM and derives
 # Claude's transcript dir (~/.claude/projects/<slug>) by replacing every non-alnum in the cwd with '-'
@@ -31,11 +35,11 @@ set -euo pipefail
 # NEVER wakes. The same mismatch breaks Claude's per-directory trust lookup (projects[<abs-cwd>]).
 # Resolving ROOT to its physical path up front makes every cwd match what the agents actually write.
 # `/tmp` always exists, so `cd /tmp && pwd -P` yields the canonical prefix even before orch-test exists.
-ROOT="$(cd /tmp && pwd -P)/orch-test"            # e.g. /private/tmp/orch-test — canonical (see above); UDS socket stays < 104 chars
+ROOT="$(cd /tmp && pwd -P)/$NAME"                # e.g. /private/tmp/orch-test — canonical (see above); UDS socket stays < 104 chars
 HOME_DIR="$ROOT/home"
 DATA="$HOME_DIR/Library/Application Support/Orchestra"
 SOCK="$DATA/orchestrad.sock"
-TMUX_SOCK=orch-test
+TMUX_SOCK="$NAME"
 CARD_ID="AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"   # fixed id ⇒ shortId "aaaaaa", session orchestra-aaaa…
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON="$REPO_ROOT/.build/debug/orchestrad"
@@ -109,7 +113,8 @@ agent = os.environ.get("AGENT", "claude-code")
 model = ({"id": "gpt-5.3-codex", "displayName": "GPT-5.3 Codex", "family": "gpt"} if agent == "codex"
          else {"id": "claude-opus-4-8", "displayName": "Opus 4.8", "family": "claude"})
 card = {"id": cid, "title": "test card", "titleProvisional": False, "desc": "", "repo": repo,
-        "branch": "verify", "worktree": wt, "agentId": agent, "model": model,
+        "branch": "verify", "cwd": wt, "origin": "worktree", "access": "readWrite",
+        "agentId": agent, "model": model,
         "startIn": "impl", "column": "impl", "order": 0, "status": "waiting", "ctxPct": 0,
         "priorSessionIds": [], "initialPrompt": "t", "archived": False,
         "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"}
@@ -121,7 +126,11 @@ PY
     swift build --package-path "$REPO_ROOT" >&2
     mkdir -p "$DATA"
     seed_home                                    # onboarding + per-dir trust so real agents start clean (no prompts)
-    HOME="$HOME_DIR" ORCHESTRA_TMUX_SOCKET="$TMUX_SOCK" PATH="$RUN_PATH" \
+    # ORCH_TEST_EXTRA_PATH prepends a dir to the daemon's PATH — lets a test inject a stand-in agent
+    # binary (e.g. a `claude` shim that execs a live TUI) so a spawned card has a real agent window
+    # WITHOUT widening to the user's real (billable) agent. Empty by default → unchanged behavior.
+    UP_PATH="$RUN_PATH"; [ -n "${ORCH_TEST_EXTRA_PATH:-}" ] && UP_PATH="$ORCH_TEST_EXTRA_PATH:$RUN_PATH"
+    HOME="$HOME_DIR" ORCHESTRA_TMUX_SOCKET="$TMUX_SOCK" PATH="$UP_PATH" \
       "$DAEMON" > "$ROOT/daemon.log" 2>&1 &
     sleep 2
     if ! grep -q "listening" "$ROOT/daemon.log" 2>/dev/null; then

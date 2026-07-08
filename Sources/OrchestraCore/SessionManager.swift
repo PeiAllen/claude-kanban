@@ -33,7 +33,11 @@ public struct SessionManager: Sendable {
     /// it. Each client instead attaches to its own grouped view session: same shared window list,
     /// but an independent active window. The double underscore can't collide with a session name
     /// (those are `orchestra-<uuid>`, no underscores) so prefix matching in `kill` is unambiguous.
-    public static func viewSession(_ base: String, _ window: String) -> String { "\(base)__\(window)" }
+    public static func viewSession(_ base: String, _ window: String) -> String {
+        // Delegate to the single source of truth in OrchestraKit (shared with the desktop/iOS terminal
+        // clients) rather than re-spelling `"\(base)__\(window)"`. TmuxAttachTests pins them equal.
+        TmuxAttach.viewSession(base: base, window: window)
+    }
 
     private func base() -> [String] {
         var b = ["tmux", "-L", socket]
@@ -85,6 +89,31 @@ public struct SessionManager: Sendable {
         return win
     }
 
+    /// Ensure a **specifically-named** window exists in the worktree; returns its name. Unlike
+    /// `newShellWindow` (which auto-increments `shell-N`), this is **idempotent** — if a window of that
+    /// name already exists it is reused, never duplicated. This is the phone-owned-shell reconnect
+    /// guarantee: the phone requests a deterministic `phone-<client>` window, so a re-attach lands on the
+    /// same window instead of spawning a fresh one (phone-agent-terminal UX design, §"Reconnect churn").
+    @discardableResult
+    public func ensureShellWindow(_ name: String, window: String, cwd: String) throws -> String {
+        guard Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid shell window name: \(window)")
+        }
+        if try windowNames(name).contains(window) { return window }
+        let r = try tmux(["new-window", "-t", name, "-n", window, "-c", cwd])
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux new-window failed" : r.stderr) }
+        return window
+    }
+
+    /// A client-supplied shell window name is restricted to `[A-Za-z0-9-]` and may never be the reserved
+    /// `agent` window (window 0). This stops a client from re-targeting the `"\(name):\(window)"` tmux
+    /// argument at another window/session (a `:`/`.` injection) or hijacking the agent window as its shell.
+    /// The phone's deterministic `phone-<clientId>` names (clientId is a lowercased UUID) satisfy this.
+    static func isValidShellWindowName(_ window: String) -> Bool {
+        guard window != "agent", !window.isEmpty else { return false }
+        return window.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+    }
+
     /// Close a shell window and its grouped view session. No-op for a missing window; refuses to
     /// touch the `agent` window (window 0) so a stray call can't kill the agent.
     public func closeShellWindow(_ name: String, window: String) throws {
@@ -95,6 +124,13 @@ public struct SessionManager: Sendable {
         if !r.ok, try isAlive(name), try windowNames(name).contains(window) {
             throw OrchestraError.io(r.stderr.isEmpty ? "tmux kill-window failed" : r.stderr)
         }
+    }
+
+    /// Best-effort: detach every client of the card's `agent` grouped view session so a new owner's
+    /// PTY (re)sizes the window. No-op if the session/view doesn't exist. Belt-and-suspenders behind
+    /// the D5 desktop unmount — never load-bearing for the ownership lease itself.
+    public func detachAgentViewClients(_ base: String) throws {
+        _ = try? tmux(["detach-client", "-s", SessionManager.viewSession(base, "agent")])
     }
 
     /// Grouped view sessions pinned to this base session's windows (named `<base>__<window>`).
@@ -112,11 +148,17 @@ public struct SessionManager: Sendable {
         return r.stdout.split(whereSeparator: \.isNewline).map(String.init)
     }
 
-    /// All attachable windows as `TmuxTarget`s (agent + shells). `[]` if the session is dead.
+    /// All attachable windows as `TmuxTarget`s (agent + shells). THROWS when it can't obtain an
+    /// authoritative listing — a dead/unreachable session or a `list-windows` failure. Callers that
+    /// broadcast this (`emitShells`) rely on the distinction: a SUCCESSFUL listing with no `shell`
+    /// windows (only the `agent` window) is a genuine "no shells" state worth broadcasting, whereas a
+    /// FAILURE must NOT be flattened to an empty set — doing so would wholesale-wipe every client's
+    /// shell panel on a transient tmux hiccup. (`try?` at a call site recovers the old `?? []` behaviour
+    /// where a caller genuinely wants "empty on any failure".)
     public func windows(_ name: String) throws -> [TmuxTarget] {
-        guard try isAlive(name) else { return [] }
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
         let r = try tmux(["list-windows", "-t", name, "-F", "#{window_index} #{window_name}"])
-        guard r.ok else { return [] }
+        guard r.ok else { throw OrchestraError.io(r.stderr.isEmpty ? "tmux list-windows failed" : r.stderr) }
         var targets: [TmuxTarget] = []
         for line in r.stdout.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: " ", maxSplits: 1)
@@ -149,6 +191,59 @@ public struct SessionManager: Sendable {
         // literal text rather than swallowed as a tmux flag.
         _ = try tmux(["send-keys", "-t", "\(name):\(window)", "-l", "--", text])
         _ = try tmux(["send-keys", "-t", "\(name):\(window)", "Enter"])
+    }
+
+    /// Send a constrained key chord to a window — an ordered mix of named special keys and literal
+    /// text runs. Distinct from `sendKeys` (line-only) and the inbox `send`: named keys are delivered
+    /// as tmux key tokens (`Escape`, `Up`, `C-c`, …) and text as raw bytes; there is NO implicit Enter,
+    /// so submitting requires an explicit `.named(.enter)` token.
+    public func sendChord(_ name: String, tokens: [KeyToken], window: String = "agent") throws {
+        // Validate the window before it is interpolated into the tmux `-t "\(name):\(window)"` target —
+        // an unvalidated `window` (e.g. `agent.1`, `other:sess`) would retarget a different pane/window.
+        // The reserved `agent` window is a legitimate target here (unlike `ensureShellWindow`).
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
+        guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
+        let target = "\(name):\(window)"
+        for token in tokens {
+            let r: ProcResult
+            switch token {
+            case .named(let key):
+                r = try tmux(["send-keys", "-t", target, key.tmuxToken])
+            case .text(let text):
+                // `-l` = literal; `--` ends option parsing so text starting with `-` isn't swallowed.
+                r = try tmux(["send-keys", "-t", target, "-l", "--", text])
+            }
+            // A failed send-keys must NOT report success: the Needs-You gate's "Approve" would otherwise
+            // return ok while the agent stays blocked (the keystroke never reached the pane — e.g. the
+            // window vanished between the liveness check and the send). Surface it so the caller can retry.
+            guard r.ok else {
+                throw OrchestraError.io(r.stderr.isEmpty ? "tmux send-keys failed for \(target)" : r.stderr)
+            }
+        }
+    }
+
+    /// Read-only snapshot of a window's pane via `capture-pane -p` — the non-attaching read the
+    /// phone Agent tab uses. Captures the *visible* pane (no scrollback) so output is naturally
+    /// bounded; `maxChars` is a hard safety cap on top. Never attaches, never resizes. Works for the
+    /// `agent` window and any `shell-N` window. Throws if the target window/pane doesn't exist.
+    public func capture(_ name: String, window: String = "agent",
+                        maxChars: Int = 256 * 1024) throws -> CaptureResult {
+        // Validate the window before it is interpolated into the tmux `-t "\(name):\(window)"` target —
+        // an unvalidated `window` would let a caller read a different pane. `agent` is a valid target here.
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
+        let target = "\(name):\(window)"
+        let r = try tmux(["capture-pane", "-p", "-t", target])
+        guard r.ok else {
+            throw OrchestraError.io(r.stderr.isEmpty ? "tmux capture-pane failed for \(target)" : r.stderr)
+        }
+        let full = r.stdout
+        let truncated = full.count > maxChars
+        let text = truncated ? String(full.prefix(maxChars)) : full
+        return CaptureResult(window: window, text: text, truncated: truncated)
     }
 
     public func kill(_ name: String) throws {

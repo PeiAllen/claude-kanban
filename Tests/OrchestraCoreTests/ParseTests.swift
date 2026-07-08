@@ -99,4 +99,32 @@ struct ParseTests {
         #expect(after.desc == "Running: ls")
         #expect(after.status == .running)
     }
+
+    // C1 — Codex PermissionRequest → the SAME Needs-You surface Claude uses. The Codex adapter parses
+    // the permission hooksPush into waiting/.permission, and service.report lands it on the card's
+    // waitReason on the wire (so M3's iOS queue renders the 🔐 row). Proves the daemon path is
+    // adapter-agnostic: Codex reaches .permission through its own parse, no `if agent==` in core.
+    @Test("Codex PermissionRequest → parse → service.report → card.waitReason == .permission")
+    func test_codex_permission_reaches_board() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+
+        let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
+        let report = try #require(CodexAdapter().parse(raw))
+        try await env.svc.report(t.id, report)
+
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.status == .waiting)
+        #expect(after.waitReason == .permission)
+    }
+
+    // C1 non-regression — Claude's permission path is unchanged: a Notification with
+    // notification_type == permission_prompt still classifies as .permission (Codex is additive).
+    @Test("Claude Notification/permission_prompt still classifies .permission (unchanged)")
+    func test_claude_permission_path_unchanged() throws {
+        let payload = try JSONValue.parse(Data(#"{"notification_type":"permission_prompt","message":"Allow Bash?"}"#.utf8))
+        let r = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "notification", payload: payload)))
+        #expect(r == StatusReport(desc: "Allow Bash?", status: .waiting, waitReason: .permission))
+    }
 }

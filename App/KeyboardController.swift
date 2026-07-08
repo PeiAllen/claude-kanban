@@ -1,4 +1,5 @@
 import AppKit
+import OrchestraUI
 import OrchestraCore
 
 /// The app's single keyboard router. Installs one `NSEvent` keyDown local monitor (mirroring the

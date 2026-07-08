@@ -104,4 +104,9 @@ shoot "6-focus-terminal" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_FOCUS=termina
 shoot "7-focus-shell"        env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=shell
 shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=terminal
 
+# PR D5: a phone owns the card's agent terminal → the desktop unmounts the live terminal and shows the
+# "Taken over by phone" placeholder. Fresh owner ⇒ Retake Terminal; stale owner ⇒ Force Retake.
+shoot "9-takeover-placeholder"       env ORCH_SHOW=takeover
+shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
+
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

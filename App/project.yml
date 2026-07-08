@@ -43,6 +43,8 @@ targets:
     dependencies:
       - package: OrchestraCore
         product: OrchestraCore
+      - package: OrchestraCore
+        product: OrchestraUI
       - package: SwiftTerm
         product: SwiftTerm
     settings:

@@ -1,0 +1,111 @@
+# XcodeGen spec for the Orchestra iOS app (mirrors App/project.yml for macOS).
+#   brew install xcodegen
+#   xcodegen generate --spec App-iOS/project.yml --project App-iOS
+# Links the local SwiftPM package (OrchestraKit + OrchestraUI) and SwiftTerm (iOS). The app reuses the
+# SHARED OrchestraUI.BoardModel (reconcile #3) — OrchestraUI's OrchestraCore dep is macOS-conditional,
+# so the iOS graph is OrchestraKit + OrchestraUI + SwiftTerm only.
+name: OrchestraiOS
+options:
+  bundleIdPrefix: com.orchestra
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  Orchestra:
+    path: ..                       # the SwiftPM package at the repo root
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.2.0
+  # SSH-PTY terminal transport (T1). iOS can't fork/exec the system `ssh`, so the SSH client is
+  # in-process: Apple's first-party swift-nio-ssh (provider-neutral). NIOCore/NIOPosix come from
+  # swift-nio; Curve25519 keys from swift-crypto. First build needs network to resolve these.
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio
+    from: 2.65.0
+  SwiftNIOSSH:
+    url: https://github.com/apple/swift-nio-ssh
+    from: 0.9.0
+  SwiftCrypto:
+    url: https://github.com/apple/swift-crypto
+    from: 3.0.0
+
+targets:
+  OrchestraiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        excludes: ["project.yml", "README.md", "Tests", "OrchestraiOS.entitlements"]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: OrchestraiOS
+        CFBundleDisplayName: Orchestra
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        # N1: wake the app in the background to receive remote (APNs) notifications so a push can be
+        # handled + deep-linked even when the app isn't foreground.
+        UIBackgroundModes:
+          - remote-notification
+    dependencies:
+      - package: Orchestra
+        product: OrchestraKit
+      - package: Orchestra
+        product: OrchestraUI
+      - package: SwiftTerm
+        product: SwiftTerm
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOCore
+      - package: SwiftNIO
+        product: NIOPosix
+      - package: SwiftCrypto
+        product: Crypto
+    # Device signing (FREE personal team). CODE_SIGN_STYLE is in `settings.base` below (committed, visible).
+    # DEVELOPMENT_TEAM stays OUT of git — it comes from the optional include in DeviceSigning.xcconfig
+    # (a gitignored DeviceSigning.local.xcconfig) for GUI builds; build-ios-device.sh passes it on the CLI.
+    configFiles:
+      Debug: DeviceSigning.xcconfig
+      Release: DeviceSigning.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.orchestra.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
+        GENERATE_INFOPLIST_FILE: NO
+        # Automatic signing: free personal team ⇒ Xcode creates/refreshes the dev provisioning profile
+        # on the fly (`-allowProvisioningUpdates`). Harmless for Simulator / the CODE_SIGNING_ALLOWED=NO
+        # compile gate, which skip signing regardless.
+        CODE_SIGN_STYLE: Automatic
+        # Keychain-access-group entitlement so SSHKeyStore can store the per-device SSH key. Ignored
+        # when building unsigned (the compile-only gate); applied when signed (device / harness).
+        # DEFAULT is the no-push variant so a plain Xcode GUI "Run" on a FREE personal team signs cleanly:
+        # aps-environment requires a PAID Apple Developer membership and makes free-team signing fail.
+        # Real APNs push is out of scope on the free tier (board/terminals/takeover need none of it).
+        # To restore push on a PAID account: point this back at OrchestraiOS.entitlements (which carries
+        # aps-environment). build-ios-device.sh also passes -nopush explicitly (now redundant, still valid).
+        CODE_SIGN_ENTITLEMENTS: OrchestraiOS-nopush.entitlements
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+
+  OrchestraiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: OrchestraiOS
+      - package: Orchestra
+        product: OrchestraKit
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES

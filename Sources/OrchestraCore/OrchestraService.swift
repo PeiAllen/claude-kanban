@@ -22,6 +22,9 @@ public actor OrchestraService {
     let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
+    /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
+    /// pushes; the phone populates it over the `registerDevice` RPC.
+    let devices: DeviceTokenStore
     /// The human-grant resolver (T2). Consulted by `grantTrust`; the production `SurfaceGrantResolver`
     /// only approves interactive surfaces and denies agent/daemon (autonomy-exemption + no self-grant).
     let grantResolver: any TrustGrantResolver
@@ -42,6 +45,11 @@ public actor OrchestraService {
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
+    // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
+    var terminalOwnership = TerminalOwnershipStore()
+    // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
+    // changed nothing but `updatedAt` doesn't re-emit and re-render the whole board hierarchy (#4).
+    private var lastEmittedOwnerSig: [UUID: OwnerEmitSig] = [:]
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
     // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout). Keyed by
@@ -72,6 +80,7 @@ public actor OrchestraService {
                 resolver: PathResolver? = nil,
                 trust: TrustLedger? = nil,
                 inbox: Inbox? = nil,
+                devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
@@ -81,6 +90,7 @@ public actor OrchestraService {
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
         self.inbox = inbox ?? Inbox()
+        self.devices = devices ?? DeviceTokenStore()
         self.grantResolver = grantResolver
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
@@ -373,6 +383,15 @@ public actor OrchestraService {
         await wake(t.id)
     }
 
+    /// Send a constrained key chord to one of the card's tmux windows (default `agent`). Unlike
+    /// `send` (which queues to the durable inbox), this delivers live keystrokes — used by the phone's
+    /// captured-prompt semantic buttons and non-live steering fallbacks. Validation of the chord itself
+    /// happens at the command boundary; here we just require a live card and forward to the session.
+    public func sendChord(_ id: UUID, tokens: [KeyToken], window: String) async throws {
+        let t = try await require(id)
+        try sessions.sendChord(sessions.sessionName(t.id), tokens: tokens, window: window)
+    }
+
     /// Inbox editor (UI + MCP): list a card's pending messages. Non-destructive.
     public func inboxPeek(_ id: UUID) async throws -> [InboxMessage] {
         let t = try await require(id)
@@ -534,12 +553,34 @@ public actor OrchestraService {
 
     // MARK: - shells / exec / sessions
 
-    public func openShell(_ id: UUID) async throws -> ShellTab {
+    /// Open a shell window in the card's worktree. With `window == nil` (the desktop path) a fresh
+    /// `shell-N` window is created each call. With an explicit `window` (the phone-owned path) the
+    /// named window is **reused if it already exists** — the idempotent-reconnect guarantee a phone
+    /// client relies on so a re-attach doesn't leak a new window every time.
+    public func openShell(_ id: UUID, window: String? = nil) async throws -> ShellTab {
         let t = try await require(id)
         let name = sessions.sessionName(id)
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
-        let win = try sessions.newShellWindow(name, cwd: t.cwd)
+        let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
+            ?? sessions.newShellWindow(name, cwd: t.cwd)
+        emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
+    }
+
+    /// Recompute the card's shell-window set from tmux (authoritative) and broadcast it so every
+    /// connected client — desktop or phone — renders the same set. Called after any shell open/close.
+    /// Distinguishes "session genuinely has no shell windows" from "couldn't list the windows": a
+    /// SUCCESSFUL listing that happens to contain only the `agent` window is a real, broadcastable
+    /// "no shells" state, but a `windows()` FAILURE (transient tmux hiccup / unreachable server) is
+    /// SKIPPED rather than broadcast as empty — emitting `[]` on a hiccup would wholesale-wipe every
+    /// client's shell panel/selection until the next reconnect. The caller's own mutation already
+    /// succeeded, and the next successful open/close (or reconnect reconcile) re-broadcasts the truth.
+    private func emitShells(_ t: Task) {
+        let name = sessions.sessionName(t.id)
+        guard let targets = try? sessions.windows(name) else { return }
+        let shells = targets.filter { $0.kind == .shell }
+            .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
+        emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)))
     }
 
     /// Open a shell tab in the card's worktree and launch a READ-ONLY claude in it (default mode,
@@ -565,12 +606,14 @@ public actor OrchestraService {
         // literal argv; sendKeys sends the line + Enter itself.
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
+        emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
+        emitShells(t)
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
@@ -581,6 +624,28 @@ public actor OrchestraService {
         let r = try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
         let cap = 256 * 1024
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)
+    }
+
+    /// One-round-trip board snapshot: the full task/config/models/agents state PLUS every active card's
+    /// shell sessions + agent-terminal owner. Replaces the client's `list`+`archivedList`+`getConfig`+
+    /// `models`+`agents` calls AND the per-card `sessions`/`agentTerminalOwner` fan-out on every
+    /// (re)connect. The per-card work stays serial (each `sessions` shells to tmux) but rides one RPC, so
+    /// a 25-card board costs one round trip instead of ~50 — live events no longer wait seconds behind it.
+    public func boardSnapshot() async -> BoardSnapshot {
+        let active = await list(nil)
+        let archived = await archivedTasks()
+        let now = Date()
+        var sessionsList: [CardSessions] = []
+        var owners: [AgentTerminalOwnerState] = []
+        sessionsList.reserveCapacity(active.count)
+        owners.reserveCapacity(active.count)
+        for card in active {
+            if let s = try? await sessions(card.id) { sessionsList.append(s) }
+            owners.append(terminalOwnership.snapshot(cardId: card.id, ref: card.ref(), now: now))
+        }
+        return BoardSnapshot(tasks: active, archived: archived, config: config,
+                             models: models(agentId: nil), agents: agents(),
+                             sessions: sessionsList, owners: owners)
     }
 
     public func sessions(_ id: UUID) async throws -> CardSessions {
@@ -596,6 +661,122 @@ public actor OrchestraService {
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
         return CardSessions(ref: t.ref(), id: t.id, worktree: t.cwd, tmuxSocket: Config.tmuxSocket,
                             session: name, running: running, targets: targets, agent: info)
+    }
+
+    // MARK: - Agent-terminal ownership (ephemeral UI coordination)
+
+    /// The owner-visible identity of a snapshot — everything a client renders EXCEPT `updatedAt`. Two
+    /// snapshots with the same signature look identical to every consumer, so re-broadcasting one is pure
+    /// churn (a whole-hierarchy re-render on the 10s heartbeat cadence — #4 / Lens-3 LOW).
+    private struct OwnerEmitSig: Equatable {
+        let kind: AgentTerminalOwnerKind?
+        let clientId: String?
+        let epoch: Int
+        let stale: Bool
+        init(_ s: AgentTerminalOwnerState) {
+            kind = s.owner?.ownerKind; clientId = s.owner?.clientId; epoch = s.epoch; stale = s.stale
+        }
+    }
+
+    /// Broadcast an owner event only when it changed something a client would render. takeOver (epoch++)
+    /// and release (owner→nil) always differ, so they always emit; a steady heartbeat (same owner, same
+    /// epoch, still fresh) is suppressed — which is exactly the "emit on heartbeat, skip if unchanged" of #4.
+    private func emitOwnerIfChanged(_ state: AgentTerminalOwnerState) {
+        let sig = OwnerEmitSig(state)
+        guard lastEmittedOwnerSig[state.cardId] != sig else { return }
+        lastEmittedOwnerSig[state.cardId] = sig
+        emit(.agentTerminalOwner(state))
+    }
+
+    /// Current owner of the card's `agent` terminal (owner + epoch + stale/fresh). Read-only.
+    public func agentTerminalOwner(_ ref: String) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        return terminalOwnership.snapshot(cardId: t.id, ref: t.ref(), now: Date())
+    }
+
+    /// Compare-and-set acquisition of the card's `agent` terminal: bump the epoch, set the owner,
+    /// emit an owner event, and return the tmux attach target. Always wins (desktop Retake / takeover).
+    ///
+    /// Resolve the attach target FIRST, commit the CAS LAST (#1): the target lookup throws for a card
+    /// whose `agent` window is dead, and if the CAS/emit ran before it, a *failed* takeover would steal a
+    /// lease nobody can hold and strand the desktop on the placeholder (the owner event already unmounted
+    /// it). Ordering the throwing work ahead of the mutation makes a failed takeover a no-op.
+    public func takeOverAgentTerminal(_ ref: String, clientId: String,
+                                      kind: AgentTerminalOwnerKind) async throws -> TakeOverResult {
+        let t = try await resolveRef(ref)
+        // Throwing work first — if the window is gone, we bail before touching ownership.
+        let target = try await agentTarget(t.id)
+        // Commit the lease only now that the attach is guaranteed to have a target. (The old
+        // `detachAgentViewClients` belt-and-suspenders is gone — it could kick the desktop's own
+        // just-connected client on first select (#8); the D5 desktop unmount + the phone's exclusive
+        // `detach-client` recipe already handle the single-client invariant.)
+        let state = terminalOwnership.takeOver(cardId: t.id, ref: t.ref(), clientId: clientId,
+                                               kind: kind, now: Date())
+        emitOwnerIfChanged(state)
+        return TakeOverResult(state: state, target: target)
+    }
+
+    /// Release the card's `agent` terminal — clears the owner ONLY if the caller still holds the
+    /// current epoch + clientId; otherwise throws `ownershipDenied`. Emits on success.
+    public func releaseAgentTerminal(_ ref: String, clientId: String,
+                                     epoch: Int) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        let state = try terminalOwnership.release(cardId: t.id, ref: t.ref(),
+                                                  clientId: clientId, epoch: epoch, now: Date())
+        emitOwnerIfChanged(state)
+        return state
+    }
+
+    /// Refresh a takeover across reconnects — succeeds ONLY for the current epoch + clientId.
+    ///
+    /// A denied beat (a desktop retook, bumping the epoch) is NOT surfaced as an error (#3): the store
+    /// throws on the CAS miss, but the phone that lost the lease needs the *current* owner back so its
+    /// mirror can correct (drop "You have control") instead of `try?`-swallowing the throw and sitting on
+    /// a stale `.holding`. So on denial we return the live snapshot — matching what callers already assume.
+    ///
+    /// On success we EMIT the refreshed owner state (#4) so the desktop mirror stays fresh and its
+    /// placeholder stops falsely claiming "phone unreachable" ~30s into a healthy takeover. `emitOwnerIfChanged`
+    /// suppresses the event when nothing owner-visible changed, so a steady 10s heartbeat doesn't re-render
+    /// the whole board hierarchy every beat.
+    public func heartbeatAgentTerminal(_ ref: String, clientId: String,
+                                       epoch: Int) async throws -> AgentTerminalOwnerState {
+        let t = try await resolveRef(ref)
+        let now = Date()
+        do {
+            let state = try terminalOwnership.heartbeat(cardId: t.id, ref: t.ref(),
+                                                        clientId: clientId, epoch: epoch, now: now)
+            emitOwnerIfChanged(state)
+            return state
+        } catch let error as OrchestraError {
+            if case .ownershipDenied = error {
+                return terminalOwnership.snapshot(cardId: t.id, ref: t.ref(), now: now)
+            }
+            throw error
+        }
+    }
+
+    /// Test hook: shrink/enlarge the ownership heartbeat window (default 30s) so staleness tests
+    /// don't have to sleep the real timeout. Not called in production.
+    func setOwnershipHeartbeatTimeout(_ t: TimeInterval) { terminalOwnership.heartbeatTimeout = t }
+
+    /// The card's `agent` window as a ready-to-attach `TmuxTarget` (reuses the shipped `sessions`
+    /// discovery). Throws if the card has no live `agent` window.
+    private func agentTarget(_ id: UUID) async throws -> TmuxTarget {
+        let cs = try await sessions(id)
+        guard let agent = cs.targets.first(where: { $0.kind == .agent }) else {
+            throw OrchestraError.io("no agent window for card \(id)")
+        }
+        return agent
+    }
+
+    /// Read-only snapshot of a card's `agent` (default) or a `shell-N` window — the phone Agent
+    /// tab's v1 read source. No attach, no resize. Not allowlist-gated: it runs no user code, it
+    /// only reads an existing pane (cf. `exec`, which does gate). Throws if the session isn't running.
+    public func capture(_ id: UUID, window: String = "agent") async throws -> CaptureResult {
+        _ = try await require(id)                     // validates the card exists
+        let name = sessions.sessionName(id)
+        guard try sessions.isAlive(name) else { throw OrchestraError.io("session not running") }
+        return try sessions.capture(name, window: window, maxChars: 256 * 1024)
     }
 
     public func openInZed(_ id: UUID) async throws {
@@ -621,6 +802,100 @@ public actor OrchestraService {
         resolver = PathResolver(config: config)
         worktrees = WorktreeManager(config: config, resolver: resolver)
         return config
+    }
+
+    // MARK: - spawn targets (Spawn sheet enumeration; app-only, NOT an agent command)
+
+    /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
+    /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
+    /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
+    public func spawnRepos() -> [String] {
+        let root = (config.reposRoot as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+        // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
+        // (running a read-only/freeform agent inside a repo is the common case) — the client unions them
+        // with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
+        return entries
+            .filter { !$0.hasPrefix(".") }
+            .map { "\(root)/\($0)" }
+            .filter { fm.fileExists(atPath: "\($0)/.git") }
+            .sorted {
+                ($0 as NSString).lastPathComponent
+                    .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
+            }
+    }
+
+    /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).
+    /// Empty on any failure (bad repo, git missing, not a worktree) so the picker degrades to free-text
+    /// branch creation. Defense-in-depth: only runs git on an allowlisted repo path.
+    public func spawnBranches(repo: String) -> [String] {
+        guard !repo.isEmpty, let real = try? resolver.resolveRepo(repo) else { return [] }
+        guard let res = try? Proc.run(
+            ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
+             "--sort=-committerdate", "refs/heads"],
+            timeout: .seconds(5)), res.ok else { return [] }
+        return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    /// Convenient starting points for the phone's remote directory browser (`listDir`): the daemon's
+    /// `$HOME` plus the spawn allowlist roots, canonicalized and de-duplicated. These are UX affordances
+    /// (the synthetic root listing the browser opens on), NOT a confinement boundary — `listDir` can
+    /// enumerate any directory the daemon user can read (the same socket already exposes `exec`, so
+    /// confining *enumeration* would defend nothing while blocking the owner from real paths).
+    var browseRoots: [String] {
+        var seen = Set<String>()
+        var roots: [String] = []
+        for p in ([Config.home] + config.allowedRoots).map({ PathResolver.canonical($0) }) where !p.isEmpty {
+            if seen.insert(p).inserted { roots.append(p) }
+        }
+        return roots
+    }
+
+    /// Display label for a browse root in the synthetic root listing: "Home" for `$HOME`, else basename.
+    private func browseRootName(_ path: String) -> String {
+        if path == PathResolver.canonical(Config.home) { return "Home" }
+        return (path as NSString).lastPathComponent
+    }
+
+    /// List a directory's children for the phone's remote browser. The phone can't browse the daemon's
+    /// disk, so the daemon enumerates for it. `browseRoots` are the starting points; from there the owner
+    /// can browse anywhere the daemon user can read (no confinement — the same socket exposes `exec`).
+    /// Dotfiles are hidden as declutter; directories sort before files. `path` nil/empty → the synthetic
+    /// *root listing* (the browse roots themselves). App-only (NOT a registry Command): agents spawn via
+    /// `spawn`, they never browse the daemon disk.
+    public func listDir(_ path: String?) throws -> DirListing {
+        let roots = browseRoots
+        guard let raw = path, !raw.isEmpty else {
+            let entries = roots.map { DirEntry(path: $0, name: browseRootName($0), isDir: true) }
+            return DirListing(path: "", parent: nil, entries: entries)
+        }
+        let real = PathResolver.canonical(raw)
+
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: real, isDirectory: &isDir), isDir.boolValue else {
+            throw OrchestraError.invalidParams("listDir: not a directory: \(raw)")
+        }
+        var dirs: [DirEntry] = []
+        var files: [DirEntry] = []
+        for name in (try? fm.contentsOfDirectory(atPath: real)) ?? [] where !name.hasPrefix(".") {
+            let child = "\(real)/\(name)"
+            var childIsDir: ObjCBool = false
+            guard fm.fileExists(atPath: child, isDirectory: &childIsDir) else { continue }
+            let entry = DirEntry(path: child, name: name, isDir: childIsDir.boolValue)
+            if childIsDir.boolValue { dirs.append(entry) } else { files.append(entry) }
+        }
+        let byName: (DirEntry, DirEntry) -> Bool = {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        dirs.sort(by: byName); files.sort(by: byName)
+
+        // "Up" affordance: the filesystem parent, nil only at the filesystem root.
+        let parentPath = (real as NSString).deletingLastPathComponent
+        let parent: String? = parentPath != real ? PathResolver.canonical(parentPath) : nil
+
+        return DirListing(path: real, parent: parent, entries: dirs + files)
     }
 
     // MARK: - helpers
