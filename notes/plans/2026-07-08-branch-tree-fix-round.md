@@ -84,12 +84,17 @@
 - ✅ O3 — daemon borrow/release + orphan prune on archive/startup + conflict/abort docs (`feat(o3)`).
 - ✅ S4 batch — organic inSync→restackNeeded nudge + atomic recompute edge (`fix(s4,s2-9)`); TOCTOU base, perpetual redirect watch, set partial-write restore, shipped re-read, CLI help, gen cleanup, comment drift (`fix(s4)`).
 
+**DONE (continued):**
+- ✅ S3-2 — spawn-sheet remote-entry UX (both platforms): picker disable/annotate, clear-on-repo-change, keep-open-on-failure, inline validation, case-insensitive pr# (`fix(s3-2,s3-3)`). iOS xcodebuild + desktop swiftc typecheck PASS.
+- ✅ S3-3 — "Parent (branch)" diff labels, human badge copy, iOS accessibilityLabels, select-only chip (`fix(s3-2,s3-3)`).
+- ✅ Doc-drift — 01/02/03/04 reconciled to code (`docs(bt)`).
+
 **REMAINING:**
-- ⬜ **S3-2** (Task 9b): spawn-sheet remote-entry UX — iOS typecheck.
-- ⬜ **S3-3** (Task 9c): badge/baseline legibility labels + `mergeRequested` waiting copy — iOS typecheck.
-- ⬜ **S4 (UI leftover)**: flat base-picker searchable / spawn-child context affordance (Task 10c) — optional/UI.
-- ⬜ **Coverage gaps + doc-drift** (Task 10d).
-- ⬜ **Review round** (superpowers:requesting-code-review) + final summary + archive.
+- ⬜ **S4 (UI leftover)**: flat base-picker searchable / spawn-child context affordance — MINOR UI polish; candidate to DEFER (document in summary).
+- ⬜ **Coverage gaps**: remote-recompute DONE (the flagged one); residuals (backoff-tick, wake-assert, reconstructed-daemon, diamond/dirty/archived-parent) marginal vs 661-test suite — DEFER-or-add per review.
+- ⬜ **Review round IN PROGRESS**: 3 parallel review subagents (S1+O1 / S2+O2+O3 / O4+S3+S4+docs) verifying each finding closed vs report checklist. Apply findings, re-run, then final summary + `archive` (merge signal).
+
+Current: **661 tests green**, 27 commits on the branch, all typechecks pass.
 
 **OLD REMAINING (superseded — all done above):**
 - ⬜ **S2-2 + O2** (Task 6b): first-class `merge-request {child}` op (daemon composes prose, records `mergeRequested` TreeState on both cards, dedup, re-nudge timer, cleared by shipped); shipped gains the parent-tip-advanced sanity gate (`rev-list --count base..parentTip == 0` ⇒ refuse/‑‑force); wire the dead `TreeState.parentMerged` (S4) as the child's landed state or drop it. **NOTE:** the S2-2 gate will require the ShipChoreo fixtures (`retargetsGrandchildren`, `liveParentNotified`) to actually ADVANCE the parent branch (simulate the merge) — see plan Task 6b analysis.
