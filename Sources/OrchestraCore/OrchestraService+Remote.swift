@@ -18,9 +18,9 @@ extension OrchestraService {
     ///   2. If the tip MOVED, `fetch` it into the private ref and `scheduleTreeStat` (stale badge tracks it).
     ///   3. LADDER:
     ///      (a) gh MERGED (authoritative, squash-proof) ⇒ redirect onto the PR's `baseRefName`.
-    ///      (c) ancestry: the child's tip is contained in the fetched parent tip (merge-commit landing) ⇒
-    ///          redirect using gh's baseRefName if available, else warn (proof-POSITIVE only).
-    ///      (b) tip `.gone` + gh can't confirm ⇒ warning activity ("parent branch gone — likely merged").
+    ///      (b) tip `.gone` + gh can't confirm ⇒ warning activity (gh-aware wording; latched, S2-8/S3-1).
+    ///      (c) ancestry: the child's tip is contained in a FRESH parent tip (merge-commit landing) ⇒
+    ///          WARN only (proof-POSITIVE, but never authoritative about the base — never auto-redirects).
     /// Idempotent: after a redirect the link is no longer a PR, so a re-run takes no merge path.
     @discardableResult
     func remoteMergeStep(cardId: UUID) async -> RemoteMergeOutcome {
@@ -107,9 +107,12 @@ extension OrchestraService {
         let newRef = RemoteParentRef.branch(remote: "origin", name: grandparent)   // origin/<baseRefName> (PR base)
         _ = try? await remoteParents.fetch(repo: t.repo, newRef)         // make refs/orch/parents/<gp> resolvable
         let anchor = link.base
+        // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
+        // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
+        let keepWatching = (grandparent != defaultBranch(repo: t.repo))
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
-                link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: true))
+                link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))
         } catch {
             emitActivity(.warning, t, .daemon, "remote redirect: could not retarget \(t.branch) → \(grandparent)")
             return
@@ -137,6 +140,7 @@ extension OrchestraService {
                     + "run `gh pr edit \(childPr) --base \(grandparent)`")
             }
         }
+        if !keepWatching { stopRemoteWatch(cardId) }   // S4: stop the now-pointless default-branch watch
         emitActivity(.command, t, .daemon, "remote parent PR merged — redirected onto \(grandparent)")
     }
 

@@ -631,6 +631,7 @@ public actor OrchestraService {
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
         stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
+        remoteWatchGen[id] = nil   // S4: the card is terminal — drop its generation entry (bounds the map)
         stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
         if let borrow = borrowedWorktrees[id] {   // O3: sweep a borrow the card left open
             try? worktrees.remove(worktree: borrow, force: true)

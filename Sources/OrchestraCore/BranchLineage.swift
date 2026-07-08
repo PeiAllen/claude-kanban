@@ -71,14 +71,35 @@ public actor BranchLineage {
         if ancestors(repo: repo, of: link.parent).contains(branch) {
             throw OrchestraError.invalidParams("parent link would create a cycle: \(branch) → \(link.parent)")
         }
-        // Satellite keys first; the `orchestra-parent` key (read's existence marker) is the last write,
-        // so a failure partway through never leaves a branch reporting a link with a stale/absent base.
-        try setKey(repo, branch, Self.kBase, link.base)
-        if let pr = link.prNumber { try setKey(repo, branch, Self.kPr, String(pr)) }
-        else { unset(repo, branch, Self.kPr) }
-        if link.watch { try setKey(repo, branch, Self.kWatch, "true") }
-        else { unset(repo, branch, Self.kWatch) }
-        try setKey(repo, branch, Self.kParent, link.parent)
+        // S4: capture the prior link so a PARTIAL write can be rolled back. The parent-key-last ordering
+        // makes a torn write read as "no link" only when there was NO prior link; RE-pointing an existing
+        // link that fails between the base write and the parent write (e.g. `git config` losing to a held
+        // `.git/config.lock`) would otherwise leave OLD parent + NEW base — a wrong rebase anchor.
+        let prior = read(repo: repo, branch: branch)
+        do {
+            // Satellite keys first; the `orchestra-parent` key (read's existence marker) is the last write.
+            try setKey(repo, branch, Self.kBase, link.base)
+            if let pr = link.prNumber { try setKey(repo, branch, Self.kPr, String(pr)) }
+            else { unset(repo, branch, Self.kPr) }
+            if link.watch { try setKey(repo, branch, Self.kWatch, "true") }
+            else { unset(repo, branch, Self.kWatch) }
+            try setKey(repo, branch, Self.kParent, link.parent)
+        } catch {
+            // Best-effort restore to the prior link (or clear if there was none), so a partial failure
+            // never leaves a torn old-parent/new-base link. Not airtight against a persistent lock, but
+            // it recovers the common transient-contention case.
+            if let prior {
+                try? setKey(repo, branch, Self.kBase, prior.base)
+                if let pr = prior.prNumber { try? setKey(repo, branch, Self.kPr, String(pr)) }
+                else { unset(repo, branch, Self.kPr) }
+                if prior.watch { try? setKey(repo, branch, Self.kWatch, "true") }
+                else { unset(repo, branch, Self.kWatch) }
+                try? setKey(repo, branch, Self.kParent, prior.parent)
+            } else {
+                for suffix in Self.allSuffixes { unset(repo, branch, suffix) }
+            }
+            throw error
+        }
     }
 
     /// Remove every `orchestra-*` lineage key for `branch` (tolerates already-unset keys).

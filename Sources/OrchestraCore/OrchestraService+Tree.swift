@@ -99,9 +99,13 @@ extension OrchestraService {
     /// in BT2; BT6 will canonicalize remote forms). Throws `.invalidParams` if `base` can't be resolved
     /// (defense-in-depth — `WorktreeManager.ensure` already validated it before cutting the worktree).
     func recordSpawnBase(repo: String, branch: String, base: String) async throws -> String {
-        // Resolve the LOCAL branch ref (not a bare `base`, which would disambiguate to a same-named
-        // tag) so the recorded OID matches the start-point `WorktreeManager.ensure` cut the child at.
-        let oid = try revParseOID(repo: repo, ref: "refs/heads/\(base)")
+        // S4 (TOCTOU): prefer the CHILD branch's OWN tip, not a re-resolved `base` tip. `ensure` cut the
+        // child at `base`'s tip, so the child's tip IS the fork point — reading it is immune to the parent
+        // advancing between the cut and this record (re-resolving `base` could anchor at a commit not in
+        // the child's history). Fall back to `refs/heads/<base>` when the child ref can't be resolved
+        // (only in stubbed tests; a live worktree card always has its branch). Both pin refs/heads/ (S3-6).
+        let oid = try (try? revParseOID(repo: repo, ref: "refs/heads/\(branch)"))
+            ?? revParseOID(repo: repo, ref: "refs/heads/\(base)")
         try await lineage.set(repo: repo, branch: branch, link: ParentLink(parent: base, base: oid))
         return base
     }
@@ -293,6 +297,14 @@ extension OrchestraService {
         // (c) clear the shipped child's own lineage → re-run is a no-op; treeStat clears on next recompute.
         // O2: a pending merge-request is now resolved — stop its re-nudge loop.
         stopMergeRequestNudge(child.id)
+        // S4: re-read before the clear — `shipped` ran (a)–(b) across many suspensions; if a concurrent
+        // `set-parent` re-pointed this branch in the meantime, its FRESH link must not be wiped by our
+        // stale clear. Only clear when the link is still the one we shipped against.
+        let stillSame = await lineage.read(repo: child.repo, branch: child.branch)?.parent == link?.parent
+        guard stillSame else {
+            emitActivity(.command, child, source, "shipped \(child.branch) (link changed mid-flight — kept)")
+            return (await store.get(child.id)) ?? child
+        }
         try? await lineage.clear(repo: child.repo, branch: child.branch)
         let updated = (try? await store.update(child.id, { $0.parentBranch = nil; $0.treeStat = nil })) ?? child
         emit(.taskUpserted(updated))
