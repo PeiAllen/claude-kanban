@@ -17,8 +17,10 @@ final class TerminalControl: ObservableObject {
     /// Select mode: when on, SwiftTerm mouse reporting is disabled so a one-finger drag *selects text*
     /// rather than being forwarded as a terminal mouse event (design §Copy/selection).
     @Published var selectMode = false
-    /// Whether typing is armed — the terminal is (or should be) first responder. Drives the "Start Typing"
-    /// scrim: disarmed shows the scrim and blocks touches so a scroll/inspect can't send stray input.
+    /// Whether typing is armed — the terminal is (or should be) first responder. Disarmed by default: the
+    /// terminal is fully visible and a one-finger swipe scrolls the agent, with mouse reporting off (see
+    /// `IOSTerminalView`) so a scroll/tap can't send stray input. Arming turns reporting on so a one-finger
+    /// drag reaches the TUI mouse; a two-finger swipe then scrolls without dropping the keyboard.
     @Published private(set) var armed = false
     /// Sticky-Ctrl UI state: `ctrl` primes the next keystroke; `ctrlLocked` keeps it primed until untapped.
     @Published var ctrl = false
@@ -36,6 +38,10 @@ final class TerminalControl: ObservableObject {
         coordinator = c
         c.setPendingCtrl(ctrl, locked: ctrlLocked)
         c.onCtrlConsumed = { [weak self] in self?.ctrl = false }
+        // Tap-to-arm: a tap on the disarmed terminal (SwiftTerm raises the keyboard itself) flips `armed`
+        // on so the accessory bar + mouse reporting stay in sync with the soft keyboard. Guarded so a tap
+        // while already armed (e.g. clicking into the TUI) doesn't publish a redundant state change.
+        c.onUserArmed = { [weak self] in guard let self, !self.armed else { return }; self.arm() }
     }
 
     /// Revive a terminal that gave up reconnecting (or was dropped on a lease loss). Safe to call any time —

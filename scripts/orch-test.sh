@@ -113,7 +113,8 @@ agent = os.environ.get("AGENT", "claude-code")
 model = ({"id": "gpt-5.3-codex", "displayName": "GPT-5.3 Codex", "family": "gpt"} if agent == "codex"
          else {"id": "claude-opus-4-8", "displayName": "Opus 4.8", "family": "claude"})
 card = {"id": cid, "title": "test card", "titleProvisional": False, "desc": "", "repo": repo,
-        "branch": "verify", "worktree": wt, "agentId": agent, "model": model,
+        "branch": "verify", "cwd": wt, "origin": "worktree", "access": "readWrite",
+        "agentId": agent, "model": model,
         "startIn": "impl", "column": "impl", "order": 0, "status": "waiting", "ctxPct": 0,
         "priorSessionIds": [], "initialPrompt": "t", "archived": False,
         "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"}
