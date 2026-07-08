@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy this file to App/DemoConfig.local.json (gitignored) to point the DEBUG demo/screenshot data at your own paths. Both keys are optional; omit one to keep its generic default (~/code/orchestra, ~/notes).",
+  "repoRoot": "/Users/you/code/orchestra",
+  "notesRoot": "/Users/you/notes"
+}

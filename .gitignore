@@ -21,5 +21,22 @@ Package.resolved
 
 # Orchestra runtime artifacts (live under ~/Library/Application Support/Orchestra)
 *.sock
-.obsidian/
-.trash/
+
+# Secrets & signing material — never commit (belt-and-suspenders for a public repo).
+# The app keeps its real credentials in the Keychain at runtime; these patterns just make sure
+# an APNs key, provisioning profile, or a signing xcconfig can't be added by accident.
+.env
+.env.*
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+*.cer
+*.certSigningRequest
+*.local.xcconfig
+*-signing.xcconfig
+
+# Local-only DEBUG demo/screenshot overrides (real paths kept out of the repo; see
+# App/DemoConfig.swift + App/DemoConfig.local.json.example).
+App/DemoConfig.local.json

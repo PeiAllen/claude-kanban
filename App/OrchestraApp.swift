@@ -215,9 +215,9 @@ private struct DebugLaunchHook: ViewModifier {
                  updatedAt: Date(timeIntervalSinceNow: -ago))
         }
         return [
-            mk("Fix passthrough statusLine timeout", repo: "/Users/allen/code/orchestra",
+            mk("Fix passthrough statusLine timeout", repo: DemoConfig.repoRoot,
                branch: "fix/statusline-timeout", agent: "claude-code", model: "claude-opus-4-8", ago: 1800),
-            mk("Add done-popover session info", repo: "/Users/allen/code/orchestra",
+            mk("Add done-popover session info", repo: DemoConfig.repoRoot,
                branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-4-6", ago: 7200),
         ]
     }
@@ -246,8 +246,8 @@ private struct DebugLaunchHook: ViewModifier {
             UserDefaults.standard.set(hv, forKey: "shellPanelHeight")
         }
         let mock = Task(title: "Wire shell-panel resize + strip swap",
-                        repo: "/Users/allen/code/orchestra", branch: "fix/shells",
-                        cwd: "/Users/allen/code/orchestra/.worktrees/fix-shells",
+                        repo: DemoConfig.repoRoot, branch: "fix/shells",
+                        cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, status: .running, ctxPct: 62, initialPrompt: "demo")
         model.tasks = [mock]
@@ -273,8 +273,8 @@ private struct DebugLaunchHook: ViewModifier {
     static func showDemo(model: BoardModel) {
         func mk(_ title: String, _ branch: String, _ col: Column, _ status: AgentStatus, _ order: Int,
                 origin: CardOrigin = .worktree) -> Task {
-            Task(title: title, repo: "/Users/allen/code/orchestra", branch: branch,
-                 cwd: origin == .worktree ? "/Users/allen/code/orchestra/.worktrees/\(branch)" : "/Users/allen/notes/\(branch)",
+            Task(title: title, repo: DemoConfig.repoRoot, branch: branch,
+                 cwd: origin == .worktree ? "\(DemoConfig.repoRoot)/.worktrees/\(branch)" : "\(DemoConfig.notesRoot)/\(branch)",
                  origin: origin, model: AgentModel(id: "claude-opus-4-8"),
                  startIn: col == .plan ? .plan : .impl, column: col, order: order,
                  status: status, initialPrompt: title)
@@ -334,8 +334,8 @@ private struct DebugLaunchHook: ViewModifier {
     /// from the shipping row layout.
     static func snapshotInbox(to path: String, model: BoardModel) {
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
-        let card = Task(title: "Inbox demo", repo: "/Users/allen/code/orchestra", branch: "demo",
-                        cwd: "/Users/allen/code/orchestra/.worktrees/demo",
+        let card = Task(title: "Inbox demo", repo: DemoConfig.repoRoot, branch: "demo",
+                        cwd: "\(DemoConfig.repoRoot)/.worktrees/demo",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, status: .running, initialPrompt: "demo")
         let seed = ["charlie", "BRAVO (edited)", "review the auth refactor before merging"]
@@ -354,9 +354,9 @@ private struct DebugLaunchHook: ViewModifier {
     /// (including the "Copy prompt" affordance on the "Originally asked:" block).
     static func snapshotRecovery(to path: String, model: BoardModel) {
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
-        var card = Task(title: "Wire the KeyboardController", repo: "/Users/allen/code/orchestra",
+        var card = Task(title: "Wire the KeyboardController", repo: DemoConfig.repoRoot,
                         branch: "feat/controller",
-                        cwd: "/Users/allen/code/orchestra/.worktrees/feat/controller",
+                        cwd: "\(DemoConfig.repoRoot)/.worktrees/feat/controller",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, status: .dead,
                         initialPrompt: "Wire the KeyboardController to the command palette and add hjkl navigation across columns.")
@@ -419,8 +419,8 @@ private struct DebugLaunchHook: ViewModifier {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
         var card = Task(title: "Promote the Zed diff engine into DiffProvider",
-                        repo: "/Users/allen/code/orchestra", branch: "feat/code-review-on-board",
-                        cwd: "/Users/allen/code/orchestra/.worktrees/code-review-on-board",
+                        repo: DemoConfig.repoRoot, branch: "feat/code-review-on-board",
+                        cwd: "\(DemoConfig.repoRoot)/.worktrees/code-review-on-board",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, status: .running, initialPrompt: "demo")
         card.diffStat = DiffStat(filesChanged: 6, insertions: 214, deletions: 37)
@@ -440,8 +440,8 @@ private struct DebugLaunchHook: ViewModifier {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
         func mk(_ title: String, branch: String, status: AgentStatus, stat: DiffStat?) -> Task {
-            var t = Task(title: title, repo: "/Users/allen/code/orchestra", branch: branch,
-                         cwd: "/Users/allen/code/orchestra/.worktrees/\(branch)",
+            var t = Task(title: title, repo: DemoConfig.repoRoot, branch: branch,
+                         cwd: "\(DemoConfig.repoRoot)/.worktrees/\(branch)",
                          model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                          order: 0, status: status, initialPrompt: title)
             t.diffStat = stat

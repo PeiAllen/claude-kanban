@@ -95,10 +95,10 @@ struct AdapterTests {
         // worktree lives under '~/.orchestra/…', so '/.orchestra' must slug to '--orchestra' (the
         // leading '/' AND the '.' each become a '-'). Getting this wrong points resume/isResumable
         // at a nonexistent path and silently downgrades reopen/recover to a blank restart.
-        let ctx = AdapterContext(cwd: "/Users/allen/.orchestra/worktrees/app/feat", sessionId: "abc", name: "T")
+        let ctx = AdapterContext(cwd: "/Users/dev/.orchestra/worktrees/app/feat", sessionId: "abc", name: "T")
         let info = try #require(adapter.sessionInfo(ctx, current: "abc", prior: []))
         let tp = try #require(info.transcriptPath)
-        #expect(tp.contains("-Users-allen--orchestra-worktrees-app-feat"))
+        #expect(tp.contains("-Users-dev--orchestra-worktrees-app-feat"))
         #expect(!tp.contains(".orchestra"))   // the dot must NOT survive in the slug
     }
 
