@@ -680,15 +680,24 @@ public class BoardStore: ObservableObject {
         toast("Archived", sub: nil)
     }
     /// Reopen a Done card: the daemon recreates its worktree + resumes the agent; we bring the card back
-    /// onto the board, select it (so the live inspector opens), and close the Done popover.
-    public func reopen(_ id: UUID) async {
+    /// onto the board. Returns the reopened `Task` (nil on failure) so a caller can navigate to it.
+    @discardableResult
+    public func reopen(_ id: UUID) async -> Task? {
         do {
             let t = try await client.call("reopen", .object(["ref": .string(id.uuidString)])).decode(Task.self)
             apply(.taskUpserted(t))   // off the Done list onto the board immediately; the stream is idempotent
+            #if os(macOS)
+            // Desktop: select the reopened card so the persistent inspector side-panel opens on it, and
+            // close the Done popover — both are cheap here (the inspector is a side-panel, Done is a popover).
+            // On iOS the same selection is a NavigationStack PUSH that must happen AFTER the Done screen pops,
+            // or it races the pop and corrupts the stack into a chromeless black screen — so the phone drives
+            // it from the view (DoneArchiveView) via the returned task, sequenced after `dismiss()`.
             selectedId = t.id
             showDone = false
+            #endif
             toast("Reopened “\(t.title)”", sub: nil)
-        } catch { toast("Reopen failed", sub: "\(error)", color: .red) }
+            return t
+        } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
     public func send(_ id: UUID, _ message: String) async {
         _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))

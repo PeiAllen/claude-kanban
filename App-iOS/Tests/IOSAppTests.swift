@@ -200,5 +200,46 @@ final class IOSAppTests: XCTestCase {
         await controller.returnToDesktop()       // callable before any begin(); pure no-op, no crash
         XCTAssertFalse(controller.isHolding)
     }
+
+    // MARK: - ConnectionStore is remote-only on iOS (no phantom local daemon)
+
+    private func freshConnectionStore() -> ConnectionStore {
+        ConnectionStore(defaults: UserDefaults(suiteName: "orch-ios-test-\(UUID().uuidString)")!)
+    }
+
+    /// A phone has no local daemon, so the built-in `.local` connection must never appear on iOS: a fresh
+    /// store is empty (not `[.local]`), and nothing in `all` is `.local`.
+    func testStoreHasNoLocalConnectionOnIOS() {
+        let s = freshConnectionStore()
+        XCTAssertTrue(s.all.isEmpty)                       // macOS would have `[.local]`; iOS starts empty
+        XCTAssertFalse(s.all.contains { $0.isLocal })
+    }
+
+    /// `all` is exactly the persisted remotes on iOS — no synthesized local, in either position.
+    func testStoreAllIsRemotesOnlyOnIOS() {
+        let s = freshConnectionStore()
+        let c = Connection(name: "My Mac", kind: .remote, sshTarget: "me@mac.ts.net",
+                           remoteSocketPath: "~/x/orchestrad.sock")
+        s.upsert(c)
+        XCTAssertEqual(s.all.count, 1)
+        XCTAssertEqual(s.all.first?.id, c.id)
+        XCTAssertFalse(s.all.contains { $0.isLocal })
+    }
+
+    /// The default/active connection resolves to a remote (never `.local`), and after deleting the active
+    /// remote it falls back to another remote — again never `.local`.
+    func testActiveResolvesToRemoteOnIOS() {
+        let s = freshConnectionStore()
+        let a = Connection(name: "Mac A", kind: .remote, sshTarget: "a@a.ts.net", remoteSocketPath: "~/a.sock")
+        let b = Connection(name: "Mac B", kind: .remote, sshTarget: "b@b.ts.net", remoteSocketPath: "~/b.sock")
+        s.upsert(a); s.upsert(b)
+        s.activeId = a.id
+        XCTAssertEqual(s.active.id, a.id)
+        XCTAssertFalse(s.active.isLocal)
+
+        s.delete(a.id)                                     // deleting the active remote falls back…
+        XCTAssertEqual(s.active.id, b.id)                  // …to the remaining remote, not `.local`
+        XCTAssertFalse(s.active.isLocal)
+    }
 }
 

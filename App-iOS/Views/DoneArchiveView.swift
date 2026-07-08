@@ -9,6 +9,10 @@ struct DoneArchiveView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) private var theme: Theme
     @Environment(\.dismiss) private var dismiss
+    // The reopened card to open once this screen has popped. Set on a successful reopen and consumed in
+    // `onDisappear`, so the board → card-detail push happens AFTER the Done pop rather than racing it
+    // (a push fired in the same navigation frame as the pop blanks the whole screen — the original bug).
+    @State private var pendingOpen: UUID?
 
     var body: some View {
         Group {
@@ -28,12 +32,22 @@ struct DoneArchiveView: View {
         .background(theme.winBg.ignoresSafeArea())
         .navigationTitle("Done")
         .navigationBarTitleDisplayMode(.inline)
+        // Once Done has popped, open the reopened card's detail. Deferred one runloop turn (the `Task` hop)
+        // so the selection lands in a fresh navigation transaction, not the pop's — the board is already
+        // the top of the stack, so this is a clean single board → detail push.
+        .onDisappear {
+            guard let id = pendingOpen else { return }
+            pendingOpen = nil
+            _Concurrency.Task { @MainActor in model.selectedId = id }
+        }
     }
 
     private func reopen(_ task: Task) {
         _Concurrency.Task {
-            await model.reopen(task.id)
-            dismiss()   // pop back to the board so the reopened card is visible in its column
+            // On failure `reopen` returns nil (and shows a toast) — stay on the Done list, open nothing.
+            guard let reopened = await model.reopen(task.id) else { return }
+            pendingOpen = reopened.id
+            dismiss()   // pop back to the board; `onDisappear` then opens the reopened card's detail
         }
     }
 }
