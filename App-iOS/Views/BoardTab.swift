@@ -208,7 +208,14 @@ private struct MovableCard: View {
                 .offset(x: dragX)
                 .contentShape(Rectangle())
                 .onTapGesture { model.selectedId = task.id }   // tap → open detail (§3)
-                .gesture(moveDrag)                             // tap-and-hold → move (§2)
+                // Attach the move gesture *simultaneously* so it doesn't win the gesture arena
+                // outright. A plain single swipe moves the finger before the 0.3s long-press
+                // completes, so the long press fails and the touch falls through to the parent
+                // ScrollView (vertical scroll) / TabView (horizontal paging). Only a deliberate
+                // hold-then-drag clears the long-press gate and engages the move (§2). With a
+                // plain `.gesture(moveDrag)` the recognizer claimed the touch exclusively and
+                // starved both parents, so a swipe starting on a card did nothing.
+                .simultaneousGesture(moveDrag)                 // tap-and-hold → move (§2)
                 .contextMenu { moveMenu }
         } else {
             BoardCardCell(task: task)
