@@ -70,6 +70,12 @@ public final class BoardUX: BoardStore {
         _Concurrency.Task { await move(id, to: order[ti]) }
     }
 
+    /// The invariant enforcement point: no selected card ⇒ no mounted inspector ⇒ focus belongs to the
+    /// board. Every deselect path (inspector ✕, archive, taskRemoved, `closeFrontmost`) clears
+    /// `selectedId`, which routes here, so the terminal/shell zone can never strand on a closed inspector.
+    /// The keyboard eject path resets `focusZone` itself too; this makes the reset unconditional.
+    override func onSelectionCleared() { focusZone = .board }
+
     /// Descend the keyboard into the selected card's agent terminal (Enter / i). No-op with no
     /// selection so the focus ring never lights on an empty inspector.
     public func enterTerminalZone() {

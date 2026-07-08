@@ -42,7 +42,14 @@ public class BoardStore: ObservableObject {
     @Published public var tasks: [Task] = []
     @Published public var archived: [Task] = []
     @Published public var activity: [ActivityItem] = []
-    @Published public var selectedId: UUID?
+    @Published public var selectedId: UUID? {
+        didSet { if selectedId == nil { onSelectionCleared() } }
+    }
+    /// Fired whenever the selection is cleared (inspector closed, card archived/removed, deselected).
+    /// Base does nothing; the desktop `BoardUX` overrides it to reset `focusZone` back to `.board`,
+    /// since the terminal/shell zones only make sense while an inspector is mounted. This is the single
+    /// chokepoint every deselect path routes through, so the zone can't strand on a closed inspector.
+    func onSelectionCleared() {}
     @Published public var config = Config()
     @Published public var models: [AgentModel] = []
     @Published public var agents: [AgentInfo] = []
