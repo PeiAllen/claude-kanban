@@ -15,6 +15,9 @@ import OrchestraUI
 struct MacSetupView: View {
     @EnvironmentObject var model: BoardModel
     @StateObject private var vm = MacSetupModel()
+    /// Focus for the target field so the keyboard has a way out: a tap-off on the Form background, an
+    /// interactive swipe-down, and the return key all resign it. Mirrors `TerminalTab`'s `@FocusState`.
+    @FocusState private var targetFocused: Bool
     /// Called when the user finishes (a successful test) or explicitly dismisses — RootView records that
     /// onboarding was shown so it doesn't reappear on every launch.
     let onClose: () -> Void
@@ -26,6 +29,11 @@ struct MacSetupView: View {
                 stepTrust
                 stepTest
             }
+            // Tap-off + swipe-down dismissal for the target keyboard. Additive container-level modifiers
+            // only — the Form's rows and their controls (Copy, Test, Done) still handle their own taps.
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture { targetFocused = false }
             .navigationTitle("Connect your Mac")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -45,6 +53,11 @@ struct MacSetupView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .keyboardType(.asciiCapable)
+                .focused($targetFocused)
+                // The keyboard's return key doubles as an explicit dismiss (single-line field), alongside
+                // tap-off and swipe-down.
+                .submitLabel(.done)
+                .onSubmit { targetFocused = false }
         } header: {
             Label("1 · Enter your Mac", systemImage: "desktopcomputer")
         } footer: {
