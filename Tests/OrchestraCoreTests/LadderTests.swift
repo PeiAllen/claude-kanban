@@ -12,12 +12,16 @@ final class FakeGh: GhClient, @unchecked Sendable {
     init(available: Bool = true, state: PrState? = nil, headPR: Int? = nil) {
         self.available = available; self.state = state; self.headPR = headPR
     }
-    func prState(repo: String, number: Int) -> PrState? { lock.withLock { state } }
-    func prNumber(repo: String, head: String) -> Int? { lock.withLock { headPR } }
-    func editBase(repo: String, number: Int, base: String) -> Bool {
+    private(set) var prStateCalls = 0
+    func prState(repo: String, number: Int) async -> PrState? {
+        lock.withLock { prStateCalls += 1; return state }
+    }
+    func prNumber(repo: String, head: String) async -> Int? { lock.withLock { headPR } }
+    func editBase(repo: String, number: Int, base: String) async -> Bool {
         lock.withLock { editedBase = (number, base) }; return true
     }
     var recordedEdit: (number: Int, base: String)? { lock.withLock { editedBase } }
+    var stateCallCount: Int { lock.withLock { prStateCalls } }
 }
 
 @Suite("Detection ladder — remote merge decision with FakeGh (no network, no gh)")
@@ -30,6 +34,22 @@ struct LadderTests {
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         return (svc, repo, card)   // watch loop wired in Task 8; here we drive remoteMergeStep directly
+    }
+
+    // S1-5: only a PR parent should pay for `gh pr view`. A plain `origin/<b>` parent carries no PR
+    // number, so the tick must never consult gh (no wasted network round-trip on the actor).
+    @Test("S1-5: a plain origin/<b> parent never consults gh")
+    func branchParentSkipsGh() async throws {
+        let (svc, _, _, base) = TestEnv.makeReal()
+        let repo = base + "/repos/app"
+        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childB",
+                                                  base: "origin/feature-b"))
+        let fake = FakeGh(available: true,
+            state: PrState(state: "MERGED", mergedAt: "t", mergeCommit: nil, baseRefName: "main"))
+        await svc.setGh(fake)
+        _ = await svc.remoteMergeStep(cardId: card.id)
+        #expect(fake.stateCallCount == 0)   // no prNumber ⇒ tier (a) skipped ⇒ gh untouched
     }
 
     @Test("gh MERGED ⇒ redirect fires with the PR baseRefName; child PR base repaired")

@@ -37,8 +37,14 @@ extension OrchestraService {
             scheduleTreeStat(cardId)
         }
 
-        // (a) authoritative gh MERGED (squash-proof).
-        if let pr = link.prNumber, gh.available, let st = gh.prState(repo: t.repo, number: pr), st.merged {
+        // (a) authoritative gh MERGED (squash-proof). Only a PR parent reaches gh — a plain `origin/<b>`
+        // parent carries no PR number, so gh is spared on every branch tick (S1-5's traffic point: the
+        // `origin/<b>` tier never pays for `gh pr view`). A PR parent MUST still probe every tick: its
+        // merge is invisible in `refs/pull/N/head` (which doesn't move on merge, S2-8), so movement can't
+        // gate it. The key S1-5 fix is the `await` — it hops the ≤20 s round-trip off the actor via a
+        // detached task, so it suspends, never blocks, the service (list/spawn/send stay responsive).
+        if let pr = link.prNumber, gh.available,
+           let st = await gh.prState(repo: t.repo, number: pr), st.merged {
             await applyRemoteRedirect(cardId: cardId, link: link, grandparent: st.baseRefName, childHead: t.branch)
             return .redirected(grandparent: st.baseRefName)
         }
@@ -99,8 +105,8 @@ extension OrchestraService {
         await wake(cardId)
 
         // Repair the child's own published PR base (GitHub auto-retarget is unreliable). Best-effort.
-        if gh.available, let childPr = gh.prNumber(repo: t.repo, head: childHead) {
-            _ = gh.editBase(repo: t.repo, number: childPr, base: grandparent)
+        if gh.available, let childPr = await gh.prNumber(repo: t.repo, head: childHead) {
+            _ = await gh.editBase(repo: t.repo, number: childPr, base: grandparent)
         }
         emitActivity(.command, t, .daemon, "remote parent PR merged — redirected onto \(grandparent)")
     }
