@@ -207,15 +207,26 @@ private struct MovableCard: View {
             BoardCardCell(task: task)
                 .offset(x: dragX)
                 .contentShape(Rectangle())
-                .onTapGesture { model.selectedId = task.id }   // tap → open detail (§3)
-                // Attach the move gesture *simultaneously* so it doesn't win the gesture arena
-                // outright. A plain single swipe moves the finger before the 0.3s long-press
-                // completes, so the long press fails and the touch falls through to the parent
-                // ScrollView (vertical scroll) / TabView (horizontal paging). Only a deliberate
-                // hold-then-drag clears the long-press gate and engages the move (§2). With a
-                // plain `.gesture(moveDrag)` the recognizer claimed the touch exclusively and
-                // starved both parents, so a swipe starting on a card did nothing.
-                .simultaneousGesture(moveDrag)                 // tap-and-hold → move (§2)
+                // Tap-to-open and the tap-and-hold → drag-to-adjacent move (design §2/§3) are both
+                // driven by a UIKit recognizer overlay, NOT SwiftUI gestures. A SwiftUI
+                // `LongPressGesture.sequenced(before: DragGesture)` — even attached with
+                // `.simultaneousGesture` — holds the gesture arena during its pending window and
+                // starves the parent ScrollView's vertical pan and the paged TabView's horizontal
+                // swipe, so a plain swipe starting on a card did nothing (empirically verified on a
+                // Simulator with injected touches — the earlier `.simultaneousGesture` fix did not
+                // actually let swipes through). A native `UILongPressGestureRecognizer` set to
+                // recognize *simultaneously* with those parent pans does not starve them: a quick
+                // swipe exceeds the press's allowable movement before the 0.3s gate, so the press
+                // fails and the scroll/pager takes the touch; only a deliberate hold-then-drag fires
+                // the press and moves the card. The overlay is the touch target, so it also carries
+                // the tap (an underlying SwiftUI `.onTapGesture` would be shadowed by it).
+                .overlay(
+                    LongPressMoveGesture(
+                        onTap: { model.selectedId = task.id },
+                        onChanged: { dx in dragX = min(130, max(-130, dx)) },
+                        onEnded: { dx in commitMove(dx) }
+                    )
+                )
                 .contextMenu { moveMenu }
         } else {
             BoardCardCell(task: task)
@@ -235,26 +246,15 @@ private struct MovableCard: View {
         }
     }
 
-    /// Tap-and-hold → swipe to an adjacent column. The long press disambiguates from the pager's own
-    /// horizontal swipe; a drag past the threshold commits the move to the neighbouring column.
-    private var moveDrag: some Gesture {
-        LongPressGesture(minimumDuration: 0.3)
-            .sequenced(before: DragGesture(minimumDistance: 12))
-            .onChanged { value in
-                if case .second(true, let drag?) = value {
-                    dragX = min(130, max(-130, drag.translation.width))
-                }
-            }
-            .onEnded { value in
-                guard case .second(true, let drag?) = value else { snapBack(); return }
-                let movingRight = drag.translation.width > 0
-                if abs(drag.translation.width) > 64,
-                   let target = adjacentColumn(from: task.column, movingRight: movingRight) {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    move(to: target)
-                }
-                snapBack()
-            }
+    /// Commit the tap-and-hold → drag-to-adjacent move once the drag ends. `dx` is the horizontal
+    /// translation from where the long press fired; past the threshold it moves to the neighbouring
+    /// column (design §2). Mirrors the old `moveDrag.onEnded`.
+    private func commitMove(_ dx: CGFloat) {
+        if abs(dx) > 64, let target = adjacentColumn(from: task.column, movingRight: dx > 0) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            move(to: target)
+        }
+        snapBack()
     }
 
     private func snapBack() { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { dragX = 0 } }
@@ -297,6 +297,92 @@ private struct ConnectionBanner: View {
         case .retrying:   return "Reconnecting…"
         case .down:       return "Offline"
         case .live:       return ""
+        }
+    }
+}
+
+// MARK: - Move gesture bridge (UIKit recognizer that coexists with the board's scroll + pager)
+
+/// A transparent overlay hosting a UIKit `UILongPressGestureRecognizer` (hold-then-drag → move) plus a
+/// `UITapGestureRecognizer` (tap → open). Unlike a SwiftUI `LongPressGesture.sequenced(before:
+/// DragGesture)`, a native long-press recognizer configured to recognize *simultaneously* with the
+/// parent `UIScrollView` / paged-`TabView` pans does not starve them: a quick swipe exceeds the press's
+/// allowable movement before the 0.3s gate (the press fails → the scroll/pager keeps the touch), while
+/// a deliberate hold fires the press and drives the drag. `cancelsTouchesInView = false` keeps the
+/// underlying `.contextMenu` interaction alive. See `MovableCard.body` for why this replaced the old
+/// `.simultaneousGesture` move gesture, which blocked both parents.
+///
+/// `onChanged`/`onEnded` report the horizontal translation (points) from where the press fired; the tap
+/// is carried here because the overlay is the hit-test target and would otherwise shadow a SwiftUI
+/// `.onTapGesture` on the card beneath it.
+private struct LongPressMoveGesture: UIViewRepresentable {
+    let onTap: () -> Void
+    let onChanged: (CGFloat) -> Void
+    let onEnded: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let press = UILongPressGestureRecognizer(target: context.coordinator,
+                                                 action: #selector(Coordinator.handlePress(_:)))
+        press.minimumPressDuration = 0.3
+        press.delegate = context.coordinator
+        press.cancelsTouchesInView = false
+        view.addGestureRecognizer(press)
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.handleTap(_:)))
+        tap.delegate = context.coordinator
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onChanged = onChanged
+        context.coordinator.onEnded = onEnded
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTap: onTap, onChanged: onChanged, onEnded: onEnded)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onTap: () -> Void
+        var onChanged: (CGFloat) -> Void
+        var onEnded: (CGFloat) -> Void
+        private var startX: CGFloat = 0
+
+        init(onTap: @escaping () -> Void,
+             onChanged: @escaping (CGFloat) -> Void,
+             onEnded: @escaping (CGFloat) -> Void) {
+            self.onTap = onTap
+            self.onChanged = onChanged
+            self.onEnded = onEnded
+        }
+
+        @objc func handleTap(_ g: UITapGestureRecognizer) {
+            if g.state == .ended { onTap() }
+        }
+
+        @objc func handlePress(_ g: UILongPressGestureRecognizer) {
+            // Measure in window coordinates (pass `nil`), NOT the recognizer's own view: the card —
+            // and this overlay with it — is offset by `dragX` while dragging, so a view-relative
+            // location would feed back on itself and damp the drag. Window coordinates are stable.
+            let x = g.location(in: nil).x
+            switch g.state {
+            case .began:                       startX = x
+            case .changed:                     onChanged(x - startX)
+            case .ended, .cancelled, .failed:  onEnded(x - startX)
+            default:                           break
+            }
+        }
+
+        // Recognize alongside the parent ScrollView / paged-TabView pans so a quick swipe is never
+        // starved — the press simply fails and the scroll/pager takes the touch.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
         }
     }
 }
