@@ -288,7 +288,8 @@ public actor OrchestraService {
             // the worktree is cut. Strip a refs/heads/ prefix; reject any other refs/… (remote forms —
             // origin/<b>, pr#<N> — are classified separately and left untouched).
             var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let b = normalizedBase, b.hasPrefix("refs/"), RemoteParentRef.parse(b) == nil {
+            if let b = normalizedBase, b.hasPrefix("refs/"),
+               RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
                 guard b.hasPrefix("refs/heads/") else {
                     throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
                 }
@@ -296,7 +297,7 @@ public actor OrchestraService {
             }
             // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
             // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
-            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0) }
+            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
             var remoteFetchedOID: String? = nil
             var ensureBase = normalizedBase
             if let remoteRef {
@@ -437,7 +438,7 @@ public actor OrchestraService {
         // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
         // link's `watch` flag (a fresh remote-base spawn sets it true; a churn re-spawn onto an existing
         // branch with watch=false must not start one) rather than relying on the loop to bail on tick 1.
-        if RemoteParentRef.parse(derivedParentBranch ?? "") != nil,
+        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
            await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
             startRemoteWatch(cardId: id)
         }

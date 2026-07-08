@@ -26,7 +26,7 @@ extension OrchestraService {
     func remoteMergeStep(cardId: UUID) async -> RemoteMergeOutcome {
         guard let t = await store.get(cardId), t.origin == .worktree, !t.archived,
               let link = await lineage.read(repo: t.repo, branch: t.branch),
-              let ref = RemoteParentRef.parse(link.parent) else { return .none }
+              let ref = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) else { return .none }
 
         let tip = await remoteParents.lsRemoteTip(repo: t.repo, ref)
         var fetchedTip: String? = privateRefOID(repo: t.repo, ref: ref)
@@ -104,7 +104,7 @@ extension OrchestraService {
         // Re-read across the ladder's awaits: the card may have been archived / re-pointed since the tick
         // began. Bail rather than write lineage onto a gone card.
         guard let t = await store.get(cardId), !t.archived, t.origin == .worktree else { return }
-        let newRef = RemoteParentRef.branch(grandparent)                 // origin/<baseRefName>
+        let newRef = RemoteParentRef.branch(remote: "origin", name: grandparent)   // origin/<baseRefName> (PR base)
         _ = try? await remoteParents.fetch(repo: t.repo, newRef)         // make refs/orch/parents/<gp> resolvable
         let anchor = link.base
         do {
@@ -174,7 +174,7 @@ extension OrchestraService {
     private func shouldStopRemoteWatch(_ id: UUID) async -> Bool {
         guard let t = await store.get(id), !t.archived, t.origin == .worktree,
               let link = await lineage.read(repo: t.repo, branch: t.branch),
-              RemoteParentRef.parse(link.parent) != nil, link.watch else { return true }
+              RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil, link.watch else { return true }
         return false
     }
 
@@ -199,7 +199,7 @@ extension OrchestraService {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         for t in active {
             guard let link = await lineage.read(repo: t.repo, branch: t.branch),
-                  link.watch, RemoteParentRef.parse(link.parent) != nil else { continue }
+                  link.watch, RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil else { continue }
             startRemoteWatch(cardId: t.id)
         }
     }

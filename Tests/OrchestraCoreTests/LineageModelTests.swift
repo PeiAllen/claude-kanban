@@ -36,15 +36,6 @@ struct LineageModelTests {
         #expect(with.base == "feature-a")
     }
 
-    // MARK: O1 — ParentLink.resolvableRef (canonical → concrete git ref)
-
-    @Test("resolvableRef maps local → refs/heads and remote → private ref")
-    func resolvableRef() {
-        #expect(ParentLink(parent: "feature-a", base: "x").resolvableRef == "refs/heads/feature-a")
-        #expect(ParentLink(parent: "pr#7", base: "x").resolvableRef == "refs/orch/parents/pr-7")
-        #expect(ParentLink(parent: "origin/feature-b", base: "x").resolvableRef == "refs/orch/parents/feature-b")
-    }
-
     @Test("TreeSnapshot round-trips through JSONValue")
     func treeSnapshotRoundTrips() throws {
         let node = TreeNode(ref: "orchestra://task/abc", cardId: UUID(), repo: "/r", branch: "child",

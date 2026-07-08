@@ -20,7 +20,7 @@ extension OrchestraService {
         guard let link = await lineage.read(repo: child.repo, branch: child.branch) else {
             throw OrchestraError.invalidParams("card has no parent link — nothing to merge up into")
         }
-        if RemoteParentRef.parse(link.parent) != nil {
+        if RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: child.repo)) != nil {
             throw OrchestraError.invalidParams(
                 "parent \(link.parent) is remote — publish a stacked PR instead "
                 + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")

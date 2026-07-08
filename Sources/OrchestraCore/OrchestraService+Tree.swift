@@ -26,7 +26,7 @@ extension OrchestraService {
             // BT6: a remote parent (origin/<b>, pr#<N>) is fetched into a private ref, recorded with its
             // canonical form + prNumber, and watched per the flag (default off). `mode` doesn't apply —
             // there is no local history to rebase yet; the child restacks only once the remote parent moves.
-            if let remote = RemoteParentRef.parse(p) {
+            if let remote = RemoteParentRef.parse(p, remotes: gitRemotes(repo: t.repo)) {
                 let oid = try await remoteParents.fetch(repo: t.repo, remote)
                 let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
                 try await lineage.set(repo: t.repo, branch: t.branch,
@@ -139,7 +139,7 @@ extension OrchestraService {
         guard let link = await lineage.read(repo: t.repo, branch: t.branch) else {
             throw OrchestraError.invalidParams("card has no parent link to sync")
         }
-        guard let tip = treeTip(repo: t.repo, link.resolvableRef) else {
+        guard let tip = treeTip(repo: t.repo, resolvableRef(link, repo: t.repo)) else {
             throw OrchestraError.invalidParams("parent ref not found: \(link.parent)")
         }
         // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
@@ -147,7 +147,7 @@ extension OrchestraService {
         // equals the merged tip; after a racy/bogus `synced` (parent advanced, or no merge happened) it
         // equals the real fork, so it can't silently over-record and mask un-merged parent work. Falls
         // back to the tip only if the child's own branch ref can't be resolved (never for a live card).
-        let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", link.resolvableRef)) ?? tip
+        let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", resolvableRef(link, repo: t.repo))) ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
         // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
         // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
@@ -199,7 +199,7 @@ extension OrchestraService {
         // link) is exempt — its merge went to main via the standard flow. `--force` overrides (a genuine
         // empty/no-op squash).
         if !force, let link, !link.base.isEmpty,
-           let parentTip = treeTip(repo: child.repo, link.resolvableRef),
+           let parentTip = treeTip(repo: child.repo, resolvableRef(link, repo: child.repo)),
            treeBehind(repo: child.repo, base: link.base, tip: parentTip) == 0 {
             throw OrchestraError.invalidParams(
                 "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
@@ -231,7 +231,7 @@ extension OrchestraService {
             // S3-7: the grandparent may be remote (reached via `set-parent`, off the skill script). Resolve
             // its rebase target through the seam (a raw `pr#N`/`origin/x` is not a rev), make its private
             // ref resolvable, and preserve the PR/watch keys so the rewritten link keeps tracking the PR.
-            let gpRemote = RemoteParentRef.parse(grandparent)
+            let gpRemote = RemoteParentRef.parse(grandparent, remotes: gitRemotes(repo: child.repo))
             if let gpRemote { _ = try? await remoteParents.fetch(repo: child.repo, gpRemote) }
             let gpResolvable = gpRemote?.privateRef ?? "refs/heads/\(grandparent)"
             let gpPr: Int? = { if case .pullRequest(let n) = gpRemote { return n }; return nil }()
@@ -415,8 +415,8 @@ extension OrchestraService {
         // refs/orch/parents/…). Passing the raw canonical (`pr#N`) here was the S1-1 break: `rev-parse
         // pr#7` fails → false restackNeeded. `parentIsRemote` rides EVERY constructed stat so the badge
         // and the remote-tier UX never lose it.
-        let isRemote = RemoteParentRef.parse(link.parent) != nil
-        guard !link.base.isEmpty, let tip = treeTip(repo: repo, link.resolvableRef) else {
+        let isRemote = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: repo)) != nil
+        guard !link.base.isEmpty, let tip = treeTip(repo: repo, resolvableRef(link, repo: repo)) else {
             return TreeStat(state: .restackNeeded, parentIsRemote: isRemote)
         }
         let behind = treeBehind(repo: repo, base: link.base, tip: tip)
@@ -441,7 +441,8 @@ extension OrchestraService {
     /// remote parent by `RemoteParentRef.parse`.
     func defaultBranch(repo: String) -> String {
         if let ref = DiffBaseline.defaultBaseRef(worktree: repo),
-           RemoteParentRef.parse(ref) == nil, treeTip(repo: repo, "refs/heads/\(ref)") != nil {
+           RemoteParentRef.parse(ref, remotes: gitRemotes(repo: repo)) == nil,
+           treeTip(repo: repo, "refs/heads/\(ref)") != nil {
             return ref
         }
         for name in ["main", "master"] where treeTip(repo: repo, "refs/heads/\(name)") != nil {

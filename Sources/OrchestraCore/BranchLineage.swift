@@ -12,15 +12,6 @@ public struct ParentLink: Sendable, Equatable {
     public init(parent: String, base: String, prNumber: Int? = nil, watch: Bool = false) {
         self.parent = parent; self.base = base; self.prNumber = prNumber; self.watch = watch
     }
-
-    /// The concrete git ref every daemon git verb resolves against (O1). A local parent pins
-    /// `refs/heads/<name>` — defeating the tag-shadowing the spawn path already defends against
-    /// (S3-6) — and a remote parent maps to its fetched private ref (`refs/orch/parents/…`). The
-    /// canonical `parent` string is thereby demoted to storage/display only; NOTHING else should pass
-    /// the raw `parent` to git. `resolvedParentRef(Task)` is the Task-side forwarder of this same rule.
-    public var resolvableRef: String {
-        RemoteParentRef.parse(parent)?.privateRef ?? "refs/heads/\(parent)"
-    }
 }
 
 /// git-config CRUD for branch lineage — the single source of truth for the parent link. It survives
@@ -133,19 +124,7 @@ public actor BranchLineage {
         }
         return out
     }
-
-    // MARK: canonical parse
-
-    /// Classify a parent ref: `origin/foo` (first `/`-segment names a configured remote) ⇒ remote;
-    /// `shortName` strips the remote prefix. A plain name, or a slashed name whose first segment is
-    /// not a remote, stays local.
-    public func classify(repo: String, ref: String) -> (isRemote: Bool, shortName: String) {
-        guard let slash = ref.firstIndex(of: "/") else { return (false, ref) }
-        let first = String(ref[..<slash])
-        let remotes = (try? Proc.run(["git", "-C", repo, "remote"]))?.stdout
-            .split(separator: "\n").map(String.init) ?? []
-        return remotes.contains(first)
-            ? (true, String(ref[ref.index(after: slash)...]))
-            : (false, ref)
-    }
+    // O4/S4: `classify` deleted — it was dead (zero production callers) and disagreed with the
+    // load-bearing `RemoteParentRef.parse` (which now also consults `git remote`). Classification runs
+    // through that one seam.
 }

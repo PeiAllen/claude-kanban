@@ -14,7 +14,7 @@ struct RemoteSpawnTests {
         let oid = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
         let wm = WorktreeManager(config: config)
-        let out = try wm.ensure(repo: repo, branch: "childR", base: "refs/orch/parents/pr-7")
+        let out = try wm.ensure(repo: repo, branch: "childR", base: "refs/orch/parents/pr/7")
         #expect(out.created)
         let head = try Proc.run(["git", "-C", out.worktree, "rev-parse", "HEAD"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -30,7 +30,7 @@ struct RemoteSpawnTests {
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
         let wm = WorktreeManager(config: config)
         #expect(throws: (any Error).self) {
-            try wm.ensure(repo: repo, branch: "childX", base: "refs/orch/parents/pr-999")
+            try wm.ensure(repo: repo, branch: "childX", base: "refs/orch/parents/pr/999")
         }
         #expect(!FileManager.default.fileExists(atPath: wm.path(repo: repo, branch: "childX")))
     }

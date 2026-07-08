@@ -33,7 +33,11 @@ struct LadderTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
-        return (svc, repo, card)   // watch loop wired in Task 8; here we drive remoteMergeStep directly
+        // A remote-base spawn auto-starts the watch loop; stop it so these tests can drive
+        // `remoteMergeStep` DIRECTLY and deterministically (the background loop would otherwise race the
+        // explicit call and consume a `moved` transition). The loop itself is covered by RemoteWatchLoopTests.
+        await svc.stopRemoteWatch(card.id)
+        return (svc, repo, card)
     }
 
     // S1-5: only a PR parent should pay for `gh pr view`. A plain `origin/<b>` parent carries no PR
