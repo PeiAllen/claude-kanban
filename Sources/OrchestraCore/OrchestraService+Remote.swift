@@ -98,9 +98,11 @@ extension OrchestraService {
             $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: true)
         }) { emit(.taskUpserted(saved)) }
 
+        // S3-7: the rebase target must be the fetched private ref — the canonical `origin/<gp>` is not a
+        // rev, and only resolved before by the opportunistic tracking-ref update accident (S1-1).
         try? await inbox.enqueue(cardId,
             "remote parent merged into \(grandparent) — commit WIP, then "
-            + "`git rebase --onto \(newRef.canonical) \(anchor)`, then `git push --force-with-lease`, "
+            + "`git rebase --onto \(newRef.privateRef) \(anchor)`, then `git push --force-with-lease`, "
             + "then `orchestra synced \(t.shortId)`")
         await wake(cardId)
 

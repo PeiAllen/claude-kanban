@@ -139,7 +139,7 @@ struct ShipChoreoTests {
         #expect(lB.base == aTip)
         #expect(await env.svc.list().first { $0.id == b.id }?.treeStat?.state == .restackNeeded)
         let nB = try await env.svc.inboxPeek(b.id)
-        #expect(nB.first?.text.contains("rebase --onto main \(aTip)") == true)
+        #expect(nB.first?.text.contains("rebase --onto refs/heads/main \(aTip)") == true)
     }
 
     // (b) two children retargeted to grandparent, base preserved, restackNeeded, nudged; idempotent
@@ -186,7 +186,7 @@ struct ShipChoreoTests {
         // nudged with the rebase --onto command + recorded base
         let n1 = try await env.svc.inboxPeek(c1.id)
         #expect(n1.count == 1)
-        #expect(n1.first?.text.contains("rebase --onto grandparent \(midTip)") == true)
+        #expect(n1.first?.text.contains("rebase --onto refs/heads/grandparent \(midTip)") == true)
         #expect(try await env.svc.inboxPeek(c2.id).count == 1)
 
         // idempotent re-run: mid's link cleared + children already repointed ⇒ no new nudges

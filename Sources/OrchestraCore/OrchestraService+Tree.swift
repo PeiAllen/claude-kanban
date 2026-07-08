@@ -201,6 +201,13 @@ extension OrchestraService {
 
         // (b) retarget the child's own children onto the grandparent (keep each one's recorded base).
         do {
+            // S3-7: the grandparent may be remote (reached via `set-parent`, off the skill script). Resolve
+            // its rebase target through the seam (a raw `pr#N`/`origin/x` is not a rev), make its private
+            // ref resolvable, and preserve the PR/watch keys so the rewritten link keeps tracking the PR.
+            let gpRemote = RemoteParentRef.parse(grandparent)
+            if let gpRemote { _ = try? await remoteParents.fetch(repo: child.repo, gpRemote) }
+            let gpResolvable = gpRemote?.privateRef ?? "refs/heads/\(grandparent)"
+            let gpPr: Int? = { if case .pullRequest(let n) = gpRemote { return n }; return nil }()
             let grandchildren = await lineage.children(repo: child.repo, of: child.branch)
             let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
             for gcBranch in grandchildren {
@@ -211,7 +218,8 @@ extension OrchestraService {
                 // git-config, and surface a warning instead of silently desyncing.
                 do {
                     try await lineage.set(repo: child.repo, branch: gcBranch,
-                                          link: ParentLink(parent: grandparent, base: gcLink.base))
+                        link: ParentLink(parent: grandparent, base: gcLink.base,
+                                         prNumber: gpPr, watch: gpRemote != nil))
                 } catch {
                     emitActivity(.warning, child, source,
                         "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent)")
@@ -223,13 +231,23 @@ extension OrchestraService {
                 if let card = active.first(where: { $0.repo == child.repo && $0.branch == gcBranch }) {
                     if let saved = try? await store.update(card.id, {
                         $0.parentBranch = grandparent
-                        $0.treeStat = TreeStat(state: .restackNeeded)
+                        $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: gpRemote != nil)
                     }) {
                         emit(.taskUpserted(saved))
                     }
-                    try? await inbox.enqueue(card.id,
-                        "parent \(child.branch) shipped — commit WIP, then `git rebase --onto "
-                        + "\(grandparent) \(gcLink.base)`, then `orchestra synced \(card.shortId)`")
+                    if gpRemote != nil { startRemoteWatch(cardId: card.id) }
+                    // S3-7: route the rebase target through the resolvable ref, and skip the command text
+                    // entirely when the anchor is empty (an empty `--onto X ` is malformed).
+                    if gcLink.base.isEmpty {
+                        try? await inbox.enqueue(card.id,
+                            "parent \(child.branch) shipped — your recorded base is missing; re-establish it "
+                            + "with `orchestra set-parent \(card.shortId) \(grandparent) --mode move`, then "
+                            + "`orchestra synced \(card.shortId)`")
+                    } else {
+                        try? await inbox.enqueue(card.id,
+                            "parent \(child.branch) shipped — commit WIP, then `git rebase --onto "
+                            + "\(gpResolvable) \(gcLink.base)`, then `orchestra synced \(card.shortId)`")
+                    }
                     await wake(card.id)
                 }
             }
