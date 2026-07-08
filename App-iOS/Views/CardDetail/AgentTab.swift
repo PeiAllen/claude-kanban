@@ -145,8 +145,9 @@ private struct CaptureRender: View {
         if let frame, !frame.text.isEmpty {
             // Follow the tail like a real terminal: the capture scrape is the *newest* pane frame, so we
             // pin the view to the bottom on first appearance and re-pin whenever the captured text changes
-            // (each poll tick that actually produced new output). `scrollTo(anchor: .bottom)` aligns the
-            // text block's bottom edge to the viewport bottom, so the latest lines are always in view.
+            // (each poll tick that actually produced new output). `scrollTo(anchor: .bottomLeading)` aligns
+            // the text block's bottom-left corner to the viewport, so the latest lines are always in view
+            // and start at column 0 (long lines aren't horizontally centered off-screen).
             // Trade-off (per the plain always-stick spec): a user who scrolls up to read history gets
             // yanked back down on the next changed frame. Detecting "am I at the bottom?" needs per-line
             // ids or geometry readers the single capture blob doesn't have, so we ship plain stick-to-tail
@@ -158,8 +159,8 @@ private struct CaptureRender: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .id(tailAnchor)
                 }
-                .onAppear { proxy.scrollTo(tailAnchor, anchor: .bottom) }
-                .onChange(of: frame.text) { _, _ in proxy.scrollTo(tailAnchor, anchor: .bottom) }
+                .onAppear { proxy.scrollTo(tailAnchor, anchor: .bottomLeading) }
+                .onChange(of: frame.text) { _, _ in proxy.scrollTo(tailAnchor, anchor: .bottomLeading) }
             }
         } else if loadedOnce {
             emptyState(icon: "text.viewfinder", label: "The agent pane is empty.")
