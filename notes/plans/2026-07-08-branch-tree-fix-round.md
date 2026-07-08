@@ -49,6 +49,33 @@
 
 ---
 
+## ✅ COMPLETION SUMMARY
+
+**Test delta:** 631 → **661** (+30). **`swift test` clean** (0 failures; both real-tmux suites passed this run). **iOS**: `typecheck-kit-ios.sh` + `typecheck-ios-ui.sh` + full `typecheck-ios.sh` (xcodebuild) all pass. **Desktop**: `swiftc -typecheck` of `App/` passes. **Daemon-never-mutates-refs** re-audited by review (only `worktree add -b` at spawn + the scoped rollback `branch -D`; borrow uses `worktree add <existing>`; no commit/merge/rebase/push/update-ref).
+
+**Disposition (all FIXED unless noted):**
+| Finding | Disposition |
+|---|---|
+| S1-1..S1-5 | Fixed (remote resolution via O1; root-ship retarget; notify+wake child; Codex AGENTS.md; async GhClient off-actor) |
+| S2-1,S2-2,S2-3,S2-4,S2-5,S2-7,S2-8,S2-9 | Fixed (merge-base; sanity gate via O2; base validate/prune/rollback; TreeNode.base; archive nudges children; adopt/clear; closed-PR+gone+editBase; debounce+atomic edge) |
+| **S2-6** | Fixed via the report's **alternative**: deterministic `derivedCard` (oldest) + warn on multiplicity — NOT the hard spawn refusal (which regressed the intentional, tested co-located-worktree-cards feature; full 1:1 is the separate worktree-coupling design). **Flagged decision.** |
+| S3-1..S3-7 | Fixed (warn latch; spawn-sheet UX; badge/label legibility; ship-doc align; archived guard; refs/heads pinning via O1; nudge-ref leakage via O1) |
+| S4 batch | Fixed: parentMerged→mergeRequested, TOCTOU base, perpetual redirect watch, set partial-write restore, shipped multi-await re-read, CLI help, remoteWatchGen cleanup, organic restack nudge, comment drift, namespace collision (via O4). **Deferred:** searchable base-picker Menu + "spawn child" context affordance (minor UI polish; no correctness impact). |
+| O1,O2,O3,O4 | Implemented (resolvableRef seam; merge-request op + mergeRequested; borrow/release lifecycle; remote-name generalization) |
+| Coverage gaps | Remote-recompute (the flagged S1-1 catcher) + ~20 new finding tests. **Deferred residuals:** watch-loop backoff-tick, wake-half assertion, reconstructed-daemon durability, diamond/dirty/archived-parent tests — marginal against the 661-test real-git suite. |
+| Doc-drift | Fixed (01/02/03/04 reconciled to code). |
+
+**Review round:** 3 parallel reviewers (report as checklist) → every finding CLOSED, 0 critical. 1 **Important** (applyRemoteRedirect stale-link clobber, opened by the S1-5 async widening) + actionable minors **fixed**; a confirmation pass ran on the fix commit. **Deferred review minors:** `defaultBranch` nonexistent-`main` edge (narrow — Orchestra worktrees have local main), borrow-prefix name collision (pathological), closed-AND-gone combined wording unreachable (cosmetic), `gitRemotes` per-call `git remote` exec (perf; fail-safe: degrades to restackNeeded, never false inSync).
+
+**Decisions / spec ambiguities resolved (report wins; flagged):**
+1. **S2-6** deterministic-lookup+warn, not hard refusal (report offered both; refusal broke a verified property).
+2. **S1-5** gate: PR cards must poll gh every tick (merge is invisible in `refs/pull/N/head`), so the real fix is the off-actor hop; `origin/<b>` parents never reach gh.
+3. **S1-3** skip-parent-echo needs caller identity → `by:` param, CLI injects `ORCHESTRA_TASK_ID` (MCP degrades gracefully; both agents use the CLI).
+4. **S2-1 / TOCTOU** record merge-base / child's own tip; fall back to the parent tip / base ref only when the child branch ref can't resolve (stub tests; live cards always resolve).
+5. **O4** generalized `<remote>/branch` off hardcoded origin, but **PRs stay origin-scoped** (`pr#N` has no remote in its canonical form).
+
+---
+
 ## PROGRESS LOG (updated at handoff — read `git log --oneline` for the authoritative record)
 
 **Baseline:** 631 tests green. **Current:** 645 tests green (+14), full suite clean (`swift test`, 0 failures).
