@@ -46,6 +46,37 @@ struct IOSTerminalView: UIViewRepresentable {
         // TUIs expect rather than being re-derived from the theme.
         term.getTerminal().ansi256PaletteStrategy = .xterm
         context.coordinator.terminal = term
+        // Tap-to-arm (takeover only): with the arming scrim gone, a tap on the disarmed terminal is how the
+        // user starts typing. SwiftTerm's own single-tap already calls `becomeFirstResponder` (raising the
+        // keyboard); this observer just keeps the takeover chrome's `armed` state — and hence mouse
+        // reporting — in sync with that. It recognises simultaneously and doesn't cancel touches, so it
+        // never steals a scroll pan, a selection long-press, or SwiftTerm's own tap handling.
+        if control != nil {
+            let armTap = UITapGestureRecognizer(target: context.coordinator,
+                                                action: #selector(Coordinator.handleArmTap))
+            armTap.delegate = context.coordinator
+            armTap.cancelsTouchesInView = false
+            term.addGestureRecognizer(armTap)
+
+            // "Scroll the program" pan. tmux presents the takeover as a full-screen (alternate-screen) app
+            // the whole time, so there's no local SwiftTerm scrollback — a swipe must be forwarded to tmux /
+            // the agent as mouse-wheel events (the iOS port of the desktop's `ScrollableTerminalView
+            // .handleScroll`). Finger policy mirrors the local-scroll pan (`updateUIView` sets the count):
+            // ONE finger when disarmed — a plain swipe scrolls, like a mobile page — and TWO when armed, so a
+            // one-finger drag still reaches the TUI mouse while typing. It stands down during Select mode so
+            // a one-finger drag selects text instead. On the normal buffer it no-ops and the built-in
+            // UIScrollView pan scrolls the local scrollback.
+            let wheelPan = UIPanGestureRecognizer(target: context.coordinator,
+                                                  action: #selector(Coordinator.handleWheelPan))
+            wheelPan.delegate = context.coordinator
+            wheelPan.cancelsTouchesInView = false
+            term.addGestureRecognizer(wheelPan)
+            context.coordinator.wheelPan = wheelPan
+
+            // The alternate screen fills the viewport exactly (rows == visible), so the built-in pan would
+            // rubber-band the whole terminal while the two-finger wheel-pan forwards. Kill the bounce.
+            term.bounces = false
+        }
         return term
     }
 
@@ -58,8 +89,32 @@ struct IOSTerminalView: UIViewRepresentable {
                 uiView.font = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
             }
         }
-        // Select mode ⇒ no mouse reporting ⇒ a drag selects text instead of moving the TUI cursor.
-        uiView.allowMouseReporting = !((control?.selectMode ?? false) || selectMode)
+        // Mouse reporting = "forward touches to the TUI". Gate it on typing being armed: while DISARMED the
+        // takeover terminal is a look/scroll surface — reporting off means SwiftTerm's UIScrollView pan
+        // scrolls the scrollback (a plain swipe, like a mobile page) and a tap arms instead of firing a
+        // stray mouse click into the agent. While ARMED, reporting is on so the agent's TUI mouse works.
+        // Select mode always forces it off so a drag selects text. Non-takeover attaches pass no `control`
+        // (armed defaults on), so their behaviour is unchanged.
+        let armed = control?.armed ?? true
+        uiView.allowMouseReporting = armed && !((control?.selectMode ?? false) || selectMode)
+
+        // Scroll finger policy, applied to BOTH the local-scrollback pan (SwiftTerm's built-in UIScrollView
+        // pan, used on the normal buffer) and the wheel-forward pan (`handleWheelPan`, used on the alternate
+        // screen — i.e. the whole takeover). DISARMED: one finger, so a plain swipe scrolls like a mobile
+        // page. ARMED: two fingers, so a one-finger drag still reaches the agent's TUI mouse while two
+        // fingers scroll without dropping the keyboard. `selectModeActive` lets the wheel-pan stand down so a
+        // one-finger drag can select text. Cap SwiftTerm's own mouse/selection pans (added lazily on mouse
+        // mode) at one finger so a two-finger scroll can't double-fire as a mouse drag — but never the
+        // wheel-pan itself. Re-applied every update since those pans can appear mid-session.
+        if control != nil {
+            uiView.panGestureRecognizer.minimumNumberOfTouches = armed ? 2 : 1
+            context.coordinator.wheelPan?.minimumNumberOfTouches = armed ? 2 : 1
+            context.coordinator.selectModeActive = (control?.selectMode ?? false) || selectMode
+            for g in uiView.gestureRecognizers ?? []
+            where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
+                (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1
+            }
+        }
     }
 
     static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
@@ -70,7 +125,8 @@ struct IOSTerminalView: UIViewRepresentable {
     // aren't actor-isolated), but it only ever calls back on the main thread — so a `@MainActor`
     // coordinator satisfying it is correct, with a runtime check rather than a compile error.
     @MainActor
-    final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate {
+    final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate,
+                             @preconcurrency UIGestureRecognizerDelegate {
         private let makeChannel: () -> TerminalByteChannel
         private let shouldReconnect: () -> Bool
         weak var terminal: TerminalView?
@@ -102,13 +158,85 @@ struct IOSTerminalView: UIViewRepresentable {
         // MARK: imperative control (PR T4 — accessory bar / arming / sticky Ctrl)
 
         /// Send raw bytes straight to the PTY — the accessory bar's explicit key taps, which always send
-        /// regardless of the arming scrim (arming only gates the soft keyboard).
+        /// regardless of arm state (arming only gates the soft keyboard + touch→mouse forwarding).
         func sendBytes(_ bytes: [UInt8]) { channel?.send(bytes) }
 
         /// Arm typing: show the soft keyboard by making the terminal first responder.
         func focus() { _ = terminal?.becomeFirstResponder() }
         /// Dismiss the soft keyboard.
         func blur() { _ = terminal?.resignFirstResponder() }
+
+        /// Tap-to-arm: the user tapped the (disarmed) terminal to start typing. `TerminalControl.attach`
+        /// wires this to `arm()` so the chrome's `armed` state tracks the keyboard SwiftTerm raises on tap.
+        var onUserArmed: (() -> Void)?
+        @objc func handleArmTap() { onUserArmed?() }
+
+        // MARK: two-finger wheel forwarding (alternate screen)
+
+        /// The scroll-forward pan installed in `makeUIView`. Held so `updateUIView` can set its finger count
+        /// and so the mouse-pan cap can skip it.
+        var wheelPan: UIPanGestureRecognizer?
+        /// While Select mode is on, a one-finger drag should select text (SwiftTerm handles it), so the
+        /// wheel-pan stands down. Set from `updateUIView`.
+        var selectModeActive = false
+        /// Sub-cell finger travel carried between pan updates so a slow drag scrolls line-by-line rather
+        /// than stalling on integer truncation (xterm.js's `_wheelPartialScroll` accumulator).
+        private var wheelAccum: CGFloat = 0
+        /// Wheel events emitted per cell-height of travel. 1 = the high-precision-touch standard (kitty's
+        /// `touch_scroll_multiplier` = 1): the finger already *is* the position, so no extra acceleration.
+        /// The one knob if scrolling feels too slow/fast on device.
+        private static let wheelEventsPerCell = 1
+
+        /// Forward a two-finger swipe to the running program as mouse-wheel events (button 4 up / 5 down)
+        /// so a full-screen agent TUI or tmux copy-mode scrolls its own history — the iOS port of the
+        /// desktop's `ScrollableTerminalView.handleScroll`. Fires only on the ALTERNATE buffer with mouse
+        /// reporting on (what tmux `mouse on` / agent TUIs use); on the normal buffer it no-ops so the
+        /// UIScrollView pan scrolls the local scrollback. Independent of `armed` — scrolling is navigation,
+        /// not stray input — and independent of `allowMouseReporting`, which only gates SwiftTerm's own
+        /// tap/drag→mouse handlers.
+        @objc func handleWheelPan(_ g: UIPanGestureRecognizer) {
+            guard let term = terminal else { return }
+            let t = term.getTerminal()
+            // Forward only on the alternate buffer with mouse reporting on (tmux `mouse on` / agent TUI),
+            // and never while Select mode wants the drag for text selection.
+            guard t.isCurrentBufferAlternate, t.mouseMode != .off, !selectModeActive else { wheelAccum = 0; return }
+            switch g.state {
+            case .began:
+                wheelAccum = 0
+            case .changed:
+                wheelAccum += g.translation(in: term).y
+                g.setTranslation(.zero, in: term)
+                let cell = max(1, term.bounds.height / CGFloat(max(1, t.rows)))   // points per row
+                // Drag DOWN (Δ>0) reveals earlier lines → wheel up (button 4); drag up → wheel down (5).
+                while abs(wheelAccum) >= cell {
+                    let up = wheelAccum > 0
+                    wheelAccum -= up ? cell : -cell
+                    sendWheel(up: up, at: g.location(in: term), terminal: t)
+                }
+            case .ended, .cancelled, .failed:
+                wheelAccum = 0
+            default:
+                break
+            }
+        }
+
+        private func sendWheel(up: Bool, at point: CGPoint, terminal t: Terminal) {
+            guard let term = terminal else { return }
+            let flags = t.encodeButton(button: up ? 4 : 5, release: false, shift: false, meta: false, control: false)
+            let cols = max(1, t.cols), rows = max(1, t.rows)
+            let col = min(cols - 1, max(0, Int(point.x / max(1, term.bounds.width) * CGFloat(cols))))
+            let row = min(rows - 1, max(0, Int(point.y / max(1, term.bounds.height) * CGFloat(rows))))
+            for _ in 0..<Self.wheelEventsPerCell {
+                t.sendEvent(buttonFlags: flags, x: col, y: row)
+            }
+        }
+
+        /// Let the tap-to-arm recogniser fire alongside SwiftTerm's own tap/pan/long-press gestures so it
+        /// only *observes* the tap — it never blocks a scroll pan, a selection, or SwiftTerm's tap handling.
+        nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
 
         func setPendingCtrl(_ on: Bool, locked: Bool) {
             pendingCtrl = on

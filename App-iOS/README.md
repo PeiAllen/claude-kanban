@@ -106,7 +106,10 @@ attaching the REAL agent TUI (Claude *or* Codex, provider-neutrally) under D4's 
   (`detach-client` first) so the phone is the *sole* client of the grouped `agent` view session (no
   resize-fight). Called only after the lease is held, so the desktop has already unmounted (D5).
 - **Surface** — compact owner bar (title/status · connection · *You have control* · Return to Desktop);
-  **armed input** (nothing sends until *Start Typing*); a minimal **accessory bar** (Esc · sticky Ctrl ·
+  **armed input** (disarmed by default — the terminal is a fully-visible, swipe-to-scroll surface that
+  sends nothing until you *Start Typing* or tap it; a swipe scrolls the agent by forwarding mouse-wheel
+  events to tmux copy-mode — one finger while disarmed, two fingers while armed so scrolling works with the
+  keyboard up — see `IOSTerminalView.handleWheelPan`); a minimal **accessory bar** (Esc · sticky Ctrl ·
   Tab · ↵ · ↑ · ↓ · ⋯ drawer for Left/Right/PgUp/PgDn/Home/End); explicit **Select** mode; **A− / A+**
   font; landscape-friendly. Key bytes are the canonical xterm sequences in `OrchestraKit/TerminalKeyBytes`
   (`applyControlModifier` folds sticky-Ctrl chords). `Terminal/TerminalControl.swift` is the reusable

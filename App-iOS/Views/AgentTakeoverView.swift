@@ -11,8 +11,10 @@ import OrchestraUI
 /// Retake flipping ownership away) releases / drops the attach.
 ///
 /// Chrome, per the design: a compact **owner bar** (title/status · connection · *You have control* ·
-/// Return to Desktop); **armed input** (nothing sends until *Start Typing*); a minimal **accessory key
-/// bar** (Esc · sticky Ctrl · Tab · ↵ · ↑ · ↓ · ⋯ drawer); explicit **Select** mode; **A− / A+** font.
+/// Return to Desktop); **armed input** (disarmed by default — the terminal is a fully-visible, swipe-to-
+/// scroll surface: a one-finger swipe scrolls the agent, and it sends nothing until you *Start Typing* or
+/// tap it, after which a two-finger swipe still scrolls while typing); a minimal **accessory key bar**
+/// (Esc · sticky Ctrl · Tab · ↵ · ↑ · ↓ · ⋯ drawer); explicit **Select** mode; **A− / A+** font.
 /// Landscape is the real-terminal posture; portrait is allowed.
 struct AgentTakeoverView: View {
     let cardId: UUID
@@ -125,9 +127,14 @@ struct AgentTakeoverView: View {
             case .holding(let target):
                 // Lease-blind reconnect guard (#7): only auto-reconnect while THIS phone still holds the
                 // lease — a reconnect after a desktop retake would re-run `detach-client` and kick the desktop.
+                //
+                // No arming scrim over the terminal: when disarmed the terminal is the *top interactive
+                // layer* — fully visible, and a swipe scrolls the agent (forwarded to tmux copy-mode, since
+                // the attached view is always the alternate screen; see IOSTerminalView.handleWheelPan).
+                // Typing is armed via the accessory bar's Start Typing toggle or by tapping the terminal.
+                // One finger scrolls while disarmed; a two-finger swipe scrolls while armed (keyboard up).
                 host.takeoverAttach(target: target, control: control,
                                     shouldReconnect: { [weak controller] in controller?.isHolding ?? false })
-                if !control.armed { startTypingScrim }
             case .acquiring:
                 overlay(icon: "arrow.triangle.2.circlepath", title: "Taking over…",
                         detail: "Acquiring the agent-terminal lease.")
@@ -141,23 +148,6 @@ struct AgentTakeoverView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Armed input: the terminal renders behind this scrim but sends nothing until the user taps.
-    private var startTypingScrim: some View {
-        ZStack {
-            Color.black.opacity(0.45)
-            VStack(spacing: 10) {
-                Image(systemName: "keyboard").font(.title2)
-                Text("Start Typing").font(.headline)
-                Text("Input is armed off so a scroll or tap can’t send stray keys.\nTap to focus the keyboard.")
-                    .font(.caption).multilineTextAlignment(.center).foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.white)
-            .padding(24)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { control.arm() }
     }
 
     private func overlay(icon: String, title: String, detail: String,
