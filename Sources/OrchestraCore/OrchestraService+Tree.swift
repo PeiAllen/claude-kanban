@@ -45,11 +45,13 @@ extension OrchestraService {
                 // Validate the target exists — adopt gets this implicitly via merge-base, but move keeps the
                 // prior base and would otherwise accept a typo'd parent (leaving a nudge to rebase onto a
                 // ref that isn't there). Local refs only in BT5; remote parents are BT6.
-                guard treeTip(repo: t.repo, p) != nil else {
+                // S3-6: pin refs/heads/ so a same-named tag can't shadow the local parent branch.
+                guard treeTip(repo: t.repo, "refs/heads/\(p)") != nil else {
                     throw OrchestraError.invalidParams("parent branch not found: \(p)")
                 }
                 let existing = await lineage.read(repo: t.repo, branch: t.branch)
-                let anchor = try existing?.base ?? mergeBaseOID(repo: t.repo, t.branch, p)
+                let anchor = try existing?.base
+                    ?? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)")
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
                 let updated = try await store.update(t.id) {
                     $0.parentBranch = p
@@ -63,7 +65,7 @@ extension OrchestraService {
                 emitActivity(.command, updated, source, "moved parent → \(p)")
                 return updated
             }
-            let base = try mergeBaseOID(repo: t.repo, t.branch, p)
+            let base = try mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)")
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
             let updated = try await store.update(t.id) { $0.parentBranch = p }
             emit(.taskUpserted(updated))
@@ -125,7 +127,7 @@ extension OrchestraService {
         guard let link = await lineage.read(repo: t.repo, branch: t.branch) else {
             throw OrchestraError.invalidParams("card has no parent link to sync")
         }
-        guard let tip = treeTip(repo: t.repo, link.parent) else {
+        guard let tip = treeTip(repo: t.repo, link.resolvableRef) else {
             throw OrchestraError.invalidParams("parent ref not found: \(link.parent)")
         }
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: tip)
@@ -314,14 +316,19 @@ extension OrchestraService {
     /// commits in `base..tip`; if the base is no longer the tip's ancestor (parent rewrote/rebased) ⇒
     /// `restackNeeded`, else `inSync` (behind 0) / `stale` (behind > 0).
     private func computeTreeStat(repo: String, link: ParentLink) -> TreeStat {
-        guard !link.base.isEmpty, let tip = treeTip(repo: repo, link.parent) else {
-            return TreeStat(state: .restackNeeded)
+        // O1/S1-1: resolve the parent through `resolvableRef` (local → refs/heads/<b>, remote →
+        // refs/orch/parents/…). Passing the raw canonical (`pr#N`) here was the S1-1 break: `rev-parse
+        // pr#7` fails → false restackNeeded. `parentIsRemote` rides EVERY constructed stat so the badge
+        // and the remote-tier UX never lose it.
+        let isRemote = RemoteParentRef.parse(link.parent) != nil
+        guard !link.base.isEmpty, let tip = treeTip(repo: repo, link.resolvableRef) else {
+            return TreeStat(state: .restackNeeded, parentIsRemote: isRemote)
         }
         let behind = treeBehind(repo: repo, base: link.base, tip: tip)
         if !treeBaseIsAncestor(repo: repo, base: link.base, tip: tip) {
-            return TreeStat(state: .restackNeeded, behind: behind)
+            return TreeStat(state: .restackNeeded, behind: behind, parentIsRemote: isRemote)
         }
-        return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind)
+        return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind, parentIsRemote: isRemote)
     }
 
     /// `git rev-parse --verify --quiet <ref>` — nil when the ref can't be resolved (parent deleted).
