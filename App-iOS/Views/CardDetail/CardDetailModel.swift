@@ -57,12 +57,13 @@ public func diffDefaultBaseline(parentBranch: String?) -> DiffBase {
     parentBranch != nil ? .parent : .branch
 }
 
-/// Human label for a diff baseline (segmented control).
-public func diffBaselineLabel(_ base: DiffBase) -> String {
+/// Human label for a diff baseline (segmented control). S3-3: name the parent branch so the
+/// parent-relative diff is legible (two cards' `+N −M` can baseline against different parents).
+public func diffBaselineLabel(_ base: DiffBase, parentBranch: String? = nil) -> String {
     switch base {
     case .working: return "Working"
     case .branch:  return "Branch"
-    case .parent:  return "Parent"
+    case .parent:  return parentBranch.map { "Parent (\($0))" } ?? "Parent"
     }
 }
 

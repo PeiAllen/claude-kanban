@@ -18,7 +18,9 @@ public enum RemoteParentRef: Equatable, Sendable {
     /// caller keeps today's behavior). `pr#<N>` is a PR; `<remote>/<name>` is remote iff `<remote>` is
     /// in `remotes` — otherwise it's a local (possibly slashed) branch name.
     public static func parse(_ ref: String, remotes: [String]) -> RemoteParentRef? {
-        if ref.hasPrefix("pr#") {
+        // Case-insensitive `pr#` prefix so a human-typed `PR#12` is teachable, not silently treated as a
+        // local branch (S3-2). The canonical form normalizes back to lowercase `pr#N`.
+        if ref.lowercased().hasPrefix("pr#") {
             let n = ref.dropFirst("pr#".count)
             guard let pr = Int(n), pr > 0 else { return nil }
             return .pullRequest(pr)

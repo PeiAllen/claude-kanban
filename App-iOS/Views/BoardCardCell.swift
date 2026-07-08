@@ -88,6 +88,8 @@ struct BoardCardCell: View {
     /// restack is needed. Mirrors the desktop `treeBadge`; hidden when in-sync / untracked.
     @ViewBuilder private var treeBadge: some View {
         if let ts = task.treeStat {
+            // S3-3: the phone has no hover tooltip — carry the meaning in an accessibility label so the
+            // otherwise-cryptic glyphs (↓N / restack / waiting) are legible to VoiceOver + long-press.
             switch ts.state {
             case .stale:
                 HStack(spacing: 2) {
@@ -96,14 +98,17 @@ struct BoardCardCell: View {
                 }
                 .font(.system(.caption2, design: .monospaced).weight(.medium))
                 .foregroundStyle(theme.amber.text)
+                .accessibilityLabel("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead")
             case .restackNeeded:
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption2)
                     .foregroundStyle(theme.red.text)
+                    .accessibilityLabel("Parent history changed — restack needed")
             case .mergeRequested:
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.caption2)
                     .foregroundStyle(theme.amber.text)
+                    .accessibilityLabel("Merge requested — waiting for the parent card")
             case .inSync:
                 EmptyView()
             }

@@ -40,7 +40,7 @@ struct DiffTab: View {
     private var baselineBar: some View {
         HStack(spacing: 10) {
             Picker("Baseline", selection: $base) {
-                ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0)).tag($0) }
+                ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0, parentBranch: task.parentBranch)).tag($0) }
             }
             .pickerStyle(.segmented)
             Spacer(minLength: 6)

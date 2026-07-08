@@ -77,7 +77,21 @@
 3. **S1-3**: skip-parent-echo needs caller identity → added `by: UUID?` to shipped, CLI injects ORCHESTRA_TASK_ID (mirrors `wait`'s watcher). MCP path degrades gracefully (agents use CLI `orchestra shipped`).
 4. **S2-1**: merge-base falls back to the resolved tip when the child branch ref can't resolve (only in stub tests; live cards always resolve) — keeps stubbed synced tests green.
 
-**REMAINING (next-instance work, report's checklist order):**
+**DONE since the handoff (655→661 tests):**
+- ✅ S2-2 + O2 — `merge-request` op + sticky `mergeRequested` state (replaced dead `parentMerged`) + shipped parent-tip-advanced gate (`--force`) + re-nudge timer + dedup (`feat(o2)`).
+- ✅ S2-3 — base normalize before ensure; dangling-link PRUNE (new branch can't have had children); orphan rollback (`fix(s2-3)`).
+- ✅ O4 — remote-aware parse (git remote); disjoint pr/branch namespaces; deleted classify; PR→origin (`feat(o4)`).
+- ✅ O3 — daemon borrow/release + orphan prune on archive/startup + conflict/abort docs (`feat(o3)`).
+- ✅ S4 batch — organic inSync→restackNeeded nudge + atomic recompute edge (`fix(s4,s2-9)`); TOCTOU base, perpetual redirect watch, set partial-write restore, shipped re-read, CLI help, gen cleanup, comment drift (`fix(s4)`).
+
+**REMAINING:**
+- ⬜ **S3-2** (Task 9b): spawn-sheet remote-entry UX — iOS typecheck.
+- ⬜ **S3-3** (Task 9c): badge/baseline legibility labels + `mergeRequested` waiting copy — iOS typecheck.
+- ⬜ **S4 (UI leftover)**: flat base-picker searchable / spawn-child context affordance (Task 10c) — optional/UI.
+- ⬜ **Coverage gaps + doc-drift** (Task 10d).
+- ⬜ **Review round** (superpowers:requesting-code-review) + final summary + archive.
+
+**OLD REMAINING (superseded — all done above):**
 - ⬜ **S2-2 + O2** (Task 6b): first-class `merge-request {child}` op (daemon composes prose, records `mergeRequested` TreeState on both cards, dedup, re-nudge timer, cleared by shipped); shipped gains the parent-tip-advanced sanity gate (`rev-list --count base..parentTip == 0` ⇒ refuse/‑‑force); wire the dead `TreeState.parentMerged` (S4) as the child's landed state or drop it. **NOTE:** the S2-2 gate will require the ShipChoreo fixtures (`retargetsGrandchildren`, `liveParentNotified`) to actually ADVANCE the parent branch (simulate the merge) — see plan Task 6b analysis.
 - ⬜ **S2-3** (Task 7a): validate/normalize user-supplied `refs/`-prefixed base before `worktrees.ensure`; dangling-link cycle-guard fix in `BranchLineage.ancestors` (treat a parent branch that no longer exists as terminal, needs repo access — already has it); rollback the just-cut worktree+branch on lineage-record failure.
 - ⬜ **O3** (Task 10a): daemon `borrow`/`release` ops (create/register/sweep throwaway worktree at canonical `orch-borrow-*`; agent still merges); orphan prune on archive/startup; conflict/abort guidance in both TreeDocs variants.

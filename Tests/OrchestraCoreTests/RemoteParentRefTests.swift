@@ -13,6 +13,8 @@ struct RemoteParentRefTests {
         #expect(r.privateName == "pr/12")                         // disjoint from branch/… (S4)
         #expect(r.privateRef == "refs/orch/parents/pr/12")
         #expect(r.canonical == "pr#12")
+        // S3-2: a human-typed `PR#12` is teachable (case-insensitive prefix), canonicalized to `pr#12`.
+        #expect(RemoteParentRef.parse("PR#12", remotes: ["origin"]) == .pullRequest(12))
     }
 
     @Test("<remote>/<branch> parses to a remote branch, threading the remote (O4)")

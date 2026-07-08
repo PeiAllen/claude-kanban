@@ -167,10 +167,21 @@ struct SpawnSheet: View {
 
     private var canSpawn: Bool {
         switch mode {
-        case .worktree: return !repo.isEmpty && !branch.isEmpty
+        case .worktree: return !repo.isEmpty && !branch.isEmpty && remoteBaseWellFormed   // S3-2
         case .freeform: return !cwd.isEmpty
         case .scratch:  return true
         }
+    }
+
+    /// S3-2: `!remoteBase.isEmpty` wins over the local base picker; shape-check it so a typo is caught
+    /// before spawn. Valid = empty / `pr#<N>` (case-insensitive) / `<remote>/<branch>`.
+    private var remoteActive: Bool { !remoteBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var remoteBaseWellFormed: Bool {
+        let s = remoteBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return true }
+        if s.lowercased().hasPrefix("pr#") { return Int(s.dropFirst(3)).map { $0 > 0 } ?? false }
+        if let slash = s.firstIndex(of: "/") { return slash != s.startIndex && s.index(after: slash) != s.endIndex }
+        return false
     }
 
     /// The CTA reads "Spawn read-only agent" while the freeform card is read-only (forced by an untrusted
@@ -219,7 +230,7 @@ struct SpawnSheet: View {
                 _Concurrency.Task { await loadBranches() }
             }
             // A new repo selection reloads its branch list from the daemon.
-            .onChange(of: repo) { base = ""; _Concurrency.Task { await loadBranches() } }
+            .onChange(of: repo) { base = ""; remoteBase = ""; _Concurrency.Task { await loadBranches() } }
             // The board's cards can arrive after this sheet mounts; seed the repo default once they do.
             .onChange(of: model.tasks.count) { seedRepoIfNeeded() }
             // Daemon repos can arrive after mount too; seed once they do.
@@ -281,10 +292,13 @@ struct SpawnSheet: View {
         // Base only applies to a NEWLY-created branch; the daemon ignores it for an existing one. BT6
         // extends this with remote/PR entries — keep the "None" tag first so the default is HEAD.
         if !branchSuggestions.contains(branch) {
+            // S3-2: a non-empty remote parent wins — disable the local base picker so it isn't showing an
+            // ignored choice.
             Picker("Base branch", selection: $base) {
-                Text("None (branch from HEAD)").tag("")
-                ForEach(branchSuggestions, id: \.self) { Text($0).tag($0) }
+                Text(remoteActive ? "ignored — remote parent set" : "None (branch from HEAD)").tag("")
+                if !remoteActive { ForEach(branchSuggestions, id: \.self) { Text($0).tag($0) } }
             }
+            .disabled(remoteActive)
             // BT6: remote parent — pr#<N> or origin/<branch>; fetched + watched by the daemon.
             LabeledContent("Remote parent") {
                 TextField("pr#12 or origin/branch", text: $remoteBase)
@@ -292,6 +306,12 @@ struct SpawnSheet: View {
                     .multilineTextAlignment(.trailing)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .foregroundStyle(remoteBaseWellFormed ? theme.text : theme.red.text)
+            }
+            // S3-2: inline shape hint so a typo is teachable before spawn (not a "not found" toast).
+            if !remoteBaseWellFormed {
+                Text("expected `pr#<N>` or `<remote>/<branch>`")
+                    .font(.caption2).foregroundStyle(theme.red.text)
             }
         }
 
@@ -486,12 +506,15 @@ struct SpawnSheet: View {
             // Auto-own on phone-spawn (Bug 3): the phone that spawned the card is its intended driver, so
             // acquire the D4 takeover lease and drop straight into the live agent surface — no separate
             // "Take Over" tap. The daemon creates the `agent` tmux window synchronously inside `spawn`
-            // (SessionManager.ensure) before returning the card, so the lease target already resolves. The
-            // sheet has dismissed by the time the RPC returns, so presenting the takeover cover doesn't
-            // collide with this sheet. A failed spawn (`nil`) simply routes nowhere.
-            if let card { model.phoneTakeoverRequest = PhoneTakeoverRequest(cardId: card.id) }
+            // (SessionManager.ensure) before returning the card, so the lease target already resolves.
+            // S3-2: dismiss only on SUCCESS — a typo'd base/remote used to cost the whole form because we
+            // dismissed before the RPC returned; now the sheet stays (toast shows the error) so the user
+            // can fix + retry. A failed spawn (`nil`) leaves the sheet up and routes nowhere.
+            if let card {
+                model.phoneTakeoverRequest = PhoneTakeoverRequest(cardId: card.id)
+                dismiss()
+            }
         }
-        dismiss()
     }
 }
 
