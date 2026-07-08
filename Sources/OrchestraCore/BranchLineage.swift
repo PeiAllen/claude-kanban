@@ -12,6 +12,15 @@ public struct ParentLink: Sendable, Equatable {
     public init(parent: String, base: String, prNumber: Int? = nil, watch: Bool = false) {
         self.parent = parent; self.base = base; self.prNumber = prNumber; self.watch = watch
     }
+
+    /// The concrete git ref every daemon git verb resolves against (O1). A local parent pins
+    /// `refs/heads/<name>` — defeating the tag-shadowing the spawn path already defends against
+    /// (S3-6) — and a remote parent maps to its fetched private ref (`refs/orch/parents/…`). The
+    /// canonical `parent` string is thereby demoted to storage/display only; NOTHING else should pass
+    /// the raw `parent` to git. `resolvedParentRef(Task)` is the Task-side forwarder of this same rule.
+    public var resolvableRef: String {
+        RemoteParentRef.parse(parent)?.privateRef ?? "refs/heads/\(parent)"
+    }
 }
 
 /// git-config CRUD for branch lineage — the single source of truth for the parent link. It survives

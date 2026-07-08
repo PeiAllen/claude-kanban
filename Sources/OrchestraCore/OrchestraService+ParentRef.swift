@@ -10,9 +10,9 @@ import Foundation
 extension OrchestraService {
     func resolvedParentRef(_ task: Task) -> String? {
         guard let pb = task.parentBranch, !pb.isEmpty else { return nil }
-        // Remote parents (origin/<b>, pr#<N>) baseline against their fetched private ref; a local parent
-        // is its own branch name (identity — byte-identical to pre-remote behavior).
-        if let remote = RemoteParentRef.parse(pb) { return remote.privateRef }
-        return pb
+        // O1: forward to the ONE canonical→resolvable rule (mirrors `ParentLink.resolvableRef`). Remote
+        // parents (origin/<b>, pr#<N>) baseline against their fetched private ref; a local parent pins
+        // `refs/heads/<name>` so a same-named tag can't shadow the branch in the diff baseline (S3-6).
+        return RemoteParentRef.parse(pb)?.privateRef ?? "refs/heads/\(pb)"
     }
 }
