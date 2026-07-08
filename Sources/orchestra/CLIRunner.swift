@@ -139,6 +139,16 @@ enum CLIRunner {
                 let task = try await client.call("merge-request", .object(["ref": .string(ref)]))
                 printRef(task)
 
+            case "borrow":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let r = try await client.call("borrow", .object(["ref": .string(ref)]))
+                if let wt = r["worktree"]?.stringValue { print(wt) } else { printJSON(r) }
+
+            case "release":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                _ = try await client.call("release", .object(["ref": .string(ref)]))
+                print("released")
+
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("status", .object(["ref": .string(ref)]))

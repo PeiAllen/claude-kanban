@@ -55,6 +55,9 @@ public actor OrchestraService {
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
+    /// O3: child card → the throwaway `orch-borrow-*` worktree it borrowed to squash-merge into a bare
+    /// parent. Released explicitly (`release`) or swept on the child's archive / at startup.
+    var borrowedWorktrees: [UUID: String] = [:]
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -629,6 +632,10 @@ public actor OrchestraService {
         let t = try await require(id)
         stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
         stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
+        if let borrow = borrowedWorktrees[id] {   // O3: sweep a borrow the card left open
+            try? worktrees.remove(worktree: borrow, force: true)
+            borrowedWorktrees[id] = nil
+        }
         // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
         // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil

@@ -13,6 +13,10 @@ public protocol WorktreeManaging: Sendable {
     func ensure(repo: String, branch: String, base: String?) throws
         -> (worktree: String, created: Bool, branchExisted: Bool)
     func remove(worktree: String, force: Bool) throws
+    // O3: bare-parent borrow lifecycle.
+    func borrowPath(repo: String, branch: String) -> String
+    func borrow(repo: String, branch: String) throws -> String
+    func pruneOrphanBorrows(repo: String)
 }
 
 public extension WorktreeManaging {

@@ -20,9 +20,11 @@ dirty main checkout, merge hiccups) — don't stop to ask:
      and marks you "merge requested"), then **stop** — the parent's agent squash-merges in its own
      worktree and calls `orchestra shipped <this-card>`, which wakes you to verify + archive and
      retargets any children of yours. Do not `cd` into the parent's worktree; do not merge to main.
-   - **Bare local parent (no card owns it)** → borrow it ephemerally: `git worktree add` a throwaway
-     checkout of the parent branch, `git merge --squash <this-branch>`, commit, remove the worktree,
-     then `orchestra shipped <this-card>` (which retargets any children of yours). Then archive (step 5).
+   - **Bare local parent (no card owns it)** → `orchestra borrow <this-card>` prints a throwaway
+     `orch-borrow-*` checkout of the parent branch. `cd` there, `git merge --squash <this-branch>` and
+     commit. On conflict: resolve and commit, or `git merge --abort` and report — never leave it
+     half-merged. Then `orchestra shipped <this-card>` (retargets any children of yours) and `orchestra
+     release <this-card>` (the daemon also sweeps the borrow on archive/startup). Then archive (step 5).
    - **Parent is `main` (or this branch has no tree parent)** → continue with the standard main flow below.
    - **Remote parent (`origin/…` or a PR)** → out of scope for the ship recipe; stop and report rather
      than guessing (the `orchestra-tree` guidance covers publishing a stacked PR).

@@ -71,6 +71,57 @@ public struct WorktreeManager: Sendable {
         return (wt, true, exists)
     }
 
+    // MARK: - bare-parent borrow (O3)
+
+    /// The canonical throwaway-worktree path for borrowing `branch` (a bare parent to squash-merge a
+    /// child into). Distinct from a normal card worktree (`orch-borrow-` prefix under the repo's
+    /// worktree dir) so it never collides with a future spawn onto the parent, and so the orphan sweep
+    /// can recognise it by name.
+    public func borrowPath(repo: String, branch: String) -> String {
+        let realRepo = (try? resolver.resolveRepo(repo)) ?? repo
+        let repoName = (realRepo as NSString).lastPathComponent
+        let safe = branch.replacingOccurrences(of: "/", with: "-")
+        return "\(config.worktreesRoot)/\(repoName)/orch-borrow-\(safe)"
+    }
+
+    /// Create (or reuse) a throwaway worktree checking out the EXISTING `branch` at its canonical borrow
+    /// path — the agent then squash-merges into it and commits (the daemon never commits). Idempotent.
+    @discardableResult
+    public func borrow(repo: String, branch: String) throws -> String {
+        let realRepo = try resolver.resolveRepo(repo)
+        let wt = borrowPath(repo: realRepo, branch: branch)
+        try resolver.assertAllowed(wt)
+        if FileManager.default.fileExists(atPath: wt) { return wt }
+        guard branchExists(repo: realRepo, branch: branch) else {
+            throw OrchestraError.invalidParams("cannot borrow: branch not found: \(branch)")
+        }
+        try FileManager.default.createDirectory(
+            atPath: (wt as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let r = try Proc.run(["git", "-C", realRepo, "worktree", "add", wt, branch])
+        if !r.ok {
+            let msg = r.stderr.lowercased()
+            if msg.contains("already checked out") || msg.contains("is already used by worktree") {
+                throw OrchestraError.branchInUse(branch)
+            }
+            throw OrchestraError.io(r.stderr.isEmpty ? "git worktree add (borrow) failed" : r.stderr)
+        }
+        return wt
+    }
+
+    /// Sweep orphaned `orch-borrow-*` worktrees in `repo` (a crashed borrow leaves the parent branch
+    /// checked out in a stray worktree, which then blocks future spawns + borrows onto that branch). A
+    /// borrow is a throwaway, so force-remove regardless of dirtiness. Best-effort.
+    public func pruneOrphanBorrows(repo: String) {
+        guard let realRepo = try? resolver.resolveRepo(repo),
+              let r = try? Proc.run(["git", "-C", realRepo, "worktree", "list", "--porcelain"]), r.ok else { return }
+        for line in r.stdout.split(separator: "\n") where line.hasPrefix("worktree ") {
+            let path = String(line.dropFirst("worktree ".count)).trimmingCharacters(in: .whitespaces)
+            if (path as NSString).lastPathComponent.hasPrefix("orch-borrow-") {
+                try? remove(worktree: path, force: true)
+            }
+        }
+    }
+
     /// Remove a worktree directory (keeps the branch). Guards a dirty tree unless `force`.
     public func remove(worktree: String, force: Bool = false) throws {
         try resolver.assertAllowed(worktree)

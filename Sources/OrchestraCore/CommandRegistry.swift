@@ -168,6 +168,16 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: updated)
             },
 
+            "borrow": { svc, p, src in
+                let path = try await svc.borrow(ref: try p.string("ref"), source: src)
+                return .object(["worktree": .string(path)])
+            },
+
+            "release": { svc, p, src in
+                try await svc.release(ref: try p.string("ref"), source: src)
+                return .object(["released": .bool(true)])
+            },
+
             "status": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
                 let st = try await svc.status(t.id)
