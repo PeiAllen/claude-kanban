@@ -265,6 +265,17 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
+            // S2-6: enforce the 1:1 card↔branch precondition. Every derived parent-card lookup
+            // (shipped notify, tree's parentCardId, board indentation) assumes at most one live card per
+            // branch; spawning a second live card onto an owned branch makes them arbitrary. Archived
+            // cards don't count (their branch is free to re-adopt). Refuse with a jump-to-card hint.
+            if let existing = await store.all().first(where: {
+                !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == input.branch
+            }) {
+                throw OrchestraError.invalidParams(
+                    "a live card already owns branch \(input.branch) (\(existing.shortId)) — "
+                    + "jump to it instead of spawning a duplicate")
+            }
             // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
             // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
             let remoteRef = input.base.flatMap { RemoteParentRef.parse($0) }

@@ -33,6 +33,20 @@ struct SpawnRaceTests {
         #expect(dead.isEmpty, "\(dead.count)/\(ids.count) freshly-spawned cards were falsely marked dead")
     }
 
+    // S2-6: 1:1 card↔branch — spawning onto a branch a LIVE card already owns is refused (every derived
+    // parent-card lookup assumes uniqueness). Archived cards don't count.
+    @Test("S2-6: spawning onto a branch a live card owns is refused; allowed again after archive")
+    func spawnRefusesDuplicateLiveCard() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let first = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "feat"))
+        await #expect(throws: OrchestraError.self) {
+            _ = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "feat"))
+        }
+        try await env.svc.archive(first.id)                       // archived cards don't hold the branch
+        _ = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "feat"))
+    }
+
     @Test("restart: a stale SessionEnd from the killed old process does not re-kill the fresh session")
     func restartIgnoresStaleSessionEnd() async throws {
         let env = TestEnv.make(grace: 1)
