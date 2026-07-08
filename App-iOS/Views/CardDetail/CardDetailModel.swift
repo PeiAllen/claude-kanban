@@ -5,11 +5,12 @@ import OrchestraKit
 // unit testable — the tab set + order, the diff baselines a card offers, and the header breadcrumb. The
 // views (`CardDetailView`, `DiffTab`, …) render these decisions. Mirrors M1's `BoardPager.swift` split.
 
-/// The five card-detail tabs, in bar order: **Agent · Terminal · Diff · Inbox · Info** (design §3).
+/// The six card-detail tabs, in bar order: **Agent · Terminal · Diff · Notes · Inbox · Info** (design §3).
 /// Agent is the primary read/steer surface (built in T3); Terminal is the secondary escape hatch, still a
-/// clearly-marked stub (T2). Diff · Inbox · Info are built here (M2).
+/// clearly-marked stub (T2). Diff · Inbox · Info are built in M2; Notes (M6) is promoted to a first-class
+/// tab and sits beside Diff — both are "what this branch changed" surfaces (Diff = code, Notes = `.md`).
 public enum CardTab: String, CaseIterable, Identifiable, Sendable {
-    case agent, terminal, diff, inbox, info
+    case agent, terminal, diff, notes, inbox, info
 
     public var id: String { rawValue }
 
@@ -19,6 +20,7 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
         case .agent:    return "Agent"
         case .terminal: return "Terminal"
         case .diff:     return "Diff"
+        case .notes:    return "Notes"
         case .inbox:    return "Inbox"
         case .info:     return "Info"
         }
@@ -30,14 +32,15 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
         case .agent:    return "brain"
         case .terminal: return "terminal"
         case .diff:     return "plusminus"
+        case .notes:    return "note.text"
         case .inbox:    return "tray.full"
         case .info:     return "info.circle"
         }
     }
 
     /// The detail's initial tab — **Agent** (design §3's primary surface). A dev/test override via the
-    /// `ORCH_DEV_CARD_TAB` env (`agent|terminal|diff|inbox|info`) lets a headless Simulator screenshot a
-    /// specific tab deterministically. Absent env ⇒ Agent (no behavior change).
+    /// `ORCH_DEV_CARD_TAB` env (`agent|terminal|diff|notes|inbox|info`) lets a headless Simulator screenshot
+    /// a specific tab deterministically. Absent env ⇒ Agent (no behavior change).
     public static var initial: CardTab {
         (ProcessInfo.processInfo.environment["ORCH_DEV_CARD_TAB"]).flatMap(CardTab.init(rawValue:)) ?? .agent
     }
