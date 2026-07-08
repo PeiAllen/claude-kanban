@@ -130,7 +130,13 @@ extension OrchestraService {
         guard let tip = treeTip(repo: t.repo, link.resolvableRef) else {
             throw OrchestraError.invalidParams("parent ref not found: \(link.parent)")
         }
-        try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: tip)
+        // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
+        // trusting the agent's implicit "I merged the tip down" claim. After an honest merge-down this
+        // equals the merged tip; after a racy/bogus `synced` (parent advanced, or no merge happened) it
+        // equals the real fork, so it can't silently over-record and mask un-merged parent work. Falls
+        // back to the tip only if the child's own branch ref can't be resolved (never for a live card).
+        let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", link.resolvableRef)) ?? tip
+        try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
         await recomputeTreeStat(t.id)
         emitActivity(.command, t, source, "synced parent \(link.parent)")
         return (await store.get(t.id)) ?? t

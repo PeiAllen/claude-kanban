@@ -26,6 +26,34 @@ struct RemoteRecomputeTests {
         #expect(ts.parentIsRemote == true)                   // was dropped before the fix
     }
 
+    // S2-1: `synced` must record merge-base(child-HEAD, parent), NOT the trusted parent tip. If the
+    // parent advances between the child's merge and its `synced` call, over-recording the tip would
+    // mask the un-merged parent work (a false inSync). Real worktree so the child branch actually exists.
+    @Test("S2-1: synced records merge-base(child,parent) — a racy parent advance isn't over-recorded")
+    func syncedRecordsMergeBase() async throws {
+        let (svc, _, _, base) = TestEnv.makeReal()
+        let repo = base + "/repos/app"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        func g(_ a: String...) throws { #expect(try Proc.run(["git", "-C", repo] + a).ok) }
+        try g("init", "-q", "-b", "main"); try g("config", "user.email", "t@t"); try g("config", "user.name", "t")
+        try "0\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        try g("add", "-A"); try g("commit", "-q", "-m", "base"); try g("branch", "parent")
+        let base0 = try Proc.run(["git", "-C", repo, "rev-parse", "parent"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let card = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "parent"))
+
+        // Parent advances to base1 AFTER the child's claimed merge, BEFORE synced (the race).
+        try g("checkout", "-q", "parent")
+        try "p\n".write(toFile: repo + "/p.txt", atomically: true, encoding: .utf8)
+        try g("add", "-A"); try g("commit", "-q", "-m", "p1"); try g("checkout", "-q", "main")
+
+        _ = try await svc.synced(ref: card.ref())
+        let link = try #require(await svc.lineage.read(repo: repo, branch: "child"))
+        #expect(link.base == base0)                                     // merge-base, NOT the advanced tip
+        #expect(await treeStat(svc, card.id)?.state == .stale)          // still behind base1
+    }
+
     @Test("synced on a pr# parent card resolves the private ref (no 'parent ref not found')")
     func syncedRemoteParent() async throws {
         let (svc, _, _, base) = TestEnv.makeReal()
