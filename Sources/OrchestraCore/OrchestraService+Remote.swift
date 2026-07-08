@@ -33,27 +33,48 @@ extension OrchestraService {
         var moved = false
         if case .oid(let observed) = tip, observed != fetchedTip {
             moved = true
+            remoteWarnLatch.remove(cardId)   // S3-1: tip changed — a prior gone/closed warning may no longer hold
             fetchedTip = (try? await remoteParents.fetch(repo: t.repo, ref)) ?? fetchedTip
             scheduleTreeStat(cardId)
         }
 
-        // (a) authoritative gh MERGED (squash-proof). Only a PR parent reaches gh — a plain `origin/<b>`
-        // parent carries no PR number, so gh is spared on every branch tick (S1-5's traffic point: the
-        // `origin/<b>` tier never pays for `gh pr view`). A PR parent MUST still probe every tick: its
-        // merge is invisible in `refs/pull/N/head` (which doesn't move on merge, S2-8), so movement can't
-        // gate it. The key S1-5 fix is the `await` — it hops the ≤20 s round-trip off the actor via a
-        // detached task, so it suspends, never blocks, the service (list/spawn/send stay responsive).
-        if let pr = link.prNumber, gh.available,
-           let st = await gh.prState(repo: t.repo, number: pr), st.merged {
+        // gh state fetched ONCE per tick (PR parents only), reused by tier (a), the closed-PR signal, and
+        // the gone-tier wording. Only a PR parent reaches gh — a plain `origin/<b>` parent carries no PR
+        // number, so gh is spared on every branch tick (S1-5's traffic point). A PR parent MUST probe every
+        // tick: its merge is invisible in `refs/pull/N/head` (which doesn't move on merge, S2-8). The
+        // `await` hops the ≤20 s round-trip off the actor (detached), so it suspends — never blocks — the
+        // service (list/spawn/send stay responsive).
+        var prState: PrState? = nil
+        if let pr = link.prNumber, gh.available { prState = await gh.prState(repo: t.repo, number: pr) }
+
+        // (a) authoritative gh MERGED (squash-proof).
+        if let st = prState, st.merged {
             await applyRemoteRedirect(cardId: cardId, link: link, grandparent: st.baseRefName, childHead: t.branch)
             return .redirected(grandparent: st.baseRefName)
         }
 
+        // S2-8: a PR closed WITHOUT merging is safe but otherwise silent — GitHub keeps `refs/pull/N/head`
+        // so the tip never goes `.gone` and the card sits inSync/watched forever with no hint. Surface it
+        // once (latched) so the human picks a new base.
+        if let st = prState, st.state == "CLOSED", !st.merged, !remoteWarnLatch.contains(cardId) {
+            remoteWarnLatch.insert(cardId)
+            emitActivity(.warning, t, .daemon,
+                "parent \(link.parent) PR closed without merging — pick a new base and `set-parent`")
+        }
+
         // (b) branch gone, unconfirmable by gh. Checked BEFORE ancestry: with the remote tip deleted the
         // only parent OID we have is a STALE private ref, against which an ancestry check is meaningless.
+        // S3-1: latch the warning (this condition is persistent — it would re-fire every idle tick).
+        // S2-8: consult gh — don't claim "likely merged" when gh just said the PR was CLOSED-not-merged.
         if tip == .gone {
-            emitActivity(.warning, t, .daemon,
-                "parent \(link.parent) branch is gone — likely merged; confirm and `set-parent` a new base")
+            if !remoteWarnLatch.contains(cardId) {
+                remoteWarnLatch.insert(cardId)
+                let closedNotMerged = (prState?.state == "CLOSED" && prState?.merged == false)
+                emitActivity(.warning, t, .daemon, closedNotMerged
+                    ? "parent \(link.parent) branch is gone and its PR was closed without merging — "
+                      + "pick a new base and `set-parent`"
+                    : "parent \(link.parent) branch is gone — likely merged; confirm and `set-parent` a new base")
+            }
             return .warnedGone
         }
 
@@ -108,7 +129,13 @@ extension OrchestraService {
 
         // Repair the child's own published PR base (GitHub auto-retarget is unreliable). Best-effort.
         if gh.available, let childPr = await gh.prNumber(repo: t.repo, head: childHead) {
-            _ = await gh.editBase(repo: t.repo, number: childPr, base: grandparent)
+            // S2-8: warn on failure — a swallowed editBase leaves the child's published PR pointing at a
+            // deleted branch with no signal.
+            if !(await gh.editBase(repo: t.repo, number: childPr, base: grandparent)) {
+                emitActivity(.warning, t, .daemon,
+                    "could not repair child PR #\(childPr) base → \(grandparent); "
+                    + "run `gh pr edit \(childPr) --base \(grandparent)`")
+            }
         }
         emitActivity(.command, t, .daemon, "remote parent PR merged — redirected onto \(grandparent)")
     }
@@ -158,6 +185,7 @@ extension OrchestraService {
         remoteWatch[id]?.cancel()
         remoteWatch[id] = nil
         remoteWatchGen[id] = (remoteWatchGen[id] ?? 0) + 1
+        remoteWarnLatch.remove(id)   // S3-1: leaving the remote tier clears any latched gone/closed warning
     }
     /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
     /// in `startRemoteWatch`).

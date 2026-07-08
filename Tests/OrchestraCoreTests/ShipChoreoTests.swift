@@ -37,8 +37,9 @@ struct ShipChoreoTests {
         #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
     }
 
-    // (a) bare parent (no card) ⇒ warning activity, no throw
-    @Test("bare parent (no card) yields a warning activity, not a throw")
+    // (a) bare parent (no card) ⇒ neutral activity (S3-1: NOT a warning — it's the documented success
+    // path where the child borrowed + merged the bare parent), no throw.
+    @Test("bare parent (no card) yields a neutral (non-warning) activity, not a throw")
     func bareParentActivity() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
@@ -51,8 +52,9 @@ struct ShipChoreoTests {
         try await env.svc.shipped(ref: child.ref())   // must not throw (no parent card)
 
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        let warnings = await collector.activities.filter { $0.kind == .warning }
-        #expect(warnings.contains { $0.text.contains("parent") })
+        let acts = await collector.activities
+        #expect(acts.contains { $0.text.contains("bare parent") })
+        #expect(!acts.contains { $0.kind == .warning && $0.text.contains("no active card owns") })
     }
 
     // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now

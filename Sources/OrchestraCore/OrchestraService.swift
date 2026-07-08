@@ -46,6 +46,10 @@ public actor OrchestraService {
     var remoteWatchIntervals: (active: Duration, idle: Duration) = (.seconds(60), .seconds(300))
     /// The `gh` boundary (FakeGh in tests). Default: the real capability-probing client.
     var gh: any GhClient = GhProbe()
+    /// S3-1: per-card once-latch for the persistent remote-parent warnings (gone / PR-closed-unmerged),
+    /// so a condition that is true every idle tick surfaces ONCE, not every 5 minutes. Cleared when the
+    /// tip moves (condition may have changed) or the card is re-parented / leaves the remote tier.
+    var remoteWarnLatch: Set<UUID> = []
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]

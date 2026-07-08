@@ -194,8 +194,10 @@ extension OrchestraService {
                     await wake(parentCard.id)
                 }
             } else {
-                emitActivity(.warning, child, source,
-                    "shipped \(child.branch): no active card owns parent \(parent) to notify")
+                // S3-1: a bare parent is the documented success path (the child borrowed + merged it),
+                // not an anomaly — log it at the neutral `.command` level, not `.warning`.
+                emitActivity(.command, child, source,
+                    "shipped \(child.branch): parent \(parent) has no active card (bare parent)")
             }
         }
 

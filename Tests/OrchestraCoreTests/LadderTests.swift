@@ -52,6 +52,22 @@ struct LadderTests {
         #expect(fake.stateCallCount == 0)   // no prNumber ⇒ tier (a) skipped ⇒ gh untouched
     }
 
+    // S2-8: a PR closed WITHOUT merging must surface a signal (it's otherwise silent — the tip never
+    // goes gone). S3-1: it must fire ONCE, not every tick.
+    @Test("S2-8/S3-1: a closed-unmerged PR warns once, not every tick")
+    func closedPrWarnedOnce() async throws {
+        let (svc, _, card) = try await Self.remoteChild()
+        await svc.setGh(FakeGh(available: true,
+            state: PrState(state: "CLOSED", mergedAt: nil, mergeCommit: nil, baseRefName: "main")))
+        let collector = EventCollector()
+        await collector.start(await svc.subscribe())
+        _ = await svc.remoteMergeStep(cardId: card.id)
+        _ = await svc.remoteMergeStep(cardId: card.id)          // second tick: latched, no re-warn
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        let warns = await collector.activities.filter { $0.kind == .warning && $0.text.contains("closed without merging") }
+        #expect(warns.count == 1)
+    }
+
     @Test("gh MERGED ⇒ redirect fires with the PR baseRefName; child PR base repaired")
     func mergedRedirect() async throws {
         let (svc, repo, card) = try await Self.remoteChild()
