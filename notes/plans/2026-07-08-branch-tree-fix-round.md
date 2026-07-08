@@ -49,6 +49,48 @@
 
 ---
 
+## PROGRESS LOG (updated at handoff — read `git log --oneline` for the authoritative record)
+
+**Baseline:** 631 tests green. **Current:** 645 tests green (+14), full suite clean (`swift test`, 0 failures).
+
+**DONE (committed, keyed by finding ID):**
+- ✅ O1 — `ParentLink.resolvableRef` + `resolvedParentRef` forwarder (`fix(o1)`).
+- ✅ S1-1 + S3-6 — TreeStat/synced resolve via resolvableRef; parentIsRemote on every stat; refs/heads pinning in move/adopt (`fix(s1-1,s3-6)`).
+- ✅ S1-2 — root ship retargets children onto default branch; ship.md/tree-skill/tree-agents call shipped when children (`fix(s1-2)`).
+- ✅ S1-3 — shipped notifies+wakes child (step d), skips parent self-echo via `by:` caller ref (CLI injects ORCHESTRA_TASK_ID) (`fix(s1-3)`).
+- ✅ S1-4 — repo-root AGENTS.md tree-aware ship recipe (`fix(s1-4)`).
+- ✅ S1-5 — async GhClient off the actor (detached Proc.run); gate documented (`fix(s1-5)`).
+- ✅ S2-1 — synced records merge-base(child,parent), fallback to tip if child ref unresolvable (`fix(s2-1)`).
+- ✅ S2-4 — TreeNode.base (`fix(s2-4)`).
+- ✅ S2-5 (minimal) + S3-5 — archive cancels debounces + nudges live children; recompute guards !archived (`fix(s3-5,s2-5)`).
+- ✅ S2-6 — **DECISION: chose report's "minimum" (deterministic oldest-card lookup via `derivedCard` + warn on multiplicity), NOT hard spawn refusal** — hard refusal regressed the intentional co-located-worktree-cards feature (cwd-keyed archive refcount; full 1:1 is the separate worktree-coupling design). FLAG IN SUMMARY (`fix(s2-6)`).
+- ✅ S2-7 — adopt recomputes+stops watch; clear nils treeStat (`fix(s2-7)`).
+- ✅ S2-8 — closed-unmerged PR signal + gh-aware gone wording + editBase warn (`fix(s2-8,s3-1)`).
+- ✅ S2-9 + S3-5(guard) — synced cancels debounce; recompute edge against fresh value (`fix(s2-9,s3-5)`).
+- ✅ S3-1 — remoteWarnLatch once-latch; bare-parent notify downgraded to .command (`fix(s2-8,s3-1)`).
+- ✅ S3-4 — ship.md defers to skill's remote-parent publish flow (`fix(s3-4)`).
+- ✅ S3-7 — nudge rebase targets via resolvable ref; remote-grandparent guard; empty-base skip (`fix(s3-7)`).
+
+**KEY DECISIONS / AMBIGUITIES RESOLVED (for the final summary):**
+1. **S2-6**: deterministic-lookup+warn, not hard refusal (see above) — the report offered both; hard refusal broke a verified property.
+2. **S1-5 gate**: "gate gh pr view on movement" can't apply to PR parents (their merge is invisible in refs/pull/N/head), so PR cards poll every tick; the real fix is the off-actor hop. origin/<b> parents already never reach gh.
+3. **S1-3**: skip-parent-echo needs caller identity → added `by: UUID?` to shipped, CLI injects ORCHESTRA_TASK_ID (mirrors `wait`'s watcher). MCP path degrades gracefully (agents use CLI `orchestra shipped`).
+4. **S2-1**: merge-base falls back to the resolved tip when the child branch ref can't resolve (only in stub tests; live cards always resolve) — keeps stubbed synced tests green.
+
+**REMAINING (next-instance work, report's checklist order):**
+- ⬜ **S2-2 + O2** (Task 6b): first-class `merge-request {child}` op (daemon composes prose, records `mergeRequested` TreeState on both cards, dedup, re-nudge timer, cleared by shipped); shipped gains the parent-tip-advanced sanity gate (`rev-list --count base..parentTip == 0` ⇒ refuse/‑‑force); wire the dead `TreeState.parentMerged` (S4) as the child's landed state or drop it. **NOTE:** the S2-2 gate will require the ShipChoreo fixtures (`retargetsGrandchildren`, `liveParentNotified`) to actually ADVANCE the parent branch (simulate the merge) — see plan Task 6b analysis.
+- ⬜ **S2-3** (Task 7a): validate/normalize user-supplied `refs/`-prefixed base before `worktrees.ensure`; dangling-link cycle-guard fix in `BranchLineage.ancestors` (treat a parent branch that no longer exists as terminal, needs repo access — already has it); rollback the just-cut worktree+branch on lineage-record failure.
+- ⬜ **O3** (Task 10a): daemon `borrow`/`release` ops (create/register/sweep throwaway worktree at canonical `orch-borrow-*`; agent still merges); orphan prune on archive/startup; conflict/abort guidance in both TreeDocs variants.
+- ⬜ **O4** (Task 10b): parse consults `git remote` (thread remote through fetch/ls-remote argv), delete dead `BranchLineage.classify`, disjoint `pr/<N>` vs `branch/<b>` private namespaces (updates the LineageModelTests resolvableRef expectations to `refs/orch/parents/pr/7` etc.), error on unknown remote.
+- ⬜ **S3-2** (Task 9b): spawn-sheet remote-entry UX (both platforms) — iOS typecheck required.
+- ⬜ **S3-3** (Task 9c): badge/baseline legibility labels — iOS typecheck required.
+- ⬜ **S4 batch** (Task 10c): parentMerged wire/drop, TOCTOU spawn base, perpetual redirect watch, CLI help drift (+shipped/merge-request/borrow/release/set-parent flags), remoteWatchGen cleanup, flat base-picker, comment drift, BranchLineage.set partial-write restore, organic inSync→restackNeeded nudge, shipped multi-await re-read.
+- ⬜ **Coverage gaps + doc-drift** (Task 10d): watch-loop backoff test, wake-assertion, reconstructed-daemon durability, diamond/dirty-tree/archived-parent tests; fix layered docs (02-contract set-throws-unknownBranch, tier-c redirect→warn-only in 3 docs, 03/04 spawn-treeStat claims), reconcile shipped-(c)/parentMerged doc.
+
+**Test idiom reminders:** `TestEnv.make()` = stubbed worktrees (no real child branch); `TestEnv.makeReal()` = real WorktreeManager (real branches). `RemoteParentTests.makeOriginWithPR(repoDir:)` builds a bare origin + pr#7 + feature-b. `FakeGh` is async now. Real-tmux suites flake only on "fork failed: Device not configured".
+
+---
+
 ## Task 0: Baseline — confirm green before touching anything
 
 - [ ] **Step 1:** Run the full suite to confirm the reported 631/0 baseline in this worktree.
