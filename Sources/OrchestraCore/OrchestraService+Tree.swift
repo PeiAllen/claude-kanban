@@ -272,7 +272,7 @@ extension OrchestraService {
                 active.first { $0.repo == t.repo && $0.branch == l.parent }?.id
             }
             nodes.append(TreeNode(ref: t.ref(), cardId: t.id, repo: t.repo, branch: t.branch,
-                                  parent: link?.parent, parentCardId: parentCardId,
+                                  parent: link?.parent, parentCardId: parentCardId, base: link?.base,
                                   children: children, treeStat: t.treeStat))
         }
         return TreeSnapshot(nodes: nodes)

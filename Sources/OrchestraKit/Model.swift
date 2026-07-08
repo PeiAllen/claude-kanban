@@ -415,12 +415,13 @@ public struct TreeNode: Codable, Sendable, Equatable {
     public let branch: String
     public let parent: String?         // parent ref string from lineage config; nil = no parent link
     public let parentCardId: UUID?     // derived: active card whose repo+branch == this parent ref
+    public let base: String?           // S2-4: recorded rebase anchor OID (from ParentLink.base); nil = no link
     public let children: [String]      // child branch names (durable, card-optional)
     public let treeStat: TreeStat?     // nil in BT1
     public init(ref: String, cardId: UUID, repo: String, branch: String, parent: String?,
-                parentCardId: UUID?, children: [String], treeStat: TreeStat?) {
+                parentCardId: UUID?, base: String? = nil, children: [String], treeStat: TreeStat?) {
         self.ref = ref; self.cardId = cardId; self.repo = repo; self.branch = branch
-        self.parent = parent; self.parentCardId = parentCardId
+        self.parent = parent; self.parentCardId = parentCardId; self.base = base
         self.children = children; self.treeStat = treeStat
     }
 }
