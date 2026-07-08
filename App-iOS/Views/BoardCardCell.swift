@@ -96,10 +96,14 @@ struct BoardCardCell: View {
                 }
                 .font(.system(.caption2, design: .monospaced).weight(.medium))
                 .foregroundStyle(theme.amber.text)
-            case .restackNeeded, .parentMerged:
+            case .restackNeeded:
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption2)
                     .foregroundStyle(theme.red.text)
+            case .mergeRequested:
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(theme.amber.text)
             case .inSync:
                 EmptyView()
             }

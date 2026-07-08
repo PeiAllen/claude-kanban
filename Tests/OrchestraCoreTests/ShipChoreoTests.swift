@@ -26,6 +26,7 @@ struct ShipChoreoTests {
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
+        try TreeStatTests.advanceParent(repo, 1)   // simulate the parent agent's squash-merge (S2-2 gate)
 
         try await env.svc.shipped(ref: child.ref())
 
@@ -46,6 +47,7 @@ struct ShipChoreoTests {
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
+        try TreeStatTests.advanceParent(repo, 1)   // simulate the merge (S2-2 gate)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
@@ -55,6 +57,23 @@ struct ShipChoreoTests {
         let acts = await collector.activities
         #expect(acts.contains { $0.text.contains("bare parent") })
         #expect(!acts.contains { $0.kind == .warning && $0.text.contains("no active card owns") })
+    }
+
+    // S2-2: shipped must refuse when the parent tip hasn't advanced past the recorded base (nothing was
+    // merged) — otherwise a mistaken/aborted call rebases grandchildren toward data loss. --force overrides.
+    @Test("S2-2: shipped refuses when nothing was merged; force overrides")
+    func shippedRefusesWhenNothingMerged() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage().set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
+        // Parent has NOT advanced — nothing merged. Refuse, and leave the lineage intact.
+        await #expect(throws: OrchestraError.self) { try await env.svc.shipped(ref: child.ref()) }
+        #expect(await BranchLineage().read(repo: repo, branch: "child") != nil)
+        // Force overrides (a genuinely empty squash).
+        _ = try await env.svc.shipped(ref: child.ref(), force: true)
+        #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
     }
 
     // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now
@@ -99,6 +118,7 @@ struct ShipChoreoTests {
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
+        try TreeStatTests.advanceParent(repo, 1)   // simulate the parent's squash-merge (S2-2 gate)
 
         // The PARENT agent performed the squash-merge and calls `orchestra shipped <child>` — caller = parent.
         try await env.svc.shipped(ref: child.ref(), by: parentCard.ref())
@@ -174,6 +194,11 @@ struct ShipChoreoTests {
                           link: ParentLink(parent: "grandparent", base: grandparentTip))
         try await lin.set(repo: repo, branch: "c1", link: ParentLink(parent: "mid", base: midTip))
         try await lin.set(repo: repo, branch: "c2", link: ParentLink(parent: "mid", base: midTip))
+        // Simulate mid's squash-merge into grandparent so grandparent advances past mid's base (S2-2 gate).
+        try TreeStatTests.git(repo, "checkout", "-q", "grandparent")
+        try TreeStatTests.write(repo, "gp-merge.txt", "merged"); try TreeStatTests.git(repo, "add", "-A")
+        try TreeStatTests.git(repo, "commit", "-q", "-m", "merge mid")
+        try TreeStatTests.git(repo, "checkout", "-q", "main")
 
         try await env.svc.shipped(ref: mid.ref())
 

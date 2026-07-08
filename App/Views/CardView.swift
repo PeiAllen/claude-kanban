@@ -217,10 +217,14 @@ struct CardView: View {
                 }
                 .foregroundStyle(theme.amber.text)
                 .help("Parent is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead — merge it down, then run `orchestra synced`")
-            case .restackNeeded, .parentMerged:
+            case .restackNeeded:
                 Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
                     .foregroundStyle(theme.red.text)
                     .help("Parent history changed — restack this branch")
+            case .mergeRequested:
+                Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.amber.text)
+                    .help("Merge requested — waiting for the parent card to squash-merge this branch")
             case .inSync:
                 EmptyView()
             }

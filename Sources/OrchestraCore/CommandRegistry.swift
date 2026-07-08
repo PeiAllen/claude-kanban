@@ -158,7 +158,13 @@ public struct CommandRegistry: Sendable {
             },
 
             "shipped": { svc, p, src in
-                let updated = try await svc.shipped(ref: try p.string("ref"), by: p.optString("by"), source: src)
+                let updated = try await svc.shipped(ref: try p.string("ref"), by: p.optString("by"),
+                                                    force: p.optBool("force") ?? false, source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "merge-request": { svc, p, src in
+                let updated = try await svc.mergeRequest(ref: try p.string("ref"), source: src)
                 return try JSONValue(encodable: updated)
             },
 

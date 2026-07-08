@@ -24,7 +24,7 @@ When `treeStat` is `restackNeeded` (parent rebased, re-parented via `set-parent 
 
 Resolve the parent via `orchestra tree` and take the matching path:
 
-- **Parent has a live card** → you cannot advance a branch checked out in another worktree. `orchestra send <parent-ref> "merge-request: squash-merge <you> into <parent>"` and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`.
+- **Parent has a live card** → you cannot advance a branch checked out in another worktree. `orchestra merge-request <you>` (the daemon composes the request + nudges the parent card + marks you "merge requested") and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`, which wakes you to verify + archive.
 - **Bare local parent (no card)** → borrow it ephemerally: check the parent out in a throwaway worktree, `git merge --squash <you>`, commit, remove the worktree, then `orchestra shipped <you>`.
 - **Parent is `main`** → the standard ship flow. **If `orchestra tree <you>` shows you have children**, run `orchestra shipped <you>` after the merge lands so the daemon retargets them onto `main` and nudges each to restack — otherwise a stacked child strands on your now-merged branch and shows `inSync` forever. No children ⇒ skip `shipped`.
 - **Remote parent (`origin/<branch>` or `pr#<N>`)** → do NOT merge locally. Publish a stacked PR: `git push -u origin <your-branch>`, then `gh pr create --base <parentHeadRef>` (target the parent's head branch, not `main`). Do NOT call `orchestra shipped` — Orchestra watches the parent PR and redirects you when it merges.

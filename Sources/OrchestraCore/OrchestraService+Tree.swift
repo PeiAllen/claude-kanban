@@ -15,6 +15,9 @@ extension OrchestraService {
         guard mode == "adopt" || mode == "move" else {
             throw OrchestraError.invalidParams("mode must be 'adopt' or 'move'")
         }
+        // O2: re-parenting (any arm) resolves any pending merge-request — stop its re-nudge loop; each
+        // arm below sets/nils treeStat directly, so the sticky mergeRequested badge is replaced too.
+        stopMergeRequestNudge(t.id)
         let trimmed = parent?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let p = trimmed, !p.isEmpty {
             guard p != t.branch else {
@@ -67,7 +70,9 @@ extension OrchestraService {
             }
             let base = try mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)")
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
-            let updated = try await store.update(t.id) { $0.parentBranch = p }
+            // Nil treeStat so the scheduled recompute computes fresh against the NEW parent (and doesn't
+            // preserve a sticky mergeRequested from the old parent, O2).
+            let updated = try await store.update(t.id) { $0.parentBranch = p; $0.treeStat = nil }
             emit(.taskUpserted(updated))
             // S2-7: recompute against the NEW parent (else a badge from the previous parent lingers on an
             // idle card) and tear down any remote watch left from a prior remote parent (adopting a local
@@ -144,6 +149,10 @@ extension OrchestraService {
         // back to the tip only if the child's own branch ref can't be resolved (never for a live card).
         let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", link.resolvableRef)) ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
+        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
+        // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
+        stopMergeRequestNudge(t.id)
+        _ = try? await store.update(t.id) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
         treeStatDebounce[t.id]?.cancel()
@@ -165,7 +174,8 @@ extension OrchestraService {
     ///       finds nothing (no duplicate notify) and `children(of: child)` is empty because they now point
     ///       at the grandparent (no duplicate nudges).
     @discardableResult
-    public func shipped(ref: String, by: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
+    public func shipped(ref: String, by: String? = nil, force: Bool = false,
+                        source: ActivitySource = .daemon) async throws -> Task {
         let child = try await resolveRef(ref)
         guard child.origin == .worktree else {
             throw OrchestraError.invalidParams("only worktree cards can be shipped")
@@ -180,6 +190,21 @@ extension OrchestraService {
         // parent (inSync-forever). A root ship is not an anomaly (no "no recorded parent link" warning).
         let hadParentLink = link?.parent != nil
         let grandparent = link?.parent ?? defaultBranch(repo: child.repo)
+
+        // S2-2: sanity gate — refuse to retarget grandchildren / clear lineage when the parent tip has NOT
+        // advanced past the child's recorded base (i.e. nothing was merged since the last sync). This
+        // catches the "called shipped without actually merging" class (parent agent hit conflicts and
+        // aborted, or a confused caller), which would otherwise rebase --onto the grandchildren toward data
+        // loss. `shipped` verifies nothing else, so this is the integrity floor. A root ship (no parent
+        // link) is exempt — its merge went to main via the standard flow. `--force` overrides (a genuine
+        // empty/no-op squash).
+        if !force, let link, !link.base.isEmpty,
+           let parentTip = treeTip(repo: child.repo, link.resolvableRef),
+           treeBehind(repo: child.repo, base: link.base, tip: parentTip) == 0 {
+            throw OrchestraError.invalidParams(
+                "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
+                + "nothing appears merged. Merge first, or re-run with force if the squash was genuinely empty.")
+        }
 
         // (a) notify the parent's card, if one owns the parent branch (only when there WAS a parent link
         // — a root ship merged to main via the standard flow, there is no parent card to wake).
@@ -266,6 +291,8 @@ extension OrchestraService {
         }
 
         // (c) clear the shipped child's own lineage → re-run is a no-op; treeStat clears on next recompute.
+        // O2: a pending merge-request is now resolved — stop its re-nudge loop.
+        stopMergeRequestNudge(child.id)
         try? await lineage.clear(repo: child.repo, branch: child.branch)
         let updated = (try? await store.update(child.id, { $0.parentBranch = nil; $0.treeStat = nil })) ?? child
         emit(.taskUpserted(updated))
@@ -315,6 +342,11 @@ extension OrchestraService {
         // updated it meanwhile can't drive a duplicate emit or a spurious inSync→stale nudge. (synced
         // also cancels this card's debounce slot before recomputing — the race's other half.)
         let current = await store.get(id)?.treeStat
+        // O2: the `mergeRequested` "waiting" badge is sticky — a funnel recompute must not clobber it
+        // while the child waits on its parent to merge. Only a genuine `restackNeeded` (the parent's
+        // history changed, so the pending request is moot) supersedes it; inSync/stale are subsumed by
+        // "waiting". It is cleared explicitly by shipped/synced/set-parent, never by the funnel.
+        if current?.state == .mergeRequested, new?.state != .restackNeeded { return }
         guard new != current else { return }                   // no delta → no persist, no emit
         guard let saved = try? await store.update(id, { $0.treeStat = new }) else { return }
         emit(.taskUpserted(saved))

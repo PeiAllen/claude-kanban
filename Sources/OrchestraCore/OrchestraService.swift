@@ -50,6 +50,11 @@ public actor OrchestraService {
     /// so a condition that is true every idle tick surfaces ONCE, not every 5 minutes. Cleared when the
     /// tip moves (condition may have changed) or the card is re-parented / leaves the remote tier.
     var remoteWarnLatch: Set<UUID> = []
+    /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
+    /// parent card on a timer until the child leaves the `mergeRequested` state.
+    var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
+    var mergeRequestNudgeInterval: Duration = .seconds(300)
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -590,6 +595,7 @@ public actor OrchestraService {
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
         stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
+        stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
         // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
         // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil

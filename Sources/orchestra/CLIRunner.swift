@@ -130,7 +130,13 @@ enum CLIRunner {
                 if let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !selfId.isEmpty {
                     shippedParams["by"] = .string(selfId)
                 }
+                if flags.has("force") { shippedParams["force"] = .bool(true) }
                 let task = try await client.call("shipped", .object(shippedParams))
+                printRef(task)
+
+            case "merge-request":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let task = try await client.call("merge-request", .object(["ref": .string(ref)]))
                 printRef(task)
 
             case "status":

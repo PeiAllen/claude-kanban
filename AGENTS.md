@@ -16,10 +16,10 @@ dirty main checkout, merge hiccups) — don't stop to ask:
    main (this is a stacked child — merging it to main would drag its parent's commits along, exactly
    what the branch-tree feature exists to prevent):
    - **Parent has a live card** → you cannot advance a branch checked out in another worktree.
-     `orchestra send <parent-ref> "merge-request: squash-merge <this-branch> into <parent>"`, then
-     **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped
-     <this-card>`, which notifies you and retargets any children of yours. Do not `cd` into the
-     parent's worktree; do not merge to main.
+     `orchestra merge-request <this-card>` (the daemon composes the request, nudges the parent card,
+     and marks you "merge requested"), then **stop** — the parent's agent squash-merges in its own
+     worktree and calls `orchestra shipped <this-card>`, which wakes you to verify + archive and
+     retargets any children of yours. Do not `cd` into the parent's worktree; do not merge to main.
    - **Bare local parent (no card owns it)** → borrow it ephemerally: `git worktree add` a throwaway
      checkout of the parent branch, `git merge --squash <this-branch>`, commit, remove the worktree,
      then `orchestra shipped <this-card>` (which retargets any children of yours). Then archive (step 5).
