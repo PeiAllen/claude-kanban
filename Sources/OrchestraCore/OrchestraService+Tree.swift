@@ -137,6 +137,10 @@ extension OrchestraService {
         // back to the tip only if the child's own branch ref can't be resolved (never for a live card).
         let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", link.resolvableRef)) ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
+        // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
+        // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
+        treeStatDebounce[t.id]?.cancel()
+        treeStatDebounce[t.id] = nil
         await recomputeTreeStat(t.id)
         emitActivity(.command, t, source, "synced parent \(link.parent)")
         return (await store.get(t.id)) ?? t
@@ -274,16 +278,22 @@ extension OrchestraService {
     /// card with no parent link resolves to `nil`. Local parents only (BT4 scope); `parentMerged`
     /// (BT5 `shipped`) and remote tips (BT6) are layered on later.
     func recomputeTreeStat(_ id: UUID) async {
-        guard let t = await store.get(id), t.origin == .worktree else { return }
+        // S3-5: never recompute/emit/nudge an archived card (a card archived inside the 750 ms debounce
+        // window would otherwise get its treeStat rewritten + a durable nudge into a dead inbox).
+        guard let t = await store.get(id), t.origin == .worktree, !t.archived else { return }
         let link = await lineage.read(repo: t.repo, branch: t.branch)
-        let old = t.treeStat
         let new = link.map { computeTreeStat(repo: t.repo, link: $0) }
-        guard new != old else { return }                       // no delta → no persist, no emit
+        // S2-9: read the CURRENT persisted stat AFTER the lineage.read suspension (not a value captured
+        // at entry) for both the change gate and the nudge edge, so a synced / fan-out recompute that
+        // updated it meanwhile can't drive a duplicate emit or a spurious inSync→stale nudge. (synced
+        // also cancels this card's debounce slot before recomputing — the race's other half.)
+        let current = await store.get(id)?.treeStat
+        guard new != current else { return }                   // no delta → no persist, no emit
         guard let saved = try? await store.update(id, { $0.treeStat = new }) else { return }
         emit(.taskUpserted(saved))
         // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale,
         // never on a first compute that lands on stale). Enqueue + wake — the `concludeCard` idiom.
-        if old?.state == .inSync, new?.state == .stale, let parent = link?.parent {
+        if current?.state == .inSync, new?.state == .stale, let parent = link?.parent {
             try? await inbox.enqueue(id, "parent \(parent) moved ahead — merge it down, then run "
                 + "`orchestra synced \(saved.shortId)`")
             await wake(id)

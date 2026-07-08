@@ -150,6 +150,27 @@ struct TreeStatTests {
         #expect(link.base == tip2)                                 // recorded base advanced to parent tip
     }
 
+    // S2-9: the inSync→stale nudge is edge-triggered. Two recomputes racing across the lineage.read
+    // suspension must not each see the pre-edge `inSync` and fire a duplicate nudge — the edge is
+    // computed against the freshly-persisted value, so exactly ONE nudge lands.
+    @Test("S2-9: concurrent recomputes on the inSync→stale edge fire exactly one nudge")
+    func noDuplicateStaleNudge() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let base0 = try Self.git(repo, "rev-parse", "parent")
+        let card = try await Self.linkedChild(env, repo: repo, base: base0)
+        await env.svc.recomputeTreeStat(card.id)                 // establish persisted inSync
+        #expect(await treeStat(env, card.id)?.state == .inSync)
+        try Self.advanceParent(repo, 1)                          // parent now ahead → next recompute = stale
+
+        async let a: Void = env.svc.recomputeTreeStat(card.id)
+        async let b: Void = env.svc.recomputeTreeStat(card.id)
+        _ = await (a, b)
+
+        let nudges = try await env.svc.inboxPeek(card.id).filter { $0.text.contains("moved ahead") }
+        #expect(nudges.count == 1)
+    }
+
     @Test("synced on a card with no parent link throws invalidParams")
     func syncedNoLink() async throws {
         let env = TestEnv.make()
