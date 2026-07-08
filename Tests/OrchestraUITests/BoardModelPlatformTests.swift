@@ -86,6 +86,50 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertEqual(model.focusZone, .terminal)
     }
 
+    // MARK: focusZone invariant — no selection / no inspector ⇒ .board
+
+    func testDeselectResetsFocusZoneToBoard() {
+        let (model, _, _, _) = makeModel()
+        let t = planCard()
+        model.tasks = [t]; model.selectedId = t.id
+        model.focusZone = .terminal
+
+        // Closing the inspector (selection → nil, e.g. the header's ✕ button) must drop focus back
+        // to the board — the terminal zone only makes sense while an inspector is mounted.
+        model.selectedId = nil
+
+        XCTAssertEqual(model.focusZone, .board)
+    }
+
+    func testArchivingSelectedCardResetsFocusZoneToBoard() {
+        let (model, _, _, _) = makeModel()
+        let t = planCard()
+        model.tasks = [t]; model.selectedId = t.id
+        model.focusZone = .terminal
+
+        // Archiving the selected card clears the selection (here via the daemon's archived-upsert
+        // reconcile — the same `selectedId = nil` path `archive(_:)` and every other client hit);
+        // focus must follow it back to the board instead of stranding on a terminal with no inspector.
+        var archivedTask = t; archivedTask.archived = true
+        model.apply(.taskUpserted(archivedTask))
+
+        XCTAssertNil(model.selectedId)
+        XCTAssertEqual(model.focusZone, .board)
+    }
+
+    func testSelectingAnotherCardDoesNotForceBoardZone() {
+        let (model, _, _, _) = makeModel()
+        let a = planCard(); let b = planCard()
+        model.tasks = [a, b]; model.selectedId = a.id
+        model.focusZone = .terminal
+
+        // Switching selection to another card (still non-nil) must NOT reset the zone — the reset is
+        // scoped to *clearing* the selection, so descending into a card's terminal survives a reselect.
+        model.selectedId = b.id
+
+        XCTAssertEqual(model.focusZone, .terminal)
+    }
+
     func testEnterTerminalZoneRoutesFocusIn() {
         let (model, _, _, win) = makeModel()
         let t = planCard()
