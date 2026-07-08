@@ -282,11 +282,23 @@ public actor OrchestraService {
                     "spawning a second live card onto branch \(input.branch) (already owned by "
                     + "\(existing.shortId)) — derived parent lookups use the oldest card")
             }
+            // S2-3(i): normalize a user-supplied LOCAL base to a bare branch name BEFORE `ensure`. `ensure`
+            // accepts a refs/-prefixed base verbatim (for the internal remote private-ref path), but
+            // `recordSpawnBase` then resolves refs/heads/<base> → refs/heads/refs/heads/foo and throws AFTER
+            // the worktree is cut. Strip a refs/heads/ prefix; reject any other refs/… (remote forms —
+            // origin/<b>, pr#<N> — are classified separately and left untouched).
+            var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let b = normalizedBase, b.hasPrefix("refs/"), RemoteParentRef.parse(b) == nil {
+                guard b.hasPrefix("refs/heads/") else {
+                    throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+                }
+                normalizedBase = String(b.dropFirst("refs/heads/".count))
+            }
             // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
             // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
-            let remoteRef = input.base.flatMap { RemoteParentRef.parse($0) }
+            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0) }
             var remoteFetchedOID: String? = nil
-            var ensureBase = input.base
+            var ensureBase = normalizedBase
             if let remoteRef {
                 remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef)
                 ensureBase = remoteRef.privateRef
@@ -294,22 +306,42 @@ public actor OrchestraService {
             let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch, base: ensureBase)
             cwd = ensured.worktree
             origin = .worktree
-            // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
-            // link survives card archival), so re-derive the parentBranch cache only then — gated on
-            // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
-            // `git config` read on the hot path.
-            if ensured.branchExisted {
-                // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
-                derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
-            } else if let remoteRef, let oid = remoteFetchedOID {
-                // Remote spawn-with-base (BT6): branch created on the fetched private ref — record the
-                // canonical remote lineage (+prNumber, watch on by default) with the fetched tip as base.
-                derivedParentBranch = try await recordSpawnRemoteBase(
-                    repo: realRepo, branch: input.branch, ref: remoteRef, oid: oid)
-            } else if let base = input.base?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
-                // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
-                // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
-                derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
+            // S2-3(ii): a brand-new branch cannot have had children before it existed, so any pre-existing
+            // `orchestra-parent == <this branch>` is a dangling value left by a deleted same-named branch
+            // (name reuse). Prune those stale links before recording, so the cycle guard doesn't walk the
+            // dangling chain and reject a legitimate reuse (fixture-proven false "would create a cycle").
+            if !ensured.branchExisted {
+                for stale in await lineage.children(repo: realRepo, of: input.branch) {
+                    try? await lineage.clear(repo: realRepo, branch: stale)
+                }
+            }
+            // S2-3(iii): a lineage-record failure fires AFTER the worktree + branch were created. Roll them
+            // back so the failed spawn leaves no orphan worktree/branch that a retry's fileExists fast-path
+            // would silently adopt with no base.
+            do {
+                // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
+                // link survives card archival), so re-derive the parentBranch cache only then — gated on
+                // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
+                // `git config` read on the hot path.
+                if ensured.branchExisted {
+                    // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
+                    derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
+                } else if let remoteRef, let oid = remoteFetchedOID {
+                    // Remote spawn-with-base (BT6): branch created on the fetched private ref — record the
+                    // canonical remote lineage (+prNumber, watch on by default) with the fetched tip as base.
+                    derivedParentBranch = try await recordSpawnRemoteBase(
+                        repo: realRepo, branch: input.branch, ref: remoteRef, oid: oid)
+                } else if let base = normalizedBase, !base.isEmpty {
+                    // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
+                    // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
+                    derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
+                }
+            } catch {
+                try? worktrees.remove(worktree: ensured.worktree, force: true)
+                if !ensured.branchExisted {
+                    _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
+                }
+                throw error
             }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
