@@ -3,9 +3,10 @@ import OrchestraKit
 import OrchestraUI
 
 /// The **card detail** (design §3): a tabbed full-screen surface pushed from a board card tap. A pinned
-/// header (title · status · model · context gauge · breadcrumb) sits above a five-tab bar
-/// **Agent · Terminal · Diff · Inbox · Info**. Agent is the primary read/steer surface (T3); Terminal is a
-/// clearly-marked stub (T2); Diff, Inbox, and Info are built here.
+/// header (title · status · model · context gauge · breadcrumb) sits above a six-tab bar
+/// **Agent · Terminal · Diff · Notes · Inbox · Info**. Agent is the primary read/steer surface (T3);
+/// Terminal is a clearly-marked stub (T2); Diff, Inbox, and Info are built here; Notes (M6) renders the
+/// `.md` notes this branch changed.
 ///
 /// Keyed on the card **id**, not a snapshot: the live `Task` is resolved from `BoardModel` on every render
 /// so the header pill/gauge and the tabs stay reactive as the daemon streams events. If the card leaves
@@ -48,6 +49,7 @@ struct CardDetailView: View {
         case .agent:    AgentTab(task: task)
         case .terminal: TerminalTab(task: task)
         case .diff:     DiffTab(task: task)
+        case .notes:    NotesPage(task: task)
         case .inbox:    InboxTab(task: task)
         case .info:     InfoTab(task: task)
         }
@@ -66,8 +68,8 @@ struct CardDetailView: View {
 
 // MARK: - Tab bar
 
-/// The five-tab segmented bar under the pinned header. Custom (not a native `Picker`) so it carries the
-/// Orchestra chip language + SF-symbol-over-label and fits five segments at phone width.
+/// The six-tab segmented bar under the pinned header. Custom (not a native `Picker`) so it carries the
+/// Orchestra chip language + SF-symbol-over-label and fits its segments at phone width.
 private struct CardTabBar: View {
     @Binding var selection: CardTab
     @Environment(\.theme) private var theme: Theme

@@ -79,9 +79,11 @@ final class IOSAppTests: XCTestCase {
     // MARK: - Card detail (M2)
 
     func testCardTabOrderMatchesDesign() {
-        // §3: the tab bar order is Agent · Terminal · Diff · Inbox · Info.
-        XCTAssertEqual(CardTab.allCases, [.agent, .terminal, .diff, .inbox, .info])
-        XCTAssertEqual(CardTab.allCases.map(\.title), ["Agent", "Terminal", "Diff", "Inbox", "Info"])
+        // §3: the tab bar order is Agent · Terminal · Diff · Notes · Inbox · Info. Notes (M6) is promoted
+        // to a first-class tab beside Diff — both are "what this branch changed" surfaces.
+        XCTAssertEqual(CardTab.allCases, [.agent, .terminal, .diff, .notes, .inbox, .info])
+        XCTAssertEqual(CardTab.allCases.map(\.title),
+                       ["Agent", "Terminal", "Diff", "Notes", "Inbox", "Info"])
     }
 
     func testCardTabInitialDefaultsToAgent() {
