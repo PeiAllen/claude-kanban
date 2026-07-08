@@ -26,7 +26,7 @@ public actor RemoteParents {
     /// `.io` on failure (never hangs — timeout + no prompts).
     public func fetch(repo: String, _ ref: RemoteParentRef) throws -> String {
         let refspec = "+\(ref.remoteSrc):\(ref.privateRef)"
-        let r = try Proc.run(["git", "-C", repo, "fetch", "--no-tags", "origin", refspec],
+        let r = try Proc.run(["git", "-C", repo, "fetch", "--no-tags", ref.remoteName, refspec],
                              env: Self.remoteEnv(), timeout: Self.timeout)
         guard r.ok else {
             throw OrchestraError.io(r.stderr.isEmpty ? "git fetch \(refspec) failed" : r.stderr)
@@ -42,7 +42,7 @@ public actor RemoteParents {
     /// `git ls-remote origin <src>` → the tip OID, `.gone` (branch/PR head deleted), or `.unavailable`
     /// (any error: the daemon must not mistake an auth failure for a deletion).
     public func lsRemoteTip(repo: String, _ ref: RemoteParentRef) -> RemoteTip {
-        guard let r = try? Proc.run(["git", "-C", repo, "ls-remote", "origin", ref.remoteSrc],
+        guard let r = try? Proc.run(["git", "-C", repo, "ls-remote", ref.remoteName, ref.remoteSrc],
                                     env: Self.remoteEnv(), timeout: Self.timeout) else {
             return .unavailable
         }

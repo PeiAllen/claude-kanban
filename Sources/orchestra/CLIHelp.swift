@@ -13,9 +13,15 @@ enum CLIHelp {
                                                  Spawn a new agent (prints its ref). --seed = fork context.
                                                  --base = create the branch on top of an existing local branch.
       move <ref> --col <plan|impl|review>        Move a card
-      set-parent <ref> [parent] [--mode adopt]   Set/clear a card branch's parent link (omit parent to clear)
-      tree [ref] [--repo <r>]                     Lineage snapshot (parent/children per card, JSON)
+      set-parent <ref> [parent] [--mode adopt|move] [--watch]
+                                                 Set/clear a card branch's parent link (omit parent to clear).
+                                                 --mode move transplants commits; --watch polls a remote parent (pr#/origin).
+      tree [ref] [--repo <r>]                     Lineage snapshot (parent/children/base per card, JSON)
       synced <ref>                                Record you merged/restacked the parent down (clears the stale signal)
+      merge-request <ref>                         Ask your live parent card to squash-merge you up the tree
+      shipped <ref> [--force]                     Post-merge bookkeeping (notify child, retarget grandchildren); --force skips the merged-check
+      borrow <ref>                                Cut a throwaway worktree to squash-merge into a bare parent (prints its path)
+      release <ref>                               Tear down this card's borrow worktree
       send <ref> <message...>                    Message the agent (inbox queue)
       send-keys <ref> <key|text...> [--text <literal>] [--window <w>]
                                                  Send live keystrokes (Esc, Up, C-c, Enter, text …)

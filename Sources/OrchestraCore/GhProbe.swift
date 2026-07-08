@@ -19,13 +19,19 @@ public struct PrState: Decodable, Equatable, Sendable {
 
 /// The `gh` boundary, behind a protocol so the ladder is testable with `FakeGh` and `gh`'s absence is a
 /// tier, not a mock gap. NEVER a hard dependency: `available == false` degrades the ladder one step.
+///
+/// The network methods are **async** (S1-5): each `gh` call is a network round-trip that blocks its
+/// thread up to 20 s (40 s on a redirect). When they ran synchronously inside the `OrchestraService`
+/// actor, every list/spawn/send/inspector RPC stalled behind a watch tick's `gh` round-trip. The real
+/// probe now hops the blocking `Proc.run` onto a detached task, so awaiting it suspends — never blocks —
+/// the actor. `available` stays sync: it's a local `which gh`, not a network call.
 public protocol GhClient: Sendable {
     var available: Bool { get }
-    func prState(repo: String, number: Int) -> PrState?
+    func prState(repo: String, number: Int) async -> PrState?
     /// The PR number whose head is `head` (for repairing a published child's base). nil if none/unknown.
-    func prNumber(repo: String, head: String) -> Int?
+    func prNumber(repo: String, head: String) async -> Int?
     /// Repoint a published PR's base branch. Best-effort; false on any failure.
-    func editBase(repo: String, number: Int, base: String) -> Bool
+    func editBase(repo: String, number: Int, base: String) async -> Bool
 }
 
 /// The real probe. `repo` is a filesystem path; `gh` infers the slug from the repo's `origin`, so every
@@ -42,26 +48,31 @@ public struct GhProbe: GhClient {
     }
     private static let timeout: Duration = .seconds(20)
 
-    public func prState(repo: String, number: Int) -> PrState? {
-        guard let r = try? Proc.run(
+    /// Run a blocking `Proc.run` off the caller's actor on a detached task, so a 20 s `gh` round-trip
+    /// never blocks the service actor (S1-5). Failures surface as nil, mapped by the caller.
+    private static func runOffActor(_ argv: [String], cwd: String) async -> ProcResult? {
+        await _Concurrency.Task.detached(priority: .utility) {
+            try? Proc.run(argv, cwd: cwd, env: env(), timeout: timeout)
+        }.value
+    }
+
+    public func prState(repo: String, number: Int) async -> PrState? {
+        guard let r = await Self.runOffActor(
             ["gh", "pr", "view", String(number), "--json", "state,mergedAt,mergeCommit,baseRefName"],
-            cwd: repo, env: Self.env(), timeout: Self.timeout), r.ok,
-            let data = r.stdout.data(using: .utf8) else { return nil }
+            cwd: repo), r.ok, let data = r.stdout.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(PrState.self, from: data)
     }
 
-    public func prNumber(repo: String, head: String) -> Int? {
+    public func prNumber(repo: String, head: String) async -> Int? {
         struct Row: Decodable { let number: Int }
-        guard let r = try? Proc.run(
+        guard let r = await Self.runOffActor(
             ["gh", "pr", "list", "--head", head, "--state", "open", "--json", "number", "--limit", "1"],
-            cwd: repo, env: Self.env(), timeout: Self.timeout), r.ok,
-            let data = r.stdout.data(using: .utf8),
+            cwd: repo), r.ok, let data = r.stdout.data(using: .utf8),
             let rows = try? JSONDecoder().decode([Row].self, from: data) else { return nil }
         return rows.first?.number
     }
 
-    public func editBase(repo: String, number: Int, base: String) -> Bool {
-        (try? Proc.run(["gh", "pr", "edit", String(number), "--base", base],
-                       cwd: repo, env: Self.env(), timeout: Self.timeout))?.ok ?? false
+    public func editBase(repo: String, number: Int, base: String) async -> Bool {
+        (await Self.runOffActor(["gh", "pr", "edit", String(number), "--base", base], cwd: repo))?.ok ?? false
     }
 }

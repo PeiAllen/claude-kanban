@@ -34,6 +34,17 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     func remove(worktree: String, force: Bool) throws {
         lock.lock(); removed.append(worktree); lock.unlock()
     }
+    // O3 borrow stub — mkdir a fake borrow dir; real git behavior is covered by BorrowLifecycleTests
+    // (makeReal). `pruneOrphanBorrows` is a no-op here (no git worktree list).
+    func borrowPath(repo: String, branch: String) -> String {
+        "\(root)/\((repo as NSString).lastPathComponent)/orch-borrow-\(branch.replacingOccurrences(of: "/", with: "-"))"
+    }
+    func borrow(repo: String, branch: String) throws -> String {
+        let wt = borrowPath(repo: repo, branch: branch)
+        try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+        return wt
+    }
+    func pruneOrphanBorrows(repo: String) {}
 }
 
 /// In-memory tmux stub — tracks alive sessions and records launch argv; thread-safe (offActor runs

@@ -185,7 +185,9 @@ struct CardView: View {
         if let parent = task.parentBranch {
             let target = model.parentCard(of: task)
             Button {
-                if let target { model.selectAndEnterTerminal(target.id) }
+                // S3-3: select-only — a "look at my parent" chip shouldn't enter the parent's terminal
+                // (a heavier action than the chip implies; matches iOS's lighter push).
+                if let target { model.selectedId = target.id }
             } label: {
                 HStack(spacing: 2) {
                     Image(systemName: "arrow.turn.left.up").font(F.ui(8))
@@ -199,8 +201,8 @@ struct CardView: View {
             .disabled(target == nil)
             .frame(maxWidth: 120, alignment: .leading)
             .help(target != nil
-                  ? "Jump to parent card on \(parent)"
-                  : "No card on parent branch \(parent)")
+                  ? "Select the parent card on \(parent)"
+                  : "No live card on parent branch \(parent)")
         }
     }
 
@@ -216,11 +218,15 @@ struct CardView: View {
                     Text("\(ts.behind)").font(F.mono(10, .medium))
                 }
                 .foregroundStyle(theme.amber.text)
-                .help("Parent is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead — merge it down, then run `orchestra synced`")
-            case .restackNeeded, .parentMerged:
+                .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
+            case .restackNeeded:
                 Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
                     .foregroundStyle(theme.red.text)
-                    .help("Parent history changed — restack this branch")
+                    .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
+            case .mergeRequested:
+                Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.amber.text)
+                    .help("Merge requested — waiting for the parent card to squash-merge this branch")
             case .inSync:
                 EmptyView()
             }

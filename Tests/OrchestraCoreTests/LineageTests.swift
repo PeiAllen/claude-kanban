@@ -24,6 +24,25 @@ struct LineageTests {
         return r
     }
 
+    // S4: a `set` that fails (config lock held) must leave the PRIOR link intact — never a torn
+    // old-parent/new-base state.
+    @Test("S4: a failed re-point (config lock) leaves the prior link intact")
+    func setPartialWriteKeepsPrior() async throws {
+        let repo = try Self.makeRepo()
+        let lin = BranchLineage()
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "p1", base: "aaa"))
+        // Hold the config lock so the re-point's git-config writes all fail.
+        let lock = repo + "/.git/config.lock"
+        FileManager.default.createFile(atPath: lock, contents: Data())
+        await #expect(throws: (any Error).self) {
+            try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "p2", base: "bbb"))
+        }
+        try? FileManager.default.removeItem(atPath: lock)
+        let link = try #require(await lin.read(repo: repo, branch: "child"))
+        #expect(link.parent == "p1")   // prior parent, NOT a torn p1+bbb or p2
+        #expect(link.base == "aaa")
+    }
+
     // MARK: CRUD round-trips
 
     @Test("set/read round-trip — local parent")
@@ -151,19 +170,17 @@ struct LineageTests {
 
     // MARK: canonical parse
 
-    @Test("classify — local vs origin/ remote")
-    func classifyRefs() async throws {
+    // O4/S4: `BranchLineage.classify` was deleted (dead + disagreed with RemoteParentRef.parse).
+    // Remote-vs-local classification now runs through `RemoteParentRef.parse(_:remotes:)` — see
+    // RemoteParentRefTests. This case is retained (renamed) to prove the seam classifies the same way.
+    @Test("RemoteParentRef.parse — local vs remote (replaces the deleted classify)")
+    func parseClassifies() async throws {
         let repo = try Self.makeRepo(withOrigin: true)
-        let lin = BranchLineage()
-        let local = await lin.classify(repo: repo, ref: "feature-a")
-        #expect(local.isRemote == false)
-        #expect(local.shortName == "feature-a")
-        let remote = await lin.classify(repo: repo, ref: "origin/feature-b")
-        #expect(remote.isRemote == true)
-        #expect(remote.shortName == "feature-b")
-        // A local branch name that merely contains a slash (no remote named `feature`) stays local.
-        let slashed = await lin.classify(repo: repo, ref: "feature/foo")
-        #expect(slashed.isRemote == false)
-        #expect(slashed.shortName == "feature/foo")
+        let remotes = ["origin"]
+        #expect(RemoteParentRef.parse("feature-a", remotes: remotes) == nil)             // local
+        #expect(RemoteParentRef.parse("origin/feature-b", remotes: remotes)
+                == .branch(remote: "origin", name: "feature-b"))                          // remote
+        #expect(RemoteParentRef.parse("feature/foo", remotes: remotes) == nil)           // local slashed
+        _ = repo
     }
 }

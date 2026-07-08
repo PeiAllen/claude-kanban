@@ -18,36 +18,63 @@ extension OrchestraService {
     ///   2. If the tip MOVED, `fetch` it into the private ref and `scheduleTreeStat` (stale badge tracks it).
     ///   3. LADDER:
     ///      (a) gh MERGED (authoritative, squash-proof) ⇒ redirect onto the PR's `baseRefName`.
-    ///      (c) ancestry: the child's tip is contained in the fetched parent tip (merge-commit landing) ⇒
-    ///          redirect using gh's baseRefName if available, else warn (proof-POSITIVE only).
-    ///      (b) tip `.gone` + gh can't confirm ⇒ warning activity ("parent branch gone — likely merged").
+    ///      (b) tip `.gone` + gh can't confirm ⇒ warning activity (gh-aware wording; latched, S2-8/S3-1).
+    ///      (c) ancestry: the child's tip is contained in a FRESH parent tip (merge-commit landing) ⇒
+    ///          WARN only (proof-POSITIVE, but never authoritative about the base — never auto-redirects).
     /// Idempotent: after a redirect the link is no longer a PR, so a re-run takes no merge path.
     @discardableResult
     func remoteMergeStep(cardId: UUID) async -> RemoteMergeOutcome {
         guard let t = await store.get(cardId), t.origin == .worktree, !t.archived,
               let link = await lineage.read(repo: t.repo, branch: t.branch),
-              let ref = RemoteParentRef.parse(link.parent) else { return .none }
+              let ref = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) else { return .none }
 
         let tip = await remoteParents.lsRemoteTip(repo: t.repo, ref)
         var fetchedTip: String? = privateRefOID(repo: t.repo, ref: ref)
         var moved = false
         if case .oid(let observed) = tip, observed != fetchedTip {
             moved = true
+            remoteWarnLatch.remove(cardId)   // S3-1: tip changed — a prior gone/closed warning may no longer hold
             fetchedTip = (try? await remoteParents.fetch(repo: t.repo, ref)) ?? fetchedTip
             scheduleTreeStat(cardId)
         }
 
+        // gh state fetched ONCE per tick (PR parents only), reused by tier (a), the closed-PR signal, and
+        // the gone-tier wording. Only a PR parent reaches gh — a plain `origin/<b>` parent carries no PR
+        // number, so gh is spared on every branch tick (S1-5's traffic point). A PR parent MUST probe every
+        // tick: its merge is invisible in `refs/pull/N/head` (which doesn't move on merge, S2-8). The
+        // `await` hops the ≤20 s round-trip off the actor (detached), so it suspends — never blocks — the
+        // service (list/spawn/send stay responsive).
+        var prState: PrState? = nil
+        if let pr = link.prNumber, gh.available { prState = await gh.prState(repo: t.repo, number: pr) }
+
         // (a) authoritative gh MERGED (squash-proof).
-        if let pr = link.prNumber, gh.available, let st = gh.prState(repo: t.repo, number: pr), st.merged {
+        if let st = prState, st.merged {
             await applyRemoteRedirect(cardId: cardId, link: link, grandparent: st.baseRefName, childHead: t.branch)
             return .redirected(grandparent: st.baseRefName)
         }
 
+        // S2-8: a PR closed WITHOUT merging is safe but otherwise silent — GitHub keeps `refs/pull/N/head`
+        // so the tip never goes `.gone` and the card sits inSync/watched forever with no hint. Surface it
+        // once (latched) so the human picks a new base.
+        if let st = prState, st.state == "CLOSED", !st.merged, !remoteWarnLatch.contains(cardId) {
+            remoteWarnLatch.insert(cardId)
+            emitActivity(.warning, t, .daemon,
+                "parent \(link.parent) PR closed without merging — pick a new base and `set-parent`")
+        }
+
         // (b) branch gone, unconfirmable by gh. Checked BEFORE ancestry: with the remote tip deleted the
         // only parent OID we have is a STALE private ref, against which an ancestry check is meaningless.
+        // S3-1: latch the warning (this condition is persistent — it would re-fire every idle tick).
+        // S2-8: consult gh — don't claim "likely merged" when gh just said the PR was CLOSED-not-merged.
         if tip == .gone {
-            emitActivity(.warning, t, .daemon,
-                "parent \(link.parent) branch is gone — likely merged; confirm and `set-parent` a new base")
+            if !remoteWarnLatch.contains(cardId) {
+                remoteWarnLatch.insert(cardId)
+                let closedNotMerged = (prState?.state == "CLOSED" && prState?.merged == false)
+                emitActivity(.warning, t, .daemon, closedNotMerged
+                    ? "parent \(link.parent) branch is gone and its PR was closed without merging — "
+                      + "pick a new base and `set-parent`"
+                    : "parent \(link.parent) branch is gone — likely merged; confirm and `set-parent` a new base")
+            }
             return .warnedGone
         }
 
@@ -77,12 +104,20 @@ extension OrchestraService {
         // Re-read across the ladder's awaits: the card may have been archived / re-pointed since the tick
         // began. Bail rather than write lineage onto a gone card.
         guard let t = await store.get(cardId), !t.archived, t.origin == .worktree else { return }
-        let newRef = RemoteParentRef.branch(grandparent)                 // origin/<baseRefName>
+        // S1-5 hardening: gh is now a real ≤20 s suspension, so a `set-parent` can land mid-tick — it
+        // cancels the watch but cannot stop THIS running tick. Re-read the lineage link and bail if it is
+        // no longer the PR we started redirecting (parent/base/pr changed), so we never revert the user's
+        // fresh re-parent or re-anchor on a stale base (lost-update guard).
+        guard let current = await lineage.read(repo: t.repo, branch: t.branch), current == link else { return }
+        let newRef = RemoteParentRef.branch(remote: "origin", name: grandparent)   // origin/<baseRefName> (PR base)
         _ = try? await remoteParents.fetch(repo: t.repo, newRef)         // make refs/orch/parents/<gp> resolvable
         let anchor = link.base
+        // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
+        // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
+        let keepWatching = (grandparent != defaultBranch(repo: t.repo))
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
-                link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: true))
+                link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))
         } catch {
             emitActivity(.warning, t, .daemon, "remote redirect: could not retarget \(t.branch) → \(grandparent)")
             return
@@ -92,16 +127,25 @@ extension OrchestraService {
             $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: true)
         }) { emit(.taskUpserted(saved)) }
 
+        // S3-7: the rebase target must be the fetched private ref — the canonical `origin/<gp>` is not a
+        // rev, and only resolved before by the opportunistic tracking-ref update accident (S1-1).
         try? await inbox.enqueue(cardId,
             "remote parent merged into \(grandparent) — commit WIP, then "
-            + "`git rebase --onto \(newRef.canonical) \(anchor)`, then `git push --force-with-lease`, "
+            + "`git rebase --onto \(newRef.privateRef) \(anchor)`, then `git push --force-with-lease`, "
             + "then `orchestra synced \(t.shortId)`")
         await wake(cardId)
 
         // Repair the child's own published PR base (GitHub auto-retarget is unreliable). Best-effort.
-        if gh.available, let childPr = gh.prNumber(repo: t.repo, head: childHead) {
-            _ = gh.editBase(repo: t.repo, number: childPr, base: grandparent)
+        if gh.available, let childPr = await gh.prNumber(repo: t.repo, head: childHead) {
+            // S2-8: warn on failure — a swallowed editBase leaves the child's published PR pointing at a
+            // deleted branch with no signal.
+            if !(await gh.editBase(repo: t.repo, number: childPr, base: grandparent)) {
+                emitActivity(.warning, t, .daemon,
+                    "could not repair child PR #\(childPr) base → \(grandparent); "
+                    + "run `gh pr edit \(childPr) --base \(grandparent)`")
+            }
         }
+        if !keepWatching { stopRemoteWatch(cardId) }   // S4: stop the now-pointless default-branch watch
         emitActivity(.command, t, .daemon, "remote parent PR merged — redirected onto \(grandparent)")
     }
 
@@ -139,7 +183,7 @@ extension OrchestraService {
     private func shouldStopRemoteWatch(_ id: UUID) async -> Bool {
         guard let t = await store.get(id), !t.archived, t.origin == .worktree,
               let link = await lineage.read(repo: t.repo, branch: t.branch),
-              RemoteParentRef.parse(link.parent) != nil, link.watch else { return true }
+              RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil, link.watch else { return true }
         return false
     }
 
@@ -150,6 +194,7 @@ extension OrchestraService {
         remoteWatch[id]?.cancel()
         remoteWatch[id] = nil
         remoteWatchGen[id] = (remoteWatchGen[id] ?? 0) + 1
+        remoteWarnLatch.remove(id)   // S3-1: leaving the remote tier clears any latched gone/closed warning
     }
     /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
     /// in `startRemoteWatch`).
@@ -163,7 +208,7 @@ extension OrchestraService {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         for t in active {
             guard let link = await lineage.read(repo: t.repo, branch: t.branch),
-                  link.watch, RemoteParentRef.parse(link.parent) != nil else { continue }
+                  link.watch, RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil else { continue }
             startRemoteWatch(cardId: t.id)
         }
     }

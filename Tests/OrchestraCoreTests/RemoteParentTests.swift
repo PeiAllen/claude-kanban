@@ -50,13 +50,13 @@ struct RemoteParentTests {
         #expect(e["GIT_ASKPASS"] == "/usr/bin/false")
     }
 
-    @Test("fetch(pr#7) lands the PR head in refs/orch/parents/pr-7 and returns its OID")
+    @Test("fetch(pr#7) lands the PR head in refs/orch/parents/pr/7 and returns its OID")
     func fetchPR() async throws {
         let (repo, bare) = try Self.makeOriginWithPR()
         let prTip = try Self.oid(bare, "refs/pull/7/head")
         let oid = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
         #expect(oid == prTip)
-        #expect(try Self.oid(repo, "refs/orch/parents/pr-7") == prTip)
+        #expect(try Self.oid(repo, "refs/orch/parents/pr/7") == prTip)
     }
 
     @Test("force refspec survives a remote history rewrite")
@@ -74,15 +74,15 @@ struct RemoteParentTests {
         try Self.git(repo, "checkout", "-q", "main")
         let oid2 = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
         #expect(oid2 == newTip)   // the + refspec forced past the non-ff rewrite
-        #expect(try Self.oid(repo, "refs/orch/parents/pr-7") == newTip)
+        #expect(try Self.oid(repo, "refs/orch/parents/pr/7") == newTip)
     }
 
     @Test("lsRemoteTip returns the tip OID, and .gone for a deleted branch")
     func lsRemote() async throws {
         let (repo, bare) = try Self.makeOriginWithPR()
         let tip = try Self.oid(bare, "refs/heads/feature-b")
-        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch("feature-b")) == .oid(tip))
+        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .oid(tip))
         try Self.git(bare, "update-ref", "-d", "refs/heads/feature-b")   // delete on the remote
-        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch("feature-b")) == .gone)
+        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .gone)
     }
 }

@@ -89,6 +89,10 @@ struct TreeCommandTests {
         let childNode = try #require(snap.nodes.first { $0.branch == "child" })
         #expect(childNode.parent == "parent")
         #expect(childNode.parentCardId == parent.id)
+        // S2-4: the recorded rebase anchor is recoverable via `orchestra tree` (not just the ephemeral nudge).
+        let mb = try Proc.run(["git", "-C", repo, "merge-base", "child", "parent"]).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(childNode.base == mb)
         let parentNode = try #require(snap.nodes.first { $0.branch == "parent" })
         #expect(parentNode.children == ["child"])
         #expect(parentNode.parent == nil)

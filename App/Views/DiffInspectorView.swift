@@ -346,7 +346,9 @@ struct DiffInspectorView: View {
         switch b {
         case .working: return "Working"
         case .branch:  return "Branch"
-        case .parent:  return "Parent"
+        // S3-3: name the parent branch — the parent-relative diffstat measures against it, and two
+        // adjacent cards' `+N −M` can baseline against different parents with no other indicator.
+        case .parent:  return task.parentBranch.map { "Parent (\($0))" } ?? "Parent"
         }
     }
 

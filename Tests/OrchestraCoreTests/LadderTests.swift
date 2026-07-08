@@ -12,12 +12,16 @@ final class FakeGh: GhClient, @unchecked Sendable {
     init(available: Bool = true, state: PrState? = nil, headPR: Int? = nil) {
         self.available = available; self.state = state; self.headPR = headPR
     }
-    func prState(repo: String, number: Int) -> PrState? { lock.withLock { state } }
-    func prNumber(repo: String, head: String) -> Int? { lock.withLock { headPR } }
-    func editBase(repo: String, number: Int, base: String) -> Bool {
+    private(set) var prStateCalls = 0
+    func prState(repo: String, number: Int) async -> PrState? {
+        lock.withLock { prStateCalls += 1; return state }
+    }
+    func prNumber(repo: String, head: String) async -> Int? { lock.withLock { headPR } }
+    func editBase(repo: String, number: Int, base: String) async -> Bool {
         lock.withLock { editedBase = (number, base) }; return true
     }
     var recordedEdit: (number: Int, base: String)? { lock.withLock { editedBase } }
+    var stateCallCount: Int { lock.withLock { prStateCalls } }
 }
 
 @Suite("Detection ladder — remote merge decision with FakeGh (no network, no gh)")
@@ -29,7 +33,43 @@ struct LadderTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
-        return (svc, repo, card)   // watch loop wired in Task 8; here we drive remoteMergeStep directly
+        // A remote-base spawn auto-starts the watch loop; stop it so these tests can drive
+        // `remoteMergeStep` DIRECTLY and deterministically (the background loop would otherwise race the
+        // explicit call and consume a `moved` transition). The loop itself is covered by RemoteWatchLoopTests.
+        await svc.stopRemoteWatch(card.id)
+        return (svc, repo, card)
+    }
+
+    // S1-5: only a PR parent should pay for `gh pr view`. A plain `origin/<b>` parent carries no PR
+    // number, so the tick must never consult gh (no wasted network round-trip on the actor).
+    @Test("S1-5: a plain origin/<b> parent never consults gh")
+    func branchParentSkipsGh() async throws {
+        let (svc, _, _, base) = TestEnv.makeReal()
+        let repo = base + "/repos/app"
+        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childB",
+                                                  base: "origin/feature-b"))
+        let fake = FakeGh(available: true,
+            state: PrState(state: "MERGED", mergedAt: "t", mergeCommit: nil, baseRefName: "main"))
+        await svc.setGh(fake)
+        _ = await svc.remoteMergeStep(cardId: card.id)
+        #expect(fake.stateCallCount == 0)   // no prNumber ⇒ tier (a) skipped ⇒ gh untouched
+    }
+
+    // S2-8: a PR closed WITHOUT merging must surface a signal (it's otherwise silent — the tip never
+    // goes gone). S3-1: it must fire ONCE, not every tick.
+    @Test("S2-8/S3-1: a closed-unmerged PR warns once, not every tick")
+    func closedPrWarnedOnce() async throws {
+        let (svc, _, card) = try await Self.remoteChild()
+        await svc.setGh(FakeGh(available: true,
+            state: PrState(state: "CLOSED", mergedAt: nil, mergeCommit: nil, baseRefName: "main")))
+        let collector = EventCollector()
+        await collector.start(await svc.subscribe())
+        _ = await svc.remoteMergeStep(cardId: card.id)
+        _ = await svc.remoteMergeStep(cardId: card.id)          // second tick: latched, no re-warn
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        let warns = await collector.activities.filter { $0.kind == .warning && $0.text.contains("closed without merging") }
+        #expect(warns.count == 1)
     }
 
     @Test("gh MERGED ⇒ redirect fires with the PR baseRefName; child PR base repaired")

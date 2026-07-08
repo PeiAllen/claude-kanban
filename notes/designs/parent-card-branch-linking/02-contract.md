@@ -48,7 +48,7 @@ Task.parentBranch : String?      # EXISTS (Model.swift:187) — canonical parent
 Task.treeStat     : TreeStat?    # NEW — daemon-maintained, like diffStat
 
 struct TreeStat: Codable {       # NEW (OrchestraKit/Model.swift)
-    var state: TreeState         # inSync | stale | restackNeeded | parentMerged
+    var state: TreeState         # inSync | stale | restackNeeded | mergeRequested
     var behind: Int              # commits parent is ahead of recorded base (the ↓N badge)
     var parentIsRemote: Bool
 }
@@ -88,8 +88,11 @@ func ancestors(repo: String, of branch: String) -> [String]     // walk parent c
 ```
 
 - **Side-effects/errors:** config writes only — never touches refs or trees. `set` throws
-  `invalidParams` on self-parent or cycle (`ancestors` walk), `unknownBranch` if the local
-  parent doesn't exist. All calls `Proc.run(["git","-C",repo,"config",…])`.
+  `invalidParams` on an empty parent, self-parent, or cycle (`ancestors` walk). It does **not**
+  validate that the parent branch exists — that check lives at the service layer (`setParent`'s
+  `treeTip`/`mergeBaseOID`), so a *direct* `set` accepts a nonexistent parent. On a partial write
+  (config-lock contention) it restores the prior link (S4). All calls
+  `Proc.run(["git","-C",repo,"config",…])`.
 - **Note:** read-only cards already have `git config` hard-blocked (`ReadOnlyLaunch.swift:18`);
   lineage writes happen daemon-side, so that stays intact.
 
@@ -158,7 +161,7 @@ child /ship (tree-aware, via TreeDocs):
 daemon `shipped {ref}`:
   a. notify: derived parent-card lookup (active card, repo+branch) → inbox+wake "child <branch> merged: <summary>" (no card ⇒ activity item)
   b. retarget: for each lineage.children(of: child) → lineage rewrite parent := child's parent (grandparent), keep their recorded base; TreeStat := restackNeeded; inbox nudge "parent shipped — restack onto <grandparent>"
-  c. mark child's own TreeStat parentMerged=false/clear; child archives itself as today
+  c. clear the child's own lineage + TreeStat (re-run is a no-op); child archives itself as today
 ```
 
 - Restack itself stays agent-performed: `git rebase --onto <new-parent> <recorded-base>` in the
