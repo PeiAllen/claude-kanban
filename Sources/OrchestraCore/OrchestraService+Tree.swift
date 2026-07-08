@@ -148,11 +148,15 @@ extension OrchestraService {
     ///       finds nothing (no duplicate notify) and `children(of: child)` is empty because they now point
     ///       at the grandparent (no duplicate nudges).
     @discardableResult
-    public func shipped(ref: String, source: ActivitySource = .daemon) async throws -> Task {
+    public func shipped(ref: String, by: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
         let child = try await resolveRef(ref)
         guard child.origin == .worktree else {
             throw OrchestraError.invalidParams("only worktree cards can be shipped")
         }
+        // S1-3: the caller's card id (from ORCHESTRA_TASK_ID at the CLI) lets us tell the live-parent flow
+        // (the PARENT runs `shipped <child>`) from a self-ship (root/bare: the card runs `shipped <self>`).
+        var byCardId: UUID? = nil
+        if let by { byCardId = try? await resolveRef(by).id }
         let link = await lineage.read(repo: child.repo, branch: child.branch)
         // S1-2 (goal-4): the retarget target is the shipped child's parent, OR — for a ROOT card that
         // shipped straight to main — the repo's default branch, so its children never strand on a dead
@@ -165,9 +169,13 @@ extension OrchestraService {
         if hadParentLink, let parent = link?.parent {
             let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
             if let parentCard = active.first(where: { $0.repo == child.repo && $0.branch == parent }) {
-                try? await inbox.enqueue(parentCard.id,
-                    "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now")
-                await wake(parentCard.id)
+                // S1-3: skip the self-echo when the caller IS the parent — it just performed the merge,
+                // so a "child merged into you" wake would only make it read about its own action.
+                if parentCard.id != byCardId {
+                    try? await inbox.enqueue(parentCard.id,
+                        "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now")
+                    await wake(parentCard.id)
+                }
             } else {
                 emitActivity(.warning, child, source,
                     "shipped \(child.branch): no active card owns parent \(parent) to notify")
@@ -208,6 +216,16 @@ extension OrchestraService {
                     await wake(card.id)
                 }
             }
+        }
+
+        // (d) S1-3: tell the shipped child its branch landed — it is a stopped card that cannot see the
+        // `taskUpserted` event, so without this enqueue+wake it sits live-looking forever (a zombie card).
+        // Skip when the caller IS the child (a self-ship: root/bare/borrow — the card ships itself, then
+        // archives; it doesn't need to read that it landed).
+        if hadParentLink, byCardId != child.id, let parent = link?.parent {
+            try? await inbox.enqueue(child.id,
+                "your branch landed in \(parent) — verify and archive yourself")
+            await wake(child.id)
         }
 
         // (c) clear the shipped child's own lineage → re-run is a no-op; treeStat clears on next recompute.

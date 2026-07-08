@@ -55,6 +55,28 @@ struct ShipChoreoTests {
         #expect(warnings.contains { $0.text.contains("parent") })
     }
 
+    // S1-3: the shipped child (a stopped card waiting on its live parent) must be TOLD its merge
+    // landed — else it's a zombie card forever. And the parent that performed the merge must not get
+    // a wasted self-echo.
+    @Test("live-parent ship notifies+wakes the child; parent self-echo skipped when caller is the parent")
+    func shippedNotifiesChild() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage().set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
+
+        // The PARENT agent performed the squash-merge and calls `orchestra shipped <child>` — caller = parent.
+        try await env.svc.shipped(ref: child.ref(), by: parentCard.ref())
+
+        // (d) the child is told its branch landed.
+        let childMsgs = try await env.svc.inboxPeek(child.id)
+        #expect(childMsgs.contains { $0.text.contains("landed") })
+        // parent self-echo skipped (the caller IS the parent — it just did the merge).
+        #expect(try await env.svc.inboxPeek(parentCard.id).isEmpty)
+    }
+
     // S1-2 goal-4: a ROOT card (no parent link) shipping to main must still retarget its children
     // onto the default branch — otherwise the child shows inSync-forever against a dead parent.
     @Test("root ship (no parent link) retargets children onto the default branch — goal-4")

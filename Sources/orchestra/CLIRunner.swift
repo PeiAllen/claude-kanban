@@ -125,7 +125,12 @@ enum CLIRunner {
 
             case "shipped":
                 let ref = flags.positional(0) ?? flags.require("ref")
-                let task = try await client.call("shipped", .object(["ref": .string(ref)]))
+                var shippedParams: [String: JSONValue] = ["ref": .string(ref)]
+                // The caller card (this session), so the daemon can skip the parent self-echo (S1-3).
+                if let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !selfId.isEmpty {
+                    shippedParams["by"] = .string(selfId)
+                }
+                let task = try await client.call("shipped", .object(shippedParams))
                 printRef(task)
 
             case "status":

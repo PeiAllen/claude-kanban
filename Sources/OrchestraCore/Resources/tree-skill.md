@@ -37,7 +37,7 @@ Do NOT blindly ship to main. Resolve the parent via `orchestra tree` and take th
   2. `gh pr create --base <parentHeadRef>` — target the PARENT's head branch (the branch behind the parent PR / `origin/<branch>`), NOT `main`, so your PR shows only your commits.
   Do NOT call `orchestra shipped`. Orchestra watches the parent PR; when it merges, it redirects your card onto the parent's base and nudges you to restack.
 
-After `orchestra shipped <you>` runs, the daemon notifies the parent card and retargets any children of yours onto the grandparent — you then archive as usual.
+After `orchestra shipped <you>` runs, the daemon retargets any children of yours onto the grandparent and notifies the shipped card that its branch landed (so a stopped child wakes to verify + archive) — you then archive as usual.
 
 ## Restack after a REMOTE parent merges
 
