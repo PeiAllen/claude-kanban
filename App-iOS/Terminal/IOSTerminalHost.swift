@@ -38,6 +38,17 @@ struct IOSTerminalHost: TerminalHost {
                      forwardScroll: true)
     }
 
+    /// T2 live shell WITH an imperative `control` handle — same non-exclusive, swipe-to-scroll attach as
+    /// `attach(target:selectMode:)`, but threaded so the Terminal tab's **Hide keyboard** button can
+    /// `resignFirstResponder` (drop the soft keyboard while the terminal stays visible and swipe-scrollable),
+    /// mirroring the takeover's disarm without the takeover's arming chrome. `control` also observes the
+    /// tap-to-type focus (via `onUserArmed`) so the tab knows when to show the button. Scroll stays
+    /// one-finger regardless of arm state — `forwardScroll` keeps mouse reporting off (see `IOSTerminalView`).
+    func attach(target: TmuxTarget, selectMode: Bool, control: TerminalControl) -> AnyView {
+        terminalView(target: target, takeover: false, control: control, selectMode: selectMode,
+                     forwardScroll: true)
+    }
+
     /// **Exclusive takeover attach** (PR T4). Runs the `takeover` recipe (`detach-client` first) so the
     /// phone becomes the sole client of the `agent` view session — no resize-fight with a leftover client.
     /// Takes a `TerminalControl` so the takeover chrome (accessory bar, arming, font, Select) can drive it.

@@ -56,12 +56,13 @@ struct IOSTerminalView: UIViewRepresentable {
         // TUIs expect rather than being re-derived from the theme.
         term.getTerminal().ansi256PaletteStrategy = .xterm
         context.coordinator.terminal = term
-        // Tap-to-arm (takeover only): with the arming scrim gone, a tap on the disarmed terminal is how the
-        // user starts typing. SwiftTerm's own single-tap already calls `becomeFirstResponder` (raising the
-        // keyboard); this observer just keeps the takeover chrome's `armed` state — and hence mouse
-        // reporting — in sync with that. It recognises simultaneously and doesn't cancel touches, so it
-        // never steals a scroll pan, a selection long-press, or SwiftTerm's own tap handling. The live
-        // shell (`forwardScroll`, no `control`) has no arming, so it skips this.
+        // Tap-to-arm: with the arming scrim gone, a tap on the terminal is how the user starts typing.
+        // SwiftTerm's own single-tap already calls `becomeFirstResponder` (raising the keyboard); this
+        // observer just keeps `control.armed` in sync with that. The TAKEOVER uses it to flip mouse reporting
+        // on when armed; the LIVE SHELL uses it only to know the keyboard is up so the tab can show its
+        // **Hide keyboard** button (mouse reporting there stays off — `forwardScroll`). It recognises
+        // simultaneously and doesn't cancel touches, so it never steals a scroll pan, a selection long-press,
+        // or SwiftTerm's own tap handling. The read-only attach (no `control`) skips it.
         if control != nil {
             let armTap = UITapGestureRecognizer(target: context.coordinator,
                                                 action: #selector(Coordinator.handleArmTap))
@@ -108,13 +109,14 @@ struct IOSTerminalView: UIViewRepresentable {
         // stray mouse click into the agent. While ARMED, reporting is on so the agent's TUI mouse works.
         // Select mode always forces it off so a drag selects text.
         //
-        // The live shell (`forwardScroll`, no `control`) keeps reporting OFF unconditionally: a plain
-        // one-finger swipe scrolls tmux's history via the wheel-pan, so SwiftTerm's own touch→mouse
-        // forwarding must stand down or a swipe would double-fire as a tmux mouse-drag / selection. Tapping
-        // still raises the keyboard (SwiftTerm's single-tap falls through to `becomeFirstResponder` when
-        // reporting is off), and Select mode drives text selection through SwiftTerm's selection path. The
-        // read-only attach passes no `control` and no `forwardScroll`, so its `armed`-defaults-on behaviour
-        // is unchanged.
+        // The live shell (`forwardScroll`) keeps reporting OFF unconditionally: a plain one-finger swipe
+        // scrolls tmux's history via the wheel-pan, so SwiftTerm's own touch→mouse forwarding must stand
+        // down or a swipe would double-fire as a tmux mouse-drag / selection. This holds even now that the
+        // live shell carries a `control` (for the Hide-keyboard button): the `forwardScroll` branch below
+        // wins, so tap-to-arm never turns reporting on. Tapping still raises the keyboard (SwiftTerm's
+        // single-tap falls through to `becomeFirstResponder` when reporting is off), and Select mode drives
+        // text selection through SwiftTerm's selection path. The read-only attach passes no `control` and no
+        // `forwardScroll`, so its `armed`-defaults-on behaviour is unchanged.
         let armed = control?.armed ?? true
         uiView.allowMouseReporting = forwardScroll
             ? false
@@ -124,23 +126,27 @@ struct IOSTerminalView: UIViewRepresentable {
         // (`handleWheelPan`). Cap SwiftTerm's own mouse/selection pans (added lazily on mouse mode) at one
         // finger so a two-finger scroll can't double-fire as a mouse drag — but never the wheel-pan itself.
         // Re-applied every update since those pans can appear mid-session.
-        if control != nil {
+        // NOTE: `forwardScroll` is checked BEFORE `control != nil`. The live shell now carries a `control`
+        // (for the Hide-keyboard button) yet must keep its one-finger scroll regardless of arm state — so it
+        // takes this branch, not the takeover's `armed ? 2 : 1` policy below.
+        if forwardScroll {
+            // Live shell: a plain ONE-finger swipe always scrolls the history, armed or not (mouse reporting
+            // stays off, so a one-finger drag can't reach a TUI mouse). Select mode lets the wheel-pan stand
+            // down so a one-finger drag selects text instead.
+            uiView.panGestureRecognizer.minimumNumberOfTouches = 1
+            context.coordinator.wheelPan?.minimumNumberOfTouches = 1
+            context.coordinator.selectModeActive = selectMode
+            for g in uiView.gestureRecognizers ?? []
+            where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
+                (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1
+            }
+        } else if control != nil {
             // Takeover. DISARMED: one finger, so a plain swipe scrolls like a mobile page. ARMED: two
             // fingers, so a one-finger drag still reaches the agent's TUI mouse while two fingers scroll
             // without dropping the keyboard.
             uiView.panGestureRecognizer.minimumNumberOfTouches = armed ? 2 : 1
             context.coordinator.wheelPan?.minimumNumberOfTouches = armed ? 2 : 1
             context.coordinator.selectModeActive = (control?.selectMode ?? false) || selectMode
-            for g in uiView.gestureRecognizers ?? []
-            where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
-                (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1
-            }
-        } else if forwardScroll {
-            // Live shell: no arming, so a plain ONE-finger swipe always scrolls the history. Select mode
-            // lets the wheel-pan stand down so a one-finger drag selects text instead.
-            uiView.panGestureRecognizer.minimumNumberOfTouches = 1
-            context.coordinator.wheelPan?.minimumNumberOfTouches = 1
-            context.coordinator.selectModeActive = selectMode
             for g in uiView.gestureRecognizers ?? []
             where g !== uiView.panGestureRecognizer && g !== context.coordinator.wheelPan {
                 (g as? UIPanGestureRecognizer)?.maximumNumberOfTouches = 1

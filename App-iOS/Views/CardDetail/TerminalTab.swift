@@ -286,6 +286,13 @@ private struct LiveShellView: View {
     @State private var selected: String?        // which ribbon tab is showing
     @State private var sawMyWindow = false       // our window has appeared in the broadcast at least once
 
+    // Imperative handle over the mounted live terminal — reused from the takeover. The live shell has no
+    // arming chrome (tapping the terminal raises the keyboard directly), but `control` gives us two things:
+    // `armed` tracks whether the keyboard is up (tap-to-arm via `onUserArmed`), and `dismissKeyboard()`
+    // resigns first responder so the **Hide keyboard** button can drop the keyboard while the terminal stays
+    // visible and swipe-scrollable. Scroll/Select/Detach are untouched — mouse reporting stays off here.
+    @StateObject private var control = TerminalControl()
+
     // The card's full shell set (broadcast from the daemon → shared BoardModel). Both surfaces render
     // the same list; a phone live-attaches only its own `phone-<client>` window (attaching a desktop
     // `shell-N` would resize-fight it — the grouped view session is keyed by window, not client).
@@ -354,7 +361,22 @@ private struct LiveShellView: View {
             if isMine {
                 Circle().fill(theme.green.dot).frame(width: 7, height: 7)
                 Text("Phone-owned shell").font(.caption.weight(.semibold)).foregroundStyle(theme.text)
+                    .lineLimit(1)
                 Spacer(minLength: 8)
+                // Only while the keyboard is up: drop it (resign first responder) so you can just look at /
+                // swipe-scroll the terminal. `control.armed` tracks the soft keyboard via tap-to-arm.
+                if control.armed {
+                    Button { control.dismissKeyboard() } label: {
+                        Label("Hide keyboard", systemImage: "keyboard.chevron.compact.down")
+                            .font(.caption.weight(.medium))
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(theme.text2)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(theme.chip))
+                    .accessibilityLabel("Hide keyboard")
+                }
                 Button { selectMode.toggle() } label: {
                     Label("Select", systemImage: "selection.pin.in.out")
                         .font(.caption.weight(.medium))
@@ -398,7 +420,7 @@ private struct LiveShellView: View {
                 }
             }
         } else if let target {
-            terminalHost.attach(target: target, selectMode: selectMode)
+            liveTerminal(target: target)
                 .background(Color.black)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if attaching {
@@ -412,6 +434,17 @@ private struct LiveShellView: View {
                         .buttonStyle(.bordered)
                 }
             }
+        }
+    }
+
+    /// Mount the live terminal, threading `control` when the injected host is the real `IOSTerminalHost` so
+    /// the Hide-keyboard button can drop the keyboard. The Noop/preview host has no such overload, so those
+    /// paths fall back to the plain control-less attach (they never mount a real terminal anyway).
+    @ViewBuilder private func liveTerminal(target: TmuxTarget) -> some View {
+        if let iosHost = terminalHost as? IOSTerminalHost {
+            iosHost.attach(target: target, selectMode: selectMode, control: control)
+        } else {
+            terminalHost.attach(target: target, selectMode: selectMode)
         }
     }
 
