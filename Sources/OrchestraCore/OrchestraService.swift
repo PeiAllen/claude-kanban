@@ -265,16 +265,17 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
-            // S2-6: enforce the 1:1 card↔branch precondition. Every derived parent-card lookup
-            // (shipped notify, tree's parentCardId, board indentation) assumes at most one live card per
-            // branch; spawning a second live card onto an owned branch makes them arbitrary. Archived
-            // cards don't count (their branch is free to re-adopt). Refuse with a jump-to-card hint.
+            // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
+            // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
+            // the separate worktree-coupling design). But every derived parent-card lookup must be
+            // DETERMINISTIC (oldest live card wins — see `derivedCard`), not an arbitrary sibling. Warn on
+            // multiplicity so the operator sees the ambiguity they just created.
             if let existing = await store.all().first(where: {
                 !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == input.branch
             }) {
-                throw OrchestraError.invalidParams(
-                    "a live card already owns branch \(input.branch) (\(existing.shortId)) — "
-                    + "jump to it instead of spawning a duplicate")
+                emitActivity(.warning, existing, source,
+                    "spawning a second live card onto branch \(input.branch) (already owned by "
+                    + "\(existing.shortId)) — derived parent lookups use the oldest card")
             }
             // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
             // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.

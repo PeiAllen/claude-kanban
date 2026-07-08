@@ -33,18 +33,26 @@ struct SpawnRaceTests {
         #expect(dead.isEmpty, "\(dead.count)/\(ids.count) freshly-spawned cards were falsely marked dead")
     }
 
-    // S2-6: 1:1 card↔branch — spawning onto a branch a LIVE card already owns is refused (every derived
-    // parent-card lookup assumes uniqueness). Archived cards don't count.
-    @Test("S2-6: spawning onto a branch a live card owns is refused; allowed again after archive")
-    func spawnRefusesDuplicateLiveCard() async throws {
+    // S2-6: co-located siblings on one branch are still permitted (the cwd-keyed archive refcount depends
+    // on it), but spawning a second one WARNS on the multiplicity, and every derived parent-card lookup
+    // is DETERMINISTIC (the oldest card wins) rather than an arbitrary sibling.
+    @Test("S2-6: a co-located sibling spawn warns; derived parent lookup picks the oldest deterministically")
+    func spawnWarnsOnMultiplicityDeterministicLookup() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let first = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "feat"))
-        await #expect(throws: OrchestraError.self) {
-            _ = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "feat"))
-        }
-        try await env.svc.archive(first.id)                       // archived cards don't hold the branch
-        _ = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "feat"))
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+        let first = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "parent"))
+        let second = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
+        _ = second
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        #expect(await collector.activities.contains { $0.kind == .warning && $0.text.contains("second live card") })
+
+        // A child on `parent`: shipping it (root ship) / notify must resolve to the OLDEST parent card.
+        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = child
+        let active = await env.svc.list()
+        #expect(await env.svc.derivedCard(repo: repo, branch: "parent", among: active)?.id == first.id)
     }
 
     @Test("restart: a stale SessionEnd from the killed old process does not re-kill the fresh session")

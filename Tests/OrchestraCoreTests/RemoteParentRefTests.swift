@@ -44,7 +44,9 @@ struct RemoteParentRefTests {
         t.parentBranch = "origin/feature-b"
         #expect(await env.svc.resolvedParentRef(t) == "refs/orch/parents/feature-b")
         t.parentBranch = "feature-a"
-        #expect(await env.svc.resolvedParentRef(t) == "feature-a")   // local unchanged
+        // O1/S3-6: a local parent now pins refs/heads/ (was bare identity) so a same-named tag can't
+        // shadow the branch in the diff baseline.
+        #expect(await env.svc.resolvedParentRef(t) == "refs/heads/feature-a")
         t.parentBranch = nil
         #expect(await env.svc.resolvedParentRef(t) == nil)
     }

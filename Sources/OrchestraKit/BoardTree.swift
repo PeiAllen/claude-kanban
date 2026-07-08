@@ -12,7 +12,10 @@ public enum BoardTree {
     /// or nil when the child is parentless, self-parented, or its parent lives outside this column.
     public static func inColumnParent(_ cards: [Task], of child: Task) -> Task? {
         guard let parent = child.parentBranch else { return nil }
-        return cards.first { $0.id != child.id && $0.repo == child.repo && $0.branch == parent }
+        // S2-6: co-located siblings are permitted, so pick the OLDEST match deterministically instead of
+        // an arbitrary `.first` (board indentation must be stable across siblings).
+        return cards.filter { $0.id != child.id && $0.repo == child.repo && $0.branch == parent }
+            .min { $0.createdAt < $1.createdAt }
     }
 
     /// One column's cards, flattened depth-first so each child directly follows its parent. Roots
@@ -64,9 +67,10 @@ public enum BoardTree {
     /// has no parent branch or no live card owns it (bare/archived parent ⇒ chip is a no-op).
     public static func parentCard(_ tasks: [Task], of task: Task) -> Task? {
         guard let parent = task.parentBranch else { return nil }
-        return tasks.first {
+        // S2-6: deterministic (oldest) among co-located siblings, not an arbitrary `.first`.
+        return tasks.filter {
             !$0.archived && $0.origin == .worktree && $0.id != task.id
                 && $0.repo == task.repo && $0.branch == parent
-        }
+        }.min { $0.createdAt < $1.createdAt }
     }
 }

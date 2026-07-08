@@ -184,8 +184,8 @@ extension OrchestraService {
         // (a) notify the parent's card, if one owns the parent branch (only when there WAS a parent link
         // — a root ship merged to main via the standard flow, there is no parent card to wake).
         if hadParentLink, let parent = link?.parent {
-            let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
-            if let parentCard = active.first(where: { $0.repo == child.repo && $0.branch == parent }) {
+            let active = await store.all()
+            if let parentCard = derivedCard(repo: child.repo, branch: parent, among: active) {
                 // S1-3: skip the self-echo when the caller IS the parent — it just performed the merge,
                 // so a "child merged into you" wake would only make it read about its own action.
                 if parentCard.id != byCardId {
@@ -211,7 +211,7 @@ extension OrchestraService {
             let gpResolvable = gpRemote?.privateRef ?? "refs/heads/\(grandparent)"
             let gpPr: Int? = { if case .pullRequest(let n) = gpRemote { return n }; return nil }()
             let grandchildren = await lineage.children(repo: child.repo, of: child.branch)
-            let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+            let active = await store.all()
             for gcBranch in grandchildren {
                 guard let gcLink = await lineage.read(repo: child.repo, branch: gcBranch) else { continue }
                 // Repoint parent; KEEP the recorded base — it is the rebase anchor the agent replays from.
@@ -230,7 +230,7 @@ extension OrchestraService {
                 // The grandchild's recorded base (old shipped-branch tip) is not an ancestor of the
                 // grandparent, so a later `recomputeTreeStat` independently agrees on `restackNeeded` — the
                 // report funnel will not silently downgrade this signal before the agent runs `synced`.
-                if let card = active.first(where: { $0.repo == child.repo && $0.branch == gcBranch }) {
+                if let card = derivedCard(repo: child.repo, branch: gcBranch, among: active) {
                     if let saved = try? await store.update(card.id, {
                         $0.parentBranch = grandparent
                         $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: gpRemote != nil)
@@ -289,7 +289,7 @@ extension OrchestraService {
             let link = await lineage.read(repo: t.repo, branch: t.branch)
             let children = await lineage.children(repo: t.repo, of: t.branch)
             let parentCardId = link.flatMap { l in
-                active.first { $0.repo == t.repo && $0.branch == l.parent }?.id
+                derivedCard(repo: t.repo, branch: l.parent, among: active)?.id
             }
             nodes.append(TreeNode(ref: t.ref(), cardId: t.id, repo: t.repo, branch: t.branch,
                                   parent: link?.parent, parentCardId: parentCardId, base: link?.base,
@@ -366,9 +366,9 @@ extension OrchestraService {
         guard let t = await store.get(id), t.origin == .worktree else { return }
         let childBranches = await lineage.children(repo: t.repo, of: t.branch)
         guard !childBranches.isEmpty else { return }
-        let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+        let active = await store.all()
         for child in childBranches {
-            if let card = active.first(where: { $0.repo == t.repo && $0.branch == child }) {
+            if let card = derivedCard(repo: t.repo, branch: child, among: active) {
                 scheduleTreeStat(card.id)
             }
         }
@@ -392,6 +392,15 @@ extension OrchestraService {
             return TreeStat(state: .restackNeeded, behind: behind, parentIsRemote: isRemote)
         }
         return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind, parentIsRemote: isRemote)
+    }
+
+    /// S2-6: the deterministic derived card for a branch — the OLDEST live worktree card on repo+branch.
+    /// Co-located siblings are permitted (the cwd-keyed archive refcount depends on it), so every derived
+    /// lookup must pick a STABLE one, not an arbitrary `.first`, or shipped-notify / tree.parentCardId /
+    /// fan-out target an arbitrary sibling.
+    func derivedCard(repo: String, branch: String, among cards: [Task]) -> Task? {
+        cards.filter { !$0.archived && $0.origin == .worktree && $0.repo == repo && $0.branch == branch }
+            .min { $0.createdAt < $1.createdAt }
     }
 
     /// The repo's LOCAL default branch name (`main`/`master`) — the root-ship retarget target (S1-2).
