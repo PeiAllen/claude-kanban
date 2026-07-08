@@ -171,6 +171,27 @@ struct TreeStatTests {
         #expect(nudges.count == 1)
     }
 
+    // S4: an organic inSync→restackNeeded (parent amended/rebased with no shipped/set-parent) must
+    // nudge — it was the one restack path with no notifier.
+    @Test("S4: organic inSync→restackNeeded (parent amended) fires a restack nudge")
+    func organicRestackNudge() async throws {
+        let env = TestEnv.make()
+        let repo = try Self.repoWithParent(env.base)
+        let tip = try Self.git(repo, "rev-parse", "parent")
+        let card = try await Self.linkedChild(env, repo: repo, base: tip)
+        await env.svc.recomputeTreeStat(card.id)
+        #expect(await treeStat(env, card.id)?.state == .inSync)
+        // Parent rewrites its tip so the recorded base is orphaned (no shipped / set-parent involved).
+        try Self.git(repo, "checkout", "-q", "parent")
+        try Self.write(repo, "amend.txt", "y"); try Self.git(repo, "add", "-A")
+        try Self.git(repo, "commit", "-q", "--amend", "-m", "amended")
+        try Self.git(repo, "checkout", "-q", "main")
+        await env.svc.recomputeTreeStat(card.id)
+        #expect(await treeStat(env, card.id)?.state == .restackNeeded)
+        let msgs = try await env.svc.inboxPeek(card.id)
+        #expect(msgs.contains { $0.text.contains("changed history") && $0.text.contains("rebase --onto") })
+    }
+
     @Test("synced on a card with no parent link throws invalidParams")
     func syncedNoLink() async throws {
         let env = TestEnv.make()

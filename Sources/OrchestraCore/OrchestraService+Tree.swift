@@ -329,31 +329,52 @@ extension OrchestraService {
 
     /// Recompute the card's `TreeStat` from its lineage link; persist + emit **only when it changed**
     /// (idempotent — safe to call freely from the report funnel), exactly like `recomputeDiffStat`. A
-    /// card with no parent link resolves to `nil`. Local parents only (BT4 scope); `parentMerged`
-    /// (BT5 `shipped`) and remote tips (BT6) are layered on later.
+    /// card with no parent link resolves to `nil`.
     func recomputeTreeStat(_ id: UUID) async {
         // S3-5: never recompute/emit/nudge an archived card (a card archived inside the 750 ms debounce
         // window would otherwise get its treeStat rewritten + a durable nudge into a dead inbox).
         guard let t = await store.get(id), t.origin == .worktree, !t.archived else { return }
         let link = await lineage.read(repo: t.repo, branch: t.branch)
         let new = link.map { computeTreeStat(repo: t.repo, link: $0) }
-        // S2-9: read the CURRENT persisted stat AFTER the lineage.read suspension (not a value captured
-        // at entry) for both the change gate and the nudge edge, so a synced / fan-out recompute that
-        // updated it meanwhile can't drive a duplicate emit or a spurious inSync→stale nudge. (synced
-        // also cancels this card's debounce slot before recomputing — the race's other half.)
-        let current = await store.get(id)?.treeStat
-        // O2: the `mergeRequested` "waiting" badge is sticky — a funnel recompute must not clobber it
-        // while the child waits on its parent to merge. Only a genuine `restackNeeded` (the parent's
-        // history changed, so the pending request is moot) supersedes it; inSync/stale are subsumed by
-        // "waiting". It is cleared explicitly by shipped/synced/set-parent, never by the funnel.
-        if current?.state == .mergeRequested, new?.state != .restackNeeded { return }
-        guard new != current else { return }                   // no delta → no persist, no emit
-        guard let saved = try? await store.update(id, { $0.treeStat = new }) else { return }
+        // Cheap no-op filter for the steady funnel (avoids a tasks.json write on every unchanged
+        // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
+        // stale under a concurrent recompute, but the store.update closure below is the authority.
+        let current0 = await store.get(id)?.treeStat
+        if current0?.state == .mergeRequested, new?.state != .restackNeeded { return }
+        guard new != current0 else { return }
+        // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
+        // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent
+        // synced / fan-out recompute that already transitioned this card cannot make us fire a duplicate
+        // emit or a duplicate inSync→stale nudge (a read-then-update outside the closure left a window).
+        var staleEdge = false, restackEdge = false, changed = false
+        let saved = try? await store.update(id) { task in
+            let cur = task.treeStat
+            // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while
+            // the child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
+            if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
+            guard new != cur else { return }                   // no delta → no state change, no emit/nudge
+            staleEdge = (cur?.state == .inSync && new?.state == .stale)
+            restackEdge = (cur?.state != .restackNeeded && new?.state == .restackNeeded)
+            task.treeStat = new
+            changed = true
+        }
+        guard changed, let saved else { return }
         emit(.taskUpserted(saved))
-        // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale,
-        // never on a first compute that lands on stale). Enqueue + wake — the `concludeCard` idiom.
-        if current?.state == .inSync, new?.state == .stale, let parent = link?.parent {
+        // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale).
+        if staleEdge, let parent = link?.parent {
             try? await inbox.enqueue(id, "parent \(parent) moved ahead — merge it down, then run "
+                + "`orchestra synced \(saved.shortId)`")
+            await wake(id)
+        }
+        // S4: organic restack edge. A parent agent amending/rebasing its branch (no `shipped`, no
+        // `set-parent`) flips children to `restackNeeded` with no other notifier — the one restack path
+        // that was silent (shipped/move/remote-redirect all nudge explicitly, and set restackNeeded
+        // DIRECTLY so a later recompute sees restackNeeded→restackNeeded, no double nudge). Fire once on
+        // the transition INTO restackNeeded from a non-restack state.
+        if restackEdge, let link {
+            try? await inbox.enqueue(id,
+                "parent \(link.parent) changed history (rebased/amended) — restack: commit WIP, then "
+                + "`git rebase --onto \(resolvableRef(link, repo: t.repo)) \(link.base)`, then "
                 + "`orchestra synced \(saved.shortId)`")
             await wake(id)
         }
