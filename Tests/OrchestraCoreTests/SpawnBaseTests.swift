@@ -34,7 +34,7 @@ struct SpawnBaseTests {
         #expect(link.base == parentTip)
     }
 
-    @Test("spawn(base:) passes the base into WorktreeManager.ensure")
+    @Test("spawn(base:) passes the base into the registry's ensure")
     func spawnThreadsBaseToEnsure() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)

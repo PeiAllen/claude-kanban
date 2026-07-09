@@ -69,7 +69,7 @@ struct ReadinessSignalTests {
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
         let svc = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),
-                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
 

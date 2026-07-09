@@ -209,6 +209,36 @@ struct TaskStoreTests {
         #expect(loaded.first?.column == .impl)                           // garbage column → safe default
         #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
     }
+
+    @Test("stampMarkers makes pre-upgrade worktree dirs adoptable — clean AND dirty, byte-intact")
+    func test_migrationStampsMarkers() async throws {
+        let (reg, stub, _) = makeRegistry()                 // reuse the WorktreeRegistryTests helper
+        let clean = stub.path(repo: "app", branch: "old/clean")
+        let dirty = stub.path(repo: "app", branch: "old/dirty")
+        for p in [clean, dirty] { try FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        try "keep".write(toFile: dirty + "/uncommitted.txt", atomically: true, encoding: .utf8)
+        stub.setDirty(dirty, true)
+
+        await reg.stampMarkers(forMigratedPaths: [clean, dirty])
+
+        let a = try await reg.ensure(repo: "app", branch: "old/clean", cardId: UUID())
+        let b = try await reg.ensure(repo: "app", branch: "old/dirty", cardId: UUID())
+        #expect(!a.created && !b.created)                             // adopted, not recreated
+        #expect(stub.removed.isEmpty)                                // nothing removed
+        #expect(FileManager.default.fileExists(atPath: dirty + "/uncommitted.txt"))   // byte-intact
+        #expect(try String(contentsOfFile: dirty + "/uncommitted.txt", encoding: .utf8) == "keep")
+
+        // ONE-TIME sentinel: a SECOND `stampMarkers` call (post-migration) must NOT stamp a newly
+        // appeared marker-less dir — that would (once Stage 4's non-blocking spawn lands) risk marking a
+        // half-created checkout adoptable. A dir added after the sentinel was dropped above stays
+        // marker-less, so `ensure` prunes + recreates it (created==true) — it is never silently adopted.
+        let late = stub.path(repo: "app", branch: "old/late")
+        try FileManager.default.createDirectory(atPath: late, withIntermediateDirectories: true)
+        stub.setDirty(late, false)
+        await reg.stampMarkers(forMigratedPaths: [late])   // no-op: sentinel already dropped
+        let c = try await reg.ensure(repo: "app", branch: "old/late", cardId: UUID())
+        #expect(c.created)   // pruned + recreated — never adopted as pre-existing
+    }
 }
 
 @Suite("TaskStore rev") struct TaskStoreRevTests {

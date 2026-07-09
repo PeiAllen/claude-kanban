@@ -98,7 +98,9 @@ hook protocol".)
 Cleanup is decided by `origin`:
 
 - **`worktree`** — Orchestra created it; archive removes the dir (kept if dirty, and only when no other
-  live worktree card shares it).
+  live worktree card shares it — see [the WorktreeRegistry](#the-worktreeregistry-materialized-markers-on-demand-siblings-persisted-borrows)
+  below for the exact removal policy, including that a `dead`-but-not-yet-`archived` sibling still counts
+  as "shares it").
 - **`scratch`** — Orchestra created it; archive **unconditionally** `rm -rf`s it (double-gated by the
   `origin == .scratch` check *and* a runtime prefix check under the scratch root).
 - **`borrowed`** — *you* created it; archive never touches it.
@@ -176,6 +178,57 @@ same branch in two worktrees, so every N:1 case is two writers on one branch (a 
 use). Stacked branches want *distinct* trees (still 1:1). This retires the old refcount guard + shared-
 worktree badge machinery; the safe co-location patterns (read-only inspect, freeform cards) don't need
 worktree sharing. (`notes/designs/stacked-branches-and-guardian-handoff.md`.)
+
+### The WorktreeRegistry: materialized markers, on-demand siblings, persisted borrows
+
+The `WorktreeRegistry` actor (PR3b, `notes/designs/lifecycle-convergence/index.md`) is the sole owner of
+worktree + borrow lifecycle — the concrete `WorktreeManager` git-shell struct is `fileprivate` inside the
+same file, a compile-time guarantee that nothing else can call a git worktree op (see
+[Worktrees](04-cards-worktrees-sessions.md#worktrees) for the mechanics). Its decisions:
+
+- **The marker lives OUTSIDE the worktree.** A sentinel file in a registry-owned metadata dir
+  (`Config.worktreeMarkersDir`), one per canonical worktree path, is the sole adoption signal. An in-tree
+  marker would (a) show as untracked in `git status --porcelain` — every tree would read "dirty," breaking
+  the dirty-detection arms — and (b) mutate a dirty pre-upgrade tree the first time it was touched,
+  violating the "survives byte-intact" guarantee.
+- **`created` ≡ marker present.** The registry writes a marker only after a *complete* checkout (or an
+  explicit migration stamp), so "did the registry create/verify-adopt this tree" is exactly "does its
+  marker exist" — no separate stored bit, and `release`'s ownership guard reads the same signal `ensure`
+  writes.
+- **Serialization is the actor mailbox alone — no per-branch lock.** `ensure` performs no `await` between
+  the marker check and the checkout, so the mailbox alone makes two concurrent same-branch calls run
+  one-at-a-time and `git worktree add` fire once. This globally serializes worktree git ops — a
+  conservative superset of "per branch" — acceptable for a single-user tool.
+- **Owned roots = under `config.worktreesRoot`.** This single prefix covers ordinary card worktrees and
+  `orch-borrow-*` dirs alike. Both `release` and `sweepOrphanBorrows` gate every removal on
+  `isUnderOwnedRoots`, a stricter check than `PathResolver.assertAllowed` (which also admits
+  `reposRoot`) — so neither path can ever remove outside `worktreesRoot`, even though `manager.remove`'s
+  own `assertAllowed` call alone would permit it. Borrow paths are additionally borrow-derived by
+  construction (`borrowPath` always returns a `worktreesRoot`-rooted path), so the guard is normally a
+  no-op for them; it exists to keep the pledge true by construction, not by convention.
+- **Persisted borrows survive a daemon-only crash.** `[borrowerCardId: path]` is written as atomic JSON
+  beside the inbox (`Config.borrowsPath`); a fresh registry instance re-reads it on restart, so a live
+  borrower's dir can't be mistaken for a stray `orch-borrow-*` dir by the orphan sweep.
+- **Marker stamping is one-time, sentinel-gated.** Stamping on every boot (rather than once) would, under
+  a future non-blocking spawn, risk marking a half-created (mid-materialization) dir adoptable; the
+  persisted sentinel makes the migration run exactly once, at the first post-upgrade boot when every
+  persisted tree is at-rest and complete.
+- **A conservative-mode seam is left for Stage 4.** `setConservativeMode(_:)` gates `release` to a hard
+  no-op when set; unused today (`conservativeMode` defaults `false`), reserved for a future
+  post-corrupt-recovery mode where nothing is removed until ownership is positively re-established.
+- **An in-flight holder set closes the concurrent-spawn rollback race.** Between `ensure` returning and
+  the card's persistence to the store, a second same-branch spawn can interleave at the service actor's
+  `await` and adopt the first spawn's tree while still unpersisted. A store-only sibling scan in `release`
+  would then see no sibling and let the first spawn's rollback remove the tree the second, not-yet-stored
+  card just adopted. The registry's in-memory `inflight: [path: Set<cardId>]` — populated by every
+  `ensure` call and drained by `release`'s `defer` — is the reference a store snapshot can't see. (A
+  `store.create` failure between `ensure` succeeding and persistence strands an in-flight entry until
+  restart — fail-safe, never data loss, and restart-healed since the set is in-memory only.)
+
+Fail-safe arms: a marker-less **clean** dir is pruned and re-created; a marker-less **dirty** dir is never
+auto-removed (`ensure` throws `worktreeNeedsManualCleanup`); `release` never removes a dirty tree without
+`force`, never removes a tree any non-archived sibling (or in-flight holder) still references, and treats
+a missing tree as an idempotent success rather than an error.
 
 ### One seed, four topologies
 

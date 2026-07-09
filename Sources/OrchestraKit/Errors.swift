@@ -10,6 +10,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case parentAlreadyBorrowed(String)   // O3: a sibling holds the bare parent's borrow — wait + retry
     case toolMissing(String)          // git / tmux / claude / zed not on PATH
     case worktreeDirty(String)
+    case worktreeNeedsManualCleanup(String)   // marker-less DIRTY dir at the ensure path — never auto-removed
     case resumeFailed(String)
     case spawnFailed(String)
     case zedMissing
@@ -31,6 +32,9 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
                 + "nudge after it ships, merge the parent down, then retry your ship"
         case .toolMissing(let t):   return "required tool not found: \(t)"
         case .worktreeDirty(let p): return "worktree has uncommitted changes: \(p)"
+        case .worktreeNeedsManualCleanup(let p):
+            return "worktree dir at \(p) has uncommitted changes but no completion marker — manual cleanup needed "
+                 + "(a prior checkout was interrupted); move your work out, delete the dir, then retry"
         case .resumeFailed(let d):  return "resume failed: \(d)"
         case .spawnFailed(let d):   return "spawn failed: \(d)"
         case .zedMissing:           return "Zed not found"
@@ -64,6 +68,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .parentAlreadyBorrowed: return 1013
         case .toolMissing:      return 1006
         case .worktreeDirty:    return 1007
+        case .worktreeNeedsManualCleanup: return 1015
         case .resumeFailed:     return 1008
         case .spawnFailed:      return 1014
         case .zedMissing:       return 1009

@@ -1027,6 +1027,20 @@ public struct BoardSnapshot: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Worktree registry result
+
+/// The result of `WorktreeRegistry.ensure`/`ensureBorrow`: the materialized worktree path plus the two
+/// signals spawn/recovery still need (`created` = a fresh checkout was cut this call; `branchExisted` =
+/// the branch pre-existed so lineage config may carry).
+public struct Worktree: Sendable, Equatable {
+    public let path: String
+    public let created: Bool
+    public let branchExisted: Bool
+    public init(path: String, created: Bool, branchExisted: Bool) {
+        self.path = path; self.created = created; self.branchExisted = branchExisted
+    }
+}
+
 // MARK: - Spawn input
 
 public struct SpawnInput: Codable, Sendable, Equatable {
@@ -1050,7 +1064,7 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// is the resume-only carrier; a fresh start delivers the seed as the initial prompt). nil ⇒ no seed.
     public var seed: String?
     /// Parent ref to branch from when the card's branch is *created* (BT2 threads it into
-    /// `WorktreeManager.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
+    /// `WorktreeRegistry.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
     /// carries the field on the model; the spawn threading lands in BT2.
     public var base: String?
     public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,

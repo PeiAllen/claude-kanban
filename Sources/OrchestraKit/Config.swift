@@ -131,6 +131,10 @@ public struct Config: Codable, Sendable, Equatable {
     public static var trustLedgerPath: String { "\(dataDir)/trust-ledger.json" }
     /// Durable per-card message inbox (F3), sibling to `tasksPath`.
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
+    /// Persisted borrow registrations (`[borrowerCardId: path]`), sibling to `inboxPath`.
+    public static var borrowsPath: String { "\(dataDir)/borrows.json" }
+    /// Registry-owned worktree "materialized" markers (one sentinel file per worktree path), sibling to `inboxPath`.
+    public static var worktreeMarkersDir: String { "\(dataDir)/worktree-markers" }
     /// Registered APNs device tokens (N1), sibling to `tasksPath`. The daemon persists each client's
     /// push token + notification-pref snapshot so it can deliver attention pushes while the phone is
     /// backgrounded.

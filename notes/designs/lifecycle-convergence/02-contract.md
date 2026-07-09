@@ -284,7 +284,7 @@ classDiagram
 | Knobs additive-optional in `Config` | Old `config.json` must still decode | Required keys (breaks existing config) |
 | N=3 readiness fallback (≈6s) | Must sit well under `sessionLaunchTimeout` 30s or the fallback can never fire | Larger N (races the timeout) |
 
-### As-built deviations folded in (PR2 / Stage 2)
+### As-built deviations folded in
 
 | Decision (as built) | Why | Supersedes |
 |----------|-----|------------|
@@ -301,6 +301,16 @@ classDiagram
 | D1 `readinessConfirmation` covers launching + relaunching | One capability axis confirms BOTH being-born phases; N=3 universal fallback covers Codex `codex resume` (no rollout); Codex `.rolloutMeta` time-scoped to the launch | The spec's launch-only `resumeConfirmation` (spec amendment) |
 | `isConcluded ≡ terminal phase`; `Conclusion` gains `deadReason` | Funnel is the sole concluder; a suspended `wait` resolves on every terminal death (`.exited(reason)`), not only a clean exit (bug-#2) | `report()`'s direct conclude; a reason-less `Conclusion` |
 | restart's BLANK relaunch left immediate-live | In-scope per the 2.6 CRUX (gating scoped to `launchAndConfirm` + resume); safe (`reconcileLiveness` catches a session that never came up). **Follow-up:** route restart's blank through `launchAndConfirm(.blank)` to gate uniformly | — |
+| **PR3b (Stage 3):** borrows persisted as `[String: String]` (borrower `uuidString` → path), keyed on `UUID` in memory | Swift's `Codable` encodes `[UUID: String]` as a flat array, not a JSON object; the string-keyed form round-trips as a clean object on disk while the registry still keys on `UUID` in memory | An implied `[UUID: String]` on-disk shape |
+| **PR3b (Stage 3):** `orphanBorrowPaths` (list-only) replaces `pruneOrphanBorrows` (list+remove); removal is the registry's own liveness-guarded loop | The old boot-only prune force-removed **every** `orch-borrow-*` dir; the liveness-guarded sweep must never yank a live borrower's tree, so listing and guarded removal had to split into two functions | `WorktreeManager.pruneOrphanBorrows` as the removal path |
+| **PR3b (Stage 3):** `WorktreeManager.swift` deleted; the struct moves into `WorktreeRegistry.swift` as `fileprivate` | The compile-time "nothing outside the registry touches git worktree ops" guarantee requires same-file `fileprivate` — Swift has no cross-file module-private-to-one-type | L2's "`WorktreeManager` (internal)" listed as its own file |
+| **PR3b (Stage 3):** accepted trade-off — a crash between checkout and marker-write leaks a dir | `created ≡ marker` means a tree cut but not-yet-marked is never removed by `release`; a leaked dir (recovered only when a later `ensure` prunes + recreates it) is the fail-safe direction versus a `created` bit that could authorize removing an unverified tree | A `created` bit set at checkout-start (removable-but-unverified window) |
+| **PR3b (Stage 3):** `sweepOrphanBorrows` requires POSITIVE terminal evidence (present + `archived`) to reclaim a registered borrow; empty/partial `cards` ⇒ no-op | Fail-safe pledge: an absent borrower is ambiguous (a partial store load), not proof-of-death — keep the tree. Truly-orphaned unregistered dirs are still reclaimed by the stray loop | A plain "not present ⇒ reclaim" sweep |
+| **PR3b (Stage 3):** `WorktreeRegistry` gains an internal `run:` seam so PR3a's bounded-git timeout tests survive privatization | Keeps `WorktreeManager` `fileprivate` (the compile-time guarantee) while letting `@testable` tests inject a `run` recorder through the registry — no coverage lost | Tests constructing `WorktreeManager` directly |
+| **PR3b (Stage 3):** `stampMigratedWorktreeMarkersOnce()` is `public` | `orchestrad` is a separate target and calls it from `main.swift`; an `internal` method isn't visible there | An `internal`-only migration entry point |
+| **PR3b (Stage 3):** reuses PR3a's `Config` knobs (`worktreeAddTimeout`/`controlTimeout`) via the injected `WorktreeManager` | PR3a already landed additive-optional timeout knobs in `OrchestraKit`; the registry's manager threads them into every bounded git call rather than defining its own | A second, registry-local set of timeout knobs |
+| **PR3b (Stage 3):** marker stamping is ONE-TIME, gated by a persisted sentinel (`.migrated`), not every-boot | Every-boot stamping would, under a future Stage-4 non-blocking spawn, risk marking a half-created (mid-materialization) dir adoptable; the sentinel makes the migration run exactly once, at the first post-upgrade boot when every persisted tree is at-rest and complete | Re-running `stampMarkers` on every boot |
+| **PR3b (Stage 3):** every test naming `WorktreeManager` migrates to `WorktreeRegistry` in Task 3.5 | `@testable import` can't see a `fileprivate` type, so the suite must compile against the registry's public/internal surface after `git rm WorktreeManager.swift` | Leaving tests constructing `WorktreeManager` directly (would no longer compile) |
 
 ## Open questions — need your call
 
