@@ -101,6 +101,12 @@ public struct WorktreeManager: Sendable {
         if !r.ok {
             let msg = r.stderr.lowercased()
             if msg.contains("already checked out") || msg.contains("is already used by worktree") {
+                // The branch is checked out elsewhere. If that "elsewhere" is a canonical `orch-borrow-*`
+                // worktree, a sibling is mid-landing — surface the actionable wait-and-retry guidance
+                // rather than a bare branchInUse. Any other checkout keeps the plain wording.
+                if msg.contains("orch-borrow-") {
+                    throw OrchestraError.parentAlreadyBorrowed(branch)
+                }
                 throw OrchestraError.branchInUse(branch)
             }
             throw OrchestraError.io(r.stderr.isEmpty ? "git worktree add (borrow) failed" : r.stderr)

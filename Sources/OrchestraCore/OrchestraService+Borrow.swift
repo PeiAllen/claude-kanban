@@ -28,11 +28,31 @@ extension OrchestraService {
                 "parent \(link.parent) has a live card (\(owner.shortId)) — `orchestra merge-request "
                 + "\(child.shortId)` instead of borrowing")
         }
-        let path = try worktrees.borrow(repo: child.repo, branch: link.parent)
-        borrowedWorktrees[child.id] = path
+        // Exactly-one-borrower. `WorktreeManager.borrow` is idempotent by file-existence, so without this
+        // a SECOND child borrowing the SAME bare parent would silently be handed the sibling's live
+        // worktree — both would squash-merge into one tree and either `release` would yank it out from
+        // under the other. Enforce ownership here: the calling child may re-borrow its own registered
+        // path (idempotent), but any other holder — or a stray `orch-borrow-*` dir with no registration
+        // (a crashed borrow / a not-yet-swept restart) — is refused with actionable guidance.
+        // Ownership is keyed by exact path string; this is sound because EVERY borrow path — both the
+        // values stored in `borrowedWorktrees` and every lookup here / in `release` — originates from the
+        // single canonical `worktrees.borrowPath` (normalized via resolveRepo). Never register or compare
+        // a hand-built path, or the holder lookup could miss and re-open the sharing/deletion hole.
+        let path = worktrees.borrowPath(repo: child.repo, branch: link.parent)
+        let holder = borrowedWorktrees.first(where: { $0.value == path })?.key
+        if let holder, holder != child.id {
+            throw OrchestraError.parentAlreadyBorrowed(link.parent)
+        }
+        if holder == nil && FileManager.default.fileExists(atPath: path) {
+            // No live registration but the borrow dir exists ⇒ a sibling is landing (or crashed). The
+            // startup sweep is the recovery for a truly orphaned dir; at runtime, refuse and let it ship.
+            throw OrchestraError.parentAlreadyBorrowed(link.parent)
+        }
+        let created = try worktrees.borrow(repo: child.repo, branch: link.parent)
+        borrowedWorktrees[child.id] = created
         emitActivity(.command, child, source,
-            "borrowed bare parent \(link.parent) at \(path) — squash-merge there, then `orchestra shipped \(child.shortId)`")
-        return path
+            "borrowed bare parent \(link.parent) at \(created) — squash-merge there, then `orchestra shipped \(child.shortId)`")
+        return created
     }
 
     /// `release` — tear down the child's borrow worktree (force: it is a throwaway). Idempotent; also
@@ -40,10 +60,16 @@ extension OrchestraService {
     public func release(ref: String, source: ActivitySource = .daemon) async throws {
         let child = try await resolveRef(ref)
         if let path = borrowedWorktrees[child.id] {
-            try? worktrees.remove(worktree: path, force: true)
+            try? worktrees.remove(worktree: path, force: true)   // only this child's own registered borrow
             borrowedWorktrees[child.id] = nil
         } else if let link = await lineage.read(repo: child.repo, branch: child.branch) {
-            try? worktrees.remove(worktree: worktrees.borrowPath(repo: child.repo, branch: link.parent), force: true)
+            // Registry has no entry for this child (post-restart recovery): remove the canonical borrow
+            // path — but NEVER yank a borrow another live child currently holds (a non-holder's stray
+            // `release` must be a no-op, or it would delete the holder's tree mid-merge).
+            let path = worktrees.borrowPath(repo: child.repo, branch: link.parent)
+            if !borrowedWorktrees.values.contains(path) {
+                try? worktrees.remove(worktree: path, force: true)
+            }
         }
         emitActivity(.command, child, source, "released borrow")
     }

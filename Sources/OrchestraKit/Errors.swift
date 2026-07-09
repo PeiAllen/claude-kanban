@@ -7,6 +7,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case unknownAgent(String)
     case pathNotAllowed(String)
     case branchInUse(String)
+    case parentAlreadyBorrowed(String)   // O3: a sibling holds the bare parent's borrow — wait + retry
     case toolMissing(String)          // git / tmux / claude / zed not on PATH
     case worktreeDirty(String)
     case resumeFailed(String)
@@ -23,6 +24,9 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .unknownAgent(let a):  return "unknown agent: \(a)"
         case .pathNotAllowed(let p):return "path not allowed: \(p)"
         case .branchInUse(let b):   return "branch already checked out: \(b)"
+        case .parentAlreadyBorrowed(let b):
+            return "parent \(b) is already borrowed (another child is landing) — wait for the sync "
+                + "nudge after it ships, merge the parent down, then retry your ship"
         case .toolMissing(let t):   return "required tool not found: \(t)"
         case .worktreeDirty(let p): return "worktree has uncommitted changes: \(p)"
         case .resumeFailed(let d):  return "resume failed: \(d)"
@@ -43,6 +47,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .unknownAgent:     return 1003
         case .pathNotAllowed:   return 1004
         case .branchInUse:      return 1005
+        case .parentAlreadyBorrowed: return 1013
         case .toolMissing:      return 1006
         case .worktreeDirty:    return 1007
         case .resumeFailed:     return 1008
