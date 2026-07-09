@@ -29,11 +29,13 @@ struct MacSetupView: View {
                 stepTrust
                 stepTest
             }
-            // Tap-off + swipe-down dismissal for the target keyboard. Additive container-level modifiers
-            // only — the Form's rows and their controls (Copy, Test, Done) still handle their own taps.
+            // Tap-off + swipe-down dismissal for the target keyboard. Swipe-down is native; tap-off is a
+            // window-level UIKit recognizer (see `KeyboardDismissTap`) — a SwiftUI `.onTapGesture` on the
+            // Form is an *ancestor* of the row controls and, inside a List, wins the tap arena and eats the
+            // Copy/Test/Done presses (empirically: even `.simultaneousGesture` does). The recognizer
+            // resigns the keyboard without cancelling the touch, so the buttons still fire on the first tap.
             .scrollDismissesKeyboard(.interactively)
-            .contentShape(Rectangle())
-            .onTapGesture { targetFocused = false }
+            .background(KeyboardDismissTap())
             .navigationTitle("Connect your Mac")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -147,6 +149,78 @@ struct MacSetupView: View {
                 ? .success
                 : .failure("Couldn't connect. Check the Mac is on Tailscale, Remote Login is on, and this "
                            + "device's key is in ~/.ssh/authorized_keys.")
+        }
+    }
+}
+
+/// Tap-off keyboard dismissal that coexists with buttons. A SwiftUI `.onTapGesture` (or even a
+/// `.simultaneousGesture(TapGesture())`) placed on the Form is an ancestor of the row controls and, in a
+/// List, wins the tap arena — so a short tap dismisses the keyboard but the Copy/Test/Done buttons never
+/// see it (empirically verified on a Simulator with injected touches). This installs a
+/// `UITapGestureRecognizer` on the host **window** instead, with `cancelsTouchesInView = false` and a
+/// delegate that (a) recognizes simultaneously with every other recognizer and (b) ignores touches that
+/// land on a text-entry view. The net behaviour: a tap anywhere off the field resigns first responder
+/// (dismissing the keyboard) while the touch still reaches whatever it hit, so buttons fire on the first
+/// tap and tapping the field itself keeps it focused. Mirrors the board's UIKit-recognizer approach to the
+/// same SwiftUI gesture-arena problem (see `LongPressMoveGesture` in `BoardTab`). The recognizer is torn
+/// down when the view goes away so it never lingers on the window past this sheet.
+private struct KeyboardDismissTap: UIViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false          // only used to reach the window; never a hit target
+        DispatchQueue.main.async { context.coordinator.install(from: v) }
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async { context.coordinator.install(from: uiView) }
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.remove()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        private weak var window: UIWindow?
+        private var recognizer: UITapGestureRecognizer?
+
+        func install(from view: UIView) {
+            guard recognizer == nil, let w = view.window else { return }
+            let tap = UITapGestureRecognizer(target: self, action: #selector(fire))
+            tap.cancelsTouchesInView = false
+            tap.delegate = self
+            w.addGestureRecognizer(tap)
+            window = w
+            recognizer = tap
+        }
+
+        func remove() {
+            if let tap = recognizer { window?.removeGestureRecognizer(tap) }
+            recognizer = nil
+            window = nil
+        }
+
+        @objc private func fire() {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                            to: nil, from: nil, for: nil)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        // A tap on a text-entry view is that field's own business (focus / cursor placement) — don't treat
+        // it as a dismiss, or tapping the field to type would immediately close the keyboard.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldReceive touch: UITouch) -> Bool {
+            var v = touch.view
+            while let cur = v {
+                if cur is UITextField || cur is UITextView { return false }
+                v = cur.superview
+            }
+            return true
         }
     }
 }
