@@ -21,13 +21,15 @@ extension OrchestraService {
         let trimmed = parent?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let p = trimmed, !p.isEmpty {
             guard p != t.branch else {
-                throw OrchestraError.invalidParams("a branch cannot be its own parent: \(p)")
+                throw OrchestraError.invalidParams(
+                    "a branch cannot be its own parent: \(p) — pick a different branch as the parent")
             }
             // BT6: a remote parent (origin/<b>, pr#<N>) is fetched into a private ref, recorded with its
             // canonical form + prNumber, and watched per the flag (default off). `mode` doesn't apply —
             // there is no local history to rebase yet; the child restacks only once the remote parent moves.
             if let remote = RemoteParentRef.parse(p, remotes: gitRemotes(repo: t.repo)) {
-                let oid = try await remoteParents.fetch(repo: t.repo, remote)
+                let oid = try await remoteParents.fetch(repo: t.repo, remote,
+                    context: "could not fetch remote parent \(p)")
                 let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
                 try await lineage.set(repo: t.repo, branch: t.branch,
                     link: ParentLink(parent: remote.canonical, base: oid, prNumber: pr, watch: watch))
@@ -50,7 +52,8 @@ extension OrchestraService {
                 // ref that isn't there). Local refs only in BT5; remote parents are BT6.
                 // S3-6: pin refs/heads/ so a same-named tag can't shadow the local parent branch.
                 guard treeTip(repo: t.repo, "refs/heads/\(p)") != nil else {
-                    throw OrchestraError.invalidParams("parent branch not found: \(p)")
+                    throw OrchestraError.invalidParams(
+                        "parent branch not found: \(p) — create or fetch it, or run `git branch` to see valid parents")
                 }
                 let existing = await lineage.read(repo: t.repo, branch: t.branch)
                 let anchor = try existing?.base
@@ -141,10 +144,13 @@ extension OrchestraService {
             throw OrchestraError.invalidParams("only worktree cards have a parent to sync")
         }
         guard let link = await lineage.read(repo: t.repo, branch: t.branch) else {
-            throw OrchestraError.invalidParams("card has no parent link to sync")
+            throw OrchestraError.invalidParams(
+                "card has no parent link to sync — set one with `orchestra set-parent \(t.shortId) <branch>`")
         }
         guard let tip = treeTip(repo: t.repo, resolvableRef(link, repo: t.repo)) else {
-            throw OrchestraError.invalidParams("parent ref not found: \(link.parent)")
+            throw OrchestraError.invalidParams(
+                "parent ref not found: \(link.parent) — the parent branch was deleted; re-point with "
+                + "`orchestra set-parent \(t.shortId) <newBranch>`, or run `orchestra shipped \(t.shortId)` if it merged")
         }
         // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
         // trusting the agent's implicit "I merged the tip down" claim. After an honest merge-down this
@@ -219,7 +225,8 @@ extension OrchestraService {
                 // so a "child merged into you" wake would only make it read about its own action.
                 if parentCard.id != byCardId {
                     try? await inbox.enqueue(parentCard.id,
-                        "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now")
+                        "child \(child.branch) (\(child.shortId)) merged into you — it's in your branch now; "
+                        + "archive the child card with `orchestra archive \(child.shortId)`")
                     await wake(parentCard.id)
                 }
             } else {
@@ -252,8 +259,13 @@ extension OrchestraService {
                         link: ParentLink(parent: grandparent, base: gcLink.base,
                                          prNumber: gpPr, watch: gpRemote != nil))
                 } catch {
+                    // `set-parent`'s ref is a card shortId, not a branch name — name the grandchild's card
+                    // when one owns the branch, else fall back to a placeholder rather than a command that
+                    // would fail with `unknown task`.
+                    let gcRef = derivedCard(repo: child.repo, branch: gcBranch, among: active)?.shortId ?? "<shortId>"
                     emitActivity(.warning, child, source,
-                        "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent)")
+                        "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent) — "
+                        + "re-point it manually with `orchestra set-parent \(gcRef) \(grandparent) --mode move`")
                     continue
                 }
                 // The grandchild's recorded base (old shipped-branch tip) is not an ancestor of the
@@ -290,7 +302,7 @@ extension OrchestraService {
         // archives; it doesn't need to read that it landed).
         if hadParentLink, byCardId != child.id, let parent = link?.parent {
             try? await inbox.enqueue(child.id,
-                "your branch landed in \(parent) — verify and archive yourself")
+                "your branch landed in \(parent) — verify, then `orchestra archive \(child.shortId)`")
             await wake(child.id)
         }
 
@@ -373,8 +385,9 @@ extension OrchestraService {
         guard changed, let saved else { return }
         emit(.taskUpserted(saved))
         // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale).
-        if staleEdge, let parent = link?.parent {
-            try? await inbox.enqueue(id, "parent \(parent) moved ahead — merge it down, then run "
+        if staleEdge, let link {
+            try? await inbox.enqueue(id, "parent \(link.parent) moved ahead — run "
+                + "`git merge \(resolvableRef(link, repo: t.repo))` in your worktree, then "
                 + "`orchestra synced \(saved.shortId)`")
             await wake(id)
         }
@@ -521,7 +534,8 @@ extension OrchestraService {
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard r.ok, !oid.isEmpty else {
             throw OrchestraError.invalidParams(
-                "no merge-base between \(a) and \(b)" + (r.stderr.isEmpty ? "" : ": \(r.stderr)"))
+                "no merge-base between \(a) and \(b)" + (r.stderr.isEmpty ? "" : ": \(r.stderr)")
+                + " — they share no history; pick a parent on the same lineage")
         }
         return oid
     }

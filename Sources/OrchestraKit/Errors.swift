@@ -23,7 +23,8 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .ambiguousTask(let r): return "ambiguous task ref: \(r)"
         case .unknownAgent(let a):  return "unknown agent: \(a)"
         case .pathNotAllowed(let p):return "path not allowed: \(p)"
-        case .branchInUse(let b):   return "branch already checked out: \(b)"
+        case .branchInUse(let b):   return "branch \(b) is already checked out in another worktree — "
+                                         + "spawn onto a new branch, or use the existing card that owns it"
         case .parentAlreadyBorrowed(let b):
             return "parent \(b) is already borrowed (another child is landing) — wait for the sync "
                 + "nudge after it ships, merge the parent down, then retry your ship"
@@ -36,6 +37,17 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .trustDenied(let m):   return "trust not granted: \(m)"
         case .ownershipDenied(let m): return "ownership denied: \(m)"
         }
+    }
+
+    /// Wrap raw git stderr in the agent-readable failure contract — WHAT failed (`object`), WHY (`stderr`,
+    /// git's own words), and the runnable NEXT STEP (`recovery`) — as a classified `.io`. The cause clause
+    /// is dropped when git said nothing; the recovery clause when there is no next step to name.
+    public static func gitIO(_ object: String, stderr: String, recovery: String? = nil) -> OrchestraError {
+        let cause = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        var msg = object
+        if !cause.isEmpty { msg += " (git: \(cause))" }
+        if let recovery, !recovery.isEmpty { msg += " — \(recovery)" }
+        return .io(msg)
     }
 
     /// Stable JSON-RPC-ish error code for the control plane.

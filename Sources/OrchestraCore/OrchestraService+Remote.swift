@@ -59,7 +59,8 @@ extension OrchestraService {
         if let st = prState, st.state == "CLOSED", !st.merged, !remoteWarnLatch.contains(cardId) {
             remoteWarnLatch.insert(cardId)
             emitActivity(.warning, t, .daemon,
-                "parent \(link.parent) PR closed without merging — pick a new base and `set-parent`")
+                "parent \(link.parent) PR closed without merging — pick a new base with "
+                + "`orchestra set-parent \(t.shortId) <newBranch>`")
         }
 
         // (b) branch gone, unconfirmable by gh. Checked BEFORE ancestry: with the remote tip deleted the
@@ -72,8 +73,9 @@ extension OrchestraService {
                 let closedNotMerged = (prState?.state == "CLOSED" && prState?.merged == false)
                 emitActivity(.warning, t, .daemon, closedNotMerged
                     ? "parent \(link.parent) branch is gone and its PR was closed without merging — "
-                      + "pick a new base and `set-parent`"
-                    : "parent \(link.parent) branch is gone — likely merged; confirm and `set-parent` a new base")
+                      + "pick a new base with `orchestra set-parent \(t.shortId) <newBranch>`"
+                    : "parent \(link.parent) branch is gone — likely merged; confirm and pick a new base with "
+                      + "`orchestra set-parent \(t.shortId) <newBranch>`")
             }
             return .warnedGone
         }
@@ -90,7 +92,8 @@ extension OrchestraService {
         if moved, let parentTip = fetchedTip, let childTip = localBranchOID(repo: t.repo, branch: t.branch),
            childTip != link.base, isAncestor(repo: t.repo, ancestor: childTip, of: parentTip) {
             emitActivity(.warning, t, .daemon,
-                "parent \(link.parent) appears merged (ancestry) — confirm and `set-parent` a new base")
+                "parent \(link.parent) appears merged (ancestry) — confirm and pick a new base with "
+                + "`orchestra set-parent \(t.shortId) <newBranch>`")
             return .warnedAncestry
         }
 
@@ -119,7 +122,9 @@ extension OrchestraService {
             try await lineage.set(repo: t.repo, branch: t.branch,
                 link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))
         } catch {
-            emitActivity(.warning, t, .daemon, "remote redirect: could not retarget \(t.branch) → \(grandparent)")
+            emitActivity(.warning, t, .daemon,
+                "remote redirect: could not retarget \(t.branch) → \(grandparent) — re-point it manually with "
+                + "`orchestra set-parent \(t.shortId) \(grandparent)`")
             return
         }
         if let saved = try? await store.update(cardId, {

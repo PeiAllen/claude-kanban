@@ -23,18 +23,22 @@ public actor RemoteParents {
 
     /// Copy `ref` from `origin` into `refs/orch/parents/<name>` with a `+` (force) refspec so a remote
     /// history rewrite is mirrored rather than rejected. Returns the fetched OID. Throws a classified
-    /// `.io` on failure (never hangs — timeout + no prompts).
-    public func fetch(repo: String, _ ref: RemoteParentRef) throws -> String {
+    /// `.io` on failure (never hangs — timeout + no prompts). `context` is the caller's WHAT-failed object
+    /// (e.g. "could not fetch remote parent pr#7") so the surfaced error names the operation, git's own
+    /// stderr, and the runnable recovery in one line.
+    public func fetch(repo: String, _ ref: RemoteParentRef, context: String? = nil) throws -> String {
+        let object = context ?? "could not fetch remote parent \(ref.canonical)"
         let refspec = "+\(ref.remoteSrc):\(ref.privateRef)"
         let r = try Proc.run(["git", "-C", repo, "fetch", "--no-tags", ref.remoteName, refspec],
                              env: Self.remoteEnv(), timeout: Self.timeout)
         guard r.ok else {
-            throw OrchestraError.io(r.stderr.isEmpty ? "git fetch \(refspec) failed" : r.stderr)
+            throw OrchestraError.gitIO(object, stderr: r.stderr,
+                                       recovery: "check the remote/PR exists and you have access")
         }
         let v = try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref.privateRef])
         let oid = v.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard v.ok, !oid.isEmpty else {
-            throw OrchestraError.io("fetched \(ref.privateRef) but could not resolve its OID")
+            throw OrchestraError.io("fetched \(ref.privateRef) but could not resolve its OID — re-run set-parent")
         }
         return oid
     }
