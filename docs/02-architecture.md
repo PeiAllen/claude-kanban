@@ -62,8 +62,14 @@ orchestrad.sock`, overridable with `$ORCHESTRA_SOCK`) speaking **newline-delimit
   feed.
 - **Response:** `{jsonrpc:"2.0", id, result?, error?}` with error codes `-32700` (parse), `-32601`
   (method not found), `-32000` (internal).
-- **Server→client notification:** `{jsonrpc:"2.0", method:"event", params:<Event>}` — pushed to any
-  client that called `subscribe`.
+- **Server→client notification:** `{jsonrpc:"2.0", method:"event", params:<EventEnvelope>}` — pushed to
+  any client that called `subscribe`. `EventEnvelope{rev, event}` wraps every notification with the
+  board's monotonic `rev` at emit time (`TaskStore.currentRev`, bumped once per mutation in its single
+  `persist()` funnel and persisted alongside the tasks — see [the data model](03-data-model.md)); a
+  client can compare consecutive `rev`s to detect a missed event. `BoardSnapshot` — the one round trip a
+  (re)connecting client takes — carries the same `rev`, so it can tell whether anything landed between
+  the snapshot and its first live event. Using that cursor to detect a gap and resync is client-side work
+  that lands in a later stage; Stage 1 only stamps and carries `rev`.
 
 The socket is created user-only (mode `0600`), and every accepted/connected file descriptor has
 `SO_NOSIGPIPE` set (on Linux the equivalent guard is a per-`send` `MSG_NOSIGNAL` flag — see the ported
@@ -108,7 +114,10 @@ socket is just another path the `UDSTransport` opens. See
 Responses and events are written through a **non-blocking per-connection queue**; a broken write marks
 the connection dead exactly once. A bounded **200-item ring buffer** holds recent events so that a
 newly-subscribing client (e.g. the app reconnecting) can replay the recent activity feed under a single
-lock that also serializes live fan-out — preventing duplicate or reordered delivery.
+lock that also serializes live fan-out — preventing duplicate or reordered delivery. Both the replayed
+and the live-fanned-out notifications are `EventEnvelope`s; replayed items are stamped `rev: 0` (a
+deliberate placeholder — the ring only ever replays already-stale activity, never the live board state a
+`rev`-based gap check would care about).
 
 ## The three clients
 
@@ -162,6 +171,11 @@ Two robustness rules matter:
   the status line to stdout *before* attempting the network send.
 - **Monotonic seq guard.** Every snapshot report carries a sequence number; the daemon drops or
   coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
+- **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
+  `Task.applyReportFields(from:)`, which overlays only the fields `report()` owns (status, dead
+  metadata, session ids, `desc`, title/titleProvisional, `ctxPct`, model, `waitReason`) onto the task
+  currently in the store. Every other field — anything a concurrent RPC (e.g. a rename, a move) touched
+  in between — is left alone, so `report()` can never clobber a change it doesn't own.
 
 Polling (`tmux capture-pane`) exists only as a *fallback* when the push channel is silent.
 
