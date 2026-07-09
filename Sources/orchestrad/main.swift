@@ -49,6 +49,7 @@ _Concurrency.Task {
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
     await service.recoverSessions()
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
+    await service.rebuildMergeRequestNudges()   // re-arm merge-request re-nudge timers from live cards' state
 }
 
 // Background poll: continuous liveness reconcile (safety net for crashes / tmux kill).

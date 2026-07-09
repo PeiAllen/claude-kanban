@@ -97,4 +97,22 @@ extension OrchestraService {
         mergeRequestNudge[id] = nil
     }
     private func clearMergeRequestNudge(_ id: UUID) { mergeRequestNudge[id] = nil }
+
+    // MARK: - startup rebuild (mirrors rebuildRemoteWatches — the in-memory timer dies on restart)
+
+    /// Daemon-startup reconstruction: for every LIVE (non-archived) worktree card left in the
+    /// `mergeRequested` waiting state, re-arm its re-nudge timer. The durable state (child `treeStat` +
+    /// the parent's inbox request) survives a restart; the in-memory timer does not. We do NOT re-enqueue
+    /// the original request here — the timer's own tick does the re-prodding, and every existing stop
+    /// condition (shipped / re-parent / archive / state change) keeps working identically.
+    public func rebuildMergeRequestNudges() async {
+        let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
+        for t in active where t.treeStat?.state == .mergeRequested {
+            startMergeRequestNudge(childId: t.id)
+        }
+    }
+
+    // MARK: - test-support
+    func setMergeRequestNudgeInterval(_ d: Duration) { mergeRequestNudgeInterval = d }
+    func mergeRequestNudgeActive(_ id: UUID) -> Bool { mergeRequestNudge[id] != nil }
 }

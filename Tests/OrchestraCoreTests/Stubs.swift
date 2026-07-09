@@ -284,6 +284,29 @@ enum TestEnv {
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
+    /// Rebuild a fresh service over the SAME on-disk stores as an earlier `make()` — simulates a daemon
+    /// restart (in-memory timers/loops are gone; the file-backed store/inbox/trust reload from disk).
+    /// Pass the canonical `base` that `make()` returned: `make` writes those files under the non-canonical
+    /// `NSTemporaryDirectory()` prefix, which is the same inode via the macOS `/var → /private/var` symlink,
+    /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
+    /// itself a realistic "fresh daemon" trait.
+    static func remake(base: String, capabilities: AgentCapabilities = .claudeCode)
+        -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
+        let config = Config(reposRoot: base + "/repos",
+                            worktreesRoot: base + "/worktrees",
+                            allowlist: [base])
+        let sessions = StubSessions()
+        let worktrees = StubWorktrees(root: config.worktreesRoot)
+        let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
+        let store = TaskStore(path: base + "/tasks.json")
+        let trust = TrustLedger(path: base + "/trust-ledger.json")
+        let inbox = Inbox(path: base + "/inbox.json")
+        let svc = OrchestraService(config: config, store: store,
+                                   registry: AgentRegistry(adapters: [adapter]),
+                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox)
+        return (svc, sessions, worktrees, adapter, trust, base)
+    }
+
     /// Make a repo dir under reposRoot and return its path.
     static func repo(_ base: String, _ name: String = "app") -> String {
         let p = base + "/repos/" + name
