@@ -170,6 +170,45 @@ struct TaskStoreTests {
         #expect(loaded.first?.phase == .dead(.rebootUnrevived))          // unknown status → safe terminal
         #expect(!FileManager.default.fileExists(atPath: path + ".bak"))  // one bad record never wipes the board
     }
+
+    @Test("an id-less record drops just itself; the rest of the board loads, no .bak, rev preserved")
+    func test_idlessRecordDroppedNotBakked() async throws {
+        let path = tmpPath()
+        // A {rev,tasks} board: 2 good records + 1 record with NO id (the only true drop case).
+        let good1 = try! JSONSerialization.jsonObject(with: OrchestraJSON.wire.encode(sample("keep-1"))) as! [String: Any]
+        let good2 = try! JSONSerialization.jsonObject(with: OrchestraJSON.wire.encode(sample("keep-2"))) as! [String: Any]
+        var idless = try! JSONSerialization.jsonObject(with: OrchestraJSON.wire.encode(sample("dropme"))) as! [String: Any]
+        idless.removeValue(forKey: "id")
+        try write(["rev": 5, "tasks": [good1, idless, good2]], to: path)
+
+        let store = TaskStore(path: path)
+        let loaded = await store.load()
+        #expect(loaded.count == 2, "only the id-less record drops")
+        #expect(Set(loaded.map(\.title)) == ["keep-1", "keep-2"])
+        #expect(await store.currentRev == 5)                             // envelope rev preserved
+        #expect(store.peekPersistedRev() == 5)
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))  // record-level corruption never .bak's the board
+    }
+
+    @Test("a present-but-garbage enum field defaults rather than dropping the record")
+    func test_garbageEnumFieldDefaultsNotDropped() async throws {
+        let path = tmpPath()
+        // Valid id, but garbage `origin` and `deadReason` rawValues — must default, not throw/drop.
+        var rec = try! JSONSerialization.jsonObject(with: OrchestraJSON.wire.encode(sample("garbage-fields"))) as! [String: Any]
+        rec["origin"] = "not-a-real-origin"
+        rec["deadReason"] = "not-a-real-reason"
+        rec["column"] = "not-a-real-column"
+        try write(["rev": 3, "tasks": [rec]], to: path)
+
+        let store = TaskStore(path: path)
+        let loaded = await store.load()
+        #expect(loaded.count == 1, "the record is kept, not dropped")
+        #expect(loaded.first?.title == "garbage-fields")
+        #expect(loaded.first?.origin == .worktree)                       // garbage origin → safe default
+        #expect(loaded.first?.deadReason == nil)                         // garbage deadReason → nil
+        #expect(loaded.first?.column == .impl)                           // garbage column → safe default
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
+    }
 }
 
 @Suite("TaskStore rev") struct TaskStoreRevTests {

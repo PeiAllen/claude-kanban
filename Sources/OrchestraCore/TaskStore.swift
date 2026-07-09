@@ -15,9 +15,24 @@ public actor TaskStore {
     }
 
     /// On-disk payload shape (post-upgrade). Pre-upgrade files are a bare `[Task]` array.
-    private struct StoredBoard: Codable { let rev: Int; let tasks: [Task] }
+    /// Decoded ELEMENT-WISE via `FailableTask` so one throwing record (only an id-less one now) drops just
+    /// itself, never the whole board.
+    private struct StoredBoard: Decodable { let rev: Int; let tasks: [FailableTask] }
 
-    /// Read + decode. `[]` if absent; malformed → `.bak` + `[]`.
+    /// The on-disk envelope we WRITE — same `{rev, tasks}` shape, encoding real `[Task]`.
+    private struct BoardEnvelope: Encodable { let rev: Int; let tasks: [Task] }
+
+    /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` — which,
+    /// after the tolerant-field fix, happens ONLY when `id` is absent — becomes `nil` and is dropped,
+    /// instead of failing the array decode and stranding the entire board to `.bak`.
+    private struct FailableTask: Decodable {
+        let task: Task?
+        init(from decoder: Decoder) throws { self.task = try? Task(from: decoder) }
+    }
+
+    /// Read + decode. `[]` if absent. The board reaches `.bak` ONLY when the top-level JSON is itself
+    /// unparseable — a single corrupt record is dropped element-wise, never `.bak`'d. An id-less record
+    /// (the sole unrecoverable case) is logged and dropped; every other record is kept (fields defaulted).
     @discardableResult
     public func load() -> [Task] {
         let url = URL(fileURLWithPath: path)
@@ -27,10 +42,10 @@ public actor TaskStore {
         do {
             let data = try Data(contentsOf: url)
             if let board = try? OrchestraJSON.decoder.decode(StoredBoard.self, from: data) {
-                tasks = board.tasks; currentRev = board.rev            // post-upgrade
+                tasks = Self.compact(board.tasks); currentRev = board.rev   // post-upgrade envelope
             } else {
-                tasks = try OrchestraJSON.decoder.decode([Task].self, from: data)
-                currentRev = 0                                          // pre-upgrade migration read
+                tasks = Self.compact(try OrchestraJSON.decoder.decode([FailableTask].self, from: data))
+                currentRev = 0                                              // pre-upgrade bare array → rev 0
             }
         } catch {
             let bak = path + ".bak"
@@ -40,6 +55,17 @@ public actor TaskStore {
         }
         loaded = true
         return tasks
+    }
+
+    /// Keep the recoverable records; log-and-drop the id-less ones (the only records `FailableTask` yields
+    /// `nil` for). Record-level corruption never `.bak`'s the board — the fail-safe binding contract.
+    private static func compact(_ records: [FailableTask]) -> [Task] {
+        let dropped = records.filter { $0.task == nil }.count
+        if dropped > 0 {
+            FileHandle.standardError.write(
+                Data("TaskStore.load: dropped \(dropped) id-less record(s) (unrecoverable); board preserved\n".utf8))
+        }
+        return records.compactMap(\.task)
     }
 
     /// Synchronous, actor-independent peek of the persisted `rev` — used by `OrchestraService.init`
@@ -78,7 +104,7 @@ public actor TaskStore {
         currentRev += 1                                                // single bump funnel
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let data = try OrchestraJSON.pretty.encode(StoredBoard(rev: currentRev, tasks: tasks))
+        let data = try OrchestraJSON.pretty.encode(BoardEnvelope(rev: currentRev, tasks: tasks))
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)

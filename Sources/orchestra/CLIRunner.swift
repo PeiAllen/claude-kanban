@@ -254,8 +254,11 @@ enum CLIRunner {
     static func renderTasks(_ result: JSONValue) {
         guard let tasks = try? result.decode([Task].self) else { printJSON(result); return }
         if tasks.isEmpty { print("(no cards)"); return }
+        // Pad to the longest PhaseDisplayKey rawValue so no key is truncated (e.g. `needsPermission`,
+        // `relaunching`) and the column stays aligned; self-maintaining as keys evolve.
+        let pillWidth = PhaseDisplayKey.allCases.map(\.rawValue.count).max() ?? 7
         for t in tasks {
-            let pill = t.phaseDisplay.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
+            let pill = t.phaseDisplay.rawValue.padding(toLength: pillWidth, withPad: " ", startingAt: 0)
             print("\(t.shortId)  \(pill)  [\(t.column.rawValue)]  \(t.title)  ·  \((t.repo as NSString).lastPathComponent)/\(t.branch)")
         }
     }

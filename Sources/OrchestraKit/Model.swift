@@ -473,14 +473,18 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
         self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
-        self.origin = try c.decodeIfPresent(CardOrigin.self, forKey: .origin) ?? .worktree
-        self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
+        // Enum/decodable fields are `try?`-guarded (not just `decodeIfPresent`): a present-but-garbage
+        // rawValue (a renamed/removed case) must DEFAULT to the same safe value the memberwise init uses,
+        // never throw — else one garbage field would drop an otherwise-recoverable record. Only `id` (above)
+        // is allowed to throw, and its absence is the sole drop case.
+        self.origin = (try? c.decodeIfPresent(CardOrigin.self, forKey: .origin)) ?? .worktree
+        self.access = (try? c.decodeIfPresent(CardAccess.self, forKey: .access)) ?? .readWrite
         self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
-        self.model = try c.decodeIfPresent(AgentModel.self, forKey: .model) ?? AgentModel(id: "unknown")
-        self.startIn = try c.decodeIfPresent(StartIn.self, forKey: .startIn) ?? .impl
-        self.column = try c.decodeIfPresent(Column.self, forKey: .column) ?? .impl
+        self.model = (try? c.decodeIfPresent(AgentModel.self, forKey: .model)) ?? AgentModel(id: "unknown")
+        self.startIn = (try? c.decodeIfPresent(StartIn.self, forKey: .startIn)) ?? .impl
+        self.column = (try? c.decodeIfPresent(Column.self, forKey: .column)) ?? .impl
         self.order = try c.decodeIfPresent(Int.self, forKey: .order) ?? 0
-        self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
+        self.deadReason = (try? c.decodeIfPresent(DeadReason.self, forKey: .deadReason)) ?? nil
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)

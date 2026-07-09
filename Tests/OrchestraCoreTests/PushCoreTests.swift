@@ -33,6 +33,18 @@ final class PushCoreTests: XCTestCase {
             task: card(phase: .dead(.sessionVanished))), .died)
     }
 
+    func testCompletedDeadDoesNotFireDied() {
+        // A read-only delegated child completing its turn enters `.dead(.completed)` (report() sets it,
+        // not archived). That is NOT a death — it must fire no push, matching NeedsYouQueue.reason.
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .dead(.completed))))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
+            task: card(phase: .dead(.completed))))
+        // A genuine death still fires died.
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .dead(.agentExited))), .died)
+    }
+
     func testFreshCardNeverFires() {
         // prev == nil: a freshly-appended card / post-reconnect wholesale set never fires.
         XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .live(.waiting(.permission)))))
