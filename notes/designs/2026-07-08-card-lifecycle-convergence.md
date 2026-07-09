@@ -1,10 +1,11 @@
 # Card Lifecycle Convergence — Design Spec
 
-- **Status:** DRAFT — awaiting Allen's review (no implementation until approved)
-- **Date:** 2026-07-08
-- **Author:** card `025288` (design/lifecycle-convergence)
+- **Status:** APPROVED + FINALIZED against `main` @ `f1aa568` (2026-07-09, card `4c2ec0`)
+- **Date:** 2026-07-08 (finalized 2026-07-09)
+- **Author:** card `025288` (design/lifecycle-convergence); finalization card `4c2ec0` (impl/lifecycle-convergence)
 - **Approved direction:** "Intent + convergence" (approach B), approved after a deep adversarial review of branch `fix/spawn-hang-standalone`
 - **Scope of this doc:** the full target design + a migration outline. The task-by-task plan lives in `notes/plans/2026-07-08-card-lifecycle-convergence.md`.
+- **Finalization note (2026-07-09):** re-grounded on `main` @ `f1aa568` (the branch-tree merge landed after this spec was drafted). Corrections folded in: (a) the named timeout knobs (`sessionLaunchTimeout`/`worktreeAddTimeout`/`defaultControlTimeout`) do **not** exist on main — launches and checkouts are **unbounded** today, so this design *introduces* the knobs (§P3); (b) `provisioning` (flag + dict) never existed on main — it is branch-only; on main the uncoordinated variables are `status` + the `recovering` set (+ the branch would have added two more); (c) `reconcileLiveness`'s per-tick `sessions.list()` runs **on-actor** on main (the off-actor version was branch-only); (d) main is still **N:1** card↔branch (the 1:1 hard refusal `7bcde48` was reverted to a warning by `c099a82`; co-located sibling cards are an intentional, tested feature) — the refcount in §P3 is therefore *correct against main*, and 1:1 remains the separate worktree-coupling design's call; (e) branch-tree added new state machines + on-actor git sites this design must coexist with (§4 "Branch-tree surface", §9). Anchors in §2/§4/§9 are updated to `f1aa568`; anchors marked *(branch)* cite the discarded `fix/spawn-hang-standalone`.
 
 ---
 
@@ -29,38 +30,38 @@ Everything is **capability-gated** (works for `claude-code` *and* `codex`), take
 
 ### 2.1 Root cause
 
-A card's lifecycle today is the uncoordinated product of four variables, each written from multiple sites with no funnel:
+A card's lifecycle today is the uncoordinated product of multiple variables, each written from multiple sites with no funnel. On **main** there are two; the discarded branch would have added two more:
 
 | Variable | Kind | Declared | Writers (confirmed) |
 |---|---|---|---|
-| `status: AgentStatus` | persisted enum `{waiting, running, done, dead}` | `Model.swift` (`AgentStatus` ~:18) | hooks/telemetry `report`, liveness fallback, spawn, markDead |
-| `provisioning: Bool?` | persisted flag (added on branch) | `Model.swift` (~:237) | `OrchestraService.swift:296/:382/:374/:687`, `+Recovery.swift:309` — **5 sites** |
-| `recovering: Set<UUID>` | in-memory guard | `OrchestraService.swift:73` | spawn `:303`, sync path `:325`, resume/restart, provision, reconcile |
-| `provisioning: [UUID: Task]` | in-memory job dict (added on branch) | `OrchestraService.swift:37` | `:313`, niled `:354/:376/:394/:648` |
+| `status: AgentStatus` | persisted enum `{waiting, running, done, dead}` | `Model.swift` (`AgentStatus` :18) | hooks/telemetry `report`, liveness fallback, spawn, markDead |
+| `recovering: Set<UUID>` | in-memory guard | `OrchestraService.swift:96` | spawn `:409-410`, resume/restart, reconcile gate `+Recovery.swift:241` |
+| `provisioning: Bool?` *(branch-only)* | persisted flag | branch `Model.swift` | 5 sites on the branch |
+| `provisioning: [UUID: Task]` *(branch-only)* | in-memory job dict | branch `OrchestraService.swift` | 5 sites on the branch |
 
-Note (b) and (d) *share the name* `provisioning` while being different variables. There is **no single writer**, so any two of them can disagree, and none survive a process restart coherently.
+Note the two branch variables *share the name* `provisioning` while being different variables. There is **no single writer**, so any two of them can disagree, and none survive a process restart coherently. On main the same disease presents differently: spawn persists the card `.running`/`.waiting` **before** the session exists (`OrchestraService.swift:409-410` guards the window with `recovering`), and worktree/session launches are **unbounded** — a wedged git or tmux freezes the actor forever.
 
 ### 2.2 The 15 confirmed bugs
 
-All confirmed against the current tree + `fix/spawn-hang-standalone`. Grouped by the pillar that fixes each.
+All confirmed against `main` + `fix/spawn-hang-standalone`. Grouped by the pillar that fixes each. Anchors are current `main` @ `f1aa568` unless marked *(branch)*.
 
 | # | Bug | Evidence | Fixed by |
 |---|---|---|---|
-| 1 | **Worktree data-loss.** Provision cleanup force-removes worktrees (`force: true`, no sibling/dirty guard) at 3 sites, unlike archive which guards. | provision `OrchestraService.swift:352/:372/:448`; archive sibling filter `:658`, gate `:661`, `force:false` `:666`, dirty-keep `:667` | P3 |
-| 2 | **Parent `wait` hangs forever.** `dead(spawnFailed)` never reaches `concludeCard`, so a blocked parent is never released. | `failProvision:435`→`markDead:453`; `markDead` (`+Recovery.swift:306-313`) never touches `mergeWatch`; `concludeCard` (`+Wake.swift:61-79`) only from clean exit | P1 |
-| 3 | **Provisioning→zombie session.** `openShell`/`inspect` `/bin/sh` keep-alive claims the agent's session name during provisioning; the agent never launches; card flips `.running`. | `OrchestraService.swift:703/:742` (`ensure(argv:["/bin/sh"])`); name collision `SessionManager.swift:28` + short-circuit `:63`; neither checks `isProvisioning` | P1 (phase gate) |
-| 4 | **`provisioning=true` stuck.** `report()` writes the whole Task from a stale snapshot (`$0 = task`), clobbering provision's flip. | `+Report.swift:11` snapshot, `:133` `$0 = task` | P1 (delta write) + P1 funnel |
-| 5 | **Restart mid-provision never reconciles the flag.** `recoverSessions` never reads/clears `provisioning`; a persisted `provisioning:true` sticks. | `+Recovery.swift:14-49`; reconcile gates on in-memory `recovering` only `:249` | P2 |
-| 6 | **Concurrent same-branch `git worktree add` races.** Off-actor `ensure` is check-then-act with no lock; loser → `branchInUse` → `dead(spawnFailed)`. | `WorktreeManager.ensure:20-49`, no lock; off-actor at `provision:346`; `branchInUse:42` | P3 |
-| 7 | **Reconcile stale-snapshot TOCTOU.** Reads `store.all()`, suspends on off-actor `sessions.list()`, then kills based on the stale snapshot. | `+Recovery.swift:15` / `:243`; `markDead` on stale `t` `:251` | P2 |
-| 8 | **Unbounded `git worktree prune` fallback.** No timeout on the failure-path prune. | `WorktreeManager.swift:64` | P3 |
-| 9 | **Recovery launch timeout mismatch.** `resume`/`restart` pass no timeout → fall to hardcoded 15s `defaultControlTimeout`; spawn uses the 30s `sessionLaunchTimeout` knob. Both also run on-actor. | `+Recovery.swift:90`/`:178`; `SessionManager.defaultControlTimeout` (~:50); spawn `OrchestraService.swift:417` | P1 + P5 |
-| 10 | **`reopen` freezes the actor up to 180s.** Recreates the worktree synchronously on-actor. | `+Recovery.swift:217`, `config.worktreeAddTimeout` default 180s (comment defers the fix) | P2 |
-| 11 | **Fresh spawn has no agent-up confirmation.** `sessions.ensure` returning (tmux exit 0) is treated as success. | `OrchestraService.swift:313` | P1 (Ready signal) |
-| 12 | **Half-created worktree adopted.** `ensure` adopts any dir at the path via a bare `fileExists`. | `WorktreeManager.swift:26` | P3 (materialized marker) |
+| 1 | **Worktree data-loss.** Provision cleanup force-removes worktrees (`force: true`, no sibling/dirty guard) at 3 sites *(branch)*, unlike archive which guards. Main's spawn **orphan-rollback** (`:345-351`) also force-removes the just-cut branch+tree. | provision *(branch)* `OrchestraService.swift:352/:372/:448`; archive sibling filter `OrchestraService.swift:697`, `force:false` `:701`, dirty-keep `:702`; orphan rollback `:345-351` | P3 |
+| 2 | **Parent `wait` hangs forever.** `dead(spawnFailed)` never reaches `concludeCard`, so a blocked parent is never released. `isConcluded` counts only `archived`/`.done`/`dead+agentExited`. | `markDead` (`+Recovery.swift:298-304`) never touches `mergeWatch`; `concludeCard` (`+Wake.swift:61`) only from clean exit; `isConcluded` `+Wake.swift:136-140` | P1 |
+| 3 | **Provisioning→zombie session.** `openShell`/`inspect` `/bin/sh` keep-alive claims the agent's session name during the pre-launch window; the agent never launches; card flips `.running`. | `OrchestraService.swift:734/:773` (`ensure(argv:["/bin/sh"])`); name collision `SessionManager.swift:28` + short-circuit `:57`; neither checks the launch window | P1 (phase gate) |
+| 4 | **Stale whole-object writes.** `report()` writes the whole Task from a stale snapshot (`$0 = task`), clobbering any concurrent field mutation. | `+Report.swift:10` snapshot, `:133` `$0 = task` | P1 (delta write) + P1 funnel |
+| 5 | **Restart mid-provision never reconciles.** `recoverSessions` reconciles only session-liveness; an in-flight spawn's intermediate state doesn't survive a daemon restart (branch: a persisted `provisioning:true` sticks forever). | `+Recovery.swift:14-49`; reconcile gates on in-memory `recovering` only `:241` | P2 |
+| 6 | **Concurrent same-branch `git worktree add` races.** `ensure` is check-then-act with no lock; loser → `branchInUse` → failure. *Codex variant:* during a card's `agentSessionId==nil` window, telemetry `discover(cwd:)` can bind a **sibling card's rollout** to the new card. | `WorktreeManager.ensure:23-72`, no lock; `branchInUse:69`; adoption via bare `fileExists` `:29` | P3 (+ P1 gate for the Codex variant) |
+| 7 | **Reconcile stale-snapshot TOCTOU.** Reads `store.all()`, suspends on `sessions.list()`, then kills based on the stale snapshot. | `+Recovery.swift:236-243`; list `:239`; `markDead` on stale `t` `:243` | P2 |
+| 8 | **Unbounded external processes.** `git worktree add`/`remove`/`prune`, `tmux new-session`, and control verbs run with **no timeout at all** on main — a wedged git/tmux hangs the operation (and the actor) forever. | `WorktreeManager.swift` (no timeout args); prune fallback `:146`; `SessionManager` launches unbounded | P3 (introduces the knobs + idle-reset watchdog) |
+| 9 | **No launch-timeout story.** The named knobs (`sessionLaunchTimeout`, `worktreeAddTimeout`, `defaultControlTimeout`) **do not exist on main** — they were branch-only. Spawn, resume, restart, and reopen all launch unbounded, on-actor. The redesign introduces one set of Config knobs applied uniformly to spawn/resume/restart/reopen. | `+Recovery.swift:89/:177` (no timeout); spawn `OrchestraService.swift:422` | P1 + P3 + P5 |
+| 10 | **`reopen` freezes the actor unbounded.** Recreates the worktree synchronously on-actor with no timeout — a huge/wedged checkout freezes every RPC indefinitely. | `+Recovery.swift:204` (fn), `:211` (`worktrees.ensure`, no timeout) | P2 |
+| 11 | **Fresh spawn has no agent-up confirmation.** `sessions.ensure` returning (tmux exit 0) is treated as success. | `OrchestraService.swift:422` | P1 (Ready signal) |
+| 12 | **Half-created worktree adopted.** `ensure` adopts any dir at the path via a bare `fileExists`. | `WorktreeManager.swift:29` | P3 (materialized marker) |
 | 13 | **Whole-file writes.** `TaskStore.persist` rewrites all of `tasks.json` (incl. archived) per mutation. | `TaskStore.swift:55-67` | P5 (split + debounce) |
-| 14 | **No sync versioning.** No `rev`/seq on client events or `boardSnapshot`; reconnect replays only a 200-item activity ring; late stale events clobber fresh state (last-write-wins). | ring `ControlServer.swift:16`/`BoardStore.swift:615`; unversioned `BoardSnapshot` `Model.swift:653-667`; `BoardStore.apply` `:588` | P4 |
-| 15 | **No idempotency / no deadline.** Spawn mints the id server-side (`UUID()` `OrchestraService.swift:221`); a retry over dropped SSH = duplicate card. `ControlClient.call` awaits unbounded; no ping keepalive. | mint `:221`; `ControlClient.call:152-168`; no heartbeat | P4 + P6 |
+| 14 | **No sync versioning.** No `rev`/seq on client events or `boardSnapshot`; reconnect replays only a 200-item activity ring; late stale events clobber fresh state (last-write-wins). | ring `ControlServer.swift:16`/`BoardStore.swift:625-632`; unversioned `BoardSnapshot` `Model.swift:707-722`; `BoardStore.apply` `:587` | P4 |
+| 15 | **No idempotency / no deadline.** Spawn mints the id server-side (`UUID()` `OrchestraService.swift:254`); a retry over dropped SSH = duplicate card. `ControlClient.call` awaits unbounded (`:152-168`); no ping keepalive. | mint `:254`; `ControlClient.call:152-168`; no heartbeat | P4 + P6 |
 
 > A **per-card `seq` does exist**, but only on the agent→daemon `SnapshotReport` status-hook channel (`Model.swift:512-513`) — it is **not** on the client-facing `Event` stream or `BoardSnapshot`. Bug #14 is specifically about the *client* wire.
 
@@ -89,7 +90,7 @@ The recurring failure shape is: an **edge** (a verb firing once) mutates several
 | **Agent-agnostic** | Claude *and* Codex are priority targets (repo `CLAUDE.md`). The current provisioning tests are Claude-only. | Every mechanism is capability-gated via `adapter.capabilities.*`; matrix tests run both agents. |
 | **Break the wire freely; simplicity first** (updated 2026-07-08) | Single-user; Allen controls the daemon and every client and prefers dropping back-compat to reduce complexity. The wire is **not** frozen. | Restructure `Event`/`BoardSnapshot` as needed; make `phase` the field and **remove** `status`; make client-minted `id` **required**. Ship the daemon + all clients together. The **only** compat kept is a one-time defaulting read of the existing on-disk `tasks.json` so Allen's live board survives the upgrade — a *state migration*, not client compat. |
 | **Single service actor** | Simplicity; avoids a concurrency rewrite. | No per-card executors; all blocking IO hops off-actor via `offActor`. |
-| **553-test suite stays green at every stage** | Each migration stage ships independently. | Stage gates run the full suite. |
+| **Full test suite (~680 tests) stays green at every stage** | Each migration stage ships independently. | Stage gates run the full `swift test` suite. |
 
 ---
 
@@ -97,10 +98,11 @@ The recurring failure shape is: an **edge** (a verb firing once) mutates several
 
 - **Transport.** Newline-delimited JSON-RPC 2.0 over a UDS (`RPC.swift`, `ControlServer.swift`). iOS uses `SSHControlTransport` — one shared SSH session, one child channel running `nc -U <sock> || socat …` (`App-iOS/Terminal/SSHControlTransport.swift:65`). No seq/rev on events; no client RPC deadline; no keepalive.
 - **State of record.** `TaskStore` (an actor) holds `[Task]` in memory and rewrites all of `tasks.json` atomically on every mutation (`TaskStore.swift:55-67`). Archived cards are a `Task.archived` bool in the same array. No board `rev`.
-- **Service.** `OrchestraService` — a single actor (`OrchestraService.swift:6`) — owns spawn/recovery/report/wake/diff/notes. Many blocking calls run **on-actor** (see §9). Liveness runs every 2s from `orchestrad/main.swift:54-57` (`reconcileLiveness` + `pollTelemetry`).
-- **Capability seam (already present).** `adapter.capabilities.resumeConfirmation` is `.sessionStartHook` (Claude waits for the SessionStart hook) vs `.relaunchLiveness` (Codex treats a clean `ensure` as confirmation) — `+Recovery.swift:97-117`, `AgentCapabilities.swift:47`. Telemetry transport is gated on `capabilities.telemetry == .fileTail`. `AgentCapabilities.swift:3` states the "no `if agentId ==`" contract. **We extend this seam, we don't invent it.**
-- **Verb registry.** `CommandRegistry.build()` is a `[String: Command]` table; `Command = {schema, run}`. `CommandSchema` carries only `{name, summary, params, exposure∈{.all,.appOnly}}` (`CommandCatalog.swift:12-22`). Non-registry endpoints (`boardSnapshot`, `listDir`, `takeover`, …) are a hardcoded switch in `ControlServer.swift:184-254`.
-- **UI.** Actions are fire-and-forget (`_ = try? await`); archive toasts "Archived" even on failure (`BoardStore.swift:684-688`); nothing gated on connection/provisioning; double-click Spawn double-spawns (`SpawnSheet.swift:279-303`); mac terminal attaches once with an empty `processTerminated` (`AgentTerminalView.swift:173`); the **iOS terminal has a good bounded-backoff retry loop** (`IOSTerminalView.swift` Coordinator, `:302-356`) — the model to copy.
+- **Service.** `OrchestraService` — a single actor (`OrchestraService.swift:6`) — owns spawn/recovery/report/wake/diff/notes. Many blocking calls run **on-actor** (see §9), including the every-2s `reconcileLiveness`'s `sessions.list()` (`+Recovery.swift:239`). Liveness runs every 2s from `orchestrad/main.swift:57-60` (`reconcileLiveness` + `pollTelemetry`).
+- **Capability seam (already present).** `adapter.capabilities.resumeConfirmation` is `.sessionStartHook` (Claude waits for the SessionStart hook) vs `.relaunchLiveness` (Codex treats a clean `ensure` as confirmation) — `+Recovery.swift:96-116`, `AgentCapabilities.swift:47-49`. Telemetry transport is gated on `capabilities.telemetry == .fileTail`. `AgentCapabilities.swift:3` states the "no `if agentId ==`" contract. **We extend this seam, we don't invent it.**
+- **Verb registry.** `CommandRegistry.build()` is a `[String: Command]` table; `Command = {schema, run}`. `CommandSchema` carries only `{name, summary, params, exposure∈{.all,.appOnly}}` (`CommandCatalog.swift:14-22`). 32 verbs are registered (incl. the seven branch-tree verbs `set-parent/tree/synced/shipped/merge-request/borrow/release`). Non-registry endpoints (`boardSnapshot`, `listDir`, the takeover trio, …) are a hardcoded switch in `ControlServer.swift:106-267` with a `default:` falling through to the registry.
+- **Branch-tree surface (landed after this spec was drafted; must coexist).** Cards gained `parentBranch` + `treeStat` (`TreeState {inSync, stale, restackNeeded, mergeRequested}`) — a **parallel per-card state machine** about branch-vs-parent sync, cached from the git-config lineage SSOT (`BranchLineage` actor) and recomputed off the report funnel via 750ms debounces (`+Report.swift:141-142`, `+Tree.swift:369-384` computes edges *inside* the `store.update` closure to avoid lost updates). Per-card background loops with startup rebuild: remote watch loops (`+Remote.swift:167-208`, rebuilt by `rebuildRemoteWatches`) and merge-request re-nudge timers (`+MergeRequest.swift:63-95`, rebuilt by `rebuildMergeRequestNudges`). Startup order (`orchestrad/main.swift:47-53`): `sweepOrphanScratch → sweepOrphanBorrows → recoverSessions → rebuildRemoteWatches → rebuildMergeRequestNudges`. **Borrow**: a bare parent branch can be borrowed into a throwaway `orch-borrow-<branch>` worktree (`WorktreeManager.borrow:82-117`), exactly-one-borrower keyed on canonical path (`+Borrow.swift:43-52`); archive sweeps open borrows (`OrchestraService.swift:665-668`). The **owning-agent rule**: the daemon never merges/commits — agents do; the daemon only writes lineage + inbox nudges.
+- **UI.** Actions are fire-and-forget (`_ = try? await`); archive toasts "Archived" even on failure (`BoardStore.swift:704-707`); nothing gated on connection/launch-in-flight; double-click Spawn double-spawns (`SpawnSheet.swift:302-321`); mac terminal attaches once with an empty `processTerminated` (`AgentTerminalView.swift:173`); the **iOS terminal has a good bounded-backoff retry loop** (`IOSTerminalView.swift` Coordinator, `:313-348`) — the model to copy.
 
 ---
 
@@ -154,10 +156,11 @@ func transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil) async
 
 - The **only** place phase is written. Every verb, hook, and the reconciler go through it.
 - **Validates edges** against the machine above; an illegal edge (e.g. `dead → live`) is dropped + logged, never applied. This is what makes "revive a dead card" go `dead → relaunching → live`, never a direct jump.
-- **Epoch guard.** Each entry into `launching`/`relaunching` increments a persisted `sessionEpoch: Int`. Liveness ticks and `SessionEnd`/hook signals carry the epoch they observed; if `observedEpoch != current`, the funnel ignores the signal. A stale `SessionEnd` from a just-killed process carries the *old* epoch, so it is discarded **deterministically** — no timer, no race.
-- **`concludeCard` fires on entering any terminal phase** (`dead` for any reason, incl. `.completed`). This is the structural fix for bug #2: a parent's `wait` resolves whether the child completed or crashed.
+- **Epoch guard.** Each entry into `launching`/`relaunching` increments a persisted `sessionEpoch: Int` **before** the launch begins. Liveness ticks and `SessionEnd`/hook signals carry the epoch they observed; if `observedEpoch != current`, the funnel ignores the signal. A stale `SessionEnd` from a just-killed process carries the *old* epoch, so it is discarded **deterministically** — no timer, no race. **How signals learn their epoch:** (a) *hooks* — the launch environment stamps `ORCH_EPOCH` into the session, and the hook payload echoes it back (agent-agnostic: it's plumbing, not an agent feature); (b) *liveness* — the reconciler stamps each card's epoch into its observed-session snapshot at capture time, and the pre-kill fresh probe re-reads the current epoch, so a relaunch between snapshot and kill invalidates the kill. This deterministic ordering (epoch++ strictly before launch) also closes the branch's reopen race — an "early" readiness callback from the *new* session carries the *current* epoch and simply applies; there is no pending-confirmation buffer to wipe.
+- **`concludeCard` fires on entering any terminal phase** (`dead` for any reason, incl. `.completed`). This is the structural fix for bug #2: a parent's `wait` resolves whether the child completed or crashed. The wire `Conclusion` carries the `DeadReason` so a watcher can distinguish completed/failed.
+- **Entering `live` runs the pending-wake check** (`wakeIfPending`): a message `send` while the card was `creatingWorktree`/`launching` sits in the durable inbox; the transition into `live` is the single point that guarantees it gets delivered/woken — no path-specific release sites to forget (the branch had exactly this bug: a bare `recovering.remove` skipped `wakeIfPending` and stranded the first prompt).
 
-**What this deletes:** the `recovering: Set` (`OrchestraService.swift:73`), `scheduleRecoveringRelease`/`releaseRecovering` grace timers, the `provisioning: Bool?` field, and the `provisioning: [UUID: Task]` dict. Their jobs are subsumed by `phase` + `epoch` + the reconciler.
+**What this deletes:** the `recovering: Set` (`OrchestraService.swift:96`) and the `scheduleRecoveringRelease`/`releaseRecovering` grace timers — plus it obviates the discarded branch's `provisioning: Bool?` field and `provisioning: [UUID: Task]` dict (never on main). Their jobs are subsumed by `phase` + `epoch` + the reconciler.
 
 **`phase` replaces `status`.** Because we ship the daemon + all clients together (no cross-version interop), the old `AgentStatus {waiting, running, done, dead}` enum is **removed from the model and the wire** — it does not survive as a derived/mirrored field. `phase` is the single lifecycle field; every client renders from it via `displayState` (P6). This deletes the whole "which of four legacy buckets does creating/launching/relaunching collapse to" problem — those are simply distinct `phase` cases.
 
@@ -171,10 +174,12 @@ enum RunState: Codable, Equatable { case running; case waiting(WaitReason) }
 
 **Ready signal (fixes #11), capability-gated.** `launching → live` fires on the agent's readiness signal, per `adapter.capabilities`:
 - **Claude:** the `SessionStart` hook (`handleHook` `OrchestraService.swift:485`). `source == .startup` is currently dropped (`+Report.swift:52`); the funnel now consumes it as the `launching → live` trigger (still not a *status* change — it is a *phase* transition).
-- **Codex:** the rollout `session_meta` line via the ~2s file-tail (`CodexAdapter.parse:95`). *(Note: the brief mentioned a "Codex 0.135+ SessionStart hook" for readiness — that does not exist in the code today; the Codex SessionStart hook carries orientation + a Stop drain only. Readiness = the rollout tail.)*
+- **Codex:** the rollout `session_meta` line via the ~2s file-tail (`CodexAdapter.sessionId(fromRollout:):296`, parse `:94-95`). *(Note: the brief mentioned a "Codex 0.135+ SessionStart hook" for readiness — that does not exist in the code today; the Codex SessionStart hook carries orientation + a Stop drain only. Readiness = the rollout tail.)* **Rollout binding is phase/epoch-scoped:** telemetry `discover(cwd:)` may bind a rollout only to a card whose phase is `launching`+current-epoch or `live` — never adopt a sibling card's rollout into a card that hasn't launched (the review's Codex mis-binding variant of #6).
 - **Fallback (any agent):** N consecutive liveness ticks with the session alive. This is the floor for agents with no readiness capability, and the safety net if a hook is missed.
 
-The same phase and the same timeout knob apply to spawn, resume, and restart — fixing #9's 15s/30s split.
+**Readiness lands on the right `RunState`:** a *prompted* spawn transitions `launching → live(.running)`; a *provisional* (no-prompt) spawn transitions to `live(.waiting(.humanTurn))` — never `.running` for a card with nothing to run.
+
+The same phase machine and the same **newly-introduced** timeout knobs apply to spawn, resume, restart, and reopen — main currently has *no* launch timeouts at all (§P3 introduces `worktreeAddTimeout` ≈180s idle-reset, `sessionLaunchTimeout` ≈30s, control-verb ≈15s, fast-git ≈10s; additive-optional in `Config` so an old `config.json` still decodes). A `launching`/`relaunching` card that exhausts its timeout transitions to `dead(.spawnFailed/.resumeFailed)` with the git/tmux stderr — **or an explicit timeout note** — as `deadDetail`.
 
 ### P2 — Slow verbs = persisted intent, driven by an idempotent reconciler
 
@@ -184,7 +189,9 @@ The same phase and the same timeout knob apply to spawn, resume, and restart —
 - **`reopen`, `archive`-reclaim, `resume`, `restart` become reconciler jobs**, not synchronous on-actor work — this removes the 180s `reopen` actor freeze (#10) and the on-actor recovery launches (#9).
 - **Fail-safe verification (fixes #7).** Before **any kill**, the reconciler does a **fresh, off-actor, per-card** has-session probe **stamped with the epoch** — not a decision from a stale snapshot.
 
-  > **Design tension, resolved.** Today `reconcileLiveness` deliberately uses **one** off-actor `tmux list-sessions` snapshot per pass to avoid a per-card probe freezing the actor (`+Recovery.swift:244`). The fresh per-card probe is therefore scoped to **pre-kill only** (kills are rare) and runs **off-actor**. The common per-tick path keeps using the cheap batched snapshot; only a candidate-for-death card pays for a confirming probe. This does **not** reintroduce the freeze P5 removes.
+  > **Design tension, resolved.** Today `reconcileLiveness` uses **one** batched `sessions.list()` snapshot per pass — but runs it **on-actor** (`+Recovery.swift:239`; P5 moves it off-actor). The fresh per-card probe is therefore scoped to **pre-kill only** (kills are rare) and runs **off-actor**. The common per-tick path keeps using the cheap batched snapshot (off-actor after P5); only a candidate-for-death card pays for a confirming probe. This does **not** reintroduce the freeze P5 removes.
+
+- **Liveness is phase-gated.** Session-vanished detection applies **only to `live` cards**. A `creatingWorktree`/`launching`/`relaunching` card legitimately has no (or a half-born) session — it is governed by its **launch timeout**, not by liveness; a `dead`/`archived` card is at rest. This is what structurally replaces the branch's "hold `recovering` across the whole provision + through failure cleanup" dance: there is no window in which a session-less being-born card can be false-killed, and no spurious `sessionVanished` can race a `spawnFailed` classification (the funnel would reject the second terminal write anyway).
 
 ### P3 — `WorktreeRegistry` actor
 
@@ -197,9 +204,15 @@ A new actor that is the **sole** owner of worktree lifecycle. Nothing else touch
 | "materialized" marker | A worktree is only *adopted* if a materialized marker says it is complete — a half-cut dir is re-created, never adopted via bare `fileExists`. | #12 |
 | One removal policy via `release()` | Never remove while `refcount > 0`; never remove a dirty tree without explicit `force`; honor the created-flag; **idempotent to an already-missing tree** (no-op success). All teardown (provision cleanup, archive, reopen) routes through `release()`. | #1 |
 
-This unifies today's split behaviour where **archive guards** (sibling scan + `force:false` + dirty-keep, `OrchestraService.swift:658-667`) but **provision force-removes** (`force:true`, `:352/:372/:448`). After P3 there is exactly one policy and provision cannot destroy a shared/dirty tree.
+This unifies today's split behaviour where **archive guards** (sibling scan + `force:false` + dirty-keep, `OrchestraService.swift:697-702`) but spawn's **orphan rollback force-removes** the just-cut branch+tree on a lineage-record failure (`OrchestraService.swift:345-351`) — and the discarded branch's provision cleanup force-removed at three more sites. After P3 there is exactly one policy and no failure path can destroy a shared/dirty tree.
 
 **Refcount is derived, not stored.** The registry's `[branch: refcount]` is **rebuilt on startup** by scanning the persisted card→worktree references (each non-archived card that references a path is +1). It is never persisted as its own counter, so a crash mid-mutation can't leave a stale count that wrongly blocks or permits a removal.
+
+**Why a refcount at all (finalization check, 2026-07-09):** main is confirmed **N:1** — the 1:1 hard spawn refusal (`7bcde48`) was reverted to a warning (`c099a82`, `OrchestraService.swift:281-287`) because co-located sibling cards on one worktree are an intentional, tested feature. The refcount is the correct generalization of today's ad-hoc sibling scan. If the separate worktree-coupling design later enforces 1:1, the refcount simply pins at 0/1 — nothing here blocks that.
+
+**Borrow trees belong to the registry too.** "Nothing else touches `git worktree`" includes the branch-tree borrow lifecycle: creating the throwaway `orch-borrow-<branch>` tree, the **exactly-one-borrower** rule (keyed on canonical path, today `+Borrow.swift:43-52`), release-only-your-registration, archive's open-borrow sweep, and the startup `sweepOrphanBorrows` all route through the registry (which delegates the git to `WorktreeManager` as before). The owning-agent rule is untouched — the *agent* merges inside the borrow tree; the registry only owns the tree's lifecycle.
+
+**Path safety (two hard rules).** (1) The registry refuses to *create* a path that escapes the worktrees root: the branch component is validated (no `..`/absolute components; component-wise prefix check on the computed path) so a maliciously-crafted branch name can't yield a card whose `cwd` escapes the allowlist. (2) The registry refuses to *remove* any path outside the roots it owns (worktrees root + `orch-borrow-*`) — a borrowed/out-of-tree dir is never rm'd by any cleanup path, no matter what a card's `cwd` says.
 
 ### P2·P3 — Degraded & missing-resource behavior (fail-safe)
 
@@ -250,7 +263,11 @@ The convergence guarantee is that a **SIGKILL / panic / power loss is not specia
 **Three requirements this imposes (each becomes a crash-restart test):**
 1. **Adopt, don't relaunch.** A surviving session for a `live`/`launching` card is adopted at its persisted epoch; the reconciler relaunches *only* when the session is truly gone. This is **already** the behavior (`recoverSessions` skips alive sessions, `+Recovery.swift:23`) — the phase model carries it forward, adopting at the persisted epoch. Idempotency (stable card id + `ensure` short-circuiting on an alive session) guarantees re-driving never spawns a duplicate session or card.
 2. **Conclusion is derived from the terminal phase — no stored "concluded" flag.** `isConcluded ≡ phase ∈ {dead(*), archived}`, read from persisted state. Entering a terminal phase notifies any *live* waiter; a parent that reconnects after a restart **re-issues `wait`**, and the daemon short-circuits on the persisted terminal phase. So a crash between "enter dead" and "notify" self-heals via the client re-issue — no persisted ack bit. Critically, **every** dead reason counts as concluded (incl. `.spawnFailed`): this is the true bug-#2 fix — today `isConcluded` only counts `done`/`archived`/`dead+agentExited` (`+Wake.swift:136`), so `spawnFailed`/`sessionVanished` silently hang the parent.
-3. **The watch registry stays in-memory — and that's fine.** `watchRegistry`/`MergeWatch` (`OrchestraService.swift:36`, `MergeWatch.swift:20`) hold live continuations, so they *cannot* be persisted. They don't need to be: the durable truth is the terminal `phase`, and a blocked parent re-issues `wait` on reconnect (P4 deadline/keepalive tears down the dead call; the harness re-drives it — see [[orchestrator-nonblocking-wait]]). The daemon never reconstructs the registry; it answers a re-issued `wait` from persisted phase. *(Once this design rebases on `main`, the git-config lineage SSOT from the branch-tree work provides the persisted parent↔child link; the `wait` recovery above does not depend on it.)*
+3. **The CLI-wait continuations stay in-memory — and that's fine.** `MergeWatch` (`MergeWatch.swift:20`) holds live continuations, so it *cannot* be persisted. It doesn't need to be: the durable truth is the terminal `phase`, and a blocked parent re-issues `wait` on reconnect (P4 deadline/keepalive tears down the dead call; the harness re-drives it — see [[orchestrator-nonblocking-wait]]). The daemon never reconstructs the continuations; it answers a re-issued `wait` from persisted phase. MCP watchers already use the *durable* watch registry + inbox path, which survives by construction. *(The git-config lineage SSOT from the branch-tree work provides the persisted parent↔child link; the `wait` recovery above does not depend on it.)*
+
+**Startup order (integration with the branch-tree rebuilds).** Phase reconciliation replaces `recoverSessions` in the existing boot sequence (`orchestrad/main.swift:47-53`): `sweepOrphanScratch → sweepOrphanBorrows (via the registry) → rebuildRefcounts → phase reconciliation → rebuildRemoteWatches → rebuildMergeRequestNudges`. The last two are already-landed, generation-guarded per-card loops — the reconciler coexists with them, it does not absorb them.
+
+**The Archive Converger keeps archive's full duty list.** Teardown via `release()` is necessary but not sufficient — today's archive also cancels the card's treeStat/child-fanout debounces (`OrchestraService.swift:671-672`), stops its remote watch loop, cancels its merge-request re-nudge timer, sweeps an open borrow (`:665-668`), and nudges live children that the parent branch is now bare (`:673-688`). All of that moves into the Archive Converger's idempotent `step()` — none of it may be lost in the migration.
 
 ### P4 — Sync contract: monotonic `rev` + idempotency + deadlines
 
@@ -320,11 +337,13 @@ classDiagram
   VerbSpec <|-- ConvergenceVerb
 ```
 
-| Kind | Contract | Verbs |
+| Kind | Contract | Verbs (all 32 registered) |
 |---|---|---|
-| **QueryVerb** | Reads observed state (incl. the reconciler's session cache). Never shells. Retry-free. | `list`, `status`, `sessions`, `trustState`, `capture` |
-| **MutationVerb** | Fast synchronous edit. Protocol **requires** `phaseGate: Set<Phase>` + an idempotency story. Writes **only** through the `transition()` funnel / store. | `move`, `send`, `trust` (see open Q3 re `rename`) |
-| **ConvergenceVerb** | Sync part **only** persists intent + returns `(card, rev)`. A paired `Converger` with idempotent `step()`/`verify()` is driven by the reconciler. | `spawn`, `archive`, `reopen`, `resume`, `restart`, `handoff` |
+| **QueryVerb** | Read-only: never writes card state, never changes `phase`. May do a *bounded, off-actor* subprocess read (tmux capture, git-config lineage read). Retry-free. | `list`, `status`, `sessions`, `capture`, `tree`, `trustState`, `inbox` |
+| **MutationVerb** | Completes inline; **idempotent**; may hop off-actor for bounded git/tmux work; **never changes `phase`**. Protocol **requires** `phaseGate: Set<Phase>` + an idempotency story. Card-state writes go through the store as field-delta patches (never whole-object); `phase` writes are forbidden (compile-visible: only the funnel writes `phase`). | `move`, `send`, `trust`, `wait` (registers a durable watch; short-circuits on a terminal phase), `inbox-edit`, `inbox-remove`, `inbox-reorder`, `set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`, `shell`, `inspect`, `closeShell`, `exec`, `send-keys` (`rename` stays a status-hook projection — resolved decision §12.3) |
+| **ConvergenceVerb** | Sync part **only** persists intent (a `transition()`) + returns `(card, rev)`. A paired `Converger` with idempotent `step()`/`verify()` is driven by the reconciler. | `spawn`, `batch-spawn`, `archive`, `reopen`, `resume`, `restart`, `handoff` |
+
+Notes on the finalized classification: the seven branch-tree verbs are **Mutations** — they do slow git/gh work but complete inline from the client's view and never touch `phase` (their slow parts hop off-actor per P5). `shell`/`inspect` are Mutations *with a real phaseGate* — denying them during `creatingWorktree`/`launching` **is** the bug-#3 fix, declared as data. `tree` is a pure lineage read. `treeStat` (the branch-vs-parent sync state machine) deliberately stays **outside** `phase`: it is orthogonal to lifecycle (a `live` card can be `inSync` or `restackNeeded`), has its own landed writers with lost-update guards, and folding it in would multiply the phase matrix for zero safety gain.
 
 **The Converger protocol:**
 
@@ -359,6 +378,11 @@ protocol Converger {
 | **Slow-repo E2E fixture** | A ~28k-file repo (~9s checkout window) exercises `--progress`, the idle-reset `Proc` watchdog, race-free `WorktreeRegistry.ensure`, and a non-frozen actor. | P3, P5 |
 | **Agent-agnostic coverage** | The Claude-only provisioning tests are extended to **Codex** (readiness via rollout tail, `.relaunchLiveness`). | Constraint |
 | **Missing-resource / degraded tests** | Delete the worktree under a `relaunching` card → re-materialized (+ observable activity); delete branch too → `dead(.resumeFailed)`; `release()` on a missing tree → no-op success; corrupt `tasks.json` → backed up + daemon recovers; refcount rebuilt on startup. | P2·P3 fail-safe |
+| **Supersede-race tests (mined from the discarded branch)** | Archive fired during `creatingWorktree` (mid-checkout), during `launching`, and in the narrow post-session-create window → converges to `archived` with the session killed + tree released within a reconciler tick; no resurrection by a late success/failure flip (the funnel rejects the edge). Run for **worktree, scratch, and borrowed** spawns. | P1 + P2 verb-conflict model |
+| **Stranded-message test** | `send` to a `creatingWorktree`/`launching` card → delivered (card woken) once it enters `live`; no path-specific release site to forget. | P1 wake-on-live |
+| **Codex rollout-binding test** | A Codex card in `launching` next to a live sibling in the same repo does **not** adopt the sibling's rollout; binding only at `launching`+current-epoch or `live`. | P1 readiness scoping |
+| **Path-safety tests** | A branch name with `..` components is rejected at `ensure`; no cleanup path removes a dir outside the registry's owned roots even if `cwd` points elsewhere. | P3 path safety |
+| **Deterministic stubs over E2E (test doctrine)** | Race/crash tests use blockable seams (blockable `ensure`, sleep-injecting session stubs, kill-at-step hooks) — the E2E variants are smoke, not proof (the review demonstrated an E2E "regression test" that passed on unfixed code). | all |
 
 ---
 
@@ -373,7 +397,7 @@ Detailed task breakdown is in the plan doc. Stage summaries (all on a fresh bran
 | **~~0 — P0 hotfixes~~ (dissolved)** | The P0 concerns (no force-remove of dirty/shared trees, conclude on spawn-fail, don't let `openShell` claim the session) are satisfied **by construction** — WorktreeRegistry (P3), funnel conclude-on-terminal (P1), and the phase gate (P6). No separate hotfix card; the branch is not merged. |
 | **1 — Sync `rev` + delta writes** | Board `rev` in `TaskStore`; `report()` becomes a field-delta write (interim fix for #4's clobber). |
 | **2 — Phase + funnel + epochs** | The phase enum, `transition()` funnel, `sessionEpoch`; **delivers non-blocking spawn**; **removes `status`** (one-time on-disk migration seeds `phase`). |
-| **3 — WorktreeRegistry** | The registry actor + refcount + materialized marker + one removal policy; `--progress` + idle-reset `Proc`. |
+| **3 — WorktreeRegistry** | The registry actor + refcount + materialized marker + one removal policy (incl. borrow trees + path safety); `--progress` + idle-reset `Proc`; **introduces the launch/checkout timeout knobs** (main has none). |
 | **4 — Reconciler jobs** | `spawn`/`reopen`/`archive`/`resume`/`restart`/`handoff` become Convergers; startup phase reconciliation. |
 | **5 — Actor hygiene** | Off-actor sweep; `TaskStore` archived-split + telemetry debounce; snapshot-from-cache. |
 | **6 — Idempotency + deadlines + UI** | Client-minted ids for spawn/send; per-RPC deadlines + ping; `displayState` UI gating + honest toasts + mac terminal retry loop. |
@@ -382,21 +406,28 @@ Detailed task breakdown is in the plan doc. Stage summaries (all on a fresh bran
 
 ## 9. On-actor blocking call sites (P5 work list)
 
-Confirmed sites that run subprocess/file IO directly on the `OrchestraService` actor:
+Confirmed sites that run subprocess/file IO directly on the `OrchestraService` actor (anchors @ `f1aa568`):
 
 | Site | Call | File:line |
 |---|---|---|
-| spawn | `worktrees.ensure` (git checkout) | `OrchestraService.swift:242` |
-| spawn | `sessions.ensure` (tmux launch) | `:313` |
-| exec | `Proc.run(sh -c, timeout 120s)` | `:651` |
+| spawn | `worktrees.ensure` (git checkout, **unbounded**) | `OrchestraService.swift:312` |
+| spawn | `sessions.ensure` (tmux launch, **unbounded**) | `:422` |
+| exec | `Proc.run(sh -c, timeout 120s)` | `:795` |
 | diffText | `GitDiffProvider().render` | `+Diff.swift:18` |
-| recomputeDiffStat | `GitDiffProvider().stat` (debounced onto a detached Task) | `+Diff.swift:37` |
+| recomputeDiffStat | `GitDiffProvider().stat` (debounced onto a detached Task) | `+Diff.swift:42` |
 | changedNotes | `launcher.changedNoteFiles` | `+Notes.swift:16` |
-| pollTelemetry | recursive `$CODEX_HOME/sessions` enumeration, every 2s | `:191-208`; `CodexAdapter.swift:243/:272` |
-| prepareToLaunch | whole-`~/.claude.json` rewrite | `ClaudeCodeAdapter.swift:127`→`ClaudeTrust.grant:311` |
-| boardSnapshot | serial 2×N tmux verbs | `:661-676` |
-| sweepOrphanScratch | `sessions.list()` | `:365` |
-| reopen | `worktrees.ensure` (≤180s) | `+Recovery.swift:217` |
+| pollTelemetry | rollout tail (recursive enumeration now lives in `CodexAdapter.rolloutFiles`), every 2s | `OrchestraService.swift:224`; `CodexAdapter.swift:282-284` |
+| prepareToLaunch | `~/.claude.json` read-merge-rewrite (multi-MB parse) | `ClaudeCodeAdapter.swift:127`→`ClaudeTrust.apply:305`/`grant:314` |
+| boardSnapshot | serial 2×N tmux verbs | `:805-820` |
+| sweepOrphanScratch | `sessions.list()` | `:467/:482` |
+| reopen | `worktrees.ensure` (**unbounded**) | `+Recovery.swift:211` |
+| reconcileLiveness (every 2s) | batched `sessions.list()` | `+Recovery.swift:239` |
+| **branch-tree (new):** `gitRemotes` | `Proc.run(git remote)` — on spawn's hot path *and* the report→treeStat funnel | `+ParentRef.swift:13-17` |
+| **branch-tree (new):** local tree probes | `treeTip`/`treeBehind*`/`treeBaseIsAncestor`/`mergeBaseOID`/`revParseOID` | `+Tree.swift:501-541` |
+| **branch-tree (new):** remote-redirect probes | `privateRefOID`/`localBranchOID`/`isAncestor` | `+Remote.swift:223-237` |
+| **branch-tree (new):** `WorktreeManager` is a struct | *all* its `Proc.run` (ensure/borrow/remove/prune) runs on the caller's actor | `WorktreeManager.swift:5` |
+
+Already off-actor (the model to follow): `GhProbe` (Task.detached, `GhProbe.swift:53-57`), `RemoteParents` (actor), `BranchLineage` (actor).
 
 ---
 
@@ -435,6 +466,14 @@ Confirmed sites that run subprocess/file IO directly on the `OrchestraService` a
 | Rebuild fresh on `main`; discard `fix/spawn-hang-standalone` | Stage 2 deletes the branch's core (`provisioning`); its 15 bugs are its implementation; the value is already in this spec. Merge cost is low (13-commit rebase / ~5-file conflict) but irrelevant to the demolish-churn argument | Integrate-then-build on the branch (build-then-delete churn); ship-the-branch-first (merges throwaway machinery to main) |
 | Pre-kill fresh probe is off-actor + kill-only | Correctness without reintroducing the actor freeze | Per-tick per-card probe (freezes actor) / stale snapshot (bug #7) |
 | Keep the single service actor | Avoids a concurrency rewrite | Per-card executors |
+| Liveness is phase-gated to `live` | A being-born card can't be false-killed; no `recovering`-style hold-across-provision dance | Guard-set choreography (the branch's approach — 3 of its hard-won fixes were holes in it) |
+| Epoch++ strictly *before* launch; sessions stamped with `ORCH_EPOCH`; hook payloads echo it | Signals are attributable deterministically; closes the branch's reopen early-callback race with no pending-confirmation buffer | Grace timers / buffer resets (racy) |
+| `wakeIfPending` runs on the funnel's entry into `live` | One structural delivery point for messages sent to a being-born card | Per-path release sites (the branch stranded the first prompt by missing one) |
+| Keep the refcount despite the worktree-coupling 1:1 target | Main is confirmed N:1 (`c099a82` reverted the refusal; co-located cards are a feature); refcount degenerates to 0/1 if 1:1 lands later | Owner-map/1:1 enforcement here (regresses a live feature; belongs to the other design) |
+| `treeStat` stays outside `phase` | Orthogonal state machine (a `live` card can be `stale`); folding it in multiplies the phase matrix for zero safety | One mega-enum of lifecycle × sync state |
+| One `relaunching` phase; restart clears `agentSessionId` in the same patch | The persisted card state itself encodes resume-vs-blank; a crash mid-relaunch recovers the *user's chosen* flavor | `relaunching(kind)` phase split (more matrix rows) or a second intent field (violates single-variable) |
+| Timeout knobs are introduced by this design, additive-optional in `Config` | Main has **no** launch/checkout timeouts (the named knobs were branch-only); an old `config.json` must still decode | Assuming the knobs exist (the spec's original #9 framing — wrong against main) |
+| Borrow trees route through the registry | "Nothing else touches git worktree" must include borrows or the single-policy guarantee is a fiction | Leaving `WorktreeManager.borrow`/`pruneOrphanBorrows` as a second, unserialized owner |
 
 ## 12. Resolved decisions (Allen, 2026-07-08)
 
