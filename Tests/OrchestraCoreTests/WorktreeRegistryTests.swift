@@ -135,4 +135,69 @@ struct WorktreeRegistryTests {
     // `sweepOrphanBorrows` is what makes this hold when `worktreesRoot` is non-canonical; the stub uses
     // one root string so this test proves the liveness guard, and the canonicalization is asserted by
     // review of the `PathResolver.canonical` calls.)
+
+    // MARK: - Task 3.4: release() — the single removal policy
+
+    @Test func test_releaseNeverRemovesWhileReferenced() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID(), b = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "shared", cardId: a)   // materialized (marker present)
+        var deadSibling = card(b, cwd: w.path); deadSibling.phase = .dead(.completed)   // dead still holds
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path), deadSibling], force: false)
+        #expect(!stub.removed.contains(w.path))   // kept — a dead sibling references it
+    }
+
+    @Test func test_releaseNeverRemovesDirtyWithoutForce() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "d", cardId: a)
+        stub.setDirty(w.path, true)
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)   // no throw
+        #expect(!stub.removed.contains(w.path))   // dirty + !force ⇒ kept
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: true)
+        #expect(stub.removed.contains(w.path))    // force ⇒ removed
+    }
+
+    @Test func test_releaseHonorsCreatedFlag() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID()
+        let wt = stub.path(repo: "app", branch: "adopted")
+        try FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)  // NO marker
+        stub.setDirty(wt, false)
+        try await reg.release(cardId: a, cards: [card(a, cwd: wt)], force: false)
+        #expect(!stub.removed.contains(wt))   // no marker ⇒ not "created by us" ⇒ kept
+    }
+
+    @Test func test_releaseIdempotentToMissingTree() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "g", cardId: a)
+        try FileManager.default.removeItem(atPath: w.path)   // tree already gone
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)   // no throw
+        #expect(!stub.removed.contains(w.path))   // nothing to remove
+    }
+
+    @Test func test_releaseKeepsTreeWithInflightAdopter() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID(), b = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "nb", cardId: a)   // A creates + marks; inflight {a}
+        _ = try await reg.ensure(repo: "app", branch: "nb", cardId: b)       // B ADOPTS; inflight {a,b}
+        // A's rollback: A is present (as a synthetic), B is NOT in the store yet.
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)
+        #expect(!stub.removed.contains(w.path))   // kept — B is an in-flight holder
+        // Now B settles (archive/teardown) with no other holder ⇒ removable.
+        try await reg.release(cardId: b, cards: [card(b, cwd: w.path)], force: false)
+        #expect(stub.removed.contains(w.path))    // last holder gone ⇒ removed
+    }
+
+    @Test func test_releaseNeverRemovesOutsideOwnedRoots() async throws {
+        let (reg, stub, base) = makeRegistry()
+        let a = UUID()
+        let outside = base + "/repos/app"   // under reposRoot, NOT worktreesRoot
+        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        await reg.stampMarkers(forMigratedPaths: [outside])   // satisfy the `created`(marker) guard so ONLY
+                                                              // the owned-roots guard can prevent removal
+        try await reg.release(cardId: a, cards: [card(a, cwd: outside)], force: true)
+        #expect(!stub.removed.contains(outside))              // kept SOLELY because it's outside worktreesRoot
+    }
 }

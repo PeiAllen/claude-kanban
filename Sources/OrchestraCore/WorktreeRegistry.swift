@@ -158,6 +158,32 @@ public actor WorktreeRegistry {
         return real == root || real.hasPrefix(root.hasSuffix("/") ? root : root + "/")
     }
 
+    // MARK: - release (single removal policy)
+    /// Seam for Stage-4 conservative mode (post-corrupt-recovery): when true, release removes nothing until
+    /// ownership is positively re-established. PR4b/Task 4.4 sets it; here it just gates the policy.
+    private var conservativeMode = false
+    public func setConservativeMode(_ on: Bool) { conservativeMode = on }
+
+    /// The SINGLE removal policy every teardown routes through. Removes the card's tree only when
+    /// siblings==0 && (!dirty || force) && created(marker present) && pathUnderOwnedRoots. A missing
+    /// tree is a no-op success. Never throws in a way that escalates to data loss.
+    public func release(cardId: UUID, cards: [Task], force: Bool) async throws {
+        guard let card = cards.first(where: { $0.id == cardId }) else { return }   // unknown ⇒ no-op
+        let wt = card.cwd
+        let canon = PathResolver.canonical(wt)
+        defer { inflight[canon]?.remove(cardId); if inflight[canon]?.isEmpty == true { inflight[canon] = nil } }
+        if conservativeMode { return }                                            // Stage-4 seam
+        guard isUnderOwnedRoots(wt) else { return }                              // never outside owned roots
+        guard markerExists(wt) else { return }                                    // created(≡marker) guard
+        guard FileManager.default.fileExists(atPath: wt) else { removeMarker(wt); return }  // idempotent-to-missing
+        let storeSibling = cards.contains { $0.id != cardId && !$0.archived && $0.origin == .worktree && $0.cwd == wt }
+        let inflightSibling = !(inflight[canon]?.subtracting([cardId]).isEmpty ?? true)   // another in-flight holder?
+        guard !storeSibling && !inflightSibling else { return }                 // referenced (stored OR in-flight) ⇒ keep
+        if manager.isDirty(worktree: wt) && !force { return }                    // dirty + !force ⇒ keep
+        try? manager.remove(worktree: wt, force: force)                          // never throw to data loss
+        if !FileManager.default.fileExists(atPath: wt) { removeMarker(wt) }
+    }
+
     // MARK: - borrow persistence (atomic JSON, [String:String] on disk)
     private func loadBorrows() {
         guard !borrowsLoaded else { return }
