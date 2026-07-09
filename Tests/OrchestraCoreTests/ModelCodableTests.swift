@@ -1,0 +1,95 @@
+import Foundation
+import Testing
+@testable import OrchestraCore
+
+@Suite("Model Codable — Phase / RunState / Task lifecycle fields")
+struct ModelCodableTests {
+
+    @Test("Phase round-trips every case incl. associated values")
+    func test_phaseRoundTrips() throws {
+        let cases: [Phase] = [
+            .creatingWorktree,
+            .launching,
+            .live(.running),
+            .live(.waiting(.permission)),
+            .live(.waiting(.humanTurn)),
+            .relaunching,
+            .dead(.completed),
+            .dead(.spawnFailed),
+            .dead(.agentExited),
+            .archived(teardownComplete: false),
+            .archived(teardownComplete: true),
+        ]
+        for phase in cases {
+            let data = try OrchestraJSON.wire.encode(phase)
+            let back = try OrchestraJSON.decoder.decode(Phase.self, from: data)
+            #expect(back == phase, "round-trip mismatch for \(phase)")
+        }
+    }
+
+    @Test("Phase encodes as {name, detail?} per the wire contract")
+    func test_phaseWireShape() throws {
+        // Structural (order-independent) checks: `OrchestraJSON.wire` doesn't sort keys, so assert the
+        // decoded object shape rather than an exact byte string.
+        func obj(_ p: Phase) throws -> [String: Any] {
+            try JSONSerialization.jsonObject(with: OrchestraJSON.wire.encode(p)) as! [String: Any]
+        }
+        // Payload-free cases: `name` only, no `detail` key.
+        for (p, name) in [(Phase.creatingWorktree, "creatingWorktree"),
+                          (.launching, "launching"),
+                          (.relaunching, "relaunching")] {
+            let o = try obj(p)
+            #expect(o["name"] as? String == name)
+            #expect(o["detail"] == nil)
+        }
+        // Nested enums encode recursively: live → {name:live, detail:{name:waiting, detail:permission}}.
+        let live = try obj(.live(.waiting(.permission)))
+        #expect(live["name"] as? String == "live")
+        let run = live["detail"] as? [String: Any]
+        #expect(run?["name"] as? String == "waiting")
+        #expect(run?["detail"] as? String == "permission")
+        // DeadReason stays a raw String in `detail`.
+        let dead = try obj(.dead(.completed))
+        #expect(dead["name"] as? String == "dead")
+        #expect(dead["detail"] as? String == "completed")
+        // archived carries its Bool directly as `detail`.
+        let arch = try obj(.archived(teardownComplete: true))
+        #expect(arch["name"] as? String == "archived")
+        #expect(arch["detail"] as? Bool == true)
+    }
+
+    @Test("Phase.kind + isTerminal classify correctly")
+    func test_phaseKindAndTerminal() {
+        #expect(Phase.creatingWorktree.kind == .creatingWorktree)
+        #expect(Phase.launching.kind == .launching)
+        #expect(Phase.live(.running).kind == .live)
+        #expect(Phase.relaunching.kind == .relaunching)
+        #expect(Phase.dead(.completed).kind == .dead)
+        #expect(Phase.archived(teardownComplete: false).kind == .archivedPending)
+        #expect(Phase.archived(teardownComplete: true).kind == .archivedComplete)
+
+        #expect(Phase.dead(.agentExited).isTerminal)
+        #expect(Phase.archived(teardownComplete: false).isTerminal)
+        #expect(Phase.archived(teardownComplete: true).isTerminal)
+        #expect(!Phase.live(.running).isTerminal)
+        #expect(!Phase.launching.isTerminal)
+    }
+
+    @Test("Task round-trips the four new phase fields")
+    func test_taskCarriesPhaseFields() throws {
+        let epochDate = Date(timeIntervalSince1970: 1_700_000_000)
+        var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
+                     model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                     order: 0, initialPrompt: "go")
+        t.phase = .live(.waiting(.permission))
+        t.sessionEpoch = 3
+        t.phaseChangedAt = epochDate
+        t.pendingSeed = "carried context"
+
+        let back = try OrchestraJSON.decoder.decode(Task.self, from: OrchestraJSON.wire.encode(t))
+        #expect(back.phase == .live(.waiting(.permission)))
+        #expect(back.sessionEpoch == 3)
+        #expect(back.phaseChangedAt == epochDate)
+        #expect(back.pendingSeed == "carried context")
+    }
+}

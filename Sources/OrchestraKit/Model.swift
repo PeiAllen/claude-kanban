@@ -32,6 +32,118 @@ public enum DeadReason: String, Codable, Sendable {
     case sessionVanished   // poll liveness reconcile: tmux session gone, no SessionEnd (crash / `tmux kill`)
     case rebootUnrevived   // reboot sweep couldn't auto-revive (no id / transcript gone / resume failed at boot)
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
+    case completed         // the agent finished its work and the card was retired to Done
+    case spawnFailed       // the initial spawn never came up (worktree/launch failure before first life)
+}
+
+/// The running sub-state of a `live` card — the mid-life detail that used to live in `status`/`waitReason`.
+/// `.running` = the agent is actively working; `.waiting` = blocked, carrying *why* (see `WaitReason`).
+public enum RunState: Codable, Equatable, Sendable {
+    case running
+    case waiting(WaitReason)
+
+    private enum CodingKeys: String, CodingKey { case name, detail }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .running: try c.encode("running", forKey: .name)
+        case .waiting(let reason):
+            try c.encode("waiting", forKey: .name)
+            try c.encode(reason, forKey: .detail)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try c.decode(String.self, forKey: .name)
+        switch name {
+        case "running": self = .running
+        case "waiting": self = .waiting(try c.decode(WaitReason.self, forKey: .detail))
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .name, in: c,
+                debugDescription: "unknown RunState case \"\(name)\"")
+        }
+    }
+}
+
+/// The card's persisted lifecycle phase — the convergence SSOT that replaces the ad-hoc
+/// `status`/`waitReason`/`dead` triple (Stage 2). Every spawn enters at `.creatingWorktree`
+/// ("materialize cwd"), then `.launching`, then `.live(_)`; `.relaunching` covers a restart/resume in
+/// flight; `.dead(_)`/`.archived(_)` are terminal. `.archived(teardownComplete:)` distinguishes an
+/// archive whose worktree/session teardown is still pending from one fully torn down.
+///
+/// Wire form is a `{ "name": <case>, "detail": <associated value> }` object — `detail` present only for
+/// the cases that carry a payload (`live`, `dead`, `archived`); nested enums (`RunState`, `WaitReason`)
+/// encode recursively, `DeadReason` as its raw `String`, and `archived`'s Bool directly.
+public enum Phase: Codable, Equatable, Sendable {
+    case creatingWorktree      // materialize the cwd (worktree / scratch / borrow) — ALL spawns enter here
+    case launching             // cwd ready, bringing the agent session up
+    case live(RunState)        // the agent is up; sub-state in `RunState`
+    case relaunching           // a restart/resume is in flight
+    case dead(DeadReason)      // terminal-ish: session gone, awaiting recovery (see `DeadReason`)
+    case archived(teardownComplete: Bool)  // off the board; `teardownComplete` = worktree/session torn down
+
+    /// Coarse phase discriminant for stepper dispatch (Stage 4) + terminal/bump checks — flattens the
+    /// `archived` Bool into two kinds so callers can switch without unpacking associated values.
+    public enum Kind: String, Sendable {
+        case creatingWorktree, launching, live, relaunching, dead, archivedPending, archivedComplete
+    }
+
+    public var kind: Kind {
+        switch self {
+        case .creatingWorktree: return .creatingWorktree
+        case .launching: return .launching
+        case .live: return .live
+        case .relaunching: return .relaunching
+        case .dead: return .dead
+        case .archived(let done): return done ? .archivedComplete : .archivedPending
+        }
+    }
+
+    /// A phase from which the card does not run again on its own — `dead(*)` or `archived(*)`.
+    public var isTerminal: Bool {
+        switch self {
+        case .dead, .archived: return true
+        default: return false
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, detail }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .creatingWorktree: try c.encode("creatingWorktree", forKey: .name)
+        case .launching:        try c.encode("launching", forKey: .name)
+        case .relaunching:      try c.encode("relaunching", forKey: .name)
+        case .live(let run):
+            try c.encode("live", forKey: .name)
+            try c.encode(run, forKey: .detail)
+        case .dead(let reason):
+            try c.encode("dead", forKey: .name)
+            try c.encode(reason, forKey: .detail)
+        case .archived(let done):
+            try c.encode("archived", forKey: .name)
+            try c.encode(done, forKey: .detail)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try c.decode(String.self, forKey: .name)
+        switch name {
+        case "creatingWorktree": self = .creatingWorktree
+        case "launching":        self = .launching
+        case "relaunching":      self = .relaunching
+        case "live":             self = .live(try c.decode(RunState.self, forKey: .detail))
+        case "dead":             self = .dead(try c.decode(DeadReason.self, forKey: .detail))
+        case "archived":         self = .archived(teardownComplete: try c.decode(Bool.self, forKey: .detail))
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .name, in: c,
+                debugDescription: "unknown Phase case \"\(name)\"")
+        }
+    }
 }
 
 /// Spawn sheet "Start in".
@@ -237,6 +349,16 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var deadReason: DeadReason?  // set with `status = .dead`; cleared when status leaves `.dead`
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
     public var waitReason: WaitReason?  // set with `status = .waiting`; cleared when status leaves `.waiting`
+    /// Persisted lifecycle phase — the convergence SSOT (Stage 2). Added alongside `status`/`waitReason`
+    /// for now; later stages retire those in favor of `phase` + the `transition()` funnel.
+    public var phase: Phase
+    /// Monotonic per-card session generation — bumped on each (re)launch so stale-session signals
+    /// (liveness polls, late hooks) from a superseded generation can be fenced out.
+    public var sessionEpoch: Int
+    /// When `phase` last changed — drives phase-relative timers (bump/nudge) + terminal dwell checks.
+    public var phaseChangedAt: Date
+    /// Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. nil ⇒ none.
+    public var pendingSeed: String?
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
@@ -266,6 +388,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
         waitReason: WaitReason? = nil,
+        phase: Phase = .live(.running),
+        sessionEpoch: Int = 0,
+        phaseChangedAt: Date = Date(),
+        pendingSeed: String? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
@@ -295,6 +421,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.deadReason = deadReason
         self.deadDetail = deadDetail
         self.waitReason = waitReason
+        self.phase = phase
+        self.sessionEpoch = sessionEpoch
+        self.phaseChangedAt = phaseChangedAt
+        self.pendingSeed = pendingSeed
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
@@ -305,6 +435,57 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    // Custom decode so cards persisted *before* the lifecycle fields existed still load: the new
+    // non-optional fields (`phase`/`sessionEpoch`/`phaseChangedAt`) are decoded tolerantly with the
+    // same defaults as the memberwise init (Swift's synthesized decoder ignores property defaults,
+    // so an absent key would otherwise throw and strand every legacy card). Encode stays synthesized.
+    // Previously-required fields keep `decode` — their decode semantics are unchanged.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
+        case agentId, model, startIn, column, order, status, deadReason, deadDetail, waitReason
+        case phase, sessionEpoch, phaseChangedAt, pendingSeed
+        case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
+        case createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.titleProvisional = try c.decode(Bool.self, forKey: .titleProvisional)
+        self.desc = try c.decode(String.self, forKey: .desc)
+        self.repo = try c.decode(String.self, forKey: .repo)
+        self.branch = try c.decode(String.self, forKey: .branch)
+        self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
+        self.cwd = try c.decode(String.self, forKey: .cwd)
+        self.origin = try c.decode(CardOrigin.self, forKey: .origin)
+        self.access = try c.decode(CardAccess.self, forKey: .access)
+        self.agentId = try c.decode(String.self, forKey: .agentId)
+        self.model = try c.decode(AgentModel.self, forKey: .model)
+        self.startIn = try c.decode(StartIn.self, forKey: .startIn)
+        self.column = try c.decode(Column.self, forKey: .column)
+        self.order = try c.decode(Int.self, forKey: .order)
+        self.status = try c.decode(AgentStatus.self, forKey: .status)
+        self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
+        self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
+        self.waitReason = try c.decodeIfPresent(WaitReason.self, forKey: .waitReason)
+        // New lifecycle fields — tolerant of absence for legacy on-disk cards.
+        self.phase = try c.decodeIfPresent(Phase.self, forKey: .phase) ?? .live(.running)
+        self.sessionEpoch = try c.decodeIfPresent(Int.self, forKey: .sessionEpoch) ?? 0
+        self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
+            ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
+        self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
+        self.ctxPct = try c.decode(Double.self, forKey: .ctxPct)
+        self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
+        self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
+        self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
+        self.priorSessionIds = try c.decode([String].self, forKey: .priorSessionIds)
+        self.initialPrompt = try c.decode(String.self, forKey: .initialPrompt)
+        self.archived = try c.decode(Bool.self, forKey: .archived)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
 
 
