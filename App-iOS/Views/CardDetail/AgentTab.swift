@@ -29,11 +29,11 @@ struct AgentTab: View {
     @FocusState private var composerFocused: Bool
 
     var body: some View {
-        if task.status == .dead {
+        if task.phaseDisplay == .dead {
             RecoveryView(task: task)
         } else {
             VStack(spacing: 0) {
-                if let reason = task.status == .waiting ? task.waitReason : nil {
+                if let reason = task.waitReason {
                     WaitBanner(reason: reason, theme: theme)
                 }
                 CaptureRender(cardId: task.id)

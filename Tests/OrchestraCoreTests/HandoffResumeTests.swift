@@ -103,7 +103,7 @@ struct ResumeSeedTests {
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
         let updated = try await resumed
 
-        #expect(updated.status == .waiting)
+        #expect(updated.waitReason != nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id — NOT a fresh restart
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.contains("--resume"))

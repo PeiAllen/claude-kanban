@@ -52,6 +52,7 @@ import Testing
     private func sampleTask() -> Task {
         Task(title: "Fix login", repo: "/repos/app", branch: "b", cwd: "/wt/app/b",
              model: AgentModel(id: "claude-sonnet-4-5"), startIn: .plan, column: .plan, order: 0,
+             phaseChangedAt: Self.wholeSecondDate,
              initialPrompt: "Fix login", createdAt: Self.wholeSecondDate, updatedAt: Self.wholeSecondDate)
     }
 

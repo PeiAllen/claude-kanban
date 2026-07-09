@@ -15,6 +15,7 @@ final class E2EBinaryTests {
     let repo: String
     var server: ControlServer!
     var service: OrchestraService!
+    var pollLoop: _Concurrency.Task<Void, Never>!
 
     init() throws {
         base = IntegrationSupport.tempDir("e2e")
@@ -41,9 +42,23 @@ final class E2EBinaryTests {
                                    worktrees: WorktreeManager(config: config), sessions: sessions)
         server = ControlServer(service: service, socketPath: ctlSock)
         try server.start()
+
+        // The real daemon's 2s background poll (orchestrad/main.swift) — mirrored here (faster) so a
+        // capability-gated blank spawn reaches `.live` via the N=3 liveness fallback (the fake agent fires
+        // no SessionStart(startup) hook), exactly as production would drive it. Without this loop the
+        // spawn would await its launch-ready signal until the grace and fail.
+        let svc = service!
+        pollLoop = _Concurrency.Task {
+            while !_Concurrency.Task.isCancelled {
+                try? await _Concurrency.Task.sleep(for: .milliseconds(200))
+                await svc.reconcileLiveness()
+                await svc.pollTelemetry()
+            }
+        }
     }
 
     deinit {
+        pollLoop?.cancel()
         server?.stop()
         _ = try? Proc.run(["tmux", "-L", tmuxSock, "kill-server"])
     }

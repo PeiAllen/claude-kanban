@@ -43,6 +43,10 @@ enum ReportHelper {
         var fields: [String: JSONValue] = ["ref": .string(taskId), "event": .string(kind)]
         if let report { fields["report"] = (try? JSONValue(encodable: report)) ?? .null }
         if let source { fields["source"] = .string(source.rawValue) }
+        // Echo the session's launch generation (`$ORCH_EPOCH`, stamped into the tmux env at launch) so the
+        // daemon can fence a stale/late liveness signal against the card's current epoch. Absent on a
+        // pre-upgrade session → the daemon falls back to a real-liveness probe for kill-class signals.
+        if let epoch = env["ORCH_EPOCH"], let n = Int(epoch) { fields["epoch"] = .int(n) }
         let params = JSONValue.object(fields)
 
         // statusLine never yields a response → pure fire-and-forget send (~50ms; snapshot self-heals).

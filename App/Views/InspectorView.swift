@@ -14,7 +14,7 @@ struct InspectorView: View {
     var body: some View {
         if let t = model.selected {
             Group {
-                if t.status == .dead {
+                if t.phaseDisplay == .dead {
                     // Recovery fills the whole sidebar and owns its own close button + actions.
                     RecoveryView(task: t)
                 } else {
@@ -91,7 +91,7 @@ private struct HeaderBar: View {
             .help("Open this card's changed notes in its worktree (Obsidian)")
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
-            if task.status != .dead {
+            if task.phaseDisplay != .dead {
                 inboxAction
 
                 Button {
@@ -484,7 +484,7 @@ private struct TerminalHeader: View {
             .buttonStyle(.plain)
             .help("Open a read-only agent in this worktree (can read/search/git, cannot edit)")
 
-            StatusPill(status: task.status.rawValue)
+            StatusPill(status: task.phaseDisplay)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -494,7 +494,7 @@ private struct TerminalHeader: View {
 
 private struct StatusPill: View {
     @Environment(\.theme) var theme: Theme
-    let status: String
+    let status: PhaseDisplayKey
     var body: some View {
         let sem = theme.statusColor(status)
         HStack(spacing: 6) {
@@ -559,7 +559,7 @@ private struct SharedWorktreeList: View {
             ForEach(siblings) { sib in
                 Button { onPick(sib.id) } label: {
                     HStack(spacing: 8) {
-                        Circle().fill(theme.statusColor(sib.status.rawValue).dot).frame(width: 6, height: 6)
+                        Circle().fill(theme.statusColor(sib.phaseDisplay).dot).frame(width: 6, height: 6)
                         Text(sib.shortId).font(F.mono(10)).foregroundColor(theme.text3)
                         Text(sib.title).font(F.ui(11.5)).foregroundColor(theme.text).lineLimit(1)
                         Spacer(minLength: 12)

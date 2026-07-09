@@ -6,8 +6,11 @@ public struct Conclusion: Sendable, Equatable, Codable {
     public let cardId: UUID
     public let ref: String
     public let kind: Kind
-    public init(cardId: UUID, ref: String, kind: Kind) {
-        self.cardId = cardId; self.ref = ref; self.kind = kind
+    /// The terminal `DeadReason` that settled the card — carried so `wait`/`watch` resolve on EVERY
+    /// terminal reason (the durable bug-#2 fix), not just `.agentExited`. `nil` for archived / `.done`.
+    public let deadReason: DeadReason?
+    public init(cardId: UUID, ref: String, kind: Kind, deadReason: DeadReason? = nil) {
+        self.cardId = cardId; self.ref = ref; self.kind = kind; self.deadReason = deadReason
     }
 }
 
@@ -15,7 +18,7 @@ public struct Conclusion: Sendable, Equatable, Codable {
 /// detection — no git poll, no file stat, no per-card watcher. `OrchestraService` (the single
 /// authority for terminal state) feeds it via `conclude`; MergeWatch just records a continuation keyed
 /// on the watch set and resolves it when one of those cards concludes. This mirrors the existing
-/// `resumeWaiters` / `awaitResume` / `resolveResume` pattern in `OrchestraService+Recovery.swift`.
+/// `readinessWaiters` / `awaitReadiness` / `resolveReadiness` pattern in `OrchestraService+Recovery.swift`.
 public actor MergeWatch {
     private var subscriptions: [UUID: (watch: Set<UUID>, cont: CheckedContinuation<Conclusion?, Never>)] = [:]
 

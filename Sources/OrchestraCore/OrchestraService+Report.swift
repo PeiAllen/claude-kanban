@@ -7,11 +7,9 @@ extension OrchestraService {
     /// sessionId rollover, prompt re-title, session source, end reason) applied unconditionally, and
     /// `snapshot` (ctxPct/desc/status/model/title) applied as a unit behind the per-card monotonic
     /// `seq` guard. Persists + emits only when something changed.
-    public func report(_ id: UUID, _ patch: StatusReport) async throws {
+    public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
-        var statusTransition: (from: AgentStatus, to: AgentStatus)? = nil
-        var turnCompletionConcluded = false
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
@@ -23,9 +21,15 @@ extension OrchestraService {
             // SessionEnd genuine termination → mid-life death (no auto-resume).
             if !staleSessionEnd,
                let reason = ev.endReason, ["exit", "logout", "other"].contains(reason) {
-                if !recovering.contains(id) && task.status != .dead && !task.archived {
-                    statusTransition = (task.status, .dead)
-                    task.status = .dead
+                // Nil-epoch kill-class discipline: a pre-upgrade SessionEnd (no `observedEpoch`) can't be
+                // epoch-fenced by the funnel, so before we treat it as a death we PROBE real liveness — a
+                // stale SessionEnd for a session that is actually still alive must not kill the card. An
+                // epoch-stamped signal skips the probe (the funnel's generation fence already covers it,
+                // dropping a superseded one and applying a current one).
+                let sessionGone = observedEpoch != nil
+                    || !((try? sessions.isAlive(sessions.sessionName(id))) ?? false)
+                if task.phase.kind != .dead && !task.archived && sessionGone {
+                    task.phase = .dead(.agentExited)
                     task.deadReason = .agentExited
                     task.deadDetail = "agent exited (\(reason))"
                 }
@@ -36,21 +40,33 @@ extension OrchestraService {
                let newId = ev.sessionId, !newId.isEmpty, newId != task.agentSessionId {
                 if let old = task.agentSessionId, !old.isEmpty { task.priorSessionIds.append(old) }
                 task.agentSessionId = newId
+                // Codex `.rolloutMeta` readiness: binding a discovered id while the card is still LAUNCHING
+                // means the rollout tail just observed the fresh session's `session_meta` line — that IS the
+                // launch's readiness signal, so resolve the spawn/reopen's inline waiter. Capability-neutral:
+                // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
+                // while launching), so this never fires for Claude.
+                if before.phase.kind == .launching { resolveReadiness(id, true) }
             }
 
             // SessionStart source semantics.
             if let src = ev.sessionSource {
                 switch src {
                 case "clear":
-                    if task.status != .dead { task.status = .waiting }
+                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
                     task.titleProvisional = true
                 case "resume":
-                    if task.status != .dead { task.status = .waiting }
+                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
-                    resolveResume(id, true)   // confirm a pending recovery
+                    resolveReadiness(id, true)   // confirm a pending RELAUNCH's inline readiness wait
+                case "startup":
+                    // Claude `.sessionStartHook` readiness for a fresh LAUNCH: the agent's own
+                    // SessionStart(startup) is the launch's ready marker, so resolve the spawn/reopen's
+                    // inline waiter for a still-launching card. No phase write here — the launch verb owns
+                    // the landing (prompt-in-flight → running, else waiting) once its await unblocks.
+                    if before.phase.kind == .launching { resolveReadiness(id, true) }
                 default:
-                    break   // startup / compact: no status change
+                    break   // compact: no status change
                 }
             }
 
@@ -61,8 +77,7 @@ extension OrchestraService {
                     task.title = titleSeed(from: prompt)
                     task.titleProvisional = false
                 }
-                if task.status == .waiting { statusTransition = statusTransition ?? (task.status, .running) }
-                if task.status != .dead { task.status = .running }
+                if task.phase.kind != .dead { task.phase = .live(.running) }
             }
             // (`ev.transcriptPath` is carried for completeness but not persisted — the path is
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
@@ -108,57 +123,80 @@ extension OrchestraService {
                     task.title = name
                     task.titleProvisional = false
                 }
-                if let s = snap.status, task.status != .dead {
-                    if s != task.status { statusTransition = statusTransition ?? (task.status, s) }
-                    task.status = s
-                    if s == .waiting { task.waitReason = snap.waitReason }
+                // The agent's observed run-state maps onto a `.live(_)` phase.
+                if let run = snap.run, task.phase.kind != .dead {
+                    task.phase = .live(run)
                 }
+                // A worktree card stays long-lived on a completed turn (`.live(.waiting(.humanTurn))`, set
+                // by `run` above); only a read-only freeform/scratch card (a one-shot delegation) concludes.
                 if snap.turnCompleted == true, shouldConcludeOnTurnCompletion(task) {
-                    if task.status != .done { statusTransition = (before.status, .done) }
-                    task.status = .done
-                    task.waitReason = nil
-                    turnCompletionConcluded = true
+                    task.phase = .dead(.completed)
                 }
             }
         }
 
-        // Clear dead metadata if we left .dead.
-        if before.status == .dead && task.status != .dead {
-            task.deadReason = nil; task.deadDetail = nil
-        }
-        // waitReason is meaningful only while waiting.
-        if task.status != .waiting { task.waitReason = nil }
+        // Split the net phase change out of the field-delta write and route it through the `transition()`
+        // funnel — the SOLE writer of `phase` and the SOLE concluder (so report no longer double-concludes).
+        // The remaining report-owned fields (ctx/desc/model/title/sessionId) still land via the field-delta
+        // patch; `phase`/`deadReason`/`deadDetail` are reverted here so that patch leaves them untouched.
+        let targetPhase = task.phase
+        let targetDeadReason = task.deadReason
+        let targetDeadDetail = task.deadDetail
+        task.phase = before.phase
+        task.deadReason = before.deadReason
+        task.deadDetail = before.deadDetail
 
-        guard task != before else { return }   // idempotent: no delta -> no persist, no event
-        let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
-        emit(.taskUpserted(saved), rev: rev)
+        var didChange = false
+
+        // Field-delta write (non-phase). Idempotent: no delta -> no persist, no event.
+        if task != before {
+            let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
+            emit(.taskUpserted(saved), rev: rev)
+            didChange = true
+        }
+
+        // Phase change → the funnel. `observedEpoch` fences a superseded generation (a stale liveness
+        // signal is dropped as a no-op). The companion `mutate` carries the dead metadata atomically with
+        // the phase write; the funnel emits the upsert, runs conclusions, and fires wake-on-live.
+        if targetPhase != before.phase {
+            let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
+                t.deadReason = targetDeadReason
+                t.deadDetail = targetDeadDetail
+            }
+            if result == .applied {
+                didChange = true
+                // Activity only on a real transition — dead, or a waiting<->running change. Derived from
+                // the coarse `phase` word before vs after (the retired `status`-transition tracking).
+                if let word = Self.activityWord(targetPhase), Self.activityWord(before.phase) != word {
+                    let card = await store.get(id) ?? before
+                    if word == "died" {
+                        emitActivity(.dead, card, .agent, "agent died")
+                    } else {   // "waiting" | "running"
+                        emitActivity(.statusChanged, card, .agent, "agent \(word)")
+                    }
+                }
+            }
+        }
 
         // Code review on the board (axis 7): any per-card activity that lands here (a normalized
         // StatusReport — no tool_name) coalesces into a re-stat of the footer diffstat. Adapter-
         // agnostic by construction; the debounce + idempotent recompute bound the cost.
-        if saved.origin == .worktree {
+        if didChange, before.origin == .worktree {
             scheduleDiffStat(id)
             scheduleTreeStat(id)                                    // this card's own parent may have moved
             scheduleChildFanout(id)                                 // a moved parent stales children (debounced)
         }
+    }
 
-        // Activity only on a real status transition (waiting<->running) or dead.
-        if let tr = statusTransition, tr.from != tr.to {
-            if tr.to == .dead {
-                emitActivity(.dead, saved, .agent, "agent died")
-            } else if tr.to == .waiting || tr.to == .running {
-                emitActivity(.statusChanged, saved, .agent, "agent \(tr.to.rawValue)")
-            }
-        }
-
-        // A clean agent exit (SessionEnd exit/logout/other) is a SETTLED conclusion (.exited) — the
-        // agent quit, no auto-resume. A transient crash (sessionVanished) is NOT concluded here; it may
-        // still be revived (that path never sets `.agentExited`, and `recovering` guards a stale exit).
-        if let tr = statusTransition, tr.to == .dead, saved.deadReason == .agentExited, !recovering.contains(id) {
-            await concludeCard(id, .exited)
-        }
-        if turnCompletionConcluded {
-            await concludeCard(id, .done)
+    /// The coarse activity word for a phase — the transition vocabulary the Activity feed used to read
+    /// off `status`. `.dead(.completed)` maps to nil (a done conclusion is not a "died" activity).
+    private static func activityWord(_ phase: Phase) -> String? {
+        switch phase {
+        case .live(.running):   return "running"
+        case .live(.waiting):   return "waiting"
+        case .dead(.completed): return nil
+        case .dead:             return "died"
+        default:                return nil   // creatingWorktree / launching / relaunching / archived
         }
     }
 
@@ -167,7 +205,7 @@ extension OrchestraService {
     /// on a `.fileTail` agent is stamped with a synthetic "now" in the tailer's µs clock space so a
     /// late-delivered pre-block rollout line can't clobber it. Everything else is unchanged.
     private func fencedSeq(for snap: SnapshotReport, taskAgentId: String, lastSeq: UInt64) -> UInt64 {
-        guard snap.seq == 0, snap.status == .waiting, snap.waitReason == .permission,
+        guard snap.seq == 0, snap.run == .waiting(.permission),
               (try? registry.get(taskAgentId))?.capabilities.telemetry == .fileTail else {
             return snap.seq
         }
@@ -181,6 +219,6 @@ extension OrchestraService {
     /// branch lifecycle to merge, so an adapter's explicit task-completion signal is the card's completion
     /// signal. Worktree cards remain long-lived and keep their existing `.waiting(.humanTurn)` behavior.
     private func shouldConcludeOnTurnCompletion(_ task: Task) -> Bool {
-        task.origin != .worktree && task.access == .readOnly && !task.archived && task.status != .dead
+        task.origin != .worktree && task.access == .readOnly && !task.archived && task.phase.kind != .dead
     }
 }

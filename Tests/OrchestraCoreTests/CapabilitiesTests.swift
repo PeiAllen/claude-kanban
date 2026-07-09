@@ -21,8 +21,8 @@ struct CapabilitiesTests {
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
         #expect(AgentCapabilities.TerminalImagePaste.allCases.map(\.rawValue) == ["direct", "controlV"])
-        #expect(AgentCapabilities.ResumeConfirmation.allCases.map(\.rawValue)
-                == ["sessionStartHook", "relaunchLiveness"])
+        #expect(AgentCapabilities.ReadinessConfirmation.allCases.map(\.rawValue)
+                == ["sessionStartHook", "rolloutMeta", "relaunchLiveness"])
     }
 
     @Test("Claude advertises its frozen shipped tuple")
@@ -36,7 +36,7 @@ struct CapabilitiesTests {
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
-        #expect(c.resumeConfirmation == .sessionStartHook)   // Claude confirms resume via its SessionStart hook
+        #expect(c.readinessConfirmation == .sessionStartHook)   // Claude confirms via its SessionStart hook
     }
 
     @Test("ClaudeCodeAdapter conforms and advertises the Claude tuple")
@@ -44,12 +44,13 @@ struct CapabilitiesTests {
         #expect(ClaudeCodeAdapter().capabilities == .claudeCode)
     }
 
-    // Codex has NO SessionStart(resume) telemetry (`codex resume` writes no rollout at resume time), so it
-    // must confirm a resume on the live relaunch — otherwise every idle-Codex wake times out and kills the
-    // card. This is the capability that makes the F2 wake path safe for Codex.
-    @Test("Codex advertises relaunch-liveness resume confirmation (fileTail agent has no resume hook)")
-    func codexResumeConfirmation() {
-        #expect(AgentCapabilities.codex.resumeConfirmation == .relaunchLiveness)
+    // Codex is `.discovered` + `fileTail`: a fresh launch writes a rollout whose first line is a
+    // `session_meta` record, so the daemon's rollout tail confirms a LAUNCH via `.rolloutMeta`. A
+    // `codex resume` writes no rollout, so a relaunch has no marker and rides the universal N=3 fallback —
+    // still on the readiness gate, never an immediate ensure-is-confirmation.
+    @Test("Codex advertises rolloutMeta readiness confirmation (fileTail agent, session_meta launch marker)")
+    func codexReadinessConfirmation() {
+        #expect(AgentCapabilities.codex.readinessConfirmation == .rolloutMeta)
         #expect(AgentCapabilities.codex.telemetry == .fileTail)
         #expect(CodexAdapter().capabilities == .codex)
     }
@@ -64,8 +65,9 @@ struct CapabilitiesTests {
         #expect(custom.terminalImagePaste.canPasteImages)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: custom)
         #expect(stub.capabilities == custom)
-        // Default stays Claude-shaped so existing suites are unaffected.
-        #expect(StubAdapter(transcriptDir: NSTemporaryDirectory()).capabilities == .claudeCode)
+        // Default is Claude-shaped EXCEPT `.relaunchLiveness` readiness, so setup spawns/resumes land
+        // immediately under 2.6's capability-gated launch readiness (see `AgentCapabilities.stub`).
+        #expect(StubAdapter(transcriptDir: NSTemporaryDirectory()).capabilities == .stub)
     }
 
     @Test("terminal image paste direct means the normal paste path handles images")
@@ -126,8 +128,11 @@ struct CapabilitiesTests {
     }
 
     /// A representative non-Claude tuple used to prove core gates on the descriptor, not identity.
+    /// `.relaunchLiveness` readiness so the setup spawns here land immediately (these tests assert session-id
+    /// seeding, not the awaited launch-readiness path).
     static let discoveredTuple = AgentCapabilities(
         sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
         wakeTransport: .relaunch, inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed, authMode: .subscription)
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        readinessConfirmation: .relaunchLiveness)
 }

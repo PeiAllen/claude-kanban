@@ -8,13 +8,12 @@ final class PushCoreTests: XCTestCase {
 
     private func card(_ title: String = "card",
                       id: UUID = UUID(),
-                      status: AgentStatus,
-                      wait: WaitReason? = nil,
+                      phase: Phase = .live(.running),
                       dead: DeadReason? = nil,
                       archived: Bool = false) -> Task {
         Task(id: id, title: title, repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
-             status: status, deadReason: dead, waitReason: wait, ctxPct: 0,
+             deadReason: dead, phase: phase, ctxPct: 0,
              initialPrompt: title, archived: archived)
     }
 
@@ -22,39 +21,51 @@ final class PushCoreTests: XCTestCase {
 
     func testTransitionsMapToTriggers() {
         // running → waiting(permission) fires permission
-        XCTAssertEqual(AttentionTransition.trigger(prev: .running,
-            task: card(status: .waiting, wait: .permission)), .permission)
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .live(.waiting(.permission)))), .permission)
         // running → waiting(humanTurn) fires needsYou
-        XCTAssertEqual(AttentionTransition.trigger(prev: .running,
-            task: card(status: .waiting, wait: .humanTurn)), .needsYou)
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .live(.waiting(.humanTurn)))), .needsYou)
         // any → dead fires died
-        XCTAssertEqual(AttentionTransition.trigger(prev: .running,
-            task: card(status: .dead, dead: .agentExited)), .died)
-        XCTAssertEqual(AttentionTransition.trigger(prev: .waiting,
-            task: card(status: .dead, dead: .sessionVanished)), .died)
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .dead(.agentExited))), .died)
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
+            task: card(phase: .dead(.sessionVanished))), .died)
+    }
+
+    func testCompletedDeadDoesNotFireDied() {
+        // A read-only delegated child completing its turn enters `.dead(.completed)` (report() sets it,
+        // not archived). That is NOT a death — it must fire no push, matching NeedsYouQueue.reason.
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .dead(.completed))))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
+            task: card(phase: .dead(.completed))))
+        // A genuine death still fires died.
+        XCTAssertEqual(AttentionTransition.trigger(prev: .live(.running),
+            task: card(phase: .dead(.agentExited))), .died)
     }
 
     func testFreshCardNeverFires() {
         // prev == nil: a freshly-appended card / post-reconnect wholesale set never fires.
-        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(status: .waiting, wait: .permission)))
-        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(status: .dead, dead: .agentExited)))
+        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .live(.waiting(.permission)))))
+        XCTAssertNil(AttentionTransition.trigger(prev: nil, task: card(phase: .dead(.agentExited))))
     }
 
     func testNoTransitionWhenStatusUnchanged() {
         // Already-waiting stays waiting → no repeat fire. Already-dead stays dead → no repeat fire.
-        XCTAssertNil(AttentionTransition.trigger(prev: .waiting,
-            task: card(status: .waiting, wait: .permission)))
-        XCTAssertNil(AttentionTransition.trigger(prev: .dead,
-            task: card(status: .dead, dead: .agentExited)))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)),
+            task: card(phase: .live(.waiting(.permission)))))
+        XCTAssertNil(AttentionTransition.trigger(prev: .dead(.agentExited),
+            task: card(phase: .dead(.agentExited))))
     }
 
     func testBackgroundWaitProducesNoPush() {
         // A card on a background task stays `.running` (no waitReason) — the adapters emit no waiting
         // report. running → running is not a transition, so it never pushes. This is the bg-wait
         // suppression the spec requires, asserted directly.
-        XCTAssertNil(AttentionTransition.trigger(prev: .running, task: card(status: .running)))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.running), task: card(phase: .live(.running))))
         // Even a genuinely-running card that was previously waiting (turn resumed) doesn't push.
-        XCTAssertNil(AttentionTransition.trigger(prev: .waiting, task: card(status: .running)))
+        XCTAssertNil(AttentionTransition.trigger(prev: .live(.waiting(.humanTurn)), task: card(phase: .live(.running))))
     }
 
     // MARK: AttentionTracker (stateful observer)
@@ -63,27 +74,27 @@ final class PushCoreTests: XCTestCase {
         let tracker = AttentionTracker()
         let id = UUID()
         // First sighting (prev == nil) never fires, even if already waiting.
-        XCTAssertNil(tracker.observe(card(id: id, status: .running)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
         // running → waiting fires once…
-        let intent = tracker.observe(card(id: id, status: .waiting, wait: .permission))
+        let intent = tracker.observe(card(id: id, phase: .live(.waiting(.permission))))
         XCTAssertEqual(intent?.trigger, .permission)
         XCTAssertEqual(intent?.cardId, id)
         // …and does not re-fire while it stays waiting.
-        XCTAssertNil(tracker.observe(card(id: id, status: .waiting, wait: .permission)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)))))
         // waiting → dead fires died.
-        XCTAssertEqual(tracker.observe(card(id: id, status: .dead, dead: .agentExited))?.trigger, .died)
+        XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
     }
 
     func testTrackerReapsArchivedAndForget() {
         let tracker = AttentionTracker()
         let id = UUID()
-        _ = tracker.observe(card(id: id, status: .running))
+        _ = tracker.observe(card(id: id, phase: .live(.running)))
         // Archiving reaps state; a later re-add is a fresh card (prev == nil) so it won't fire.
-        XCTAssertNil(tracker.observe(card(id: id, status: .waiting, wait: .permission, archived: true)))
-        XCTAssertNil(tracker.observe(card(id: id, status: .waiting, wait: .permission)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)), archived: true)))
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.waiting(.permission)))))
         // But the NEXT transition off that fresh baseline fires.
-        XCTAssertNil(tracker.observe(card(id: id, status: .running)))
-        XCTAssertEqual(tracker.observe(card(id: id, status: .dead, dead: .agentExited))?.trigger, .died)
+        XCTAssertNil(tracker.observe(card(id: id, phase: .live(.running))))
+        XCTAssertEqual(tracker.observe(card(id: id, phase: .dead(.agentExited)))?.trigger, .died)
     }
 
     // MARK: gating

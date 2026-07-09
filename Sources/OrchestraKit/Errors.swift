@@ -11,6 +11,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case toolMissing(String)          // git / tmux / claude / zed not on PATH
     case worktreeDirty(String)
     case resumeFailed(String)
+    case spawnFailed(String)
     case zedMissing
     case invalidParams(String)
     case io(String)
@@ -31,6 +32,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .toolMissing(let t):   return "required tool not found: \(t)"
         case .worktreeDirty(let p): return "worktree has uncommitted changes: \(p)"
         case .resumeFailed(let d):  return "resume failed: \(d)"
+        case .spawnFailed(let d):   return "spawn failed: \(d)"
         case .zedMissing:           return "Zed not found"
         case .invalidParams(let m): return "invalid params: \(m)"
         case .io(let m):            return "io error: \(m)"
@@ -63,6 +65,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .toolMissing:      return 1006
         case .worktreeDirty:    return 1007
         case .resumeFailed:     return 1008
+        case .spawnFailed:      return 1014
         case .zedMissing:       return 1009
         case .io:               return 1010
         case .trustDenied:      return 1011

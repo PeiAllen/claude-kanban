@@ -53,7 +53,7 @@ struct StaleNudgeTests {
 
         // The parent card reports activity → funnel schedules the child's TreeStat recompute. The path
         // debounces twice (fan-out 750ms → child recompute 750ms), so poll with headroom past ~1.5s.
-        try await env.svc.report(parentCard.id, StatusReport(desc: "did work", status: .running))
+        try await env.svc.report(parentCard.id, StatusReport(desc: "did work", run: .running))
         var nudged = false
         for _ in 0..<400 {   // ≈ 4s ceiling — comfortably past the two 750ms debounce hops
             if (try? await env.svc.inboxPeek(child.id))?.isEmpty == false { nudged = true; break }

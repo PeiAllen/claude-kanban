@@ -21,7 +21,7 @@ struct OrchestraServiceTests {
         #expect(task.desc == "")
         #expect(task.initialPrompt == "Add OAuth login flow\nwith refresh")
         #expect(task.column == .plan)
-        #expect(task.status == .running)
+        #expect(task.phaseDisplay == .running)
         let sid = try #require(task.agentSessionId)
         // launch argv carries --session-id <that id> + the prompt
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(task.id)])
@@ -87,7 +87,7 @@ struct OrchestraServiceTests {
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         try await env.svc.archive(t.id, source: .app)
         let after = await env.svc.list(includeArchived: true).first { $0.id == t.id }
-        #expect(after?.status == .done)
+        #expect(after?.phase == .dead(.completed))
         #expect(after?.archived == true)
         #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))
         // archived cards are off the board
@@ -120,7 +120,7 @@ struct OrchestraServiceTests {
         let blank = try await env.svc.spawn(SpawnInput(prompt: "   ", repo: repo, branch: "feat-x"))
         #expect(blank.titleProvisional == true)
         #expect(blank.title == "feat-x")       // branch-name placeholder
-        #expect(blank.status == .waiting)       // idle, awaiting the first user prompt
+        #expect(blank.waitReason != nil)       // idle, awaiting the first user prompt
         // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(blank.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
@@ -128,7 +128,7 @@ struct OrchestraServiceTests {
 
         // A real prompt still spawns running + non-provisional.
         let real = try await env.svc.spawn(SpawnInput(prompt: "Do the thing", repo: repo, branch: "feat-y"))
-        #expect(real.status == .running)
+        #expect(real.phaseDisplay == .running)
         #expect(real.titleProvisional == false)
     }
 

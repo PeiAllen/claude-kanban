@@ -6,7 +6,7 @@ final class BoardNavigatorTests: XCTestCase {
         Task(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!,
              title: id, repo: "/r", branch: id, cwd: "/r/\(id)",
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: col,
-             order: order, status: .running, initialPrompt: id)
+             order: order, phase: .live(.running), initialPrompt: id)
     }
 
     /// A freeform-dock card (non-worktree). `at` seeds `createdAt`, which drives freeform order.
@@ -14,7 +14,7 @@ final class BoardNavigatorTests: XCTestCase {
         Task(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!,
              title: id, repo: "/r", branch: id, cwd: "/r/\(id)", origin: .borrowed,
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .plan,
-             order: 0, status: .running, initialPrompt: id,
+             order: 0, phase: .live(.running), initialPrompt: id,
              createdAt: Date(timeIntervalSince1970: at))
     }
 

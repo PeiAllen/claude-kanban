@@ -62,10 +62,10 @@ public enum NeedsYouQueue {
     /// cards so a `.done` card is never dragged back in by a stale high `ctxPct`.
     public static func reason(for t: Task,
                               contextThreshold: Double = contextNearFullThreshold) -> AttentionReason? {
-        if t.status == .waiting, t.waitReason == .permission { return .permission }
-        if t.status == .dead { return .died }
-        if t.status == .waiting, t.waitReason == .humanTurn { return .humanTurn }
-        if (t.status == .running || t.status == .waiting), t.ctxPct >= contextThreshold { return .contextFull }
+        if t.waitReason == .permission { return .permission }
+        if t.phase.kind == .dead, t.phase != .dead(.completed) { return .died }
+        if t.waitReason == .humanTurn { return .humanTurn }
+        if case .live = t.phase, t.ctxPct >= contextThreshold { return .contextFull }
         return nil
     }
 
@@ -118,7 +118,7 @@ public extension BoardStore {
     func permissionGateChord(_ id: UUID,
                              _ key: KeyPath<AgentCapabilities, [KeyToken]>) -> [KeyToken]? {
         guard let t = tasks.first(where: { $0.id == id }),
-              t.status == .waiting, t.waitReason == .permission else { return nil }
+              t.waitReason == .permission else { return nil }
         let chord = capabilities(for: t.agentId)[keyPath: key]
         return chord.isEmpty ? nil : chord
     }

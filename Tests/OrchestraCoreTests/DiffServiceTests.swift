@@ -113,7 +113,7 @@ struct DiffServiceTests {
         let (env, t) = try await worktreeCardWithRepo()
         try modify(t.cwd)
         // A normalized snapshot carrying NO tool_name — the diff core must still refresh off it.
-        try await env.svc.report(t.id, StatusReport(desc: "working", status: .running))
+        try await env.svc.report(t.id, StatusReport(desc: "working", run: .running))
         try await pollUntil {
             await env.svc.list().first { $0.id == t.id }?.diffStat?.filesChanged == 1
         }

@@ -43,14 +43,18 @@ snapshot carries a monotonic `rev`, and `spawn`/`send` require client-minted ids
 | Persisted registries | Watch registry `[watcherId: Set<childId>]` + borrow registrations `[borrowerCardId: path]`, atomic JSON beside the inbox | reconciler boot, `wait`, registry |
 | `Config` knobs (new, additive-optional) | `worktreeAddTimeout` 600s · `sessionLaunchTimeout` 30s · `controlTimeout` 15s | registry, steppers, reconciler |
 | Adapter capability seam (existing, extended) | Readiness per agent: Claude `SessionStart` hook; Codex rollout `session_meta` time-scoped to the launch; N=3-tick fallback for any agent | steppers, funnel |
-| One-time on-disk migration | `status`/`waitReason` → `phase` seed; preserves `deadReason`; stamps materialized markers on every referenced tree | `TaskStore` first load |
+| One-time on-disk migration (**as built, PR2**) | `status`/`waitReason` → `phase` seed; preserves `deadReason`; lives INSIDE `Task.init(from:)`. **Migrates card RECORDS only** — marker stamping is PR3b/Task 3.3, NOT here | `Task.init(from:)`; `TaskStore.load()` element-wise |
 
 ## Function / method contracts
 
-### `transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil) async -> TransitionResult`
+### `transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil, mutate: (inout Task) -> Void = {_ in}) async -> TransitionResult`
 - **Does:** the single writer of `phase`. Validates the edge against the machine; applies it as a
-  field-delta patch stamped with `phaseChangedAt`.
-- **Inputs:** card id, target phase; `observedEpoch` on signal-driven calls (hooks, liveness).
+  field-delta patch stamped with `phaseChangedAt`. **As built** it also takes a `mutate:` closure whose
+  companion field-writes land in the *same* `store.update` patch as the phase write (restart clears
+  `agentSessionId`, resume clears dead metadata, `markDead` writes the reason/detail) — atomic with it.
+- **Inputs:** card id, target phase; `observedEpoch` on signal-driven calls (hooks, liveness); `mutate`.
+- **Noop rule:** `to == from` is a `.noop` **except** the `relaunching → relaunching` supersede self-edge,
+  which re-arms a fresh generation and falls through to apply.
 - **Outputs:** `TransitionResult = .applied | .noop | .rejected(from:to:)` (`@discardableResult`).
   Verbs map `.rejected` → typed RPC error and `.noop` → idempotent success; async signals ignore it.
 - **Epoch guard:** entering a launch-bound phase (`creatingWorktree`, direct `launching`,
@@ -91,7 +95,7 @@ func release(cardId: UUID, cards: [Task], force: Bool) async throws
 func ensureBorrow(repo: String, parentBranch: String, borrowerCardId: UUID) async throws -> Worktree // exactly-one-borrower
 func releaseBorrow(borrowerCardId: UUID) async throws   // removes only the borrower's registration
 func sweepOrphanBorrows(cards: [Task]) async            // liveness-guarded; runs AFTER phase reconciliation
-func stampMarkers(forMigratedPaths: [String]) async     // one-time: pre-upgrade trees are marker-less (C1)
+func stampMarkers(forMigratedPaths: [String]) async     // one-time: pre-upgrade trees are marker-less (C1) — PR3b/Task 3.3, NOT PR2
 ```
 - **`ensure` serializes:** same-branch requests join the existing tree — `git worktree add` runs
   once; every git invocation is bounded by the Config knobs.
@@ -279,6 +283,24 @@ classDiagram
 | Default gate policy derives ~30×8 cells | Verbs fit 6 policy groups; hand-cells only for exceptions | 250 hand-written cells |
 | Knobs additive-optional in `Config` | Old `config.json` must still decode | Required keys (breaks existing config) |
 | N=3 readiness fallback (≈6s) | Must sit well under `sessionLaunchTimeout` 30s or the fallback can never fire | Larger N (races the timeout) |
+
+### As-built deviations folded in (PR2 / Stage 2)
+
+| Decision (as built) | Why | Supersedes |
+|----------|-----|------------|
+| Migration lives INSIDE `Task.init(from:)` | Task 2.1 gave `Task` a custom tolerant decoder, so the per-record migrating init is uniform across the `{rev,tasks}` envelope and a bare array; never `.bak`, never throws (except an id-less record) | The plan's separate `LegacyStoredBoard`/structural-decode pass |
+| Element-wise `FailableTask` load resilience | A single corrupt/id-less record drops itself (logged); the board reaches `.bak` ONLY on top-level-unparseable JSON. `id` is the sole required field | A whole-array decode that strands the board on one bad record |
+| Garbage enum fields DEFAULT, never throw | `origin`/`access`/`model`/`startIn`/`column`/`deadReason` are `try?`-guarded to the memberwise-init default so a renamed rawValue can't drop a recoverable record | `decodeIfPresent` alone (would rethrow a present-but-garbage value) |
+| **`pendingSeed` persistence DEFERRED to Stage 4** | The field + Codable round-trip exist (from 2.1) but there is NO writer/consumer in Stage 2 — the consumer is the Stage-4 reconciler; persisting it now is write-only dead state with no failing test. **Handoff still works** via `resume(seed:)` argv. **Stage 4 (PR3+) MUST wire write+consume together.** | Plan Task 2.5 Step 3.5 (persist `pendingSeed` in the same store patch) |
+| `AgentStatus` deleted from the wire; `SnapshotReport` → `run: RunState?` | Retires the `status`/`waitReason` pair off the wire; `report()` maps `run` → a `.live(run)` funnel write. New **non-wire** `PhaseDisplayKey` + derived `Task.phaseDisplay`/`Task.waitReason` | Keeping `AgentStatus` on `SnapshotReport` |
+| Funnel `mutate:` same-patch hook | Companion writes (fresh id, cleared dead metadata) land atomically with the phase write | A separate `store.update` before/after the transition (non-atomic) |
+| Noop excludes the `relaunching → relaunching` supersede | The self-edge re-arms a fresh generation, so it must apply, not no-op | A blanket `to == from → noop` |
+| Single epoch bump per (re)launch entry | Bump on `creatingWorktree` + every `relaunching` entry (incl. supersede); `launching` omitted (only entered from already-bumped `creatingWorktree`) | Bumping on `launching` too (double-bump) |
+| `.died` push trigger excludes `.dead(.completed)` | A completing read-only child fires no death push (matches `NeedsYouQueue.reason`) | `prev != .dead && now == .dead → .died` unconditionally |
+| `relaunchClaimed` splits `recovering`'s roles | Its grace-window role → epochs (funnel fence + phase-gated reconcile); its atomic-claim role → the narrow `relaunchClaimed` set (single wake/idle-resume winner) | The deleted `recovering` set |
+| D1 `readinessConfirmation` covers launching + relaunching | One capability axis confirms BOTH being-born phases; N=3 universal fallback covers Codex `codex resume` (no rollout); Codex `.rolloutMeta` time-scoped to the launch | The spec's launch-only `resumeConfirmation` (spec amendment) |
+| `isConcluded ≡ terminal phase`; `Conclusion` gains `deadReason` | Funnel is the sole concluder; a suspended `wait` resolves on every terminal death (`.exited(reason)`), not only a clean exit (bug-#2) | `report()`'s direct conclude; a reason-less `Conclusion` |
+| restart's BLANK relaunch left immediate-live | In-scope per the 2.6 CRUX (gating scoped to `launchAndConfirm` + resume); safe (`reconcileLiveness` catches a session that never came up). **Follow-up:** route restart's blank through `launchAndConfirm(.blank)` to gate uniformly | — |
 
 ## Open questions — need your call
 

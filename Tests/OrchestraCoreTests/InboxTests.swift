@@ -275,7 +275,7 @@ struct NotifyPreservedTests {
         // 1. parse is byte-identical: the stop event → waiting (the old shared "notify" kind is now split
         //    into distinct notification/stop --event values; both still map to waiting).
         let report = ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:])))
-        #expect(report?.snapshot?.status == .waiting)
+        #expect(report?.snapshot?.run != nil)
 
         // 2. applied through the service, the card goes to .waiting — with a message still queued in the inbox
         //    (the drain is a separate step; the notify/waiting report is unaffected).
@@ -285,7 +285,7 @@ struct NotifyPreservedTests {
         try await env.svc.send(task.id, "queued")
         try await env.svc.report(task.id, report!)
         let st = try await env.svc.status(task.id)
-        #expect(st.task.status == .waiting)                                          // notify/waiting preserved
+        #expect(st.task.waitReason != nil)                                          // notify/waiting preserved
         #expect(await Inbox(path: env.base + "/inbox.json").peek(task.id).count == 1) // drain not triggered
     }
 }

@@ -90,7 +90,7 @@ struct AgentTakeoverView: View {
                     Text("·").foregroundStyle(.white.opacity(0.3))
                     Circle().fill(connectionColor).frame(width: 6, height: 6)
                     Text(connectionLabel).foregroundStyle(.white.opacity(0.6))
-                    if let s = card?.status {
+                    if let s = card?.phaseDisplay {
                         Text("·").foregroundStyle(.white.opacity(0.3))
                         Text(theme.statusLabel(s)).foregroundStyle(.white.opacity(0.6))
                     }

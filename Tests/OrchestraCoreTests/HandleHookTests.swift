@@ -42,10 +42,10 @@ import Foundation
         let card = try await svc.spawn(SpawnInput(prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
 
         let r = await svc.handleHook(card.id.uuidString, event: .postToolUse,
-                                     report: StatusReport(desc: "Running: ls", status: .waiting), source: nil)
+                                     report: StatusReport(desc: "Running: ls", run: .waiting(.humanTurn)), source: nil)
         #expect(r == nil)
         let after = try await svc.resolveRef(card.id.uuidString)
-        #expect(after.status == .waiting)   // the report landed
+        #expect(after.waitReason != nil)   // the report landed
     }
 
     @Test("unknown ref returns nil, never throws")

@@ -22,6 +22,62 @@ authority on liveness, and **git** is the authority on the worktree. This is wha
 the daemon (or the whole machine) can restart and reconstruct reality from disk + `tmux ls` + git,
 rather than losing track of running agents.
 
+### The phase funnel: one writer, epochs, and capability-gated readiness
+
+A card's lifecycle is **one persisted variable** — `Task.phase` — with **one writer**, the
+`transition()` funnel. This is the *lifecycle-convergence* redesign (Stage 2 of an in-progress multi-stage
+build; the full spec is the [design vault](../notes/designs/lifecycle-convergence/index.md)), and it
+replaces the ad-hoc `status`/`waitReason`/`dead` triple that three code paths used to write independently.
+The decisions that shape it:
+
+- **One writer, one concluder.** Every mover routes its phase change through `transition()`
+  (`OrchestraService+Lifecycle.swift`), which validates the edge against a pure `isLegalEdge` machine
+  (spec §P1), stamps `phaseChangedAt`, bumps the epoch, and fires conclusions — all in one place, so the
+  legal-edge invariant, staleness fencing, and `wait`-resolution can't drift across call sites. A
+  companion `mutate:` closure lets a caller land companion field-writes (a fresh session id, cleared dead
+  metadata) **atomically in the same store patch** as the phase change. `report()`'s former direct
+  conclude is deleted — the funnel is the sole concluder, so a card never double-concludes; `Conclusion`
+  gained a **`deadReason`** so a suspended `wait` resolves on *every* terminal death (crash/reboot/
+  resume-fail → `.exited(reason)`), not only a clean exit (the bug-#2 fix), while `isConcluded` is exactly
+  "phase is terminal."
+- **Epochs make staleness deterministic.** `sessionEpoch` is a monotonic per-card generation the funnel
+  bumps once on every (re)launch-bound entry, stamped into the session env as `ORCH_EPOCH` (agent-agnostic)
+  and echoed back by the agent's hooks / readable via `tmux show-environment`. A signal (late hook, liveness
+  poll) carries the epoch it observed; a superseded epoch is dropped by the funnel's fence — a late signal
+  is *provably* harmless rather than heuristically ignored. A pre-upgrade **nil-epoch** kill signal can't be
+  fenced, so it must pass a fresh liveness probe before it may kill a card. Epochs also absorb the old
+  `recovering` set's grace-window role (its narrow atomic-claim role became the `relaunchClaimed` set).
+- **Being-born readiness is a capability, not an identity branch (the D1 resolution).** How a `launching`
+  **or** `relaunching` card is confirmed alive is one adapter axis — `AgentCapabilities.readinessConfirmation`
+  ∈ `{sessionStartHook, rolloutMeta, relaunchLiveness}` — covering *both* being-born phases (generalizing
+  the spec's launch-only `resumeConfirmation`). Claude confirms via its SessionStart hook (startup for a
+  launch, resume for a relaunch); Codex confirms a fresh launch via its rollout `session_meta` line
+  (time-scoped to the launch), and a `codex resume` — which writes no rollout — is caught by a **universal
+  N=3 liveness-tick fallback** that keeps the relaunch on the readiness gate rather than landing it live
+  immediately. `relaunchLiveness` treats a successful `ensure` as the confirmation for an agent that emits
+  no marker at all. No `if agentId ==` anywhere. This is recorded as a **spec amendment** in the vault's
+  [Decisions tables](../notes/designs/lifecycle-convergence/03-implementation.md).
+
+**Stage 2 keeps spawn/resume/restart/reopen synchronous** (they walk the phases inline); the reconciler,
+the four phase-steppers, and non-blocking spawn are Stage 4, built once rather than twice.
+
+### The Stage-2 wire break: `status` → `phase`
+
+Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.
+`status`/`waitReason` are removed from `Task`, and **`AgentStatus` is deleted from the wire entirely**:
+`SnapshotReport` now carries `run: RunState?` (the agent's observed `.running`/`.waiting(reason)`) instead
+of a `status`/`waitReason` pair, and clients render from a new **non-wire, non-Codable `PhaseDisplayKey`**
+derived from `phase` on demand (so the display vocabulary can evolve without touching the durable model).
+The **only** backward-compat kept is the **one-time on-disk migration** that reads a pre-Stage-2
+`tasks.json`: it lives inside `Task.init(from:)` (the card's own tolerant decoder, superseding the plan's
+separate `LegacyStoredBoard`), maps the legacy triple to `phase` fail-safe (nil/unknown status →
+`.dead(.rebootUnrevived)`, an idle card's absent wait reason → `.humanTurn`, preserving `deadReason`), and
+never drops a card except a genuinely id-less one — with the store's element-wise `FailableTask` load so a
+single corrupt record self-drops rather than stranding the whole board to `.bak`. The full mapping table and
+fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-time-statuswaitreason--phase-mapping).
+This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
+never nuke on-disk state.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's
@@ -30,7 +86,7 @@ interactive and real-time.
 
 ### State is pushed through a two-way hook channel
 
-Live card fields (`ctxPct`, `desc`, `status`, session id, title) are **pushed by the agent** via a
+Live card fields (`ctxPct`, `desc`, run-state, session id, title) are **pushed by the agent** via a
 managed Claude Code `--settings` file (statusLine + hooks → `orchestra _report`), not scraped from the
 pane. The channel is bounded (a stalled daemon can't freeze the agent's status bar) and seq-guarded (a
 stale `ctxPct` can't overwrite a fresh one); pane capture is a fallback only. The same channel is the

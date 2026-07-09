@@ -78,7 +78,7 @@ public struct CodexAdapter: Adapter {
         // telemetry stays the rollout fileTail below.
         if case let .hooksPush(kind, _) = raw {
             return kind == HookEvent.permission.rawValue
-                ? StatusReport(status: .waiting, waitReason: .permission)
+                ? StatusReport(run: .waiting(.permission))
                 : nil
         }
         guard case let .fileTail(line) = raw else { return nil }
@@ -101,7 +101,7 @@ public struct CodexAdapter: Adapter {
         if any("turncomplete", "taskcomplete") {
             // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
             // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn, turnCompleted: true)
+            return StatusReport(seq: seq, run: .waiting(.humanTurn), turnCompleted: true)
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less
@@ -118,14 +118,14 @@ public struct CodexAdapter: Adapter {
         }
         // Turn start → running.
         if any("taskstarted", "turnstarted") {
-            return StatusReport(seq: seq, status: .running)
+            return StatusReport(seq: seq, run: .running)
         }
         // A tool/function call mid-turn → running (+ a coarse desc).
         if any("functioncall", "responseitem") {
             if let name = payload["name"]?.stringValue, !name.isEmpty {
-                return StatusReport(seq: seq, desc: "Running \(name)", status: .running)
+                return StatusReport(seq: seq, desc: "Running \(name)", run: .running)
             }
-            return StatusReport(seq: seq, status: .running)
+            return StatusReport(seq: seq, run: .running)
         }
         return nil
     }
@@ -232,7 +232,7 @@ public struct CodexAdapter: Adapter {
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
-        let sid = current ?? discover(cwd: ctx.cwd)
+        let sid = current ?? discover(cwd: ctx.cwd, newerThan: ctx.since)
         guard let sid else {
             return AgentSessionInfo(agentId: id, sessionId: nil, transcriptPath: nil,
                                     priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
@@ -262,16 +262,29 @@ public struct CodexAdapter: Adapter {
 
     /// Newest rollout whose first metadata record belongs to this cwd. This is the safe discovery path
     /// for Orchestra cards before their Codex session id has been bound.
-    func discover(cwd: String) -> String? {
+    ///
+    /// `newerThan` (2.6) time-scopes the bind to rollouts written AFTER the card entered its being-born
+    /// phase (`phaseChangedAt`): a launching Codex card must adopt ONLY the rollout its own fresh launch
+    /// just wrote, never a live sibling's actively-written rollout in the same cwd, nor — after a mass
+    /// reboot — its own STALE pre-reboot rollout. Rule: among cwd-matching rollouts, keep only those with
+    /// `mtime > newerThan`; if that leaves MORE THAN ONE the launch is ambiguous (can't tell which is
+    /// ours) → bind nothing and let the N=3 liveness-tick fallback carry readiness; exactly one → bind it;
+    /// none → bind nothing. `newerThan == nil` keeps the legacy "newest cwd match" behavior (diagnostics /
+    /// already-bound paths that don't need the gate).
+    func discover(cwd: String, newerThan: Date? = nil) -> String? {
         let canon = PathResolver.canonical(cwd)
-        let newest = rolloutFiles()
+        let matches = rolloutFiles()
             .compactMap { path -> (path: String, mtime: Date)? in
                 guard let metaCwd = rolloutCwd(path),
                       PathResolver.canonical(metaCwd) == canon else { return nil }
-                return (path, mtime(path))
+                let m = mtime(path)
+                if let newerThan, m <= newerThan { return nil }   // stale / pre-launch → not ours
+                return (path, m)
             }
-            .max { $0.mtime < $1.mtime }
-        guard let newest else { return nil }
+        guard let newest = matches.max(by: { $0.mtime < $1.mtime }) else { return nil }
+        // Time-scoped bind: a launch writes exactly one new rollout, so >1 candidate after the cutoff is
+        // ambiguous — refuse to guess (the fallback still reaches live).
+        if newerThan != nil, matches.count > 1 { return nil }
         return sessionId(fromRollout: newest.path)
     }
 
@@ -346,9 +359,12 @@ public extension AgentCapabilities {
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
-        // `codex resume` emits no SessionStart(resume) marker (no rollout written at resume time), so the
-        // successful relaunch itself confirms — waiting for a hook would time out and kill a live idle card.
-        resumeConfirmation: .relaunchLiveness,
+        // A fresh Codex launch writes a rollout whose FIRST line is a `session_meta` record — the daemon's
+        // rollout tail observes it and resolves the launch's readiness (D1 `.rolloutMeta`). A `codex resume`
+        // writes NO rollout at resume time, so a relaunch has no marker; the universal N=3 liveness-tick
+        // fallback resolves the still-pending waiter within the grace, keeping the relaunch on the readiness
+        // gate (never an immediate ensure-is-confirmation that would bypass it).
+        readinessConfirmation: .rolloutMeta,
         // Codex's permission gate is a TUI prompt whose default option is accepted with Enter / cancelled
         // with Esc — the same keystrokes Claude uses — so the interim send-keys gate carries Enter/Esc.
         // This is the per-adapter seam C1 refines: when Codex's structured `PermissionRequest` reply is
