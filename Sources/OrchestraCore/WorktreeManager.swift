@@ -45,7 +45,8 @@ public struct WorktreeManager: Sendable {
                     // A fully-qualified ref (a fetched remote private ref, refs/orch/parents/…, BT6).
                     // Use it verbatim as the start-point — no refs/heads/ pinning.
                     guard refExists(repo: realRepo, ref: base) else {
-                        throw OrchestraError.invalidParams("base ref not found: \(base)")
+                        throw OrchestraError.invalidParams(
+                            "base ref not found: \(base) — fetch or create it first")
                     }
                     a.append(base)
                 } else {
@@ -53,7 +54,8 @@ public struct WorktreeManager: Sendable {
                     // disambiguate to a same-named tag (git's rev precedence), starting the child off the
                     // wrong commit — or failing outright on an ambiguous ref.
                     guard branchExists(repo: realRepo, branch: base) else {
-                        throw OrchestraError.invalidParams("base branch not found: \(base)")
+                        throw OrchestraError.invalidParams(
+                            "base branch not found: \(base) — run `git branch` to see valid bases")
                     }
                     a.append("refs/heads/\(base)")
                 }
@@ -66,7 +68,7 @@ public struct WorktreeManager: Sendable {
             if msg.contains("already checked out") || msg.contains("is already used by worktree") {
                 throw OrchestraError.branchInUse(branch)
             }
-            throw OrchestraError.io(r.stderr.isEmpty ? "git worktree add failed" : r.stderr)
+            throw OrchestraError.gitIO("could not create worktree for \(branch)", stderr: r.stderr)
         }
         return (wt, true, exists)
     }

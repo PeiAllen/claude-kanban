@@ -304,7 +304,9 @@ public actor OrchestraService {
             var remoteFetchedOID: String? = nil
             var ensureBase = normalizedBase
             if let remoteRef {
-                remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef)
+                let b = normalizedBase ?? remoteRef.canonical
+                remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef,
+                    context: "spawn base \(b): could not fetch remote parent \(b)")
                 ensureBase = remoteRef.privateRef
             }
             let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch, base: ensureBase)
@@ -345,7 +347,7 @@ public actor OrchestraService {
                 if !ensured.branchExisted {
                     _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
                 }
-                throw error
+                throw OrchestraError.io("spawn rolled back (worktree/branch removed): \(error)")
             }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent

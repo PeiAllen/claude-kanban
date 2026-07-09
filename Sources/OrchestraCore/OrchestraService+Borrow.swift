@@ -16,11 +16,13 @@ extension OrchestraService {
             throw OrchestraError.invalidParams("only worktree cards can borrow a parent")
         }
         guard let link = await lineage.read(repo: child.repo, branch: child.branch) else {
-            throw OrchestraError.invalidParams("card has no parent link to borrow")
+            throw OrchestraError.invalidParams(
+                "card has no parent link to borrow — set one with `orchestra set-parent \(child.shortId) <branch>`")
         }
         guard RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: child.repo)) == nil else {
             throw OrchestraError.invalidParams(
-                "parent \(link.parent) is remote — publish a stacked PR instead of borrowing")
+                "parent \(link.parent) is remote — publish a stacked PR instead of borrowing "
+                + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")
         }
         let active = await store.all()
         if let owner = derivedCard(repo: child.repo, branch: link.parent, among: active) {

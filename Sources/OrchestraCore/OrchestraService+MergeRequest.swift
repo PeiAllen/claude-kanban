@@ -18,7 +18,9 @@ extension OrchestraService {
             throw OrchestraError.invalidParams("only worktree cards can request a merge")
         }
         guard let link = await lineage.read(repo: child.repo, branch: child.branch) else {
-            throw OrchestraError.invalidParams("card has no parent link — nothing to merge up into")
+            throw OrchestraError.invalidParams(
+                "card has no parent link — nothing to merge up into; set one with "
+                + "`orchestra set-parent \(child.shortId) <branch>`")
         }
         if RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: child.repo)) != nil {
             throw OrchestraError.invalidParams(

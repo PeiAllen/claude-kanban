@@ -65,11 +65,14 @@ public actor BranchLineage {
             throw OrchestraError.invalidParams("parent ref must not be empty")
         }
         guard link.parent != branch else {
-            throw OrchestraError.invalidParams("a branch cannot be its own parent: \(branch)")
+            throw OrchestraError.invalidParams(
+                "a branch cannot be its own parent: \(branch) — pick a different branch as the parent")
         }
         // If `branch` already sits above the proposed parent, adopting it would close a loop.
         if ancestors(repo: repo, of: link.parent).contains(branch) {
-            throw OrchestraError.invalidParams("parent link would create a cycle: \(branch) → \(link.parent)")
+            throw OrchestraError.invalidParams(
+                "parent link would create a cycle: \(branch) → \(link.parent) — pick a parent that is not a "
+                + "descendant of \(branch)")
         }
         // S4: capture the prior link so a PARTIAL write can be rolled back. The parent-key-last ordering
         // makes a torn write read as "no link" only when there was NO prior link; RE-pointing an existing

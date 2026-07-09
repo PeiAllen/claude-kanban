@@ -20,6 +20,7 @@ struct StaleNudgeTests {
         let after1 = try await env.svc.inboxPeek(card.id)
         #expect(after1.count == 1)
         #expect(after1.first?.text.contains("moved ahead") == true)
+        #expect(after1.first?.text.contains("git merge") == true)   // names the literal runnable command
         #expect(after1.first?.text.contains("orchestra synced") == true)
 
         try TreeStatTests.advanceParent(repo, 1)                    // parent moves again
