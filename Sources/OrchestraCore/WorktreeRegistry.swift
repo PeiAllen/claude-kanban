@@ -275,10 +275,13 @@ public actor WorktreeRegistry {
         loadBorrows()
         let realRepo = try resolver.resolveRepo(repo)
         let path = manager.borrowPath(repo: realRepo, branch: parentBranch)
-        if let holder = borrows.first(where: { $0.value == path })?.key, holder != borrowerCardId {
+        let canonPath = PathResolver.canonical(path)
+        if let holder = borrows.first(where: { PathResolver.canonical($0.value) == canonPath })?.key,
+           holder != borrowerCardId {
             throw OrchestraError.parentAlreadyBorrowed(parentBranch)
         }
-        if borrows.first(where: { $0.value == path }) == nil && FileManager.default.fileExists(atPath: path) {
+        if borrows.first(where: { PathResolver.canonical($0.value) == canonPath }) == nil
+            && FileManager.default.fileExists(atPath: path) {
             throw OrchestraError.parentAlreadyBorrowed(parentBranch)   // stray/crashed borrow dir
         }
         let created = try manager.borrow(repo: realRepo, branch: parentBranch)
@@ -314,12 +317,15 @@ public actor WorktreeRegistry {
         // force-remove it (bug #1).
         let keptPaths = Set(borrows.compactMap { terminated($0.key) ? nil : PathResolver.canonical($0.value) })
         for (id, p) in borrows where terminated(id) {
-            if !keptPaths.contains(PathResolver.canonical(p)) { try? manager.remove(worktree: p, force: true) }
+            if !keptPaths.contains(PathResolver.canonical(p)) && isUnderOwnedRoots(p) {
+                try? manager.remove(worktree: p, force: true)
+            }
             borrows[id] = nil
         }
         persistBorrows()
         for repo in Set(cards.filter { $0.origin == .worktree }.map(\.repo)) {
-            for stray in manager.orphanBorrowPaths(repo: repo) where !keptPaths.contains(PathResolver.canonical(stray)) {
+            for stray in manager.orphanBorrowPaths(repo: repo)
+                where isUnderOwnedRoots(stray) && !keptPaths.contains(PathResolver.canonical(stray)) {
                 try? manager.remove(worktree: stray, force: true)
             }
         }
@@ -381,7 +387,9 @@ public actor WorktreeRegistry {
         guard isUnderOwnedRoots(wt) else { return }                              // never outside owned roots
         guard markerExists(wt) else { return }                                    // created(≡marker) guard
         guard FileManager.default.fileExists(atPath: wt) else { removeMarker(wt); return }  // idempotent-to-missing
-        let storeSibling = cards.contains { $0.id != cardId && !$0.archived && $0.origin == .worktree && $0.cwd == wt }
+        let storeSibling = cards.contains {
+            $0.id != cardId && !$0.archived && $0.origin == .worktree && PathResolver.canonical($0.cwd) == canon
+        }
         let inflightSibling = !(inflight[canon]?.subtracting([cardId]).isEmpty ?? true)   // another in-flight holder?
         guard !storeSibling && !inflightSibling else { return }                 // referenced (stored OR in-flight) ⇒ keep
         if manager.isDirty(worktree: wt) && !force { return }                    // dirty + !force ⇒ keep
@@ -405,7 +413,12 @@ public actor WorktreeRegistry {
         let url = URL(fileURLWithPath: borrowsPath)
         let tmp = URL(fileURLWithPath: borrowsPath + ".tmp.\(UUID().uuidString)")
         guard (try? data.write(to: tmp, options: .atomic)) != nil else { return }
-        if FileManager.default.fileExists(atPath: borrowsPath) { _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp) }
-        else { try? FileManager.default.moveItem(at: tmp, to: url) }
+        if FileManager.default.fileExists(atPath: borrowsPath) {
+            if (try? FileManager.default.replaceItemAt(url, withItemAt: tmp)) == nil {
+                try? FileManager.default.removeItem(at: tmp)   // best-effort: don't leak the tmp sibling
+            }
+        } else if (try? FileManager.default.moveItem(at: tmp, to: url)) == nil {
+            try? FileManager.default.removeItem(at: tmp)
+        }
     }
 }

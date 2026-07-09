@@ -200,8 +200,12 @@ same file, a compile-time guarantee that nothing else can call a git worktree op
   one-at-a-time and `git worktree add` fire once. This globally serializes worktree git ops — a
   conservative superset of "per branch" — acceptable for a single-user tool.
 - **Owned roots = under `config.worktreesRoot`.** This single prefix covers ordinary card worktrees and
-  `orch-borrow-*` dirs alike; `release`/the sweep never remove anything outside it, checked by a stricter
-  gate than `PathResolver.assertAllowed` (which also admits `reposRoot`).
+  `orch-borrow-*` dirs alike. Both `release` and `sweepOrphanBorrows` gate every removal on
+  `isUnderOwnedRoots`, a stricter check than `PathResolver.assertAllowed` (which also admits
+  `reposRoot`) — so neither path can ever remove outside `worktreesRoot`, even though `manager.remove`'s
+  own `assertAllowed` call alone would permit it. Borrow paths are additionally borrow-derived by
+  construction (`borrowPath` always returns a `worktreesRoot`-rooted path), so the guard is normally a
+  no-op for them; it exists to keep the pledge true by construction, not by convention.
 - **Persisted borrows survive a daemon-only crash.** `[borrowerCardId: path]` is written as atomic JSON
   beside the inbox (`Config.borrowsPath`); a fresh registry instance re-reads it on restart, so a live
   borrower's dir can't be mistaken for a stray `orch-borrow-*` dir by the orphan sweep.

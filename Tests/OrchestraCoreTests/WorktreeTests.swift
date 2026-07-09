@@ -141,7 +141,7 @@ struct WorktreeBoundedTests {
             return Self.ok()
         }
         let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
-        await #expect(throws: (any Error).self) {
+        await #expect(throws: OrchestraError.self) {
             _ = try await reg.ensure(repo: cfg.reposRoot, branch: "slow", cardId: UUID())
         }
         let add = try #require(rec.first(where: Self.isAdd))
