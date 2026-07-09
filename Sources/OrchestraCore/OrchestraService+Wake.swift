@@ -15,7 +15,11 @@ extension OrchestraService {
     public func watch(watcher: UUID, refs: [UUID]) async -> Conclusion? {
         let children = Set(refs)
         registerWatch(watcher, children)
-        return await firstConcluded(in: children)
+        if let concluded = await firstConcluded(in: children) {
+            unregisterWatch(watcher, concluded.cardId)   // settled inline → drop it so a re-death can't re-notify
+            return concluded
+        }
+        return nil
     }
 
     /// CLI wait path: suspend until ONE of `refs` concludes; returns that `Conclusion` (or nil if
@@ -31,6 +35,9 @@ extension OrchestraService {
         // Short-circuit on a child that is ALREADY settled-terminal (handles the re-issue race where a
         // child concluded between two `wait` calls). This IS the real-card-state read.
         if let concluded = await firstConcluded(in: children) {
+            // Unregister the settled child (mirror `concludeCard`'s remove) so a later revival→re-death
+            // of the same child cannot re-notify this watcher through a stale registry entry.
+            if let watcher { unregisterWatch(watcher, concluded.cardId) }
             result = concluded
         } else {
             result = await mergeWatch.awaitConclusion(children)
@@ -42,10 +49,24 @@ extension OrchestraService {
     private func firstConcluded(in children: Set<UUID>) async -> Conclusion? {
         for id in children {
             if let t = await store.get(id), let kind = isConcluded(t) {
-                return Conclusion(cardId: id, ref: t.ref(), kind: kind)
+                return Conclusion(cardId: id, ref: t.ref(), kind: kind, deadReason: Self.concludedReason(t))
             }
         }
         return nil
+    }
+
+    /// The terminal `DeadReason` a settled card carries on its conclusion — the raw reason for an
+    /// `.exited`, nil for a `.done` (archived / `.dead(.completed)`). Kept in step with `isConcluded`.
+    static func concludedReason(_ t: Task) -> DeadReason? {
+        if case .dead(let r) = t.phase, r != .completed { return r }
+        return nil
+    }
+
+    /// Remove one settled child from a watcher's registry (mirror of `concludeCard`'s `remove(id)` +
+    /// empty-set cleanup) — used by the `wait`/`watch` short-circuit so a re-death can't re-notify.
+    func unregisterWatch(_ watcher: UUID, _ child: UUID) {
+        watchRegistry[watcher]?.remove(child)
+        if watchRegistry[watcher]?.isEmpty == true { watchRegistry[watcher] = nil }
     }
 
     private func releaseActiveWaitProcess(_ watcher: UUID) {
@@ -58,16 +79,17 @@ extension OrchestraService {
     /// (Done) and a clean agent exit — NOT from a revivable crash. Routes the conclusion into every
     /// watching parent's inbox (F3) + wakes it (F2), then resolves any active `awaitConclusion` (the
     /// native-reinvoke wake: `orchestra wait` returns → its process exits → the harness re-invokes).
-    func concludeCard(_ id: UUID, _ kind: Conclusion.Kind) async {
+    func concludeCard(_ id: UUID, _ kind: Conclusion.Kind, deadReason: DeadReason? = nil) async {
         guard let t = await store.get(id) else { return }
-        let conc = Conclusion(cardId: id, ref: t.ref(), kind: kind)
+        let conc = Conclusion(cardId: id, ref: t.ref(), kind: kind, deadReason: deadReason)
         // F3 inbox routing + F2 wake for every registered watcher of this child. If the watcher has a
         // live CLI `orchestra wait`, that process's output is already the conclusion notice, so do not
         // enqueue a duplicate automatic inbox notice. MCP/tool watches have no later process output, so
         // they need the durable inbox notice as their wake context.
         for (watcher, children) in watchRegistry where children.contains(id) {
             if activeWaitProcesses[watcher] == nil {
-                try? await inbox.enqueue(watcher, "Card \(t.shortId) concluded (\(kind.rawValue)).")
+                let detail = deadReason.map { " — \($0.rawValue)" } ?? ""
+                try? await inbox.enqueue(watcher, "Card \(t.shortId) concluded (\(kind.rawValue)\(detail)).")
                 await wake(watcher)
             }
             watchRegistry[watcher]?.remove(id)
@@ -134,8 +156,9 @@ extension OrchestraService {
     /// `.done`/archived = moved to Done; a clean agent exit (`.agentExited`) = `.exited`. A revivable
     /// crash (`sessionVanished`) is deliberately NOT terminal here.
     func isConcluded(_ t: Task) -> Conclusion.Kind? {
-        if t.archived || t.phase == .dead(.completed) { return .done }
-        if t.phase.kind == .dead, t.deadReason == .agentExited { return .exited }
+        if case .archived = t.phase { return .done }
+        if t.archived { return .done }                 // archive-verb funnel routing is Stage 4; keep the Bool bridge
+        if case .dead(let r) = t.phase { return r == .completed ? .done : .exited }
         return nil
     }
 

@@ -150,7 +150,7 @@ extension OrchestraService {
         // agent quit, no auto-resume. A transient crash (sessionVanished) is NOT concluded here; it may
         // still be revived (that path never sets `.agentExited`, and `recovering` guards a stale exit).
         if deadEntered, saved.deadReason == .agentExited, !recovering.contains(id) {
-            await concludeCard(id, .exited)
+            await concludeCard(id, .exited, deadReason: saved.deadReason)
         }
         if turnCompletionConcluded {
             await concludeCard(id, .done)
