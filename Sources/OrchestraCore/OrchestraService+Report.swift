@@ -130,7 +130,7 @@ extension OrchestraService {
         if task.status != .waiting { task.waitReason = nil }
 
         guard task != before else { return }   // idempotent: no delta -> no persist, no event
-        let (saved, rev) = try await store.update(id) { $0 = task }
+        let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
         emit(.taskUpserted(saved), rev: rev)
 
         // Code review on the board (axis 7): any per-card activity that lands here (a normalized

@@ -281,3 +281,26 @@ struct ReportTests {
         #expect(!acts.contains { $0.kind == .statusChanged && $0.text.contains("ctx") })
     }
 }
+
+@Suite("report field-delta") struct ReportDeltaTests {
+    private func sample() -> Task {
+        Task(title: "c", repo: "/r", branch: "b", cwd: "/wt/b",
+             model: AgentModel(id: "claude-sonnet-4-5"), startIn: .plan, column: .plan, order: 0, initialPrompt: "c")
+    }
+    @Test("applyReportFields overlays only report-owned fields, preserving concurrently-mutated ones")
+    func test_reportDoesNotClobberConcurrentFields() throws {
+        // `current` = the store's live value, with an UNRELATED field (column) changed concurrently
+        // after report took its snapshot. `snapshot` = what report computed from its (older) read.
+        var current = sample()
+        current.column = .impl             // concurrent write to a field report does NOT own
+        current.ctxPct = 0
+        var snapshot = current
+        snapshot.column = .plan            // report's stale view of the unowned field
+        snapshot.ctxPct = 42               // report's owned field, freshly computed
+
+        current.applyReportFields(from: snapshot)
+
+        #expect(current.ctxPct == 42)      // owned field applied
+        #expect(current.column == .impl)   // unowned field PRESERVED — not clobbered
+    }
+}

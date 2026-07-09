@@ -319,6 +319,23 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public func ref(slugging slug: Bool = true) -> String {
         "orchestra://task/\(shortId)" + (slug ? "-\(slugify(title))" : "")
     }
+
+    /// The `report()` field-delta write: overlay exactly the fields `report()` owns from a
+    /// freshly-computed snapshot `s`, leaving every other (possibly concurrently-mutated) field at
+    /// self's current value. Centralizes report's ownership so a whole-object write can't clobber.
+    public mutating func applyReportFields(from s: Task) {
+        status = s.status
+        deadReason = s.deadReason
+        deadDetail = s.deadDetail
+        agentSessionId = s.agentSessionId
+        priorSessionIds = s.priorSessionIds
+        desc = s.desc
+        titleProvisional = s.titleProvisional
+        title = s.title
+        ctxPct = s.ctxPct
+        model = s.model
+        waitReason = s.waitReason
+    }
 }
 
 // MARK: - Command result shapes
