@@ -69,7 +69,11 @@ orchestrad.sock`, overridable with `$ORCHESTRA_SOCK`) speaking **newline-delimit
   client can compare consecutive `rev`s to detect a missed event. `BoardSnapshot` — the one round trip a
   (re)connecting client takes — carries the same `rev`, so it can tell whether anything landed between
   the snapshot and its first live event. Using that cursor to detect a gap and resync is client-side work
-  that lands in a later stage; Stage 1 only stamps and carries `rev`.
+  that lands in a later stage; Stage 1 only stamps and carries `rev`. `rev` is monotonic but **sparse** —
+  not every bump carries a client event (an event-less mutation whose rev is absorbed by a following emit,
+  or an ephemeral event that shares the prior task-state rev) — so the later gap-detector must treat
+  `rev ≤ lastSeen` as already-applied and resync only on positive evidence of a missed event, never on a
+  bare forward gap.
 
 The socket is created user-only (mode `0600`), and every accepted/connected file descriptor has
 `SO_NOSIGPIPE` set (on Linux the equivalent guard is a per-`send` `MSG_NOSIGNAL` flag — see the ported

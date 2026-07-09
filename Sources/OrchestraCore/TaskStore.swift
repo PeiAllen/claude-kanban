@@ -128,7 +128,9 @@ public actor TaskStore {
         guard let idx = tasks.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.unknownTask(id.uuidString)
         }
+        let before = tasks[idx]
         mutate(&tasks[idx])
+        guard tasks[idx] != before else { return (tasks[idx], currentRev) }  // no-op: no persist, no rev bump
         tasks[idx].updatedAt = Date()
         try persist()
         return (tasks[idx], currentRev)

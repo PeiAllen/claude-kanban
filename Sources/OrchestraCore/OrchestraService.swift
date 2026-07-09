@@ -174,8 +174,10 @@ public actor OrchestraService {
 
     // MARK: - test-support (rev)
 
+    #if DEBUG
     func storeCurrentRevForTest() async -> Int { await store.currentRev }
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
+    #endif
 
     // MARK: - trust
 

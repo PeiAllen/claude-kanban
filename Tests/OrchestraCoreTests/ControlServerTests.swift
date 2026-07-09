@@ -41,4 +41,55 @@ import Testing
         #expect(e?.rev == rev)
         if case .activity = e?.event {} else { Issue.record("expected activity") }
     }
+
+    // MARK: - wire serialization (round-trip through the real codec, no live socket)
+
+    /// `.iso8601` (the wire's date strategy) truncates to whole seconds, so any `Date` compared for
+    /// equality after a round-trip must itself be whole-seconds — else the assertion would flake on
+    /// sub-second precision that was never on the wire to begin with.
+    private static let wholeSecondDate = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+
+    private func sampleTask() -> Task {
+        Task(title: "Fix login", repo: "/repos/app", branch: "b", cwd: "/wt/app/b",
+             model: AgentModel(id: "claude-sonnet-4-5"), startIn: .plan, column: .plan, order: 0,
+             initialPrompt: "Fix login", createdAt: Self.wholeSecondDate, updatedAt: Self.wholeSecondDate)
+    }
+
+    /// Encode exactly the way `ControlServer.eventNotification` + `RPCCodec.line` do (wrap in an
+    /// `RPCNotification` under `{method:"event", params:<EventEnvelope>}`, then NDJSON-encode), and
+    /// decode exactly the way `ControlClient`'s read loop does (`WireMessage` -> `params?.decode`).
+    private func roundTrip(_ envelope: EventEnvelope) throws -> EventEnvelope? {
+        let notification = RPCNotification(method: "event", params: try? JSONValue(encodable: envelope))
+        let line = try RPCCodec.line(notification)
+        let msg = try RPCCodec.decoder.decode(WireMessage.self, from: line)
+        #expect(msg.method == "event")
+        return try msg.params?.decode(EventEnvelope.self)
+    }
+
+    @Test("a taskUpserted EventEnvelope round-trips through the real wire codec")
+    func test_taskUpsertedEnvelopeRoundTripsThroughWireCodec() throws {
+        let task = sampleTask()
+        let sent = EventEnvelope(rev: 42, event: .taskUpserted(task))
+        let received = try roundTrip(sent)
+        #expect(received?.rev == 42)
+        if case .taskUpserted(let t) = received?.event {
+            #expect(t == task)
+        } else {
+            Issue.record("expected .taskUpserted, got \(String(describing: received?.event))")
+        }
+    }
+
+    @Test("an activity EventEnvelope round-trips through the real wire codec")
+    func test_activityEnvelopeRoundTripsThroughWireCodec() throws {
+        let item = ActivityItem(at: Self.wholeSecondDate, taskId: nil, ref: nil, source: .daemon,
+                                 kind: .command, text: "hello")
+        let sent = EventEnvelope(rev: 7, event: .activity(item))
+        let received = try roundTrip(sent)
+        #expect(received?.rev == 7)
+        if case .activity(let a) = received?.event {
+            #expect(a == item)
+        } else {
+            Issue.record("expected .activity, got \(String(describing: received?.event))")
+        }
+    }
 }

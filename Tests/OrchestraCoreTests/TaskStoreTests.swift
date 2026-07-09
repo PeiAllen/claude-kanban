@@ -104,6 +104,31 @@ struct TaskStoreTests {
         #expect(seen.first! >= 1)
     }
 
+    @Test("a no-op update does not bump rev")
+    func test_noOpUpdateDoesNotBumpRev() async throws {
+        let store = TaskStore(path: tmpPath())
+        let t = try await store.create(sample()).task
+        let revAfterCreate = await store.currentRev
+
+        // No-op closure: leaves the task byte-for-byte identical.
+        let (unchanged, revAfterNoOp) = try await store.update(t.id) { _ in }
+        #expect(revAfterNoOp == revAfterCreate)
+        #expect(await store.currentRev == revAfterCreate)
+        #expect(unchanged == t)
+
+        // Setting a field to its current value is also a no-op.
+        let (stillUnchanged, revAfterNoOp2) = try await store.update(t.id) { $0.desc = t.desc }
+        #expect(revAfterNoOp2 == revAfterCreate)
+        #expect(await store.currentRev == revAfterCreate)
+        #expect(stillUnchanged == t)
+
+        // A real change still bumps rev.
+        let (changed, revAfterRealChange) = try await store.update(t.id) { $0.desc = "actually different" }
+        #expect(revAfterRealChange == revAfterCreate + 1)
+        #expect(await store.currentRev == revAfterCreate + 1)
+        #expect(changed.desc == "actually different")
+    }
+
     @Test("a pre-upgrade bare-array tasks.json reads back rev = 0")
     func test_preUpgradeBareArrayDefaultsRevZero() async throws {
         let path = tmpPath()
