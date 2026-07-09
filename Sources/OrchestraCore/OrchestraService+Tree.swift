@@ -259,9 +259,13 @@ extension OrchestraService {
                         link: ParentLink(parent: grandparent, base: gcLink.base,
                                          prNumber: gpPr, watch: gpRemote != nil))
                 } catch {
+                    // `set-parent`'s ref is a card shortId, not a branch name — name the grandchild's card
+                    // when one owns the branch, else fall back to a placeholder rather than a command that
+                    // would fail with `unknown task`.
+                    let gcRef = derivedCard(repo: child.repo, branch: gcBranch, among: active)?.shortId ?? "<shortId>"
                     emitActivity(.warning, child, source,
                         "shipped \(child.branch): could not retarget child \(gcBranch) → \(grandparent) — "
-                        + "re-point it manually with `orchestra set-parent \(gcBranch) \(grandparent) --mode move`")
+                        + "re-point it manually with `orchestra set-parent \(gcRef) \(grandparent) --mode move`")
                     continue
                 }
                 // The grandchild's recorded base (old shipped-branch tip) is not an ancestor of the
