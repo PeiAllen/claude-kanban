@@ -12,8 +12,8 @@ struct BoardCardCell: View {
     @Environment(\.theme) private var theme: Theme
 
     private var isFreeform: Bool { task.origin != .worktree }
-    private var sem: SemColor { theme.statusColor(task.status.rawValue) }
-    private var isLive: Bool { task.status == .running || task.status == .waiting }
+    private var sem: SemColor { theme.statusColor(task.phaseDisplay) }
+    private var isLive: Bool { if case .live = task.phase { return true } else { return false } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -26,7 +26,7 @@ struct BoardCardCell: View {
             if !task.desc.isEmpty {
                 Text(task.desc)
                     .font(.subheadline)
-                    .foregroundStyle(task.status == .waiting ? theme.amber.text : theme.text2)
+                    .foregroundStyle(task.waitReason != nil ? theme.amber.text : theme.text2)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -37,16 +37,16 @@ struct BoardCardCell: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.card))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(task.status == .waiting ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
+                .strokeBorder(task.waitReason != nil ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
         )
         .overlay(alignment: .top) {
-            if task.status == .running {
+            if task.phaseDisplay == .running {
                 RoundedRectangle(cornerRadius: 2).fill(theme.green.dot)
                     .frame(height: 2).padding(.horizontal, 10)
             }
         }
         .shadow(color: theme.shadowCard, radius: 3, x: 0, y: 1)
-        .opacity(task.status == .dead ? 0.72 : 1)
+        .opacity(task.phaseDisplay == .dead ? 0.72 : 1)
     }
 
     // MARK: header — status pill (worktree) or mode chip + read-only (freeform)
@@ -57,7 +57,7 @@ struct BoardCardCell: View {
                 ModeChip(origin: task.origin)
                 if task.access == .readOnly { ReadOnlyBadge() }
             } else {
-                StatusPill(status: task.status, sem: sem, updatedAt: task.updatedAt, live: isLive)
+                StatusPill(status: task.phaseDisplay, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
             Spacer(minLength: 4)
             if isFreeform {
@@ -176,7 +176,7 @@ private func abbreviatedPath(_ path: String) -> String {
 // MARK: - Status pill / dot
 
 private struct StatusPill: View {
-    let status: AgentStatus
+    let status: PhaseDisplayKey
     let sem: SemColor
     let updatedAt: Date
     let live: Bool

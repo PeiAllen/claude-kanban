@@ -297,7 +297,7 @@ public class BoardStore: ObservableObject {
 
     /// distinct agents with running/waiting cards (for the MCP chip count).
     public var activeAgentCount: Int {
-        Set(tasks.filter { $0.status == .running || $0.status == .waiting }.map(\.agentId)).count
+        Set(tasks.filter { if case .live = $0.phase { return true } else { return false } }.map(\.agentId)).count
     }
 
     // MARK: lifecycle
@@ -600,7 +600,7 @@ public class BoardStore: ObservableObject {
                 // Prior status of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
                 // `tasks` wholesale, bypassing `apply`) never fire a notification.
-                let prev = tasks.first { $0.id == t.id }?.status
+                let prev = tasks.first { $0.id == t.id }?.phase
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }

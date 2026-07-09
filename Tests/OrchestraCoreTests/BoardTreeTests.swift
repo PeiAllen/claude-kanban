@@ -11,7 +11,7 @@ final class BoardTreeTests: XCTestCase {
                      title: id, repo: repo, branch: branch ?? id, cwd: "\(repo)/\(id)",
                      origin: origin,
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: col,
-                     order: order, status: .running, initialPrompt: id)
+                     order: order, phase: .live(.running), initialPrompt: id)
         t.parentBranch = parent
         t.archived = archived
         return t

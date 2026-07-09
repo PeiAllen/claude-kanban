@@ -12,7 +12,7 @@ extension OrchestraService {
     /// outlived it): resumable cards (agentSessionId + transcript on disk) are revived via a throttled
     /// `resume`; the rest are marked `.dead` (rebootUnrevived). Idempotent.
     public func recoverSessions() async {
-        let tasks = await store.all().filter { !$0.archived && $0.status != .dead }
+        let tasks = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
         let grace = config.revivalGraceSeconds
         var jobs: [@Sendable () async -> Void] = []
 
@@ -118,7 +118,7 @@ extension OrchestraService {
         scheduleRecoveringRelease(id, after: grace)
 
         let (updated, rev) = try await store.update(id) {
-            $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
+            $0.phase = .live(.waiting(.humanTurn)); $0.deadReason = nil; $0.deadDetail = nil
         }
         emit(.taskUpserted(updated), rev: rev)
         emitActivity(.recovered, updated, source, "resumed “\(updated.title)”")
@@ -185,7 +185,7 @@ extension OrchestraService {
         let (updated, rev) = try await store.update(id) {
             $0.agentSessionId = freshId
             $0.priorSessionIds = prior
-            $0.status = .waiting
+            $0.phase = .live(.waiting(.humanTurn))
             $0.titleProvisional = true
             $0.deadReason = nil
             $0.deadDetail = nil
@@ -217,7 +217,7 @@ extension OrchestraService {
 
         // Back on the board (original column preserved); clear any stale dead state before reviving.
         let (unarchived, rev) = try await store.update(id) {
-            $0.archived = false; $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
+            $0.archived = false; $0.phase = .live(.waiting(.humanTurn)); $0.deadReason = nil; $0.deadDetail = nil
         }
         emit(.taskUpserted(unarchived), rev: rev)
         emitActivity(.recovered, unarchived, source, "Reopened “\(unarchived.title)”")
@@ -237,7 +237,7 @@ extension OrchestraService {
         let tasks = await store.all()
         // One `tmux list-sessions` per poll tick, not one `has-session` per card.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
-        for t in tasks where !t.archived && t.status != .dead && t.status != .done {
+        for t in tasks where !t.archived && t.phase.kind != .dead {
             if recovering.contains(t.id) { continue }
             if !aliveNames.contains(sessions.sessionName(t.id)) {
                 await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
@@ -290,14 +290,14 @@ extension OrchestraService {
     /// Called once the window closes. `wake` re-checks every gate, so this is a no-op unless there is a
     /// genuinely stranded message, and it self-terminates: the resumed turn drains the inbox.
     func wakeIfPending(_ id: UUID) async {
-        guard let t = await store.get(id), t.status == .waiting, !t.archived,
+        guard let t = await store.get(id), case .live(.waiting) = t.phase, !t.archived,
               !(await inbox.peek(id)).isEmpty else { return }
         await wake(id)
     }
 
     func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {
         guard let (updated, rev) = try? await store.update(id, {
-            $0.status = .dead; $0.deadReason = reason; $0.deadDetail = detail
+            $0.phase = .dead(reason); $0.deadReason = reason; $0.deadDetail = detail
         }) else { return }
         emit(.taskUpserted(updated), rev: rev)
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")

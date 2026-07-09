@@ -255,7 +255,7 @@ enum CLIRunner {
         guard let tasks = try? result.decode([Task].self) else { printJSON(result); return }
         if tasks.isEmpty { print("(no cards)"); return }
         for t in tasks {
-            let pill = t.status.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
+            let pill = t.phaseDisplay.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
             print("\(t.shortId)  \(pill)  [\(t.column.rawValue)]  \(t.title)  ·  \((t.repo as NSString).lastPathComponent)/\(t.branch)")
         }
     }

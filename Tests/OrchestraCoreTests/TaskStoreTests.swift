@@ -19,7 +19,7 @@ struct TaskStoreTests {
         let store = TaskStore(path: tempPath())
         let t = try await store.create(sample()).task
         #expect(t.order == 0)
-        #expect(t.status == .running)
+        #expect(t.phaseDisplay == .running)
         let t2 = try await store.create(sample("Second")).task
         #expect(t2.order == 1)  // appended after the first in the same column
     }
@@ -28,8 +28,8 @@ struct TaskStoreTests {
     func updateMerges() async throws {
         let store = TaskStore(path: tempPath())
         let t = try await store.create(sample()).task
-        let updated = try await store.update(t.id) { $0.status = .waiting; $0.desc = "Editing Foo.swift" }.task
-        #expect(updated.status == .waiting)
+        let updated = try await store.update(t.id) { $0.phase = .live(.waiting(.humanTurn)); $0.desc = "Editing Foo.swift" }.task
+        #expect(updated.waitReason != nil)
         #expect(updated.desc == "Editing Foo.swift")
         #expect(updated.updatedAt >= t.updatedAt)
     }
@@ -76,6 +76,99 @@ struct TaskStoreTests {
         }
         let all = await store.all()
         #expect(all.count == 20)
+    }
+}
+
+@Suite("TaskStore — one-time on-disk migration to phase") struct TaskStoreMigrationTests {
+    private func tmpPath() -> String { NSTemporaryDirectory() + "orch-mig-\(UUID().uuidString)/tasks.json" }
+
+    private func sample(_ title: String) -> Task {
+        Task(title: title, repo: "/repos/app", branch: "feat-\(title)", cwd: "/wt/app/\(title)",
+             model: AgentModel(id: "claude-sonnet-4-5"), startIn: .impl, column: .impl, order: 0,
+             initialPrompt: title)
+    }
+
+    /// Reshape a Task into a PRE-Stage-2 legacy record: drop the phase-era keys and inject the legacy
+    /// `status`/`waitReason`/`deadReason`/`archived` keys exactly as an old tasks.json carried them.
+    private func legacyRecord(_ t: Task, status: String, waitReason: String? = nil,
+                              deadReason: String? = nil, archived: Bool = false) -> [String: Any] {
+        var obj = try! JSONSerialization.jsonObject(
+            with: OrchestraJSON.wire.encode(t)) as! [String: Any]
+        for k in ["phase", "sessionEpoch", "phaseChangedAt", "status", "waitReason", "deadReason"] {
+            obj.removeValue(forKey: k)
+        }
+        obj["status"] = status
+        if let w = waitReason { obj["waitReason"] = w }
+        if let d = deadReason { obj["deadReason"] = d }
+        obj["archived"] = archived
+        return obj
+    }
+
+    /// The six-record legacy fixture as an array of JSON objects, one per lifecycle case.
+    private func legacyRecords() -> [[String: Any]] {
+        [
+            legacyRecord(sample("running"), status: "running"),
+            legacyRecord(sample("wait-nil"), status: "waiting"),                       // nil waitReason
+            legacyRecord(sample("wait-perm"), status: "waiting", waitReason: "permission"),
+            legacyRecord(sample("done"), status: "done"),
+            legacyRecord(sample("dead"), status: "dead", deadReason: "resumeFailed"),
+            legacyRecord(sample("arch"), status: "done", archived: true),
+        ]
+    }
+
+    private func write(_ json: Any, to path: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: json)
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+
+    private func assertMigratedPhases(_ tasks: [Task]) {
+        func phase(_ title: String) -> Phase? { tasks.first { $0.title == title }?.phase }
+        #expect(tasks.count == 6, "no card dropped")
+        #expect(phase("running") == .live(.running))
+        #expect(phase("wait-nil") == .live(.waiting(.humanTurn)))         // nil waitReason → humanTurn, never unknown
+        #expect(phase("wait-perm") == .live(.waiting(.permission)))
+        #expect(phase("done") == .dead(.completed))
+        #expect(phase("dead") == .dead(.resumeFailed))                    // dead preserves its reason
+        #expect(phase("arch") == .archived(teardownComplete: true))
+    }
+
+    @Test("migrates a legacy bare [Task] array — every status → phase, rev 0")
+    func test_migratesLegacyTasksJson_bareArray() async throws {
+        let path = tmpPath()
+        try write(legacyRecords(), to: path)
+        let store = TaskStore(path: path)
+        let loaded = await store.load()
+        assertMigratedPhases(loaded)
+        #expect(await store.currentRev == 0)                             // bare array → rev 0 (PR1)
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))  // a legacy board is NOT wiped
+    }
+
+    @Test("migrates a legacy {rev,tasks} envelope — phases migrate, rev preserved")
+    func test_migratesLegacyTasksJson_envelope() async throws {
+        let path = tmpPath()
+        try write(["rev": 7, "tasks": legacyRecords()], to: path)
+        let store = TaskStore(path: path)
+        let loaded = await store.load()
+        assertMigratedPhases(loaded)
+        #expect(await store.currentRev == 7)                             // envelope rev preserved
+        #expect(store.peekPersistedRev() == 7)                           // and the sync peek agrees
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
+    }
+
+    @Test("a garbage/partial legacy record is kept as a safe terminal, not dropped or .bak'd")
+    func test_migratesUnknownLegacyRecordToSafeTerminal() async throws {
+        let path = tmpPath()
+        // Only `id` + a garbage `status`; every other field absent — best-effort decode must fill defaults.
+        let id = UUID()
+        try write([["id": id.uuidString, "status": "zombie"]], to: path)
+        let store = TaskStore(path: path)
+        let loaded = await store.load()
+        #expect(loaded.count == 1, "the card is kept, not dropped")
+        #expect(loaded.first?.id == id)
+        #expect(loaded.first?.phase == .dead(.rebootUnrevived))          // unknown status → safe terminal
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))  // one bad record never wipes the board
     }
 }
 

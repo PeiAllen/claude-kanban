@@ -75,6 +75,20 @@ struct ModelCodableTests {
         #expect(!Phase.launching.isTerminal)
     }
 
+    @Test("a fresh Task no longer encodes status/waitReason (flag-day removal)")
+    func test_statusFieldRemoved() throws {
+        let t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
+                     model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                     order: 0, initialPrompt: "go")
+        let obj = try JSONSerialization.jsonObject(
+            with: OrchestraJSON.wire.encode(t)) as! [String: Any]
+        #expect(obj["status"] == nil, "status must not be on the wire")
+        #expect(obj["waitReason"] == nil, "waitReason must not be on the wire")
+        #expect(obj["phase"] != nil, "phase is the SSOT on the wire")
+        // `AgentStatus` is deleted (compile-level): this file would not compile if any of the
+        // model types still referenced it.
+    }
+
     @Test("Task round-trips the four new phase fields")
     func test_taskCarriesPhaseFields() throws {
         let epochDate = Date(timeIntervalSince1970: 1_700_000_000)

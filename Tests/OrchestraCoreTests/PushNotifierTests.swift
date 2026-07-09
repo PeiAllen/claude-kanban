@@ -73,11 +73,11 @@ final class PushNotifierTests: XCTestCase {
 
     private func tempPath() -> String { NSTemporaryDirectory() + "pn-\(UUID().uuidString).json" }
 
-    private func card(id: UUID = UUID(), status: AgentStatus, wait: WaitReason? = nil,
+    private func card(id: UUID = UUID(), phase: Phase = .live(.running),
                       dead: DeadReason? = nil) -> Task {
         Task(id: id, title: "Card", repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
-             status: status, deadReason: dead, waitReason: wait, ctxPct: 0, initialPrompt: "Card")
+             deadReason: dead, phase: phase, ctxPct: 0, initialPrompt: "Card")
     }
 
     private func prefs(_ scope: NotifyScope) -> NotifyPrefsSnapshot {
@@ -98,8 +98,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: mock)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))          // first sighting: no fire
-        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .permission)))  // running→waiting
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))          // first sighting: no fire
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))  // running→waiting
 
         let sends = await mock.recorded()
         XCTAssertEqual(sends.count, 1)
@@ -118,8 +118,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: mock)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .dead, dead: .agentExited)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .dead(.agentExited))))
 
         let sends = await mock.recorded()
         XCTAssertEqual(sends.map(\.token), [tokOn], "the .off device must be dropped at source")
@@ -133,9 +133,9 @@ final class PushNotifierTests: XCTestCase {
 
         // A card on a background task stays .running across snapshots — never a .waiting transition.
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
 
         let sends = await mock.recorded()
         XCTAssertTrue(sends.isEmpty, "a background-waiting (still-running) card must never push")
@@ -148,10 +148,10 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: mock)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
         await notifier.handle(.taskRemoved(id))
         // Re-created with the same id is a fresh card (prev == nil) — the first waiting sighting won't fire.
-        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .humanTurn)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.humanTurn)))))
         let sends = await mock.recorded()
         XCTAssertTrue(sends.isEmpty)
     }
@@ -195,8 +195,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: sender)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .permission)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertTrue(remaining.isEmpty, "a 410 Unregistered must drop the dead token")
@@ -210,8 +210,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: sender)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .dead, dead: .agentExited)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .dead(.agentExited))))
 
         let remaining = await service.registeredDevices()
         XCTAssertTrue(remaining.isEmpty, "a 400 BadDeviceToken must drop the dead token")
@@ -230,8 +230,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: sender)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .permission)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.token), [newTok],
@@ -246,8 +246,8 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier(service: service, sender: sender)
 
         let id = UUID()
-        await notifier.handle(.taskUpserted(card(id: id, status: .running)))
-        await notifier.handle(.taskUpserted(card(id: id, status: .waiting, wait: .permission)))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.running))))
+        await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.permission)))))
 
         let remaining = await service.registeredDevices()
         XCTAssertEqual(remaining.map(\.clientId), ["cA"], "a transient 500 must NOT drop the token")

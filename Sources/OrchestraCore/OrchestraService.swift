@@ -247,7 +247,7 @@ public actor OrchestraService {
     /// Driven by the daemon's 2s poll loop, alongside `reconcileLiveness`.
     public func pollTelemetry() async {
         let tasks = await store.all()
-        for t in tasks where !t.archived && t.status != .dead {
+        for t in tasks where !t.archived && t.phase.kind != .dead {
             guard let adapter = try? registry.get(t.agentId),
                   adapter.capabilities.telemetry == .fileTail else { continue }
             // Resolve the rollout path from the adapter (uses the tracked id, else discovers the newest).
@@ -418,7 +418,7 @@ public actor OrchestraService {
             repo: realRepo, branch: input.branch, cwd: cwd,
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
-            column: startIn.column, order: 0, status: provisional ? .waiting : .running,
+            column: startIn.column, order: 0, phase: provisional ? .live(.waiting(.humanTurn)) : .live(.running),
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
             parentBranch: derivedParentBranch
         )
@@ -459,7 +459,7 @@ public actor OrchestraService {
 
         // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
         // for this adapter (the just-created card is already in the store) and warn past the threshold.
-        let active = await store.all().filter { !$0.archived && $0.status != .dead }
+        let active = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
             emitActivity(.warning, created, source, warn.message)
         }
@@ -739,7 +739,7 @@ public actor OrchestraService {
                 break
             }
         }
-        let (updated, rev) = try await store.update(id) { $0.status = .done; $0.archived = true }
+        let (updated, rev) = try await store.update(id) { $0.phase = .dead(.completed); $0.archived = true }
         lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
         emit(.taskUpserted(updated), rev: rev)
         emitActivity(.archived, updated, source, "Archived “\(updated.title)”")

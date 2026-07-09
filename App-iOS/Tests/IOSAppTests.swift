@@ -136,11 +136,11 @@ final class IOSAppTests: XCTestCase {
     func testPushDeepLinkRoutesDiedToRecoveryElsePeek() {
         let id = UUID()
         // A died card deep-links to Recovery (matches the row's own Recover action).
-        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .dead), .recover(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, display: .dead), .recover(id))
         // Everything else (waiting/running, or unknown) opens the card peek.
-        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .waiting), .peek(id))
-        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: .running), .peek(id))
-        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, status: nil), .peek(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, display: .idle), .peek(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, display: .running), .peek(id))
+        XCTAssertEqual(NeedsYouRoute.deepLink(cardId: id, display: nil), .peek(id))
     }
 
     func testPushCoordinatorDeepLinkSetAndConsume() {

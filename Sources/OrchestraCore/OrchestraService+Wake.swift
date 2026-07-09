@@ -121,7 +121,7 @@ extension OrchestraService {
     /// leaves it for the next turn). No loop: the resumed session runs ONE turn off the drained seed and its
     /// Stop finds the inbox empty.
     func resumeSeedWake(_ t: Task, watcherWillReinvoke: Bool) async {
-        guard t.status == .waiting, isResumable(t) else { return }
+        guard case .live(.waiting) = t.phase, isResumable(t) else { return }
         if watcherWillReinvoke, activeWaitProcesses[t.id] != nil { return }
         // Claim the relaunch SYNCHRONOUSLY (before the detached hop) so a concurrent wake sees `recovering`
         // and defers — else two resumes race and the second drains an already-emptied inbox and kills the
@@ -134,8 +134,8 @@ extension OrchestraService {
     /// `.done`/archived = moved to Done; a clean agent exit (`.agentExited`) = `.exited`. A revivable
     /// crash (`sessionVanished`) is deliberately NOT terminal here.
     func isConcluded(_ t: Task) -> Conclusion.Kind? {
-        if t.archived || t.status == .done { return .done }
-        if t.status == .dead, t.deadReason == .agentExited { return .exited }
+        if t.archived || t.phase == .dead(.completed) { return .done }
+        if t.phase.kind == .dead, t.deadReason == .agentExited { return .exited }
         return nil
     }
 

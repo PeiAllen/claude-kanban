@@ -7,61 +7,60 @@ import OrchestraKit
 final class NeedsYouQueueTests: XCTestCase {
 
     private func card(_ title: String,
-                      status: AgentStatus,
-                      wait: WaitReason? = nil,
+                      phase: Phase = .live(.running),
                       dead: DeadReason? = nil,
                       ctx: Double = 0,
                       archived: Bool = false,
                       updatedAt: Date = Date()) -> Task {
         Task(title: title, repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
-             status: status, deadReason: dead, waitReason: wait, ctxPct: ctx,
+             deadReason: dead, phase: phase, ctxPct: ctx,
              initialPrompt: title, archived: archived, updatedAt: updatedAt)
     }
 
     // MARK: reason derivation
 
     func testReasonMapsEachDaemonSignal() {
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("p", status: .waiting, wait: .permission)), .permission)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("h", status: .waiting, wait: .humanTurn)), .humanTurn)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("d", status: .dead, dead: .agentExited)), .died)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("c", status: .running, ctx: 92)), .contextFull)
+        XCTAssertEqual(NeedsYouQueue.reason(for: card("p", phase: .live(.waiting(.permission)))), .permission)
+        XCTAssertEqual(NeedsYouQueue.reason(for: card("h", phase: .live(.waiting(.humanTurn)))), .humanTurn)
+        XCTAssertEqual(NeedsYouQueue.reason(for: card("d", phase: .dead(.agentExited))), .died)
+        XCTAssertEqual(NeedsYouQueue.reason(for: card("c", phase: .live(.running), ctx: 92)), .contextFull)
     }
 
     func testRunningCardWithNoSignalNeedsNothing() {
         // A plain running card (the common case, incl. background-waits which stay .running) never surfaces.
-        XCTAssertNil(NeedsYouQueue.reason(for: card("r", status: .running)))
-        XCTAssertNil(NeedsYouQueue.reason(for: card("r", status: .running, ctx: 40)))
+        XCTAssertNil(NeedsYouQueue.reason(for: card("r", phase: .live(.running))))
+        XCTAssertNil(NeedsYouQueue.reason(for: card("r", phase: .live(.running), ctx: 40)))
     }
 
     func testDoneCardIsNeverDraggedInByStaleContext() {
         // Context-full is gated to live (running/waiting) cards — a finished card isn't "needing you".
-        XCTAssertNil(NeedsYouQueue.reason(for: card("done", status: .done, ctx: 99)))
+        XCTAssertNil(NeedsYouQueue.reason(for: card("done", phase: .dead(.completed), ctx: 99)))
     }
 
     func testPermissionOutranksContextWhenBoth() {
         // A waiting-on-permission card that is also near-full surfaces for the stronger reason.
-        let t = card("both", status: .waiting, wait: .permission, ctx: 99)
+        let t = card("both", phase: .live(.waiting(.permission)), ctx: 99)
         XCTAssertEqual(NeedsYouQueue.reason(for: t), .permission)
     }
 
     func testContextThresholdBoundary() {
-        XCTAssertNil(NeedsYouQueue.reason(for: card("just-under", status: .running, ctx: 84)))
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("at", status: .running, ctx: 85)), .contextFull)
+        XCTAssertNil(NeedsYouQueue.reason(for: card("just-under", phase: .live(.running), ctx: 84)))
+        XCTAssertEqual(NeedsYouQueue.reason(for: card("at", phase: .live(.running), ctx: 85)), .contextFull)
     }
 
     // MARK: build — filtering + sort
 
     func testArchivedCardsAreExcluded() {
-        let t = card("archived-dead", status: .dead, dead: .agentExited, archived: true)
+        let t = card("archived-dead", phase: .dead(.agentExited), archived: true)
         XCTAssertTrue(NeedsYouQueue.build(from: [t]).isEmpty)
     }
 
     func testBackgroundWaitCardNeverAppears() {
         // A card paused on a background task is reported .running by the adapters, so it is simply a
         // running card here — excluded. (The exclusion is by construction, not a special case.)
-        let bg = card("bg-loop", status: .running)
-        let real = card("blocked", status: .waiting, wait: .permission)
+        let bg = card("bg-loop", phase: .live(.running))
+        let real = card("blocked", phase: .live(.waiting(.permission)))
         let q = NeedsYouQueue.build(from: [bg, real])
         XCTAssertEqual(q.map(\.task.title), ["blocked"])
     }
@@ -70,11 +69,11 @@ final class NeedsYouQueueTests: XCTestCase {
         let now = Date()
         let old = now.addingTimeInterval(-600)   // waiting longer
         let new = now.addingTimeInterval(-60)
-        let perm   = card("perm",    status: .waiting, wait: .permission, updatedAt: new)
-        let died   = card("died",    status: .dead,    dead: .agentExited, updatedAt: new)
-        let humanA = card("human-old", status: .waiting, wait: .humanTurn, updatedAt: old)
-        let humanB = card("human-new", status: .waiting, wait: .humanTurn, updatedAt: new)
-        let ctx    = card("ctx",     status: .running, ctx: 95, updatedAt: new)
+        let perm   = card("perm",    phase: .live(.waiting(.permission)), updatedAt: new)
+        let died   = card("died",    phase: .dead(.agentExited),    dead: .agentExited, updatedAt: new)
+        let humanA = card("human-old", phase: .live(.waiting(.humanTurn)), updatedAt: old)
+        let humanB = card("human-new", phase: .live(.waiting(.humanTurn)), updatedAt: new)
+        let ctx    = card("ctx",     phase: .live(.running), ctx: 95, updatedAt: new)
 
         let order = NeedsYouQueue.build(from: [ctx, humanB, humanA, died, perm]).map(\.task.title)
         // permission > died > humanTurn (oldest-first within reason) > context
@@ -104,10 +103,10 @@ final class NeedsYouQueueTests: XCTestCase {
     func testGateFiresOnlyWhileWaitingOnPermission() {
         // Only a card STILL blocked on a permission prompt yields a chord; anything else is a no-op so an
         // approve/deny keystroke can't land in a now-live REPL and submit the composer.
-        let perm = card("perm", status: .waiting, wait: .permission)
-        let humanTurn = card("human", status: .waiting, wait: .humanTurn)
-        let running = card("run", status: .running)
-        let dead = card("dead", status: .dead, dead: .agentExited)
+        let perm = card("perm", phase: .live(.waiting(.permission)))
+        let humanTurn = card("human", phase: .live(.waiting(.humanTurn)))
+        let running = card("run", phase: .live(.running))
+        let dead = card("dead", phase: .dead(.agentExited))
         let m = modelWith([perm, humanTurn, running, dead])
 
         XCTAssertEqual(m.permissionGateChord(perm.id, \.approveChord), [.named(.enter)])
@@ -128,7 +127,7 @@ final class NeedsYouQueueTests: XCTestCase {
             authMode: .subscription, approveChord: [.named(.tab)], denyChord: [])
         let agent = AgentInfo(id: "tabber", name: "Tabber", icon: "sparkle",
                               models: [AgentModel(id: "m")], capabilities: tabCaps)
-        var t = card("perm", status: .waiting, wait: .permission)
+        var t = card("perm", phase: .live(.waiting(.permission)))
         t.agentId = "tabber"
         let m = modelWith([t], agents: [agent])
 

@@ -29,7 +29,7 @@ struct SpawnRaceTests {
         }
 
         let all = await env.svc.list(includeArchived: true)
-        let dead = ids.filter { id in all.first { $0.id == id }?.status == .dead }
+        let dead = ids.filter { id in all.first { $0.id == id }?.phaseDisplay == .dead }
         #expect(dead.isEmpty, "\(dead.count)/\(ids.count) freshly-spawned cards were falsely marked dead")
     }
 
@@ -63,13 +63,13 @@ struct SpawnRaceTests {
 
         // User clicks "start fresh": the old (still-running) process is killed and a new session ensured.
         let restarted = try await env.svc.restart(t.id, source: .app)
-        #expect(restarted.status == .waiting)
+        #expect(restarted.waitReason != nil)
 
         // The killed old process's SessionEnd hook arrives out-of-band right after restart returns.
         try await env.svc.report(t.id, StatusReport(endReason: "exit"))
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status != .dead, "stale SessionEnd re-killed the restarted card")
+        #expect(after.phaseDisplay != .dead, "stale SessionEnd re-killed the restarted card")
         #expect(after.deadReason == nil)
     }
 }

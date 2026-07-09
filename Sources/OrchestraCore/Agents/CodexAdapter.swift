@@ -78,7 +78,7 @@ public struct CodexAdapter: Adapter {
         // telemetry stays the rollout fileTail below.
         if case let .hooksPush(kind, _) = raw {
             return kind == HookEvent.permission.rawValue
-                ? StatusReport(status: .waiting, waitReason: .permission)
+                ? StatusReport(run: .waiting(.permission))
                 : nil
         }
         guard case let .fileTail(line) = raw else { return nil }
@@ -101,7 +101,7 @@ public struct CodexAdapter: Adapter {
         if any("turncomplete", "taskcomplete") {
             // Codex has no permission hook and no background-yield/auto-resume pattern (subagents run
             // synchronously; background shells poll in-turn), so a completed turn is a genuine human-wait.
-            return StatusReport(seq: seq, status: .waiting, waitReason: .humanTurn, turnCompleted: true)
+            return StatusReport(seq: seq, run: .waiting(.humanTurn), turnCompleted: true)
         }
         // Token usage -> ctxPct + modelId. Prefer the offline model table as the denominator when the
         // rollout names a model; fall back to the rollout's explicit context window for model-less
@@ -118,14 +118,14 @@ public struct CodexAdapter: Adapter {
         }
         // Turn start → running.
         if any("taskstarted", "turnstarted") {
-            return StatusReport(seq: seq, status: .running)
+            return StatusReport(seq: seq, run: .running)
         }
         // A tool/function call mid-turn → running (+ a coarse desc).
         if any("functioncall", "responseitem") {
             if let name = payload["name"]?.stringValue, !name.isEmpty {
-                return StatusReport(seq: seq, desc: "Running \(name)", status: .running)
+                return StatusReport(seq: seq, desc: "Running \(name)", run: .running)
             }
-            return StatusReport(seq: seq, status: .running)
+            return StatusReport(seq: seq, run: .running)
         }
         return nil
     }

@@ -13,13 +13,7 @@ public enum Column: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Live status pill. `dead` = the session is no longer running and the card awaits user recovery
-/// (work in the worktree is intact). Distinct from `done` (finished + archivable).
-public enum AgentStatus: String, Codable, Sendable {
-    case waiting, running, done, dead
-}
-
-/// Why a card is `.waiting` — set with `status = .waiting`, cleared when status leaves `.waiting`.
+/// Why a card is `.waiting` — carried inside `RunState.waiting` on the card's `phase`.
 /// Drives which notification trigger the app fires. `.dead` is a separate transition (see `deadReason`).
 public enum WaitReason: String, Codable, Sendable {
     case permission   // agent blocked on tool approval (Claude Notification/permission_prompt)
@@ -144,6 +138,22 @@ public enum Phase: Codable, Equatable, Sendable {
                 debugDescription: "unknown Phase case \"\(name)\"")
         }
     }
+}
+
+/// A coarse UI label for a card's `phase` — the display-only classification the board cells, detail
+/// headers, and status pills render. Deliberately **non-Codable and non-wire**: it is derived from
+/// `phase` on demand (`Task.phaseDisplay`) and never persisted, so the display vocabulary can evolve
+/// without touching the durable model. The being-born phases are surfaced honestly (a spawning card
+/// reads `.starting`/`.launching`, not a fake `.running`).
+public enum PhaseDisplayKey: String, Sendable, Equatable, CaseIterable {
+    case starting        // .creatingWorktree — materializing the cwd
+    case launching       // .launching — bringing the session up
+    case relaunching     // .relaunching — a restart/resume in flight
+    case running         // .live(.running)
+    case idle            // .live(.waiting(.humanTurn)) — finished its turn, waiting on the human
+    case needsPermission // .live(.waiting(.permission)) — blocked on tool approval
+    case dead            // .dead(non-completed) — needs recovery
+    case done            // .dead(.completed) / .archived — finished + retired
 }
 
 /// Spawn sheet "Start in".
@@ -345,12 +355,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var startIn: StartIn    // where the agent began
     public var column: Column      // board column
     public var order: Int          // sort within a column
-    public var status: AgentStatus // waiting/running/done/dead — pushed from hooks; tmux-liveness fallback
-    public var deadReason: DeadReason?  // set with `status = .dead`; cleared when status leaves `.dead`
+    public var deadReason: DeadReason?  // set with `phase = .dead(_)`; carries the terminal reason
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
-    public var waitReason: WaitReason?  // set with `status = .waiting`; cleared when status leaves `.waiting`
-    /// Persisted lifecycle phase — the convergence SSOT (Stage 2). Added alongside `status`/`waitReason`
-    /// for now; later stages retire those in favor of `phase` + the `transition()` funnel.
+    /// Persisted lifecycle phase — the convergence SSOT (Stage 2). The sole source of running/waiting/
+    /// dead/archived truth: `status`/`waitReason` were retired into `phase` + `RunState` (Stage 2 flag-day).
     public var phase: Phase
     /// Monotonic per-card session generation — bumped on each (re)launch so stale-session signals
     /// (liveness polls, late hooks) from a superseded generation can be fenced out.
@@ -384,10 +392,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         startIn: StartIn,
         column: Column,
         order: Int,
-        status: AgentStatus = .running,
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
-        waitReason: WaitReason? = nil,
         phase: Phase = .live(.running),
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
@@ -417,10 +423,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.startIn = startIn
         self.column = column
         self.order = order
-        self.status = status
         self.deadReason = deadReason
         self.deadDetail = deadDetail
-        self.waitReason = waitReason
         self.phase = phase
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
@@ -437,55 +441,122 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
-    // Custom decode so cards persisted *before* the lifecycle fields existed still load: the new
-    // non-optional fields (`phase`/`sessionEpoch`/`phaseChangedAt`) are decoded tolerantly with the
-    // same defaults as the memberwise init (Swift's synthesized decoder ignores property defaults,
-    // so an absent key would otherwise throw and strand every legacy card). Encode stays synthesized.
-    // Previously-required fields keep `decode` — their decode semantics are unchanged.
+    // Custom decode that ALSO performs the one-time on-disk migration from the retired
+    // `status`/`waitReason`/`archived` triple to `phase` (Stage 2 flag-day). Two properties:
+    //   1. Best-effort/lossless: `id` is the ONLY required field — every other field is
+    //      `decodeIfPresent` with a safe default, so a partial/garbage legacy record is *kept* (as a
+    //      safe-terminal card) rather than throwing and stranding the whole board to `.bak`.
+    //   2. Migrating: when the `phase` key is ABSENT (a pre-Stage-2 record) `phase` is seeded from the
+    //      legacy `status`/`waitReason`/`deadReason`/`archived` keys (read leniently as `String?` so a
+    //      garbage status can never abort the record). A record that already has `phase` decodes it
+    //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
-        case agentId, model, startIn, column, order, status, deadReason, deadDetail, waitReason
+        case agentId, model, startIn, column, order, deadReason, deadDetail
         case phase, sessionEpoch, phaseChangedAt, pendingSeed
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
+        // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
+        case status, waitReason
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // The sole required field: an id-less record is genuinely unrecoverable (the only drop case).
         self.id = try c.decode(UUID.self, forKey: .id)
-        self.title = try c.decode(String.self, forKey: .title)
-        self.titleProvisional = try c.decode(Bool.self, forKey: .titleProvisional)
-        self.desc = try c.decode(String.self, forKey: .desc)
-        self.repo = try c.decode(String.self, forKey: .repo)
-        self.branch = try c.decode(String.self, forKey: .branch)
+        // Everything else is best-effort — a missing/partial field falls back to a safe default so the
+        // card is kept, not dropped.
+        self.title = try c.decodeIfPresent(String.self, forKey: .title) ?? "(recovered)"
+        self.titleProvisional = try c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
+        self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
+        self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
-        self.cwd = try c.decode(String.self, forKey: .cwd)
-        self.origin = try c.decode(CardOrigin.self, forKey: .origin)
-        self.access = try c.decode(CardAccess.self, forKey: .access)
-        self.agentId = try c.decode(String.self, forKey: .agentId)
-        self.model = try c.decode(AgentModel.self, forKey: .model)
-        self.startIn = try c.decode(StartIn.self, forKey: .startIn)
-        self.column = try c.decode(Column.self, forKey: .column)
-        self.order = try c.decode(Int.self, forKey: .order)
-        self.status = try c.decode(AgentStatus.self, forKey: .status)
+        self.cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+        self.origin = try c.decodeIfPresent(CardOrigin.self, forKey: .origin) ?? .worktree
+        self.access = try c.decodeIfPresent(CardAccess.self, forKey: .access) ?? .readWrite
+        self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
+        self.model = try c.decodeIfPresent(AgentModel.self, forKey: .model) ?? AgentModel(id: "unknown")
+        self.startIn = try c.decodeIfPresent(StartIn.self, forKey: .startIn) ?? .impl
+        self.column = try c.decodeIfPresent(Column.self, forKey: .column) ?? .impl
+        self.order = try c.decodeIfPresent(Int.self, forKey: .order) ?? 0
         self.deadReason = try c.decodeIfPresent(DeadReason.self, forKey: .deadReason)
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
-        self.waitReason = try c.decodeIfPresent(WaitReason.self, forKey: .waitReason)
-        // New lifecycle fields — tolerant of absence for legacy on-disk cards.
-        self.phase = try c.decodeIfPresent(Phase.self, forKey: .phase) ?? .live(.running)
+        self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
+        self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
+        self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
+        self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
+        self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
+        self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
+        let archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        self.archived = archived
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         self.sessionEpoch = try c.decodeIfPresent(Int.self, forKey: .sessionEpoch) ?? 0
         self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
             ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
-        self.ctxPct = try c.decode(Double.self, forKey: .ctxPct)
-        self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
-        self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
-        self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
-        self.priorSessionIds = try c.decode([String].self, forKey: .priorSessionIds)
-        self.initialPrompt = try c.decode(String.self, forKey: .initialPrompt)
-        self.archived = try c.decode(Bool.self, forKey: .archived)
-        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
-        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
+        // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
+        if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
+            self.phase = phase
+        } else {
+            self.phase = Task.migratedPhase(
+                status: try? c.decodeIfPresent(String.self, forKey: .status),
+                waitReason: try? c.decodeIfPresent(String.self, forKey: .waitReason),
+                deadReason: deadReason, archived: archived)
+        }
+    }
+
+    /// Seed `phase` from a pre-Stage-2 record's legacy fields. Precedence top-to-bottom; a nil/unknown
+    /// `waitReason` on a waiting card is common (idle cards) so it maps to `.humanTurn`, never a fake
+    /// wait; a nil/unrecognized `status` maps to the safe terminal `.dead(.rebootUnrevived)` (never throws).
+    static func migratedPhase(status: String?, waitReason: String?,
+                              deadReason: DeadReason?, archived: Bool) -> Phase {
+        if archived { return .archived(teardownComplete: true) }
+        switch status {
+        case "running": return .live(.running)
+        case "waiting": return .live(.waiting(WaitReason(rawValue: waitReason ?? "") ?? .humanTurn))
+        case "done":    return .dead(.completed)
+        case "dead":    return .dead(deadReason ?? .agentExited)
+        default:        return .dead(.rebootUnrevived)   // nil or an unrecognized legacy status
+        }
+    }
+
+    // Custom encode (the decode-only legacy keys make Codable synthesis impossible). Emits every
+    // stored property to its key — and deliberately NOT `status`/`waitReason`, which no longer exist.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(titleProvisional, forKey: .titleProvisional)
+        try c.encode(desc, forKey: .desc)
+        try c.encode(repo, forKey: .repo)
+        try c.encode(branch, forKey: .branch)
+        try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
+        try c.encode(cwd, forKey: .cwd)
+        try c.encode(origin, forKey: .origin)
+        try c.encode(access, forKey: .access)
+        try c.encode(agentId, forKey: .agentId)
+        try c.encode(model, forKey: .model)
+        try c.encode(startIn, forKey: .startIn)
+        try c.encode(column, forKey: .column)
+        try c.encode(order, forKey: .order)
+        try c.encodeIfPresent(deadReason, forKey: .deadReason)
+        try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
+        try c.encode(phase, forKey: .phase)
+        try c.encode(sessionEpoch, forKey: .sessionEpoch)
+        try c.encode(phaseChangedAt, forKey: .phaseChangedAt)
+        try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
+        try c.encode(ctxPct, forKey: .ctxPct)
+        try c.encodeIfPresent(diffStat, forKey: .diffStat)
+        try c.encodeIfPresent(treeStat, forKey: .treeStat)
+        try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
+        try c.encode(priorSessionIds, forKey: .priorSessionIds)
+        try c.encode(initialPrompt, forKey: .initialPrompt)
+        try c.encode(archived, forKey: .archived)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 
 
@@ -505,7 +576,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// freshly-computed snapshot `s`, leaving every other (possibly concurrently-mutated) field at
     /// self's current value. Centralizes report's ownership so a whole-object write can't clobber.
     public mutating func applyReportFields(from s: Task) {
-        status = s.status
+        phase = s.phase
         deadReason = s.deadReason
         deadDetail = s.deadDetail
         agentSessionId = s.agentSessionId
@@ -515,7 +586,29 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         title = s.title
         ctxPct = s.ctxPct
         model = s.model
-        waitReason = s.waitReason
+    }
+
+    // MARK: - Derived phase views (non-wire; computed from `phase` on demand)
+
+    /// The coarse UI label for this card, derived from `phase`. The one place `phase → display`
+    /// classification lives, so board cells / detail headers / status pills no longer each re-map it.
+    public var phaseDisplay: PhaseDisplayKey {
+        switch phase {
+        case .creatingWorktree:            return .starting
+        case .launching:                   return .launching
+        case .relaunching:                 return .relaunching
+        case .live(.running):              return .running
+        case .live(.waiting(.permission)): return .needsPermission
+        case .live(.waiting(.humanTurn)):  return .idle
+        case .dead(.completed):            return .done
+        case .archived:                    return .done
+        case .dead:                        return .dead
+        }
+    }
+
+    /// Why this card is waiting, derived from `phase` — `nil` unless it is `.live(.waiting(_))`.
+    public var waitReason: WaitReason? {
+        if case .live(.waiting(let r)) = phase { return r } else { return nil }
     }
 }
 
@@ -769,21 +862,21 @@ public struct SnapshotReport: Codable, Sendable, Equatable {
     public var modelId: String?
     /// Current model *display label* (e.g. `model.display_name`) — UI only, never used to launch.
     public var modelDisplay: String?
-    public var status: AgentStatus?
+    /// The agent's observed run-state — `.running` or `.waiting(reason)`. Replaces the retired
+    /// `status`/`waitReason` pair; `report()` maps a present `run` onto a `.live(run)` phase write.
+    public var run: RunState?
     public var desc: String?
-    /// Why the card is waiting (permission vs human-turn) — set alongside `status = .waiting`.
-    public var waitReason: WaitReason?
     /// The agent reported a natural turn/task completion, not just an idle notification.
     public var turnCompleted: Bool?
     /// A `/rename` mirror — applied only on a genuine change (see report) so it can't clobber the
     /// re-title-after-restart flow.
     public var sessionName: String?
     public init(seq: UInt64 = 0, ctxPct: Double? = nil, modelId: String? = nil,
-                modelDisplay: String? = nil, status: AgentStatus? = nil, desc: String? = nil,
-                waitReason: WaitReason? = nil, turnCompleted: Bool? = nil, sessionName: String? = nil) {
+                modelDisplay: String? = nil, run: RunState? = nil, desc: String? = nil,
+                turnCompleted: Bool? = nil, sessionName: String? = nil) {
         self.seq = seq; self.ctxPct = ctxPct; self.modelId = modelId
-        self.modelDisplay = modelDisplay; self.status = status; self.desc = desc
-        self.waitReason = waitReason; self.turnCompleted = turnCompleted; self.sessionName = sessionName
+        self.modelDisplay = modelDisplay; self.run = run; self.desc = desc
+        self.turnCompleted = turnCompleted; self.sessionName = sessionName
     }
 }
 
@@ -823,12 +916,11 @@ public struct StatusReport: Codable, Sendable, Equatable {
     /// (and is exercised by the report tests) instead of being re-derived at every call site.
     public init(seq: UInt64 = 0, sessionId: String? = nil, transcriptPath: String? = nil,
                 ctxPct: Double? = nil, modelId: String? = nil, modelDisplay: String? = nil,
-                sessionName: String? = nil, desc: String? = nil, status: AgentStatus? = nil,
-                waitReason: WaitReason? = nil,
+                sessionName: String? = nil, desc: String? = nil, run: RunState? = nil,
                 turnCompleted: Bool? = nil,
                 promptText: String? = nil, sessionSource: String? = nil, endReason: String? = nil) {
         let hasSnapshot = seq != 0 || ctxPct != nil || modelId != nil || modelDisplay != nil
-            || sessionName != nil || desc != nil || status != nil || waitReason != nil || turnCompleted != nil
+            || sessionName != nil || desc != nil || run != nil || turnCompleted != nil
         let hasEvent = sessionId != nil || transcriptPath != nil || promptText != nil
             || sessionSource != nil || endReason != nil
         self.init(
@@ -836,8 +928,8 @@ public struct StatusReport: Codable, Sendable, Equatable {
                                           sessionSource: sessionSource, endReason: endReason,
                                           promptText: promptText) : nil,
             snapshot: hasSnapshot ? SnapshotReport(seq: seq, ctxPct: ctxPct, modelId: modelId,
-                                                   modelDisplay: modelDisplay, status: status,
-                                                   desc: desc, waitReason: waitReason, turnCompleted: turnCompleted,
+                                                   modelDisplay: modelDisplay, run: run,
+                                                   desc: desc, turnCompleted: turnCompleted,
                                                    sessionName: sessionName) : nil)
     }
 }

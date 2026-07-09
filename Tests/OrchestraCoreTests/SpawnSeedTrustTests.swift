@@ -27,7 +27,7 @@ struct SpawnSeedTests {
         let t = try await env.svc.spawn(
             SpawnInput(prompt: "", repo: repo, branch: "fk2", seed: "SLICE"))
         #expect(t.titleProvisional == false)
-        #expect(t.status == .running)
+        #expect(t.phaseDisplay == .running)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(try #require(argv.last).contains("SLICE"))
     }

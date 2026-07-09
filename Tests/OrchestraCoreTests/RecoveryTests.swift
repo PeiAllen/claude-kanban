@@ -38,7 +38,7 @@ struct RecoveryTests {
 
         let all = await env.svc.list(includeArchived: true)
         let cAfter = all.first { $0.id == c.id }
-        #expect(cAfter?.status == .dead)
+        #expect(cAfter?.phaseDisplay == .dead)
         #expect(cAfter?.deadReason == .rebootUnrevived)
         // A (alive) was not relaunched
         let aArgv = env.sessions.ensureArgv[env.sessions.sessionName(a.id)]
@@ -63,7 +63,7 @@ struct RecoveryTests {
         try await _Concurrency.Task.sleep(for: .milliseconds(80))
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
         let updated = try await resumed
-        #expect(updated.status == .waiting)
+        #expect(updated.waitReason != nil)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id (no new mint)
     }
@@ -87,7 +87,7 @@ struct RecoveryTests {
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
         let updated = try await resumed
 
-        #expect(updated.status == .waiting)
+        #expect(updated.waitReason != nil)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id
     }
@@ -101,7 +101,7 @@ struct RecoveryTests {
         // no transcript written → "transcript gone"
         await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id) }
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .resumeFailed)
         #expect(after.deadDetail?.contains("transcript") == true)
     }
@@ -115,7 +115,7 @@ struct RecoveryTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id) }
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .resumeFailed)
         #expect(after.deadDetail?.contains("callback") == true)
     }
@@ -129,7 +129,7 @@ struct RecoveryTests {
         let oldId = try #require(t.agentSessionId)
 
         let updated = try await env.svc.restart(t.id, source: .app)
-        #expect(updated.status == .waiting)
+        #expect(updated.waitReason != nil)
         #expect(updated.titleProvisional == true)
         #expect(updated.deadReason == nil)
         #expect(updated.deadDetail == nil)
@@ -157,7 +157,7 @@ struct RecoveryTests {
         await env.svc.recoverSessions()
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == p.id })
-        #expect(after.status == .waiting)        // restarted fresh, NOT marked dead
+        #expect(after.waitReason != nil)        // restarted fresh, NOT marked dead
         #expect(after.deadReason == nil)
         let newId = try #require(after.agentSessionId)
         #expect(newId != oldId)                   // restart mints a fresh session id
@@ -175,7 +175,7 @@ struct RecoveryTests {
         env.sessions.setAlive(t.id, false)   // vanished (crash / tmux kill, no SessionEnd)
         await env.svc.reconcileLiveness()
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .sessionVanished)
     }
 
@@ -206,14 +206,14 @@ struct RecoveryTests {
         let repo = TestEnv.repo(env.base)
         let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
-        try await env.svc.report(card.id, StatusReport(status: .waiting))                       // idle
+        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))                       // idle
         let name = env.sessions.sessionName(card.id)
 
         // send A wakes → resume #1; confirm it so `recovering` is held for the grace window.
         try await env.svc.send(card.id, "A")
         try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))   // resume #1 confirmed
-        try await env.svc.report(card.id, StatusReport(status: .waiting))          // idle again, still in grace
+        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))          // idle again, still in grace
         let ensureAfterA = env.sessions.ensureCount
 
         // send B lands DURING the recovering window → wake no-ops at gate A, message stranded.
@@ -257,7 +257,7 @@ struct RecoveryTests {
         let repo = TestEnv.repo(env.base)
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
-        try await env.svc.report(t.id, StatusReport(status: .waiting))                      // idle
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                      // idle
         let name = env.sessions.sessionName(t.id)
 
         // Does `op` finish at all? A leaked continuation leaves it suspended FOREVER, so the bound only
@@ -286,9 +286,9 @@ struct RecoveryTests {
         // And the card must remain wakeable: it is idle+resumable and NOT stuck in `recovering`, so a
         // fresh send resume-seeds it. (grace=1s must elapse first so the confirmed resume's release fires.)
         let confirmed = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(confirmed.status != .dead)
+        #expect(confirmed.phaseDisplay != .dead)
         try await _Concurrency.Task.sleep(for: .milliseconds(1100))   // let scheduleRecoveringRelease fire
-        try await env.svc.report(t.id, StatusReport(status: .waiting))
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
         let ensureBefore = env.sessions.ensureCount
         try await env.svc.send(t.id, "PING-AFTER-LEAK")
         try await pollUntil { env.sessions.ensureCount > ensureBefore }   // stuck `recovering` → never fires

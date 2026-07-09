@@ -66,7 +66,7 @@ struct CodexAdapterArgvTests {
     @Test("parse(permission hooksPush) → waiting/.permission (Codex PermissionRequest gate)")
     func parsePermissionHook() {
         let r = adapter.parse(.hooksPush(kind: "permission", payload: .object([:])))
-        #expect(r == StatusReport(status: .waiting, waitReason: .permission))
+        #expect(r == StatusReport(run: .waiting(.permission)))
     }
 
     // The OTHER Codex hooks (SessionStart/Stop) carry NO StatusReport — the daemon dispatches them
@@ -83,8 +83,8 @@ struct CodexAdapterArgvTests {
     func fileTailUnaffected() {
         let line = #"{"type":"turn_complete","timestamp":"2026-07-04T10:00:00Z"}"#
         let r = adapter.parse(.fileTail(line: line))
-        #expect(r?.snapshot?.status == .waiting)
-        #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.run != nil)
+        #expect(r?.snapshot?.run == .waiting(.humanTurn))
     }
 
     // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.

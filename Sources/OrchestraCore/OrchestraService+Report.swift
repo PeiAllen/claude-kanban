@@ -10,7 +10,6 @@ extension OrchestraService {
     public func report(_ id: UUID, _ patch: StatusReport) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
-        var statusTransition: (from: AgentStatus, to: AgentStatus)? = nil
         var turnCompletionConcluded = false
 
         // --- Event-ordered half (never seq-gated) ---
@@ -23,9 +22,8 @@ extension OrchestraService {
             // SessionEnd genuine termination → mid-life death (no auto-resume).
             if !staleSessionEnd,
                let reason = ev.endReason, ["exit", "logout", "other"].contains(reason) {
-                if !recovering.contains(id) && task.status != .dead && !task.archived {
-                    statusTransition = (task.status, .dead)
-                    task.status = .dead
+                if !recovering.contains(id) && task.phase.kind != .dead && !task.archived {
+                    task.phase = .dead(.agentExited)
                     task.deadReason = .agentExited
                     task.deadDetail = "agent exited (\(reason))"
                 }
@@ -42,11 +40,11 @@ extension OrchestraService {
             if let src = ev.sessionSource {
                 switch src {
                 case "clear":
-                    if task.status != .dead { task.status = .waiting }
+                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
                     task.titleProvisional = true
                 case "resume":
-                    if task.status != .dead { task.status = .waiting }
+                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
                     resolveResume(id, true)   // confirm a pending recovery
                 default:
@@ -61,8 +59,7 @@ extension OrchestraService {
                     task.title = titleSeed(from: prompt)
                     task.titleProvisional = false
                 }
-                if task.status == .waiting { statusTransition = statusTransition ?? (task.status, .running) }
-                if task.status != .dead { task.status = .running }
+                if task.phase.kind != .dead { task.phase = .live(.running) }
             }
             // (`ev.transcriptPath` is carried for completeness but not persisted — the path is
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
@@ -108,26 +105,22 @@ extension OrchestraService {
                     task.title = name
                     task.titleProvisional = false
                 }
-                if let s = snap.status, task.status != .dead {
-                    if s != task.status { statusTransition = statusTransition ?? (task.status, s) }
-                    task.status = s
-                    if s == .waiting { task.waitReason = snap.waitReason }
+                // The agent's observed run-state maps onto a `.live(_)` phase — the interim direct
+                // `phase` write (Task 2.4 reroutes this through the `transition()` funnel).
+                if let run = snap.run, task.phase.kind != .dead {
+                    task.phase = .live(run)
                 }
                 if snap.turnCompleted == true, shouldConcludeOnTurnCompletion(task) {
-                    if task.status != .done { statusTransition = (before.status, .done) }
-                    task.status = .done
-                    task.waitReason = nil
+                    task.phase = .dead(.completed)
                     turnCompletionConcluded = true
                 }
             }
         }
 
         // Clear dead metadata if we left .dead.
-        if before.status == .dead && task.status != .dead {
+        if before.phase.kind == .dead && task.phase.kind != .dead {
             task.deadReason = nil; task.deadDetail = nil
         }
-        // waitReason is meaningful only while waiting.
-        if task.status != .waiting { task.waitReason = nil }
 
         guard task != before else { return }   // idempotent: no delta -> no persist, no event
         let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
@@ -142,23 +135,37 @@ extension OrchestraService {
             scheduleChildFanout(id)                                 // a moved parent stales children (debounced)
         }
 
-        // Activity only on a real status transition (waiting<->running) or dead.
-        if let tr = statusTransition, tr.from != tr.to {
-            if tr.to == .dead {
+        // Activity only on a real transition — dead, or a waiting<->running change. Derived from the
+        // coarse `phase` word before vs after (the retired `status`-transition tracking).
+        let deadEntered = before.phase.kind != .dead && task.phase.kind == .dead
+        if let word = Self.activityWord(task.phase), Self.activityWord(before.phase) != word {
+            if word == "died" {
                 emitActivity(.dead, saved, .agent, "agent died")
-            } else if tr.to == .waiting || tr.to == .running {
-                emitActivity(.statusChanged, saved, .agent, "agent \(tr.to.rawValue)")
+            } else {   // "waiting" | "running"
+                emitActivity(.statusChanged, saved, .agent, "agent \(word)")
             }
         }
 
         // A clean agent exit (SessionEnd exit/logout/other) is a SETTLED conclusion (.exited) — the
         // agent quit, no auto-resume. A transient crash (sessionVanished) is NOT concluded here; it may
         // still be revived (that path never sets `.agentExited`, and `recovering` guards a stale exit).
-        if let tr = statusTransition, tr.to == .dead, saved.deadReason == .agentExited, !recovering.contains(id) {
+        if deadEntered, saved.deadReason == .agentExited, !recovering.contains(id) {
             await concludeCard(id, .exited)
         }
         if turnCompletionConcluded {
             await concludeCard(id, .done)
+        }
+    }
+
+    /// The coarse activity word for a phase — the transition vocabulary the Activity feed used to read
+    /// off `status`. `.dead(.completed)` maps to nil (a done conclusion is not a "died" activity).
+    private static func activityWord(_ phase: Phase) -> String? {
+        switch phase {
+        case .live(.running):   return "running"
+        case .live(.waiting):   return "waiting"
+        case .dead(.completed): return nil
+        case .dead:             return "died"
+        default:                return nil   // creatingWorktree / launching / relaunching / archived
         }
     }
 
@@ -167,7 +174,7 @@ extension OrchestraService {
     /// on a `.fileTail` agent is stamped with a synthetic "now" in the tailer's µs clock space so a
     /// late-delivered pre-block rollout line can't clobber it. Everything else is unchanged.
     private func fencedSeq(for snap: SnapshotReport, taskAgentId: String, lastSeq: UInt64) -> UInt64 {
-        guard snap.seq == 0, snap.status == .waiting, snap.waitReason == .permission,
+        guard snap.seq == 0, snap.run == .waiting(.permission),
               (try? registry.get(taskAgentId))?.capabilities.telemetry == .fileTail else {
             return snap.seq
         }
@@ -181,6 +188,6 @@ extension OrchestraService {
     /// branch lifecycle to merge, so an adapter's explicit task-completion signal is the card's completion
     /// signal. Worktree cards remain long-lived and keep their existing `.waiting(.humanTurn)` behavior.
     private func shouldConcludeOnTurnCompletion(_ task: Task) -> Bool {
-        task.origin != .worktree && task.access == .readOnly && !task.archived && task.status != .dead
+        task.origin != .worktree && task.access == .readOnly && !task.archived && task.phase.kind != .dead
     }
 }

@@ -192,7 +192,7 @@ struct WakeMergeWatchTests {
         let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
-        try await env.svc.report(parent.id, StatusReport(status: .waiting))
+        try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))
         let name = env.sessions.sessionName(parent.id)
 
         let cmd = try #require(CommandRegistry().command("wait"))
@@ -232,7 +232,7 @@ struct WakeMergeWatchTests {
         #expect(conc?.cardId == child.id)
         #expect(conc?.kind == .done)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .done)
+        #expect(after.phase == .dead(.completed))
         #expect(after.archived == false)
     }
 
@@ -254,7 +254,7 @@ struct WakeMergeWatchTests {
         #expect(conc?.cardId == child.id)
         #expect(conc?.kind == .done)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .done)
+        #expect(after.phase == .dead(.completed))
         #expect(after.archived == false)
     }
 
@@ -273,7 +273,7 @@ struct WakeMergeWatchTests {
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .humanTurn)
         waiting.cancel(); _ = await waiting.value
     }
@@ -289,13 +289,13 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+        try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
 
         let conc = await waiting.value
         #expect(conc?.cardId == child.id)
         #expect(conc?.kind == .done)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .done)
+        #expect(after.phase == .dead(.completed))
         #expect(after.archived == false)
     }
 
@@ -307,12 +307,12 @@ struct WakeMergeWatchTests {
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
-        try await env.svc.report(child.id, StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+        try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
         try await _Concurrency.Task.sleep(for: .milliseconds(80))
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .humanTurn)
         waiting.cancel(); _ = await waiting.value
     }
@@ -334,7 +334,7 @@ struct WakeMergeWatchTests {
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .humanTurn)
         waiting.cancel(); _ = await waiting.value
     }

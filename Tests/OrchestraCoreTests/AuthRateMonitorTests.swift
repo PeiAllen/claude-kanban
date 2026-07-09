@@ -18,10 +18,10 @@ struct AuthRateMonitorTests {
     static let registry = AgentRegistry(adapters: [subAdapter, keyAdapter])
 
     /// A minimal active card on an adapter. Only `agentId` + `status`/`archived` matter to the monitor.
-    static func card(_ agentId: String, status: AgentStatus = .running, archived: Bool = false) -> Task {
+    static func card(_ agentId: String, archived: Bool = false) -> Task {
         var t = Task(title: "c", repo: "/r", branch: "b", cwd: "/c", agentId: agentId,
                      model: AgentModel(id: "m"), startIn: .impl, column: .impl, order: 0,
-                     status: status, initialPrompt: "p")
+                     phase: .live(.running), initialPrompt: "p")
         t.archived = archived
         return t
     }

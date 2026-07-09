@@ -42,14 +42,14 @@ struct CodexRolloutParseTests {
     @Test("test_rollout_to_statusreport: task_started → running")
     func taskStartedRunning() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#))
-        #expect(r.snapshot?.status == .running)
+        #expect(r.snapshot?.run == .running)
     }
 
     @Test("turn_complete → waiting with humanTurn reason")
     func turnCompleteHumanTurn() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"turn_complete"}}"#))
-        #expect(r.snapshot?.status == .waiting)
-        #expect(r.snapshot?.waitReason == .humanTurn)
+        #expect(r.snapshot?.run != nil)
+        #expect(r.snapshot?.run == .waiting(.humanTurn))
         #expect(r.snapshot?.turnCompleted == true)
     }
 
@@ -84,20 +84,20 @@ struct CodexRolloutParseTests {
     func functionCallDesc() throws {
         let line = #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#
         let r = try #require(tail(line))
-        #expect(r.snapshot?.status == .running)
+        #expect(r.snapshot?.run == .running)
         #expect(r.snapshot?.desc == "Running shell")
     }
 
     @Test("idle signal: TurnComplete → waiting")
     func idleSignal() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#))
-        #expect(r.snapshot?.status == .waiting)
+        #expect(r.snapshot?.run != nil)
     }
 
     @Test("rename tolerance: old TaskComplete AND new TurnComplete both mean idle")
     func renameToleranceTurn() throws {
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#)?.snapshot?.status == .waiting)
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#)?.snapshot?.status == .waiting)
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#)?.snapshot?.run != nil)
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#)?.snapshot?.run != nil)
     }
 
     @Test("rename tolerance: total_token_usage.total_tokens AND a flat total_tokens both parse")
@@ -287,7 +287,7 @@ struct CodexTelemetryE2ETests {
 
         let after = try #require(await svc.list().first { $0.id == card.id })
         #expect(after.ctxPct == 25.0)
-        #expect(after.status == .running)
+        #expect(after.phaseDisplay == .running)
     }
 
     @Test("pollTelemetry handles current Codex token_count without model id")
@@ -306,7 +306,7 @@ struct CodexTelemetryE2ETests {
         append(rollout, #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#)
         await svc.pollTelemetry()
         let after = try #require(await svc.list().first { $0.id == card.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
     }
 
     @Test("seq-gate holds end-to-end: a stale (earlier-timestamp) ctx line can't overwrite a fresher one")
@@ -344,6 +344,6 @@ struct CodexTelemetryE2ETests {
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.pollTelemetry()   // must be a no-op for hooksPush; no crash, no change
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == t.status)
+        #expect(after.phase == t.phase)
     }
 }

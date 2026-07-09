@@ -19,6 +19,8 @@ struct RecoveryView: View {
         case .sessionVanished: return "The session stopped unexpectedly (crashed or was killed)."
         case .rebootUnrevived: return "Lost on reboot and couldn't be auto-resumed."
         case .resumeFailed:    return "Resume failed — \(task.deadDetail ?? "")."
+        case .completed:       return "The agent completed its work."
+        case .spawnFailed:     return "The initial spawn never came up."
         case .none:            return "The session is no longer running."
         }
     }

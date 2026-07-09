@@ -10,8 +10,8 @@ struct CardDetailHeader: View {
     let task: Task
     @Environment(\.theme) private var theme: Theme
 
-    private var sem: SemColor { theme.statusColor(task.status.rawValue) }
-    private var isLive: Bool { task.status == .running || task.status == .waiting }
+    private var sem: SemColor { theme.statusColor(task.phaseDisplay) }
+    private var isLive: Bool { if case .live = task.phase { return true } else { return false } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,7 +22,7 @@ struct CardDetailHeader: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                DetailStatusPill(status: task.status, sem: sem, updatedAt: task.updatedAt, live: isLive)
+                DetailStatusPill(status: task.phaseDisplay, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
 
             HStack(spacing: 8) {
@@ -55,7 +55,7 @@ struct CardDetailHeader: View {
 
 /// Status pill matching the board cell's language, scaled up a touch for the header.
 private struct DetailStatusPill: View {
-    let status: AgentStatus
+    let status: PhaseDisplayKey
     let sem: SemColor
     let updatedAt: Date
     let live: Bool
