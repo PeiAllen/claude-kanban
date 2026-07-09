@@ -5,10 +5,21 @@ import Foundation
 public struct WorktreeManager: Sendable {
     let config: Config
     let resolver: PathResolver
+    /// Runs git via `Proc.run` by default; injectable so tests can assert the timeout argument
+    /// deterministically. `timeout` is a REQUIRED `Duration` — there is no legitimate unbounded git
+    /// op in this file, so an unbounded call is a compile error. WorktreeManager never needs cwd/env
+    /// (all git ops use `-C`).
+    let run: @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult
 
     public init(config: Config, resolver: PathResolver? = nil) {
+        self.init(config: config, resolver: resolver, run: { try Proc.run($0, timeout: $1) })
+    }
+
+    init(config: Config, resolver: PathResolver?,
+         run: @escaping @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult) {
         self.config = config
         self.resolver = resolver ?? PathResolver(config: config)
+        self.run = run
     }
 
     /// Pure: the computed worktree path for a repo + branch (powers the Spawn sheet field).
@@ -62,7 +73,7 @@ public struct WorktreeManager: Sendable {
             }
             argv = a
         }
-        let r = try Proc.run(argv)
+        let r = try run(argv, .seconds(config.worktreeAddTimeout))
         if !r.ok {
             let msg = r.stderr.lowercased()
             if msg.contains("already checked out") || msg.contains("is already used by worktree") {
@@ -99,7 +110,7 @@ public struct WorktreeManager: Sendable {
         }
         try FileManager.default.createDirectory(
             atPath: (wt as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        let r = try Proc.run(["git", "-C", realRepo, "worktree", "add", wt, branch])
+        let r = try run(["git", "-C", realRepo, "worktree", "add", wt, branch], .seconds(config.worktreeAddTimeout))
         if !r.ok {
             let msg = r.stderr.lowercased()
             if msg.contains("already checked out") || msg.contains("is already used by worktree") {
@@ -121,7 +132,7 @@ public struct WorktreeManager: Sendable {
     /// borrow is a throwaway, so force-remove regardless of dirtiness. Best-effort.
     public func pruneOrphanBorrows(repo: String) {
         guard let realRepo = try? resolver.resolveRepo(repo),
-              let r = try? Proc.run(["git", "-C", realRepo, "worktree", "list", "--porcelain"]), r.ok else { return }
+              let r = try? run(["git", "-C", realRepo, "worktree", "list", "--porcelain"], .seconds(config.controlTimeout)), r.ok else { return }
         for line in r.stdout.split(separator: "\n") where line.hasPrefix("worktree ") {
             let path = String(line.dropFirst("worktree ".count)).trimmingCharacters(in: .whitespaces)
             if (path as NSString).lastPathComponent.hasPrefix("orch-borrow-") {
@@ -140,10 +151,10 @@ public struct WorktreeManager: Sendable {
         var argv = ["git", "-C", worktree, "worktree", "remove"]
         if force { argv.append("--force") }
         argv.append(worktree)
-        let r = try Proc.run(argv)
+        let r = try run(argv, .seconds(config.controlTimeout))
         if !r.ok {
             // Fall back to pruning from the parent repo when the dir is already gone/detached.
-            _ = try? Proc.run(["git", "-C", worktree, "worktree", "prune"])
+            _ = try? run(["git", "-C", worktree, "worktree", "prune"], .seconds(config.controlTimeout))
             if FileManager.default.fileExists(atPath: worktree) {
                 throw OrchestraError.io(r.stderr.isEmpty ? "git worktree remove failed" : r.stderr)
             }
@@ -151,20 +162,20 @@ public struct WorktreeManager: Sendable {
     }
 
     func branchExists(repo: String, branch: String) -> Bool {
-        let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"])
+        let r = try? run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"], .seconds(config.controlTimeout))
         return r?.ok ?? false
     }
 
     /// Does a fully-qualified ref resolve? (Used for a remote private-ref start-point, refs/orch/parents/…)
     func refExists(repo: String, ref: String) -> Bool {
-        let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref])
+        let r = try? run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref], .seconds(config.controlTimeout))
         return r?.ok ?? false
     }
 
     /// True if the worktree has uncommitted changes. **Fails safe:** if git can't be queried we treat
     /// the tree as dirty so `remove` (without `force`) never deletes work it couldn't verify is clean.
     func isDirty(worktree: String) -> Bool {
-        guard let r = try? Proc.run(["git", "-C", worktree, "status", "--porcelain"]), r.ok else {
+        guard let r = try? run(["git", "-C", worktree, "status", "--porcelain"], .seconds(config.controlTimeout)), r.ok else {
             return true
         }
         return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
