@@ -201,8 +201,8 @@ final class StubAdapter: Adapter, @unchecked Sendable {
 /// Collect events from a service subscription for assertions.
 actor EventCollector {
     private(set) var events: [Event] = []
-    func start(_ stream: AsyncStream<Event>) {
-        _Concurrency.Task { for await e in stream { self.append(e) } }
+    func start(_ stream: AsyncStream<EventEnvelope>) {
+        _Concurrency.Task { for await e in stream { self.append(e.event) } }
     }
     private func append(_ e: Event) { events.append(e) }
     var activities: [ActivityItem] {

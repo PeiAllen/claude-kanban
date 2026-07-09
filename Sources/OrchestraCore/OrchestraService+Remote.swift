@@ -127,10 +127,10 @@ extension OrchestraService {
                 + "`orchestra set-parent \(t.shortId) \(grandparent)`")
             return
         }
-        if let saved = try? await store.update(cardId, {
+        if let (saved, rev) = try? await store.update(cardId, {
             $0.parentBranch = newRef.canonical
             $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: true)
-        }) { emit(.taskUpserted(saved)) }
+        }) { emit(.taskUpserted(saved), rev: rev) }
 
         // S3-7: the rebase target must be the fetched private ref — the canonical `origin/<gp>` is not a
         // rev, and only resolved before by the opportunistic tracking-ref update accident (S1-1).

@@ -17,18 +17,18 @@ struct TaskStoreTests {
     @Test("create fills id + timestamps + order and persists")
     func createFillsFields() async throws {
         let store = TaskStore(path: tempPath())
-        let t = try await store.create(sample())
+        let t = try await store.create(sample()).task
         #expect(t.order == 0)
         #expect(t.status == .running)
-        let t2 = try await store.create(sample("Second"))
+        let t2 = try await store.create(sample("Second")).task
         #expect(t2.order == 1)  // appended after the first in the same column
     }
 
     @Test("update merges only via the mutation and persists")
     func updateMerges() async throws {
         let store = TaskStore(path: tempPath())
-        let t = try await store.create(sample())
-        let updated = try await store.update(t.id) { $0.status = .waiting; $0.desc = "Editing Foo.swift" }
+        let t = try await store.create(sample()).task
+        let updated = try await store.update(t.id) { $0.status = .waiting; $0.desc = "Editing Foo.swift" }.task
         #expect(updated.status == .waiting)
         #expect(updated.desc == "Editing Foo.swift")
         #expect(updated.updatedAt >= t.updatedAt)
@@ -45,7 +45,7 @@ struct TaskStoreTests {
     func roundTrips() async throws {
         let path = tempPath()
         let store = TaskStore(path: path)
-        let t = try await store.create(sample("Persisted"))
+        let t = try await store.create(sample("Persisted")).task
         // Fresh store, same path → loads the persisted task.
         let store2 = TaskStore(path: path)
         let loaded = await store2.load()
@@ -91,7 +91,7 @@ struct TaskStoreTests {
     func test_everyMutationBumpsRev() async throws {
         let store = TaskStore(path: tmpPath())
         var seen: [Int] = []
-        let t = try await store.create(sample())        // NOTE: in Task 1.2 this becomes `store.create(sample()).task`
+        let t = try await store.create(sample()).task
         seen.append(await store.currentRev)
         _ = try await store.update(t.id) { $0.desc = "b" }
         seen.append(await store.currentRev)

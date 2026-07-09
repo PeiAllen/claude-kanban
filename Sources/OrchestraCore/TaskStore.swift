@@ -89,16 +89,18 @@ public actor TaskStore {
         }
     }
 
-    /// Insert a new task at the end of its column's order. Fills order; persists.
+    /// Insert a new task at the end of its column's order. Fills order; persists. Returns the created
+    /// task ALONGSIDE the rev `persist()` just bumped to, atomically (no `await` in between) — so a
+    /// caller can bind an event's `rev` to exactly this mutation (see the rev-binding design decision).
     @discardableResult
-    public func create(_ task: Task) throws -> Task {
+    public func create(_ task: Task) throws -> (task: Task, rev: Int) {
         ensureLoaded()
         var t = task
         t.order = nextOrder(in: t.column)
         t.updatedAt = Date()
         tasks.append(t)
-        try persist()
-        return t
+        try persist()                     // bumps currentRev
+        return (t, currentRev)
     }
 
     /// Next free order slot at the end of a column (excluding `ignoring`, e.g. the card being moved).
@@ -113,14 +115,15 @@ public actor TaskStore {
     /// Move a card to a column, appending it at the end of that column's order. One place owns the
     /// ordering invariant.
     @discardableResult
-    public func move(_ id: UUID, to column: Column) throws -> Task {
+    public func move(_ id: UUID, to column: Column) throws -> (task: Task, rev: Int) {
         let order = nextOrder(in: column, ignoring: id)
-        return try update(id) { $0.column = column; $0.order = order }
+        return try update(id) { $0.column = column; $0.order = order }   // inherits (task, rev)
     }
 
-    /// Apply a mutation to the task with `id`, persist, and return the updated task.
+    /// Apply a mutation to the task with `id`, persist, and return the updated task ALONGSIDE the rev
+    /// `persist()` just bumped to (see `create`).
     @discardableResult
-    public func update(_ id: UUID, _ mutate: (inout Task) -> Void) throws -> Task {
+    public func update(_ id: UUID, _ mutate: (inout Task) -> Void) throws -> (task: Task, rev: Int) {
         ensureLoaded()
         guard let idx = tasks.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.unknownTask(id.uuidString)
@@ -128,7 +131,7 @@ public actor TaskStore {
         mutate(&tasks[idx])
         tasks[idx].updatedAt = Date()
         try persist()
-        return tasks[idx]
+        return (tasks[idx], currentRev)
     }
 
     public func remove(_ id: UUID) throws {

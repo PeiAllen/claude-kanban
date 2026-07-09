@@ -686,6 +686,14 @@ public enum Event: Codable, Sendable, Equatable {
     case shellsChanged(ShellWindowsState)
 }
 
+/// Every event notification to clients is wrapped with the board `rev` at emit, so a client can
+/// detect a gap (a missed event) and resync. Ephemeral events carry the current board rev.
+public struct EventEnvelope: Codable, Sendable, Equatable {
+    public let rev: Int
+    public let event: Event
+    public init(rev: Int, event: Event) { self.rev = rev; self.event = event }
+}
+
 /// The full set of a card's shell windows (excludes `agent`), carried by `Event.shellsChanged`. The
 /// daemon recomputes it from tmux (authoritative) after every shell open/close. Each `ShellTab`'s
 /// `owner` tells a client which surface owns it.
@@ -705,6 +713,9 @@ public struct ShellWindowsState: Codable, Sendable, Equatable {
 /// snapshot-then-subscribe gap: any event racing the snapshot is either reflected in it or delivered
 /// live (apply is idempotent).
 public struct BoardSnapshot: Codable, Sendable, Equatable {
+    /// The board's `rev` at the moment this snapshot was taken (`TaskStore.currentRev`) — lets a
+    /// (re)connecting client detect a gap between this snapshot and subsequently-received events.
+    public let rev: Int
     public let tasks: [Task]
     public let archived: [Task]
     public let config: Config
@@ -714,8 +725,9 @@ public struct BoardSnapshot: Codable, Sendable, Equatable {
     public let sessions: [CardSessions]
     /// Per active card, its current agent-terminal owner — the bulk form of `agentTerminalOwner`.
     public let owners: [AgentTerminalOwnerState]
-    public init(tasks: [Task], archived: [Task], config: Config, models: [AgentModel],
+    public init(rev: Int, tasks: [Task], archived: [Task], config: Config, models: [AgentModel],
                 agents: [AgentInfo], sessions: [CardSessions], owners: [AgentTerminalOwnerState]) {
+        self.rev = rev
         self.tasks = tasks; self.archived = archived; self.config = config
         self.models = models; self.agents = agents; self.sessions = sessions; self.owners = owners
     }

@@ -45,8 +45,8 @@ extension OrchestraService {
             }
         }
         guard newStat != t.diffStat else { return newStat }   // no delta → no persist, no emit
-        guard let saved = try? await store.update(id, { $0.diffStat = newStat }) else { return newStat }
-        emit(.taskUpserted(saved))
+        guard let (saved, rev) = try? await store.update(id, { $0.diffStat = newStat }) else { return newStat }
+        emit(.taskUpserted(saved), rev: rev)
         return newStat
     }
 
