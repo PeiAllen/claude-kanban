@@ -6,29 +6,51 @@ public actor TaskStore {
     private let path: String
     private var tasks: [Task] = []
     private var loaded = false
+    /// Monotonic board version, bumped in `persist()` and persisted in the `{rev, tasks}` payload.
+    /// A pre-upgrade bare-array `tasks.json` loads as `rev = 0` (the one on-disk compat we keep).
+    public private(set) var currentRev: Int = 0
 
     public init(path: String = Config.tasksPath) {
         self.path = path
     }
+
+    /// On-disk payload shape (post-upgrade). Pre-upgrade files are a bare `[Task]` array.
+    private struct StoredBoard: Codable { let rev: Int; let tasks: [Task] }
 
     /// Read + decode. `[]` if absent; malformed → `.bak` + `[]`.
     @discardableResult
     public func load() -> [Task] {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
-            tasks = []; loaded = true; return tasks
+            tasks = []; currentRev = 0; loaded = true; return tasks
         }
         do {
             let data = try Data(contentsOf: url)
-            tasks = try OrchestraJSON.decoder.decode([Task].self, from: data)
+            if let board = try? OrchestraJSON.decoder.decode(StoredBoard.self, from: data) {
+                tasks = board.tasks; currentRev = board.rev            // post-upgrade
+            } else {
+                tasks = try OrchestraJSON.decoder.decode([Task].self, from: data)
+                currentRev = 0                                          // pre-upgrade migration read
+            }
         } catch {
             let bak = path + ".bak"
             try? FileManager.default.removeItem(atPath: bak)
             try? FileManager.default.moveItem(atPath: path, toPath: bak)
-            tasks = []
+            tasks = []; currentRev = 0
         }
         loaded = true
         return tasks
+    }
+
+    /// Synchronous, actor-independent peek of the persisted `rev` — used by `OrchestraService.init`
+    /// to seed its `lastRev` mirror BEFORE the control server accepts RPCs (no `await`, so it can run
+    /// in the sync init). `nonisolated` is legal: it reads only the immutable `let path` and the file.
+    /// Same decode order as `load`; defaults 0 for absent/bare-array/malformed.
+    public nonisolated func peekPersistedRev() -> Int {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let board = try? OrchestraJSON.decoder.decode(StoredBoard.self, from: data)
+        else { return 0 }
+        return board.rev
     }
 
     private func ensureLoaded() {
@@ -53,9 +75,10 @@ public actor TaskStore {
     }
 
     private func persist() throws {
+        currentRev += 1                                                // single bump funnel
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let data = try OrchestraJSON.pretty.encode(tasks)
+        let data = try OrchestraJSON.pretty.encode(StoredBoard(rev: currentRev, tasks: tasks))
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)
