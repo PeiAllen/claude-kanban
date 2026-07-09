@@ -110,7 +110,7 @@ extension OrchestraService {
     /// be brought back by something else: Claude's harness re-invokes it when a CLI `orchestra wait`
     /// process exits, so we must NOT relaunch in that one case (it would replace the live wait); MCP/tool
     /// watches and Codex have no such CLI process, so they resume-seed. That single distinction is
-    /// `watcherWillReinvoke` plus the `activeWaitProcesses` gate. A card mid-relaunch (`recovering`) or
+    /// `watcherWillReinvoke` plus the `activeWaitProcesses` gate. A card mid-relaunch (`relaunchClaimed`) or
     /// archived is never woken.
     ///
     /// REVISIT — `controlChannel` (a real `turn/start` RPC via the Codex app-server) is the agent-agnostic
@@ -119,7 +119,7 @@ extension OrchestraService {
     /// See notes/designs/agent-provider-interface.md §8 ("generalize F2 wake").
     func wake(_ id: UUID) async {
         guard let t = await store.get(id), let adapter = try? registry.get(t.agentId),
-              !t.archived, !recovering.contains(id) else { return }
+              !t.archived, case .live = t.phase, !relaunchClaimed.contains(id) else { return }
         switch adapter.capabilities.wakeTransport {
         case .nativeReinvoke: await resumeSeedWake(t, watcherWillReinvoke: true)   // Claude: harness re-invokes on wait-exit
         case .relaunch:       await resumeSeedWake(t, watcherWillReinvoke: false)  // Codex: no reinvoke — resume even when watching
@@ -145,11 +145,25 @@ extension OrchestraService {
     func resumeSeedWake(_ t: Task, watcherWillReinvoke: Bool) async {
         guard case .live(.waiting) = t.phase, isResumable(t) else { return }
         if watcherWillReinvoke, activeWaitProcesses[t.id] != nil { return }
-        // Claim the relaunch SYNCHRONOUSLY (before the detached hop) so a concurrent wake sees `recovering`
-        // and defers — else two resumes race and the second drains an already-emptied inbox and kills the
-        // first's freshly-resumed session. `resume` re-inserts (idempotent); its `defer` clears it on finish.
-        recovering.insert(t.id)
-        _Concurrency.Task { [weak self] in _ = try? await self?.resumeInCard(t.id, source: .daemon) }
+        // Claim the relaunch SYNCHRONOUSLY (before the detached hop) so a concurrent wake sees the claim and
+        // defers — else two resumes race and the second drains an already-emptied inbox and kills the first's
+        // freshly-resumed session. This is the narrow atomic-claim role the deleted `recovering` set played;
+        // the reconcile no longer reads it (it gates on phase). Cleared when the resume settles.
+        guard !relaunchClaimed.contains(t.id) else { return }
+        relaunchClaimed.insert(t.id)
+        _Concurrency.Task { [weak self] in
+            _ = try? await self?.resumeInCard(t.id, source: .daemon)
+            await self?.clearRelaunchClaimed(t.id)
+        }
+    }
+
+    /// Release a wake/idle-resume's atomic claim once the relaunch settles, then re-drive `wake` for a
+    /// message that a `send` queued DURING the claim window (its `wake` deferred at the `relaunchClaimed`
+    /// gate and nothing else retries it). `wakeIfPending` re-checks every gate, so it is a no-op unless a
+    /// genuinely stranded message remains.
+    func clearRelaunchClaimed(_ id: UUID) async {
+        relaunchClaimed.remove(id)
+        await wakeIfPending(id)
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.

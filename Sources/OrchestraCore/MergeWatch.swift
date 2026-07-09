@@ -18,7 +18,7 @@ public struct Conclusion: Sendable, Equatable, Codable {
 /// detection — no git poll, no file stat, no per-card watcher. `OrchestraService` (the single
 /// authority for terminal state) feeds it via `conclude`; MergeWatch just records a continuation keyed
 /// on the watch set and resolves it when one of those cards concludes. This mirrors the existing
-/// `resumeWaiters` / `awaitResume` / `resolveResume` pattern in `OrchestraService+Recovery.swift`.
+/// `readinessWaiters` / `awaitReadiness` / `resolveReadiness` pattern in `OrchestraService+Recovery.swift`.
 public actor MergeWatch {
     private var subscriptions: [UUID: (watch: Set<UUID>, cont: CheckedContinuation<Conclusion?, Never>)] = [:]
 

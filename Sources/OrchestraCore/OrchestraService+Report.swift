@@ -28,7 +28,7 @@ extension OrchestraService {
                 // dropping a superseded one and applying a current one).
                 let sessionGone = observedEpoch != nil
                     || !((try? sessions.isAlive(sessions.sessionName(id))) ?? false)
-                if !recovering.contains(id) && task.phase.kind != .dead && !task.archived && sessionGone {
+                if task.phase.kind != .dead && !task.archived && sessionGone {
                     task.phase = .dead(.agentExited)
                     task.deadReason = .agentExited
                     task.deadDetail = "agent exited (\(reason))"
@@ -52,7 +52,7 @@ extension OrchestraService {
                 case "resume":
                     if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
-                    resolveResume(id, true)   // confirm a pending recovery
+                    resolveReadiness(id, true)   // confirm a pending relaunch's inline readiness wait
                 default:
                     break   // startup / compact: no status change
                 }

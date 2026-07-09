@@ -60,9 +60,11 @@ struct WakeMergeWatchTests {
         #expect(await waiting.value?.cardId == child.id)       // now it resolves
     }
 
-    // 5 · transient crash + revive (settled-terminal only).
-    @Test("a crash (sessionVanished) that is revived does NOT conclude")
-    func crashRevivedNotConcluded() async throws {
+    // 5 · a crash (sessionVanished) IS a settled conclusion now (2.5 bug-#2): `markDead` routes through the
+    //     funnel, so a non-terminal → terminal death concludes and a suspended `wait` resolves instead of
+    //     hanging. (Pre-2.5 a revivable crash silently swallowed the conclusion — the hang this fixes.)
+    @Test("a crash (sessionVanished) concludes the wait with .exited/sessionVanished (bug-#2)")
+    func crashConcludesWait() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
@@ -71,18 +73,11 @@ struct WakeMergeWatchTests {
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
         env.sessions.setAlive(child.id, false)
-        await env.svc.reconcileLiveness()                      // → .dead sessionVanished (NOT a conclusion)
-        try await _Concurrency.Task.sleep(for: .milliseconds(40))
-        #expect(await env.svc.activeWaitSubscriptionCount() == 1) // crash alone did not conclude
-
-        // Revive it.
-        async let resumed = env.svc.resume(child.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
-        try await env.svc.report(child.id, StatusReport(sessionSource: "resume"))
-        _ = try await resumed
-        try await _Concurrency.Task.sleep(for: .milliseconds(40))
-        #expect(await env.svc.activeWaitSubscriptionCount() == 1) // revived → still not concluded
-        waiting.cancel(); _ = await waiting.value
+        await env.svc.reconcileLiveness()                      // → .dead sessionVanished, routed to conclude
+        let concl = await waiting.value                        // the wait resolves (no longer hangs)
+        #expect(concl?.cardId == child.id)
+        #expect(concl?.kind == .exited)
+        #expect(concl?.deadReason == .sessionVanished)
     }
 
     // 5b · a CLEAN agent exit IS a settled conclusion (.exited).

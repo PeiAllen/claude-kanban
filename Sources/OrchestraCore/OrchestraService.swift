@@ -84,21 +84,26 @@ public actor OrchestraService {
     private var lastEmittedOwnerSig: [UUID: OwnerEmitSig] = [:]
     // Per-card monotonic seq guard for snapshot reports.
     var lastSeqStore: [UUID: UInt64] = [:]
-    // Pending resume confirmations (resolved by the SessionStart(resume) callback or a timeout). Keyed by
-    // card id but TOKEN-tagged: two overlapping resume() for the same id must never silently clobber (and
-    // thus LEAK) the earlier continuation — the displaced waiter is resolved `.superseded`, and a stale
-    // timeout is ignored unless its token still owns the slot. See `awaitResume`/`resolveResume`.
-    var resumeWaiters: [UUID: (token: UInt64, cont: CheckedContinuation<ResumeOutcome, Never>)] = [:]
-    // Monotonic tag minted per awaitResume so a timeout only fires for the waiter it was scheduled for.
-    var resumeTokenSeq: UInt64 = 0
-    // A SessionStart(resume) callback can arrive BEFORE `awaitResume` registers its waiter, because
-    // resume()'s off-actor relaunch frees this reentrant actor to service `report()` mid-revival. We
-    // remember such early confirmations here so the waiter consumes them instead of losing the wakeup
-    // and timing out. Cleared at the start of each resume attempt so a late callback from a prior,
-    // already-failed attempt can't spuriously confirm a future one.
-    var pendingResumeConfirmations: Set<UUID> = []
-    // Cards currently being revived/restarted — guarded against the liveness reconcile.
-    var recovering: Set<UUID> = []
+    // Pending inline-readiness waiters (resolved by the readiness signal — SessionStart(resume) for a
+    // `.sessionStartHook` agent — or a timeout). Keyed by card id but TOKEN-tagged: two overlapping
+    // relaunches for the same id must never silently clobber (and thus LEAK) the earlier continuation —
+    // the displaced waiter is resolved `.superseded`, and a stale timeout is ignored unless its token
+    // still owns the slot. See `awaitReadiness`/`resolveReadiness`.
+    var readinessWaiters: [UUID: (token: UInt64, cont: CheckedContinuation<ReadinessOutcome, Never>)] = [:]
+    // Monotonic tag minted per awaitReadiness so a timeout only fires for the waiter it was scheduled for.
+    var readinessTokenSeq: UInt64 = 0
+    // A readiness signal can arrive BEFORE `awaitReadiness` registers its waiter, because a relaunch's
+    // off-actor session bring-up frees this reentrant actor to service `report()` mid-revival. We remember
+    // such early confirmations here so the waiter consumes them instead of losing the wakeup and timing
+    // out. Cleared at the start of each relaunch attempt so a late callback from a prior, already-failed
+    // attempt can't spuriously confirm a future one.
+    var pendingReadiness: Set<UUID> = []
+    // Narrow atomic-claim set (replaces the deleted `recovering` set's role (b)): a wake/idle-resume
+    // inserts the card SYNCHRONOUSLY (before any `await`) so a concurrent wake sees the claim and defers,
+    // avoiding a double-resume race on an idle card. Role (a) — the stale-SessionEnd grace window — is now
+    // covered by session epochs (2.4), so this is NOT read by the liveness reconcile (which uses phase
+    // rules). Cleared when the resume settles. See `wake`/`resumeSeedWake`/`clearRelaunchClaimed`.
+    var relaunchClaimed: Set<UUID> = []
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
     // activity burst off the normalized `report()` funnel — NOT a periodic poll.
     var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
@@ -407,55 +412,50 @@ public actor OrchestraService {
         let provisional = folded == nil
         let title = provisional ? (input.branch.isEmpty ? "New agent" : input.branch)
                                  : titleSeed(from: folded ?? input.prompt)
-        // A provisional card is idle awaiting the user's first prompt, so it starts `.waiting`; a real
+        // A provisional card is idle awaiting the user's first prompt, so it lands `.waiting`; a real
         // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
         // when provisional (a whitespace-only prompt must not be submitted to the agent).
         let launchPrompt: String? = folded
+        let landing: RunState = provisional ? .waiting(.humanTurn) : .running
 
+        // Stage 2: the card is CREATED at `.creatingWorktree, sessionEpoch: 1` — creation IS spawn's single
+        // generation bump (do NOT also `transition(→.creatingWorktree)`). The cwd was materialized above
+        // (worktree cut / scratch mkdir), so this phase is instant here. The funnel then walks it
+        // `→.launching →.live`. A liveness poll that interleaves while the card is still `.creatingWorktree`
+        // (e.g. at the `resolveTrust` await below) SKIPS it by phase — no `recovering` set required.
         let task = Task(
             id: id,
             title: title, titleProvisional: provisional, desc: "",
             repo: realRepo, branch: input.branch, cwd: cwd,
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
-            column: startIn.column, order: 0, phase: provisional ? .live(.waiting(.humanTurn)) : .live(.running),
+            column: startIn.column, order: 0, phase: .creatingWorktree,
+            sessionEpoch: 1, phaseChangedAt: Date(),
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
             parentBranch: derivedParentBranch
         )
         let (created, createdRev) = try await store.create(task)
-
-        // INVARIANT (mirrors resume/restart): guard the create → ensure window. The card is now
-        // persisted as `.running`/`.waiting`, but its tmux session isn't created until `sessions.ensure`
-        // below — and `resolveTrust` awaits the TrustLedger actor in between, suspending this actor. Without
-        // this, the background liveness poll (`reconcileLiveness`) can interleave at that suspension, see a
-        // session-less non-dead card, and falsely mark it `.dead(sessionVanished)`. `recovering` makes the
-        // poll skip it until the session exists.
-        recovering.insert(id)
-        defer { recovering.remove(id) }
-
-        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
-        // Column/mode/self-id orientation is delivered at SessionStart by each agent's hook (Claude's
-        // `_report --event session`, Codex's `_report --event orient`) as `additionalContext`, so it is
-        // NOT folded into the launch positional — the hook covers both a launched-with-prompt card and an
-        // idle provisional one, without submitting an unsolicited turn. See [[SessionBrief]] / [[CodexHooks]].
-        let ctx = AdapterContext(cwd: cwd, repo: realRepo, model: model.id, startIn: startIn,
-                                 sessionId: sid, prompt: launchPrompt, name: title,
-                                 orchestraBin: orchestraBin, access: input.access,
-                                 trustCwd: trustDecision == .trusted)
-        try? adapter.prepareToLaunch(ctx)
-        // Stamp the session's generation (Stage 2): the agent's hooks echo `$ORCH_EPOCH` back on every
-        // `_report`, so a liveness/late signal carries the epoch it observed and the funnel can fence a
-        // superseded generation. Agent-agnostic — merged into the tmux `-e` env for both adapters.
-        try sessions.ensure(created, argv: adapter.start(ctx), env: withEpoch(adapter.env, created.sessionEpoch))
-
         emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
+
+        // Resolve trust while still in `.creatingWorktree` (reconcile-safe), then bring the agent up through
+        // the funnel: `→.launching` (no bump) → launch (stamping ORCH_EPOCH=1) → readiness → `→.live`.
+        // Any inline failure routes the card to `.dead(.spawnFailed)`.
+        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
+        do {
+            try await launchAndConfirm(id, flavor: .blank(landing: landing, prompt: launchPrompt),
+                                       trustCwd: trustDecision == .trusted)
+        } catch {
+            await transition(id, to: .dead(.spawnFailed), mutate: { $0.deadDetail = "\(error)" })
+            throw error
+        }
+        let live = await store.get(id) ?? created
 
         // T2: an untrusted cwd (needsGrant) spawns sandboxed (trustCwd=false above) but tells the
         // human how to grant it. Autonomy-exempt: this never blocks the spawn — the card just runs
         // read-only-ish until a human runs `orchestra trust`.
         if trustDecision == .needsGrant {
-            emitActivity(.warning, created, source,
+            emitActivity(.warning, live, source,
                 "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
                 + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
         }
@@ -464,7 +464,7 @@ public actor OrchestraService {
         // for this adapter (the just-created card is already in the store) and warn past the threshold.
         let active = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
-            emitActivity(.warning, created, source, warn.message)
+            emitActivity(.warning, live, source, warn.message)
         }
 
         // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
@@ -474,7 +474,7 @@ public actor OrchestraService {
            await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
             startRemoteWatch(cardId: id)
         }
-        return created
+        return live
     }
 
     /// Remove orphaned scratch dirs — `~/.orchestra/scratch/<id>` subdirs with no matching non-archived

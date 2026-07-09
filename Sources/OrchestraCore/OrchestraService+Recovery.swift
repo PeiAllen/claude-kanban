@@ -1,18 +1,28 @@
 import Foundation
 
-/// The outcome of awaiting a resume relaunch's confirmation. `.superseded` is distinct from `.timedOut`
-/// so a resume displaced by a newer resume for the same card exits quietly (the survivor owns the card)
-/// instead of being treated as a failure and marked dead.
-enum ResumeOutcome: Sendable { case confirmed, timedOut, superseded }
+/// The outcome of awaiting a relaunch's inline readiness confirmation. `.superseded` is distinct from
+/// `.timedOut` so a relaunch displaced by a newer relaunch for the same card exits quietly (the survivor
+/// owns the card) instead of being treated as a failure and marked dead.
+enum ReadinessOutcome: Sendable { case confirmed, timedOut, superseded }
+
+/// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
+/// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;
+/// dedicated signals arrive in 2.6) and lands on the given run-state. `.resume` relaunches the vendor
+/// transcript and confirms readiness via `awaitReadiness` (the SessionStart(resume) hook / relaunch
+/// liveness), landing `.waiting`.
+enum LaunchFlavor: Sendable {
+    case blank(landing: RunState, prompt: String?)
+    case resume(seed: String?)
+}
 
 extension OrchestraService {
 
-    /// Daemon-startup recovery pass. For every non-archived card whose tmux session is not alive
+    /// Daemon-startup recovery pass. For every non-terminal card whose tmux session is not alive
     /// (true for ALL after a reboot; a no-op after a daemon-only crash since the external tmux server
     /// outlived it): resumable cards (agentSessionId + transcript on disk) are revived via a throttled
     /// `resume`; the rest are marked `.dead` (rebootUnrevived). Idempotent.
     public func recoverSessions() async {
-        let tasks = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
+        let tasks = await store.all().filter { !$0.phase.isTerminal }
         let grace = config.revivalGraceSeconds
         var jobs: [@Sendable () async -> Void] = []
 
@@ -49,8 +59,9 @@ extension OrchestraService {
     }
 
     /// Revive THIS card's existing session: recreate the tmux session + relaunch `claude --resume`.
-    /// Confirmed by the SessionStart(resume) hook calling `report` within the grace window. On success
-    /// → `.waiting` + deadReason cleared. On failure → `.dead` (resumeFailed) + throw.
+    /// Routes through the funnel — `transition(→.relaunching)` (bumps the generation, the atomic claim) →
+    /// kill+ensure off-actor → inline readiness confirmation → `transition(→.live)`, epoch-fenced so a
+    /// relaunch superseded by a newer one no-ops its finalize. On failure → `.dead` (resumeFailed) + throw.
     @discardableResult
     public func resume(_ id: UUID, graceSeconds: Int? = nil, seed: String? = nil,
                        source: ActivitySource = .daemon) async throws -> Task {
@@ -58,15 +69,16 @@ extension OrchestraService {
         let adapter = try registry.get(task.agentId)
         let grace = graceSeconds ?? config.revivalGraceSeconds
 
-        // INVARIANT: `recovering` must stay set across kill → ensure → awaitResume so that a stale
-        // SessionEnd from the killed process (and the poll's liveness reconcile) is ignored mid-revival
-        // — both gate on `!recovering.contains(id)`. Do not narrow this window.
-        recovering.insert(id)
-        var keepRecoveringAfterReturn = false
-        defer { if !keepRecoveringAfterReturn { recovering.remove(id) } }
+        // Enter `.relaunching`: bumps `sessionEpoch` (the generation claim — a stale SessionEnd / liveness
+        // signal from the torn-down session is fenced by epoch, and the reconcile skips `.relaunching`) and
+        // clears dead metadata atomically. The `relaunching → relaunching` supersede self-edge is legal, so
+        // a newer relaunch bumps again and this attempt's finalize is later dropped by the epoch fence.
+        _ = await transition(id, to: .relaunching, mutate: { $0.deadReason = nil; $0.deadDetail = nil })
+        guard let claimed = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        let epoch = claimed.sessionEpoch
         // Start clean: drop any confirmation left over from a prior attempt so only THIS relaunch's
-        // SessionStart(resume) callback can confirm it.
-        pendingResumeConfirmations.remove(id)
+        // readiness signal can confirm it.
+        pendingReadiness.remove(id)
 
         // Pre-check: must have a tracked id whose transcript still exists.
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
@@ -82,45 +94,28 @@ extension OrchestraService {
 
         // Recreate the session off the actor so a mass revival overlaps (and report() stays serviced).
         try? adapter.prepareToLaunch(ctx)
-        let env = withEpoch(adapter.env, task.sessionEpoch)   // stamp the current generation into the session
+        let env = withEpoch(adapter.env, epoch)   // stamp the current generation into the session
         do {
             try await offActor { [sessions] in
                 _ = try sessions.kill(sessions.sessionName(id))
-                _ = try sessions.ensure(task, argv: argv, env: env)
+                _ = try sessions.ensure(claimed, argv: argv, env: env)
             }
         } catch {
             return try await failResume(id, detail: "\(error)", source: source)
         }
 
-        // Confirm the relaunch is alive — HOW depends on the agent (capability, never identity):
-        switch adapter.capabilities.resumeConfirmation {
-        case .sessionStartHook:
-            // Wait for the agent's own SessionStart(resume) telemetry (Claude), or time out.
-            switch await awaitResume(id, graceSeconds: grace) {
-            case .confirmed:
-                break
-            case .timedOut:
-                return try await failResume(id, detail: "no SessionStart callback in \(grace)s", source: source)
-            case .superseded:
-                // A newer resume(id) took over this card (overlapping kill+relaunch collapse to the latest).
-                // Exit quietly WITHOUT markDead or a status write — the surviving resume owns the outcome AND
-                // the `recovering` lifecycle (leave it set; do NOT schedule a release here).
-                keepRecoveringAfterReturn = true
-                return task
-            }
-        case .relaunchLiveness:
-            // No resume marker exists (e.g. `codex resume` writes no rollout at resume time); the successful
-            // `ensure` above IS the confirmation. Do NOT wait for a hook that never comes — that would time
-            // out and fail-DANGEROUSLY kill a live idle card. reconcileLiveness catches a relaunch that died.
-            break
+        // Confirm the relaunch is alive (capability-gated). `.superseded` ⇒ a newer resume(id) took over
+        // this card; exit quietly WITHOUT markDead or a phase write — the surviving relaunch owns the
+        // outcome (its own transition(→.live) at the current epoch finalizes it).
+        switch await confirmReadiness(id, adapter: adapter, graceSeconds: grace) {
+        case .confirmed:  break
+        case .timedOut:   return try await failResume(id, detail: "no SessionStart callback in \(grace)s", source: source)
+        case .superseded: return task
         }
-        keepRecoveringAfterReturn = true
-        scheduleRecoveringRelease(id, after: grace)
 
-        let (updated, rev) = try await store.update(id) {
-            $0.phase = .live(.waiting(.humanTurn)); $0.deadReason = nil; $0.deadDetail = nil
-        }
-        emit(.taskUpserted(updated), rev: rev)
+        // Reach live — epoch-fenced (`observedEpoch: epoch`) so a superseded attempt's finalize is a no-op.
+        _ = await transition(id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
+        guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         emitActivity(.recovered, updated, source, "resumed “\(updated.title)”")
         return updated
     }
@@ -141,17 +136,13 @@ extension OrchestraService {
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
-    /// re-handed; status → waiting, titleProvisional → true. Never touches worktree contents.
+    /// re-handed; status → waiting, titleProvisional → true. Never touches worktree contents. Routes
+    /// through the funnel — `transition(→.relaunching, mutate:)` carries the real persist block (fresh id,
+    /// rolled prior ids, provisional, cleared dead/desc) atomically with the phase write.
     @discardableResult
     public func restart(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
         let task = try await require(id)
         let adapter = try registry.get(task.agentId)
-
-        recovering.insert(id)
-        // On the error path, release immediately; on success we hand off to a delayed release (below) so
-        // the killed old process's stale SessionEnd is absorbed during a grace window.
-        var launched = false
-        defer { if !launched { recovering.remove(id) } }
 
         // Same capability gate as spawn: only a `.seeded` agent mints a fresh id on restart.
         let freshId: String?
@@ -159,51 +150,97 @@ extension OrchestraService {
         case .seeded:     freshId = adapter.newSessionId()
         case .discovered: freshId = nil
         }
-        // Build the new task state first so the launch uses the new id.
-        var prior = task.priorSessionIds
-        if let old = task.agentSessionId, !old.isEmpty { prior.append(old) }
+        var priorIds = task.priorSessionIds
+        if let old = task.agentSessionId, !old.isEmpty { priorIds.append(old) }
+        let prior = priorIds
+
+        // Enter `.relaunching` with the REAL persist block applied atomically (was a separate store.update):
+        // the launch below uses the new id, and a stale signal is epoch-fenced by the bump.
+        _ = await transition(id, to: .relaunching, mutate: {
+            $0.agentSessionId = freshId
+            $0.priorSessionIds = prior
+            $0.titleProvisional = true
+            $0.deadReason = nil
+            $0.deadDetail = nil
+            $0.desc = ""
+        })
+        guard let claimed = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        let epoch = claimed.sessionEpoch
 
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                  startIn: task.startIn, sessionId: freshId, prompt: nil,
                                  name: task.title, orchestraBin: orchestraBin,
                                  trustCwd: trustDecision == .trusted)
-        let launchTask = task
         try? adapter.prepareToLaunch(ctx)
-        let env = withEpoch(adapter.env, launchTask.sessionEpoch)   // stamp the current generation
+        let env = withEpoch(adapter.env, epoch)   // stamp the current generation
         let startArgv = adapter.start(ctx)
-        try await offActor { [sessions] in
-            _ = try sessions.kill(sessions.sessionName(id))
-            _ = try sessions.ensure(launchTask, argv: startArgv, env: env)
+        do {
+            try await offActor { [sessions] in
+                _ = try sessions.kill(sessions.sessionName(id))
+                _ = try sessions.ensure(claimed, argv: startArgv, env: env)
+            }
+        } catch {
+            return try await failResume(id, detail: "\(error)", source: source)
         }
-        // The fresh session is up: keep `recovering` set across a grace window (instead of dropping it
-        // on return) so a late SessionEnd from the process we just killed is ignored, not treated as the
-        // NEW session exiting. See scheduleRecoveringRelease / resume's kill→ensure→grace invariant.
-        launched = true
-        scheduleRecoveringRelease(id, after: config.revivalGraceSeconds)
-
-        let (updated, rev) = try await store.update(id) {
-            $0.agentSessionId = freshId
-            $0.priorSessionIds = prior
-            $0.phase = .live(.waiting(.humanTurn))
-            $0.titleProvisional = true
-            $0.deadReason = nil
-            $0.deadDetail = nil
-            $0.desc = ""
-        }
-        emit(.taskUpserted(updated), rev: rev)
+        // Blank launch → readiness is the successful `ensure`. Reach live, epoch-fenced.
+        _ = await transition(id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
+        guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         emitActivity(.recovered, updated, source, "new session “\(updated.title)”")
         return updated
     }
 
     /// Reopen an archived (Done) card: recreate the run dir the archive reclaimed, put the card back on
     /// the board (keeps its column), and bring the agent back — `resume` its transcript when resumable,
-    /// else a fresh `restart` in the recreated tree. Idempotent: a non-archived card is returned as-is.
-    /// Agent-agnostic — it reuses the same `resume`/`restart` primitives every adapter already implements.
+    /// else a fresh blank launch in the recreated tree. Idempotent: a non-archived card is returned as-is.
+    ///
+    /// Legal phase path `archived → creatingWorktree → launching → live` (§P1). The archive verb is still
+    /// Bool-bridged in Stage 2 (an archived card's `phase` is `.dead(.completed)`), so we first normalize
+    /// it to `.archived(complete)` — the funnel's `dead → archivedComplete` edge — so the `archived →
+    /// creatingWorktree` reopen edge applies. Does NOT call `resume()`/`restart()` (they enter via
+    /// `.relaunching`, illegal from `.creatingWorktree`); the launch+confirm step is shared via
+    /// `launchAndConfirm`.
     @discardableResult
     public func reopen(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
         let t = try await require(id)
         guard t.archived else { return t }
+        let adapter = try registry.get(t.agentId)
+        let resumable = isResumable(t)
+
+        // Normalize the Bool-bridged archived phase to a real `.archived(_)` so the reopen edge applies.
+        if t.phase.kind != .archivedComplete, t.phase.kind != .archivedPending {
+            _ = await transition(id, to: .archived(teardownComplete: true))
+        }
+
+        // Enter `.creatingWorktree` (bumps the generation), clearing the archived Bool + dead metadata.
+        // The blank path also mints a fresh id / rolls prior ids / resets provisional+desc (restart
+        // semantics); the resume path keeps the id so the transcript carries forward.
+        if resumable {
+            _ = await transition(id, to: .creatingWorktree, mutate: {
+                $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil
+            })
+        } else {
+            let freshId: String?
+            switch adapter.capabilities.sessionId {
+            case .seeded:     freshId = adapter.newSessionId()
+            case .discovered: freshId = nil
+            }
+            var priorIds = t.priorSessionIds
+            if let old = t.agentSessionId, !old.isEmpty { priorIds.append(old) }
+            let prior = priorIds
+            _ = await transition(id, to: .creatingWorktree, mutate: {
+                $0.archived = false
+                $0.agentSessionId = freshId
+                $0.priorSessionIds = prior
+                $0.titleProvisional = true
+                $0.desc = ""
+                $0.deadReason = nil
+                $0.deadDetail = nil
+            })
+        }
+        if let reopening = await store.get(id) {
+            emitActivity(.recovered, reopening, source, "Reopened “\(reopening.title)”")
+        }
 
         // Give the resumed agent its cwd back — archive removed it (branch kept for .worktree cards).
         switch t.origin {
@@ -215,32 +252,103 @@ extension OrchestraService {
             break   // never removed on archive
         }
 
-        // Back on the board (original column preserved); clear any stale dead state before reviving.
-        let (unarchived, rev) = try await store.update(id) {
-            $0.archived = false; $0.phase = .live(.waiting(.humanTurn)); $0.deadReason = nil; $0.deadDetail = nil
+        // cwd ready → launching → launch+confirm → live.
+        let trustDecision = await resolveTrust(origin: t.origin, cwd: t.cwd, repo: t.repo)
+        do {
+            let flavor: LaunchFlavor = resumable ? .resume(seed: nil)
+                                                 : .blank(landing: .waiting(.humanTurn), prompt: nil)
+            try await launchAndConfirm(id, flavor: flavor, trustCwd: trustDecision == .trusted)
+        } catch {
+            await transition(id, to: .dead(.spawnFailed), mutate: { $0.deadDetail = "\(error)" })
+            throw error
         }
-        emit(.taskUpserted(unarchived), rev: rev)
-        emitActivity(.recovered, unarchived, source, "Reopened “\(unarchived.title)”")
+        guard let live = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        return live
+    }
 
-        // resume keeps the transcript; a card whose transcript is gone gets a fresh blank session.
-        if isResumable(unarchived) {
-            return try await resume(id, source: source)
-        } else {
-            return try await restart(id, source: source)
+    /// Shared launching→live step for spawn + reopen. The caller has the card in `.creatingWorktree`; this
+    /// resolves the launch inputs (still `.creatingWorktree` — reconcile-safe), then enters `.launching`
+    /// and brings the session up with NO `await` between the `.launching` write and the synchronous
+    /// `ensure`, so a concurrent liveness poll can never observe a launching card whose session doesn't
+    /// exist yet. Throws on a launch/confirm failure so the caller routes the card to `.dead(.spawnFailed)`.
+    /// NOT used by resume/restart (they walk the `.relaunching` edge).
+    func launchAndConfirm(_ id: UUID, flavor: LaunchFlavor, trustCwd: Bool,
+                          graceSeconds: Int? = nil) async throws {
+        let task = try await require(id)
+        let adapter = try registry.get(task.agentId)
+        let env = withEpoch(adapter.env, task.sessionEpoch)   // stamp the current generation
+
+        switch flavor {
+        case .blank(let landing, let prompt):
+            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id, startIn: task.startIn,
+                                     sessionId: task.agentSessionId, prompt: prompt, name: task.title,
+                                     orchestraBin: orchestraBin, access: task.access, trustCwd: trustCwd)
+            try? adapter.prepareToLaunch(ctx)
+            let argv = adapter.start(ctx)
+            // Enter launching, then ensure with NO intervening suspension (see the launching-window invariant).
+            _ = await transition(id, to: .launching)
+            try sessions.ensure(task, argv: argv, env: env)
+            // Blank launch → readiness is the successful ensure (the 2.5 sync-spawn stub; 2.6 adds signals).
+            _ = await transition(id, to: .live(landing))
+
+        case .resume(let seed):
+            let grace = graceSeconds ?? config.revivalGraceSeconds
+            pendingReadiness.remove(id)
+            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
+                                     sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
+                                     trustCwd: trustCwd, seed: seed)
+            guard let sid = task.agentSessionId,
+                  let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
+                  let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp),
+                  let argv = adapter.resume(ctx) else {
+                throw OrchestraError.resumeFailed("transcript gone")
+            }
+            try? adapter.prepareToLaunch(ctx)
+            _ = await transition(id, to: .launching)
+            _ = try? sessions.kill(sessions.sessionName(id))
+            try sessions.ensure(task, argv: argv, env: env)
+            switch await confirmReadiness(id, adapter: adapter, graceSeconds: grace) {
+            case .confirmed:  _ = await transition(id, to: .live(.waiting(.humanTurn)))
+            case .timedOut:   throw OrchestraError.resumeFailed("no SessionStart callback in \(grace)s")
+            case .superseded: return   // a newer relaunch owns the card
+            }
         }
     }
 
-    /// Background poll's continuous liveness reconcile (safety net when no SessionEnd fires). A
-    /// non-archived, non-done/dead card whose tmux session vanished → `.dead` (sessionVanished),
-    /// guarded against cards mid-resume/restart.
+    /// Confirm a relaunch is alive — HOW depends on the agent (capability, never identity). `.sessionStartHook`
+    /// waits for the agent's own SessionStart(resume) telemetry (Claude), or times out; `.relaunchLiveness`
+    /// takes the successful `ensure` as the confirmation (e.g. `codex resume` writes no rollout at resume
+    /// time), so it must NOT wait for a hook that never comes.
+    func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int) async -> ReadinessOutcome {
+        switch adapter.capabilities.resumeConfirmation {
+        case .sessionStartHook: return await awaitReadiness(id, graceSeconds: graceSeconds)
+        case .relaunchLiveness: return .confirmed
+        }
+    }
+
+    /// Background poll's continuous liveness reconcile (safety net when no SessionEnd fires). Phase-gated:
+    /// being-born (`.creatingWorktree`) and relaunching cards are skipped (their session is legitimately
+    /// absent mid-bring-up); a `.launching` card whose session vanished failed its initial launch →
+    /// `.dead(.spawnFailed)`; a `.live` card whose session vanished crashed → `.dead(.sessionVanished)`.
+    /// Terminal cards are excluded outright. All deaths route through the funnel (`markDead`) so they conclude.
     public func reconcileLiveness() async {
         let tasks = await store.all()
         // One `tmux list-sessions` per poll tick, not one `has-session` per card.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
-        for t in tasks where !t.archived && t.phase.kind != .dead {
-            if recovering.contains(t.id) { continue }
-            if !aliveNames.contains(sessions.sessionName(t.id)) {
-                await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+        for t in tasks where !t.phase.isTerminal {
+            switch t.phase.kind {
+            case .creatingWorktree, .relaunching:
+                continue   // being born / relaunching — the session is legitimately not up yet
+            case .launching:
+                if !aliveNames.contains(sessions.sessionName(t.id)) {
+                    await markDead(t.id, reason: .spawnFailed, detail: nil, source: .daemon)
+                }
+            case .live:
+                if !aliveNames.contains(sessions.sessionName(t.id)) {
+                    await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+                }
+            case .dead, .archivedPending, .archivedComplete:
+                continue   // terminal — excluded by `isTerminal`, but keep the switch exhaustive
             }
         }
     }
@@ -269,80 +377,71 @@ extension OrchestraService {
         throw OrchestraError.resumeFailed(detail)
     }
 
-    /// Remove `id` from `recovering` (actor-isolated) — the target of a delayed release.
-    func releaseRecovering(_ id: UUID) { recovering.remove(id) }
-
-    /// Keep `id` in `recovering` for `seconds`, then release it. Used by `restart` so a stale `SessionEnd`
-    /// from the just-killed old process (delivered out-of-band shortly after restart returns) is ignored
-    /// instead of re-killing the fresh session as `.agentExited`. Mirrors `resume`'s kill→ensure→grace
-    /// window, which `restart` otherwise lacked.
-    func scheduleRecoveringRelease(_ id: UUID, after seconds: Int) {
-        _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .seconds(max(0, seconds)))
-            await self?.releaseRecovering(id)
-            await self?.wakeIfPending(id)   // deliver a send that no-op'd at wake gate A during this window
-        }
-    }
-
-    /// Deliver an inbox that a `send`/inbox-add queued WHILE this card was in the `recovering` grace window
-    /// — its `wake` no-op'd at gate A and, uniquely, nothing else retries it (a running card's Stop-drain,
-    /// a not-yet-resumable card's next turn, and a watching parent's reinvoke all cover their own gates).
-    /// Called once the window closes. `wake` re-checks every gate, so this is a no-op unless there is a
-    /// genuinely stranded message, and it self-terminates: the resumed turn drains the inbox.
+    /// Deliver an inbox that a `send`/inbox-add queued WHILE this card was mid-relaunch — its `wake` no-op'd
+    /// (the `relaunchClaimed` gate / a non-`.live` phase) and, uniquely, nothing else retries it (a running
+    /// card's Stop-drain, a not-yet-resumable card's next turn, and a watching parent's reinvoke all cover
+    /// their own gates). Called once the relaunch settles (`clearRelaunchClaimed`). `wake` re-checks every
+    /// gate, so this is a no-op unless there is a genuinely stranded message, and it self-terminates: the
+    /// resumed turn drains the inbox.
     func wakeIfPending(_ id: UUID) async {
         guard let t = await store.get(id), case .live(.waiting) = t.phase, !t.archived,
               !(await inbox.peek(id)).isEmpty else { return }
         await wake(id)
     }
 
+    /// The single terminal-death classifier. Routes through the funnel so a non-terminal → terminal death
+    /// fires `concludeCard` (bug-#2 fix — a suspended `wait` resolves on a crash/reboot/resume-fail death,
+    /// not just a clean exit). Callers pass a DELIBERATE classification (aliveNames miss / a fresh liveness
+    /// probe / a definitive resume failure), so this transitions with `observedEpoch: nil` — exempt from
+    /// the nil-epoch kill-probe gate (which lives at the inbound-SessionEnd signal site).
     func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {
-        guard let (updated, rev) = try? await store.update(id, {
-            $0.phase = .dead(reason); $0.deadReason = reason; $0.deadDetail = detail
-        }) else { return }
-        emit(.taskUpserted(updated), rev: rev)
+        let result = await transition(id, to: .dead(reason), mutate: {
+            $0.deadReason = reason; $0.deadDetail = detail
+        })
+        guard result == .applied, let updated = await store.get(id) else { return }
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
     }
 
-    private func awaitResume(_ id: UUID, graceSeconds: Int) async -> ResumeOutcome {
+    private func awaitReadiness(_ id: UUID, graceSeconds: Int) async -> ReadinessOutcome {
         // The confirmation may already have landed while we were relaunching off-actor (see
-        // `pendingResumeConfirmations`). Consume it synchronously — before registering a waiter —
-        // so an early callback confirms instantly instead of waiting out (or timing out) the grace.
-        // This block and the registration below run without an intervening `await`, so no callback
-        // can slip between the check and the registration on this serialized actor.
-        if pendingResumeConfirmations.remove(id) != nil { return .confirmed }
-        resumeTokenSeq &+= 1
-        let token = resumeTokenSeq
-        return await withCheckedContinuation { (cont: CheckedContinuation<ResumeOutcome, Never>) in
-            // A second resume for this id must NEVER leak the earlier continuation: resolve the displaced
-            // waiter `.superseded` (the newer resume now owns the session + `recovering` lifecycle). Without
-            // this, `resumeWaiters[id] = …` would drop the old continuation unresumed → that resume() hangs
-            // forever → `recovering` sticks → `wake` no-ops every future send (the idle-Claude bug).
-            if let old = resumeWaiters[id] { old.cont.resume(returning: .superseded) }
-            resumeWaiters[id] = (token, cont)
+        // `pendingReadiness`). Consume it synchronously — before registering a waiter — so an early callback
+        // confirms instantly instead of waiting out (or timing out) the grace. This block and the
+        // registration below run without an intervening `await`, so no callback can slip between the check
+        // and the registration on this serialized actor.
+        if pendingReadiness.remove(id) != nil { return .confirmed }
+        readinessTokenSeq &+= 1
+        let token = readinessTokenSeq
+        return await withCheckedContinuation { (cont: CheckedContinuation<ReadinessOutcome, Never>) in
+            // A second relaunch for this id must NEVER leak the earlier continuation: resolve the displaced
+            // waiter `.superseded` (the newer relaunch now owns the session). Without this,
+            // `readinessWaiters[id] = …` would drop the old continuation unresumed → that relaunch hangs
+            // forever → the idle card can never be woken again.
+            if let old = readinessWaiters[id] { old.cont.resume(returning: .superseded) }
+            readinessWaiters[id] = (token, cont)
             let grace = max(0, graceSeconds)
             _Concurrency.Task { [weak self] in
                 try? await _Concurrency.Task.sleep(for: .seconds(grace))
-                await self?.timeoutResume(id, token: token)
+                await self?.timeoutReadiness(id, token: token)
             }
         }
     }
 
-    func resolveResume(_ id: UUID, _ ok: Bool) {
-        if let w = resumeWaiters.removeValue(forKey: id) {
+    func resolveReadiness(_ id: UUID, _ ok: Bool) {
+        if let w = readinessWaiters.removeValue(forKey: id) {
             w.cont.resume(returning: ok ? .confirmed : .timedOut)
         } else if ok {
-            // No waiter yet: `awaitResume` hasn't registered (resume() is still relaunching off-actor).
-            // Remember this confirmation so the waiter picks it up rather than losing the wakeup.
-            pendingResumeConfirmations.insert(id)
+            // No waiter yet: `awaitReadiness` hasn't registered (the relaunch is still bringing the session
+            // up off-actor). Remember this confirmation so the waiter picks it up rather than losing it.
+            pendingReadiness.insert(id)
         }
     }
 
-    /// Time out ONLY the waiter this timer was scheduled for. A newer resume that superseded it (or a
+    /// Time out ONLY the waiter this timer was scheduled for. A newer relaunch that superseded it (or a
     /// confirmation that already resolved it) advanced the slot's token, so a stale timer is a no-op —
     /// it must never resolve an unrelated, still-pending waiter.
-    private func timeoutResume(_ id: UUID, token: UInt64) {
-        guard let w = resumeWaiters[id], w.token == token else { return }
-        resumeWaiters.removeValue(forKey: id)
+    private func timeoutReadiness(_ id: UUID, token: UInt64) {
+        guard let w = readinessWaiters[id], w.token == token else { return }
+        readinessWaiters.removeValue(forKey: id)
         w.cont.resume(returning: .timedOut)
     }
 
