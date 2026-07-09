@@ -199,6 +199,11 @@ public actor WorktreeRegistry {
     /// borrower cardId -> canonical borrow path. Persisted (survives a daemon-only crash).
     private var borrows: [UUID: String] = [:]
     private var borrowsLoaded = false
+    /// True when `borrowsPath` exists but could not be read/decoded (corrupt/torn write). Distinct from
+    /// "file genuinely absent" (which means zero borrows and is perfectly fine). While true, `borrows`
+    /// cannot be trusted as complete, so `sweepOrphanBorrows` must not prune ANYTHING (FIX E) — a live
+    /// borrower's registration might be sitting unreadable in that same file.
+    private var borrowsLoadFailed = false
 
     /// canonical worktree path -> cardIds that called `ensure` for it and have not yet `release`d.
     /// Closes the concurrent-spawn rollback race: spawn A creates a tree, spawn B for the same branch
@@ -285,8 +290,21 @@ public actor WorktreeRegistry {
             throw OrchestraError.parentAlreadyBorrowed(parentBranch)   // stray/crashed borrow dir
         }
         let created = try manager.borrow(repo: realRepo, branch: parentBranch)
+        // Idempotent re-borrow: if this exact registration is ALREADY durably persisted, a transient
+        // persist hiccup below must NOT roll back a tree that may hold the agent's in-progress work.
+        let alreadyDurable = (borrows[borrowerCardId] == created)
         borrows[borrowerCardId] = created
-        persistBorrows()
+        if !alreadyDurable {
+            guard persistBorrows() else {
+                // Registration not durable ⇒ never report a phantom success. Roll back the in-memory
+                // entry and remove the just-created (empty, no-work-yet) throwaway borrow tree, then
+                // throw so the caller retries.
+                borrows[borrowerCardId] = nil
+                try? manager.remove(worktree: created, force: true)
+                throw OrchestraError.io(
+                    "borrow registration could not be persisted for \(parentBranch) — free space/permissions and retry")
+            }
+        }
         return Worktree(path: created, created: true, branchExisted: true)
     }
 
@@ -294,7 +312,7 @@ public actor WorktreeRegistry {
         loadBorrows()
         guard let path = borrows[borrowerCardId] else { return }   // idempotent
         borrows[borrowerCardId] = nil
-        persistBorrows()
+        guard persistBorrows() else { borrows[borrowerCardId] = path; return }   // removal not durable ⇒ keep the tree
         if !borrows.values.contains(path) {                        // no other holder ⇒ throwaway, force-remove
             try? manager.remove(worktree: path, force: true)
         }
@@ -304,6 +322,7 @@ public actor WorktreeRegistry {
     /// terminated-borrower registrations + stray unregistered `orch-borrow-*` dirs.
     public func sweepOrphanBorrows(cards: [Task]) async {
         loadBorrows()
+        guard !borrowsLoadFailed else { return }   // corrupt/unreadable registry ⇒ can't tell live from stray ⇒ keep everything
         // FAIL-SAFE ambiguity guard: an empty `cards` alongside non-empty registrations means the caller
         // handed us no evidence (partial/failed store load). "On ambiguity keep everything" — do nothing.
         guard !(cards.isEmpty && !borrows.isEmpty) else { return }
@@ -398,27 +417,39 @@ public actor WorktreeRegistry {
     }
 
     // MARK: - borrow persistence (atomic JSON, [String:String] on disk)
+    /// Distinguishes "no borrows.json ⇒ zero borrows, fine" from "borrows.json exists but is
+    /// unreadable/corrupt ⇒ AMBIGUOUS, do not trust `borrows` as complete" (`borrowsLoadFailed`).
     private func loadBorrows() {
         guard !borrowsLoaded else { return }
         borrowsLoaded = true
+        guard FileManager.default.fileExists(atPath: borrowsPath) else { return }   // absent ⇒ genuinely empty, OK
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: borrowsPath)),
-              let raw = try? OrchestraJSON.decoder.decode([String: String].self, from: data) else { return }
+              let raw = try? OrchestraJSON.decoder.decode([String: String].self, from: data) else {
+            borrowsLoadFailed = true   // present but unreadable/corrupt ⇒ AMBIGUOUS; the sweep must not prune
+            return
+        }
         borrows = Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
     }
-    private func persistBorrows() {
+    /// Returns `true` only when the swap durably succeeded — every failure branch (encode, tmp write,
+    /// replace/move) returns `false` so callers can refuse to report a non-durable registration as success.
+    @discardableResult
+    private func persistBorrows() -> Bool {
         let raw = Dictionary(uniqueKeysWithValues: borrows.map { ($0.key.uuidString, $0.value) })
-        guard let data = try? OrchestraJSON.pretty.encode(raw) else { return }
+        guard let data = try? OrchestraJSON.pretty.encode(raw) else { return false }
         let dir = (borrowsPath as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let url = URL(fileURLWithPath: borrowsPath)
         let tmp = URL(fileURLWithPath: borrowsPath + ".tmp.\(UUID().uuidString)")
-        guard (try? data.write(to: tmp, options: .atomic)) != nil else { return }
+        guard (try? data.write(to: tmp, options: .atomic)) != nil else { return false }
         if FileManager.default.fileExists(atPath: borrowsPath) {
             if (try? FileManager.default.replaceItemAt(url, withItemAt: tmp)) == nil {
                 try? FileManager.default.removeItem(at: tmp)   // best-effort: don't leak the tmp sibling
+                return false
             }
         } else if (try? FileManager.default.moveItem(at: tmp, to: url)) == nil {
             try? FileManager.default.removeItem(at: tmp)
+            return false
         }
+        return true
     }
 }

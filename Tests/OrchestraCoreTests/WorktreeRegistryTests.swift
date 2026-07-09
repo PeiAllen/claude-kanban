@@ -200,4 +200,41 @@ struct WorktreeRegistryTests {
         try await reg.release(cardId: a, cards: [card(a, cwd: outside)], force: true)
         #expect(!stub.removed.contains(outside))              // kept SOLELY because it's outside worktreesRoot
     }
+
+    // MARK: - Final-review fixes: fail-safe borrow persistence
+
+    @Test func test_sweepKeepsBorrowWhenRegistryUnreadable() async throws {
+        let (reg, stub, base) = makeRegistry()
+        let w = try await reg.ensureBorrow(repo: "app", parentBranch: "main", borrowerCardId: UUID())
+        // Corrupt the persisted borrows file — simulates a torn/garbage write discovered on restart.
+        try "not json".write(toFile: base + "/borrows.json", atomically: true, encoding: .utf8)
+        // Fresh registry over the SAME paths (simulates a daemon restart reading the corrupt file).
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
+        let reg2 = WorktreeRegistry(config: config, resolver: PathResolver(config: config), manager: stub,
+                                    borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
+        await reg2.sweepOrphanBorrows(cards: [card(UUID(), cwd: "/x")])   // live worktree card in repo "app"
+        #expect(!stub.removed.contains(w.path))                            // NOT pruned — registry load failed (ambiguous)
+        #expect(FileManager.default.fileExists(atPath: w.path))            // dir still on disk
+    }
+
+    @Test func test_ensureBorrowThrowsWhenRegistrationNotDurable() async throws {
+        let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-reg-\(UUID().uuidString)")
+        let worktreesRoot = base + "/worktrees"
+        try FileManager.default.createDirectory(atPath: worktreesRoot, withIntermediateDirectories: true)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: worktreesRoot, allowlist: [base])
+        let stub = StubWorktrees(root: worktreesRoot)
+        // `blocker` is a regular FILE — its child path `blocker/borrows.json` can never be created
+        // (createDirectory + write both fail), guaranteeing persistBorrows() fails durably.
+        let blocker = base + "/blk"
+        FileManager.default.createFile(atPath: blocker, contents: Data())
+        let borrowsPath = blocker + "/borrows.json"
+        let reg = WorktreeRegistry(config: config, resolver: PathResolver(config: config), manager: stub,
+                                   borrowsPath: borrowsPath, markersDir: base + "/worktree-markers")
+        let id = UUID()
+        await #expect(throws: (any Error).self) {
+            _ = try await reg.ensureBorrow(repo: "app", parentBranch: "main", borrowerCardId: id)
+        }
+        // The just-created throwaway borrow tree must be rolled back (removed), not left as a phantom.
+        #expect(stub.removed.contains(where: { $0.contains("orch-borrow-main") }))
+    }
 }

@@ -37,9 +37,11 @@ is no separate stored bit.
 - **dir present, no marker, clean** (a pre-upgrade or half-created tree with no uncommitted changes) →
   prune it and cut a fresh checkout.
 - **dir present, no marker, dirty** → **never removed.** `ensure` throws `worktreeNeedsManualCleanup`
-  instead (the card lands in `dead(.spawnFailed)` with a "manual cleanup needed" activity) — a prior
-  checkout may have been interrupted mid-write, so an unverified dirty dir is left byte-intact for a
-  human to inspect rather than silently pruned.
+  to its spawn/reopen caller, whose error message carries the manual-cleanup guidance — a prior checkout
+  may have been interrupted mid-write, so an unverified dirty dir is left byte-intact for a human to
+  inspect rather than silently pruned. (Mapping this into a card-level `dead(.spawnFailed)` + activity is
+  a later PR's reconciler concern — not wired here: at spawn, `ensure` runs before the card exists and
+  outside the rollback/launch catch; at reopen, `ensure` runs before the `dead(.spawnFailed)` catch.)
 - **dir absent** (fresh, just-pruned, or a marked tree whose dir vanished underneath it) → `git worktree
   add`, then write the marker.
 
