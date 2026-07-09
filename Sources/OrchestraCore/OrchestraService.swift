@@ -71,7 +71,12 @@ public actor OrchestraService {
     public let maxConsecutiveInjects = 25
 
     // Event fan-out.
-    private var subscribers: [UUID: AsyncStream<Event>.Continuation] = [:]
+    private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
+    /// Mirror of the last board rev an event carried; stamped onto ephemeral events (which never bump
+    /// rev, so the last task-state rev is the current board rev). Seeded in `init` via
+    /// `store.peekPersistedRev()` (before the control server can accept any RPC), and refreshed by
+    /// every `emit(_:rev:)` thereafter.
+    private var lastRev: Int = 0
     // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
     var terminalOwnership = TerminalOwnershipStore()
     // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
@@ -129,11 +134,16 @@ public actor OrchestraService {
         self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
         self.launcher = launcher ?? Launcher(resolver: r)
+        // Seed the lastRev mirror synchronously (nonisolated peek — no await), BEFORE server.start()
+        // can accept any RPC or PushNotifier.run() can subscribe, so an early ephemeral emit (e.g. a
+        // borrow/trust/set-parent RPC racing daemon boot ahead of `recoverSessions`) never stamps a
+        // stale rev 0 on a persisted board. Every subsequent `emit(_:rev:)` refreshes it.
+        self.lastRev = self.store.peekPersistedRev()
     }
 
     // MARK: - Subscriptions / events
 
-    public func subscribe() -> AsyncStream<Event> {
+    public func subscribe() -> AsyncStream<EventEnvelope> {
         let sid = UUID()
         return AsyncStream { cont in
             subscribers[sid] = cont
@@ -146,14 +156,28 @@ public actor OrchestraService {
 
     private func unsubscribe(_ id: UUID) { subscribers[id] = nil }
 
-    func emit(_ event: Event) {
-        for cont in subscribers.values { cont.yield(event) }
+    /// SYNCHRONOUS: `rev` is passed in explicitly (from the mutation return, or `lastRev` for
+    /// ephemerals) — there is no `await` between a mutation and its emit, so actor reentrancy cannot
+    /// skew which rev an event carries (see the rev-binding design decision).
+    func emit(_ event: Event, rev: Int) {
+        lastRev = rev
+        let envelope = EventEnvelope(rev: rev, event: event)
+        for cont in subscribers.values { cont.yield(envelope) }
     }
 
+    /// Ephemeral: stamps the current board rev via the `lastRev` mirror (ephemeral events never bump
+    /// the store's rev, so the last task-state rev IS the current board rev).
     func emitActivity(_ kind: ActivityKind, _ task: Task?, _ source: ActivitySource, _ text: String) {
         let item = ActivityItem(taskId: task?.id, ref: task?.ref(), source: source, kind: kind, text: text)
-        emit(.activity(item))
+        emit(.activity(item), rev: lastRev)
     }
+
+    // MARK: - test-support (rev)
+
+    #if DEBUG
+    func storeCurrentRevForTest() async -> Int { await store.currentRev }
+    func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
+    #endif
 
     // MARK: - trust
 
@@ -398,7 +422,7 @@ public actor OrchestraService {
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
             parentBranch: derivedParentBranch
         )
-        let created = try await store.create(task)
+        let (created, createdRev) = try await store.create(task)
 
         // INVARIANT (mirrors resume/restart): guard the create → ensure window. The card is now
         // persisted as `.running`/`.waiting`, but its tmux session isn't created until `sessions.ensure`
@@ -421,7 +445,7 @@ public actor OrchestraService {
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
 
-        emit(.taskUpserted(created))
+        emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
 
         // T2: an untrusted cwd (needsGrant) spawns sandboxed (trustCwd=false above) but tells the
@@ -626,8 +650,8 @@ public actor OrchestraService {
                 "freeform cards stay in Freeform; only worktree cards can move between Plan, Implementation, and Review")
         }
         let from = current.column
-        let updated = try await store.move(id, to: column)
-        emit(.taskUpserted(updated))
+        let (updated, rev) = try await store.move(id, to: column)
+        emit(.taskUpserted(updated), rev: rev)
         emitActivity(.moved, updated, source, "→ \(column.displayName)")
         // A user drag / keyboard-carry on the board (`.app`) notifies the card that it was moved; a card
         // moving ITSELF via CLI/MCP/agent, or a no-op drop back into its own column, does not. Best-effort
@@ -715,9 +739,9 @@ public actor OrchestraService {
                 break
             }
         }
-        let updated = try await store.update(id) { $0.status = .done; $0.archived = true }
+        let (updated, rev) = try await store.update(id) { $0.status = .done; $0.archived = true }
         lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
-        emit(.taskUpserted(updated))
+        emit(.taskUpserted(updated), rev: rev)
         emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
         await concludeCard(id, .done)   // moving to Done is a settled conclusion (F2 / merge-watch)
     }
@@ -751,7 +775,7 @@ public actor OrchestraService {
         guard let targets = try? sessions.windows(name) else { return }
         let shells = targets.filter { $0.kind == .shell }
             .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
-        emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)))
+        emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)), rev: lastRev)
     }
 
     /// Open a shell tab in the card's worktree and launch a READ-ONLY claude in it (default mode,
@@ -803,6 +827,12 @@ public actor OrchestraService {
     /// (re)connect. The per-card work stays serial (each `sessions` shells to tmux) but rides one RPC, so
     /// a 25-card board costs one round trip instead of ~50 — live events no longer wait seconds behind it.
     public func boardSnapshot() async -> BoardSnapshot {
+        // Read `rev` BEFORE `list(nil)` (deliberate, fail-safe): a mutation landing between the two
+        // awaits makes `snap.rev` ≤ the true rev of the task data, so a client's resync at worst
+        // re-applies idempotently — it never drops a real event. Reading rev AFTER `list` could
+        // over-claim (snapshot data older than its rev) and drop an event instead.
+        let rev = await store.currentRev
+        lastRev = rev
         let active = await list(nil)
         let archived = await archivedTasks()
         let now = Date()
@@ -814,7 +844,7 @@ public actor OrchestraService {
             if let s = try? await sessions(card.id) { sessionsList.append(s) }
             owners.append(terminalOwnership.snapshot(cardId: card.id, ref: card.ref(), now: now))
         }
-        return BoardSnapshot(tasks: active, archived: archived, config: config,
+        return BoardSnapshot(rev: rev, tasks: active, archived: archived, config: config,
                              models: models(agentId: nil), agents: agents(),
                              sessions: sessionsList, owners: owners)
     }
@@ -856,7 +886,7 @@ public actor OrchestraService {
         let sig = OwnerEmitSig(state)
         guard lastEmittedOwnerSig[state.cardId] != sig else { return }
         lastEmittedOwnerSig[state.cardId] = sig
-        emit(.agentTerminalOwner(state))
+        emit(.agentTerminalOwner(state), rev: lastRev)
     }
 
     /// Current owner of the card's `agent` terminal (owner + epoch + stale/fresh). Read-only.

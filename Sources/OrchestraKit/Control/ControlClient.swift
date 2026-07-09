@@ -320,8 +320,10 @@ public final class ControlClient: @unchecked Sendable {
             guard !line.isEmpty,
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
             if msg.method == "event" {
-                if let event = try? msg.params?.decode(Event.self) {
-                    stateLock.withLock { eventContinuation }?.yield(event)
+                if let env = try? msg.params?.decode(EventEnvelope.self) {
+                    // Stage 6 consumes env.rev for gap detection; Stage 1 forwards the inner event
+                    // unchanged — the client's own `subscribe()` still yields a bare `Event`.
+                    stateLock.withLock { eventContinuation }?.yield(env.event)
                 }
             } else if let id = msg.id {
                 if let cont = stateLock.withLock({ pending.removeValue(forKey: id) }) {

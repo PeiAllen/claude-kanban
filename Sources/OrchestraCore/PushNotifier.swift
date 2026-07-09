@@ -38,8 +38,8 @@ public actor PushNotifier {
     /// Consume the service event stream until it ends. Wired as a second subscriber alongside the
     /// ControlServer's event pump.
     public func run() async {
-        for await event in await service.subscribe() {
-            await handle(event)
+        for await envelope in await service.subscribe() {
+            await handle(envelope.event)
         }
     }
 

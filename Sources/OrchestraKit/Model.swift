@@ -319,6 +319,23 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public func ref(slugging slug: Bool = true) -> String {
         "orchestra://task/\(shortId)" + (slug ? "-\(slugify(title))" : "")
     }
+
+    /// The `report()` field-delta write: overlay exactly the fields `report()` owns from a
+    /// freshly-computed snapshot `s`, leaving every other (possibly concurrently-mutated) field at
+    /// self's current value. Centralizes report's ownership so a whole-object write can't clobber.
+    public mutating func applyReportFields(from s: Task) {
+        status = s.status
+        deadReason = s.deadReason
+        deadDetail = s.deadDetail
+        agentSessionId = s.agentSessionId
+        priorSessionIds = s.priorSessionIds
+        desc = s.desc
+        titleProvisional = s.titleProvisional
+        title = s.title
+        ctxPct = s.ctxPct
+        model = s.model
+        waitReason = s.waitReason
+    }
 }
 
 // MARK: - Command result shapes
@@ -686,6 +703,14 @@ public enum Event: Codable, Sendable, Equatable {
     case shellsChanged(ShellWindowsState)
 }
 
+/// Every event notification to clients is wrapped with the board `rev` at emit, so a client can
+/// detect a gap (a missed event) and resync. Ephemeral events carry the current board rev.
+public struct EventEnvelope: Codable, Sendable, Equatable {
+    public let rev: Int
+    public let event: Event
+    public init(rev: Int, event: Event) { self.rev = rev; self.event = event }
+}
+
 /// The full set of a card's shell windows (excludes `agent`), carried by `Event.shellsChanged`. The
 /// daemon recomputes it from tmux (authoritative) after every shell open/close. Each `ShellTab`'s
 /// `owner` tells a client which surface owns it.
@@ -705,6 +730,9 @@ public struct ShellWindowsState: Codable, Sendable, Equatable {
 /// snapshot-then-subscribe gap: any event racing the snapshot is either reflected in it or delivered
 /// live (apply is idempotent).
 public struct BoardSnapshot: Codable, Sendable, Equatable {
+    /// The board's `rev` at the moment this snapshot was taken (`TaskStore.currentRev`) — lets a
+    /// (re)connecting client detect a gap between this snapshot and subsequently-received events.
+    public let rev: Int
     public let tasks: [Task]
     public let archived: [Task]
     public let config: Config
@@ -714,8 +742,9 @@ public struct BoardSnapshot: Codable, Sendable, Equatable {
     public let sessions: [CardSessions]
     /// Per active card, its current agent-terminal owner — the bulk form of `agentTerminalOwner`.
     public let owners: [AgentTerminalOwnerState]
-    public init(tasks: [Task], archived: [Task], config: Config, models: [AgentModel],
+    public init(rev: Int, tasks: [Task], archived: [Task], config: Config, models: [AgentModel],
                 agents: [AgentInfo], sessions: [CardSessions], owners: [AgentTerminalOwnerState]) {
+        self.rev = rev
         self.tasks = tasks; self.archived = archived; self.config = config
         self.models = models; self.agents = agents; self.sessions = sessions; self.owners = owners
     }

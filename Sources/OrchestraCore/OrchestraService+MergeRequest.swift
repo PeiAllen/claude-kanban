@@ -37,10 +37,10 @@ extension OrchestraService {
         // Dedup: the mergeRequested badge is the pending marker. A re-send while already pending does not
         // re-enqueue (the re-nudge timer handles reminders); it only refreshes the badge.
         let alreadyPending = (child.treeStat?.state == .mergeRequested)
-        if let saved = try? await store.update(child.id, {
+        if let (saved, rev) = try? await store.update(child.id, {
             $0.treeStat = TreeStat(state: .mergeRequested)
         }) {
-            emit(.taskUpserted(saved))
+            emit(.taskUpserted(saved), rev: rev)
         }
         if !alreadyPending {
             try? await inbox.enqueue(parentCard.id,

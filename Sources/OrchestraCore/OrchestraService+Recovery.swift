@@ -117,10 +117,10 @@ extension OrchestraService {
         keepRecoveringAfterReturn = true
         scheduleRecoveringRelease(id, after: grace)
 
-        let updated = try await store.update(id) {
+        let (updated, rev) = try await store.update(id) {
             $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
         }
-        emit(.taskUpserted(updated))
+        emit(.taskUpserted(updated), rev: rev)
         emitActivity(.recovered, updated, source, "resumed “\(updated.title)”")
         return updated
     }
@@ -182,7 +182,7 @@ extension OrchestraService {
         launched = true
         scheduleRecoveringRelease(id, after: config.revivalGraceSeconds)
 
-        let updated = try await store.update(id) {
+        let (updated, rev) = try await store.update(id) {
             $0.agentSessionId = freshId
             $0.priorSessionIds = prior
             $0.status = .waiting
@@ -191,7 +191,7 @@ extension OrchestraService {
             $0.deadDetail = nil
             $0.desc = ""
         }
-        emit(.taskUpserted(updated))
+        emit(.taskUpserted(updated), rev: rev)
         emitActivity(.recovered, updated, source, "new session “\(updated.title)”")
         return updated
     }
@@ -216,10 +216,10 @@ extension OrchestraService {
         }
 
         // Back on the board (original column preserved); clear any stale dead state before reviving.
-        let unarchived = try await store.update(id) {
+        let (unarchived, rev) = try await store.update(id) {
             $0.archived = false; $0.status = .waiting; $0.deadReason = nil; $0.deadDetail = nil
         }
-        emit(.taskUpserted(unarchived))
+        emit(.taskUpserted(unarchived), rev: rev)
         emitActivity(.recovered, unarchived, source, "Reopened “\(unarchived.title)”")
 
         // resume keeps the transcript; a card whose transcript is gone gets a fresh blank session.
@@ -296,10 +296,10 @@ extension OrchestraService {
     }
 
     func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {
-        guard let updated = try? await store.update(id, {
+        guard let (updated, rev) = try? await store.update(id, {
             $0.status = .dead; $0.deadReason = reason; $0.deadDetail = detail
         }) else { return }
-        emit(.taskUpserted(updated))
+        emit(.taskUpserted(updated), rev: rev)
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
     }
 

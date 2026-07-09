@@ -27,8 +27,8 @@ public final class ControlServer: @unchecked Sendable {
         // Event pump: fan service events out to subscribers; ring-buffer activity.
         _Concurrency.Task { [weak self] in
             guard let self else { return }
-            for await event in await self.service.subscribe() {
-                self.handleEvent(event)
+            for await envelope in await self.service.subscribe() {
+                self.handleEvent(envelope)
             }
         }
         acceptQueue.async { [weak self] in self?.acceptLoop() }
@@ -116,8 +116,11 @@ public final class ControlServer: @unchecked Sendable {
             // connection's serial queue, so holding the lock is cheap.
             lock.withLock {
                 subscribers[conn.fd] = conn
+                // Replayed activities are historical/informational and never drive gap-detection (a
+                // reconnecting client resyncs from the fresh `boardSnapshot`, which carries the live
+                // rev) — so `rev: 0` here is correct, not a placeholder.
                 for item in ring {
-                    conn.enqueue((try? RPCCodec.line(eventNotification(.activity(item)))) ?? Data())
+                    conn.enqueue((try? RPCCodec.line(eventNotification(EventEnvelope(rev: 0, event: .activity(item))))) ?? Data())
                 }
             }
             return .object(["ok": .bool(true)])
@@ -269,13 +272,13 @@ public final class ControlServer: @unchecked Sendable {
 
     // MARK: - events
 
-    private func handleEvent(_ event: Event) {
-        let line = (try? RPCCodec.line(eventNotification(event))) ?? Data()
+    private func handleEvent(_ envelope: EventEnvelope) {
+        let line = (try? RPCCodec.line(eventNotification(envelope))) ?? Data()
         // Append-to-ring and the subscriber snapshot happen under one lock so a concurrent
         // `subscribe` either fully replays this event from the ring (and never delivers it live too)
         // or registers in time to receive it live — never both, never out of order.
         let conns: [PeerConnection] = lock.withLock {
-            if case .activity(let item) = event {
+            if case .activity(let item) = envelope.event {   // ring buffers the inner event only
                 ring.append(item)
                 if ring.count > ringCap { ring.removeFirst(ring.count - ringCap) }
             }
@@ -286,9 +289,9 @@ public final class ControlServer: @unchecked Sendable {
         for c in conns { c.enqueue(line) }
     }
 
-    /// A proper JSON-RPC notification: `{method:"event", params:<Event>}`.
-    private func eventNotification(_ event: Event) -> RPCNotification {
-        RPCNotification(method: "event", params: try? JSONValue(encodable: event))
+    /// A proper JSON-RPC notification: `{method:"event", params:<EventEnvelope>}`.
+    private func eventNotification(_ envelope: EventEnvelope) -> RPCNotification {
+        RPCNotification(method: "event", params: try? JSONValue(encodable: envelope))
     }
 
     private func removeSubscriber(_ conn: PeerConnection) { _ = lock.withLock { subscribers.removeValue(forKey: conn.fd) } }

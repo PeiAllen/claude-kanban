@@ -33,11 +33,11 @@ extension OrchestraService {
                 let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
                 try await lineage.set(repo: t.repo, branch: t.branch,
                     link: ParentLink(parent: remote.canonical, base: oid, prNumber: pr, watch: watch))
-                let updated = try await store.update(t.id) {
+                let (updated, rev) = try await store.update(t.id) {
                     $0.parentBranch = remote.canonical
                     $0.treeStat = TreeStat(state: .inSync, parentIsRemote: true)
                 }
-                emit(.taskUpserted(updated))
+                emit(.taskUpserted(updated), rev: rev)
                 if watch { startRemoteWatch(cardId: t.id) } else { stopRemoteWatch(t.id) }
                 emitActivity(.command, updated, source, "set remote parent → \(remote.canonical)")
                 return updated
@@ -59,11 +59,11 @@ extension OrchestraService {
                 let anchor = try existing?.base
                     ?? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)")
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
-                let updated = try await store.update(t.id) {
+                let (updated, rev) = try await store.update(t.id) {
                     $0.parentBranch = p
                     $0.treeStat = TreeStat(state: .restackNeeded)
                 }
-                emit(.taskUpserted(updated))
+                emit(.taskUpserted(updated), rev: rev)
                 try? await inbox.enqueue(t.id,
                     "parent moved to \(p) — commit WIP, then `git rebase --onto \(p) \(anchor)`, "
                     + "then `orchestra synced \(updated.shortId)`")
@@ -75,8 +75,8 @@ extension OrchestraService {
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
             // Nil treeStat so the scheduled recompute computes fresh against the NEW parent (and doesn't
             // preserve a sticky mergeRequested from the old parent, O2).
-            let updated = try await store.update(t.id) { $0.parentBranch = p; $0.treeStat = nil }
-            emit(.taskUpserted(updated))
+            let (updated, rev) = try await store.update(t.id) { $0.parentBranch = p; $0.treeStat = nil }
+            emit(.taskUpserted(updated), rev: rev)
             // S2-7: recompute against the NEW parent (else a badge from the previous parent lingers on an
             // idle card) and tear down any remote watch left from a prior remote parent (adopting a local
             // one takes the card off the remote tier).
@@ -89,8 +89,8 @@ extension OrchestraService {
             try await lineage.clear(repo: t.repo, branch: t.branch)
             // S2-7: clear the badge too (compare `shipped`, which nils both) — else `tree` reports a nil
             // parent alongside a stale non-nil treeStat.
-            let updated = try await store.update(t.id) { $0.parentBranch = nil; $0.treeStat = nil }
-            emit(.taskUpserted(updated))
+            let (updated, rev) = try await store.update(t.id) { $0.parentBranch = nil; $0.treeStat = nil }
+            emit(.taskUpserted(updated), rev: rev)
             emitActivity(.command, updated, source, "cleared parent link")
             return updated
         }
@@ -272,11 +272,11 @@ extension OrchestraService {
                 // grandparent, so a later `recomputeTreeStat` independently agrees on `restackNeeded` — the
                 // report funnel will not silently downgrade this signal before the agent runs `synced`.
                 if let card = derivedCard(repo: child.repo, branch: gcBranch, among: active) {
-                    if let saved = try? await store.update(card.id, {
+                    if let (saved, rev) = try? await store.update(card.id, {
                         $0.parentBranch = grandparent
                         $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: gpRemote != nil)
                     }) {
-                        emit(.taskUpserted(saved))
+                        emit(.taskUpserted(saved), rev: rev)
                     }
                     if gpRemote != nil { startRemoteWatch(cardId: card.id) }
                     // S3-7: route the rebase target through the resolvable ref, and skip the command text
@@ -318,10 +318,17 @@ extension OrchestraService {
             return (await store.get(child.id)) ?? child
         }
         try? await lineage.clear(repo: child.repo, branch: child.branch)
-        let updated = (try? await store.update(child.id, { $0.parentBranch = nil; $0.treeStat = nil })) ?? child
-        emit(.taskUpserted(updated))
-        emitActivity(.command, updated, source, "shipped \(child.branch)")
-        return updated
+        // TRAP (fixed): the old `?? child` fallback always bound, so the emit + activity fired
+        // unconditionally even when `store.update` threw (card vanished mid-flight) — but `child` has
+        // no rev to emit with. Restructure to emit only on success; on failure (intentional behavior
+        // change), skip the emit + activity rather than fabricate a rev for a stale snapshot.
+        if let (updated, rev) = try? await store.update(child.id, { $0.parentBranch = nil; $0.treeStat = nil }) {
+            emit(.taskUpserted(updated), rev: rev)
+            emitActivity(.command, updated, source, "shipped \(child.branch)")
+            return updated
+        } else {
+            return child
+        }
     }
 
     /// `tree` — a lineage snapshot for a scope: one card (`ref`), a `repo`, or all active cards.
@@ -371,7 +378,7 @@ extension OrchestraService {
         // synced / fan-out recompute that already transitioned this card cannot make us fire a duplicate
         // emit or a duplicate inSync→stale nudge (a read-then-update outside the closure left a window).
         var staleEdge = false, restackEdge = false, changed = false
-        let saved = try? await store.update(id) { task in
+        let res = try? await store.update(id) { task in
             let cur = task.treeStat
             // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while
             // the child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
@@ -382,8 +389,8 @@ extension OrchestraService {
             task.treeStat = new
             changed = true
         }
-        guard changed, let saved else { return }
-        emit(.taskUpserted(saved))
+        guard changed, let (saved, rev) = res else { return }
+        emit(.taskUpserted(saved), rev: rev)
         // Stale nudge: fire ONCE, only on the inSync → stale edge (never per-commit, never stale→stale).
         if staleEdge, let link {
             try? await inbox.enqueue(id, "parent \(link.parent) moved ahead — run "
