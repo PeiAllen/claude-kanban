@@ -3,27 +3,78 @@
 This chapter covers the machinery that turns a `Task` into a running agent: git worktree management,
 the tmux session topology, the agent adapter protocol and the Claude Code adapter, the three-layer
 read-only barrier, process and path safety, and crash/reboot recovery. These live under
-`Sources/OrchestraCore/` (`WorktreeManager`, `SessionManager`, `Agents/`, `Proc`, `PathResolver`,
+`Sources/OrchestraCore/` (`WorktreeRegistry`, `SessionManager`, `Agents/`, `Proc`, `PathResolver`,
 `OrchestraService+Recovery`).
 
 ## Worktrees
 
 Each `.worktree` card owns **exactly one git worktree** — a 1:1 relationship (see
-[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). `WorktreeManager` computes the
-path as `~/.orchestra/worktrees/<repoName>/<branch>` and creates it idempotently:
+[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). The **`WorktreeRegistry`** actor
+(`Sources/OrchestraCore/WorktreeRegistry.swift`) is the **sole owner** of worktree and borrow lifecycle:
+the concrete `WorktreeManager` — the struct that actually shells out to `git worktree add`/`remove` — is
+`fileprivate` inside the same file, a compile-time guarantee that nothing outside the registry can touch
+a git worktree op. Every teardown path (spawn rollback, archive, reopen, the borrow sweep) routes through
+the registry's `ensure` / `release` / `ensureBorrow` / `releaseBorrow` / `sweepOrphanBorrows`.
 
-1. resolve and **allowlist-check** the repo (`PathResolver`),
-2. if the worktree dir already exists, return it (idempotent),
-3. otherwise `git worktree add <wt> <branch>` if the branch exists, or `git worktree add -b <branch>
-   <wt>` for a new branch,
-4. if git reports the branch is *already checked out / already used by a worktree*, throw
-   `branchInUse` — because git forbids the same branch in two worktrees.
+**`ensure(repo:branch:cardId:base:)` is serialized by the actor mailbox alone** — there is no per-branch
+lock. `ensure` performs no `await` between checking for a materialized tree and cutting the checkout, so
+two concurrent `ensure` calls for the same branch simply run one at a time inside the mailbox: the first
+cuts the checkout, the second adopts the tree the first just made, and `git worktree add` fires exactly
+once.
 
-**Removal** (on archive) runs `git worktree remove`, but **guards a dirty tree**: it refuses unless
-forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work is never
-silently deleted. The **branch is kept** after removal so the work can be recovered — which is exactly
-what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that surviving
-branch and resumes the agent.
+**Adoption is gated by a materialized marker, not a bare `fileExists`.** The registry writes a sentinel
+file into its own metadata dir (`Config.worktreeMarkersDir`) — **outside** the worktree — only after a
+checkout completes (or an explicit one-time migration stamp, below). Keeping the marker outside the tree
+matters: an in-tree sentinel would show up as untracked in `git status --porcelain` (every tree would
+read "dirty," breaking the dirty-detection arms below) and would mutate a dirty pre-upgrade tree, which
+would violate the "survives byte-intact" guarantee. `created` — the flag `ensure` returns, and the guard
+`release` checks before it will ever remove a tree — is defined as exactly "the marker is present"; there
+is no separate stored bit.
+
+`ensure` branches on what it finds at the computed path:
+
+- **dir present + marker present** → adopt: hand back the existing path, `created == false`.
+- **dir present, no marker, clean** (a pre-upgrade or half-created tree with no uncommitted changes) →
+  prune it and cut a fresh checkout.
+- **dir present, no marker, dirty** → **never removed.** `ensure` throws `worktreeNeedsManualCleanup`
+  instead (the card lands in `dead(.spawnFailed)` with a "manual cleanup needed" activity) — a prior
+  checkout may have been interrupted mid-write, so an unverified dirty dir is left byte-intact for a
+  human to inspect rather than silently pruned.
+- **dir absent** (fresh, just-pruned, or a marked tree whose dir vanished underneath it) → `git worktree
+  add`, then write the marker.
+
+**Removal routes through one policy — `release(cardId:cards:force:)`.** It removes the card's tree only
+when **all** of: no sibling still references it, the tree is clean (or `force`), a marker is present
+(`created`), and the path is under the registry's owned roots (`config.worktreesRoot`, which also covers
+`orch-borrow-*` dirs). A missing tree is an idempotent success, never an error, and `release` never
+throws in a way that could lose data — every ambiguous case resolves to "keep the tree."
+
+Sibling counts are **computed on demand** from the `[Task]` the caller passes in — there is no stored
+refcount map. The check is `cards.filter { $0.id != cardId && !$0.archived && $0.origin == .worktree &&
+$0.cwd == path }`: a `dead` card (not yet archived) still counts as a holder, because its tree must
+survive for `restart` to reattach to; only `archived` actually drops the reference. The registry also
+tracks an in-memory **in-flight holder set** — a race guard for the window between a concurrent same-branch
+`ensure` adopting a tree and that card's persistence to the store; without it, the first spawn's rollback
+could see no store-derived sibling and remove the tree out from under the second, still-being-born card.
+
+**Borrow registrations are persisted, not just in-memory.** `ensureBorrow`/`releaseBorrow` maintain a
+`[borrowerCardId: path]` map (atomic JSON beside the inbox, `Config.borrowsPath`), enforcing exactly one
+borrower per parent branch. This survives a daemon-only crash: a fresh registry instance re-reads the
+file and still knows who holds a given borrow path. `sweepOrphanBorrows(cards:)` is **liveness-guarded**:
+it reclaims a registered borrow only when its borrower card is *present* in `cards` **and** `archived` — a
+borrower that is merely absent from the passed list is ambiguous (a partial store load), not proof of
+death, so the borrow is kept. Unregistered stray `orch-borrow-*` dirs are still reclaimed by a separate
+pass over `git worktree list`.
+
+A **one-time migration** (`stampMarkers(forMigratedPaths:)`, gated by its own persisted sentinel so it
+runs at most once, at the first post-upgrade boot) stamps markers for every pre-existing worktree so it
+becomes adoptable without touching its contents — a dirty pre-upgrade tree survives byte-intact.
+
+**Removal** (on archive, via `release`) runs `git worktree remove` but **guards a dirty tree**: it
+refuses unless forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work
+is never silently deleted. The **branch is kept** after removal so the work can be recovered — which is
+exactly what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that
+surviving branch and resumes the agent.
 
 Borrowed and scratch cards have **no worktree**: a borrowed card's `cwd` is the directory you chose; a
 scratch card's `cwd` is a freshly `mkdir`'d `~/.orchestra/scratch/<id>`.
