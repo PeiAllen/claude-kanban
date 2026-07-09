@@ -52,6 +52,8 @@
 
 **Why not stamp at serialization time (in `ControlServer`)?** Same class of bug: a later mutation could bump `store.currentRev` between emit and serialize, mis-stamping a `.taskUpserted`.
 
+**Note for Stage 6 (rev is per-event correct, but NOT strictly emit-order-monotonic — do not build a naive stale-drop filter).** One site — `spawn` (shape (f): `store.create@:401` → `emit@:424`, with `await resolveTrust` etc. in between) — has awaits between its mutation and its emit. Under actor reentrancy a concurrent mutation can bump rev and *synchronously* emit at rev N+1 during spawn's suspension, so a subscriber can see `taskUpserted(B)@N+1` **before** `taskUpserted(A)@N`. Each event still carries **its own** mutation's rev (the strict-binding property holds), but the delivered rev sequence is not monotonic there, and — because ephemeral events deliberately **share** the prior task-state rev (so rev is not unique per event) — Stage 6's client MUST apply `taskUpserted` **idempotently by card id** and use `rev` only to detect a gap→resync, **never** to drop an event on `rev ≤ lastSeen`. This is folded into the vault's contract for Stage 6 (see the merge-request).
+
 **Blast radius (counts verified against the tree @ current HEAD by the R2 Opus review):** 20 `TaskStore` mutator call sites in `Sources` (1 `create` @ `OrchestraService.swift:401`, 18 `update`, 1 `move` @ `:629`). Of these, **18 capture-and-emit** → `let (saved, rev) = try await store.update(...)` + `emit(.taskUpserted(saved), rev: rev)`; **2 discard** (`+MergeRequest.swift:86`, `+Tree.swift:165` — `_ = try? await store.update(...)`) → unchanged (they discard the tuple). There are **18** `emit(.taskUpserted)` sites (not 21), **each** verified to have a fresh mutation producing the emitted task (rev-binding is sound at every one — no site emits a `store.get`/cached/loop value). `create`/`update`/`move` return `(task: Task, rev: Int)`; `remove`/`save` stay as-is (no `.taskRemoved` emit exists). **Test-side captures also break under the tuple change and must be fixed in Task 1.2** (compile errors): `TaskStoreTests.swift:20,23,30,31,48` (`let t = try await store.create(...)` etc.) and this plan's own `test_everyMutationBumpsRev` (`let t = try await store.create(...)`) → append `.task`.
 
 ---
@@ -215,7 +217,8 @@ git commit -m "feat(sync): monotonic board rev stamped by TaskStore"
 - Modify: `Sources/OrchestraCore/OrchestraService.swift` init (seed `lastRev = store.peekPersistedRev()`); `Sources/OrchestraCore/OrchestraService+Tree.swift:321` (`shipped()` — emit-only-on-success)
 - Modify: `Sources/OrchestraCore/Control/ControlServer.swift` (event pump `:30`, `handleEvent:272`, `eventNotification:290`, ring-replay `:119`)
 - Modify: `Sources/OrchestraKit/Control/ControlClient.swift` (event decode `:322-325`)
-- Test: `Tests/OrchestraCoreTests/ControlServerTests.swift`
+- Modify: `Tests/OrchestraCoreTests/Stubs.swift:204` (`EventCollector.start` → `AsyncStream<EventEnvelope>`, append `e.event`)
+- Test: `Tests/OrchestraCoreTests/ControlServerTests.swift` (create)
 
 **Interfaces:**
 - Consumes: `TaskStore.currentRev` (Task 1.1).
@@ -280,7 +283,7 @@ import Testing
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `swift test --filter ControlServerTests`
+Run: `swift test --filter ControlServerRevTests`
 Expected: FAIL — `EventEnvelope` / `BoardSnapshot.rev` do not exist; `subscribe()` yields `Event`.
 
 - [ ] **Step 3a: Add `EventEnvelope` + `BoardSnapshot.rev`** — `Model.swift`
@@ -353,7 +356,7 @@ public func move(_ id: UUID, to column: Column) throws -> (task: Task, rev: Int)
 > - **(b) `if let` optional (`+Remote:130-133`, `+MergeRequest:40-43`, `+Tree:275-279`):** `if let saved = try? await store.update(...) { emit(.taskUpserted(saved)) }` → `if let (saved, rev) = try? await store.update(...) { emit(.taskUpserted(saved), rev: rev) }`.
 > - **(c) `guard let` optional (`+Diff:48-49`, `+Recovery:299-302`):** `guard let saved = try? await store.update(...) else { … }` → `guard let (saved, rev) = try? await store.update(...) else { … }`.
 > - **(d) optional-captured, unwrapped-later, reused (`+Tree:374/385` `recomputeTreeStat`):** `let saved = try? await store.update(...) { … }` then `guard changed, let saved else { return }` → `let res = try? await store.update(...) { … }` then `guard changed, let (saved, rev) = res else { return }`; then `emit(.taskUpserted(saved), rev: rev)` (`saved.shortId` still works).
-> - **(e) TRAP — `?? fallback` to a non-mutation value (`+Tree:321-322` `shipped()`):** `let updated = (try? await store.update(child.id, {…})) ?? child; emit(.taskUpserted(updated))` — the fallback `child` has no rev and the tuple breaks the `??`. **Restructure to emit only on success:** `if let (updated, rev) = try? await store.update(child.id, {…}) { emit(.taskUpserted(updated), rev: rev); emitActivity(.command, updated, source, "shipped \(child.branch)"); return updated } else { return child }`.
+> - **(e) TRAP — `?? fallback` to a non-mutation value (`+Tree:321-322` `shipped()`):** `let updated = (try? await store.update(child.id, {…})) ?? child; emit(.taskUpserted(updated)); emitActivity(…)` — today the `?? child` always binds, so the emit + activity fire **unconditionally**. The fallback `child` has no rev and the tuple breaks the `??`. **Restructure to emit only on success:** `if let (updated, rev) = try? await store.update(child.id, {…}) { emit(.taskUpserted(updated), rev: rev); emitActivity(.command, updated, source, "shipped \(child.branch)"); return updated } else { return child }`. **Behavior change on the failure path (intentional, better):** if `store.update` throws (card vanished mid-flight) the emit + "shipped" activity are now *skipped* instead of firing with a fabricated-rev `child` snapshot — correct, since emitting a stale/fabricated-rev event would be wrong. Call this out in the merge-request.
 > - **(f) deferred emit across many lines (`spawn`, `store.create:401` → `emit:424`):** capture `let (created, rev) = try await store.create(...)` at `:401`; thread `rev` down to `emit(.taskUpserted(created), rev: rev)` at `:424` (no store mutation of `created` happens in between — the pair stays consistent).
 > - **(g) discard (2 sites — `+MergeRequest:86`, `+Tree:165`):** `_ = try? await store.update(...)` — **unchanged** (discards the tuple).
 > - **(h) test captures (fix in this task — compile errors):** `TaskStoreTests.swift:20,23,30,31,48` and this plan's own `test_everyMutationBumpsRev` → append `.task`. Existing `ReportTests` capture their spawn result (not a store-mutator return) — unaffected.
@@ -397,18 +400,20 @@ func emitActivity(_ kind: ActivityKind, _ task: Task?, _ source: ActivitySource,
 
 - In `emitOwnerIfChanged` (`:855-860`): `emit(.agentTerminalOwner(state), rev: lastRev)`.
 - At `:754`: `emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)), rev: lastRev)`.
-- At the **21 task-state `emit(.taskUpserted(x))` sites** (OrchestraService.swift + `+Report`/`+Diff`/`+MergeRequest`/`+Remote`/`+Recovery`/`+Tree`): pass the rev captured from that site's mutation → `emit(.taskUpserted(saved), rev: rev)`. Each such site has a `store.create`/`update`/`move` immediately above it that now yields `(saved, rev)`.
+- At the **18 task-state `emit(.taskUpserted(x))` sites** (OrchestraService.swift + `+Report`/`+Diff`/`+MergeRequest`/`+Remote`/`+Recovery`/`+Tree`): pass the rev captured from that site's mutation → `emit(.taskUpserted(saved), rev: rev)`, per the shape catalogue below (incl. the `+Tree:321`/`:374` traps). Each site has a `store.create`/`update`/`move` producing the emitted task.
 - **Seed `lastRev` at `init` (NOT in `recoverSessions` — R2 fix)** — `server.start()` (`main.swift:24`) accepts RPCs, and `PushNotifier.run()` subscribes, **before** the async boot `Task` ever reaches `recoverSessions()` (`main.swift:50`); an early `borrow`/`trust`/`set-parent` RPC could emit an ephemeral activity at `lastRev == 0`. So seed it synchronously in `OrchestraService.init`, before the server can accept anything:
 
+The real init is `public init(config: Config, store: TaskStore? = nil, …)` with `self.store = store ?? TaskStore()` (`OrchestraService.swift:107-124`). Seed **after** `self.store` is assigned, using `self.store` (not the optional parameter `store`):
+
 ```swift
-public init(config: Config, store: TaskStore, ...) {
-    // ... existing assignments ...
-    self.lastRev = store.peekPersistedRev()   // sync, nonisolated; before server.start() accepts RPCs
-}
+self.store = store ?? TaskStore()
+// ... other assignments ...
+self.lastRev = self.store.peekPersistedRev()   // sync, nonisolated; before server.start() accepts RPCs
 ```
 
-Every subsequent `emit(_:rev:)` refreshes `lastRev`, so it tracks from the first mutation on. (This makes any `recoverSessions` seed redundant — do not add one.)
+(`lastRev` has a default `= 0`, so it may be assigned late in init.) Every subsequent `emit(_:rev:)` refreshes `lastRev`, so it tracks from the first mutation on. (This makes any `recoverSessions` seed redundant — do not add one.)
 - **Second `subscribe()` consumer (`PushNotifier.swift:41`)** — `for await event in await service.subscribe() { await handle(event) }` now receives an `EventEnvelope`; change to `await handle(event.event)`. Leave `handle(_ event: Event)` (`:48`, `public`, unit-tested) as-is. This is the only other daemon-side `subscribe()` — `BoardStore.swift:454` is the **client** `subscribe()` (stays `AsyncStream<Event>`, unaffected).
+- **Test linchpin — `EventCollector.start` (`Tests/OrchestraCoreTests/Stubs.swift:204`)** — `func start(_ stream: AsyncStream<Event>)` (backing `private(set) var events: [Event]`) is consumed by ~10 test files via `collector.start(await env.svc.subscribe())` (SpawnRaceTests, DiffServiceTests, AuthWarnSpawnTests, OrchestraServiceTests, ShipChoreoTests, ReportTests, LadderTests, TerminalOwnershipServiceTests, TrustGrantTests, …). All fail to compile once `subscribe()` returns `AsyncStream<EventEnvelope>`. Change the signature to `AsyncStream<EventEnvelope>` and append `e.event` (`for await e in stream { self.append(e.event) }`) — every downstream `[Event]`/`.upserts`/`.activities` assertion keeps working, no call-site changes needed. This one edit fixes the whole cluster.
 - In `boardSnapshot()` (`:805`): stamp rev and refresh the mirror:
 
 ```swift
@@ -467,7 +472,7 @@ if msg.method == "event" {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `swift test --filter ControlServerTests`
+Run: `swift test --filter ControlServerRevTests`
 Expected: PASS.
 
 - [ ] **Step 5: Run the full suite**
@@ -559,13 +564,14 @@ extension Task {
 
 - [ ] **Step 3b: Wire `report()` to use it** — `OrchestraService+Report.swift:133`
 
-Replace `let saved = try await store.update(id) { $0 = task }` with:
+Task 1.2 already rewrote this site to `let (saved, rev) = try await store.update(id) { $0 = task }` + `emit(.taskUpserted(saved), rev: rev)`. Edit **only the closure body** here — do NOT touch the `(saved, rev)` capture or the rev-emit:
 
 ```swift
-let saved = try await store.update(id) { $0.applyReportFields(from: task) }.task
+let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
+emit(.taskUpserted(saved), rev: rev)   // unchanged from Task 1.2
 ```
 
-(`.task` because `update` now returns `(task, rev)` after Task 1.2; this site does not emit with rev — the existing `emit(.taskUpserted(saved))` below becomes `emit(.taskUpserted(saved), rev: rev)` in the 1.2 sweep, so capture `let (saved, rev) = ...` if 1.2 already landed here.) Keep the `guard task != before else { return }` idempotency gate above it unchanged.
+Keep the `guard task != before else { return }` idempotency gate above it unchanged.
 
 > **Sweep (do it in this step, record the result in the commit body):** `rg -Fn '$0 = task' Sources App` — the only per-card whole-object `Task` write is this one (`+Report.swift:133`). `ControlServer.swift:129` `setConfig { $0 = newConfig }` is the **config** setter (a deliberate whole-`Config` replace, not a per-card `Task` record) — out of scope, leave it. The `+Tree.swift:369-384` `treeStat` writers already compute inside the `store.update` closure (`$0.treeStat = …`) — field-deltas already, leave them. After this task the suite-wide rule is **field-delta patches only** for `Task` writes.
 
@@ -617,4 +623,5 @@ git commit -m "docs(sync): document board rev on events/snapshot"
 4. **No placeholders:** every code step shows real code; test-helper names are flagged for adaptation to the file's existing `Stubs.swift` conventions (the assertions are exact).
 5. **Green-after-every-task:** each task ends with a full `swift test` run; the on-disk shape change (1.1) and wire change (1.2) each have an explicit "fix real breaks, keep assertions honest" full-suite step.
 6. **Review round 1 resolved (GPT-5.5):** (a) BLOCKER reentrancy rev-skew → strict binding (mutators return rev, synchronous `emit(_:rev:)`); (b) MAJOR `lastRev` unseeded → seed in `recoverSessions()` + refresh on every emit; (c) MAJOR report clobber test passed on unfixed code → pure `applyReportFields(from:)` unit test.
+8. **Review round 3 resolved (Opus xhigh — verdict: "no blockers/majors remain"; design confirmed sound):** mechanical minors only — (M1) init seed uses `self.store.peekPersistedRev()` after `self.store = store ?? TaskStore()`; (M2) `Stubs.swift` `EventCollector.start` → `AsyncStream<EventEnvelope>` (the ~10-file test linchpin) added to 1.2; (M3) Task 1.3 edits only the report closure body, keeping 1.2's `(saved, rev)`+rev-emit; (M4) stale "21"→"18"; (M5) Stage-6 out-of-order-emit note (spawn shape (f) → apply idempotently, resync-on-gap, never drop); (N1) `shipped()` failure-path emit-skip called out; (N2) `--filter ControlServerRevTests`.
 7. **Review round 2 resolved (Opus xhigh + GPT-5.5 — both confirmed rev-binding + `applyReportFields` field-set sound):** (a) BLOCKER `PushNotifier.swift:41` 2nd `subscribe()` consumer → unwrap `event.event` (both reviewers); (b) BLOCKER `TaskStoreTests`/`ReportTests` already exist (6+23 tests) — Write would silently delete them → **APPEND** (Opus); (c) MAJOR `+Tree:321 shipped()` `?? child` fallback has no fresh rev + breaks the tuple → emit-only-on-success restructure (GPT); (d) MAJOR seed timing — `server.start()` accepts RPCs before `recoverSessions()` → seed `lastRev` in `OrchestraService.init` via `nonisolated peekPersistedRev()` (GPT); (e) MAJOR blast-radius counts corrected (18 emit sites) + all shapes enumerated + test-side captures added to the spread; (f) NITs: `+Tree:374` optional-unwrap shape, `boardSnapshot` rev-before-`list` fail-safe note, deterministic `move` in the rev test. All 18 emit sites individually verified against the tree (only `+Tree:321`/`:374` are traps).
