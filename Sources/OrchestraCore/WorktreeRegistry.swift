@@ -292,14 +292,16 @@ public actor WorktreeRegistry {
         let created = try manager.borrow(repo: realRepo, branch: parentBranch)
         // Idempotent re-borrow: if this exact registration is ALREADY durably persisted, a transient
         // persist hiccup below must NOT roll back a tree that may hold the agent's in-progress work.
-        let alreadyDurable = (borrows[borrowerCardId] == created)
+        let prior = borrows[borrowerCardId]
+        let alreadyDurable = (prior == created)
         borrows[borrowerCardId] = created
         if !alreadyDurable {
             guard persistBorrows() else {
-                // Registration not durable ⇒ never report a phantom success. Roll back the in-memory
-                // entry and remove the just-created (empty, no-work-yet) throwaway borrow tree, then
-                // throw so the caller retries.
-                borrows[borrowerCardId] = nil
+                // Registration not durable ⇒ never report a phantom success. Restore the prior in-memory
+                // entry (mirroring `releaseBorrow` — never widen the fault to an unrelated durable borrow)
+                // and remove the just-created (empty, no-work-yet) throwaway borrow tree, then throw so
+                // the caller retries.
+                borrows[borrowerCardId] = prior
                 try? manager.remove(worktree: created, force: true)
                 throw OrchestraError.io(
                     "borrow registration could not be persisted for \(parentBranch) — free space/permissions and retry")
