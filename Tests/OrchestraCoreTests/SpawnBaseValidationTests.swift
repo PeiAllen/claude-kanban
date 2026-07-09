@@ -9,7 +9,8 @@ import Testing
 @Suite("Spawn base validation + rollback + dangling cycle guard (S2-3)")
 struct SpawnBaseValidationTests {
 
-    /// A real repo (real WorktreeManager) on `main` with a `foo` branch. Returns (svc, repo path).
+    /// A real repo (real worktree manager, via the registry) on `main` with a `foo` branch. Returns
+    /// (svc, repo path).
     static func repo() throws -> (svc: OrchestraService, repo: String) {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"

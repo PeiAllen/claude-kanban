@@ -11,7 +11,7 @@ public actor OrchestraService {
     /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
     /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
     let orchestraBin: String
-    var worktrees: any WorktreeManaging
+    var worktrees: WorktreeRegistry
     var sessions: any SessionManaging
     let launcher: Launcher
     var resolver: PathResolver
@@ -55,9 +55,6 @@ public actor OrchestraService {
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
-    /// O3: child card → the throwaway `orch-borrow-*` worktree it borrowed to squash-merge into a bare
-    /// parent. Released explicitly (`release`) or swept on the child's archive / at startup.
-    var borrowedWorktrees: [UUID: String] = [:]
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -125,7 +122,7 @@ public actor OrchestraService {
     public init(config: Config,
                 store: TaskStore? = nil,
                 registry: AgentRegistry = AgentRegistry(),
-                worktrees: (any WorktreeManaging)? = nil,
+                worktrees: WorktreeRegistry? = nil,
                 sessions: (any SessionManaging)? = nil,
                 launcher: Launcher? = nil,
                 resolver: PathResolver? = nil,
@@ -144,7 +141,7 @@ public actor OrchestraService {
         self.devices = devices ?? DeviceTokenStore()
         self.grantResolver = grantResolver
         self.registry = registry
-        self.worktrees = worktrees ?? WorktreeManager(config: config, resolver: r)
+        self.worktrees = worktrees ?? WorktreeRegistry(config: config, resolver: r)
         self.sessions = sessions ?? SessionManager()
         self.launcher = launcher ?? Launcher(resolver: r)
         // Seed the lastRev mirror synchronously (nonisolated peek — no await), BEFORE server.start()
@@ -353,8 +350,8 @@ public actor OrchestraService {
                     context: "spawn base \(b): could not fetch remote parent \(b)")
                 ensureBase = remoteRef.privateRef
             }
-            let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch, base: ensureBase)
-            cwd = ensured.worktree
+            let ensured = try await worktrees.ensure(repo: realRepo, branch: input.branch, cardId: id, base: ensureBase)
+            cwd = ensured.path
             origin = .worktree
             // S2-3(ii): a brand-new branch cannot have had children before it existed, so any pre-existing
             // `orchestra-parent == <this branch>` is a dangling value left by a deleted same-named branch
@@ -387,7 +384,15 @@ public actor OrchestraService {
                     derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
                 }
             } catch {
-                try? worktrees.remove(worktree: ensured.worktree, force: true)
+                // S2-3(iii) rollback: the card was never persisted (store.create hasn't run yet), so
+                // build a synthetic Task carrying only what `release` reads (id/cwd/origin/archived) —
+                // routes through the SINGLE removal policy so a shared/dirty tree is never force-dropped.
+                let synthetic = Task(id: id, title: input.branch, repo: realRepo, branch: input.branch,
+                                     cwd: ensured.path, origin: .worktree, access: input.access,
+                                     model: AgentModel(id: input.model ?? ""), startIn: input.startIn ?? .plan,
+                                     column: (input.startIn ?? .plan).column, order: 0,
+                                     phase: .creatingWorktree, initialPrompt: "")
+                _ = try? await worktrees.release(cardId: id, cards: (await store.all()) + [synthetic], force: false)
                 if !ensured.branchExisted {
                     _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
                 }
@@ -533,6 +538,18 @@ public actor OrchestraService {
                now.timeIntervalSince(mtime) < graceInterval { continue }
             try? fm.removeItem(atPath: path)
         }
+    }
+
+    /// Boot: one-time marker migration for pre-upgrade (marker-less) worktree trees. Non-archived worktree
+    /// cards only; being-born phases excluded as defense-in-depth (they can't exist at the first post-upgrade
+    /// boot anyway — those phases are new). The registry's sentinel makes this a genuine no-op on every later
+    /// boot. MUST be `public` — `orchestrad` is a separate executable target and calls this from `main.swift`.
+    public func stampMigratedWorktreeMarkersOnce() async {
+        let paths = await store.all()
+            .filter { !$0.archived && $0.origin == .worktree
+                      && $0.phase.kind != .creatingWorktree && $0.phase.kind != .launching && $0.phase.kind != .relaunching }
+            .map(\.cwd)
+        await worktrees.stampMarkers(forMigratedPaths: paths)
     }
 
     /// Spawn many at once. A failed entry is recorded (not thrown) so the rest still spawn and the
@@ -705,10 +722,7 @@ public actor OrchestraService {
         stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
         remoteWatchGen[id] = nil   // S4: the card is terminal — drop its generation entry (bounds the map)
         stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
-        if let borrow = borrowedWorktrees[id] {   // O3: sweep a borrow the card left open
-            try? worktrees.remove(worktree: borrow, force: true)
-            borrowedWorktrees[id] = nil
-        }
+        try? await worktrees.releaseBorrow(borrowerCardId: id)   // O3: sweep a borrow the card left open
         // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
         // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil
@@ -733,17 +747,10 @@ public actor OrchestraService {
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
             case .worktree:
-                // Multiple cards can intentionally share one worktree — only remove it when no other
-                // non-archived .worktree card still lives there, or we'd pull the dir out from under a
-                // live sibling. `cwd` == worktree root for .worktree cards.
-                let siblings = await store.all().filter {
-                    $0.id != id && !$0.archived && $0.origin == .worktree && $0.cwd == t.cwd
-                }
-                if siblings.isEmpty {
-                    // Keep the branch; never silently delete a dirty tree — keep the dir if dirty.
-                    do { try worktrees.remove(worktree: t.cwd, force: false) }
-                    catch OrchestraError.worktreeDirty { /* keep the worktree on archive */ }
-                }
+                // Multiple cards can intentionally share one worktree — `release` keeps the tree when any
+                // other non-archived .worktree card (or in-flight `ensure` holder) still references it, and
+                // never silently deletes a dirty tree without `force`.
+                try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
             case .scratch:
                 // Scratch dirs are truly ephemeral: rm -rf unconditionally (no dirty-guard; the user
                 // moves out anything useful first). The destructive op is double-gated — this `.scratch`
@@ -1020,7 +1027,7 @@ public actor OrchestraService {
     public func setConfig(_ patch: (inout Config) -> Void) -> Config {
         patch(&config)
         resolver = PathResolver(config: config)
-        worktrees = WorktreeManager(config: config, resolver: resolver)
+        worktrees = WorktreeRegistry(config: config, resolver: resolver)
         return config
     }
 

@@ -1,7 +1,8 @@
 import Foundation
 
 /// Collaborator protocols so `OrchestraService` can be unit-tested with stubs (no real git/tmux).
-/// The concrete `WorktreeManager` / `SessionManager` conform below.
+/// The concrete worktree manager (`WorktreeRegistry.swift`, fileprivate) / `SessionManager` conform
+/// below.
 
 public protocol WorktreeManaging: Sendable {
     func path(repo: String, branch: String) -> String
@@ -16,7 +17,6 @@ public protocol WorktreeManaging: Sendable {
     // O3: bare-parent borrow lifecycle.
     func borrowPath(repo: String, branch: String) -> String
     func borrow(repo: String, branch: String) throws -> String
-    func pruneOrphanBorrows(repo: String)
     /// True if the worktree has uncommitted changes. FAILS SAFE (unqueryable ⇒ dirty).
     func isDirty(worktree: String) -> Bool
     /// Canonical `orch-borrow-*` dir paths currently present under `repo` (LIST only, no removal).
@@ -70,5 +70,4 @@ public extension SessionManaging {
     }
 }
 
-extension WorktreeManager: WorktreeManaging {}
 extension SessionManager: SessionManaging {}

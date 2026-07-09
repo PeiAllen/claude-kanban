@@ -1,6 +1,194 @@
 import Foundation
 import OrchestraKit
 
+/// repo + branch -> git worktree (ensure / path / remove) via `git`. Every path passes
+/// `PathResolver.assertAllowed`. Archive removes the worktree dir but keeps the branch.
+/// `fileprivate` to this file — `WorktreeRegistry` is the only public surface; every teardown/adopt
+/// path routes through the registry's `ensure`/`release`/`ensureBorrow`/`releaseBorrow` so the single
+/// removal policy (`release`) can never be bypassed by a caller reaching for the raw manager.
+fileprivate struct WorktreeManager: Sendable {
+    let config: Config
+    let resolver: PathResolver
+    /// Runs git via `Proc.run` by default; injectable so tests can assert the timeout argument
+    /// deterministically. `timeout` is a REQUIRED `Duration` — there is no legitimate unbounded git
+    /// op in this file, so an unbounded call is a compile error. WorktreeManager never needs cwd/env
+    /// (all git ops use `-C`).
+    let run: @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult
+
+    init(config: Config, resolver: PathResolver? = nil) {
+        self.init(config: config, resolver: resolver, run: { try Proc.run($0, timeout: $1) })
+    }
+
+    init(config: Config, resolver: PathResolver?,
+         run: @escaping @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult) {
+        self.config = config
+        self.resolver = resolver ?? PathResolver(config: config)
+        self.run = run
+    }
+
+    /// Pure: the computed worktree path for a repo + branch (powers the Spawn sheet field).
+    func path(repo: String, branch: String) -> String {
+        config.worktreePath(repo: repo, branch: branch)
+    }
+
+    /// Ensure a worktree exists for repo + branch. Idempotent. Returns (worktree, created, branchExisted).
+    /// `base` (BT2) is the start-point for a NEWLY-created branch only — an existing branch ignores it.
+    /// An unknown `base` throws `.invalidParams` *before* any worktree is cut (no half-created dir).
+    @discardableResult
+    func ensure(repo: String, branch: String, base: String? = nil)
+        throws -> (worktree: String, created: Bool, branchExisted: Bool) {
+        let realRepo = try resolver.resolveRepo(repo)
+        let wt = path(repo: realRepo, branch: branch)
+        try resolver.assertAllowed(wt)
+
+        if FileManager.default.fileExists(atPath: wt) {
+            return (wt, false, true)   // a live worktree implies the branch already exists
+        }
+        try FileManager.default.createDirectory(
+            atPath: (wt as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+
+        // Does the branch already exist?
+        let exists = branchExists(repo: realRepo, branch: branch)
+        let argv: [String]
+        if exists {
+            argv = ["git", "-C", realRepo, "worktree", "add", wt, branch]   // existing branch ignores `base`
+        } else {
+            var a = ["git", "-C", realRepo, "worktree", "add", "-b", branch, wt]
+            if let base = base?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
+                // Validate the start-point BEFORE `worktree add`, so an unknown base leaves no dir.
+                if base.hasPrefix("refs/") {
+                    // A fully-qualified ref (a fetched remote private ref, refs/orch/parents/…, BT6).
+                    // Use it verbatim as the start-point — no refs/heads/ pinning.
+                    guard refExists(repo: realRepo, ref: base) else {
+                        throw OrchestraError.invalidParams(
+                            "base ref not found: \(base) — fetch or create it first")
+                    }
+                    a.append(base)
+                } else {
+                    // Local branch base (BT2). Pin to the LOCAL branch ref: a bare `base` would
+                    // disambiguate to a same-named tag (git's rev precedence), starting the child off the
+                    // wrong commit — or failing outright on an ambiguous ref.
+                    guard branchExists(repo: realRepo, branch: base) else {
+                        throw OrchestraError.invalidParams(
+                            "base branch not found: \(base) — run `git branch` to see valid bases")
+                    }
+                    a.append("refs/heads/\(base)")
+                }
+            }
+            argv = a
+        }
+        let r = try run(argv, .seconds(config.worktreeAddTimeout))
+        if !r.ok {
+            let msg = r.stderr.lowercased()
+            if msg.contains("already checked out") || msg.contains("is already used by worktree") {
+                throw OrchestraError.branchInUse(branch)
+            }
+            throw OrchestraError.gitIO("could not create worktree for \(branch)", stderr: r.stderr)
+        }
+        return (wt, true, exists)
+    }
+
+    // MARK: - bare-parent borrow (O3)
+
+    /// The canonical throwaway-worktree path for borrowing `branch` (a bare parent to squash-merge a
+    /// child into). Distinct from a normal card worktree (`orch-borrow-` prefix under the repo's
+    /// worktree dir) so it never collides with a future spawn onto the parent, and so the orphan sweep
+    /// can recognise it by name.
+    func borrowPath(repo: String, branch: String) -> String {
+        let realRepo = (try? resolver.resolveRepo(repo)) ?? repo
+        let repoName = (realRepo as NSString).lastPathComponent
+        let safe = branch.replacingOccurrences(of: "/", with: "-")
+        return "\(config.worktreesRoot)/\(repoName)/orch-borrow-\(safe)"
+    }
+
+    /// Create (or reuse) a throwaway worktree checking out the EXISTING `branch` at its canonical borrow
+    /// path — the agent then squash-merges into it and commits (the daemon never commits). Idempotent.
+    @discardableResult
+    func borrow(repo: String, branch: String) throws -> String {
+        let realRepo = try resolver.resolveRepo(repo)
+        let wt = borrowPath(repo: realRepo, branch: branch)
+        try resolver.assertAllowed(wt)
+        if FileManager.default.fileExists(atPath: wt) { return wt }
+        guard branchExists(repo: realRepo, branch: branch) else {
+            throw OrchestraError.invalidParams("cannot borrow: branch not found: \(branch)")
+        }
+        try FileManager.default.createDirectory(
+            atPath: (wt as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let r = try run(["git", "-C", realRepo, "worktree", "add", wt, branch], .seconds(config.worktreeAddTimeout))
+        if !r.ok {
+            let msg = r.stderr.lowercased()
+            if msg.contains("already checked out") || msg.contains("is already used by worktree") {
+                // The branch is checked out elsewhere. If that "elsewhere" is a canonical `orch-borrow-*`
+                // worktree, a sibling is mid-landing — surface the actionable wait-and-retry guidance
+                // rather than a bare branchInUse. Any other checkout keeps the plain wording.
+                if msg.contains("orch-borrow-") {
+                    throw OrchestraError.parentAlreadyBorrowed(branch)
+                }
+                throw OrchestraError.branchInUse(branch)
+            }
+            throw OrchestraError.io(r.stderr.isEmpty ? "git worktree add (borrow) failed" : r.stderr)
+        }
+        return wt
+    }
+
+    /// Remove a worktree directory (keeps the branch). Guards a dirty tree unless `force`.
+    func remove(worktree: String, force: Bool = false) throws {
+        try resolver.assertAllowed(worktree)
+        guard FileManager.default.fileExists(atPath: worktree) else { return }
+        if !force && isDirty(worktree: worktree) {
+            throw OrchestraError.worktreeDirty(worktree)
+        }
+        var argv = ["git", "-C", worktree, "worktree", "remove"]
+        if force { argv.append("--force") }
+        argv.append(worktree)
+        let r = try run(argv, .seconds(config.controlTimeout))
+        if !r.ok {
+            // Fall back to pruning from the parent repo when the dir is already gone/detached.
+            _ = try? run(["git", "-C", worktree, "worktree", "prune"], .seconds(config.controlTimeout))
+            if FileManager.default.fileExists(atPath: worktree) {
+                throw OrchestraError.io(r.stderr.isEmpty ? "git worktree remove failed" : r.stderr)
+            }
+        }
+    }
+
+    func branchExists(repo: String, branch: String) -> Bool {
+        let r = try? run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"], .seconds(config.controlTimeout))
+        return r?.ok ?? false
+    }
+
+    /// Does a fully-qualified ref resolve? (Used for a remote private-ref start-point, refs/orch/parents/…)
+    func refExists(repo: String, ref: String) -> Bool {
+        let r = try? run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref], .seconds(config.controlTimeout))
+        return r?.ok ?? false
+    }
+
+    /// True if the worktree has uncommitted changes. **Fails safe:** if git can't be queried we treat
+    /// the tree as dirty so `remove` (without `force`) never deletes work it couldn't verify is clean.
+    func isDirty(worktree: String) -> Bool {
+        guard let r = try? run(["git", "-C", worktree, "status", "--porcelain"], .seconds(config.controlTimeout)), r.ok else {
+            return true
+        }
+        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// List (no removal) canonical `orch-borrow-*` worktree dir paths currently present under `repo`.
+    /// `WorktreeRegistry`'s orphan sweep uses this to reclaim stray/crashed borrow dirs it doesn't have
+    /// a persisted registration for.
+    func orphanBorrowPaths(repo: String) -> [String] {
+        guard let realRepo = try? resolver.resolveRepo(repo),
+              let r = try? run(["git", "-C", realRepo, "worktree", "list", "--porcelain"],
+                               .seconds(config.controlTimeout)), r.ok else { return [] }
+        var out: [String] = []
+        for line in r.stdout.split(separator: "\n") where line.hasPrefix("worktree ") {
+            let p = String(line.dropFirst("worktree ".count)).trimmingCharacters(in: .whitespaces)
+            if (p as NSString).lastPathComponent.hasPrefix("orch-borrow-") { out.append(p) }
+        }
+        return out
+    }
+}
+
+extension WorktreeManager: WorktreeManaging {}
+
 public actor WorktreeRegistry {
     private let config: Config
     private let resolver: PathResolver
@@ -35,6 +223,17 @@ public actor WorktreeRegistry {
         self.manager = manager ?? WorktreeManager(config: config, resolver: resolver)
         self.borrowsPath = borrowsPath
         self.markersDir = markersDir
+    }
+
+    /// Test seam: inject the timed `run` closure into the (fileprivate) manager. Lets `WorktreeTests`'
+    /// bounded-git assertions survive privatization without exposing `WorktreeManager`.
+    internal init(config: Config, resolver: PathResolver? = nil,
+                  run: @escaping @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult,
+                  borrowsPath: String = Config.borrowsPath, markersDir: String = Config.worktreeMarkersDir) {
+        let r = resolver ?? PathResolver(config: config)
+        self.config = config; self.resolver = r
+        self.manager = WorktreeManager(config: config, resolver: r, run: run)
+        self.borrowsPath = borrowsPath; self.markersDir = markersDir
     }
 
     // MARK: pure helpers (no actor state)
@@ -127,10 +326,16 @@ public actor WorktreeRegistry {
     }
 
     // MARK: - migration
-    /// One-time: pre-upgrade trees are marker-less. Stamp a marker (OUTSIDE the tree) so they become
+    private var markersMigrationSentinel: String { "\(markersDir)/.migrated" }
+    /// ONE-TIME. Stamps markers for the given existing trees, then drops a sentinel so later boots no-op.
+    /// Runs only at the first post-upgrade boot, when the daemon was down and every persisted tree is
+    /// at-rest/complete — so it can never mark an in-flight (Stage-4 non-blocking spawn) half-checkout
     /// adoptable. Does NOT touch tree contents ⇒ a dirty pre-upgrade tree survives byte-intact.
     public func stampMarkers(forMigratedPaths paths: [String]) async {
+        guard !FileManager.default.fileExists(atPath: markersMigrationSentinel) else { return }
         for p in paths where FileManager.default.fileExists(atPath: p) { writeMarker(p) }
+        try? FileManager.default.createDirectory(atPath: markersDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: markersMigrationSentinel, contents: Data())
     }
 
     // MARK: - markers (registry-owned, OUTSIDE the worktree)

@@ -223,7 +223,7 @@ struct CodexTelemetryE2ETests {
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),
-                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
         // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
@@ -268,7 +268,7 @@ struct CodexTelemetryE2ETests {
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),
-                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
         async let sa = svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",

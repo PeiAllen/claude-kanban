@@ -245,7 +245,7 @@ extension OrchestraService {
         // Give the resumed agent its cwd back — archive removed it (branch kept for .worktree cards).
         switch t.origin {
         case .worktree:
-            _ = try worktrees.ensure(repo: t.repo, branch: t.branch)
+            _ = try await worktrees.ensure(repo: t.repo, branch: t.branch, cardId: t.id)
         case .scratch:
             try? FileManager.default.createDirectory(atPath: t.cwd, withIntermediateDirectories: true)
         case .borrowed:

@@ -8,7 +8,8 @@ import Testing
 @Suite("Borrow lifecycle (O3)")
 struct BorrowLifecycleTests {
 
-    /// A real repo (real WorktreeManager) with `main` and a bare `parent` branch. Returns (svc, repo).
+    /// A real repo (real worktree manager, via the registry) with `main` and a bare `parent` branch.
+    /// Returns (svc, repo).
     static func repo() throws -> (svc: OrchestraService, repo: String) {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
@@ -126,19 +127,22 @@ struct BorrowLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: path))
     }
 
-    // MARK: WorktreeManager.borrow error classification (defense-in-depth wording)
+    // MARK: WorktreeRegistry / manager `borrow` error classification (defense-in-depth wording)
 
     @Test("borrow classifies a rival orch-borrow checkout into actionable guidance, not a raw git error")
     func worktreeBorrowClassifiesRival() async throws {
         let (svc, repo) = try Self.repo()
         // The bare parent is checked out in an `orch-borrow-*` worktree at a path distinct from ours, so
-        // the borrow reaches `git worktree add` and git refuses the checkout.
+        // the borrow reaches `git worktree add` and git refuses the checkout. Drive the registry's
+        // `ensureBorrow` directly (bypassing the `OrchestraService.borrow(ref:)` ownership layer, which
+        // needs a linked child card) — with no registration for the canonical path yet, it reaches the
+        // manager's raw classification just like the pre-privatization direct-manager call did.
         let landing = await svc.worktrees.borrowPath(repo: repo, branch: "parent") + "-landing"
         try FileManager.default.createDirectory(
             atPath: (landing as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         #expect(try Proc.run(["git", "-C", repo, "worktree", "add", landing, "parent"]).ok)
         do {
-            _ = try await svc.worktrees.borrow(repo: repo, branch: "parent")
+            _ = try await svc.worktrees.ensureBorrow(repo: repo, parentBranch: "parent", borrowerCardId: UUID())
             Issue.record("expected borrow to throw while the parent is already borrowed")
         } catch let e as OrchestraError {
             let msg = "\(e)"
@@ -154,7 +158,7 @@ struct BorrowLifecycleTests {
         let other = (repo as NSString).deletingLastPathComponent + "/sib-normal"
         #expect(try Proc.run(["git", "-C", repo, "worktree", "add", other, "parent"]).ok)
         do {
-            _ = try await svc.worktrees.borrow(repo: repo, branch: "parent")
+            _ = try await svc.worktrees.ensureBorrow(repo: repo, parentBranch: "parent", borrowerCardId: UUID())
             Issue.record("expected borrow to throw while the parent is checked out elsewhere")
         } catch let e as OrchestraError {
             let msg = "\(e)"
@@ -163,13 +167,32 @@ struct BorrowLifecycleTests {
         }
     }
 
-    @Test("the startup sweep prunes an orch-borrow worktree (scans git worktree list, not the registry)")
+    @Test("the startup sweep prunes an unregistered stray orch-borrow worktree (crashed borrow, no registration)")
     func startupSweepPrunesOrphan() async throws {
+        // Task 3.4/3.5: `sweepOrphanBorrows` is now LIVENESS-GUARDED (routed through the registry) — a
+        // borrow whose borrower card is still live is KEPT, not blindly pruned (that used to be a real
+        // bug: a blunt "nothing is legitimately borrowing" sweep could yank a tree out from under an
+        // in-flight squash-merge). So the orphan this sweep reclaims is the REALISTIC post-crash case: a
+        // canonical `orch-borrow-*` dir checked out on disk with no registration for it (as right after a
+        // restart, before any daemon-side `borrow` re-registers it) — mirrors `borrowRefusesUnregisteredStrayDir`.
+        let (svc, repo) = try Self.repo()
+        _ = try await Self.linkedChild(svc, repo: repo)   // a live .worktree card in this repo, so the repo gets swept
+        let path = await svc.worktrees.borrowPath(repo: repo, branch: "parent")
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        #expect(try Proc.run(["git", "-C", repo, "worktree", "add", path, "parent"]).ok)
+        #expect(FileManager.default.fileExists(atPath: path))
+        await svc.sweepOrphanBorrows()                // stray + unregistered ⇒ pruned
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    @Test("the startup sweep KEEPS a registered borrow whose borrower card is still live")
+    func startupSweepKeepsLiveBorrow() async throws {
         let (svc, repo) = try Self.repo()
         let child = try await Self.linkedChild(svc, repo: repo)
         let path = try await svc.borrow(ref: child.ref())
         #expect(FileManager.default.fileExists(atPath: path))
-        await svc.sweepOrphanBorrows()                // startup: nothing legitimately borrowing → prune all
-        #expect(!FileManager.default.fileExists(atPath: path))
+        await svc.sweepOrphanBorrows()                // child is live ⇒ referenced ⇒ kept
+        #expect(FileManager.default.fileExists(atPath: path))
     }
 }

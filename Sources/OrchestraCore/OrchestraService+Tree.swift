@@ -100,7 +100,7 @@ extension OrchestraService {
     /// top of `base`. The recorded base OID is `base`'s tip at creation — the redirect anchor for later
     /// restack/sync. Returns the canonical parent ref stored on `Task.parentBranch` (the local base name
     /// in BT2; BT6 will canonicalize remote forms). Throws `.invalidParams` if `base` can't be resolved
-    /// (defense-in-depth — `WorktreeManager.ensure` already validated it before cutting the worktree).
+    /// (defense-in-depth — `WorktreeRegistry.ensure` already validated it before cutting the worktree).
     func recordSpawnBase(repo: String, branch: String, base: String) async throws -> String {
         // S4 (TOCTOU): prefer the CHILD branch's OWN tip, not a re-resolved `base` tip. `ensure` cut the
         // child at `base`'s tip, so the child's tip IS the fork point — reading it is immune to the parent

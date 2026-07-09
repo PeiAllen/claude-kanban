@@ -42,7 +42,7 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         try? FileManager.default.removeItem(atPath: worktree)
     }
     // O3 borrow stub — mkdir a fake borrow dir; real git behavior is covered by BorrowLifecycleTests
-    // (makeReal). `pruneOrphanBorrows` is a no-op here (no git worktree list).
+    // (makeReal).
     func borrowPath(repo: String, branch: String) -> String {
         "\(root)/\((repo as NSString).lastPathComponent)/orch-borrow-\(branch.replacingOccurrences(of: "/", with: "-"))"
     }
@@ -51,7 +51,6 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return wt
     }
-    func pruneOrphanBorrows(repo: String) {}
 
     /// Controllable dirty set, driven by `WorktreeRegistryTests` via `setDirty`.
     private var dirtyPaths: Set<String> = []
@@ -64,6 +63,9 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         return entries.filter { $0.hasPrefix("orch-borrow-") }.map { "\(dir)/\($0)" }
     }
 }
+
+// (`WorktreeManaging` no longer declares `pruneOrphanBorrows` — Task 3.5 dropped it; the registry's
+// `sweepOrphanBorrows(cards:)` guarded loop replaced its only caller.)
 
 /// In-memory tmux stub — tracks alive sessions and records launch argv; thread-safe (offActor runs
 /// ensure on a background queue). `ensureSleepMs` lets the throttle test create overlap.
@@ -315,13 +317,15 @@ enum TestEnv {
                             maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
+        let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
+                                          borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json")
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: registry ?? AgentRegistry(adapters: [adapter]),
-                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox,
+                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver)
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
@@ -339,13 +343,15 @@ enum TestEnv {
                             allowlist: [base])
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
+        let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
+                                          borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json")
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox)
+                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox)
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 
@@ -386,10 +392,10 @@ enum TestEnv {
         }
     }
 
-    /// A service wired with the REAL `WorktreeManager` (git worktrees actually cut) — needed for the
-    /// remote-tier tests, where a spawn's start-point must resolve against a real fetched ref. Everything
-    /// else (store/trust/inbox/adapter) is stubbed as in `make`. Returns the service + its allowlisted base
-    /// (the git working repo + its bare origin are created UNDER `base` by `makeRemoteRepo`).
+    /// A service wired with the REAL worktree manager (git worktrees actually cut, via the registry) —
+    /// needed for the remote-tier tests, where a spawn's start-point must resolve against a real fetched
+    /// ref. Everything else (store/trust/inbox/adapter) is stubbed as in `make`. Returns the service + its
+    /// allowlisted base (the git working repo + its bare origin are created UNDER `base` by `makeRemoteRepo`).
     static func makeReal(capabilities: AgentCapabilities = .stub)
         -> (svc: OrchestraService, sessions: StubSessions, adapter: StubAdapter, base: String) {
         let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-rsvc-\(UUID().uuidString)")
@@ -403,11 +409,21 @@ enum TestEnv {
         let store = TaskStore(path: base + "/tasks.json")
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
-        let worktrees = WorktreeManager(config: config, resolver: resolver)
+        let worktrees = WorktreeRegistry(config: config, resolver: resolver,
+                                         borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: worktrees, sessions: sessions, resolver: resolver,
                                    trust: trust, inbox: inbox)
         return (svc, sessions, adapter, base)
+    }
+
+    /// Wrap a stub worktree manager in a registry with test-local (base-relative) borrows/markers paths.
+    /// For the handful of direct `OrchestraService(config:…, worktrees:)` constructions that don't go
+    /// through `make`/`remake`/`makeReal` (Codex/Readiness fixtures) — a bare `StubWorktrees` no longer
+    /// satisfies the `worktrees:` parameter now that it's typed `WorktreeRegistry?`.
+    static func registry(_ stub: StubWorktrees, base: String, config: Config) -> WorktreeRegistry {
+        WorktreeRegistry(config: config, manager: stub,
+                         borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
     }
 }

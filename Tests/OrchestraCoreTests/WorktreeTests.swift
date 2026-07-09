@@ -3,7 +3,7 @@ import Testing
 @testable import OrchestraCore
 @testable import OrchestraKit
 
-@Suite("WorktreeManager — bounded git (3.2)")
+@Suite("WorktreeRegistry — bounded git (3.2, driven via the registry post-privatization)")
 struct WorktreeBoundedTests {
 
     /// Records every (argv, timeout) the manager runs, and returns a canned result per argv.
@@ -40,46 +40,63 @@ struct WorktreeBoundedTests {
         return (cfg, { try? FileManager.default.removeItem(atPath: base) })
     }
 
-    /// Drive one code path with `branchExists` controlling the `rev-parse` probe, then assert its
-    /// recorded `worktree add` carried `worktreeAddTimeout`. (Wrapping `rec.run` in a closure literal
-    /// makes it reliably inferred `@Sendable`.)
-    private func assertAddBounded(branchExists: Bool,
-                                  _ drive: (WorktreeManager, Config) throws -> Void) throws {
-        let (cfg, cleanup) = config(); defer { cleanup() }
-        let rec = Recorder { argv in
-            if argv.contains("rev-parse") { return branchExists ? Self.ok() : Self.fail("no branch") }
-            return Self.ok()   // everything else (incl. the add) succeeds
-        }
-        let wm = WorktreeManager(config: cfg, resolver: nil, run: { try rec.run($0, $1) })
-        try drive(wm, cfg)
-        let add = try #require(rec.first(where: Self.isAdd))
-        #expect(add.timeout == .seconds(cfg.worktreeAddTimeout))   // 600s
+    /// The registry's run-seam init (test-only, internal) — injects the timed `run` closure into the
+    /// fileprivate manager without naming the concrete type. `base`-relative markers/borrows so a
+    /// bounded-git assertion never touches real `~/.orchestra` state.
+    private func registry(_ cfg: Config, base: String, run: @escaping @Sendable ([String], Duration) throws -> ProcResult) -> WorktreeRegistry {
+        WorktreeRegistry(config: cfg, run: run, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
     }
 
     @Test("every `git worktree add` — ensure(new), ensure(existing), borrow — is bounded by worktreeAddTimeout")
-    func test_worktreeAddIsBounded() throws {
-        // ensure, NEW branch: rev-parse fails → `-b` add (WorktreeManager.swift:41→65)
-        try assertAddBounded(branchExists: false) { wm, cfg in
-            _ = try wm.ensure(repo: cfg.reposRoot, branch: "feat-new")
+    func test_worktreeAddIsBounded() async throws {
+        // ensure, NEW branch: rev-parse fails → `-b` add
+        do {
+            let (cfg, cleanup) = config(); defer { cleanup() }
+            let rec = Recorder { argv in
+                if argv.contains("rev-parse") { return Self.fail("no branch") }
+                return Self.ok()
+            }
+            let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+            _ = try await reg.ensure(repo: cfg.reposRoot, branch: "feat-new", cardId: UUID())
+            let add = try #require(rec.first(where: Self.isAdd))
+            #expect(add.timeout == .seconds(cfg.worktreeAddTimeout))   // 600s
         }
-        // ensure, EXISTING branch: rev-parse ok → existing-branch add (WorktreeManager.swift:39→65)
-        try assertAddBounded(branchExists: true) { wm, cfg in
-            _ = try wm.ensure(repo: cfg.reposRoot, branch: "feat-existing")
+        // ensure, EXISTING branch: rev-parse ok → existing-branch add
+        do {
+            let (cfg, cleanup) = config(); defer { cleanup() }
+            let rec = Recorder { argv in
+                if argv.contains("rev-parse") { return Self.ok() }
+                return Self.ok()
+            }
+            let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+            _ = try await reg.ensure(repo: cfg.reposRoot, branch: "feat-existing", cardId: UUID())
+            let add = try #require(rec.first(where: Self.isAdd))
+            #expect(add.timeout == .seconds(cfg.worktreeAddTimeout))
         }
-        // borrow: branch must exist → borrow add (WorktreeManager.swift:102)
-        try assertAddBounded(branchExists: true) { wm, cfg in
-            _ = try wm.borrow(repo: cfg.reposRoot, branch: "feat-borrow")
+        // borrow: branch must exist → borrow add
+        do {
+            let (cfg, cleanup) = config(); defer { cleanup() }
+            let rec = Recorder { argv in
+                if argv.contains("rev-parse") { return Self.ok() }
+                return Self.ok()
+            }
+            let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+            _ = try await reg.ensureBorrow(repo: cfg.reposRoot, parentBranch: "feat-borrow", borrowerCardId: UUID())
+            let add = try #require(rec.first(where: Self.isAdd))
+            #expect(add.timeout == .seconds(cfg.worktreeAddTimeout))
         }
     }
 
     @Test("the `worktree remove` and its fallback `worktree prune` are bounded by controlTimeout")
-    func test_pruneIsBounded() throws {
+    func test_pruneIsBounded() async throws {
         let (cfg, cleanup) = config(); defer { cleanup() }
-        // Make a real dir so remove() passes its fileExists guard, then have the stub delete it
-        // when it sees `worktree remove` and return non-ok → the fallback prune fires; the dir is
-        // then gone so remove() returns without throwing.
-        let wt = cfg.worktreesRoot + "/repo/victim"
-        try FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+        let id = UUID()
+        // Precompute the worktree path (pure — doesn't need `run`) so the recorder can reference it
+        // without capturing a `var` across the `@Sendable` closure boundary.
+        let wt = cfg.worktreePath(repo: cfg.reposRoot, branch: "victim")
+        // A recorder that answers `worktree add` ok (so `ensure` "cuts" a tree without physically
+        // creating the dir — the run-seam doesn't touch the filesystem) then, on `worktree remove`,
+        // deletes the dir it's told to remove and returns non-ok so the fallback `prune` fires.
         let rec = Recorder { argv in
             if Self.isRemove(argv) {
                 try? FileManager.default.removeItem(atPath: wt)   // dir gone after the remove attempt
@@ -87,8 +104,21 @@ struct WorktreeBoundedTests {
             }
             return Self.ok()
         }
-        let wm = WorktreeManager(config: cfg, resolver: nil, run: { try rec.run($0, $1) })
-        try wm.remove(worktree: wt, force: true)   // force skips the isDirty status query
+        let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+        let ensured = try await reg.ensure(repo: cfg.reposRoot, branch: "victim", cardId: id)
+        #expect(ensured.path == wt)
+        // The run-seam `ensure` records `git worktree add` but does NOT physically create `wt` on disk
+        // (the canned `run` closure never touches the filesystem) — and `release`'s `guard
+        // fileExists(wt)` short-circuits before ever reaching `manager.remove`. So, exactly like the
+        // pre-privatization test, mkdir the dir so `release` reaches the bounded remove+prune this
+        // coverage is about. `ensure` already wrote the marker (unconditionally, regardless of whether
+        // the dir physically exists), so `release`'s `created`(≡marker) guard is already satisfied.
+        try FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+
+        let card = Task(id: id, title: "t", repo: cfg.reposRoot, branch: "victim", cwd: wt,
+                        origin: .worktree, model: AgentModel(id: "m"), startIn: .impl, column: .impl,
+                        order: 0, phase: .live(.running), initialPrompt: "")
+        try await reg.release(cardId: id, cards: [card], force: true)   // force skips the isDirty status query
 
         let removeCall = try #require(rec.first(where: Self.isRemove))
         #expect(removeCall.timeout == .seconds(cfg.controlTimeout))   // the `worktree remove` itself, 15s
@@ -97,22 +127,22 @@ struct WorktreeBoundedTests {
     }
 
     // Real wall-clock enforcement lives in `Proc.run(timeout:)` (covered by Proc's own tests) and
-    // `Proc` is untouched here (constraint). So this proves the two things WorktreeManager is
-    // responsible for: (1) the add is invoked WITH `worktreeAddTimeout`, and (2) a timeout-shaped
-    // failure — the non-ok result `Proc.run` returns after it SIGTERMs a process that blew the wall
-    // clock — is surfaced as a thrown error instead of a hang. Not just generic error propagation:
-    // it asserts the bound was actually passed on the timing-out call.
+    // `Proc` is untouched here (constraint). So this proves the two things the manager is responsible
+    // for: (1) the add is invoked WITH `worktreeAddTimeout`, and (2) a timeout-shaped failure — the
+    // non-ok result `Proc.run` returns after it SIGTERMs a process that blew the wall clock — is
+    // surfaced as a thrown error instead of a hang. Not just generic error propagation: it asserts the
+    // bound was actually passed on the timing-out call.
     @Test("a bounded add whose bound trips surfaces as a throw (not a hang), and the add was bounded")
-    func test_worktreeAddTimesOut() throws {
+    func test_worktreeAddTimesOut() async throws {
         let (cfg, cleanup) = config(); defer { cleanup() }
         let rec = Recorder { argv in
             if argv.contains("rev-parse") { return Self.fail("no branch") }
             if Self.isAdd(argv) { return ProcResult(stdout: "", stderr: "terminated: timed out", exitCode: 15) }
             return Self.ok()
         }
-        let wm = WorktreeManager(config: cfg, resolver: nil, run: { try rec.run($0, $1) })
-        #expect(throws: OrchestraError.self) {
-            try wm.ensure(repo: cfg.reposRoot, branch: "slow")
+        let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+        await #expect(throws: (any Error).self) {
+            _ = try await reg.ensure(repo: cfg.reposRoot, branch: "slow", cardId: UUID())
         }
         let add = try #require(rec.first(where: Self.isAdd))
         #expect(add.timeout == .seconds(cfg.worktreeAddTimeout))   // the timing-out add WAS bounded

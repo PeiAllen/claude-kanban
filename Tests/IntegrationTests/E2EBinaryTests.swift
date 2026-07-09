@@ -39,7 +39,9 @@ final class E2EBinaryTests {
         let adapter = ClaudeCodeAdapter(binOverride: IntegrationSupport.fakeAgentPath)
         service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: WorktreeManager(config: config), sessions: sessions)
+                                   worktrees: WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json",
+                                                               markersDir: base + "/worktree-markers"),
+                                   sessions: sessions)
         server = ControlServer(service: service, socketPath: ctlSock)
         try server.start()
 
