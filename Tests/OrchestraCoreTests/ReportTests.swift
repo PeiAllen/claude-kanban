@@ -64,7 +64,8 @@ struct ReportTests {
         // A fileTail agent (Codex): telemetry == .fileTail, so the permission fence is active.
         let env = TestEnv.make(capabilities: .codex)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        // .codex is `.rolloutMeta` → the blank spawn awaits; drive its launch-ready signal (spawnAwaited).
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "Task", repo: repo, branch: "b"))
 
         // The PermissionRequest hook arrives as a seq==0 push → the card blocks on permission.
         try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)))

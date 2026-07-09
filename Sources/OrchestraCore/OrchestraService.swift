@@ -98,6 +98,14 @@ public actor OrchestraService {
     // out. Cleared at the start of each relaunch attempt so a late callback from a prior, already-failed
     // attempt can't spuriously confirm a future one.
     var pendingReadiness: Set<UUID> = []
+    // Universal N=3 readiness fallback (2.6). Per-card count of consecutive liveness ticks a being-born
+    // card (`.launching`/`.relaunching`) has had a LIVE session AND a still-pending inline readiness waiter.
+    // At `launchReadyTickThreshold` we `resolveReadiness` the waiter — a safety net WITHIN the grace window
+    // for a lost/absent readiness signal (Codex `codex resume` writes no rollout; a missed SessionStart
+    // hook; any `.relaunchLiveness`-shaped agent). `N × 2s(pollInterval) < grace`, so it fires before the
+    // await's timeout would fail the verb. Reset when the card leaves the being-born phase.
+    var launchReadyTicks: [UUID: Int] = [:]
+    let launchReadyTickThreshold = 3
     // Narrow atomic-claim set (replaces the deleted `recovering` set's role (b)): a wake/idle-resume
     // inserts the card SYNCHRONOUSLY (before any `await`) so a concurrent wake sees the claim and defers,
     // avoiding a double-resume race on an idle card. Role (a) — the stale-SessionEnd grace window — is now
@@ -255,9 +263,16 @@ public actor OrchestraService {
         for t in tasks where !t.archived && t.phase.kind != .dead {
             guard let adapter = try? registry.get(t.agentId),
                   adapter.capabilities.telemetry == .fileTail else { continue }
-            // Resolve the rollout path from the adapter (uses the tracked id, else discovers the newest).
+            // Resolve the rollout path from the adapter (uses the tracked id, else DISCOVERS it). The
+            // discovery is time-scoped ONLY while the card is being born (`.launching`/`.relaunching`): a
+            // not-yet-bound launch must adopt only its OWN fresh rollout (mtime > `phaseChangedAt`), never a
+            // live sibling's actively-written rollout in the same cwd nor its own stale pre-reboot one. Once
+            // the card is live and stably tailing, discovery is unrestricted (newest cwd match) — the risky
+            // moment is the launch bind, not steady state.
+            let beingBorn = t.phase.kind == .launching || t.phase.kind == .relaunching
             let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
-                                     name: t.title, access: t.access)
+                                     name: t.title, access: t.access,
+                                     since: beingBorn ? t.phaseChangedAt : nil)
             guard let path = adapter.sessionInfo(ctx, current: t.agentSessionId,
                                                  prior: t.priorSessionIds)?.transcriptPath,
                   FileManager.default.fileExists(atPath: path) else { continue }

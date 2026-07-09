@@ -280,6 +280,8 @@ extension OrchestraService {
 
         switch flavor {
         case .blank(let landing, let prompt):
+            let grace = graceSeconds ?? config.revivalGraceSeconds
+            pendingReadiness.remove(id)   // start clean so only THIS launch's signal can confirm it
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id, startIn: task.startIn,
                                      sessionId: task.agentSessionId, prompt: prompt, name: task.title,
                                      orchestraBin: orchestraBin, access: task.access, trustCwd: trustCwd)
@@ -288,8 +290,17 @@ extension OrchestraService {
             // Enter launching, then ensure with NO intervening suspension (see the launching-window invariant).
             _ = await transition(id, to: .launching)
             try sessions.ensure(task, argv: argv, env: env)
-            // Blank launch → readiness is the successful ensure (the 2.5 sync-spawn stub; 2.6 adds signals).
-            _ = await transition(id, to: .live(landing))
+            // Capability-gated launch readiness (2.6): `.relaunchLiveness` takes the successful `ensure` as
+            // the confirmation and lands immediately; `.sessionStartHook`/`.rolloutMeta` inline-await the
+            // agent's own ready signal (Claude SessionStart(startup) / Codex rollout `session_meta`), with
+            // the N=3 liveness-tick fallback as the safety net — so the signal genuinely drives launching→
+            // live rather than firing after the card is already live. Timeout fails the spawn (→ .dead);
+            // superseded means a newer bring-up owns the card, so leave the phase to that survivor.
+            switch await confirmReadiness(id, adapter: adapter, graceSeconds: grace) {
+            case .confirmed:  _ = await transition(id, to: .live(landing))
+            case .timedOut:   throw OrchestraError.spawnFailed("no launch-ready signal in \(grace)s")
+            case .superseded: return
+            }
 
         case .resume(let seed):
             let grace = graceSeconds ?? config.revivalGraceSeconds
@@ -315,14 +326,17 @@ extension OrchestraService {
         }
     }
 
-    /// Confirm a relaunch is alive — HOW depends on the agent (capability, never identity). `.sessionStartHook`
-    /// waits for the agent's own SessionStart(resume) telemetry (Claude), or times out; `.relaunchLiveness`
-    /// takes the successful `ensure` as the confirmation (e.g. `codex resume` writes no rollout at resume
-    /// time), so it must NOT wait for a hook that never comes.
+    /// Confirm a being-born card (launch OR relaunch) is alive — HOW depends on the agent (capability, never
+    /// identity). `.sessionStartHook` waits for the agent's own SessionStart telemetry (Claude), or times
+    /// out. `.rolloutMeta` ALSO waits (Codex): a fresh launch's rollout `session_meta` line resolves the
+    /// waiter via the tail observer; a `codex resume` writes no rollout, so the N=3 `launchReadyTicks`
+    /// fallback resolves it within the grace — either way it stays ON the readiness gate (never immediate,
+    /// which would leave no waiter and bypass the gate). `.relaunchLiveness` takes the successful `ensure`
+    /// as the confirmation because the agent emits no marker at all, so it must NOT wait for one.
     func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int) async -> ReadinessOutcome {
-        switch adapter.capabilities.resumeConfirmation {
-        case .sessionStartHook: return await awaitReadiness(id, graceSeconds: graceSeconds)
-        case .relaunchLiveness: return .confirmed
+        switch adapter.capabilities.readinessConfirmation {
+        case .sessionStartHook, .rolloutMeta: return await awaitReadiness(id, graceSeconds: graceSeconds)
+        case .relaunchLiveness:                return .confirmed
         }
     }
 
@@ -336,20 +350,49 @@ extension OrchestraService {
         // One `tmux list-sessions` per poll tick, not one `has-session` per card.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
         for t in tasks where !t.phase.isTerminal {
+            let alive = aliveNames.contains(sessions.sessionName(t.id))
             switch t.phase.kind {
-            case .creatingWorktree, .relaunching:
-                continue   // being born / relaunching — the session is legitimately not up yet
+            case .creatingWorktree:
+                launchReadyTicks[t.id] = nil   // not yet awaiting readiness — nothing to tick
+                continue   // being born — the session is legitimately not up yet
+            case .relaunching:
+                // A relaunch's session IS up once `ensure` returned (resume/restart bring it up off-actor),
+                // but the phase stays `.relaunching` until the inline waiter resolves. If the session is
+                // live and a waiter is still pending, tick the N=3 fallback (covers Codex `codex resume`
+                // with no rollout, a missed hook). Never markDead a relaunching card (its absence is legit).
+                if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
+                continue
             case .launching:
-                if !aliveNames.contains(sessions.sessionName(t.id)) {
+                if alive {
+                    tickLaunchReady(t.id)   // N=3 fallback for a launch whose readiness signal never arrived
+                } else {
+                    launchReadyTicks[t.id] = nil
                     await markDead(t.id, reason: .spawnFailed, detail: nil, source: .daemon)
                 }
             case .live:
-                if !aliveNames.contains(sessions.sessionName(t.id)) {
+                launchReadyTicks[t.id] = nil   // reached live — reset the being-born counter
+                if !alive {
                     await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
                 }
             case .dead, .archivedPending, .archivedComplete:
+                launchReadyTicks[t.id] = nil
                 continue   // terminal — excluded by `isTerminal`, but keep the switch exhaustive
             }
+        }
+    }
+
+    /// N=3 readiness fallback tick (see `launchReadyTicks`). Only counts while an inline waiter is actually
+    /// pending; at the threshold it resolves that waiter so the verb reaches `.live` before the await's grace
+    /// timeout would fail it. No pending waiter → reset (e.g. a `.relaunchLiveness` restart that never awaits,
+    /// or the instant after the waiter already resolved).
+    private func tickLaunchReady(_ id: UUID) {
+        guard readinessWaiters[id] != nil else { launchReadyTicks[id] = nil; return }
+        let n = (launchReadyTicks[id] ?? 0) + 1
+        if n >= launchReadyTickThreshold {
+            launchReadyTicks[id] = nil
+            resolveReadiness(id, true)
+        } else {
+            launchReadyTicks[id] = n
         }
     }
 

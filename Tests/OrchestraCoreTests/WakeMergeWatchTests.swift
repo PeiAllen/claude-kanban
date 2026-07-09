@@ -214,8 +214,8 @@ struct WakeMergeWatchTests {
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
         let env = TestEnv.make(registry: AgentRegistry(adapters: [codex]))
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p", agentId: "codex"))
-        let child = try await env.svc.spawn(SpawnInput(
+        let parent = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "p", agentId: "codex"))
+        let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(
             prompt: "what is 2+2",
             agentId: "codex",
             cwd: base + "/cwd",
@@ -240,8 +240,8 @@ struct WakeMergeWatchTests {
         let repo = TestEnv.repo(env.base)
         let cwd = env.base + "/borrowed"
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let parent = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
@@ -261,7 +261,7 @@ struct WakeMergeWatchTests {
         let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
         let cwd = env.base + "/borrowed-stop"
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
-        let child = try await env.svc.spawn(SpawnInput(prompt: "ask if unclear", cwd: cwd, access: .readOnly))
+        let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "ask if unclear", cwd: cwd, access: .readOnly))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
@@ -320,7 +320,7 @@ struct WakeMergeWatchTests {
         let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
         let cwd = env.base + "/borrowed"
         try? FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
-        let child = try await env.svc.spawn(SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
+        let child = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "summarize", cwd: cwd, access: .readOnly))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 

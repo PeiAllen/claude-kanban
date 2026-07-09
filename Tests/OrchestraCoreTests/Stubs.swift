@@ -155,6 +155,20 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is
 /// fully controllable. Registered with id "claude-code" so `spawn` finds it.
+extension AgentCapabilities {
+    /// The default test-stub capability: Claude-shaped on every axis EXCEPT readiness confirmation, which
+    /// is `.relaunchLiveness` so a blank spawn/reopen and a resume both land immediately on a successful
+    /// `ensure` — no readiness signal to hand-deliver. This keeps the many tests that spawn/resume a card
+    /// merely as SETUP green and synchronous under 2.6's capability-gated launch readiness. Tests that
+    /// specifically exercise the awaited signal path opt into `.claudeCode` (`.sessionStartHook`) or
+    /// `.codex` (`.rolloutMeta`) explicitly.
+    static let stub = AgentCapabilities(
+        sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
+        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
+}
+
 final class StubAdapter: Adapter, @unchecked Sendable {
     let id: String
     let name: String
@@ -163,7 +177,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     let enabled = true
     let capabilities: AgentCapabilities
     let transcriptDir: String
-    init(transcriptDir: String, capabilities: AgentCapabilities = .claudeCode,
+    init(transcriptDir: String, capabilities: AgentCapabilities = .stub,
          id: String = "claude-code", name: String = "Stub") {
         self.transcriptDir = transcriptDir
         self.capabilities = capabilities
@@ -271,7 +285,7 @@ final class StubGrantResolver: TrustGrantResolver, @unchecked Sendable {
 
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
-    static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .claudeCode,
+    static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .stub,
                      grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                      registry: AgentRegistry? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
@@ -300,7 +314,7 @@ enum TestEnv {
     /// `NSTemporaryDirectory()` prefix, which is the same inode via the macOS `/var → /private/var` symlink,
     /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
     /// itself a realistic "fresh daemon" trait.
-    static func remake(base: String, capabilities: AgentCapabilities = .claudeCode)
+    static func remake(base: String, capabilities: AgentCapabilities = .stub)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
@@ -324,11 +338,41 @@ enum TestEnv {
         return p
     }
 
+    /// Spawn through the AWAITING launch path (`.sessionStartHook`/`.rolloutMeta` caps) and drive the
+    /// launch's readiness signal so it reaches `.live`. Under 2.6 a capability-gated blank spawn inline-
+    /// awaits its ready signal; a test using such caps merely as setup has no live poll loop, so this
+    /// finds the card mid-launch (spawn persists it at `.creatingWorktree`→`.launching` before it awaits)
+    /// and delivers SessionStart(startup) to unblock it. Use for resume/relaunch-mechanics tests that need
+    /// `.claudeCode` (the awaited resume path) but still spawn a live card first.
+    @discardableResult
+    static func spawnAwaited(_ svc: OrchestraService, _ input: SpawnInput) async throws -> Task {
+        async let spawned = svc.spawn(input)
+        try await pollUntil {
+            await svc.list().contains { $0.branch == input.branch && $0.phase.kind == .launching }
+        }
+        if let id = await svc.list().first(where: { $0.branch == input.branch })?.id {
+            try? await svc.report(id, StatusReport(sessionSource: "startup"))
+        }
+        return try await spawned
+    }
+
+    /// Drive being-born cards to `.live` via the universal N=3 liveness-tick fallback (no readiness signal
+    /// hand-delivered): repeatedly run `reconcileLiveness` until at least `count` cards are live. Used by
+    /// Codex (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime
+    /// predates the card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback
+    /// reaches live, then post-live discovery (unrestricted) binds the rollout for telemetry.
+    static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
+        try await pollUntil {
+            await svc.reconcileLiveness()
+            return await svc.list().filter { $0.phase.kind == .live }.count >= count
+        }
+    }
+
     /// A service wired with the REAL `WorktreeManager` (git worktrees actually cut) — needed for the
     /// remote-tier tests, where a spawn's start-point must resolve against a real fetched ref. Everything
     /// else (store/trust/inbox/adapter) is stubbed as in `make`. Returns the service + its allowlisted base
     /// (the git working repo + its bare origin are created UNDER `base` by `makeRemoteRepo`).
-    static func makeReal(capabilities: AgentCapabilities = .claudeCode)
+    static func makeReal(capabilities: AgentCapabilities = .stub)
         -> (svc: OrchestraService, sessions: StubSessions, adapter: StubAdapter, base: String) {
         let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-rsvc-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)

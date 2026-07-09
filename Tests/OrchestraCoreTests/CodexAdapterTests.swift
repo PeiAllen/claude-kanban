@@ -268,7 +268,7 @@ struct CodexSpawnWiringTests {
                                    worktrees: StubWorktrees(root: config.worktreesRoot),
                                    sessions: sessions,
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let t = try await svc.spawn(SpawnInput(prompt: "look around", agentId: "codex",
+        let t = try await TestEnv.spawnAwaited(svc, SpawnInput(prompt: "look around", agentId: "codex",
                                                cwd: PathResolver.canonical(work), access: .readOnly))
         #expect(t.agentId == "codex")
         let name = sessions.sessionName(t.id)
@@ -376,7 +376,7 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // Model only — the way the app's flat picker sends it — no agentId.
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])

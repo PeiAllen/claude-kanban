@@ -40,6 +40,12 @@ extension OrchestraService {
                let newId = ev.sessionId, !newId.isEmpty, newId != task.agentSessionId {
                 if let old = task.agentSessionId, !old.isEmpty { task.priorSessionIds.append(old) }
                 task.agentSessionId = newId
+                // Codex `.rolloutMeta` readiness: binding a discovered id while the card is still LAUNCHING
+                // means the rollout tail just observed the fresh session's `session_meta` line — that IS the
+                // launch's readiness signal, so resolve the spawn/reopen's inline waiter. Capability-neutral:
+                // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
+                // while launching), so this never fires for Claude.
+                if before.phase.kind == .launching { resolveReadiness(id, true) }
             }
 
             // SessionStart source semantics.
@@ -52,9 +58,15 @@ extension OrchestraService {
                 case "resume":
                     if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
-                    resolveReadiness(id, true)   // confirm a pending relaunch's inline readiness wait
+                    resolveReadiness(id, true)   // confirm a pending RELAUNCH's inline readiness wait
+                case "startup":
+                    // Claude `.sessionStartHook` readiness for a fresh LAUNCH: the agent's own
+                    // SessionStart(startup) is the launch's ready marker, so resolve the spawn/reopen's
+                    // inline waiter for a still-launching card. No phase write here — the launch verb owns
+                    // the landing (prompt-in-flight → running, else waiting) once its await unblocks.
+                    if before.phase.kind == .launching { resolveReadiness(id, true) }
                 default:
-                    break   // startup / compact: no status change
+                    break   // compact: no status change
                 }
             }
 

@@ -70,9 +70,11 @@ struct RecoveryTests {
 
     @Test("resume success: SessionStart callback delivered BEFORE awaitResume registers still confirms (no lost wakeup)")
     func resumeConfirmBeforeWaiterRegistered() async throws {
-        let env = TestEnv.make(grace: 2)
+        // .claudeCode: the resume genuinely awaits SessionStart(resume), so the pending-before-registered
+        // ordering is exercisable (a `.relaunchLiveness` stub never registers a waiter).
+        let env = TestEnv.make(grace: 2, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
@@ -108,12 +110,14 @@ struct RecoveryTests {
 
     @Test("resume failure: transcript present but no callback within grace → .dead resumeFailed")
     func resumeFailTimeout() async throws {
-        let env = TestEnv.make(grace: 0)   // immediate timeout, no callback delivered
+        // .claudeCode so the resume awaits its SessionStart(resume) hook; a per-call `graceSeconds: 0` forces
+        // the timeout without starving the setup spawn (which needs a non-zero grace to land via spawnAwaited).
+        let env = TestEnv.make(grace: 2, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
-        await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id) }
+        await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id, graceSeconds: 0) }
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
         #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .resumeFailed)
@@ -203,9 +207,11 @@ struct RecoveryTests {
     /// `wakeIfPending`), event-driven, no poll.
     @Test("a send that lands mid-relaunch is delivered when the relaunch settles")
     func sendDuringRelaunchDeliveredOnRelease() async throws {
-        let env = TestEnv.make(grace: 30)
+        // .claudeCode: the wake-driven resume stays IN FLIGHT until its SessionStart(resume) hook lands, so
+        // a second send genuinely arrives mid-relaunch (a `.relaunchLiveness` stub confirms too fast to race).
+        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))             // idle
         let name = env.sessions.sessionName(card.id)
@@ -253,9 +259,11 @@ struct RecoveryTests {
     /// wild: `resume`/`handoff`/`reopen` and `recoverSessions` can all race a send-wake.
     @Test("overlapping resume(id): the superseded resume returns (no leaked continuation → card stays wakeable)")
     func concurrentResumeNeverLeaks() async throws {
-        let env = TestEnv.make(grace: 30)
+        // .claudeCode: overlapping resumes both register an awaitReadiness waiter, so the displaced-waiter
+        // supersede/leak path is exercisable (a `.relaunchLiveness` stub confirms with no waiter to leak).
+        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                      // idle
         let name = env.sessions.sessionName(t.id)

@@ -226,9 +226,14 @@ struct CodexTelemetryE2ETests {
                                    worktrees: StubWorktrees(root: config.worktreesRoot),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let card = try await svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
-                                                  agentId: "codex",
-                                                  cwd: PathResolver.canonical(work)))
+        // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
+        // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
+        // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
+        async let spawned = svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
+                                                 agentId: "codex",
+                                                 cwd: PathResolver.canonical(work)))
+        try await TestEnv.reconcileUntilLive(svc, count: 1)
+        let card = try await spawned
         return (svc, card, rollout)
     }
 
@@ -266,10 +271,13 @@ struct CodexTelemetryE2ETests {
                                    worktrees: StubWorktrees(root: config.worktreesRoot),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let cardA = try await svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
-                                                   agentId: "codex", cwd: workA))
-        let cardB = try await svc.spawn(SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
-                                                   agentId: "codex", cwd: workB))
+        async let sa = svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
+                                            agentId: "codex", cwd: workA))
+        async let sb = svc.spawn(SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
+                                            agentId: "codex", cwd: workB))
+        try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback (fixture rollouts predate launch)
+        let cardA = try await sa
+        let cardB = try await sb
         return (svc, cardA, rolloutA, cardB, rolloutB)
     }
 

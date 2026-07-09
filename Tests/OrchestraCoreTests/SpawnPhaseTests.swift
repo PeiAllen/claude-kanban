@@ -142,9 +142,12 @@ struct SpawnPhaseTests {
 
     @Test("two concurrent wakes on an idle card resume exactly once (relaunchClaimed defers the second)")
     func test_concurrentWakeDoesNotDoubleResume() async throws {
-        let env = TestEnv.make(grace: 30)
+        // .claudeCode (sessionStartHook): the resume genuinely awaits its signal, so the in-flight window
+        // the `relaunchClaimed` deferral depends on is observable (a `.relaunchLiveness` stub confirms too
+        // fast to exercise it). spawnAwaited drives the setup spawn's launch-ready signal.
+        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)                       // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))   // idle
         let name = env.sessions.sessionName(t.id)
@@ -162,9 +165,12 @@ struct SpawnPhaseTests {
 
     @Test("reopen drives .archived → .creatingWorktree → .launching → .live and re-materializes the cwd")
     func test_reopenDrivesCreatingWorktreePath() async throws {
-        let env = TestEnv.make(grace: 30)
+        // .claudeCode: reopen's resume path awaits the delivered SessionStart(resume), so the
+        // creatingWorktree→launching→live sequence lands deterministically (with time for the collector to
+        // drain) instead of racing a too-fast `.relaunchLiveness` confirm.
+        let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let sid = try #require(t.agentSessionId)
         env.adapter.writeTranscript(for: sid)                                     // resumable
         try await env.svc.archive(t.id)

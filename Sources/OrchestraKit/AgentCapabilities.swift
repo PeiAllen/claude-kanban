@@ -37,15 +37,19 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         case nativeReinvoke, relaunch, controlChannel
     }
 
-    /// How a `resume` relaunch is confirmed alive (F2 wake / recovery). `sessionStartHook` = wait for the
-    /// agent's own SessionStart(resume) telemetry to reach `report()` (Claude `hooksPush` — precise + fast).
-    /// `relaunchLiveness` = the successful relaunch (tmux `ensure`) IS the confirmation because the agent
-    /// emits no resume marker: Codex's `codex resume` writes no rollout at resume time, so waiting for a
-    /// hook would time out at the grace and fail-DANGEROUSLY `markDead` a card whose session is actually
-    /// live. The continuous liveness reconcile (`reconcileLiveness`, 2s) is the safety net if the relaunch
-    /// truly didn't take.
-    public enum ResumeConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
-        case sessionStartHook, relaunchLiveness
+    /// How a card being BORN — `launching` (blank spawn/reopen) OR `relaunching` (resume/restart) — is
+    /// confirmed alive (D1: one axis covers both being-born phases). `sessionStartHook` = wait for the
+    /// agent's own SessionStart telemetry to reach `report()` (Claude `hooksPush`: `startup` confirms a
+    /// launch, `resume` confirms a relaunch — precise + fast). `rolloutMeta` = wait for the agent's rollout
+    /// `session_meta` line, tailed post-launch (Codex `.discovered`): a fresh launch writes one so the tail
+    /// observer resolves readiness on it; a `codex resume` writes NO rollout, so the universal N=3
+    /// liveness-tick fallback (`launchReadyTicks`) resolves the still-pending waiter within the grace —
+    /// keeping the relaunch ON the readiness gate rather than off it. `relaunchLiveness` = the successful
+    /// relaunch (tmux `ensure`) IS the confirmation because the agent emits no marker at all; waiting for a
+    /// signal that never comes would time out at the grace and fail-DANGEROUSLY `markDead` a live card. The
+    /// continuous liveness reconcile (`reconcileLiveness`, 2s) is the safety net for every variant.
+    public enum ReadinessConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
+        case sessionStartHook, rolloutMeta, relaunchLiveness
     }
 
     /// How the durable inbox is drained into the agent (F3). `stopHook` = a Stop hook injects at
@@ -90,7 +94,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
-    public let resumeConfirmation: ResumeConfirmation
+    public let readinessConfirmation: ReadinessConfirmation
 
     /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
     /// chord that DENIES it. These are agent-terminal-layout facts, not provider-neutral truths: Claude's
@@ -106,7 +110,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
-                resumeConfirmation: ResumeConfirmation = .sessionStartHook,
+                readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
                 approveChord: [KeyToken] = [.named(.enter)],
                 denyChord: [KeyToken] = [.named(.esc)]) {
         self.sessionId = sessionId
@@ -117,7 +121,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
-        self.resumeConfirmation = resumeConfirmation
+        self.readinessConfirmation = readinessConfirmation
         self.approveChord = approveChord
         self.denyChord = denyChord
     }
@@ -137,5 +141,7 @@ public extension AgentCapabilities {
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
-        resumeConfirmation: .sessionStartHook)   // Claude fires SessionStart(resume) via hooksPush
+        // Claude fires SessionStart(startup) on a fresh launch and SessionStart(resume) on a relaunch, both
+        // via hooksPush — one hook capability confirms BOTH being-born phases.
+        readinessConfirmation: .sessionStartHook)
 }

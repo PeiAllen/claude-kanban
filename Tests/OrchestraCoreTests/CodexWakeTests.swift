@@ -12,19 +12,24 @@ struct CodexWakeTests {
 
     /// Codex-shaped wake+drain (resume-seed + Stop hook), run over the StubAdapter's resume machinery so the
     /// transcript/resume-callback plumbing matches `SendWakeTests`.
+    /// Codex-shaped wake+drain over the StubAdapter's SEEDED resume machinery (so the transcript/resume-
+    /// callback plumbing matches `SendWakeTests`). `.relaunchLiveness` readiness so the setup spawn + the
+    /// wake's resume both land immediately (this suite drives wake/seed delivery, not the awaited signal).
     static let relaunchCaps = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
         wakeTransport: .relaunch, inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed, authMode: .subscription)
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        readinessConfirmation: .relaunchLiveness)
 
-    /// The REAL Codex confirmation shape: `fileTail` telemetry + `.relaunchLiveness` — Codex emits NO
-    /// SessionStart(resume) marker, so the live relaunch must confirm the wake. (`relaunchCaps` above masks
-    /// the bug by advertising `.hooksPush` + hand-injecting a `sessionSource:"resume"` that Codex never sends.)
+    /// The `.relaunchLiveness` confirmation shape with `fileTail` telemetry — the agent emits NO marker on a
+    /// relaunch, so the live relaunch itself must confirm the wake (else every idle wake times out and kills
+    /// the card). `.relaunchLiveness` remains a valid capability value in 2.6 (Codex's own relaunch now
+    /// rides `.rolloutMeta` + the N=3 fallback — see `ReadinessSignalTests.test_relaunchingToLive_fallback`).
     static let realCodexCaps = AgentCapabilities(
         sessionId: .seeded, telemetry: .fileTail, contextUsage: .tokens,
         wakeTransport: .relaunch, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
-        resumeConfirmation: .relaunchLiveness)
+        readinessConfirmation: .relaunchLiveness)
 
     @Test("send resume-seeds an idle Codex card so the queued message lands now")
     func sendResumeSeedsIdleCodex() async throws {
