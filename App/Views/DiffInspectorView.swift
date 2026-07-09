@@ -15,7 +15,7 @@ struct DiffInspectorView: View {
     /// daemon, so the shipping view renders faithfully with no control socket. nil in production.
     var preview: String? = nil
 
-    @State private var base: DiffBase = .branch
+    @State private var base: DiffBase
     @State private var layout: DiffLayout = .unified
     @State private var text = ""
     @State private var files: [DiffFileSection] = []
@@ -31,6 +31,8 @@ struct DiffInspectorView: View {
         _files = State(initialValue: preview.map(DiffFileParser.parse) ?? [])
         _loading = State(initialValue: preview == nil)
         _layout = State(initialValue: split ? .split : .unified)
+        // BT3: a stacked card opens on Parent (its own work vs its parent), else Branch.
+        _base = State(initialValue: task.parentBranch != nil ? .parent : .branch)
     }
 
     /// `.parent` is only offered once the card carries a parent branch (stacked-branches sets it).
@@ -54,7 +56,7 @@ struct DiffInspectorView: View {
         HStack(spacing: 8) {
             if preview == nil {
                 Picker("", selection: $base) {
-                    ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0)).tag($0) }
+                    ForEach(baselines, id: \.self) { Text(diffBaselineLabel($0, parentBranch: task.parentBranch)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -70,7 +72,7 @@ struct DiffInspectorView: View {
             } else {
                 // Snapshot-only: a native segmented Picker won't render in ImageRenderer, so draw a
                 // faithful faux-segmented control for the headless screenshot.
-                fauxSegments(items: baselines.map { (diffBaselineLabel($0), $0 == base) })
+                fauxSegments(items: baselines.map { (diffBaselineLabel($0, parentBranch: task.parentBranch), $0 == base) })
                 fauxSegments(items: [(layoutLabel(.unified), layout == .unified),
                                      (layoutLabel(.split), layout == .split)])
             }
@@ -327,8 +329,6 @@ struct DiffInspectorView: View {
             .background(c.tint)
             .clipShape(Capsule())
     }
-
-    /// Path styled as a dimmed directory + bold filename, e.g. `App/Views/` + **DiffInspectorView.swift**.
 
     private func layoutLabel(_ l: DiffLayout) -> String {
         switch l {

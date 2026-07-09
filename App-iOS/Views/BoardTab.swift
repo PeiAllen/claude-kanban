@@ -170,7 +170,10 @@ private struct BoardPageView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        ForEach(cards) { MovableCard(task: $0) }
+                        ForEach(cards) { task in
+                            MovableCard(task: task)
+                                .padding(.leading, CGFloat(model.treeDepth(of: task)) * 16)
+                        }
                     }
                     .padding(16)
                 }

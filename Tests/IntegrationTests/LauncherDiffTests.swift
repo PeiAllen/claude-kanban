@@ -45,7 +45,7 @@ struct LauncherDiffTests {
     @Test("two mirror dirs cover modify/add/delete; new side hardlinks to live worktree files")
     func diffDirs() throws {
         let (wt, _, launcher) = try makeWorktree()
-        let dirs = try #require(try launcher.branchDiffDirs(worktree: wt))
+        let dirs = try #require(try launcher.branchDiffDirs(worktree: wt, parentRef: nil))
 
         func read(_ p: String) -> String { (try? String(contentsOfFile: p, encoding: .utf8)) ?? "" }
         let fm = FileManager.default
@@ -86,7 +86,7 @@ struct LauncherDiffTests {
         let config = Config(reposRoot: PathResolver.canonical(root),
                             worktreesRoot: PathResolver.canonical(root))
         let launcher = Launcher(resolver: PathResolver(config: config))
-        #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt)) == nil)
+        #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt), parentRef: nil) == nil)
     }
 
     @Test("openNotes refuses a worktree outside the allowlist before touching Obsidian")
@@ -95,7 +95,7 @@ struct LauncherDiffTests {
         // worktree target before the vault script is ever resolved or run.
         let launcher = Launcher(resolver: PathResolver(allowedRoots: []))
         #expect(throws: OrchestraError.pathNotAllowed("/not/allowed/worktree")) {
-            _ = try launcher.openNotes("/not/allowed/worktree")
+            _ = try launcher.openNotes("/not/allowed/worktree", parentRef: nil)
         }
     }
 
@@ -138,7 +138,7 @@ struct LauncherDiffTests {
     func changedNotesFiltering() throws {
         let (wt, launcher) = try makeNotesWorktree()
         // Vault-relative paths — the form workspace.json leaf `file` entries use.
-        let got = Set(launcher.changedNotes(worktree: wt))
+        let got = Set(launcher.changedNotes(worktree: wt, parentRef: nil))
         let expected: Set<String> = [
             "notes/keep.md",            // committed modify
             "notes/added.md",           // untracked add
@@ -154,7 +154,7 @@ struct LauncherDiffTests {
     func changedNotesNonGit() throws {
         let dir = IntegrationSupport.tempDir("ln0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir)).isEmpty)
+        #expect(launcher.changedNotes(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
     }
 
     @Test("changedNoteFiles returns each changed .md with correct M/A status + live content")
@@ -162,7 +162,7 @@ struct LauncherDiffTests {
         let (wt, launcher) = try makeNotesWorktree()
         // Keyed by path so the assertion doesn't depend on git's enumeration order.
         let byPath = Dictionary(uniqueKeysWithValues:
-            launcher.changedNoteFiles(worktree: wt).map { ($0.path, $0) })
+            launcher.changedNoteFiles(worktree: wt, parentRef: nil).map { ($0.path, $0) })
 
         #expect(Set(byPath.keys) == ["notes/keep.md", "notes/added.md", "docs/superpowers/spec.md"])
 
@@ -184,7 +184,56 @@ struct LauncherDiffTests {
     func changedNoteFilesNonGit() throws {
         let dir = IntegrationSupport.tempDir("lnf0")
         let launcher = Launcher(resolver: PathResolver(allowedRoots: [dir]))
-        #expect(launcher.changedNoteFiles(worktree: PathResolver.canonical(dir)).isEmpty)
+        #expect(launcher.changedNoteFiles(worktree: PathResolver.canonical(dir), parentRef: nil).isEmpty)
+    }
+
+    /// A repo whose worktree is a CHILD branch stacked on a `parent` branch: main(base) →
+    /// parent(+notes/parent.md) → child=worktree(+notes/child.md). With a parent ref the diff/notes
+    /// baseline against the parent (child's own work only); with nil they baseline against main (both).
+    private func makeStackedWorktree() throws -> (worktree: String, launcher: Launcher) {
+        let root = IntegrationSupport.tempDir("lst")
+        let repo = root + "/repo"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: repo + "/notes", withIntermediateDirectories: true)
+        try git(repo, "init", "-q", "-b", "main")
+        try git(repo, "config", "user.email", "t@t.t")
+        try git(repo, "config", "user.name", "T")
+        try "base\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        try git(repo, "add", ".")
+        try git(repo, "commit", "-q", "-m", "base")
+        // Parent branch with its OWN note.
+        try git(repo, "checkout", "-q", "-b", "parent")
+        try "# parent\n".write(toFile: repo + "/notes/parent.md", atomically: true, encoding: .utf8)
+        try git(repo, "add", ".")
+        try git(repo, "commit", "-q", "-m", "parent note")
+        try git(repo, "checkout", "-q", "main")   // leave `parent` as a bare local branch for the worktree
+        // Child worktree forked from parent, with its OWN note.
+        let wt = root + "/wt"
+        try git(repo, "worktree", "add", "-q", "-b", "child", wt, "parent")
+        try "# child\n".write(toFile: wt + "/notes/child.md", atomically: true, encoding: .utf8)
+        try git(wt, "add", ".")
+        try git(wt, "commit", "-q", "-m", "child note")
+
+        let config = Config(reposRoot: PathResolver.canonical(root),
+                            worktreesRoot: PathResolver.canonical(root))
+        return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
+    }
+
+    @Test("a parentRef baselines changedNotes + branchDiffDirs against the parent (child's own work only)")
+    func parentBaselineExcludesParentWork() throws {
+        let (wt, launcher) = try makeStackedWorktree()
+
+        // Parent baseline: only the child's own note.
+        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: "parent")) == ["notes/child.md"])
+        // Default (nil) baseline vs main: the parent's note is included too.
+        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: nil))
+                == ["notes/parent.md", "notes/child.md"])
+
+        // Zed "View changes": the parent-baselined multi-diff carries only the child's file.
+        let dirs = try #require(try launcher.branchDiffDirs(worktree: wt, parentRef: "parent"))
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: dirs.new + "/notes/child.md"))
+        #expect(!fm.fileExists(atPath: dirs.new + "/notes/parent.md"))   // parent's work excluded
     }
 
     @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")

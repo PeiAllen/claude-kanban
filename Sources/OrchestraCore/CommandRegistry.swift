@@ -44,7 +44,8 @@ public struct CommandRegistry: Sendable {
                     cwd: p.optString("cwd"),
                     access: p.optString("access").flatMap(CardAccess.init(rawValue:)) ?? .readWrite,
                     scratch: p["scratch"]?.boolValue ?? false,
-                    seed: p.optString("seed"))
+                    seed: p.optString("seed"),
+                    base: p.optString("base"))
                 let task = try await svc.spawn(input, source: src)
                 return try JSONValue(encodable: task)
             },
@@ -133,6 +134,48 @@ public struct CommandRegistry: Sendable {
                 let t = try await svc.resolveRef(try p.string("ref"))
                 let updated = try await svc.resumeInCard(t.id, seed: try p.string("context"), source: src)
                 return try JSONValue(encodable: updated)
+            },
+
+            "set-parent": { svc, p, src in
+                let updated = try await svc.setParent(
+                    ref: try p.string("ref"),
+                    parent: p.optString("parent"),
+                    mode: p.optString("mode") ?? "adopt",
+                    watch: p.optBool("watch") ?? false,
+                    source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "tree": { svc, p, _ in
+                // Read-only lineage query (like `list`): not logged, to keep the activity feed clean.
+                let snap = try await svc.tree(ref: p.optString("ref"), repo: p.optString("repo"))
+                return try JSONValue(encodable: snap)
+            },
+
+            "synced": { svc, p, src in
+                let updated = try await svc.synced(ref: try p.string("ref"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "shipped": { svc, p, src in
+                let updated = try await svc.shipped(ref: try p.string("ref"), by: p.optString("by"),
+                                                    force: p.optBool("force") ?? false, source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "merge-request": { svc, p, src in
+                let updated = try await svc.mergeRequest(ref: try p.string("ref"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "borrow": { svc, p, src in
+                let path = try await svc.borrow(ref: try p.string("ref"), source: src)
+                return .object(["worktree": .string(path)])
+            },
+
+            "release": { svc, p, src in
+                try await svc.release(ref: try p.string("ref"), source: src)
+                return .object(["released": .bool(true)])
             },
 
             "status": { svc, p, src in
@@ -246,7 +289,8 @@ public struct CommandRegistry: Sendable {
                         prompt: try item.string("prompt"), repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),
-                        seed: item.optString("seed")))
+                        seed: item.optString("seed"),
+                        base: item.optString("base")))
                 }
                 let result = await svc.batchSpawn(inputs, source: src)
                 return try JSONValue(encodable: result)

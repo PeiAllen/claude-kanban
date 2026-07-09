@@ -7,20 +7,44 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var removed: [String] = []
     private(set) var ensured: [String] = []   // repo+branch pairs ensure() was called for
+    private var existingBranches: Set<String> = []   // branches ensure() should report as pre-existing
     init(root: String) { self.root = root }
+
+    /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
+    /// re-spawn onto a branch whose worktree was removed but whose branch + lineage config remain).
+    func markBranchExists(_ branch: String) {
+        lock.lock(); existingBranches.insert(branch); lock.unlock()
+    }
 
     func path(repo: String, branch: String) -> String {
         "\(root)/\((repo as NSString).lastPathComponent)/\(branch)"
     }
-    func ensure(repo: String, branch: String) throws -> (worktree: String, created: Bool) {
-        lock.lock(); ensured.append("\(repo)#\(branch)"); lock.unlock()
+    private(set) var ensuredBases: [String: String?] = [:]   // branch -> base ensure() saw
+    func ensure(repo: String, branch: String, base: String?) throws
+        -> (worktree: String, created: Bool, branchExisted: Bool) {
+        lock.lock()
+        ensured.append("\(repo)#\(branch)")
+        ensuredBases[branch] = base
+        let existed = existingBranches.contains(branch)
+        lock.unlock()
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
-        return (wt, true)
+        return (wt, true, existed)
     }
     func remove(worktree: String, force: Bool) throws {
         lock.lock(); removed.append(worktree); lock.unlock()
     }
+    // O3 borrow stub — mkdir a fake borrow dir; real git behavior is covered by BorrowLifecycleTests
+    // (makeReal). `pruneOrphanBorrows` is a no-op here (no git worktree list).
+    func borrowPath(repo: String, branch: String) -> String {
+        "\(root)/\((repo as NSString).lastPathComponent)/orch-borrow-\(branch.replacingOccurrences(of: "/", with: "-"))"
+    }
+    func borrow(repo: String, branch: String) throws -> String {
+        let wt = borrowPath(repo: repo, branch: branch)
+        try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+        return wt
+    }
+    func pruneOrphanBorrows(repo: String) {}
 }
 
 /// In-memory tmux stub — tracks alive sessions and records launch argv; thread-safe (offActor runs
@@ -260,10 +284,58 @@ enum TestEnv {
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
+    /// Rebuild a fresh service over the SAME on-disk stores as an earlier `make()` — simulates a daemon
+    /// restart (in-memory timers/loops are gone; the file-backed store/inbox/trust reload from disk).
+    /// Pass the canonical `base` that `make()` returned: `make` writes those files under the non-canonical
+    /// `NSTemporaryDirectory()` prefix, which is the same inode via the macOS `/var → /private/var` symlink,
+    /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
+    /// itself a realistic "fresh daemon" trait.
+    static func remake(base: String, capabilities: AgentCapabilities = .claudeCode)
+        -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
+        let config = Config(reposRoot: base + "/repos",
+                            worktreesRoot: base + "/worktrees",
+                            allowlist: [base])
+        let sessions = StubSessions()
+        let worktrees = StubWorktrees(root: config.worktreesRoot)
+        let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
+        let store = TaskStore(path: base + "/tasks.json")
+        let trust = TrustLedger(path: base + "/trust-ledger.json")
+        let inbox = Inbox(path: base + "/inbox.json")
+        let svc = OrchestraService(config: config, store: store,
+                                   registry: AgentRegistry(adapters: [adapter]),
+                                   worktrees: worktrees, sessions: sessions, trust: trust, inbox: inbox)
+        return (svc, sessions, worktrees, adapter, trust, base)
+    }
+
     /// Make a repo dir under reposRoot and return its path.
     static func repo(_ base: String, _ name: String = "app") -> String {
         let p = base + "/repos/" + name
         try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
         return p
+    }
+
+    /// A service wired with the REAL `WorktreeManager` (git worktrees actually cut) — needed for the
+    /// remote-tier tests, where a spawn's start-point must resolve against a real fetched ref. Everything
+    /// else (store/trust/inbox/adapter) is stubbed as in `make`. Returns the service + its allowlisted base
+    /// (the git working repo + its bare origin are created UNDER `base` by `makeRemoteRepo`).
+    static func makeReal(capabilities: AgentCapabilities = .claudeCode)
+        -> (svc: OrchestraService, sessions: StubSessions, adapter: StubAdapter, base: String) {
+        let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-rsvc-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
+        let config = Config(reposRoot: base + "/repos",
+                            worktreesRoot: base + "/worktrees",
+                            allowlist: [base])
+        let resolver = PathResolver(config: config)
+        let sessions = StubSessions()
+        let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
+        let store = TaskStore(path: base + "/tasks.json")
+        let trust = TrustLedger(path: base + "/trust-ledger.json")
+        let inbox = Inbox(path: base + "/inbox.json")
+        let worktrees = WorktreeManager(config: config, resolver: resolver)
+        let svc = OrchestraService(config: config, store: store,
+                                   registry: AgentRegistry(adapters: [adapter]),
+                                   worktrees: worktrees, sessions: sessions, resolver: resolver,
+                                   trust: trust, inbox: inbox)
+        return (svc, sessions, adapter, base)
     }
 }

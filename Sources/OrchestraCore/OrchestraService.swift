@@ -31,6 +31,33 @@ public actor OrchestraService {
     /// Conclusion-watch for the reactive fan-out (F2). A subscriber to this service's terminal
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
+    /// Branch-tree lineage store (git-config parent links). The single writer; `Task.parentBranch`
+    /// is a cache derived from it at spawn / set-parent.
+    let lineage = BranchLineage()
+    /// The isolated remote-parent tier (BT6): hardened `fetch`/`lsRemoteTip` for remote bases + watch.
+    let remoteParents = RemoteParents()
+    /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
+    /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
+    var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    /// Per-card watch generation — bumped on every start/stop so a cancelled loop's terminal cleanup can't
+    /// null out a newer loop installed by a restart (see `startRemoteWatch`).
+    var remoteWatchGen: [UUID: Int] = [:]
+    /// Injectable poll cadence — short values in tests avoid real 60s/300s sleeps. (active, idle).
+    var remoteWatchIntervals: (active: Duration, idle: Duration) = (.seconds(60), .seconds(300))
+    /// The `gh` boundary (FakeGh in tests). Default: the real capability-probing client.
+    var gh: any GhClient = GhProbe()
+    /// S3-1: per-card once-latch for the persistent remote-parent warnings (gone / PR-closed-unmerged),
+    /// so a condition that is true every idle tick surfaces ONCE, not every 5 minutes. Cleared when the
+    /// tip moves (condition may have changed) or the card is re-parented / leaves the remote tier.
+    var remoteWarnLatch: Set<UUID> = []
+    /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
+    /// parent card on a timer until the child leaves the `mergeRequested` state.
+    var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
+    var mergeRequestNudgeInterval: Duration = .seconds(300)
+    /// O3: child card → the throwaway `orch-borrow-*` worktree it borrowed to squash-merge into a bare
+    /// parent. Released explicitly (`release`) or swept on the child's archive / at startup.
+    var borrowedWorktrees: [UUID: String] = [:]
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
     var watchRegistry: [UUID: Set<UUID>] = [:]
@@ -70,6 +97,12 @@ public actor OrchestraService {
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
     // activity burst off the normalized `report()` funnel — NOT a periodic poll.
     var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    // Per-card coalescing debounce for the TreeStat recompute (branch-tree, BT4). Twin of
+    // `diffStatDebounce` — a one-shot per activity burst off the `report()` funnel, not a poll.
+    var treeStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    // Per-parent coalescing debounce for the child fan-out (branch-tree, BT4). Keeps the `git config
+    // --get-regexp` child lookup OFF the hot report path — one lookup per activity burst, not per report.
+    var childFanoutDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
     public init(config: Config,
                 store: TaskStore? = nil,
@@ -227,6 +260,7 @@ public actor OrchestraService {
         let realRepo: String
         let cwd: String
         let origin: CardOrigin
+        var derivedParentBranch: String? = nil
         if input.scratch {
             cwd = Config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -239,8 +273,82 @@ public actor OrchestraService {
         } else {
             // Security: reject a non-allowlisted repo BEFORE creating anything.
             realRepo = try resolver.resolveRepo(input.repo)
-            (cwd, _) = try worktrees.ensure(repo: realRepo, branch: input.branch)
+            // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
+            // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
+            // the separate worktree-coupling design). But every derived parent-card lookup must be
+            // DETERMINISTIC (oldest live card wins — see `derivedCard`), not an arbitrary sibling. Warn on
+            // multiplicity so the operator sees the ambiguity they just created.
+            if let existing = await store.all().first(where: {
+                !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == input.branch
+            }) {
+                emitActivity(.warning, existing, source,
+                    "spawning a second live card onto branch \(input.branch) (already owned by "
+                    + "\(existing.shortId)) — derived parent lookups use the oldest card")
+            }
+            // S2-3(i): normalize a user-supplied LOCAL base to a bare branch name BEFORE `ensure`. `ensure`
+            // accepts a refs/-prefixed base verbatim (for the internal remote private-ref path), but
+            // `recordSpawnBase` then resolves refs/heads/<base> → refs/heads/refs/heads/foo and throws AFTER
+            // the worktree is cut. Strip a refs/heads/ prefix; reject any other refs/… (remote forms —
+            // origin/<b>, pr#<N> — are classified separately and left untouched).
+            var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let b = normalizedBase, b.hasPrefix("refs/"),
+               RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
+                guard b.hasPrefix("refs/heads/") else {
+                    throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+                }
+                normalizedBase = String(b.dropFirst("refs/heads/".count))
+            }
+            // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
+            // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
+            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
+            var remoteFetchedOID: String? = nil
+            var ensureBase = normalizedBase
+            if let remoteRef {
+                let b = normalizedBase ?? remoteRef.canonical
+                remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef,
+                    context: "spawn base \(b): could not fetch remote parent \(b)")
+                ensureBase = remoteRef.privateRef
+            }
+            let ensured = try worktrees.ensure(repo: realRepo, branch: input.branch, base: ensureBase)
+            cwd = ensured.worktree
             origin = .worktree
+            // S2-3(ii): a brand-new branch cannot have had children before it existed, so any pre-existing
+            // `orchestra-parent == <this branch>` is a dangling value left by a deleted same-named branch
+            // (name reuse). Prune those stale links before recording, so the cycle guard doesn't walk the
+            // dangling chain and reject a legitimate reuse (fixture-proven false "would create a cycle").
+            if !ensured.branchExisted {
+                for stale in await lineage.children(repo: realRepo, of: input.branch) {
+                    try? await lineage.clear(repo: realRepo, branch: stale)
+                }
+            }
+            // S2-3(iii): a lineage-record failure fires AFTER the worktree + branch were created. Roll them
+            // back so the failed spawn leaves no orphan worktree/branch that a retry's fileExists fast-path
+            // would silently adopt with no base.
+            do {
+                // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
+                // link survives card archival), so re-derive the parentBranch cache only then — gated on
+                // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
+                // `git config` read on the hot path.
+                if ensured.branchExisted {
+                    // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
+                    derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
+                } else if let remoteRef, let oid = remoteFetchedOID {
+                    // Remote spawn-with-base (BT6): branch created on the fetched private ref — record the
+                    // canonical remote lineage (+prNumber, watch on by default) with the fetched tip as base.
+                    derivedParentBranch = try await recordSpawnRemoteBase(
+                        repo: realRepo, branch: input.branch, ref: remoteRef, oid: oid)
+                } else if let base = normalizedBase, !base.isEmpty {
+                    // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
+                    // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
+                    derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
+                }
+            } catch {
+                try? worktrees.remove(worktree: ensured.worktree, force: true)
+                if !ensured.branchExisted {
+                    _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
+                }
+                throw OrchestraError.io("spawn rolled back (worktree/branch removed): \(error)")
+            }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
         // (Claude) gets its id minted pre-launch; a `.discovered` agent is left nil and reads its id
@@ -287,7 +395,8 @@ public actor OrchestraService {
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, status: provisional ? .waiting : .running,
-            ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt
+            ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
+            parentBranch: derivedParentBranch
         )
         let created = try await store.create(task)
 
@@ -329,6 +438,14 @@ public actor OrchestraService {
         let active = await store.all().filter { !$0.archived && $0.status != .dead }
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
             emitActivity(.warning, created, source, warn.message)
+        }
+
+        // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
+        // link's `watch` flag (a fresh remote-base spawn sets it true; a churn re-spawn onto an existing
+        // branch with watch=false must not start one) rather than relying on the loop to bail on tick 1.
+        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
+           await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
+            startRemoteWatch(cardId: id)
         }
         return created
     }
@@ -542,6 +659,33 @@ public actor OrchestraService {
 
     public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
         let t = try await require(id)
+        stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
+        remoteWatchGen[id] = nil   // S4: the card is terminal — drop its generation entry (bounds the map)
+        stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
+        if let borrow = borrowedWorktrees[id] {   // O3: sweep a borrow the card left open
+            try? worktrees.remove(worktree: borrow, force: true)
+            borrowedWorktrees[id] = nil
+        }
+        // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
+        // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
+        treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil
+        childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
+        // S2-5: a worktree card's branch goes bare on archive — nudge its live children so a stopped child
+        // re-evaluates its ship path instead of waiting on the archived card's (now dead) inbox.
+        if t.origin == .worktree {
+            let childBranches = await lineage.children(repo: t.repo, of: t.branch)
+            if !childBranches.isEmpty {
+                let active = await store.all().filter { $0.id != id }
+                for cb in childBranches {
+                    // S2-6: deterministic (oldest) live child, not an arbitrary co-located sibling.
+                    if let card = derivedCard(repo: t.repo, branch: cb, among: active) {
+                        try? await inbox.enqueue(card.id,
+                            "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship")
+                        await wake(card.id)
+                    }
+                }
+            }
+        }
         try? sessions.kill(sessions.sessionName(id))
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
@@ -808,7 +952,7 @@ public actor OrchestraService {
 
     public func openInZed(_ id: UUID) async throws {
         let t = try await require(id)
-        try launcher.openInZed(t.cwd)
+        try launcher.openInZed(t.cwd, parentRef: resolvedParentRef(t))
     }
 
     /// Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
@@ -816,7 +960,7 @@ public actor OrchestraService {
     @discardableResult
     public func openNotes(_ id: UUID) async throws -> (opened: Int, total: Int) {
         let t = try await require(id)
-        return try launcher.openNotes(t.cwd)
+        return try launcher.openNotes(t.cwd, parentRef: resolvedParentRef(t))
     }
 
     // MARK: - config

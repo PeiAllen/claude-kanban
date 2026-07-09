@@ -251,8 +251,9 @@ public class BoardStore: ObservableObject {
     public var selected: Task? { tasks.first { $0.id == selectedId } ?? archived.first { $0.id == selectedId } }
 
     public func cards(in column: Column) -> [Task] {
-        tasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
-             .sorted { $0.order < $1.order }
+        BoardTree.ordered(
+            tasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
+                 .sorted { $0.order < $1.order })
     }
 
     /// Non-worktree cards (`.borrowed`/`.scratch`) live in the standalone freeform region, not the
@@ -276,6 +277,22 @@ public class BoardStore: ObservableObject {
         let sibs = worktreeSiblings(of: task)
         guard !sibs.isEmpty else { return "" }
         return "Also on this worktree:\n" + sibs.map { "\($0.shortId)  \($0.title)" }.joined(separator: "\n")
+    }
+
+    /// The live card on this card's parent branch (same repo, active worktree card), or nil when the
+    /// card is unparented or its parent branch has no live card. Drives the card's parent chip +
+    /// jump-to-parent. Pure `Task`-data lookup — see `BoardTree.parentCard`.
+    public func parentCard(of task: Task) -> Task? {
+        BoardTree.parentCard(tasks, of: task)
+    }
+
+    /// Indent level of `task` within its column's branch tree (0 for roots), capped at
+    /// `BoardTree.maxIndent`. The card views multiply this by a per-surface step for the leading inset.
+    public func treeDepth(of task: Task) -> Int {
+        BoardTree.indent(
+            tasks.filter { $0.column == task.column && !$0.archived && $0.origin == .worktree }
+                 .sorted { $0.order < $1.order },
+            of: task)
     }
 
     /// distinct agents with running/waiting cards (for the MCP chip count).
@@ -652,7 +669,8 @@ public class BoardStore: ObservableObject {
     @discardableResult
     public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
-               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false) async -> Task? {
+               cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
+               base: String? = nil) async -> Task? {
         var p: [String: JSONValue] = [
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
@@ -663,6 +681,8 @@ public class BoardStore: ObservableObject {
         if let cwd { p["cwd"] = .string(cwd); p["access"] = .string(access.rawValue) }
         // Scratch card: a fresh throwaway dir the daemon mkdir's (and rm -rf's on archive).
         if scratch { p["scratch"] = .bool(true) }
+        // Spawn-with-base (BT2): create the worktree branch on top of an existing local branch.
+        if let base, !base.isEmpty { p["base"] = .string(base) }
         do {
             let t = try await client.call("spawn", .object(p)).decode(Task.self)
             apply(.taskUpserted(t))   // show the card immediately; the event stream is idempotent

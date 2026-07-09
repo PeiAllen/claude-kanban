@@ -46,6 +46,13 @@ public enum CardTab: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// The baseline a card's Diff tab opens on (design §3 Diff, BT3): **Parent** for a stacked card so it
+/// shows the card's OWN work vs its parent, else **Branch** (vs the default branch). Pure so the Diff
+/// tab and its tests agree on the default.
+public func diffDefaultBaseline(parentBranch: String?) -> DiffBase {
+    parentBranch != nil ? .parent : .branch
+}
+
 /// The pinned-header worktree breadcrumb (design §3). A worktree card reads `repo/branch → …/dir`; a
 /// freeform/scratch card has no branch, so it reads its directory path alone. Pure string shaping so the
 /// header stays declarative and the format is testable.

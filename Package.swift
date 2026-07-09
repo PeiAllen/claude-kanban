@@ -64,6 +64,8 @@ let package = Package(
                 .copy("Resources/com.orchestra.daemon.plist"),
                 .copy("Resources/delegation-skill.md"),
                 .copy("Resources/delegation-agents.md"),
+                .copy("Resources/tree-skill.md"),
+                .copy("Resources/tree-agents.md"),
             ]
         ),
         .executableTarget(name: "orchestrad", dependencies: ["OrchestraCore"]),

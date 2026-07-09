@@ -49,6 +49,11 @@ public enum CommandCatalog {
                           "col": colProp(startInOnly: true),
                           "seed": strProp("Fork/fan-out context (the parent slice / handoff summary) the "
                               + "fresh card opens on — folded ahead of `prompt` into the launch turn."),
+                          "base": strProp("Parent to create this card's branch ON TOP OF: an existing local "
+                              + "branch, or a remote parent — 'origin/<branch>' (same-repo remote branch) or "
+                              + "'pr#<N>' (pull request). A remote base is fetched and watched for merges. The "
+                              + "new branch starts at the base's tip and its parent link is recorded. Ignored "
+                              + "when the branch already exists. Omit for today's HEAD behavior."),
                       ], required: ["prompt"])),
 
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
@@ -104,6 +109,66 @@ public enum CommandCatalog {
                           "context": strProp("Handoff context — the summary/instructions the resumed, "
                               + "clean-context session opens on (folded ahead of any queued inbox messages)."),
                       ], required: ["ref", "context"])),
+
+        CommandSchema(name: "set-parent",
+                      summary: "Set or clear a card branch's parent link. With `parent`: 'adopt' (default) "
+                          + "records parent + merge-base (history untouched); 'move' repoints and keeps the "
+                          + "recorded base as the rebase anchor, marking restack-needed. Omit `parent` to clear.",
+                      params: schema([
+                          "ref": refProp(),
+                          "parent": strProp("Parent branch ref: a local name, or a remote form "
+                              + "'origin/<branch>' (same-repo remote branch) / 'pr#<N>' (pull request). "
+                              + "Omit to clear the link."),
+                          "mode": strProp("'adopt' (default): metadata-only relink, base = merge-base. "
+                              + "'move': repoint + keep recorded base; marks restack-needed and nudges the "
+                              + "owner to `git rebase --onto <new-parent> <recorded-base>`. Ignored for a "
+                              + "remote parent (no local history to rebase yet)."),
+                          "watch": boolProp("Remote parents only: poll the PR/branch and auto-redirect this "
+                              + "card onto the parent's base when it merges. Default off."),
+                      ], required: ["ref"])),
+
+        CommandSchema(name: "tree",
+                      summary: "Lineage snapshot — parent/children per card. Scope by `ref` or `repo`; "
+                          + "omit both for all active cards.",
+                      params: schema([
+                          "ref": refProp(),
+                          "repo": strProp("Limit to cards in this repo root."),
+                      ], required: [])),
+
+        CommandSchema(name: "synced",
+                      summary: "Report that this card merged/restacked its parent down: record the "
+                          + "parent's current tip as the sync base and clear the stale/behind signal.",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "shipped",
+                      summary: "Post-merge bookkeeping after a child branch was merged into its parent: "
+                          + "notify + wake the shipped child, retarget the child's own children onto the "
+                          + "grandparent (keeping each one's recorded base) with a restack nudge. Idempotent. "
+                          + "Refuses if the parent tip hasn't advanced past the recorded base (nothing "
+                          + "merged) unless `force`.",
+                      params: schema([
+                          "ref": refProp(),
+                          "force": boolProp("Skip the parent-tip-advanced sanity check (use for a genuinely "
+                              + "empty/no-op squash). Default off."),
+                      ], required: ["ref"])),
+
+        CommandSchema(name: "merge-request",
+                      summary: "Ask this card's LIVE parent card to squash-merge it up the tree: the daemon "
+                          + "composes the request, nudges the parent card, and marks this card 'merge "
+                          + "requested' (a waiting badge) until the parent runs `shipped`. Dedups re-sends.",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "borrow",
+                      summary: "Cut a throwaway worktree checking out this card's BARE parent branch (no "
+                          + "live card owns it) so you can squash-merge into it, then `shipped`. Returns the "
+                          + "worktree path. Refuses a remote parent (publish a PR) or a live-card parent "
+                          + "(send a merge-request).",
+                      params: schema(["ref": refProp()], required: ["ref"])),
+
+        CommandSchema(name: "release",
+                      summary: "Tear down this card's borrow worktree (the daemon also sweeps it on archive "
+                          + "and at startup).",
+                      params: schema(["ref": refProp()], required: ["ref"])),
 
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",
                       params: schema(["ref": refProp()], required: ["ref"])),
@@ -174,7 +239,7 @@ public enum CommandCatalog {
         CommandSchema(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
                       params: schema(["tasks": .object([
                           "type": .string("array"),
-                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?}"),
+                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, base?}"),
                       ])], required: ["tasks"])),
 
         CommandSchema(name: "trust",

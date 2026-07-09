@@ -133,6 +133,7 @@ private struct ColumnView: View {
                         ForEach(cards) { task in
                             CardView(task: task)
                                 .id(task.id)
+                                .padding(.leading, CGFloat(model.treeDepth(of: task)) * 14)
                                 .draggable(task.id.uuidString)
                         }
                     }

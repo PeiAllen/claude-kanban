@@ -41,7 +41,8 @@ enum CLIRunner {
                 let p = JSONValue.object(fields
                     .merging(optional("model", flags.value("model"))) { a, _ in a }
                     .merging(optional("col", flags.value("col"))) { a, _ in a }
-                    .merging(optional("seed", flags.value("seed"))) { a, _ in a })
+                    .merging(optional("seed", flags.value("seed"))) { a, _ in a }
+                    .merging(optional("base", flags.value("base"))) { a, _ in a })
                 let task = try await client.call("spawn", p)
                 printRef(task)
 
@@ -98,6 +99,55 @@ enum CLIRunner {
                 }
                 let r = try await client.call("trust", .object(["path": .string(path)]))
                 if try r.decode(TrustGrantResult.self).granted { print("trusted \(path)") }
+
+            case "set-parent":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                var params: [String: JSONValue] = ["ref": .string(ref)]
+                if let parent = flags.value("parent") ?? flags.positional(1) {
+                    params["parent"] = .string(parent)
+                }
+                if let mode = flags.value("mode") { params["mode"] = .string(mode) }
+                if flags.has("watch") { params["watch"] = .bool(true) }
+                let task = try await client.call("set-parent", .object(params))
+                printRef(task)
+
+            case "tree":
+                var params: [String: JSONValue] = [:]
+                if let ref = flags.value("ref") ?? flags.positional(0) { params["ref"] = .string(ref) }
+                if let repo = flags.value("repo") { params["repo"] = .string(repo) }
+                let r = try await client.call("tree", .object(params))
+                printJSON(r)
+
+            case "synced":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let task = try await client.call("synced", .object(["ref": .string(ref)]))
+                printRef(task)
+
+            case "shipped":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                var shippedParams: [String: JSONValue] = ["ref": .string(ref)]
+                // The caller card (this session), so the daemon can skip the parent self-echo (S1-3).
+                if let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !selfId.isEmpty {
+                    shippedParams["by"] = .string(selfId)
+                }
+                if flags.has("force") { shippedParams["force"] = .bool(true) }
+                let task = try await client.call("shipped", .object(shippedParams))
+                printRef(task)
+
+            case "merge-request":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let task = try await client.call("merge-request", .object(["ref": .string(ref)]))
+                printRef(task)
+
+            case "borrow":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let r = try await client.call("borrow", .object(["ref": .string(ref)]))
+                if let wt = r["worktree"]?.stringValue { print(wt) } else { printJSON(r) }
+
+            case "release":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                _ = try await client.call("release", .object(["ref": .string(ref)]))
+                print("released")
 
             case "status":
                 let ref = flags.positional(0) ?? flags.require("ref")

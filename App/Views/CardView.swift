@@ -154,7 +154,9 @@ struct CardView: View {
                     .foregroundStyle(theme.text3)
                     .help("Read-only")
             }
+            parentChip
             worktreeBadge
+            treeBadge
             Spacer(minLength: 6)
             meta
                 .frame(maxWidth: 148, alignment: .trailing)
@@ -173,6 +175,61 @@ struct CardView: View {
             }
             .foregroundStyle(theme.text3)
             .help(model.worktreeSiblingsHelp(of: task))
+        }
+    }
+
+    /// Parent-branch chip: shows `⤴ <parent>` whenever the card has a parent branch. Clicking jumps to
+    /// the live parent card (select + enter its terminal); a no-op with an explanatory tooltip when no
+    /// live card owns that branch. Reads `Task` + the store's derived lookup — no new plumbing.
+    @ViewBuilder private var parentChip: some View {
+        if let parent = task.parentBranch {
+            let target = model.parentCard(of: task)
+            Button {
+                // S3-3: select-only — a "look at my parent" chip shouldn't enter the parent's terminal
+                // (a heavier action than the chip implies; matches iOS's lighter push).
+                if let target { model.selectedId = target.id }
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.turn.left.up").font(F.ui(8))
+                    Text(parent).font(F.mono(9.5)).lineLimit(1).truncationMode(.middle)
+                }
+                .foregroundStyle(target != nil ? theme.accent : theme.text3)
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(Capsule(style: .continuous).fill(theme.chip))
+            }
+            .buttonStyle(.plain)
+            .disabled(target == nil)
+            .frame(maxWidth: 120, alignment: .leading)
+            .help(target != nil
+                  ? "Select the parent card on \(parent)"
+                  : "No live card on parent branch \(parent)")
+        }
+    }
+
+    /// Lineage status (branch-tree): `↓N` when the parent has advanced past the recorded base (stale),
+    /// a restack glyph when the branch needs re-basing (parent rewrote/shipped). Styled like the diffstat
+    /// pill; hidden when in-sync or untracked (`treeStat == nil`). Reads `Task` directly — no store plumbing.
+    @ViewBuilder private var treeBadge: some View {
+        if let ts = task.treeStat {
+            switch ts.state {
+            case .stale:
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.down").font(F.ui(8.5))
+                    Text("\(ts.behind)").font(F.mono(10, .medium))
+                }
+                .foregroundStyle(theme.amber.text)
+                .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
+            case .restackNeeded:
+                Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.red.text)
+                    .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
+            case .mergeRequested:
+                Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.amber.text)
+                    .help("Merge requested — waiting for the parent card to squash-merge this branch")
+            case .inSync:
+                EmptyView()
+            }
         }
     }
 

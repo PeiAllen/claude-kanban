@@ -8,6 +8,7 @@ import OrchestraUI
 /// context mini-gauge, diffstat, current-activity line.
 struct BoardCardCell: View {
     let task: Task
+    @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
     private var isFreeform: Bool { task.origin != .worktree }
@@ -75,9 +76,65 @@ struct BoardCardCell: View {
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            treeBadge
+            parentChip
             Spacer(minLength: 6)
             if let pct = ctxPct { CtxGauge(pct: pct, theme: theme, width: 30, height: 5, minFill: 2, showPercent: false) }
             meta
+        }
+    }
+
+    /// Lineage status (branch-tree): `↓N` when the parent advanced (stale), a restack glyph when a
+    /// restack is needed. Mirrors the desktop `treeBadge`; hidden when in-sync / untracked.
+    @ViewBuilder private var treeBadge: some View {
+        if let ts = task.treeStat {
+            // S3-3: the phone has no hover tooltip — carry the meaning in an accessibility label so the
+            // otherwise-cryptic glyphs (↓N / restack / waiting) are legible to VoiceOver + long-press.
+            switch ts.state {
+            case .stale:
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.down")
+                    Text("\(ts.behind)")
+                }
+                .font(.system(.caption2, design: .monospaced).weight(.medium))
+                .foregroundStyle(theme.amber.text)
+                .accessibilityLabel("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead")
+            case .restackNeeded:
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(theme.red.text)
+                    .accessibilityLabel("Parent history changed — restack needed")
+            case .mergeRequested:
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(theme.amber.text)
+                    .accessibilityLabel("Merge requested — waiting for the parent card")
+            case .inSync:
+                EmptyView()
+            }
+        }
+    }
+
+    /// Parent-branch chip: `⤴ <parent>` when the card has a parent branch. Tapping navigates to the
+    /// live parent card's detail (sets `selectedId`); a no-op when no live card owns the branch.
+    @ViewBuilder private var parentChip: some View {
+        if let parent = task.parentBranch {
+            let target = model.parentCard(of: task)
+            Button {
+                if let target { model.selectedId = target.id }
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.turn.left.up")
+                    Text(parent).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(target != nil ? theme.accent : theme.text3)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(theme.chip))
+            }
+            .buttonStyle(.plain)
+            .disabled(target == nil)
+            .frame(maxWidth: 130, alignment: .leading)
         }
     }
 

@@ -415,12 +415,15 @@ struct CodexDelegationTests {
         return (home, CodexAdapter(codexHome: home))
     }
 
-    @Test("prepareToLaunch writes the Codex AGENTS.md variant into the isolated CODEX_HOME")
+    @Test("prepareToLaunch composes the delegation + tree sections into the isolated CODEX_HOME AGENTS.md")
     func materializesAgents() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: false))
         let text = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
-        #expect(text == DelegationDocs.load(.codexAgents))       // the Codex variant, not the skill
+        #expect(text.contains(try #require(DelegationDocs.forAgent("codex"))))   // delegation section body
+        #expect(text.contains(try #require(TreeDocs.forAgent("codex"))))         // tree section body
+        #expect(text.contains(AgentsFileComposer.startMarker("delegation")))
+        #expect(text.contains(AgentsFileComposer.startMarker("tree")))
         #expect(!text.hasPrefix("---\n"))                        // plain AGENTS.md, no frontmatter
     }
 
@@ -439,8 +442,12 @@ struct CodexDelegationTests {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         let ctx = AdapterContext(cwd: "/wt", trustCwd: true)
         try adapter.prepareToLaunch(ctx)
-        try adapter.prepareToLaunch(ctx)
-        #expect(try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8) == DelegationDocs.load(.codexAgents))
+        try adapter.prepareToLaunch(ctx)   // second apply must not duplicate either section
+        let text = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
+        #expect(text.contains(try #require(DelegationDocs.forAgent("codex"))))
+        #expect(text.contains(try #require(TreeDocs.forAgent("codex"))))
+        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
+        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("tree")).count == 2)
         // the trust write (config.toml) is unaffected by the AGENTS.md materialization
         #expect((try? String(contentsOfFile: "\(home)/config.toml", encoding: .utf8))?.contains("trust_level = \"trusted\"") == true)
     }

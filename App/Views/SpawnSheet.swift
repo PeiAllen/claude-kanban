@@ -17,6 +17,22 @@ struct SpawnSheet: View {
     @State private var prompt = ""
     @State private var repo = ""
     @State private var branch = ""
+    /// BT2: an existing local branch to create the new branch ON TOP OF (empty = none = today's HEAD
+    /// behavior). Sourced from the same `branches` list as the branch combo.
+    @State private var base = ""
+    /// BT6: a REMOTE parent to branch from — `origin/<branch>` (same-repo remote branch) or `pr#<N>`
+    /// (pull request). The daemon fetches + watches it. Non-empty ⇒ it wins over the local base picker.
+    @State private var remoteBase = ""
+
+    /// The base to actually send: `nil` unless a base is chosen AND the branch is newly created — the
+    /// daemon ignores base for an existing branch, so we neither send nor preview it there. A typed remote
+    /// parent (pr#N / origin/branch) takes precedence over the local base picker.
+    private var effectiveBase: String? {
+        if branches.contains(branch) { return nil }
+        let rb = remoteBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rb.isEmpty { return rb }
+        return base.isEmpty ? nil : base
+    }
     @State private var agentSel = ""
     @State private var modelSel = ""
     @State private var startIn: StartIn = .plan
@@ -109,7 +125,7 @@ struct SpawnSheet: View {
     /// named off the first prompt you type (e.g. `/layered-plan`). Repo + branch are still required.
     private var canSpawn: Bool {
         switch mode {
-        case .worktree: return !repo.isEmpty && !branch.isEmpty
+        case .worktree: return !repo.isEmpty && !branch.isEmpty && remoteBaseWellFormed   // S3-2: block a malformed remote ref
         case .freeform: return !cwd.isEmpty
         case .scratch:  return true   // nothing to pick — Orchestra makes the dir
         }
@@ -124,7 +140,8 @@ struct SpawnSheet: View {
     private var cliPreview: String {
         switch mode {
         case .worktree:
-            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch) --col \(startIn.column.rawValue)"
+            let baseFlag = effectiveBase.map { " --base \($0)" } ?? ""
+            return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --repo \(repo) --branch \(branch.isEmpty ? "…" : branch)\(baseFlag) --col \(startIn.column.rawValue)"
         case .freeform:
             return "$ orchestra spawn --prompt \"\(prompt.isEmpty ? "…" : prompt)\"\(agentFlag) --cwd \(cwd.isEmpty ? "…" : cwd)\(readOnly ? " --read-only" : "")"
         case .scratch:
@@ -181,6 +198,12 @@ struct SpawnSheet: View {
                     HStack(spacing: 11) {
                         field("Repository") { repoPicker }
                         field("Branch") { branchPicker }
+                    }
+                    // Base only applies when the branch is newly created; hide it for a branch that
+                    // already exists (the daemon ignores base there anyway).
+                    if !branches.contains(branch) {
+                        field("Base branch (optional)") { basePicker }
+                        field("Remote parent (optional — pr#12 or origin/branch)") { remoteBaseField }
                     }
                 case .freeform:
                     field("Directory") { directoryPicker }
@@ -280,18 +303,22 @@ struct SpawnSheet: View {
                     let m = modelSel.isEmpty ? nil : modelSel
                     let a = agentSel.isEmpty ? nil : agentSel
                     _Concurrency.Task {
+                        let spawned: Task?
                         switch mode {
                         case .worktree:
-                            await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
-                                              agent: a)
+                            spawned = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m,
+                                                        startIn: startIn, agent: a, base: effectiveBase)
                         case .freeform:
-                            await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                              agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
+                            spawned = await model.spawn(prompt: prompt, repo: "", branch: "", model: m,
+                                                        startIn: startIn, agent: a, cwd: cwd,
+                                                        access: readOnly ? .readOnly : .readWrite)
                         case .scratch:
-                            await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
-                                              agent: a, scratch: true)
+                            spawned = await model.spawn(prompt: prompt, repo: "", branch: "", model: m,
+                                                        startIn: startIn, agent: a, scratch: true)
                         }
-                        model.showSpawn = false
+                        // S3-2: only dismiss on success — a typo'd base/remote must not cost the whole form
+                        // (the error surfaces as a toast; the sheet stays so the user can fix + retry).
+                        if spawned != nil { model.showSpawn = false }
                     }
                 } label: {
                     Text("Spawn agent").font(F.ui(12, .semibold)).foregroundColor(.white)
@@ -330,6 +357,8 @@ struct SpawnSheet: View {
         .onChange(of: repo) {
             branches = gitBranches(in: repo)
             if branch.isEmpty || !branches.contains(branch) { branch = "" }
+            if !base.isEmpty && !branches.contains(base) { base = "" }
+            remoteBase = ""   // S3-2: a pr#/origin ref typed for the old repo names a different thing here
         }
         .onChange(of: cwd) { refreshTrust() }
         .onChange(of: mode) { refreshTrust() }
@@ -601,6 +630,81 @@ struct SpawnSheet: View {
         guard !v.isEmpty else { return }
         branch = v
         showBranchPopover = false
+    }
+
+    // MARK: Base combo (BT2)
+
+    /// A compact picker for the optional base branch: "None (branch from HEAD)" plus every existing
+    /// local branch. Reuses `branches` (the same source as the branch combo). BT6 extends this with
+    /// remote/PR entries — keep the "None" row first so the default stays today's behavior.
+    /// S3-2: a non-empty remote parent silently wins over the local base picker; surface that so the
+    /// picker isn't showing an ignored choice.
+    private var remoteActive: Bool { !remoteBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private var basePicker: some View {
+        Menu {
+            Button("None (branch from HEAD)") { base = "" }
+            if !branches.isEmpty { Divider() }
+            ForEach(branches, id: \.self) { b in
+                Button(b) { base = b }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11)).foregroundColor(theme.text2)
+                Text(remoteActive ? "ignored — remote parent set below"
+                                  : (base.isEmpty ? "None (branch from HEAD)" : base))
+                    .font(F.mono(12.5)).foregroundColor(base.isEmpty || remoteActive ? theme.text3 : theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(theme.text2)
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .background(theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.fieldBorder, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .disabled(remoteActive)
+        .opacity(remoteActive ? 0.5 : 1)
+    }
+
+    /// BT6: free-text remote parent entry. `pr#<N>` (pull request) or `origin/<branch>` (remote branch);
+    /// the daemon fetches it into a private ref and watches it for merges. Empty = no remote parent.
+    /// S3-2: shape-check the typed remote parent so a typo is teachable BEFORE spawn (rather than a
+    /// "base branch not found" toast). Valid = empty, `pr#<N>` (case-insensitive), or `<remote>/<name>`.
+    private var remoteBaseWellFormed: Bool {
+        let s = remoteBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return true }
+        if s.lowercased().hasPrefix("pr#") { return Int(s.dropFirst(3)).map { $0 > 0 } ?? false }
+        if let slash = s.firstIndex(of: "/") { return slash != s.startIndex && s.index(after: slash) != s.endIndex }
+        return false
+    }
+
+    private var remoteBaseField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "cloud")
+                    .font(.system(size: 11)).foregroundColor(theme.text2)
+                TextField("pr#12  or  origin/feature-x", text: $remoteBase)
+                    .textFieldStyle(.plain)
+                    .font(F.mono(12.5)).foregroundColor(theme.text)
+            }
+            .padding(.horizontal, 11).frame(height: 34)
+            .frame(maxWidth: .infinity)
+            .background(theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(remoteBaseWellFormed ? theme.fieldBorder : theme.red.text, lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            if !remoteBaseWellFormed {
+                Text("expected `pr#<N>` or `<remote>/<branch>`")
+                    .font(F.ui(10)).foregroundColor(theme.red.text)
+            }
+        }
     }
 
     /// Case-insensitive subsequence ("fuzzy") match — every char of `query` appears in order in `text`.
