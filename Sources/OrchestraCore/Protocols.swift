@@ -17,6 +17,10 @@ public protocol WorktreeManaging: Sendable {
     func borrowPath(repo: String, branch: String) -> String
     func borrow(repo: String, branch: String) throws -> String
     func pruneOrphanBorrows(repo: String)
+    /// True if the worktree has uncommitted changes. FAILS SAFE (unqueryable ⇒ dirty).
+    func isDirty(worktree: String) -> Bool
+    /// Canonical `orch-borrow-*` dir paths currently present under `repo` (LIST only, no removal).
+    func orphanBorrowPaths(repo: String) -> [String]
 }
 
 public extension WorktreeManaging {
@@ -26,6 +30,8 @@ public extension WorktreeManaging {
         -> (worktree: String, created: Bool, branchExisted: Bool) {
         try ensure(repo: repo, branch: branch, base: nil)
     }
+    func isDirty(worktree: String) -> Bool { true }          // conservative default
+    func orphanBorrowPaths(repo: String) -> [String] { [] }
 }
 
 public protocol SessionManaging: Sendable {

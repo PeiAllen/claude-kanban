@@ -1027,6 +1027,20 @@ public struct BoardSnapshot: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Worktree registry result
+
+/// The result of `WorktreeRegistry.ensure`/`ensureBorrow`: the materialized worktree path plus the two
+/// signals spawn/recovery still need (`created` = a fresh checkout was cut this call; `branchExisted` =
+/// the branch pre-existed so lineage config may carry).
+public struct Worktree: Sendable, Equatable {
+    public let path: String
+    public let created: Bool
+    public let branchExisted: Bool
+    public init(path: String, created: Bool, branchExisted: Bool) {
+        self.path = path; self.created = created; self.branchExisted = branchExisted
+    }
+}
+
 // MARK: - Spawn input
 
 public struct SpawnInput: Codable, Sendable, Equatable {

@@ -8,6 +8,8 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     private(set) var removed: [String] = []
     private(set) var ensured: [String] = []   // repo+branch pairs ensure() was called for
     private var existingBranches: Set<String> = []   // branches ensure() should report as pre-existing
+    /// Simulated `git worktree add` latency so concurrent-`ensure` tests can genuinely contend on the actor.
+    var ensureSleepMs: UInt32 = 0
     init(root: String) { self.root = root }
 
     /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
@@ -27,12 +29,17 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         ensuredBases[branch] = base
         let existed = existingBranches.contains(branch)
         lock.unlock()
+        if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return (wt, true, existed)
     }
+    /// `(path, force)` pairs, in call order — the rollback-routing test discriminates old `force:true`
+    /// callers from new `force:false` callers.
+    private(set) var removedForce: [(path: String, force: Bool)] = []
     func remove(worktree: String, force: Bool) throws {
-        lock.lock(); removed.append(worktree); lock.unlock()
+        lock.lock(); removed.append(worktree); removedForce.append((worktree, force)); lock.unlock()
+        try? FileManager.default.removeItem(atPath: worktree)
     }
     // O3 borrow stub — mkdir a fake borrow dir; real git behavior is covered by BorrowLifecycleTests
     // (makeReal). `pruneOrphanBorrows` is a no-op here (no git worktree list).
@@ -45,6 +52,17 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         return wt
     }
     func pruneOrphanBorrows(repo: String) {}
+
+    /// Controllable dirty set, driven by `WorktreeRegistryTests` via `setDirty`.
+    private var dirtyPaths: Set<String> = []
+    func setDirty(_ path: String, _ v: Bool) { lock.lock(); if v { dirtyPaths.insert(path) } else { dirtyPaths.remove(path) }; lock.unlock() }
+    func isDirty(worktree: String) -> Bool { lock.lock(); defer { lock.unlock() }; return dirtyPaths.contains(worktree) }
+
+    func orphanBorrowPaths(repo: String) -> [String] {
+        let dir = "\(root)/\((repo as NSString).lastPathComponent)"
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return entries.filter { $0.hasPrefix("orch-borrow-") }.map { "\(dir)/\($0)" }
+    }
 }
 
 /// In-memory tmux stub — tracks alive sessions and records launch argv; thread-safe (offActor runs

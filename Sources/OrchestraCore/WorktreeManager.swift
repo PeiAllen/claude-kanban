@@ -174,10 +174,25 @@ public struct WorktreeManager: Sendable {
 
     /// True if the worktree has uncommitted changes. **Fails safe:** if git can't be queried we treat
     /// the tree as dirty so `remove` (without `force`) never deletes work it couldn't verify is clean.
-    func isDirty(worktree: String) -> Bool {
+    public func isDirty(worktree: String) -> Bool {
         guard let r = try? run(["git", "-C", worktree, "status", "--porcelain"], .seconds(config.controlTimeout)), r.ok else {
             return true
         }
         return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// List (no removal) canonical `orch-borrow-*` worktree dir paths currently present under `repo`.
+    /// `WorktreeRegistry`'s orphan sweep uses this to reclaim stray/crashed borrow dirs it doesn't have
+    /// a persisted registration for.
+    public func orphanBorrowPaths(repo: String) -> [String] {
+        guard let realRepo = try? resolver.resolveRepo(repo),
+              let r = try? run(["git", "-C", realRepo, "worktree", "list", "--porcelain"],
+                               .seconds(config.controlTimeout)), r.ok else { return [] }
+        var out: [String] = []
+        for line in r.stdout.split(separator: "\n") where line.hasPrefix("worktree ") {
+            let p = String(line.dropFirst("worktree ".count)).trimmingCharacters(in: .whitespaces)
+            if (p as NSString).lastPathComponent.hasPrefix("orch-borrow-") { out.append(p) }
+        }
+        return out
     }
 }

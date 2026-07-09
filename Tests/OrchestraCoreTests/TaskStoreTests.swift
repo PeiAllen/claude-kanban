@@ -209,6 +209,25 @@ struct TaskStoreTests {
         #expect(loaded.first?.column == .impl)                           // garbage column → safe default
         #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
     }
+
+    @Test("stampMarkers makes pre-upgrade worktree dirs adoptable — clean AND dirty, byte-intact")
+    func test_migrationStampsMarkers() async throws {
+        let (reg, stub, _) = makeRegistry()                 // reuse the WorktreeRegistryTests helper
+        let clean = stub.path(repo: "app", branch: "old/clean")
+        let dirty = stub.path(repo: "app", branch: "old/dirty")
+        for p in [clean, dirty] { try FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        try "keep".write(toFile: dirty + "/uncommitted.txt", atomically: true, encoding: .utf8)
+        stub.setDirty(dirty, true)
+
+        await reg.stampMarkers(forMigratedPaths: [clean, dirty])
+
+        let a = try await reg.ensure(repo: "app", branch: "old/clean", cardId: UUID())
+        let b = try await reg.ensure(repo: "app", branch: "old/dirty", cardId: UUID())
+        #expect(!a.created && !b.created)                             // adopted, not recreated
+        #expect(stub.removed.isEmpty)                                // nothing removed
+        #expect(FileManager.default.fileExists(atPath: dirty + "/uncommitted.txt"))   // byte-intact
+        #expect(try String(contentsOfFile: dirty + "/uncommitted.txt", encoding: .utf8) == "keep")
+    }
 }
 
 @Suite("TaskStore rev") struct TaskStoreRevTests {
