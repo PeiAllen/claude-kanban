@@ -473,7 +473,8 @@ struct SpawnSheet: View {
                 VStack(spacing: 1) {
                     ForEach(Array(filteredRepos.enumerated()), id: \.element) { idx, path in
                         ComboRow(label: (path as NSString).lastPathComponent, systemImage: "folder",
-                                 tint: theme.text2, selected: idx == repoHi, theme: theme) { pickRepo(path) }
+                                 tint: theme.text2, selected: path == repo, highlighted: idx == repoHi,
+                                 theme: theme) { pickRepo(path) }
                     }
                     if filteredRepos.isEmpty {
                         Text("No matches").font(F.ui(11.5)).foregroundColor(theme.text3)
@@ -485,7 +486,7 @@ struct SpawnSheet: View {
             .frame(maxHeight: 220)
         }
         .frame(width: 270)
-        .onAppear { repoSearchFocused = true; repoHi = 0 }
+        .onAppear { repoSearchFocused = true; repoHi = filteredRepos.firstIndex(of: repo) ?? 0 }
         .onKeyPress(phases: .down) { press in comboMove(press, count: filteredRepos.count, hi: $repoHi) }
     }
 
@@ -562,11 +563,13 @@ struct SpawnSheet: View {
                 VStack(spacing: 1) {
                     if !q.isEmpty && !exactExists {
                         ComboRow(label: "Create “\(q)”", systemImage: "plus.circle",
-                                  tint: theme.accent, selected: false, theme: theme) { commitBranch(q) }
+                                  tint: theme.accent, selected: false, highlighted: false,
+                                  theme: theme) { commitBranch(q) }
                     }
                     ForEach(Array(filteredBranches.enumerated()), id: \.element) { idx, b in
                         ComboRow(label: b, systemImage: "arrow.triangle.branch",
-                                  tint: theme.text2, selected: idx == branchHi, theme: theme) { commitBranch(b) }
+                                  tint: theme.text2, selected: b == branch, highlighted: idx == branchHi,
+                                  theme: theme) { commitBranch(b) }
                     }
                     if filteredBranches.isEmpty && (q.isEmpty || exactExists) {
                         Text(branches.isEmpty ? "No branches in this repo" : "No matches")
@@ -579,7 +582,7 @@ struct SpawnSheet: View {
             .frame(maxHeight: 220)
         }
         .frame(width: 270)
-        .onAppear { branchHi = 0 }
+        .onAppear { branchHi = filteredBranches.firstIndex(of: branch) ?? 0 }
         .onChange(of: branchQuery) { _, _ in branchHi = 0 }
         .onKeyPress(phases: .down) { press in comboMove(press, count: filteredBranches.count, hi: $branchHi) }
     }
@@ -757,7 +760,10 @@ private struct ComboRow: View {
     let label: String
     let systemImage: String
     let tint: Color
+    /// The actual chosen value — draws the trailing checkmark. Compared by value, not by index.
     let selected: Bool
+    /// The keyboard cursor (Ctrl-j/k) — draws a background highlight. Distinct from `selected`.
+    let highlighted: Bool
     let theme: Theme
     let action: () -> Void
 
@@ -779,7 +785,7 @@ private struct ComboRow: View {
             }
             .padding(.horizontal, 9).frame(height: 28)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovering ? theme.chipHover : Color.clear)
+            .background(hovering || highlighted ? theme.chipHover : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
