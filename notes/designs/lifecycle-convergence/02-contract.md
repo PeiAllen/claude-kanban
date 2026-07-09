@@ -1,0 +1,290 @@
+---
+project: claude-kanban (Orchestra)
+feature: lifecycle-convergence
+layer: 2
+title: Contractual Design
+status: approved
+created: 2026-07-09
+updated: 2026-07-09
+links: ["[[index]]", "[[01-design]]"]
+---
+
+# Layer 2 — Contractual Design: Card Lifecycle Convergence
+
+> The **interfaces**. The major types, actors, and functions from the finalized spec (§5–§6), with
+> the contract of each and where it lives. Mechanics and sequencing belong to [[03-implementation]].
+
+## Architecture overview
+
+The design splits across two compile-time homes. **OrchestraKit** (shared by daemon + all three
+clients) carries the vocabulary: the `Phase` model, the typed verb catalog (`CommandSchema` +
+`kind` + `phaseGate`), the `Conclusion` payload, and `displayState` — so daemon policy and client
+gating are one table that cannot drift. **The daemon** (`OrchestraCore` / `orchestrad`) carries the
+machinery: the `transition()` funnel (the only writer of `phase`), the reconciler with four
+phase-keyed steppers, the `WorktreeRegistry` actor, and the persisted files (`tasks.json` + watch
+registry + borrow registrations + inbox). Verbs only persist intent; the reconciler converges
+reality toward it. Clients speak a clean-break wire: `phase` replaces `status`, every event and
+snapshot carries a monotonic `rev`, and `spawn`/`send` require client-minted ids.
+
+## Major classes / modules
+
+| Name | Responsibility | Collaborators |
+|------|----------------|---------------|
+| `Phase` (+ `RunState`, `WaitReason`, `DeadReason`) | The persisted lifecycle enum; the intent | `Task` model, funnel, `displayState` |
+| `transition()` funnel | Sole writer of `phase`; validates edges, stamps `phaseChangedAt`, bumps epochs, fires conclusions + `wakeIfPending` | `TaskStore`, `MergeWatch`, inbox |
+| `TaskStore` (existing actor) | State of record; monotonic `rev` per mutation; **field-delta patches only** (no whole-object writes); corrupt-file recovery | funnel, verbs, persistence files |
+| Reconciler (extends `reconcileLiveness`) | 2s tick + boot: steps transitional cards, enforces `phaseChangedAt` timeouts, phase-gated liveness, orphan-session sweep, pre-kill fresh probes | steppers, `WorktreeRegistry`, `SessionManager` |
+| `PhaseStepper` ×4 (Materialize / Launch / Relaunch / Teardown) | One stateless idempotent driver per transitional phase; verbs never drive | `ConvergeContext` |
+| `ConvergeContext` | Plain dependency bundle (store, registry, sessions, adapters, `transition`) — steppers testable with stubs | steppers |
+| `WorktreeRegistry` (new actor) | Sole owner of worktree + borrow lifecycle: serialized `ensure`, markers, one `release()` policy, path safety, persisted borrow registrations | `WorktreeManager` (internal), store |
+| `CommandSchema` + `VerbSpec` fields (OrchestraKit) | Verb taxonomy as data: `kind` ∈ {Query, Mutation, Convergence} + `phaseGate: Set<Phase>` | registry dispatch, `displayState` |
+| Registry dispatch chokepoint | Enforces `phaseGate` against the target card's phase before any handler runs; typed error on denial | `CommandRegistry`, `ControlServer` |
+| `displayState(phase, connection)` (OrchestraKit) | One render contract for every surface; `validActions` **derived** from the catalog's phaseGates + UI-only extras | mac + iOS + CLI |
+| Persisted registries | Watch registry `[watcherId: Set<childId>]` + borrow registrations `[borrowerCardId: path]`, atomic JSON beside the inbox | reconciler boot, `wait`, registry |
+| `Config` knobs (new, additive-optional) | `worktreeAddTimeout` 600s · `sessionLaunchTimeout` 30s · `controlTimeout` 15s | registry, steppers, reconciler |
+| Adapter capability seam (existing, extended) | Readiness per agent: Claude `SessionStart` hook; Codex rollout `session_meta` time-scoped to the launch; N=3-tick fallback for any agent | steppers, funnel |
+| One-time on-disk migration | `status`/`waitReason` → `phase` seed; preserves `deadReason`; stamps materialized markers on every referenced tree | `TaskStore` first load |
+
+## Function / method contracts
+
+### `transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil) async -> TransitionResult`
+- **Does:** the single writer of `phase`. Validates the edge against the machine; applies it as a
+  field-delta patch stamped with `phaseChangedAt`.
+- **Inputs:** card id, target phase; `observedEpoch` on signal-driven calls (hooks, liveness).
+- **Outputs:** `TransitionResult = .applied | .noop | .rejected(from:to:)` (`@discardableResult`).
+  Verbs map `.rejected` → typed RPC error and `.noop` → idempotent success; async signals ignore it.
+- **Epoch guard:** entering a launch-bound phase (`creatingWorktree`, direct `launching`,
+  `relaunching` incl. the supersede self-edge) increments `sessionEpoch` *before* any launch work.
+- **Stale signals:** `observedEpoch != current` → the signal is ignored, never applied.
+- **Nil-epoch discipline:** kill-class signals with no epoch never transition a card directly —
+  a fresh off-actor pre-kill probe must pass first; nil-epoch status signals may pass.
+- **Wake on live:** entering `live` runs `wakeIfPending` — the one delivery point for messages
+  parked while the card was being born.
+- **Conclusions:** a non-terminal → terminal edge fires `concludeCard` (never `dead → archived`,
+  never teardown completion); the wire `Conclusion` is `{kind, deadReason?}`.
+
+### `static func isLegalEdge(from: Phase, to: Phase, viaSignal: Bool) -> Bool`
+- **Does:** the pure, testable edge validator `transition()` consults — encodes spec §P1's machine;
+  `viaSignal: true` admits the `dead → live` revival edge (verbs can never drive it).
+
+### `PhaseStepper` protocol
+```
+protocol PhaseStepper {
+  static var drives: Phase.Kind { get }              // creatingWorktree | launching | relaunching | archivedPending
+  func step(_ card: Task, _ ctx: ConvergeContext) async throws   // idempotent: advance one edge
+  func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool // target reached?
+}
+```
+- **Does:** drives one transitional phase toward its target; the reconciler dispatches by phase.
+- **Inputs:** the persisted card + `ConvergeContext` — no stored per-card state; crash recovery
+  re-derives everything from disk.
+- **Outputs:** progress via `transition()`; `verify()` is the crash-convergence test oracle.
+- **Launch flavor** derives from persisted fields alone: `agentSessionId` + transcript → resume,
+  else blank; `initialPrompt` only if never prompted.
+- **Errors:** a throw feeds the reconciler's attempt counter + capped backoff — never a hot loop,
+  never silent giving-up.
+
+### `WorktreeRegistry` — the exact interface (plan Task 3.3)
+```
+func ensure(repo: String, branch: String, cardId: UUID, base: String? = nil) async throws -> Worktree
+func release(cardId: UUID, cards: [Task], force: Bool) async throws
+func ensureBorrow(repo: String, parentBranch: String, borrowerCardId: UUID) async throws -> Worktree // exactly-one-borrower
+func releaseBorrow(borrowerCardId: UUID) async throws   // removes only the borrower's registration
+func sweepOrphanBorrows(cards: [Task]) async            // liveness-guarded; runs AFTER phase reconciliation
+func stampMarkers(forMigratedPaths: [String]) async     // one-time: pre-upgrade trees are marker-less (C1)
+```
+- **`ensure` serializes:** same-branch requests join the existing tree — `git worktree add` runs
+  once; every git invocation is bounded by the Config knobs.
+- **Markers gate adoption:** only marker-complete trees are adopted; clean marker-less dir →
+  prune + re-create.
+- **Dirty marker-less dirs are never removed:** `ensure` throws a classified error (the caller
+  transitions `dead(.spawnFailed)` + "manual cleanup needed" activity).
+- **Path safety:** `ensure` rejects branch names whose computed path escapes the worktrees root;
+  no cleanup path removes anything outside the owned roots (worktrees root + `orch-borrow-*`).
+- **`release` is the one removal policy:** every teardown (spawn rollback, archive, reopen) routes
+  here; siblings computed on demand from `cards` (a `dead` card still holds its reference).
+- **`release` guards:** never removes a tree referenced by a non-archived sibling; never removes
+  dirty without explicit `force`; idempotent to an already-missing tree (no-op success).
+- **Borrows are registry-owned:** exactly-one-borrower keyed on canonical path; registrations
+  persisted in the same call; the sweep keeps any dir whose registered borrower is non-terminal.
+- **Owning-agent rule untouched:** agents merge inside borrow trees; the registry only owns the
+  tree's lifecycle.
+
+### `displayState(phase: Phase?, connection: ConnectionState) -> DisplayState`
+- **Does:** the one render contract; every surface (mac, iOS, CLI presentation) consumes it —
+  one `displayStatusKey`, no per-surface label logic.
+- **Outputs:** `DisplayState { label, validActions: Set<Verb>, isBusy, staleSince }`.
+- **Derived gating:** `validActions` comes from the catalog's phaseGates + UI-only extras;
+  `isBusy` gates in-flight actions (the double-spawn guard); `staleSince` feeds the banner.
+- **Purity:** no I/O — trivially table-testable. Recovery copy explains `dead(.spawnFailed)` with
+  its `deadDetail` on both mac + iOS.
+
+### `Inbox.enqueue(..., dedupKey: String? = nil)`
+- **Does:** existing enqueue + an optional dedup key so re-driven duties can't re-spam
+  (Teardown's child nudge uses `(childId, "parent-archived:<branch>")`).
+
+### `wait` (Mutation) — durability contract
+- **CLI transport:** holds the RPC open (in-memory continuation); deadline/keepalive tears down a
+  dead call and the client re-issues; the daemon short-circuits on a persisted terminal phase.
+- **MCP transport:** registers in the persisted watch registry and returns inline; boot reload
+  delivers conclusions for already-terminal children.
+- **Short-circuit hygiene:** an inline short-circuit on a terminal child unregisters that child
+  from the caller's watch.
+
+### Sync contract (wire)
+- `TaskStore` stamps a board-global monotonic `rev`; every `Event` + `boardSnapshot` carries it.
+  Clients apply iff `rev > lastSeen`; a gap → snapshot resync.
+- **Client-minted ids** are required on `spawn`/`send`; a retried `spawn` returns the existing
+  card as-is, whatever its phase; `batch-spawn` = N independent per-item ids.
+- **Deadlines + keepalive:** `ControlClient.call` gains a per-RPC deadline; a periodic ping
+  detects a dead-but-open tunnel.
+- **No auto-retrier anywhere:** deadline expiry surfaces to the human/agent; idempotency makes
+  manual re-issue safe.
+
+## Library / framework decisions
+
+| Decision | Why | Rejected |
+|----------|-----|----------|
+| No new dependencies | Swift actors + existing `Proc`/tmux/atomic-JSON already suffice | Any state-machine / persistence library |
+| Worktree ops serialized by a dedicated actor (`WorktreeRegistry`) | Actor mailbox = the serialization; matches `BranchLineage` precedent | Locks inside `WorktreeManager` (struct, caller-actor bound) |
+| Epoch transport = tmux env `ORCH_EPOCH` (stamped at launch, hook-echoed, readable back) | Agent-agnostic plumbing; enables identity readback | Session-name suffixes (breaks stable-name adoption) |
+| Persistence = atomic JSON files beside the inbox (`replaceItemAt`) | Proven pattern in-repo; tiny data | SQLite / unified store rewrite |
+| Verb taxonomy home = OrchestraKit's `CommandCatalog.swift` | Compile-time shared with all clients → `validActions` cannot drift from daemon policy | Daemon-only table + duplicated client knowledge |
+
+## Diagrams
+
+### Bird's-eye (module dependency — zooms Layer 1's daemon box)
+
+```mermaid
+flowchart TD
+  subgraph kit [OrchestraKit — compile-time shared]
+    MODEL[Phase · RunState · DeadReason · Conclusion]
+    CAT[CommandCatalog<br/>kind + phaseGate per verb]
+    DS[displayState<br/>statusKey + validActions]
+  end
+  subgraph daemon [orchestrad / OrchestraCore]
+    CS[ControlServer<br/>+ registry dispatch = phaseGate chokepoint]
+    SVC[OrchestraService actor — verbs]
+    FUN[transition funnel<br/>sole writer of phase]
+    STORE[TaskStore<br/>rev + field-delta patches]
+    REC[Reconciler — 2s tick + boot]
+    STEP[PhaseSteppers ×4<br/>Materialize · Launch · Relaunch · Teardown]
+    REG[WorktreeRegistry actor<br/>wraps WorktreeManager]
+    SESS[SessionManager — tmux]
+    ADAPT[Adapters: claude-code · codex<br/>capabilities seam]
+  end
+  FILES[(tasks.json + rev<br/>watch registry · borrows · inbox)]
+  CLIENTS[3 clients] --> CS --> SVC --> FUN --> STORE --> FILES
+  CS -.enforces.-> CAT
+  DS -.derives from.-> CAT
+  CLIENTS -.render via.-> DS
+  REC --> STEP
+  STEP --> FUN
+  STEP --> REG & SESS & ADAPT
+  REC --> SESS
+  REG --> FILES
+  SVC --> REG
+```
+
+### Detailed (key types)
+
+```mermaid
+classDiagram
+  class Phase {
+    creatingWorktree
+    launching
+    live(RunState)
+    relaunching
+    dead(DeadReason)
+    archived(teardownComplete)
+  }
+  class Task {
+    +Phase phase
+    +Int sessionEpoch
+    +Date phaseChangedAt
+    +String? pendingSeed
+    +String? agentSessionId
+  }
+  class TransitionResult {
+    applied
+    noop
+    rejected(from, to)
+  }
+  class Funnel {
+    +transition(id, to, observedEpoch) TransitionResult
+  }
+  class PhaseStepper {
+    <<protocol>>
+    +drives Phase.Kind
+    +step(card, ctx)
+    +verify(card, ctx) Bool
+  }
+  class ConvergeContext {
+    store · registry · sessions · adapters · transition
+  }
+  class WorktreeRegistry {
+    <<actor>>
+    +ensure(repo, branch, cardId, base) Worktree
+    +release(cardId, cards, force)
+    +ensureBorrow(repo, parentBranch, borrowerCardId) Worktree
+    +releaseBorrow(borrowerCardId)
+    +sweepOrphanBorrows(cards)
+    +stampMarkers(forMigratedPaths)
+  }
+  class CommandSchema {
+    +name · kind · phaseGate
+  }
+  class DisplayState {
+    +label
+    +validActions Set~Verb~
+    +isBusy
+    +staleSince
+  }
+  Funnel --> Task : field-delta patch
+  Funnel --> TransitionResult
+  PhaseStepper --> ConvergeContext
+  PhaseStepper --> Funnel : progress via
+  WorktreeRegistry --> Task : sibling scan
+  DisplayState ..> CommandSchema : derives validActions
+  Task --> Phase
+```
+
+## Traceability → Layer 1
+
+| L1 goal | Covered by |
+|---------|-----------|
+| One persisted lifecycle variable | `Phase` on `Task`; `transition()` sole writer; store field-delta patches |
+| Crash-equivalence | Stateless steppers + `phaseChangedAt` timeouts + persisted watch/borrow/seed registries |
+| Deterministic staleness | Epoch bump in the funnel's launch-bound entries; `observedEpoch` guard; `ORCH_EPOCH` readback |
+| Fail-safe resource handling | `WorktreeRegistry` marker arms, `release()` policy, path safety; nil-epoch kill discipline |
+| Kill the 15 + round-2 bugs | Funnel conclusions (#2), gate chokepoint (#3), registry (#1/#6/#8/#12), `rev`+ids (#14/#15) — full map in [[04-tests]] |
+| Non-blocking daemon | Reconciler owns driving; steppers off-actor; bounded Config knobs |
+| Typed verb contract | `CommandSchema.kind` + `phaseGate` as data; dispatch chokepoint |
+| Deny-by-default gating | `phaseGate: Set<Phase>` allow-set semantics |
+| Agent-agnostic | Capability seam contract for readiness; epoch plumbing agent-neutral |
+| Honest clients | `displayState` contract (pure, table-testable, derived `validActions`) |
+| Detectable sync | `rev` on `Event`/`boardSnapshot`; client-minted ids; deadlines + keepalive |
+
+## Decisions made
+
+| Decision | Why | Rejected |
+|----------|-----|----------|
+| Taxonomy in OrchestraKit's `CommandCatalog` | One verb×phase table shared at compile time; UI gating can't drift | Daemon-only registry + hand-maintained client tables |
+| `VerbSpec` = exactly `{name, kind, phaseGate}` | Pruned: no `capability` field (type doesn't exist), no `converger` field (dispatch is by phase) | Richer schema fields nothing reads |
+| Gate enforcement at one dispatch chokepoint | Verbs declare their target-card param; gate checked before the handler; typed denial error | Per-handler checks (forgettable) |
+| Steppers are stateless (`step(card:ctx:)`) | Crash recovery's premise: persisted card = whole input | Per-card converger instances with stored ids |
+| `WorktreeManager` internal to the registry | "Nothing else touches git worktree" enforced by compile-time access control | A convention + a lint test |
+| Watch registry + borrows persisted beside inbox | MCP `wait` is fire-and-forget (nothing to re-issue); a live borrow must survive a daemon-only crash | In-memory dicts ("durable by construction" was disproved) |
+| `transition()` returns a 3-case result | Illegal edge = typed error; retry = visible success; silent drop impossible | Void return |
+| Default gate policy derives ~30×8 cells | Verbs fit 6 policy groups; hand-cells only for exceptions | 250 hand-written cells |
+| Knobs additive-optional in `Config` | Old `config.json` must still decode | Required keys (breaks existing config) |
+| N=3 readiness fallback (≈6s) | Must sit well under `sessionLaunchTimeout` 30s or the fallback can never fire | Larger N (races the timeout) |
+
+## Open questions — need your call
+
+- (none — the contracts condense the finalized spec §5–§6; all open items were resolved there)
+
+## Traceability
+
+Sources: spec §5 (pillars P1–P6), §6 (verb contract + stepper protocol + gate policy), §P2/P3
+function-level behavior. Layer 1: [[01-design]] (all goals mapped above).

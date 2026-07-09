@@ -3,7 +3,7 @@ project: claude-kanban (Orchestra)
 feature: lifecycle-convergence
 layer: 1
 title: Initial Design
-status: draft
+status: approved
 created: 2026-07-09
 updated: 2026-07-09
 links: ["[[index]]"]
@@ -46,20 +46,20 @@ in memory.
   everything from persisted state plus re-observation, and re-drives in-flight work.
 - **Deterministic staleness:** signals from dead/old sessions are discarded by construction
   (per-launch epochs), not by timers or grace windows.
-- **Fail-safe resource handling:** never destroy a dirty/shared worktree, never kill a session
-  without fresh epoch-stamped confirmation, never remove paths outside owned roots; on ambiguity,
-  keep everything.
+- **Fail-safe resource handling:** never destroy a dirty/shared worktree, kill a session without
+  fresh epoch-stamped confirmation, or remove paths outside owned roots; on ambiguity, keep everything.
 - **Kill all 15 review bugs + the round-2 findings** — each maps to a named behavior in this vault
   (traceability in later layers).
 - **Non-blocking daemon:** no RPC and no periodic loop ever blocks the service actor on a subprocess;
   spawn returns immediately and the card visibly converges.
-- **Typed verb contract:** every verb declares its kind and its phase-gate as data; adding verbs or
-  phases forces explicit decisions.
+- **Typed verb contract:** every verb declares its kind and its `phaseGate` allow-set as data.
+- **Deny-by-default gating:** a phase absent from a verb's allow-set is denied, so new phases are
+  fail-safe everywhere until intentionally allowed — no per-verb declaration ceremony.
 - **Agent-agnostic:** every mechanism works for Claude Code *and* Codex through the existing
   `adapter.capabilities` seam; no `if agentId ==` in shared code.
 - **Honest clients:** every surface renders from one `displayState(phase, connection)`; no
-  fire-and-forget success toasts; missed events are detectable (board `rev`) and retries are safe
-  (client-minted ids).
+  fire-and-forget success toasts.
+- **Detectable sync:** missed events are detectable (board `rev`); retries are safe (client-minted ids).
 
 **Non-goals**
 
@@ -102,23 +102,25 @@ in memory.
 `creatingWorktree → launching → live(running|waiting) → relaunching → dead(reason) → archived(teardownComplete)`.
 Key behaviors, each chosen deliberately:
 
-- **All spawns enter `creatingWorktree`** ("materialize cwd": worktree add / scratch mkdir /
-  borrowed no-op — instant for non-worktree cards). One entry point, no special cases; reopen
-  re-enters the same way.
+- **All spawns enter `creatingWorktree`** — "materialize cwd": worktree add / scratch mkdir /
+  borrowed no-op (instant for non-worktree cards).
+- **Reopen re-enters the same way** — one entry point, no special cases.
 - **`launching → live` fires on a real readiness signal**, capability-gated per agent (Claude:
-  SessionStart hook; Codex: rollout `session_meta`, time-scoped to the current launch), with an
-  N=3-liveness-tick fallback. A prompted card lands `live(.running)`; a promptless card lands
+  SessionStart hook; Codex: rollout `session_meta` time-scoped to the launch); N=3-liveness-tick fallback.
+- **Landing state:** a prompted card lands `live(.running)`; a promptless card lands
   `live(.waiting(.humanTurn))`.
 - **`relaunching → relaunching` is legal and means supersede** (newest resume/restart/wake wins;
   epoch++ deterministically orphans the in-flight attempt) — preserving today's tested semantics.
 - **`dead` is terminal but revivable:** a dead card's session may legitimately survive (today's
-  `.done` behavior); an epoch-current agent signal — never a verb — revives `dead → live`. This also
-  self-heals timeout misclassifications.
+  `.done` behavior); an epoch-current agent signal — never a verb — revives `dead → live`.
+- **Revival self-heals misclassification:** a wrongly-deadened card returns on its next
+  epoch-current signal.
 - **`archived` carries teardown progress** (`pending → complete`): archive's seven-duty teardown is
   re-drivable after a crash without duplicate side effects.
-- **Conclusions fire on non-terminal → terminal transitions only**, for **every** terminal reason —
-  a parent's `wait` resolves whether the child completed, failed to spawn, or vanished (the durable
-  bug-#2 fix), and never fires twice for `dead → archived`.
+- **Conclusions fire on non-terminal → terminal transitions only** — `dead → archived` never
+  re-concludes.
+- **Every terminal reason concludes:** a parent's `wait` resolves whether the child completed,
+  failed to spawn, or vanished (the durable bug-#2 fix).
 - **Messages to a being-born card park in the durable inbox** and are delivered by the funnel's
   entry into `live` — one structural release point.
 
@@ -134,8 +136,8 @@ safe terminal `dead(reason)` — never crash, hang, or destroy):
 
 | Missing thing | Behavior |
 |---|---|
-| Worktree under a relaunching card | Re-materialize from the branch + observable activity |
-| Branch too | `dead(.spawnFailed/.resumeFailed)` |
+| Worktree under a launching/relaunching card | Stepper's `ensure` re-materializes from the branch + observable activity |
+| Branch too | `dead(.spawnFailed)` when launching, `dead(.resumeFailed)` when relaunching |
 | Worktree under a **live** agent | Surface only (badge + useful errors) — tmux won't die on cwd loss, and the agent may hold context worth a handoff; never auto-kill |
 | Marker-less dir (clean) | Prune + re-create |
 | Marker-less dir (**dirty**) | Never removed — `dead(.spawnFailed)` + "manual cleanup" activity |
