@@ -77,6 +77,28 @@ public struct SessionManager: Sendable {
         return r.ok
     }
 
+    /// The `ORCH_EPOCH` generation stamped into the session's environment at launch (Stage 2). Read back
+    /// via `tmux show-environment -t <name> ORCH_EPOCH`; `nil` when the variable is absent/unset or the
+    /// session is gone. Its consumer is the Stage-4 restart/reconcile path; the parse test keeps it live.
+    public func stampedEpoch(name: String) throws -> Int? {
+        // A never-set variable makes `show-environment` exit non-zero ("unknown variable"); that's not an
+        // error here — it just means no stamp. A removed variable prints the `-ORCH_EPOCH` unset form.
+        let r = try tmux(["show-environment", "-t", name, "ORCH_EPOCH"])
+        guard r.ok else { return nil }
+        return Self.parseStampedEpoch(r.stdout)
+    }
+
+    /// Parse a `tmux show-environment … ORCH_EPOCH` payload: `ORCH_EPOCH=<n>` → `n`; the `-ORCH_EPOCH`
+    /// unset form, an absent line, or an unparseable value → `nil`. Pure so it is unit-testable without tmux.
+    static func parseStampedEpoch(_ output: String) -> Int? {
+        for line in output.split(whereSeparator: \.isNewline) {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            guard s.hasPrefix("ORCH_EPOCH=") else { continue }
+            return Int(s.dropFirst("ORCH_EPOCH=".count))
+        }
+        return nil
+    }
+
     /// Add a `shell-N` window in the worktree; returns the window name.
     @discardableResult
     public func newShellWindow(_ name: String, cwd: String) throws -> String {

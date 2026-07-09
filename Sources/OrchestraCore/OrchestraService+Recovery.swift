@@ -82,7 +82,7 @@ extension OrchestraService {
 
         // Recreate the session off the actor so a mass revival overlaps (and report() stays serviced).
         try? adapter.prepareToLaunch(ctx)
-        let env = adapter.env
+        let env = withEpoch(adapter.env, task.sessionEpoch)   // stamp the current generation into the session
         do {
             try await offActor { [sessions] in
                 _ = try sessions.kill(sessions.sessionName(id))
@@ -170,7 +170,7 @@ extension OrchestraService {
                                  trustCwd: trustDecision == .trusted)
         let launchTask = task
         try? adapter.prepareToLaunch(ctx)
-        let env = adapter.env
+        let env = withEpoch(adapter.env, launchTask.sessionEpoch)   // stamp the current generation
         let startArgv = adapter.start(ctx)
         try await offActor { [sessions] in
             _ = try sessions.kill(sessions.sessionName(id))

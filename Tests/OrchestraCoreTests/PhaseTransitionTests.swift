@@ -201,3 +201,123 @@ struct PhaseTransitionTests {
         #expect(await inbox.peek(parent.id).isEmpty)   // no stale re-notification
     }
 }
+
+/// Task 2.4 — the epoch guard makes stale liveness signals harmless, and `report()`'s status/exit
+/// writes are rerouted through the `transition()` funnel (which becomes the sole concluder).
+@Suite("Stage 2 · epoch guard + report→funnel reroute")
+struct EpochGuardReportFunnelTests {
+
+    // A read-only borrowed card (origin != .worktree, access == .readOnly) — the durable-card form of a
+    // one-shot delegation, so `shouldConcludeOnTurnCompletion` is true for it.
+    private func readOnlyCard(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String), _ name: String) async throws -> Task {
+        let dir = env.base + "/borrow-\(name)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return try await env.svc.spawn(SpawnInput(prompt: "work", cwd: dir, access: .readOnly))
+    }
+
+    // MARK: - epoch fence on the SessionEnd (kill-class) signal
+
+    @Test("a stale-epoch SessionEnd is dropped; the matching-epoch one applies")
+    func test_staleSessionEndIgnored() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        _ = try await env.svc.store.update(card.id) { $0.sessionEpoch = 2 }
+
+        // A SessionEnd stamped with the SUPERSEDED generation (1 ≠ 2) is fenced out by the funnel.
+        try await env.svc.report(card.id, StatusReport(endReason: "exit"), observedEpoch: 1)
+        var after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phase.kind != .dead)   // not killed by a stale signal
+
+        // The SAME signal at the CURRENT generation applies.
+        try await env.svc.report(card.id, StatusReport(endReason: "exit"), observedEpoch: 2)
+        after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phaseDisplay == .dead)
+        #expect(after.deadReason == .agentExited)
+    }
+
+    @Test("a nil-epoch kill signal transitions only after the isAlive probe confirms the session is gone")
+    func test_nilEpochKillSignalRequiresProbe() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+
+        // Kill-class, nil epoch, session STILL ALIVE → the probe blocks the kill.
+        let live = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "a"))
+        #expect(env.sessions.isAliveTest(live.id))   // spawn ensured it
+        try await env.svc.report(live.id, StatusReport(endReason: "exit"), observedEpoch: nil)
+        var after = try #require(await env.svc.store.get(live.id))
+        #expect(after.phase.kind != .dead)           // isAlive == true → not killed
+
+        // Session now genuinely gone → the probe permits the kill.
+        env.sessions.setAlive(live.id, false)
+        try await env.svc.report(live.id, StatusReport(endReason: "exit"), observedEpoch: nil)
+        after = try #require(await env.svc.store.get(live.id))
+        #expect(after.phaseDisplay == .dead)
+        #expect(after.deadReason == .agentExited)
+        #expect(env.sessions.isAliveQueries.contains(env.sessions.sessionName(live.id)))
+
+        // A nil-epoch STATUS signal (running↔waiting) is NOT kill-class → it passes unprobed.
+        let status = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "b"))
+        try await env.svc.report(status.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: nil)
+        let s = try #require(await env.svc.store.get(status.id))
+        #expect(s.phaseDisplay == .idle)
+    }
+
+    // MARK: - status/exit writes go through the funnel
+
+    @Test("a running→waiting report drives the funnel and emits exactly one upsert")
+    func test_reportStatusWritesGoThroughFunnel() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+
+        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phase == .live(.waiting(.humanTurn)))
+        let upserts = await collector.upserts.filter { $0.id == card.id }
+        #expect(upserts.count == 1)                          // a pure phase change = one funnel write
+        #expect(upserts.last?.phase == .live(.waiting(.humanTurn)))
+    }
+
+    @Test("turn completion concludes a read-only card once; a worktree card just goes idle")
+    func test_turnCompletionConcludesReadOnlyOnly() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let inbox = await env.svc.inbox
+
+        // Read-only card: a completed turn is terminal (.dead(.completed)) and concludes exactly once.
+        let watcherA = try await env.svc.spawn(SpawnInput(prompt: "wA", repo: repo, branch: "wa"))
+        let readOnly = try await readOnlyCard(env, "ro")
+        await env.svc.registerWatch(watcherA.id, [readOnly.id])
+        try await env.svc.report(readOnly.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        let ro = try #require(await env.svc.store.get(readOnly.id))
+        #expect(ro.phase == .dead(.completed))
+        try await pollUntil { await inbox.peek(watcherA.id).count == 1 }
+        #expect(await inbox.peek(watcherA.id).count == 1)     // EXACTLY one conclusion
+
+        // Worktree card: a completed turn stays long-lived (.live(.waiting(.humanTurn))), never concludes.
+        let watcherB = try await env.svc.spawn(SpawnInput(prompt: "wB", repo: repo, branch: "wb"))
+        let worktree = try await env.svc.spawn(SpawnInput(prompt: "wt", repo: repo, branch: "wt"))
+        await env.svc.registerWatch(watcherB.id, [worktree.id])
+        try await env.svc.report(worktree.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        let wt = try #require(await env.svc.store.get(worktree.id))
+        #expect(wt.phase == .live(.waiting(.humanTurn)))      // NOT terminal
+        #expect(await inbox.peek(watcherB.id).isEmpty)        // no conclusion
+    }
+
+    // MARK: - stampedEpoch readback parsing
+
+    @Test("stampedEpoch parses tmux show-environment output")
+    func test_stampedEpochParses() {
+        #expect(SessionManager.parseStampedEpoch("ORCH_EPOCH=3\n") == 3)
+        #expect(SessionManager.parseStampedEpoch("ORCH_EPOCH=0") == 0)
+        #expect(SessionManager.parseStampedEpoch("-ORCH_EPOCH\n") == nil)   // tmux's unset form
+        #expect(SessionManager.parseStampedEpoch("") == nil)
+        #expect(SessionManager.parseStampedEpoch("OTHER=x\n") == nil)
+    }
+}

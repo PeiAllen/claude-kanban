@@ -83,7 +83,17 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()
         return (name, true)
     }
-    func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }
+    /// Records every `isAlive` query (in order) so the nil-epoch kill-probe discipline can be asserted:
+    /// a pre-upgrade SessionEnd must consult `isAlive` before it is allowed to kill the card.
+    private(set) var isAliveQueries: [String] = []
+    func isAlive(_ name: String) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        isAliveQueries.append(name)
+        return alive.contains(name)
+    }
+
+    /// Non-recording liveness read for test setup/assertions (doesn't pollute `isAliveQueries`).
+    func isAliveTest(_ id: UUID) -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(sessionName(id)) }
 
     /// Per-session shell windows (excludes `agent`), so `windows()` faithfully reflects opens/closes —
     /// the shell-sync broadcast (`emitShells`) recomputes its set from here, so a canned single-agent

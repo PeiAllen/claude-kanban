@@ -163,7 +163,9 @@ public final class ControlServer: @unchecked Sendable {
             }
             let report = p["report"].flatMap { try? $0.decode(StatusReport.self) }
             let source = p.optString("source").flatMap(SessionSource.init(rawValue:))
-            let resp = await service.handleHook(ref, event: event, report: report, source: source)
+            let observedEpoch = p.optInt("epoch")   // the session's launch generation, echoed by the hook
+            let resp = await service.handleHook(ref, event: event, report: report,
+                                                source: source, observedEpoch: observedEpoch)
             if let resp { return .object(["response": try JSONValue(encodable: resp)]) }
             return .object(["response": .null])
         case "diffText":

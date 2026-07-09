@@ -262,7 +262,10 @@ struct ReportTests {
     @Test("SessionEnd genuine exit → .dead (agentExited); transition reasons never reach report")
     func sessionEndDead() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(endReason: "exit"))
+        // A post-upgrade SessionEnd carries the session's ORCH_EPOCH, so the funnel applies the kill via
+        // its generation fence (no liveness probe needed). A NIL-epoch SessionEnd would instead require a
+        // real `isAlive` probe first — that discipline is covered by PhaseTransitionTests.
+        try await env.svc.report(t.id, StatusReport(endReason: "exit"), observedEpoch: t.sessionEpoch)
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .agentExited)

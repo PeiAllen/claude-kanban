@@ -579,10 +579,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// The `report()` field-delta write: overlay exactly the fields `report()` owns from a
     /// freshly-computed snapshot `s`, leaving every other (possibly concurrently-mutated) field at
     /// self's current value. Centralizes report's ownership so a whole-object write can't clobber.
+    /// NOTE: `phase`/`deadReason`/`deadDetail` are deliberately NOT overlaid here — the `transition()`
+    /// funnel is the sole writer of those (Stage 2 convergence); `report()` routes the phase change
+    /// through it separately, so a whole-object overlay must never clobber a concurrent funnel write.
     public mutating func applyReportFields(from s: Task) {
-        phase = s.phase
-        deadReason = s.deadReason
-        deadDetail = s.deadDetail
         agentSessionId = s.agentSessionId
         priorSessionIds = s.priorSessionIds
         desc = s.desc

@@ -93,7 +93,10 @@ struct WakeMergeWatchTests {
         let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
-        try await env.svc.report(child.id, StatusReport(endReason: "exit"))
+        // The post-upgrade SessionEnd carries the session's ORCH_EPOCH, so the funnel kills via its
+        // generation fence (a nil-epoch exit would first require a real-liveness probe — see
+        // PhaseTransitionTests.test_nilEpochKillSignalRequiresProbe).
+        try await env.svc.report(child.id, StatusReport(endReason: "exit"), observedEpoch: child.sessionEpoch)
         #expect(await waiting.value?.kind == .exited)
     }
 

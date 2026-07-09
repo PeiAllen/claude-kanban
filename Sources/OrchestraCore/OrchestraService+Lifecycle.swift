@@ -12,6 +12,14 @@ public enum TransitionResult: Equatable, Sendable {
 
 extension OrchestraService {
 
+    /// Merge the `ORCH_EPOCH` generation stamp into an adapter's launch env (agent-agnostic — the value
+    /// rides the tmux `-e` env at every launch call site, and the agent's hooks echo it back on `_report`).
+    func withEpoch(_ env: [String: String], _ epoch: Int) -> [String: String] {
+        var e = env
+        e["ORCH_EPOCH"] = String(epoch)
+        return e
+    }
+
     // MARK: - Stage 2 · the single phase-transition funnel
 
     /// The ONE writer of `Task.phase` (Stage 2 convergence). Every lifecycle mover — spawn, launch,
@@ -36,7 +44,13 @@ extension OrchestraService {
         //     (it re-arms a fresh generation), so it falls through to apply.
         if to == from && from.kind != .relaunching { return .noop }
 
-        // 2 · A signal carries the epoch it observed. Fence out a stale generation (finalized in 2.4).
+        // 2 · A signal carries the epoch it observed (`viaSignal`); a verb-driven transition carries none.
+        //     Fence out a superseded generation: a signal whose `observedEpoch` no longer matches the card's
+        //     `sessionEpoch` is from a session we've since torn down/relaunched, so it is dropped. This is
+        //     what makes a late/stale liveness signal harmless. The NIL-epoch kill-class discipline (a
+        //     pre-upgrade signal with no epoch must be probed for real liveness before it may kill) is gated
+        //     at the signal's call site — `report()`'s SessionEnd `isAlive` probe — NOT here, because
+        //     internal deliberate classifications (`markDead`) are not signals and must not be second-guessed.
         let viaSignal = (observedEpoch != nil)
         if let observedEpoch, observedEpoch != card.sessionEpoch { return .noop }
 

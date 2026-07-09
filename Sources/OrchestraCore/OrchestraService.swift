@@ -443,7 +443,10 @@ public actor OrchestraService {
                                  orchestraBin: orchestraBin, access: input.access,
                                  trustCwd: trustDecision == .trusted)
         try? adapter.prepareToLaunch(ctx)
-        try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
+        // Stamp the session's generation (Stage 2): the agent's hooks echo `$ORCH_EPOCH` back on every
+        // `_report`, so a liveness/late signal carries the epoch it observed and the funnel can fence a
+        // superseded generation. Agent-agnostic — merged into the tmux `-e` env for both adapters.
+        try sessions.ensure(created, argv: adapter.start(ctx), env: withEpoch(adapter.env, created.sessionEpoch))
 
         emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
@@ -624,12 +627,13 @@ public actor OrchestraService {
     /// neutral `HookResponse` (receive direction) for the adapter to encode. `nil` on unknown ref or when
     /// there is nothing to send back.
     public func handleHook(_ ref: String, event: HookEvent,
-                           report: StatusReport?, source: SessionSource?) async -> HookResponse? {
+                           report: StatusReport?, source: SessionSource?,
+                           observedEpoch: Int? = nil) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
-        if let report { try? await self.report(task.id, report) }
+        if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
         if event == .sessionStart, let source, source != .startup, source != .compact,
            report?.event?.sessionSource == nil {
-            try? await self.report(task.id, StatusReport(sessionSource: source.rawValue))
+            try? await self.report(task.id, StatusReport(sessionSource: source.rawValue), observedEpoch: observedEpoch)
         }
         switch event {
         case .sessionStart where source != .compact:
