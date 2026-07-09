@@ -341,10 +341,12 @@ extension OrchestraService {
     }
 
     /// Background poll's continuous liveness reconcile (safety net when no SessionEnd fires). Phase-gated:
-    /// being-born (`.creatingWorktree`) and relaunching cards are skipped (their session is legitimately
-    /// absent mid-bring-up); a `.launching` card whose session vanished failed its initial launch →
-    /// `.dead(.spawnFailed)`; a `.live` card whose session vanished crashed → `.dead(.sessionVanished)`.
-    /// Terminal cards are excluded outright. All deaths route through the funnel (`markDead`) so they conclude.
+    /// the being-born phases (`.creatingWorktree`, `.relaunching`, `.launching`) are NEVER killed here — their
+    /// session is legitimately absent mid-bring-up and each is owned by a SYNCHRONOUS launch/relaunch that
+    /// handles its own readiness + spawnFailed timeout; killing them would race the owner's own
+    /// `transition`→`ensure` window and false-kill a live spawn. Only a `.live` card whose session vanished is
+    /// concluded (crashed → `.dead(.sessionVanished)`). Terminal cards are excluded outright. Deaths that DO
+    /// fire route through the funnel (`markDead`) so they conclude.
     public func reconcileLiveness() async {
         let tasks = await store.all()
         // One `tmux list-sessions` per poll tick, not one `has-session` per card.
@@ -363,12 +365,12 @@ extension OrchestraService {
                 if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
                 continue
             case .launching:
-                if alive {
-                    tickLaunchReady(t.id)   // N=3 fallback for a launch whose readiness signal never arrived
-                } else {
-                    launchReadyTicks[t.id] = nil
-                    await markDead(t.id, reason: .spawnFailed, detail: nil, source: .daemon)
-                }
+                // Being born under a SYNCHRONOUS launch that owns readiness + the spawnFailed timeout (launchAndConfirm).
+                // Mirror `.relaunching`: tick the N=3 fallback while a waiter is pending; NEVER markDead here — killing a
+                // launching card races the launch's own `transition(.launching)`→`ensure` window and would false-kill a
+                // live spawn. (Stage-4's reconciler will own launching timeouts via phaseChangedAt for the non-blocking path.)
+                if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
+                continue
             case .live:
                 launchReadyTicks[t.id] = nil   // reached live — reset the being-born counter
                 if !alive {

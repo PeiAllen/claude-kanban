@@ -167,8 +167,9 @@ extension OrchestraService {
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.
-    /// `.done`/archived = moved to Done; a clean agent exit (`.agentExited`) = `.exited`. A revivable
-    /// crash (`sessionVanished`) is deliberately NOT terminal here.
+    /// ANY `.dead` reason is terminal for conclusion purposes: `.completed` → `.done`; every other dead reason
+    /// (incl. `sessionVanished`/`rebootUnrevived`/`resumeFailed`) → `.exited`, so a suspended `wait` resolves on
+    /// crash death rather than hanging. `.archived` (and the `archived` Bool bridge) → `.done`.
     func isConcluded(_ t: Task) -> Conclusion.Kind? {
         if case .archived = t.phase { return .done }
         if t.archived { return .done }                 // archive-verb funnel routing is Stage 4; keep the Bool bridge

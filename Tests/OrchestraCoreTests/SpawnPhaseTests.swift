@@ -49,7 +49,7 @@ struct SpawnPhaseTests {
         #expect(first?.sessionEpoch == 1)
     }
 
-    @Test("liveness skips being-born phases; a launching card whose session vanished → .dead(.spawnFailed)")
+    @Test("liveness skips being-born phases: sessionless .relaunching/.creatingWorktree/.launching cards are NOT killed")
     func test_livenessSkipsBeingBornPhases() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
@@ -70,7 +70,9 @@ struct SpawnPhaseTests {
         await env.svc.reconcileLiveness()
         #expect(await env.svc.list(includeArchived: true).first { $0.id == c.id }?.phase.kind == .creatingWorktree)
 
-        // .launching + vanished session → .dead(.spawnFailed).
+        // .launching + vanished session → NOT killed (mirrors .creatingWorktree/.relaunching). The SYNCHRONOUS
+        // launchAndConfirm owns readiness + the spawnFailed timeout, so liveness must never markDead a .launching
+        // card — doing so races the launch's own transition(.launching)→ensure window and false-kills a live spawn.
         let l = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "l"))
         try await env.svc.archive(l.id)
         _ = await env.svc.transition(l.id, to: .archived(teardownComplete: true))
@@ -78,9 +80,7 @@ struct SpawnPhaseTests {
         _ = await env.svc.transition(l.id, to: .launching)
         env.sessions.setAlive(l.id, false)
         await env.svc.reconcileLiveness()
-        let after = await env.svc.list(includeArchived: true).first { $0.id == l.id }
-        #expect(after?.phaseDisplay == .dead)
-        #expect(after?.deadReason == .spawnFailed)
+        #expect(await env.svc.list(includeArchived: true).first { $0.id == l.id }?.phase.kind == .launching)
     }
 
     @Test("a prompted spawn lands .live(.running)")
