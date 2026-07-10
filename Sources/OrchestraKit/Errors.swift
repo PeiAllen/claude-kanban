@@ -18,6 +18,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
     case io(String)
     case trustDenied(String)
     case ownershipDenied(String)   // CAS failure: release/heartbeat by a non-current epoch/clientId
+    case phaseGated(verb: String, phase: String)   // the target card's phase denies this verb (deny-by-default gate)
 
     public var description: String {
         switch self {
@@ -42,6 +43,8 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .io(let m):            return "io error: \(m)"
         case .trustDenied(let m):   return "trust not granted: \(m)"
         case .ownershipDenied(let m): return "ownership denied: \(m)"
+        case .phaseGated(let verb, let phase):
+            return "verb '\(verb)' is not allowed while the card is '\(phase)'"
         }
     }
 
@@ -75,6 +78,7 @@ public enum OrchestraError: Error, CustomStringConvertible, Sendable, Equatable 
         case .io:               return 1010
         case .trustDenied:      return 1011
         case .ownershipDenied:  return 1012
+        case .phaseGated:       return 1016
         }
     }
 }
