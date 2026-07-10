@@ -132,6 +132,10 @@ public actor OrchestraService {
     /// Per-card capped-exponential backoff for a FAILING step: `count` bumps on each throw (reset on
     /// success), `nextEligible` gates the next retry so a persistently-failing stepper never hot-loops.
     var stepAttempts: [UUID: (count: Int, nextEligible: Date)] = [:]
+    /// Test seam: pin the step-backoff delay to a fixed value (seconds), overriding the capped-exponential
+    /// schedule. The backoff test uses a large value so its "immediate re-ticks stay inside the window"
+    /// assertion is load-proof — the real 2s first delay can be outlasted by a heavily-parallel test run.
+    var stepBackoffOverrideSeconds: Double? = nil
     /// The reconciler's `Phase.Kind → PhaseStepper` dispatch table. Defaults to the real four; a test may
     /// override an entry (e.g. a throwing stepper for the backoff test) via `setStepper`.
     var steppers: [Phase.Kind: any PhaseStepper] = PhaseSteppers.byKind

@@ -51,13 +51,16 @@ struct ReconcilerTests {
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let stepper = CountingThrowStepper()
         await env.svc.setStepper(stepper, for: .creatingWorktree)
+        // Pin a large backoff so the "re-ticks stay inside the window" assertion is load-proof: the real
+        // first delay is 2s, which a heavily-parallel suite run can outlast between the reconcile() calls.
+        await env.svc.setStepBackoff(3600)
         await env.svc.seedPhase(t.id, .creatingWorktree)
 
         await env.svc.reconcile()                                    // dispatch the throwing step
         try await pollUntil { stepper.count >= 1 }
         let afterFirst = stepper.count
 
-        // Immediate re-ticks land inside the (≥2s) backoff window → the step must NOT re-run (no hot loop).
+        // Immediate re-ticks land inside the (pinned 3600s) backoff window → the step must NOT re-run (no hot loop).
         for _ in 0..<6 { await env.svc.reconcile() }
         try await _Concurrency.Task.sleep(for: .milliseconds(120))
         #expect(stepper.count == afterFirst)

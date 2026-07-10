@@ -13,6 +13,9 @@ extension OrchestraService {
     /// Test seam: override the stepper for a `Phase.Kind` (e.g. a throwing stepper for the backoff test).
     func setStepper(_ stepper: any PhaseStepper, for kind: Phase.Kind) { steppers[kind] = stepper }
 
+    /// Test seam: pin the step-backoff delay so the backoff test's window is load-proof (see the field's doc).
+    func setStepBackoff(_ seconds: Double) { stepBackoffOverrideSeconds = seconds }
+
     /// Test/introspection: the worktree registry's conservative-mode flag (post-corrupt-boot).
     func worktreeConservativeMode() async -> Bool { await worktrees.conservativeMode }
 
@@ -135,7 +138,8 @@ extension OrchestraService {
     /// persistently-failing step never hot-loops but still retries at a bounded cadence.
     private func bumpStepBackoff(_ id: UUID, now: Date) {
         let count = (stepAttempts[id]?.count ?? 0) + 1
-        let delay = min(pow(2.0, Double(min(count, 6))), stepBackoffCapSeconds)   // 2,4,8,…,64 capped
+        let delay = stepBackoffOverrideSeconds
+            ?? min(pow(2.0, Double(min(count, 6))), stepBackoffCapSeconds)   // 2,4,8,…,64 capped
         stepAttempts[id] = (count, now.addingTimeInterval(delay))
     }
     private var stepBackoffCapSeconds: Double { 64 }
