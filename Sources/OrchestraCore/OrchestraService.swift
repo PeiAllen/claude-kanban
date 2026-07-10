@@ -1138,6 +1138,15 @@ public actor OrchestraService {
         return try resolve(TaskRef(parsing: raw), in: all)
     }
 
+    /// Bundle the live dependencies a `PhaseStepper` needs. PR4b's reconciler builds one per tick; the
+    /// `transition` closure re-enters this actor so the funnel stays the sole `phase` writer.
+    func convergeContext() -> ConvergeContext {
+        ConvergeContext(store: store, worktrees: worktrees, sessions: sessions, adapters: registry,
+                        transition: { [self] id, to, epoch in
+                            await transition(id, to: to, observedEpoch: epoch)
+                        })
+    }
+
     // (column display names live on `Column.displayName`)
 
     /// The selectable models. With `agentId`, just that adapter's catalog. Without, the UNION across

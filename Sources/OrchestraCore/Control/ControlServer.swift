@@ -268,7 +268,9 @@ public final class ControlServer: @unchecked Sendable {
             guard let cmd = registry.command(req.method) else {
                 throw RPCError(code: -32601, message: "method not found: \(req.method)")
             }
-            return try await cmd.run(service, req.params ?? .object([:]), source)
+            // The single gate-enforcement chokepoint: `dispatch` checks the verb's `phaseGate` against the
+            // target card's phase and throws `.phaseGated` before the handler runs (deny-by-default).
+            return try await registry.dispatch(cmd, service, req.params ?? .object([:]), source)
         }
     }
 
