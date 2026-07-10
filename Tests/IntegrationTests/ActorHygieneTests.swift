@@ -20,6 +20,18 @@ final class ActorHygieneTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor exec")
         _ = try await slow.value                          // drain
     }
+
+    func test_actorNotBlockedByDiff() async throws {
+        let (service, cardId, _) = try await ActorHygieneSupport.liveCardWorktree()
+        let gate = ActorHygieneSupport.Gate()
+        await service._setDiffProviderForTest(ActorHygieneSupport.BlockingDiffProvider(gate: gate))
+        let slow = _Concurrency.Task { _ = await service.recomputeDiffStat(cardId) }
+        gate.waitUntilEntered()                              // provider is now parked inside the hop
+        let start = Date()
+        _ = await service.list()
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor diff")
+        gate.open(); _ = await slow.value
+    }
 }
 
 // MARK: - Shared Stage-5.1 test harness (reused by the 5.1.2–5.1.5 gate tests)
@@ -148,6 +160,26 @@ enum ActorHygieneSupport {
             _open = true
             cond.broadcast()
             cond.unlock()
+        }
+    }
+
+    /// A `DiffProvider` stub for `test_actorNotBlockedByDiff` (5.1.2): `stat`/`render` mark the gate
+    /// entered (proving the call genuinely reached the hop) then park until the test opens it — a
+    /// deterministic stand-in for a slow real `git diff`.
+    final class BlockingDiffProvider: DiffProvider, @unchecked Sendable {
+        private let gate: Gate
+        init(gate: Gate) { self.gate = gate }
+
+        func stat(worktree: String, base: DiffBase, parentBranch: String?) throws -> DiffStat? {
+            gate.markEntered()
+            gate.blockUntilOpen()
+            return nil
+        }
+
+        func render(worktree: String, base: DiffBase, parentBranch: String?) throws -> String {
+            gate.markEntered()
+            gate.blockUntilOpen()
+            return ""
         }
     }
 }

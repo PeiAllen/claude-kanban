@@ -15,8 +15,8 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.origin == .worktree else { return "" }
         try resolver.assertAllowed(t.cwd)
-        let text = (try? GitDiffProvider().render(worktree: t.cwd, base: base,
-                                                  parentBranch: resolvedParentRef(t))) ?? ""
+        let provider = diffProvider, ref = resolvedParentRef(t), cwd = t.cwd
+        let text = (try? await offActor { try provider.render(worktree: cwd, base: base, parentBranch: ref) }) ?? ""
         if text.utf8.count > Self.diffTextCap {
             return String(text.prefix(Self.diffTextCap))
                 + "\n… (diff truncated — open in Zed for the full changes)\n"
@@ -39,7 +39,8 @@ extension OrchestraService {
         if t.origin == .worktree {
             do {
                 try resolver.assertAllowed(t.cwd)
-                newStat = try GitDiffProvider().stat(worktree: t.cwd, base: effective, parentBranch: ref)
+                let provider = diffProvider, cwd = t.cwd
+                newStat = try await offActor { try provider.stat(worktree: cwd, base: effective, parentBranch: ref) }
             } catch {
                 newStat = nil
             }

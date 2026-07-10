@@ -13,6 +13,7 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.origin == .worktree else { return [] }
         try resolver.assertAllowed(t.cwd)
-        return launcher.changedNoteFiles(worktree: t.cwd, parentRef: resolvedParentRef(t))
+        let l = launcher, ref = resolvedParentRef(t), cwd = t.cwd
+        return try await offActor { l.changedNoteFiles(worktree: cwd, parentRef: ref) }
     }
 }
