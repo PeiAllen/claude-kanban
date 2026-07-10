@@ -64,10 +64,18 @@ is confirmed (the tmux verb now checks its exit status and throws on failure); i
 card stays pending and retries next tick. Otherwise a stuck-ON remain-on-exit would leave a later mid-run
 crash as a dead pane in a present session that the generic vanish check (session-presence) never sees.
 
-**Daemon restart inside the grace is handled.** `spawnPending` is in-memory, so a restart within the grace
-loses it while the tmux session (with its dead pane, remain-on-exit ON) survives. `recoverSessions` now
-pane-checks the *alive* subset: a present-but-dead-pane session is reaped and the card recovered
-(resume / restart / rebootUnrevived) instead of being read as "still running" and wedged forever.
+**Guaranteed convergence of an orphaned dead pane.** `spawnPending` is in-memory, so a daemon restart
+inside the grace loses it while the tmux session (dead pane, remain-on-exit ON) survives — and the generic
+vanish check keys on session-NAME absence, so it never fires. A card must ALWAYS converge, so the
+**continuous** `reconcileLiveness` (not just the one-shot boot sweep) resolves it: `agentPaneDeadSessions()`
+(one server-wide `list-panes -a` per tick) surfaces every orchestra session whose agent pane process
+exited; a non-pending `.running` card in that set → `resolveOrphanedDeadPane` — capture surviving stderr →
+remain-on-exit off → reap → `markDead(.spawnExitedImmediately)`. **No retry** (the budget record was lost
+with `spawnPending`; per the convergence contract, just mark dead — never loop). A dead agent pane only
+exists while remain-on-exit is ON (a startup-armed pane), so this never mis-fires on a healthy card.
+`recoverSessions` is unified onto the same helper, so boot and poll agree and the evidence survives.
+Reconcile order: `recovering` → `spawnPending` (budgeted retry) → orphaned-dead-pane (converge) → generic
+vanish.
 
 ## Known limitations (accepted)
 
