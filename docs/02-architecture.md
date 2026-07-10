@@ -233,6 +233,30 @@ socket is just another path the `UDSTransport` opens. See
 [Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the app chapter and the
 [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md).
 
+Two more resilience details round out the transport seam:
+
+- **Per-RPC deadline.** Every `call()` attaches a `callTimeout` (default 15 s) to its pending
+  continuation; on expiry only that call fails with a timeout error, not the whole connection — a single
+  slow RPC (a laggy tunnel hop, a momentarily busy daemon) doesn't take the client down with it.
+- **Ping keepalive.** While `state == .live`, a background loop issues a `version` probe (itself bound
+  by `callTimeout`) every `pingInterval` (default 20 s). Its job is to catch a **dead-but-open** tunnel —
+  a socket or SSH channel that never EOFs and never replies, which the read loop alone can't see. A
+  failed probe flips `ConnectionState` to `.retrying` and `shutdown()`s the transport, waking the reader
+  into the same reconnect path a dropped link takes.
+
+A second, unrelated reconnect policy governs the two **terminal** hosts — mac's `AgentTerminalView` (a
+local `tmux attach` subprocess via SwiftTerm) and iOS's `IOSTerminalView` (a remote SSH-driven attach) —
+which now share `TerminalReconnectPolicy` (`Sources/OrchestraKit/TerminalReconnectPolicy.swift`) rather
+than each rolling its own backoff. Attempt `n` waits `min(8, 2^(n-1))` seconds, up to a `maxReconnects`
+budget (default 5, so the schedule is `[1, 2, 4, 8, 8]`) before the host gives up and surfaces a
+manual-retry affordance. The policy itself is pure math; each host owns its own timer, pending-reconnect
+flag, and live-gate. On mac, the attempt counter resets to zero only when a reattach *survives* a
+5-second stabilize window (a failed `tmux attach` exits almost instantly, so staying up that long is the
+success signal) or when the attach target changes outright (`resetForNewTarget()`, which also bumps a
+generation counter that invalidates any backoff already queued against the old target) — never merely on
+attach start. That keeps a persistently-flapping tmux session bounded by the same five-attempt budget
+instead of getting a fresh count on every retry.
+
 ### Request flow, server-side
 
 `ControlServer` accepts each connection and serves it on its own GCD queue. For each line it decodes an
@@ -274,6 +298,22 @@ All three are `ControlClient`s differing only in their `source` tag and how they
 
 Because the CLI and MCP both generate their surface from the same registry, the three clients can never
 drift apart on *what* commands exist — only on presentation.
+
+Every human-facing surface — the mac app and the iOS app (not the MCP bridge, which relays raw task JSON
+to another agent, not rendered status) and `orchestra list`'s CLI pill — renders a card's status through
+one shared, pure contract: `displayState(phase:connection:) -> DisplayState`
+(`Sources/OrchestraKit/DisplayState.swift`), returning
+`{statusKey, label, validActions: Set<Verb>, isBusy, isStale}`. No surface hand-rolls its own status text
+or action list — the board cell, card detail/inspector, and recovery views on both mac and iOS all read
+from it: `label` comes from `Phase.displayKey → PhaseDisplayKey.label` (the one place the phase-to-text
+vocabulary lives), the app's color comes from `Theme.statusColor(statusKey)`, and `validActions` is built
+by looping `CommandCatalog.all` for schemas whose `phaseGate` admits the phase's `Phase.Kind` — never a
+hand-copied per-surface table, so a verb's gate can't quietly drift from what the UI offers. A
+disconnected link (`connection != .live`) empties `validActions` of every daemon verb and sets `isStale`;
+the one action that survives is a local-only extra (`.openNotes`, gated on whether the phase has a
+materialized worktree cwd), since opening the notes file is a local disk op that needs no daemon.
+`dead(.spawnFailed)` — like every other dead reason — maps through `Phase.displayKey` to the `.dead` key
+and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads as `.done` ("Done").
 
 ## The report channel
 
