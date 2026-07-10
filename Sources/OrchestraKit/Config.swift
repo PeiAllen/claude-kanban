@@ -133,6 +133,10 @@ public struct Config: Codable, Sendable, Equatable {
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
     /// Persisted borrow registrations (`[borrowerCardId: path]`), sibling to `inboxPath`.
     public static var borrowsPath: String { "\(dataDir)/borrows.json" }
+    /// Durable watch registry (`[watcherCardId: [childCardId]]`), sibling to `inboxPath`. Survives a
+    /// daemon restart so an MCP `wait` watcher is re-notified of a child that concluded while the daemon
+    /// was down (F2/F3 fan-out durability, PR4b carry #4).
+    public static var watchRegistryPath: String { "\(dataDir)/watch-registry.json" }
     /// Registry-owned worktree "materialized" markers (one sentinel file per worktree path), sibling to `inboxPath`.
     public static var worktreeMarkersDir: String { "\(dataDir)/worktree-markers" }
     /// Registered APNs device tokens (N1), sibling to `tasksPath`. The daemon persists each client's

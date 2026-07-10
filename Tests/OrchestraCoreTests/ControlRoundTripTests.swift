@@ -176,6 +176,11 @@ struct ControlRoundTripTests {
         let task = try await client.call("spawn", .object([
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
+        // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return FileManager.default.fileExists(atPath: task.cwd)
+        }
         // Turn the card's cwd into a real git repo with an uncommitted change.
         let dir = task.cwd
         for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
@@ -210,6 +215,11 @@ struct ControlRoundTripTests {
         let task = try await client.call("spawn", .object([
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
+        // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return FileManager.default.fileExists(atPath: task.cwd)
+        }
         // Card cwd → a git repo with a committed note, then an uncommitted modify + an untracked add.
         let dir = task.cwd
         #expect(try Proc.run(["mkdir", "-p", dir + "/notes"], cwd: dir).ok)

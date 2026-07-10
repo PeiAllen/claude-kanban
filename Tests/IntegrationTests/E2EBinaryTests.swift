@@ -53,7 +53,7 @@ final class E2EBinaryTests {
         pollLoop = _Concurrency.Task {
             while !_Concurrency.Task.isCancelled {
                 try? await _Concurrency.Task.sleep(for: .milliseconds(200))
-                await svc.reconcileLiveness()
+                await svc.reconcile()          // Task 3: the stepping reconciler drives non-blocking spawn → live
                 await svc.pollTelemetry()
             }
         }
@@ -93,13 +93,23 @@ final class E2EBinaryTests {
         let shortId = String(list.stdout.split(whereSeparator: \.isWhitespace).first ?? "")
         #expect(!shortId.isEmpty)
 
+        // Non-blocking spawn (PR4b Task 3): the card is `.creatingWorktree`/`.launching` until the daemon's
+        // reconcile loop cuts the worktree + brings the session up + confirms readiness (via the N=3
+        // fallback — the fake agent fires no SessionStart hook). `exec` is gated until the card is `.live`,
+        // so poll the board (~15s cap) until the card leaves `launching`/`creating`.
+        for _ in 0..<75 {
+            let listed = try cli(["list"])
+            if listed.stdout.contains(shortId), listed.stdout.contains("running") { break }   // reached .live(.running)
+            usleep(200_000)
+        }
+        let sessions = try cli(["sessions", shortId, "--json"])
+
         // exec runs in the worktree and prints the branch
         let exec = try cli(["exec", shortId, "git rev-parse --abbrev-ref HEAD"])
         #expect(exec.stdout.contains("feat"))
         #expect(exec.exitCode == 0)
 
         // sessions --json returns a CardSessions with the agent window
-        let sessions = try cli(["sessions", shortId, "--json"])
         #expect(sessions.stdout.contains("\"session\""))
         #expect(sessions.stdout.contains(":agent"))
     }

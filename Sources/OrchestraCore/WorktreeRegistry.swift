@@ -393,7 +393,7 @@ public actor WorktreeRegistry {
     // MARK: - release (single removal policy)
     /// Seam for Stage-4 conservative mode (post-corrupt-recovery): when true, release removes nothing until
     /// ownership is positively re-established. PR4b/Task 4.4 sets it; here it just gates the policy.
-    private var conservativeMode = false
+    public private(set) var conservativeMode = false
     public func setConservativeMode(_ on: Bool) { conservativeMode = on }
 
     /// The SINGLE removal policy every teardown routes through. Removes the card's tree only when

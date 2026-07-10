@@ -11,7 +11,7 @@ struct SetParentRemoteTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         // A plain card on its own branch, no parent yet.
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "solo"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "solo"))
         _ = try await svc.setParent(ref: card.shortId, parent: "pr#7", mode: "adopt", watch: true)
         let link = try #require(await svc.lineage.read(repo: repo, branch: "solo"))
         #expect(link.parent == "pr#7")
@@ -28,7 +28,7 @@ struct SetParentRemoteTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         #expect(await svc.remoteWatchActive(card.id) == true)
         _ = try await svc.setParent(ref: card.shortId, parent: nil)
         #expect(await svc.remoteWatchActive(card.id) == false)
@@ -42,7 +42,7 @@ struct SetParentRemoteTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         #expect(await svc.remoteWatchActive(card.id) == true)
         // The bare origin pushed a real `feature-b`; fetch it into a LOCAL branch to adopt.
         _ = try RemoteParentTests.git(repo, "fetch", "-q", "origin", "feature-b:local-parent")
@@ -57,7 +57,7 @@ struct SetParentRemoteTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         await svc.recomputeTreeStat(card.id)                             // give it a non-nil badge
         #expect(await svc.store.get(card.id)?.treeStat != nil)
         _ = try await svc.setParent(ref: card.shortId, parent: nil)
@@ -69,7 +69,7 @@ struct SetParentRemoteTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "solo"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "solo"))
         let reg = CommandRegistry()
         let cmd = try #require(reg.command("set-parent"))
         _ = try await cmd.run(svc, .object([

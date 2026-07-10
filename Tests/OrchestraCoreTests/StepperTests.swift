@@ -2,6 +2,359 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
+// ============================================================================
+// PR4b Task 5 — the matrix + crash-recovery battery (Tests B–E). Test A
+// (`test_gatePolicyConformance`) lives in VerbContractTests; Test D's inequality
+// is also proven in ReconcilerTests — this file adds the BOTH-AGENT crash framings
+// the doctrine wants ("deterministic stubs are the guard; a `remake` IS the crash").
+//
+// The battery reuses the settled seams: `remake` = a fresh service over the same
+// on-disk store (the stateless-stepper re-derives from disk), `reconcile()` /
+// `reconcilePhasesAtBoot()` drive convergence, `PhaseSteppers.byKind[kind].verify`
+// is the per-cell transitional oracle, and every session/worktree side effect is
+// stub-observable. Both backends run through the capability seam (`.claudeCode`
+// sessionStartHook / codex `.rolloutMeta`) — never an `if agentId ==`.
+// ============================================================================
+
+/// A per-backend env tuple: a genuine `codex` card is a DIFFERENT adapter id (not
+/// Claude-with-different-caps), so the capability branches are exercised for real.
+private typealias BEnv = (svc: OrchestraService, sessions: StubSessions,
+                          worktrees: StubWorktrees, adapter: StubAdapter, base: String)
+
+/// The both-agent matrix parameter — the readiness axis is what differs (Claude
+/// `.sessionStartHook` vs Codex `.rolloutMeta`), which is exactly the launch/relaunch
+/// path the crash tests exercise, so BA is REQUIRED here (not a courtesy).
+private let batteryAgents: [(id: String, caps: AgentCapabilities)] =
+    [("claude-code", .claudeCode), ("codex", ReadinessSignalTests.codexStubCaps)]
+
+/// A stub-backed service whose sole adapter carries `id` + `caps`. Mirrors the wiring
+/// `TestEnv.make` uses, but lets a `codex` card actually be codex (the readiness seam).
+private func batteryEnv(_ caps: AgentCapabilities, id: String) -> BEnv {
+    let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-battery-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
+    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
+    let sessions = StubSessions()
+    let worktrees = StubWorktrees(root: config.worktreesRoot)
+    let wtReg = WorktreeRegistry(config: config, manager: worktrees,
+                                 borrowsPath: base + "/borrows.json", markersDir: base + "/wm")
+    let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: caps, id: id)
+    let store = TaskStore(path: base + "/tasks.json")
+    let trust = TrustLedger(path: base + "/trust.json")
+    let inbox = Inbox(path: base + "/inbox.json")
+    let svc = OrchestraService(config: config, store: store, registry: AgentRegistry(adapters: [adapter]),
+                               worktrees: wtReg, sessions: sessions, trust: trust, inbox: inbox,
+                               watchStore: WatchRegistryStore(path: base + "/watch.json"))
+    return (svc, sessions, worktrees, adapter, base)
+}
+
+/// Rebuild a fresh service over the SAME on-disk store as `batteryEnv` — the deterministic
+/// "crash": in-memory timers/loops/sessions are gone, so the steppers re-derive from the
+/// persisted phase. The adapter id/caps MUST match (the persisted card carries the agentId,
+/// so a bare `TestEnv.remake` — always "claude-code" — would fail `registry.get("codex")`).
+private func batteryRemake(base: String, caps: AgentCapabilities, id: String) -> BEnv {
+    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
+    let sessions = StubSessions()
+    let worktrees = StubWorktrees(root: config.worktreesRoot)
+    let wtReg = WorktreeRegistry(config: config, manager: worktrees,
+                                 borrowsPath: base + "/borrows.json", markersDir: base + "/wm")
+    let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: caps, id: id)
+    let store = TaskStore(path: base + "/tasks.json")
+    let trust = TrustLedger(path: base + "/trust.json")
+    let inbox = Inbox(path: base + "/inbox.json")
+    let svc = OrchestraService(config: config, store: store, registry: AgentRegistry(adapters: [adapter]),
+                               worktrees: wtReg, sessions: sessions, trust: trust, inbox: inbox,
+                               watchStore: WatchRegistryStore(path: base + "/watch.json"))
+    return (svc, sessions, worktrees, adapter, base)
+}
+
+/// Spawn a worktree card and drive it to `.live` (materialized tree + up session), delivering
+/// the readiness signal each launching tick so an AWAITING cap (`.sessionStartHook`/`.rolloutMeta`)
+/// confirms deterministically. The common starting point for the crash framings.
+private func batterySpawnLive(_ e: BEnv, branch: String) async throws -> Task {
+    let created = try await e.svc.spawn(
+        SpawnInput(prompt: "x", repo: TestEnv.repo(e.base), branch: branch, agentId: e.adapter.id))
+    try await pollUntil {
+        await e.svc.reconcile()
+        let card = await e.svc.list(includeArchived: true).first { $0.id == created.id }
+        if card?.phase.kind == .launching { try? await e.svc.report(created.id, StatusReport(sessionSource: "startup")) }
+        return card?.phase.kind == .live
+    }
+    return try #require(await e.svc.list(includeArchived: true).first { $0.id == created.id })
+}
+
+/// Archive a card and drive the reconciler's TeardownStepper to `.archivedComplete`.
+private func batteryArchiveAndTeardown(_ e: BEnv, _ id: UUID) async throws {
+    try await e.svc.archive(id)
+    try await pollUntil {
+        await e.svc.reconcile()
+        return await e.svc.list(includeArchived: true).first { $0.id == id }?.phase.kind == .archivedComplete
+    }
+}
+
+// MARK: - Test B · stepper crash-convergence matrix (agent × boundary)
+
+/// Every stepper converges from ANY persisted boundary after a crash. Explicitly enumerated as
+/// `agent × boundary` (2 × 7 = 14 named cells). Per-cell oracle (only 4 kinds have a stepper):
+///  • the 4 transitional kinds assert `PhaseSteppers.byKind[kind].verify == true`;
+///  • `live` → adopted at the matching epoch (no relaunch, no duplicate session/card);
+///  • `dead` → stays `dead`; a `dead(.completed)` session is NOT swept (revival stays possible);
+///  • `archivedComplete` → terminal; no re-drive, no duplicate teardown.
+@Suite("PR4b Task 5 · Test B — stepper crash-convergence matrix")
+struct StepperCrashMatrixTests {
+
+    enum Boundary: String, CaseIterable, Sendable {
+        case creatingWorktree, launching, live, relaunching, dead, archivedPending, archivedComplete
+    }
+
+    @Test("test_everyStepperConvergesFromAnyBoundary", arguments: batteryAgents, Boundary.allCases)
+    func test_everyStepperConvergesFromAnyBoundary(
+        agent: (id: String, caps: AgentCapabilities), boundary: Boundary) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let live = try await batterySpawnLive(e, branch: "b")
+        let epoch = live.sessionEpoch
+
+        // Drive the card TO the boundary phase, then persist it — this is the state a crash strands.
+        switch boundary {
+        case .creatingWorktree:  await e.svc.seedPhase(live.id, .creatingWorktree)
+        case .launching:         await e.svc.seedPhase(live.id, .launching, sessionEpoch: epoch)
+        case .live:              break                                  // already live
+        case .relaunching:
+            e.adapter.writeTranscript(for: live.agentSessionId!)        // resumable so the relaunch resumes
+            await e.svc.seedPhase(live.id, .relaunching)
+        case .dead:              await e.svc.markDead(live.id, reason: .completed, detail: nil, source: .daemon)
+        case .archivedPending:   await e.svc.seedPhase(live.id, .archived(teardownComplete: false))
+        case .archivedComplete:  try await batteryArchiveAndTeardown(e, live.id)
+        }
+
+        // The crash: a fresh service over the same on-disk store (steppers re-derive from disk).
+        let e2 = batteryRemake(base: e.base, caps: agent.caps, id: agent.id)
+        // Seed the session state a real crash would leave for the ADOPTION boundaries: a daemon-only
+        // crash leaves the tmux session alive at the matching epoch; a `dead(.completed)` session lingers.
+        switch boundary {
+        case .live, .dead: e2.sessions.setStampedEpoch(live.id, epoch)
+        default: break
+        }
+
+        // Boot pass (adopts/reboot-routes `.live` cards) then steady-state ticks to convergence. We do NOT
+        // hand-deliver a readiness signal: the steppers' `finishLaunch` brings the session up for REAL and the
+        // reconciler's N=3 liveness fallback confirms it — the missed-hook path both agents must survive. (A
+        // hand-delivered `SessionStart(resume)` would finalize a `.relaunching` card to `.live` WITHOUT the
+        // stepper's ensure — masking the very relaunch work this cell exists to verify.)
+        await e2.svc.reconcilePhasesAtBoot()
+        try await pollUntil {
+            await e2.svc.reconcile()
+            return await Self.oracleReached(e2, live.id, boundary)
+        }
+
+        // Per-cell oracle assertions.
+        let ctx = await e2.svc.convergeContext()
+        let final = try #require(await e2.svc.list(includeArchived: true).first { $0.id == live.id })
+        let name = e2.sessions.sessionName(live.id)
+        switch boundary {
+        case .creatingWorktree: #expect(await MaterializeStepper().verify(final, ctx))
+        case .launching, .live: #expect(await LaunchStepper().verify(final, ctx))   // live: adopted at epoch
+        case .relaunching:      #expect(await RelaunchStepper().verify(final, ctx))
+        case .archivedPending:  #expect(await TeardownStepper().verify(final, ctx))
+        case .archivedComplete: #expect(await TeardownStepper().verify(final, ctx))  // stays complete
+        case .dead:             break
+        }
+        switch boundary {
+        case .live:
+            #expect(final.phase.kind == .live)                          // adopted, not relaunched
+            #expect(final.sessionEpoch == epoch)                        // identity preserved
+            #expect(e2.sessions.killed.isEmpty)                         // no relaunch kill
+            #expect(e2.sessions.ensureArgv[name] == nil)                // no duplicate session
+            #expect(await e2.svc.list(includeArchived: true).filter { $0.id == live.id }.count == 1)  // no duplicate card
+        case .dead:
+            #expect(final.phase == .dead(.completed))                   // stays dead
+            #expect(e2.sessions.isAliveTest(live.id))                   // dead(.completed) session NOT swept
+            #expect(!e2.sessions.killed.contains(name))
+        case .archivedComplete:
+            #expect(final.phase.kind == .archivedComplete)              // terminal
+            #expect(e2.sessions.killed.isEmpty)                         // no duplicate teardown kill
+            #expect(e2.worktrees.removed.isEmpty)                       // no duplicate run-dir reclaim
+        default:
+            break
+        }
+    }
+
+    /// The loop's convergence predicate (the phase the boundary settles at).
+    private static func oracleReached(_ e: BEnv, _ id: UUID, _ boundary: Boundary) async -> Bool {
+        guard let f = await e.svc.list(includeArchived: true).first(where: { $0.id == id }) else { return false }
+        switch boundary {
+        case .creatingWorktree, .launching, .relaunching, .live: return f.phase.kind == .live
+        case .archivedPending, .archivedComplete:                return f.phase.kind == .archivedComplete
+        case .dead:                                              return f.phase.kind == .dead
+        }
+    }
+}
+
+// MARK: - Test C · adopt-don't-relaunch + reboot crash scenarios
+
+@Suite("PR4b Task 5 · Test C — adopt / reboot crash scenarios")
+struct AdoptRebootCrashTests {
+
+    /// A daemon-only crash whose tmux session survives at the MATCHING epoch is ADOPTED (never relaunched).
+    @Test("test_daemonCrashAdoptsLiveSession", arguments: batteryAgents)
+    func test_daemonCrashAdoptsLiveSession(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let live = try await batterySpawnLive(e, branch: "b")
+        let epoch = live.sessionEpoch
+
+        let e2 = batteryRemake(base: e.base, caps: agent.caps, id: agent.id)
+        e2.sessions.setStampedEpoch(live.id, epoch)          // session survived the daemon at the same epoch
+        await e2.svc.reconcilePhasesAtBoot()
+
+        let after = try #require(await e2.svc.list().first { $0.id == live.id })
+        #expect(after.phase.kind == .live)                                          // adopted
+        #expect(after.sessionEpoch == epoch)                                        // identity unchanged
+        #expect(e2.sessions.killed.isEmpty)                                         // never killed
+        #expect(e2.sessions.ensureArgv[e2.sessions.sessionName(live.id)] == nil)    // never relaunched
+        #expect(try e2.sessions.stampedEpoch(name: e2.sessions.sessionName(live.id)) == epoch)
+    }
+
+    /// A `.launching` card whose session came up before the crash cut the phase write is adopted on the
+    /// next tick at the matching epoch — no duplicate session, no duplicate card.
+    @Test("test_launchingAdoptsSurvivingSession", arguments: batteryAgents)
+    func test_launchingAdoptsSurvivingSession(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let live = try await batterySpawnLive(e, branch: "b")
+        let epoch = live.sessionEpoch
+        await e.svc.seedPhase(live.id, .launching, sessionEpoch: epoch)   // session up, phase-write lost
+
+        let e2 = batteryRemake(base: e.base, caps: agent.caps, id: agent.id)
+        e2.sessions.setStampedEpoch(live.id, epoch)                       // surviving session at matching epoch
+        let countBefore = await e2.svc.list(includeArchived: true).count
+        try await pollUntil {
+            await e2.svc.reconcile()
+            return await e2.svc.list().first { $0.id == live.id }?.phase.kind == .live
+        }
+
+        let after = try #require(await e2.svc.list().first { $0.id == live.id })
+        #expect(after.phase.kind == .live)                                          // adopted
+        #expect(after.sessionEpoch == epoch)
+        #expect(e2.sessions.killed.isEmpty)                                         // no relaunch kill
+        #expect(e2.sessions.ensureArgv[e2.sessions.sessionName(live.id)] == nil)    // no duplicate session
+        #expect(await e2.svc.list(includeArchived: true).count == countBefore)      // no duplicate card
+    }
+
+    /// A machine reboot wipes tmux: a resumable card resumes per capability (`--resume`); a non-resumable,
+    /// already-prompted card is `dead(.rebootUnrevived)` (fail-safe, never a blank relaunch of real work).
+    @Test("test_machineRebootPath", arguments: batteryAgents)
+    func test_machineRebootPath(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let resumable = try await batterySpawnLive(e, branch: "r")
+        e.adapter.writeTranscript(for: resumable.agentSessionId!)         // resumable: transcript on disk
+        let orphaned = try await batterySpawnLive(e, branch: "n")         // no transcript, prompted ⇒ unrecoverable
+
+        // Reboot: fresh process AND fresh (empty) tmux — no session survives. The RelaunchStepper's
+        // `finishLaunch` resumes for real and the N=3 liveness fallback confirms it (no injected hook — a
+        // hand-delivered `resume` signal would finalize the card to `.live` without the actual `--resume`).
+        let e2 = batteryRemake(base: e.base, caps: agent.caps, id: agent.id)
+        await e2.svc.reconcilePhasesAtBoot()
+        try await pollUntil {
+            await e2.svc.reconcile()
+            return await e2.svc.list().first { $0.id == resumable.id }?.phase.kind == .live
+        }
+
+        let ra = try #require(await e2.svc.list().first { $0.id == resumable.id })
+        #expect(ra.phase.kind == .live)                                             // revived
+        #expect(ra.agentSessionId == resumable.agentSessionId)                      // resumed the same session id
+        let argv = try #require(e2.sessions.ensureArgv[e2.sessions.sessionName(resumable.id)])
+        #expect(argv.contains("--resume"))                                          // resume per capability
+
+        let na = try #require(await e2.svc.list(includeArchived: true).first { $0.id == orphaned.id })
+        #expect(na.phase == .dead(.rebootUnrevived))                                // unrecoverable ⇒ fail-safe dead
+    }
+}
+
+// MARK: - Test D+E · missed readiness + conclusion idempotency
+
+@Suite("PR4b Task 5 · Test D+E — missed readiness + conclusion idempotency")
+struct MissedReadinessConclusionTests {
+
+    /// A `.launching` card whose readiness hook was LOST still reaches `.live` via the universal N=3
+    /// liveness-tick fallback — with NO signal injected. Asserts the inequality the fallback depends on:
+    /// `launchReadyTickThreshold × pollInterval(2s) < config.sessionLaunchTimeout(30s)`. Both agents
+    /// (the fallback is the ONLY resolver for Codex `codex resume` / any missed hook).
+    @Test("test_launchingMissedHookConvergesViaLiveness", arguments: batteryAgents)
+    func test_launchingMissedHookConvergesViaLiveness(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+
+        let thr = await e.svc.launchReadyTickThreshold
+        let interval = e.svc.reconcilePollInterval
+        let timeout = await e.svc.config.sessionLaunchTimeout
+        #expect(Double(thr) * interval < Double(timeout))   // the fallback fires well inside the timeout
+
+        // Non-blocking spawn → the reconciler drives it to `.launching`, where its readiness waiter blocks.
+        // We DELIVER NO signal — only the N=3 launch-readiness fallback carries it the rest of the way to live.
+        let created = try await e.svc.spawn(
+            SpawnInput(prompt: "x", repo: TestEnv.repo(e.base), branch: "b", agentId: e.adapter.id))
+        try await pollUntil {
+            await e.svc.reconcile()
+            return await e.svc.list().first { $0.id == created.id }?.phase.kind == .live
+        }
+        #expect(await e.svc.list().first { $0.id == created.id }?.phase.kind == .live)
+    }
+
+    /// `wait` on a child that is ALREADY persisted-terminal short-circuits inline AND unregisters the watch
+    /// entry (write-through), so a later archive of the same child produces NO duplicate conclusion.
+    @Test("test_waitShortCircuitsOnPersistedTerminalPhase")
+    func test_waitShortCircuitsOnPersistedTerminalPhase() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "w", repo: repo, branch: "w"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
+
+        // Child concludes (persisted-terminal) BEFORE any watch is registered — no notice is owed yet.
+        await env.svc.markDead(child.id, reason: .completed, detail: nil, source: .daemon)   // dead(.completed) ⇒ .done
+        #expect(try #require(await env.svc.list(includeArchived: true).first { $0.id == child.id }).phase == .dead(.completed))
+
+        // The inline conclusion: `wait` reads REAL card state, returns immediately, and unregisters.
+        let conc = await env.svc.wait(watcher: watcher.id, refs: [child.id])
+        #expect(conc?.kind == .done)                                        // short-circuit conclusion
+        #expect(await env.svc.watchRegistry[watcher.id] == nil)             // watch entry unregistered (in-memory)
+        let persisted = WatchRegistryStore(path: env.base + "/watch-registry.json").load()
+        #expect(persisted.map[watcher.id] == nil)                           // …and the removal PERSISTED (write-through)
+
+        // A LATER archive of the same child must not re-notify the (now-unregistered) watcher.
+        try await TestEnv.archiveAndTeardown(env.svc, child.id)
+        let inbox = try await env.svc.inboxPeek(watcher.id)
+        #expect(!inbox.contains { $0.text.contains("concluded") })          // no duplicate conclusion
+    }
+
+    /// Batch-spawn's per-item idempotency contract that exists TODAY (full server-side dedup is PR6a): each
+    /// item spawns independently with its own id, a failure carries its slot `index`, so a partially-acked
+    /// batch is retried by the failed indices alone — producing no duplicate of the already-acked cards.
+    @Test("test_batchSpawnRetryIsIdempotent")
+    func test_batchSpawnRetryIsIdempotent() async throws {
+        let env = TestEnv.make()
+        let goodRepo = TestEnv.repo(env.base)
+        let badRepo = "/nonexistent-outside-allowlist-\(UUID().uuidString)"   // non-allowlisted ⇒ deterministic fail
+        let batch = [
+            SpawnInput(prompt: "a", repo: goodRepo, branch: "a"),
+            SpawnInput(prompt: "b", repo: badRepo,  branch: "b"),
+            SpawnInput(prompt: "c", repo: goodRepo, branch: "c"),
+        ]
+        let r1 = await env.svc.batchSpawn(batch)
+        #expect(r1.spawned.count == 2)
+        #expect(r1.failed.count == 1)
+        #expect(r1.failed.first?.index == 1)                     // per-item identity: the failure carries its slot
+        #expect(Set(r1.spawned.map(\.id)).count == 2)            // distinct per-item ids
+        let ackedIds = Set(r1.spawned.map(\.id))
+
+        // Retry ONLY the failed slot (now with a valid repo) — the acked two are NOT re-submitted.
+        let r2 = await env.svc.batchSpawn([SpawnInput(prompt: "b", repo: goodRepo, branch: "b")])
+        #expect(r2.spawned.count == 1)
+        #expect(r2.failed.isEmpty)
+
+        // No duplicate cards: the two originally-acked persist untouched + the one retried = 3 distinct.
+        let all = await env.svc.list(includeArchived: true)
+        #expect(all.count == 3)
+        #expect(ackedIds.isSubset(of: Set(all.map(\.id))))       // acked cards are stable (retry didn't duplicate)
+    }
+}
+
 @Suite("PhaseStepper — protocol contract (skeleton, PR4a)")
 struct StepperTests {
 
@@ -12,16 +365,20 @@ struct StepperTests {
     private struct DoubleStepper: PhaseStepper {
         static var drives: Phase.Kind { .creatingWorktree }
         func step(_ card: Task, _ ctx: ConvergeContext) async throws {
-            _ = await ctx.transition(card.id, .launching, nil)
+            _ = await ctx.transition(card.id, .launching, nil, { _ in })
         }
         func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
             (await ctx.store.get(card.id))?.phase.kind == .launching
         }
     }
 
-    @Test("the reconciler-owned stepper map is an empty skeleton in PR4a")
-    func test_stepperMapEmptyInPR4a() {
-        #expect(PhaseSteppers.byKind.isEmpty)
+    @Test("the reconciler-owned stepper map has the four PR4b steppers")
+    func test_stepperMapHasFourSteppers() {
+        #expect(PhaseSteppers.byKind.count == 4)
+        #expect(PhaseSteppers.byKind[.creatingWorktree] is MaterializeStepper)
+        #expect(PhaseSteppers.byKind[.launching] is LaunchStepper)
+        #expect(PhaseSteppers.byKind[.relaunching] is RelaunchStepper)
+        #expect(PhaseSteppers.byKind[.archivedPending] is TeardownStepper)
     }
 
     @Test("test_stepperStepIsIdempotent")

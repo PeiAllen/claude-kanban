@@ -86,7 +86,7 @@ struct CapabilitiesTests {
     func spawnSeedsWhenSeeded() async throws {
         let env = TestEnv.make()   // default .claudeCode → .seeded
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         #expect(t.agentSessionId != nil)
         // Seeded id is passed to launch as --session-id.
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -97,7 +97,7 @@ struct CapabilitiesTests {
     func spawnDiscoveredDoesNotSeed() async throws {
         let env = TestEnv.make(capabilities: Self.discoveredTuple)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         #expect(t.agentSessionId == nil)   // discovered → read back post-launch, not seeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(!argv.contains("--session-id"))
@@ -107,7 +107,7 @@ struct CapabilitiesTests {
     func isResumableGatedByCaps() async throws {
         let env = TestEnv.make()   // .seeded
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         // No transcript yet → not resumable.
         #expect(await env.svc.isResumable(t) == false)
         // Adapter's state (transcript) now on disk → resumable.
@@ -122,7 +122,7 @@ struct CapabilitiesTests {
     func isResumableDiscoveredNoId() async throws {
         let env = TestEnv.make(capabilities: Self.discoveredTuple)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         #expect(t.agentSessionId == nil)               // discovered → unseeded
         #expect(await env.svc.isResumable(t) == false) // no id ⇒ nothing to resume
     }

@@ -12,6 +12,17 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     var ensureSleepMs: UInt32 = 0
     init(root: String) { self.root = root }
 
+    /// A test-armed gate proving an RPC can return WHILE `ensure` is still provisioning: `blockEnsure`
+    /// parks the next `ensure` call on a semaphore (bounded by a safety timeout so a mis-armed test can't
+    /// hang the suite); `releaseEnsure` opens it. Distinct from `ensureSleepMs` (a fixed latency).
+    private let ensureGate = DispatchSemaphore(value: 0)
+    private var ensureBlocked = false
+    func blockEnsure() { lock.lock(); ensureBlocked = true; lock.unlock() }
+    func releaseEnsure() {
+        lock.lock(); let wasBlocked = ensureBlocked; ensureBlocked = false; lock.unlock()
+        if wasBlocked { ensureGate.signal() }
+    }
+
     /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
     /// re-spawn onto a branch whose worktree was removed but whose branch + lineage config remain).
     func markBranchExists(_ branch: String) {
@@ -22,14 +33,21 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         "\(root)/\((repo as NSString).lastPathComponent)/\(branch)"
     }
     private(set) var ensuredBases: [String: String?] = [:]   // branch -> base ensure() saw
+    /// When set, `ensure` throws it (drives the materialize failure-classification tests). An error whose
+    /// description contains "timed out" exercises the explicit timeout wording.
+    var ensureError: Error?
     func ensure(repo: String, branch: String, base: String?) throws
         -> (worktree: String, created: Bool, branchExisted: Bool) {
         lock.lock()
         ensured.append("\(repo)#\(branch)")
         ensuredBases[branch] = base
         let existed = existingBranches.contains(branch)
+        let blocked = ensureBlocked
+        let err = ensureError
         lock.unlock()
+        if let err { throw err }
         if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
+        if blocked { _ = ensureGate.wait(timeout: .now() + .seconds(30)) }   // parked until releaseEnsure (safety-bounded)
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return (wt, true, existed)
@@ -94,6 +112,17 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); if value { alive.insert(sessionName(id)) } else { alive.remove(sessionName(id)) }; lock.unlock()
     }
 
+    /// Seed a session as alive AND stamp its `ORCH_EPOCH` (as an `ensure` would) so `stampedEpoch` reads
+    /// it back — drives the reconciler's epoch-identity adoption / orphan-probe tests without a real launch.
+    func setStampedEpoch(_ id: UUID, _ epoch: Int) {
+        lock.lock(); let n = sessionName(id); alive.insert(n)
+        ensureEnv[n, default: [:]]["ORCH_EPOCH"] = String(epoch); lock.unlock()
+    }
+
+    /// Optional off-actor latency injected into `isAlive` (the reconciler's pre-kill probe), so a test can
+    /// prove the probe runs OFF the service actor: a concurrent fast RPC returns while the probe sleeps.
+    var isAliveSleepMs: UInt32 = 0
+
     func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
     func ensure(_ task: Task, argv: [String], env: [String: String] = [:]) throws -> (name: String, created: Bool) {
@@ -107,9 +136,9 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     /// a pre-upgrade SessionEnd must consult `isAlive` before it is allowed to kill the card.
     private(set) var isAliveQueries: [String] = []
     func isAlive(_ name: String) throws -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        isAliveQueries.append(name)
-        return alive.contains(name)
+        lock.lock(); isAliveQueries.append(name); let sleepMs = isAliveSleepMs; let a = alive.contains(name); lock.unlock()
+        if sleepMs > 0 { usleep(sleepMs * 1000) }   // simulate a slow off-actor probe (isAliveSleepMs)
+        return a
     }
 
     /// Non-recording liveness read for test setup/assertions (doesn't pollute `isAliveQueries`).
@@ -170,7 +199,29 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         let text = "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }
-    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
+    func kill(_ name: String) throws {
+        // Mirror real tmux: killing a session that isn't alive is a no-op — do NOT record it. (finishLaunch
+        // idempotently kills any predecessor before `ensure`; for a FRESH launch there is none, so that
+        // harmless no-op must not show up as a spurious `killed` entry.)
+        lock.lock(); let wasAlive = alive.remove(name) != nil; shellWins[name] = nil
+        if wasAlive { killed.append(name) }; lock.unlock()
+    }
+
+    /// Parse the `ORCH_EPOCH` stamped into the session's launch env (the reconciler's identity oracle).
+    /// nil when the session is gone (not alive) or was launched without the stamp — mirroring the real
+    /// `SessionManager.stampedEpoch` (which returns nil for an absent variable / dead session).
+    /// One-shot hook invoked synchronously INSIDE `stampedEpoch` — which the reconciler runs OFF the
+    /// service actor. Lets a test inject a concurrent restart during the probe's actor-released window
+    /// (to prove the adoption shortcut is epoch-fenced). Fires once, then clears itself.
+    var onStampedEpochProbe: (@Sendable (String) -> Void)?
+    func stampedEpoch(name: String) throws -> Int? {
+        let hook: (@Sendable (String) -> Void)?
+        lock.lock(); hook = onStampedEpochProbe; onStampedEpochProbe = nil; lock.unlock()
+        hook?(name)   // run OUTSIDE the lock so the test's concurrent actor work can't deadlock on it
+        lock.lock(); defer { lock.unlock() }
+        guard alive.contains(name), let v = ensureEnv[name]?["ORCH_EPOCH"] else { return nil }
+        return Int(v)
+    }
 }
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is
@@ -326,7 +377,8 @@ enum TestEnv {
         let svc = OrchestraService(config: config, store: store,
                                    registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
-                                   grantResolver: grantResolver)
+                                   grantResolver: grantResolver,
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
@@ -351,8 +403,45 @@ enum TestEnv {
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox)
+                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
         return (svc, sessions, worktrees, adapter, trust, base)
+    }
+
+    /// **Intent-only-archive migration helper (PR4b Task 4).** `archive` now records the intent
+    /// (`→ archivedPending` + the `archived` Bool) and RETURNS; the reconciler's `TeardownStepper` runs the
+    /// full duty list (kill / releaseBorrow / release / cancel debounces+watches / nudge-children) and flips
+    /// `→ archivedComplete`. This archives THEN drives `reconcile()` until teardown completes — a behavior-
+    /// preserving drop-in for the pre-flip synchronous `archive` that most tests used as SETUP.
+    static func archiveAndTeardown(_ svc: OrchestraService, _ id: UUID, source: ActivitySource = .daemon) async throws {
+        try await svc.archive(id, source: source)
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == id }?.phase.kind == .archivedComplete
+        }
+    }
+
+    /// **Intent-only relaunch/reopen migration helper (PR4b Task 4).** `resume`/`restart`/`reopen`/`handoff`
+    /// now record the intent (`→ .relaunching` or `→ .creatingWorktree`) and RETURN; the reconciler's steppers
+    /// drive the walk to `.live`. This drives `reconcile()` until `id` is `.live`, hand-delivering the agent's
+    /// readiness signal each transitional tick when `inject` is set (needed for AWAITING caps —
+    /// `.sessionStartHook`/`.rolloutMeta`; harmless for the immediate `.relaunchLiveness` stub). Returns the
+    /// live card.
+    @discardableResult
+    static func reconcileToLive(_ svc: OrchestraService, _ id: UUID, inject: Bool = false) async throws -> Task {
+        try await pollUntil {
+            await svc.reconcile()
+            let card = await svc.list(includeArchived: true).first { $0.id == id }
+            if inject, let k = card?.phase.kind {
+                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume")) }
+                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup")) }
+            }
+            return card?.phase.kind == .live
+        }
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == id }) else {
+            throw OrchestraError.unknownTask(id.uuidString)
+        }
+        return live
     }
 
     /// Make a repo dir under reposRoot and return its path.
@@ -362,32 +451,63 @@ enum TestEnv {
         return p
     }
 
-    /// Spawn through the AWAITING launch path (`.sessionStartHook`/`.rolloutMeta` caps) and drive the
-    /// launch's readiness signal so it reaches `.live`. Under 2.6 a capability-gated blank spawn inline-
-    /// awaits its ready signal; a test using such caps merely as setup has no live poll loop, so this
-    /// finds the card mid-launch (spawn persists it at `.creatingWorktree`→`.launching` before it awaits)
-    /// and delivers SessionStart(startup) to unblock it. Use for resume/relaunch-mechanics tests that need
-    /// `.claudeCode` (the awaited resume path) but still spawn a live card first.
+    /// **Non-blocking-spawn migration helper (PR4b Task 3).** `spawn` now returns a `.creatingWorktree`
+    /// card; the reconciler's steppers (Materialize → Launch) drive it to `.live`. This spawns then drives
+    /// `reconcile()` in a poll loop (~2s cap) until the card is `.live`, returning it — a behavior-preserving
+    /// drop-in for the pre-flip synchronous `spawn` that most tests used purely as SETUP.
+    ///
+    /// Readiness-cap contract: the DEFAULT stub adapter is `.relaunchLiveness` (readiness = a successful
+    /// `ensure`, immediate — the reconcile ticks alone suffice). For an AWAITING cap
+    /// (`.sessionStartHook`/`.rolloutMeta`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
+    /// independent, per Task 2 finding 2) resolves the launch waiter within three ticks, so this STILL
+    /// converges with no hand-delivered signal. Use `spawnAwaited` when a test must exercise the agent's
+    /// OWN readiness signal deterministically (it injects `report(sessionSource:)`).
     @discardableResult
-    static func spawnAwaited(_ svc: OrchestraService, _ input: SpawnInput) async throws -> Task {
-        async let spawned = svc.spawn(input)
+    static func spawnAndAwaitLive(_ svc: OrchestraService, _ input: SpawnInput,
+                                 source: ActivitySource = .daemon) async throws -> Task {
+        let created = try await svc.spawn(input, source: source)
         try await pollUntil {
-            await svc.list().contains { $0.branch == input.branch && $0.phase.kind == .launching }
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == created.id }?.phase.kind == .live
         }
-        if let id = await svc.list().first(where: { $0.branch == input.branch })?.id {
-            try? await svc.report(id, StatusReport(sessionSource: "startup"))
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == created.id }) else {
+            throw OrchestraError.unknownTask(created.id.uuidString)
         }
-        return try await spawned
+        return live
     }
 
-    /// Drive being-born cards to `.live` via the universal N=3 liveness-tick fallback (no readiness signal
-    /// hand-delivered): repeatedly run `reconcileLiveness` until at least `count` cards are live. Used by
-    /// Codex (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime
-    /// predates the card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback
-    /// reaches live, then post-live discovery (unrestricted) binds the rollout for telemetry.
+    /// Spawn through the AWAITING launch path and reach `.live` by hand-delivering the agent's readiness
+    /// signal. `spawn` persists the card at `.creatingWorktree`; this drives `reconcile()` (Materialize →
+    /// Launch), and each tick the card is `.launching` with a pending waiter it delivers
+    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`/`.rolloutMeta`) confirms on its OWN
+    /// signal (not the N=3 fallback). Returns the live card. Use for resume/relaunch-mechanics tests that
+    /// need `.claudeCode`/`.codex` but still want a deterministically-live card first.
+    @discardableResult
+    static func spawnAwaited(_ svc: OrchestraService, _ input: SpawnInput,
+                            source: ActivitySource = .daemon) async throws -> Task {
+        let created = try await svc.spawn(input, source: source)
+        try await pollUntil {
+            await svc.reconcile()
+            let card = await svc.list(includeArchived: true).first { $0.id == created.id }
+            if card?.phase.kind == .launching {
+                try? await svc.report(created.id, StatusReport(sessionSource: "startup"))
+            }
+            return card?.phase.kind == .live
+        }
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == created.id }) else {
+            throw OrchestraError.unknownTask(created.id.uuidString)
+        }
+        return live
+    }
+
+    /// Drive being-born cards to `.live` via the reconciler: repeatedly run `reconcile()` (steps
+    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live. Used by Codex
+    /// (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime predates the
+    /// card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback reaches live, then
+    /// post-live discovery (unrestricted) binds the rollout for telemetry.
     static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
         try await pollUntil {
-            await svc.reconcileLiveness()
+            await svc.reconcile()
             return await svc.list().filter { $0.phase.kind == .live }.count >= count
         }
     }

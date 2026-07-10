@@ -56,8 +56,22 @@ public actor OrchestraService {
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
-    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
+    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
+    /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
+    /// watcher survives a daemon restart (carry #4).
     var watchRegistry: [UUID: Set<UUID>] = [:]
+    /// Lazy-load latch for `watchRegistry` (mirrors `WorktreeRegistry.borrowsLoaded`). The server accepts
+    /// RPCs before boot's `reloadWatchRegistry` runs, so the FIRST access — a boot-window `registerWatch`/
+    /// `unregisterWatch`/`concludeCard` or the reload itself — loads-then-unions rather than clobbering the
+    /// on-disk map with an empty in-memory one.
+    var watchRegistryLoaded = false
+    /// Set when the load found a present-but-torn file (mirrors `borrowsLoadFailed`): the in-memory map is
+    /// kept as-is and mutations REFUSE to `watchStore.save` so a partial in-memory map never overwrites the
+    /// torn (but possibly recoverable) file. Fail-safe: never persist over an ambiguous registry.
+    var watchRegistryLoadFailed = false
+    /// Durable backing for `watchRegistry`. Reloaded at boot (`reloadWatchRegistry`), written through on
+    /// every mutation. Injected in tests so each temp dir gets its own file.
+    let watchStore: WatchRegistryStore
     /// Watchers with a live CLI `orchestra wait` process. A native-reinvoke card only defers wake to
     /// wait-exit when this is present; MCP/tool watches register interest without a CLI process.
     var activeWaitProcesses: [UUID: Int] = [:]
@@ -119,6 +133,25 @@ public actor OrchestraService {
     // --get-regexp` child lookup OFF the hot report path — one lookup per activity burst, not per report.
     var childFanoutDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
+    // MARK: - Stage-4 reconciler driving discipline (PR4b Task 2)
+    /// Cards with a phase-step currently dispatched off-actor. At most ONE step in flight per card — set
+    /// SYNCHRONOUSLY before dispatching, cleared in the step's completion — so a slow step is never
+    /// double-driven by the next tick, by a concurrent verb, or by boot revival.
+    var inFlightSteps: Set<UUID> = []
+    /// Per-card capped-exponential backoff for a FAILING step: `count` bumps on each throw (reset on
+    /// success), `nextEligible` gates the next retry so a persistently-failing stepper never hot-loops.
+    var stepAttempts: [UUID: (count: Int, nextEligible: Date)] = [:]
+    /// Test seam: pin the step-backoff delay to a fixed value (seconds), overriding the capped-exponential
+    /// schedule. The backoff test uses a large value so its "immediate re-ticks stay inside the window"
+    /// assertion is load-proof — the real 2s first delay can be outlasted by a heavily-parallel test run.
+    var stepBackoffOverrideSeconds: Double? = nil
+    /// The reconciler's `Phase.Kind → PhaseStepper` dispatch table. Defaults to the real four; a test may
+    /// override an entry (e.g. a throwing stepper for the backoff test) via `setStepper`.
+    var steppers: [Phase.Kind: any PhaseStepper] = PhaseSteppers.byKind
+    /// Poll cadence the reconciler assumes (main.swift's loop). Also the unit the N=3 launch-readiness
+    /// fallback's `threshold × interval < sessionLaunchTimeout` inequality is stated in.
+    public nonisolated let reconcilePollInterval: TimeInterval = 2
+
     public init(config: Config,
                 store: TaskStore? = nil,
                 registry: AgentRegistry = AgentRegistry(),
@@ -130,9 +163,11 @@ public actor OrchestraService {
                 inbox: Inbox? = nil,
                 devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
+                watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
         self.orchestraBin = orchestraBin
+        self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()
@@ -301,7 +336,7 @@ public actor OrchestraService {
         let realRepo: String
         let cwd: String
         let origin: CardOrigin
-        var derivedParentBranch: String? = nil
+        var spawnBaseCarrier: String? = nil   // normalized base carried to the reconciler's MaterializeStepper
         if input.scratch {
             cwd = Config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -312,7 +347,7 @@ public actor OrchestraService {
             origin = .borrowed
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else {
-            // Security: reject a non-allowlisted repo BEFORE creating anything.
+            // Security: reject a non-allowlisted repo BEFORE creating anything (synchronous fail-fast).
             realRepo = try resolver.resolveRepo(input.repo)
             // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
             // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
@@ -326,11 +361,12 @@ public actor OrchestraService {
                     "spawning a second live card onto branch \(input.branch) (already owned by "
                     + "\(existing.shortId)) — derived parent lookups use the oldest card")
             }
-            // S2-3(i): normalize a user-supplied LOCAL base to a bare branch name BEFORE `ensure`. `ensure`
-            // accepts a refs/-prefixed base verbatim (for the internal remote private-ref path), but
-            // `recordSpawnBase` then resolves refs/heads/<base> → refs/heads/refs/heads/foo and throws AFTER
-            // the worktree is cut. Strip a refs/heads/ prefix; reject any other refs/… (remote forms —
-            // origin/<b>, pr#<N> — are classified separately and left untouched).
+            // S2-3(i): normalize + VALIDATE a user-supplied base SYNCHRONOUSLY (must-fail-fast — the security
+            // gate stays before anything is created). Strip a `refs/heads/` prefix; reject any other `refs/…`
+            // (remote forms — origin/<b>, pr#<N> — are classified separately and left untouched). The
+            // normalized string is CARRIED on the card (`spawnBase`); the reconciler-driven `materialize`
+            // re-derives the remote/local classification (`RemoteParentRef.parse`) and cuts the worktree.
+            // Non-blocking flip: spawn does NO remote fetch / `worktrees.ensure` / lineage record / checkout.
             var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let b = normalizedBase, b.hasPrefix("refs/"),
                RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
@@ -339,65 +375,10 @@ public actor OrchestraService {
                 }
                 normalizedBase = String(b.dropFirst("refs/heads/".count))
             }
-            // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
-            // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
-            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
-            var remoteFetchedOID: String? = nil
-            var ensureBase = normalizedBase
-            if let remoteRef {
-                let b = normalizedBase ?? remoteRef.canonical
-                remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef,
-                    context: "spawn base \(b): could not fetch remote parent \(b)")
-                ensureBase = remoteRef.privateRef
-            }
-            let ensured = try await worktrees.ensure(repo: realRepo, branch: input.branch, cardId: id, base: ensureBase)
-            cwd = ensured.path
+            spawnBaseCarrier = (normalizedBase?.isEmpty == false) ? normalizedBase : nil
+            // PURE cwd (no checkout — the MaterializeStepper cuts/adopts the tree from `spawnBase`).
+            cwd = worktrees.path(repo: realRepo, branch: input.branch)
             origin = .worktree
-            // S2-3(ii): a brand-new branch cannot have had children before it existed, so any pre-existing
-            // `orchestra-parent == <this branch>` is a dangling value left by a deleted same-named branch
-            // (name reuse). Prune those stale links before recording, so the cycle guard doesn't walk the
-            // dangling chain and reject a legitimate reuse (fixture-proven false "would create a cycle").
-            if !ensured.branchExisted {
-                for stale in await lineage.children(repo: realRepo, of: input.branch) {
-                    try? await lineage.clear(repo: realRepo, branch: stale)
-                }
-            }
-            // S2-3(iii): a lineage-record failure fires AFTER the worktree + branch were created. Roll them
-            // back so the failed spawn leaves no orphan worktree/branch that a retry's fileExists fast-path
-            // would silently adopt with no base.
-            do {
-                // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
-                // link survives card archival), so re-derive the parentBranch cache only then — gated on
-                // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
-                // `git config` read on the hot path.
-                if ensured.branchExisted {
-                    // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
-                    derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
-                } else if let remoteRef, let oid = remoteFetchedOID {
-                    // Remote spawn-with-base (BT6): branch created on the fetched private ref — record the
-                    // canonical remote lineage (+prNumber, watch on by default) with the fetched tip as base.
-                    derivedParentBranch = try await recordSpawnRemoteBase(
-                        repo: realRepo, branch: input.branch, ref: remoteRef, oid: oid)
-                } else if let base = normalizedBase, !base.isEmpty {
-                    // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
-                    // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
-                    derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
-                }
-            } catch {
-                // S2-3(iii) rollback: the card was never persisted (store.create hasn't run yet), so
-                // build a synthetic Task carrying only what `release` reads (id/cwd/origin/archived) —
-                // routes through the SINGLE removal policy so a shared/dirty tree is never force-dropped.
-                let synthetic = Task(id: id, title: input.branch, repo: realRepo, branch: input.branch,
-                                     cwd: ensured.path, origin: .worktree, access: input.access,
-                                     model: AgentModel(id: input.model ?? ""), startIn: input.startIn ?? .plan,
-                                     column: (input.startIn ?? .plan).column, order: 0,
-                                     phase: .creatingWorktree, initialPrompt: "")
-                _ = try? await worktrees.release(cardId: id, cards: (await store.all()) + [synthetic], force: false)
-                if !ensured.branchExisted {
-                    _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
-                }
-                throw OrchestraError.io("spawn rolled back (worktree/branch removed): \(error)")
-            }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
         // (Claude) gets its id minted pre-launch; a `.discovered` agent is left nil and reads its id
@@ -435,14 +416,12 @@ public actor OrchestraService {
         // A provisional card is idle awaiting the user's first prompt, so it lands `.waiting`; a real
         // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
         // when provisional (a whitespace-only prompt must not be submitted to the agent).
-        let launchPrompt: String? = folded
-        let landing: RunState = provisional ? .waiting(.humanTurn) : .running
-
-        // Stage 2: the card is CREATED at `.creatingWorktree, sessionEpoch: 1` — creation IS spawn's single
-        // generation bump (do NOT also `transition(→.creatingWorktree)`). The cwd was materialized above
-        // (worktree cut / scratch mkdir), so this phase is instant here. The funnel then walks it
-        // `→.launching →.live`. A liveness poll that interleaves while the card is still `.creatingWorktree`
-        // (e.g. at the `resolveTrust` await below) SKIPS it by phase — no `recovering` set required.
+        // NON-BLOCKING FLIP (PR4b Task 3): the card is CREATED at `.creatingWorktree, sessionEpoch: 1`
+        // carrying `spawnBase` (creation IS spawn's single generation bump — no `transition(→.creatingWorktree)`),
+        // then spawn RETURNS. The reconciler's steppers (MaterializeStepper cuts/adopts the worktree + records
+        // lineage → LaunchStepper brings the agent up + confirms readiness) drive it `→.launching →.live` off
+        // the poll loop. The launch's landing (.running / .waiting) + the prompt are re-derived from the
+        // persisted `titleProvisional`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
         let task = Task(
             id: id,
             title: title, titleProvisional: provisional, desc: "",
@@ -451,50 +430,30 @@ public actor OrchestraService {
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, phase: .creatingWorktree,
             sessionEpoch: 1, phaseChangedAt: Date(),
+            pendingSeed: nil, spawnBase: spawnBaseCarrier,
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
-            parentBranch: derivedParentBranch
+            parentBranch: nil            // materialize re-derives + records the parent link from `spawnBase`
         )
         let (created, createdRev) = try await store.create(task)
         emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
 
-        // Resolve trust while still in `.creatingWorktree` (reconcile-safe), then bring the agent up through
-        // the funnel: `→.launching` (no bump) → launch (stamping ORCH_EPOCH=1) → readiness → `→.live`.
-        // Any inline failure routes the card to `.dead(.spawnFailed)`.
-        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
-        do {
-            try await launchAndConfirm(id, flavor: .blank(landing: landing, prompt: launchPrompt),
-                                       trustCwd: trustDecision == .trusted)
-        } catch {
-            await transition(id, to: .dead(.spawnFailed), mutate: { $0.deadDetail = "\(error)" })
-            throw error
-        }
-        let live = await store.get(id) ?? created
-
-        // T2: an untrusted cwd (needsGrant) spawns sandboxed (trustCwd=false above) but tells the
-        // human how to grant it. Autonomy-exempt: this never blocks the spawn — the card just runs
-        // read-only-ish until a human runs `orchestra trust`.
-        if trustDecision == .needsGrant {
-            emitActivity(.warning, live, source,
-                "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
-                + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
-        }
-
         // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
         // for this adapter (the just-created card is already in the store) and warn past the threshold.
         let active = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
-            emitActivity(.warning, live, source, warn.message)
+            emitActivity(.warning, created, source, warn.message)
         }
 
-        // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
-        // link's `watch` flag (a fresh remote-base spawn sets it true; a churn re-spawn onto an existing
-        // branch with watch=false must not start one) rather than relying on the loop to bail on tick 1.
-        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
-           await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
-            startRemoteWatch(cardId: id)
+        // T2 (advisory only): an untrusted borrowed cwd will spawn sandboxed — tell the human how to grant
+        // it. Resolve trust read-only here for the message; the LaunchStepper's `finishLaunch` resolves it
+        // again for the actual launch (idempotent). Never blocks the spawn.
+        if await resolveTrust(origin: origin, cwd: cwd, repo: realRepo) == .needsGrant {
+            emitActivity(.warning, created, source,
+                "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
+                + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
         }
-        return live
+        return created
     }
 
     /// Remove orphaned scratch dirs — `~/.orchestra/scratch/<id>` subdirs with no matching non-archived
@@ -717,59 +676,24 @@ public actor OrchestraService {
 
     // MARK: - archive
 
-    public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
+    /// INTENT-ONLY (PR4b Task 4): record the archive intent + the `archived` Bool mirror (so the card leaves
+    /// the board instantly) and RETURN. The reconciler's `TeardownStepper` runs the FULL duty list (kill /
+    /// releaseBorrow / release / cancel debounces+watches / nudge-children) and flips `archivedPending →
+    /// archivedComplete`; the funnel concludes on the non-terminal → `archivedPending` entry (no manual
+    /// `concludeCard` here). No subprocess/teardown runs before the return — the verb is non-blocking.
+    public func archive(_ id: UUID, source: ActivitySource = .daemon) async throws {
         let t = try await require(id)
-        stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
-        remoteWatchGen[id] = nil   // S4: the card is terminal — drop its generation entry (bounds the map)
-        stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
-        try? await worktrees.releaseBorrow(borrowerCardId: id)   // O3: sweep a borrow the card left open
-        // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
-        // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
-        treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil
-        childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
-        // S2-5: a worktree card's branch goes bare on archive — nudge its live children so a stopped child
-        // re-evaluates its ship path instead of waiting on the archived card's (now dead) inbox.
-        if t.origin == .worktree {
-            let childBranches = await lineage.children(repo: t.repo, of: t.branch)
-            if !childBranches.isEmpty {
-                let active = await store.all().filter { $0.id != id }
-                for cb in childBranches {
-                    // S2-6: deterministic (oldest) live child, not an arbitrary co-located sibling.
-                    if let card = derivedCard(repo: t.repo, branch: cb, among: active) {
-                        try? await inbox.enqueue(card.id,
-                            "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship")
-                        await wake(card.id)
-                    }
-                }
-            }
+        // Idempotency guard FIRST (spec §P1/§6/§11): an already-archived card is idempotent success. Without
+        // this the tightened `isLegalEdge` makes `archivedComplete → archivedPending` illegal → a `.rejected`
+        // error, breaking the retried-archive guarantee — the archive HANDLER is the idempotency point (the
+        // PR4a decision that keeps `archive.phaseGate = gAll`).
+        if t.phase.kind == .archivedPending || t.phase.kind == .archivedComplete { return }
+        // The single intent write: phase → archivedPending, companion `archived = true` in the same patch so
+        // the card is off the board before the duty list has run. The TeardownStepper owns the rest.
+        _ = await transition(id, to: .archived(teardownComplete: false), mutate: { $0.archived = true })
+        if let updated = await store.get(id) {
+            emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
         }
-        try? sessions.kill(sessions.sessionName(id))
-        if removeWorktree {                              // gates ALL run-dir reclaim
-            switch t.origin {
-            case .worktree:
-                // Multiple cards can intentionally share one worktree — `release` keeps the tree when any
-                // other non-archived .worktree card (or in-flight `ensure` holder) still references it, and
-                // never silently deletes a dirty tree without `force`.
-                try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
-            case .scratch:
-                // Scratch dirs are truly ephemeral: rm -rf unconditionally (no dirty-guard; the user
-                // moves out anything useful first). The destructive op is double-gated — this `.scratch`
-                // arm, plus a runtime check that the path is under the scratch root. The `assert` is a
-                // debug catch only; the `if` is the release-safe guard a destructive op must never skip.
-                assert(t.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
-                if t.cwd.hasPrefix(Config.scratchRoot + "/") {
-                    try? FileManager.default.removeItem(atPath: t.cwd)
-                }
-            case .borrowed:
-                // Orchestra never deletes a borrowed dir. No-op (also none exist yet).
-                break
-            }
-        }
-        let (updated, rev) = try await store.update(id) { $0.phase = .dead(.completed); $0.archived = true }
-        lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
-        emit(.taskUpserted(updated), rev: rev)
-        emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
-        await concludeCard(id, .done)   // moving to Done is a settled conclusion (F2 / merge-watch)
     }
 
     // MARK: - shells / exec / sessions
@@ -1141,10 +1065,18 @@ public actor OrchestraService {
     /// Bundle the live dependencies a `PhaseStepper` needs. PR4b's reconciler builds one per tick; the
     /// `transition` closure re-enters this actor so the funnel stays the sole `phase` writer.
     func convergeContext() -> ConvergeContext {
-        ConvergeContext(store: store, worktrees: worktrees, sessions: sessions, adapters: registry,
-                        transition: { [self] id, to, epoch in
-                            await transition(id, to: to, observedEpoch: epoch)
-                        })
+        ConvergeContext(
+            store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            transition: { [self] id, to, epoch, mutate in
+                await transition(id, to: to, observedEpoch: epoch, mutate: mutate)
+            },
+            materialize: { [self] id in await materialize(id) },
+            finishLaunch: { [self] id, flavor in await finishLaunch(id, flavor: flavor) },
+            teardownActorDuties: { [self] id in await teardownActorDuties(id) },
+            emitActivity: { [self] id, kind, text in
+                let task = await store.get(id)
+                await emitActivity(kind, task, .daemon, text)
+            })
     }
 
     // (column display names live on `Column.displayName`)

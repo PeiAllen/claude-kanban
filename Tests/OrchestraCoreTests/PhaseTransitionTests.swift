@@ -24,16 +24,19 @@ struct PhaseTransitionTests {
     @Test("isLegalEdge encodes exactly the §P1 edge set; everything else is rejected")
     func test_illegalEdgesRejected() {
         // The legal edge set, keyed by (from.kind, to.kind). `dead → live` is legal ONLY viaSignal.
+        // PR4b Task 4: a card reaches `.archivedComplete` ONLY via `archivedPending → archivedComplete`
+        // (the TeardownStepper) — the direct `(X, .archivedComplete)` edges for X ∈ {creatingWorktree,
+        // launching, live, relaunching, dead} are REMOVED (archive is intent-only → archivedPending).
         let legal: Set<[Phase.Kind]> = [
             [.creatingWorktree, .launching], [.creatingWorktree, .dead],
-            [.creatingWorktree, .archivedPending], [.creatingWorktree, .archivedComplete],
+            [.creatingWorktree, .archivedPending],
             [.launching, .live], [.launching, .dead],
-            [.launching, .archivedPending], [.launching, .archivedComplete],
+            [.launching, .archivedPending],
             [.live, .live], [.live, .relaunching], [.live, .dead],
-            [.live, .archivedPending], [.live, .archivedComplete],
+            [.live, .archivedPending],
             [.relaunching, .relaunching], [.relaunching, .live], [.relaunching, .dead],
-            [.relaunching, .archivedPending], [.relaunching, .archivedComplete],
-            [.dead, .relaunching], [.dead, .archivedPending], [.dead, .archivedComplete],
+            [.relaunching, .archivedPending],
+            [.dead, .relaunching], [.dead, .archivedPending],
             [.archivedPending, .archivedComplete],
             [.archivedPending, .creatingWorktree], [.archivedComplete, .creatingWorktree],
         ]
@@ -146,9 +149,13 @@ struct PhaseTransitionTests {
             #expect(env.sessions.ensureCount == ensureBefore)          // still parked
         }
 
-        // Going live (idle) fires wakeIfPending → resume-seed delivers the parked message.
+        // Going live (idle) fires wakeIfPending → resume-seed enqueues a `.relaunching` intent (PARKED folded
+        // into pendingSeed); the reconciler's RelaunchStepper then delivers it (PR4b Task 4 — intent-only wake).
         #expect(await env.svc.transition(card.id, to: .live(.waiting(.humanTurn))) == .applied)
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
         let argv = try #require(env.sessions.ensureArgv[name])
         #expect(argv.contains("--resume"))
@@ -242,7 +249,7 @@ struct EpochGuardReportFunnelTests {
         let repo = TestEnv.repo(env.base)
 
         // Kill-class, nil epoch, session STILL ALIVE → the probe blocks the kill.
-        let live = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "a"))
+        let live = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "a", repo: repo, branch: "a"))
         #expect(env.sessions.isAliveTest(live.id))   // spawn ensured it
         try await env.svc.report(live.id, StatusReport(endReason: "exit"), observedEpoch: nil)
         var after = try #require(await env.svc.store.get(live.id))
@@ -257,7 +264,7 @@ struct EpochGuardReportFunnelTests {
         #expect(env.sessions.isAliveQueries.contains(env.sessions.sessionName(live.id)))
 
         // A nil-epoch STATUS signal (running↔waiting) is NOT kill-class → it passes unprobed.
-        let status = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "b"))
+        let status = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "b", repo: repo, branch: "b"))
         try await env.svc.report(status.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: nil)
         let s = try #require(await env.svc.store.get(status.id))
         #expect(s.phaseDisplay == .idle)
@@ -269,7 +276,7 @@ struct EpochGuardReportFunnelTests {
     func test_reportStatusWritesGoThroughFunnel() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
@@ -290,7 +297,7 @@ struct EpochGuardReportFunnelTests {
         let inbox = await env.svc.inbox
 
         // Read-only card: a completed turn is terminal (.dead(.completed)) and concludes exactly once.
-        let watcherA = try await env.svc.spawn(SpawnInput(prompt: "wA", repo: repo, branch: "wa"))
+        let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wA", repo: repo, branch: "wa"))
         let readOnly = try await readOnlyCard(env, "ro")
         await env.svc.registerWatch(watcherA.id, [readOnly.id])
         try await env.svc.report(readOnly.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
@@ -300,8 +307,8 @@ struct EpochGuardReportFunnelTests {
         #expect(await inbox.peek(watcherA.id).count == 1)     // EXACTLY one conclusion
 
         // Worktree card: a completed turn stays long-lived (.live(.waiting(.humanTurn))), never concludes.
-        let watcherB = try await env.svc.spawn(SpawnInput(prompt: "wB", repo: repo, branch: "wb"))
-        let worktree = try await env.svc.spawn(SpawnInput(prompt: "wt", repo: repo, branch: "wt"))
+        let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wB", repo: repo, branch: "wb"))
+        let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wt", repo: repo, branch: "wt"))
         await env.svc.registerWatch(watcherB.id, [worktree.id])
         try await env.svc.report(worktree.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
         try await _Concurrency.Task.sleep(for: .milliseconds(60))

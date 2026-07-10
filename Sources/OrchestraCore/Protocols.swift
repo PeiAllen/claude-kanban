@@ -51,6 +51,11 @@ public protocol SessionManaging: Sendable {
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult
     func kill(_ name: String) throws
     func detachAgentViewClients(_ base: String) throws
+    /// The `ORCH_EPOCH` generation stamped into the session's env at launch (read back via tmux
+    /// `show-environment`); `nil` when absent/unset or the session is gone. The reconciler's identity
+    /// oracle (`verify`): a session is "the current one" iff its stamped epoch == `card.sessionEpoch`.
+    /// Defaulted `nil` so unrelated stubs need no change; `SessionManager` overrides with the real read.
+    func stampedEpoch(name: String) throws -> Int?
 }
 
 public extension SessionManaging {
@@ -63,6 +68,8 @@ public extension SessionManaging {
     // Default no-op so mocks/conformers needn't implement it; `SessionManager` overrides with a
     // best-effort tmux detach. Belt-and-suspenders behind the D5 desktop unmount.
     func detachAgentViewClients(_ base: String) throws {}
+    /// Default so test stubs needn't implement it; the real `SessionManager` overrides with the tmux read.
+    func stampedEpoch(name: String) throws -> Int? { nil }
     /// Convenience: launch with no extra environment (keep-alive shells + existing callers/tests).
     @discardableResult
     func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {

@@ -84,6 +84,11 @@ struct ShellSyncRoundTripTests {
             "prompt": .string("shells"), "repo": .string(repo), "branch": .string("feat")]))
             .decode(Task.self)
         let ref = task.shortId
+        // Non-blocking spawn: drive the reconciler to bring the card's session up before opening shells.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list().first { $0.id == task.id }?.phase.kind == .live
+        }
 
         // The PHONE subscribes — it must learn about a shell the DESKTOP opens (the reported bug).
         let box = EventBox()

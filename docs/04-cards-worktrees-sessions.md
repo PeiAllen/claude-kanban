@@ -521,10 +521,14 @@ outcome-typed `{confirmed, timedOut, superseded}`: **`.superseded`** is distinct
 relaunch displaced by a newer relaunch for the same card exits quietly (the survivor owns the card) instead
 of being marked dead.
 
-> **Stage 2 is synchronous.** `spawn`/`resume`/`restart`/`reopen` walk the phases **inline** in this stage
-> (built once, correctly) — the reconciler, the four phase-steppers, and non-blocking spawn are Stage 4. The
-> interim liveness rule (a vanished `.launching` session → `.dead(.spawnFailed)`) is safe under sync spawn
-> because the session existed when the RPC returned.
+> **Convergence (PR4b) shipped.** `spawn`/`resume`/`restart`/`reopen`/`handoff` are now **intent-only**:
+> each persists a target phase through `transition()` and returns immediately, without awaiting a worktree
+> checkout, an agent bring-up, or a teardown duty. The daemon's reconciler drives the walk off the request
+> path via four `PhaseStepper`s (`MaterializeStepper`/`LaunchStepper`/`RelaunchStepper`/`TeardownStepper`) —
+> see [the Convergence model](02-architecture.md#the-convergence-model) for the full picture; it isn't
+> duplicated here. The liveness rule below (a vanished `.launching` session → `.dead(.spawnFailed)`) is now
+> enforced by the reconciler's `phaseChangedAt`/`sessionLaunchTimeout` check rather than a synchronous verb
+> owning its own timeout.
 
 ### The recovery primitives
 
@@ -558,11 +562,13 @@ of being marked dead.
   `resume()`/`restart()` (they enter via `.relaunching`, illegal from `.creatingWorktree`). Idempotent and
   agent-agnostic. Backs the [`reopen` Command](05-command-reference.md#registry-commands) and the app's
   [Done-popover Reopen button](07-app-ui.md#onboarding-settings-recovery-and-popovers).
-- **`launchAndConfirm(id, flavor:, trustCwd:)`.** The shared `launching → live` step for spawn + reopen:
-  resolves launch inputs while still `.creatingWorktree`, enters `.launching`, then `ensure`s the session
-  with **no `await` between the `.launching` write and the synchronous `ensure`** (so a concurrent liveness
-  poll can never observe a launching card whose session doesn't exist yet), confirms readiness, and lands
-  `.live`. Not used by resume/restart (they walk the `.relaunching` edge).
+- **`materialize(id)` + `finishLaunch(id, flavor:)`.** The retired synchronous `launchAndConfirm` step is
+  now split across the reconciler's steppers (`OrchestraService+Converge.swift`): `MaterializeStepper` calls
+  `materialize(id)` to cut/adopt the `.creatingWorktree` card's worktree (or mkdir a scratch dir) and land
+  `.launching`; `LaunchStepper` then calls `finishLaunch(id, flavor:)` to `ensure` the session, confirm
+  readiness, and land `.live`. Both are stateless, idempotent, and re-derive everything from the persisted
+  card, so a crash between steps is re-driven safely rather than raced. Not used by resume/restart (they
+  walk the `.relaunching` edge via `RelaunchStepper`).
 - **`reconcileLiveness()`.** The 2-second poll loop's phase-gated safety net (one `tmux list-sessions` per
   tick). Being-born (`.creatingWorktree`) and `.relaunching` cards are **skipped** (their session is
   legitimately absent mid-bring-up; a live relaunching card with a still-pending waiter ticks the N=3

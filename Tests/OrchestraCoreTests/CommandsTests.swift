@@ -41,7 +41,7 @@ struct CommandsTests {
     func dispatchByRef() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let reg = CommandRegistry()
 
         // move by shortId
@@ -64,7 +64,7 @@ struct CommandsTests {
     func dispatchCapture() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         // Make the card's tmux session deterministically alive for the read (spawn's ensure is async).
         env.sessions.setAlive(t.id, true)
 
@@ -77,7 +77,7 @@ struct CommandsTests {
         #expect(cap.text.contains(env.sessions.sessionName(t.id)))
 
         // A read of a card whose session isn't running surfaces an error.
-        let t2 = try await env.svc.spawn(SpawnInput(prompt: "y", repo: repo, branch: "c"))
+        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "y", repo: repo, branch: "c"))
         env.sessions.setAlive(t2.id, false)
         await #expect(throws: OrchestraError.self) {
             _ = try await capture.run(env.svc, .object(["ref": .string(t2.shortId)]), .mcp)
@@ -88,10 +88,11 @@ struct CommandsTests {
     func dispatchReopen() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
-        try await env.svc.archive(t.id)
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        try await TestEnv.archiveAndTeardown(env.svc, t.id)
         let reg = CommandRegistry()
         let reopen = try #require(reg.command("reopen"))
+        // Intent-only reopen returns the unarchived `.creatingWorktree` card immediately.
         let result = try await reopen.run(env.svc, .object(["ref": .string(t.shortId)]), .app)
         #expect(try result.decode(Task.self).archived == false)
     }
@@ -145,7 +146,7 @@ struct CommandsTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let reg = CommandRegistry()
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         try await env.svc.send(t.id, "one")
         try await env.svc.send(t.id, "two")
 
@@ -183,7 +184,7 @@ struct CommandsTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let reg = CommandRegistry()
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let edit = try #require(reg.command("inbox-edit"))
         await #expect(throws: OrchestraError.self) {
             _ = try await edit.run(env.svc, .object(["ref": .string(t.shortId),

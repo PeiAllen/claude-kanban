@@ -93,21 +93,22 @@ struct ResumeSeedTests {
     func resumeWithSeed() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
 
-        async let resumed = env.svc.resume(t.id, seed: "SEEDED-CTX")
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let updated = try await resumed
+        // Intent-only: the seed is persisted as `pendingSeed` in the relaunch patch (carried #1 write side).
+        let intent = try await env.svc.resume(t.id, seed: "SEEDED-CTX")
+        #expect(intent.pendingSeed == "SEEDED-CTX")
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         #expect(updated.waitReason != nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id — NOT a fresh restart
+        #expect(updated.pendingSeed == nil)         // consumed + cleared on readiness
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.contains("--resume"))
-        #expect(argv.last == "SEEDED-CTX")          // seed delivered as the opening turn
+        #expect(argv.last == "SEEDED-CTX")          // seed delivered as the opening turn (RelaunchStepper)
     }
 }
 
@@ -119,7 +120,7 @@ struct ResumeInCardTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         return t
@@ -131,10 +132,9 @@ struct ResumeInCardTests {
         let t = try await makeResumable(env, branch: "b")
         let oldId = t.agentSessionId
 
-        async let resumed = env.svc.resumeInCard(t.id, seed: "HANDOFF")
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let updated = try await resumed
+        let intent = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
+        #expect(intent.pendingSeed == "HANDOFF")    // folded seed persisted for the RelaunchStepper
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         #expect(updated.agentSessionId == oldId)   // SAME session id — resume, not restart
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -149,18 +149,57 @@ struct ResumeInCardTests {
         try await env.svc.send(t.id, "queued-1")
         try await env.svc.send(t.id, "queued-2")
 
-        async let resumed = env.svc.resumeInCard(t.id, seed: "HANDOFF")
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        _ = try await resumed
+        // The inbox is drained + folded at INTENT time (into pendingSeed); the RelaunchStepper delivers it.
+        _ = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
+        #expect(await env.svc.drainForStop(t.id) == nil)   // already drained — nothing to double-deliver
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let seed = try #require(argv.last)
         #expect(seed.contains("HANDOFF"))
         #expect(seed.contains("queued-1"))
         #expect(seed.contains("queued-2"))
-        // Inbox was drained by the fold — nothing left to double-deliver via a later Stop-drain.
-        #expect(await env.svc.drainForStop(t.id) == nil)
+    }
+
+    @Test("test_handoffSeedSurvivesCrash")
+    func test_handoffSeedSurvivesCrash() async throws {
+        // handoff persists `pendingSeed` (folded HANDOFF + drained inbox) in the SAME patch as `.relaunching`,
+        // so a crash before launch keeps it on disk and the re-driven relaunch delivers it.
+        let env = TestEnv.make(grace: 30)
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
+        env.adapter.writeTranscript(for: t.agentSessionId!)
+        try await env.svc.send(t.id, "queued-1")
+
+        let intent = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
+        #expect(intent.phase.kind == .relaunching)
+        let seed = try #require(intent.pendingSeed)
+        #expect(seed.contains("HANDOFF"))
+        #expect(seed.contains("queued-1"))   // drained inbox folded into the durable seed
+
+        // Crash BEFORE launch: a fresh daemon re-derives from the persisted card + delivers the seed.
+        let env2 = TestEnv.remake(base: env.base)
+        _ = try await TestEnv.reconcileToLive(env2.svc, t.id)
+        let argv = try #require(env2.sessions.ensureArgv[env2.sessions.sessionName(t.id)])
+        #expect(argv.last?.contains("HANDOFF") == true)
+        #expect(argv.last?.contains("queued-1") == true)
+        #expect(try #require(await env2.svc.store.get(t.id)).pendingSeed == nil)   // consumed on readiness
+
+        // A resumeFailed KEEPS the seed (fail-safe): a card whose transcript vanished mid-relaunch stays
+        // seeded so a later retry still delivers it.
+        let f = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "y", repo: repo, branch: "f"))
+        await env.svc.markDead(f.id, reason: .agentExited, detail: nil, source: .daemon)
+        env.adapter.writeTranscript(for: f.agentSessionId!)
+        _ = try await env.svc.resumeInCard(f.id, seed: "KEEPME")
+        env.adapter.deleteTranscript(for: f.agentSessionId!)   // transcript vanishes → RelaunchStepper fails safe
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list(includeArchived: true).first { $0.id == f.id }?.phase.kind == .dead
+        }
+        let dead = try #require(await env.svc.store.get(f.id))
+        #expect(dead.deadReason == .resumeFailed)
+        #expect(dead.pendingSeed?.contains("KEEPME") == true)   // seed retained for a later retry
     }
 
     @Test("resumeInCard with no seed and empty inbox delivers no positional (pure resume)")
@@ -168,10 +207,8 @@ struct ResumeInCardTests {
         let env = TestEnv.make(grace: 2)
         let t = try await makeResumable(env, branch: "b")
 
-        async let resumed = env.svc.resumeInCard(t.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        _ = try await resumed
+        _ = try await env.svc.resumeInCard(t.id)
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.contains("--resume"))
@@ -189,7 +226,7 @@ struct HandoffCommandTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         return t
@@ -202,16 +239,14 @@ struct HandoffCommandTests {
         let oldId = t.agentSessionId
         let cmd = try #require(CommandRegistry().command("handoff"))
 
-        async let done = cmd.run(
+        // Intent-only: the command records the relaunch (pendingSeed = folded HANDOFF-CTX) + returns.
+        let result = try await cmd.run(
             env.svc,
             .object(["ref": .string(t.id.uuidString), "context": .string("HANDOFF-CTX")]),
             .agent)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let result = try await done
-
         // returns the updated Task (same id — resume, not a blank restart)
         #expect(try result.decode(Task.self).agentSessionId == oldId)
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
         // the resume argv carried the handoff context as its opening turn
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.contains("--resume"))

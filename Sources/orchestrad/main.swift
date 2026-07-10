@@ -42,22 +42,26 @@ if let apns = APNsConfig.from(env: ProcessInfo.processInfo.environment) {
 let pushNotifier = PushNotifier(service: service, sender: pushSender)
 _Concurrency.Task { await pushNotifier.run() }
 
-// Reboot/crash recovery — fired async so a slow revival never blocks the daemon coming up.
-// Sweep orphaned scratch dirs first (cards that died without a clean archive), then recover.
+// Reboot/crash recovery — fired async so a slow revival never blocks the daemon coming up. Boot ORDER
+// (PR4b): orphan-scratch sweep → one-time marker migration → phase reconciliation (folds the old
+// recoverSessions; also wires corrupt-store conservative mode) → orphan-borrow sweep → watch-registry
+// reload (delivers conclusions for children terminal-at-reload) → remote watches → merge-request nudges.
 _Concurrency.Task {
     await service.sweepOrphanScratch()
     await service.stampMigratedWorktreeMarkersOnce()   // ONE-TIME (sentinel-gated) marker migration
+    await service.reconcilePhasesAtBoot()  // re-drive stranded phases; revive .live cards; conservative mode
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
-    await service.recoverSessions()
+    await service.reloadWatchRegistry()    // carry #4: durable watch registry + terminal-at-reload delivery
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
     await service.rebuildMergeRequestNudges()   // re-arm merge-request re-nudge timers from live cards' state
 }
 
-// Background poll: continuous liveness reconcile (safety net for crashes / tmux kill).
+// Background poll: the continuous reconcile tick (steps transitional cards, launch timeouts, orphan sweep,
+// `.live` liveness) + telemetry tail. One `sessions.list()` per tick, hopped off the actor.
 _Concurrency.Task {
     while true {
-        try? await _Concurrency.Task.sleep(for: .seconds(2))
-        await service.reconcileLiveness()
+        try? await _Concurrency.Task.sleep(for: .seconds(service.reconcilePollInterval))
+        await service.reconcile()
         await service.pollTelemetry()   // tail fileTail (Codex) rollouts → parse → report
     }
 }

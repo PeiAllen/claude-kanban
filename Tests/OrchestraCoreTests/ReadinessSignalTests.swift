@@ -25,15 +25,9 @@ struct ReadinessSignalTests {
         let env = TestEnv.make(grace: 10, capabilities: .claudeCode)   // sessionStartHook → blank spawn awaits
         let repo = TestEnv.repo(env.base)
 
-        async let spawned = env.svc.spawn(SpawnInput(prompt: "do it", repo: repo, branch: "b"))
-        // The card is walked to `.launching`, where its inline readiness waiter blocks (no signal yet).
-        try await pollUntil {
-            await env.svc.list().contains { $0.branch == "b" && $0.phase.kind == .launching }
-        }
-        let cardId = try #require(await env.svc.list().first { $0.branch == "b" }?.id)
-        // The launch's ready signal: SessionStart(startup). It resolves the waiter → the verb lands `.live`.
-        try await env.svc.report(cardId, StatusReport(sessionSource: "startup"))
-        let live = try await spawned
+        // Non-blocking spawn: the reconciler drives the card to `.launching`, where its readiness waiter
+        // blocks; spawnAwaited hand-delivers SessionStart(startup), which resolves it → the card lands `.live`.
+        let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "do it", repo: repo, branch: "b"))
         #expect(live.phase == .live(.running))   // a prompt was in flight → running (per the landing rule)
     }
 
@@ -45,10 +39,10 @@ struct ReadinessSignalTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
 
-        async let resumed = env.svc.resume(t.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // the relaunch's ready signal
-        let live = try await resumed
+        // Intent-only: resume records `.relaunching`; the RelaunchStepper brings the session up and its
+        // readiness waiter is resolved by the delivered SessionStart(resume) (inject) → `.live`.
+        _ = try await env.svc.resume(t.id)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
         #expect(live.phase == .live(.waiting(.humanTurn)))
         #expect(live.deadReason == nil)
     }
@@ -73,19 +67,25 @@ struct ReadinessSignalTests {
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
 
-        async let spawned = svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
-                                                 agentId: "codex", cwd: work))
-        // Wait until the card is `.launching` (its readiness waiter is registered), THEN write the fresh
-        // rollout — its session_meta has mtime "now" > the card's `phaseChangedAt`, so the launch bind adopts
-        // exactly this rollout (never a stale/foreign one).
-        try await pollUntil { await svc.list().contains { $0.phase.kind == .launching } }
+        let created = try await svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
+                                                     agentId: "codex", cwd: work))
+        // Non-blocking spawn: drive the reconciler ONLY until the card is `.launching` (its readiness waiter
+        // registers), then STOP reconciling so the N=3 fallback can't fire — the rollout's session_meta is the
+        // resolver we want to exercise. Its mtime "now" > `phaseChangedAt`, so the launch bind adopts exactly
+        // this rollout (never a stale/foreign one).
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list().first { $0.id == created.id }?.phase.kind == .launching
+        }
+        try await _Concurrency.Task.sleep(for: .milliseconds(60))   // let the LaunchStepper register its waiter
         let sid = UUID().uuidString.lowercased()
         let rollout = "\(day)/rollout-2026-07-09T10-00-00-\(sid).jsonl"
         FileManager.default.createFile(atPath: rollout, contents:
             Data((#"{"timestamp":"2026-07-09T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(work)"}}"# + "\n").utf8))
 
         await svc.pollTelemetry()   // tails session_meta → report(sessionId) → launching → resolveReadiness → live
-        let live = try await spawned
+        try await pollUntil { await svc.list().first { $0.id == created.id }?.phase.kind == .live }   // no reconcile → no N=3
+        let live = try #require(await svc.list().first { $0.id == created.id })
         #expect(live.phase.kind == .live)
         #expect(live.agentSessionId == sid)   // bound from the rollout the launch just wrote
     }
@@ -101,12 +101,11 @@ struct ReadinessSignalTests {
         // `.rolloutMeta` relaunch inline-awaits — but a `codex resume` emits NO rollout, so NO signal is
         // hand-delivered here. The N=3 liveness-tick fallback (session live + pending waiter) must resolve
         // it within the grace, so the card reaches live rather than timing out and being killed.
-        async let resumed = env.svc.resume(t.id)
-        try await pollUntil {
-            await env.svc.reconcileLiveness()
-            return (await env.svc.list().first { $0.id == t.id })?.phase.kind == .live
-        }
-        let live = try await resumed
+        // Intent-only: resume records `.relaunching`; the RelaunchStepper brings the session up and — since a
+        // `codex resume` emits NO rollout — the reconciler's N=3 liveness fallback (NO signal injected) must
+        // resolve the waiter within the grace so the card reaches live rather than timing out.
+        _ = try await env.svc.resume(t.id)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
         #expect(live.phase.kind == .live)
         #expect(live.deadReason == nil)
     }
@@ -120,9 +119,9 @@ struct ReadinessSignalTests {
         let n = await env.svc.launchReadyTickThreshold
         #expect(n * 2 < 30)   // N × tickInterval(2s poll) < sessionLaunchTimeout(grace) — fallback beats the timeout
 
-        async let spawned = env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         try await TestEnv.reconcileUntilLive(env.svc, count: 1)   // reconcile ticks → N=3 → resolveReadiness → live
-        let live = try await spawned
+        let live = try #require(await env.svc.list().first { $0.branch == "b" })
         #expect(live.phase.kind == .live)
         #expect(live.deadReason == nil)
     }

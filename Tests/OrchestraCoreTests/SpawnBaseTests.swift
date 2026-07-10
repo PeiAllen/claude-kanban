@@ -23,7 +23,7 @@ struct SpawnBaseTests {
     func spawnWithBaseRecordsLineage() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "parent")
 
         let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
@@ -38,7 +38,7 @@ struct SpawnBaseTests {
     func spawnThreadsBaseToEnsure() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(env.worktrees.ensuredBases["child"] == "parent")
     }
 
@@ -51,7 +51,7 @@ struct SpawnBaseTests {
                                       link: ParentLink(parent: "other", base: "deadbeef"))
         env.worktrees.markBranchExists("child")
         // Even though we pass base = parent, the existing branch must derive parent from config (= other).
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "other")
         let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
         #expect(link.parent == "other")   // not overwritten by base
@@ -72,7 +72,7 @@ struct SpawnBaseTests {
         try git("checkout", "-q", "main")
         try git("tag", "parent", "main")
 
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "parent")
         let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
         #expect(link.base == branchTip)   // the branch tip, not the tag's OID
@@ -83,7 +83,7 @@ struct SpawnBaseTests {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
         let t = try await withScratchLock {
-            try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "", scratch: true, base: "parent"))
+            try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "", scratch: true, base: "parent"))
         }
         #expect(t.origin == .scratch)
         #expect(t.parentBranch == nil)   // base never consulted off the worktree arm
@@ -93,7 +93,7 @@ struct SpawnBaseTests {
     func noBaseNoLineage() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "solo"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "solo"))
         #expect(t.parentBranch == nil)
         #expect(await BranchLineage().read(repo: repo, branch: "solo") == nil)
     }
@@ -107,6 +107,13 @@ struct SpawnBaseTests {
         let out = try await cmd.run(env.svc,
             .object(["prompt": .string("x"), "repo": .string(repo),
                      "branch": .string("child"), "base": .string("parent")]), .mcp)
-        #expect(try out.decode(Task.self).parentBranch == "parent")
+        // Non-blocking spawn: the command returns a `.creatingWorktree` card; drive the reconciler so
+        // materialize records the parent link, then read it back.
+        let id = try out.decode(Task.self).id
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list().first { $0.id == id }?.phase.kind == .live
+        }
+        #expect(await env.svc.list().first { $0.id == id }?.parentBranch == "parent")
     }
 }

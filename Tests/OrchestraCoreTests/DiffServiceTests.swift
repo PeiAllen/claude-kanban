@@ -10,7 +10,7 @@ struct DiffServiceTests {
     private func worktreeCardWithRepo() async throws -> (env: Env, task: Task) {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "task", repo: repo, branch: "b"))
         try gitInit(t.cwd)
         return (env, t)
     }
@@ -65,7 +65,7 @@ struct DiffServiceTests {
     func footerSelectsParentBaseline() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "task", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "task", repo: repo, branch: "child"))
         try gitParentChild(t.cwd)
         _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
 
@@ -82,7 +82,7 @@ struct DiffServiceTests {
     func changedNotesUsesParentBaseline() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "task", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "task", repo: repo, branch: "child"))
         try gitParentChildNotes(t.cwd)
         _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
         let notes = try await env.svc.changedNotes(t.id)
@@ -133,7 +133,7 @@ struct DiffServiceTests {
         let env = TestEnv.make()
         let dir = env.base + "/data"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", cwd: dir, access: .readWrite))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(try await env.svc.diffText(t.id) == "")
         _ = await env.svc.recomputeDiffStat(t.id)

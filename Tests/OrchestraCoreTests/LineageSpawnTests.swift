@@ -24,7 +24,7 @@ struct LineageSpawnTests {
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         env.worktrees.markBranchExists("child")   // the branch survived the prior card's archival
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child"))
         #expect(t.parentBranch == "parent")
     }
 
@@ -33,7 +33,7 @@ struct LineageSpawnTests {
         let env = TestEnv.make()
         let repo = try Self.gitRepo(env.base)
         // Not marked existing ⇒ brand-new branch ⇒ no lineage to derive.
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "solo"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "solo"))
         #expect(t.parentBranch == nil)
     }
 
@@ -47,7 +47,7 @@ struct LineageSpawnTests {
         try await BranchLineage().set(repo: repo, branch: "ghost",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         // "ghost" is NOT marked existing ⇒ ensure reports branchExisted=false ⇒ churn is skipped.
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "ghost"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "ghost"))
         #expect(t.parentBranch == nil)
     }
 }

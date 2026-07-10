@@ -8,7 +8,7 @@ struct ReportTests {
     private func spawned() async throws -> (env: ReturnType, task: Task) {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Initial task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "Initial task", repo: repo, branch: "b"))
         return (env, t)
     }
     typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
@@ -242,7 +242,7 @@ struct ReportTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.ctxPct == 43)
         // a second card's low seq is independent
-        let t2 = try await env.svc.spawn(SpawnInput(prompt: "second", repo: TestEnv.repo(env.base), branch: "b2"))
+        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "second", repo: TestEnv.repo(env.base), branch: "b2"))
         try await env.svc.report(t2.id, StatusReport(seq: 1, ctxPct: 9))
         let after2 = try #require(await env.svc.list().first { $0.id == t2.id })
         #expect(after2.ctxPct == 9)

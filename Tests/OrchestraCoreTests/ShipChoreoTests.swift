@@ -22,8 +22,8 @@ struct ShipChoreoTests {
     func liveParentNotified() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
-        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the parent agent's squash-merge (S2-2 gate)
@@ -44,7 +44,7 @@ struct ShipChoreoTests {
     func bareParentActivity() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the merge (S2-2 gate)
@@ -65,7 +65,7 @@ struct ShipChoreoTests {
     func shippedRefusesWhenNothingMerged() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         // Parent has NOT advanced — nothing merged. Refuse, and leave the lineage intact.
@@ -82,12 +82,13 @@ struct ShipChoreoTests {
     func archiveNudgesLiveChildren() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
-        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
-        try await env.svc.archive(parentCard.id)
+        // Intent-only archive: the child nudge is a TeardownStepper actor-duty (PR4b Task 4) — drive it.
+        try await TestEnv.archiveAndTeardown(env.svc, parentCard.id)
 
         let msgs = try await env.svc.inboxPeek(child.id)
         #expect(msgs.contains { $0.text.contains("archived") })
@@ -99,7 +100,7 @@ struct ShipChoreoTests {
         let env = TestEnv.make()
         let repo = try TreeStatTests.repoWithParent(env.base)
         let tip = try TreeStatTests.git(repo, "rev-parse", "parent")
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: tip))
         try await env.svc.archive(card.id)
@@ -114,8 +115,8 @@ struct ShipChoreoTests {
     func shippedNotifiesChild() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
-        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the parent's squash-merge (S2-2 gate)
@@ -149,8 +150,8 @@ struct ShipChoreoTests {
         try TreeStatTests.git(repo, "branch", "B", "A")
         try TreeStatTests.git(repo, "checkout", "-q", "main")
 
-        let a = try await env.svc.spawn(SpawnInput(prompt: "A", repo: repo, branch: "A"))   // no link
-        let b = try await env.svc.spawn(SpawnInput(prompt: "B", repo: repo, branch: "B"))
+        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "A", repo: repo, branch: "A"))   // no link
+        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "B", repo: repo, branch: "B"))
         try await BranchLineage().set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
 
         try await env.svc.shipped(ref: a.ref())
@@ -186,9 +187,9 @@ struct ShipChoreoTests {
         try TreeStatTests.git(repo, "checkout", "-q", "main")
         let grandparentTip = try TreeStatTests.git(repo, "rev-parse", "grandparent")
 
-        let mid = try await env.svc.spawn(SpawnInput(prompt: "mid", repo: repo, branch: "mid"))
-        let c1 = try await env.svc.spawn(SpawnInput(prompt: "c1", repo: repo, branch: "c1"))
-        let c2 = try await env.svc.spawn(SpawnInput(prompt: "c2", repo: repo, branch: "c2"))
+        let mid = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "mid", repo: repo, branch: "mid"))
+        let c1 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c1", repo: repo, branch: "c1"))
+        let c2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c2", repo: repo, branch: "c2"))
         let lin = BranchLineage()
         try await lin.set(repo: repo, branch: "mid",
                           link: ParentLink(parent: "grandparent", base: grandparentTip))

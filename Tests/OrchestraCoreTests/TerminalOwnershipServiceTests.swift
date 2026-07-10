@@ -12,7 +12,7 @@ struct TerminalOwnershipServiceTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        let task = try await env.svc.spawn(
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "own me", repo: repo, branch: "feat"), source: .app)
         let ref = task.shortId
 
@@ -45,7 +45,7 @@ struct TerminalOwnershipServiceTests {
     func failedTakeoverDoesNotStealLease() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
@@ -74,7 +74,7 @@ struct TerminalOwnershipServiceTests {
     func deniedHeartbeatReturnsSnapshot() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
@@ -97,7 +97,7 @@ struct TerminalOwnershipServiceTests {
         let repo = TestEnv.repo(env.base)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        let task = try await env.svc.spawn(
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
@@ -120,7 +120,7 @@ struct TerminalOwnershipServiceTests {
     func staleReleaseRejected() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
         let a = try await env.svc.takeOverAgentTerminal(ref, clientId: "phoneA", kind: .phone)

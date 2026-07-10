@@ -46,7 +46,7 @@ struct StaleNudgeTests {
         let repo = try TreeStatTests.repoWithParent(env.base)
         let base0 = try TreeStatTests.git(repo, "rev-parse", "parent")
         // A live parent card owning branch "parent", plus the linked child.
-        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
         let child = try await TreeStatTests.linkedChild(env, repo: repo, base: base0)
         await env.svc.recomputeTreeStat(child.id)                   // inSync baseline
         try TreeStatTests.advanceParent(repo, 1)                    // parent tip moves in git
