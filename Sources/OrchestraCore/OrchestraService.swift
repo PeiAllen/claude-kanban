@@ -19,6 +19,13 @@ public actor OrchestraService {
     /// provider; a test injects a blocking stub (`_setDiffProviderForTest`) to prove `diffText`/
     /// `recomputeDiffStat` run their git work off-actor (PR5 actor-hygiene, Task 5.1.2).
     var diffProvider: any DiffProvider = GitDiffProvider()
+    /// Per-repo `git remote` memo (PR5 actor-hygiene, Task 5.1.4) — keyed by `.git/config` mtime, so
+    /// `nonisolated` git-probe code (`gitRemotes`) can call it off-actor without an actor-state read.
+    let gitRemotesCache = GitRemotesCache()
+    /// Test-only probe for `computeTreeStat` (PR5 actor-hygiene, Task 5.1.4): read ON-ACTOR by
+    /// `recomputeTreeStat` and passed as a call-scoped argument into the `nonisolated computeTreeStat` —
+    /// never itself read from inside the offActor hop. `nil` in production.
+    let treeProbeHolder = TreeProbeHolder()
     /// Per-adapter subscription rate state for the authMode soft-warn (E2 / q4 — advisory only, no cap).
     let authRate = AuthRateMonitor()
     /// Daemon-side rollout TRANSPORT for `fileTail` agents (Codex). Tracks a per-card byte offset; the
@@ -227,6 +234,7 @@ public actor OrchestraService {
     func storeCurrentRevForTest() async -> Int { await store.currentRev }
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
     func _setDiffProviderForTest(_ provider: any DiffProvider) { diffProvider = provider }
+    func _setTreeProbeForTest(_ probe: (@Sendable () -> Void)?) { treeProbeHolder.set(probe) }
     #endif
 
     // MARK: - trust

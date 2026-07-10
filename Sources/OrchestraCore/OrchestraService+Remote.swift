@@ -117,7 +117,7 @@ extension OrchestraService {
         let anchor = link.base
         // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
         // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
-        let keepWatching = (grandparent != defaultBranch(repo: t.repo))
+        let keepWatching = (grandparent != defaultBranch(repo: t.repo, timeout: .seconds(config.controlTimeout)))
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
                 link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))

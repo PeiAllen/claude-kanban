@@ -43,6 +43,36 @@ final class ActorHygieneTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor pollTelemetry")
         gate.open(); await slow.value
     }
+
+    func test_actorNotBlockedByTreeStatRecompute() async throws {
+        let gate = ActorHygieneSupport.Gate()
+        let (service, cardId) = try await ActorHygieneSupport.liveCardWorktreeWithParent()
+        await service._setTreeProbeForTest { gate.markEntered(); gate.blockUntilOpen() }
+        let slow = _Concurrency.Task { await service.recomputeTreeStat(cardId) }
+        gate.waitUntilEntered()                              // compute is now parked inside the offActor hop
+        let start = Date()
+        _ = await service.list()
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor treeStat recompute")
+        gate.open(); await slow.value
+    }
+
+    func test_gitRemotesInvalidatesOnConfigChange() async throws {
+        let (service, _, repo) = try await ActorHygieneSupport.liveCardWorktree()
+        XCTAssertEqual(service.gitRemotes(repo: repo), [])
+        try Proc.checked(["git", "-C", repo, "remote", "add", "origin", "https://example.com/x.git"])
+        XCTAssertEqual(service.gitRemotes(repo: repo), ["origin"])
+    }
+
+    func test_gitRemotesInvalidatesInLinkedWorktree() async throws {
+        let (service, _, repo) = try await ActorHygieneSupport.liveCardWorktree()
+        let linked = repo + "-linked"
+        try Proc.checked(["git", "-C", repo, "worktree", "add", "-q", linked, "-b", "linked-branch"])
+        XCTAssertEqual(service.gitRemotes(repo: linked), [])
+        // Remotes are configured in the COMMON dir's config — mutate via the main repo path, but the
+        // memo is keyed off the LINKED worktree's `.git` file → common-dir resolution (defense-in-depth).
+        try Proc.checked(["git", "-C", repo, "remote", "add", "origin", "https://example.com/x.git"])
+        XCTAssertEqual(service.gitRemotes(repo: linked), ["origin"])
+    }
 }
 
 // MARK: - Shared Stage-5.1 test harness (reused by the 5.1.2–5.1.5 gate tests)
@@ -81,6 +111,38 @@ enum ActorHygieneSupport {
                         initialPrompt: "")
         _ = try await service.store.create(card)
         return (service, card.id, repo)
+    }
+
+    /// Like `liveCardWorktree`, but the card carries a real branch-lineage parent link (`work` → `main`)
+    /// so `recomputeTreeStat` actually reaches `computeTreeStat` (a nil-parent card short-circuits
+    /// before the offActor hop). Used by the 5.1.4 treeStat gate test.
+    static func liveCardWorktreeWithParent() async throws -> (service: OrchestraService, cardId: UUID) {
+        let base = IntegrationSupport.tempDir("actor-hygiene-treestat")
+        let repo = base + "/repo"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try Proc.checked(["git", "-C", repo, "init", "-q", "-b", "main"])
+        try Proc.checked(["git", "-C", repo, "config", "user.email", "t@t.t"])
+        try Proc.checked(["git", "-C", repo, "config", "user.name", "T"])
+        try "hi".write(toFile: repo + "/README.md", atomically: true, encoding: .utf8)
+        try Proc.checked(["git", "-C", repo, "add", "."])
+        try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "init"])
+        let mainTip = try Proc.checked(["git", "-C", repo, "rev-parse", "HEAD"])
+            .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        try Proc.checked(["git", "-C", repo, "checkout", "-q", "-b", "work"])
+
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)])
+        let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
+                                       trust: TrustLedger(path: base + "/trust-ledger.json"),
+                                       inbox: Inbox(path: base + "/inbox.json"),
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+        let card = Task(title: "actor-hygiene-treestat", repo: repo, branch: "work", cwd: repo,
+                        model: AgentModel(id: "m1"), startIn: .impl, column: .impl, order: 0,
+                        initialPrompt: "", parentBranch: "main")
+        _ = try await service.store.create(card)
+        try await service.lineage.set(repo: repo, branch: "work", link: ParentLink(parent: "main", base: mainTip))
+        return (service, card.id)
     }
 
     /// Build a real `OrchestraService` with a caller-supplied adapter registered for the card's
