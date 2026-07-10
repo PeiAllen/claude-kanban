@@ -109,7 +109,13 @@ struct TransportReconnectTests {
         #expect(box.subscribeCount == 1)
 
         box.dropCurrent()                                          // drop mid-stream
-        try await _Concurrency.Task.sleep(for: .milliseconds(700)) // let backoff + reconnect run
+        // Poll for the reconnect to converge rather than a fixed 700ms sleep: the reconnect BACKOFF TIMER
+        // is real time, and a heavily-parallel run starves it past a fixed window (in-memory FakeTransport,
+        // so this is a fixed-sleep timing fragility — not a real-socket env flake). Generous cap, deterministic.
+        try await pollUntil {
+            guard box.opens >= 2, box.subscribeCount == 2 else { return false }
+            return await states.values.last == .live
+        }
         #expect(box.opens >= 2)                                    // reconnected with a fresh transport
         #expect(box.subscribeCount == 2)                           // re-subscribed on the new transport
         let seen = await states.values
@@ -139,7 +145,9 @@ struct TransportReconnectTests {
         _ = client.subscribe()                                       // subscribe #1
         try await _Concurrency.Task.sleep(for: .milliseconds(120))
         box.dropCurrent()                                            // force a reconnect
-        try await _Concurrency.Task.sleep(for: .milliseconds(700))   // backoff + reconnect + re-subscribe
+        // Poll for the reconnect + re-subscribe (real backoff timer) rather than a fixed 700ms — see the
+        // reconnectResubscribes note: fixed-sleep timing fragility under parallel load, deterministic poll.
+        try await pollUntil { box.subscribeClientIds.count >= 2 }
         let ids = box.subscribeClientIds
         #expect(ids.count >= 2)                                      // subscribed on both transports
         #expect(ids.allSatisfy { $0 == "phone-xyz" })               // SAME id after reconnect
@@ -181,7 +189,12 @@ struct TransportReconnectTests {
         try await _Concurrency.Task.sleep(for: .milliseconds(150))
         #expect(await hits.value == 0)                             // NOT on the first connect
         box.dropCurrent()                                          // force a reconnect
-        try await _Concurrency.Task.sleep(for: .milliseconds(700))
+        // Poll for the reconnect + onReconnect hook (real backoff timer) rather than a fixed 700ms — same
+        // fixed-sleep timing fragility under parallel load as the other reconnect tests; deterministic poll.
+        try await pollUntil {
+            guard box.opens >= 2 else { return false }
+            return await hits.value >= 1
+        }
         #expect(box.opens >= 2)
         #expect(await hits.value >= 1)                             // fired on the reconnect (re-assert hook)
         client.close()

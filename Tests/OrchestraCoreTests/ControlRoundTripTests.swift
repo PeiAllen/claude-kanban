@@ -102,9 +102,14 @@ struct ControlRoundTripTests {
         let box = EventBox()
         let stream = c2.subscribe()
         _Concurrency.Task { for await e in stream { await box.add(e) } }
-        try await _Concurrency.Task.sleep(for: .milliseconds(150))
-        let acts = await box.events.compactMap { if case .activity(let a) = $0 { return a } else { return nil } }
-        #expect(acts.contains { $0.kind == .spawned && $0.text.contains("Earlier card") })
+        // Poll for the ring-replayed activity rather than a fixed sleep: the replay arrives asynchronously
+        // over the socket, and a heavily-parallel run can push its delivery past a fixed 150ms → false-fail.
+        try await pollUntil {
+            await box.events.contains {
+                if case .activity(let a) = $0 { return a.kind == .spawned && a.text.contains("Earlier card") }
+                return false
+            }
+        }
     }
 
     @Test("hook RPC: stop drains the inbox into the continuation; empty inbox → null")

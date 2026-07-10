@@ -260,7 +260,10 @@ struct LaunchStepperTests {
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()
         async let stepping: Void = LaunchStepper().step(card, ctx)
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))   // past finishLaunch's pendingReadiness.remove
+        // Wait until the step has REGISTERED its readiness waiter (past finishLaunch's "start clean"
+        // pendingReadiness.remove) BEFORE delivering the signal — a fixed sleep races that clear under
+        // parallel-suite contention and drops the signal (→ grace timeout). Deterministic seam, not wall-clock.
+        try await pollUntil { await env.svc.hasReadinessWaiter(card.id) }
         try await env.svc.report(card.id, StatusReport(sessionSource: "startup"))   // the ready signal
         try await stepping
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
@@ -272,7 +275,7 @@ struct LaunchStepperTests {
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()
         async let stepping: Void = LaunchStepper().step(card, ctx)
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        try await pollUntil { await env.svc.hasReadinessWaiter(card.id) }   // waiter registered → signal can't be dropped
         try await env.svc.report(card.id, StatusReport(sessionSource: "startup"))
         try await stepping
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
