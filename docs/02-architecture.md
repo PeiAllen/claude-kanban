@@ -42,7 +42,35 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
    without a `SessionEnd` hook (see [the Convergence model](#the-convergence-model)) — and, alongside it,
    drives [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter), the rollout-tail tick that
    pulls live state for `fileTail` agents (Codex) that don't push it.
-5. Parks on `dispatchMain()`.
+5. **Installs a `SIGTERM` flush handler** (launchd/systemd send `SIGTERM` before `SIGKILL` on a clean
+   stop/restart) that flushes any debounced `tasks.json` write, then parks on `dispatchMain()`.
+
+### Actor hygiene, the snapshot cache, and telemetry debounce
+
+The daemon is a **single `OrchestraService` actor** — one serialized owner of all mutable state, no
+per-card executors. That design is only responsive if the actor never blocks on IO, so every slow
+subprocess/file operation is hopped **off the actor** onto a background queue via one primitive,
+`offActor { … }` (a `nonisolated` GCD/continuation bridge). `exec`, git diff/notes/tree probes,
+`pollTelemetry`'s rollout resolution, the every-tick `sessions.list()`, `prepareToLaunch`'s
+`~/.claude.json` read-merge, the scratch sweep, `spawnBranches`' `git for-each-ref`, and the shell-window
+listing all run off-actor and bounded by the `controlTimeout`/`sessionLaunchTimeout` config knobs, so a
+slow git repo or a hung tmux call **never freezes RPC servicing** — a concurrent `list`/`spawn` stays
+prompt. Read-only git helpers are `nonisolated` and their `git remote` lookup is memoized per repo,
+invalidated on `.git/config` mtime.
+
+Two caches keep hot paths cheap without changing observable behavior:
+
+- **Observed-session cache.** Each 2-second `reconcile()` tick captures every live card's tmux window
+  state off-actor into an in-memory cache. `boardSnapshot` — served on every client (re)connect — reads
+  that cache instead of shelling `tmux` per card, so a reconnect costs **zero** tmux subprocesses. The
+  cache is evicted on teardown and on any shell open/close so user-driven changes are never hidden; a
+  cache miss or an entry older than the card's current session falls back to a live read, so nothing is
+  ever mis-shown. Session state is at most one tick (~2s) stale and self-heals via live events.
+- **Telemetry-persist debounce.** High-frequency telemetry deltas (context %, status) update the card in
+  memory and bump the board `rev` **synchronously** — the event stream a client sees is unchanged — but
+  their `tasks.json` write is **coalesced**, so a chatty agent no longer thrashes the file. Any
+  non-telemetry mutation (or the `SIGTERM` flush) forces a synchronous write, so a clean restart loses
+  nothing; only a hard crash can drop the last few seconds of (reconstructable) telemetry.
 
 ### Why a daemon, and why tmux
 
