@@ -328,10 +328,10 @@ orientation/inbox-drain content to print):
 |--------------|-------------------|------------------------------|
 | statusLine refresh | `statusline` | `ctxPct`, model id + display, session id, session name |
 | `SessionStart` | `session` | session id, transcript path, session source (clear/resume/startup/compact); also injects the card's live column/mode/self-id **orientation** as `additionalContext` |
-| `UserPromptSubmit` | `prompt` | the prompt text → auto-title; status → `running` |
+| `UserPromptSubmit` | `prompt` | the prompt text → auto-title; run-state → `.running` |
 | `Pre/PostToolUse` | `tool` | `desc` (a live blurb of what the agent is doing) |
-| `Notification` / `Stop` | `notify` | `desc`; status → `waiting` |
-| `SessionEnd` | `sessionend` | exit reason → may flip status to `dead` |
+| `Notification` / `Stop` | `notify` | `desc`; run-state → `.waiting(_)` |
+| `SessionEnd` | `sessionend` | exit reason → may drive the card to `dead(_)` via the `transition()` funnel |
 
 This is a **two-way** channel: agent → Orchestra carries live fields, and the Orchestra → agent direction
 is now **realized** on several paths — the F3 Stop-drain injects the durable inbox back at turn-end via the
@@ -348,10 +348,12 @@ Two robustness rules matter:
 - **Monotonic seq guard.** Every snapshot report carries a sequence number; the daemon drops or
   coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
 - **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
-  `Task.applyReportFields(from:)`, which overlays only the fields `report()` owns (status, dead
-  metadata, session ids, `desc`, title/titleProvisional, `ctxPct`, model, `waitReason`) onto the task
-  currently in the store. Every other field — anything a concurrent RPC (e.g. a rename, a move) touched
-  in between — is left alone, so `report()` can never clobber a change it doesn't own.
+  `Task.applyReportFields(from:)`, which overlays only the telemetry fields `report()` owns (session
+  ids, `desc`, title/titleProvisional, `ctxPct`, model) onto the task currently in the store. Run-state
+  and dead metadata are *not* overlaid here — they flow through the `transition()` funnel / `markDead`
+  (Stage 2), which is why `status`/`waitReason` no longer appear in this list. Every other field —
+  anything a concurrent RPC (e.g. a rename, a move) touched in between — is left alone, so `report()`
+  can never clobber a change it doesn't own.
 
 Polling (`tmux capture-pane`) exists only as a *fallback* when the push channel is silent.
 
@@ -363,10 +365,13 @@ Spawning a card from the CLI:
    source:"cli"}` and writes it to the socket.
 2. `ControlServer` decodes it, finds `spawn` in the registry, and calls
    `OrchestraService.spawn(input, source:.cli)`.
-3. `OrchestraService` resolves and allowlists the repo, asks `WorktreeManager` to cut the worktree,
-   asks `AgentRegistry` for the Claude adapter, builds the launch argv, and asks `SessionManager` to
-   create the tmux session running that argv. It persists the new `Task` via `TaskStore` and emits a
-   `taskUpserted` event plus a `spawned` activity item.
+3. `OrchestraService.spawn` is **intent-only**: it resolves and allowlists the repo, persists the new
+   `Task` at `phase = .creatingWorktree` (the cwd path is computed, but no worktree is cut yet) via the
+   `transition()` funnel + `TaskStore`, emits a `taskUpserted` event plus a `spawned` activity item, and
+   **returns immediately**. The reconciler then converges the card: `MaterializeStepper` asks
+   `WorktreeRegistry` to cut/join the worktree (`→ .launching`), and `LaunchStepper` derives the launch
+   flavor, builds the argv, and asks `SessionManager` to create the tmux session; on the readiness signal
+   (or the N-tick fallback) the card reaches `.live`.
 4. `ControlServer` returns the new task to the CLI and fans the events out to every subscriber — so the
    app's board updates live, even though the spawn came from the CLI.
 5. The agent starts, its `SessionStart`/statusLine hooks fire, and `_report` begins pushing live state

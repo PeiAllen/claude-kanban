@@ -1,7 +1,8 @@
 # 5. Command reference
 
 Every action Orchestra exposes lives in **one place** — the `CommandRegistry`
-(`Sources/OrchestraCore/Commands.swift`). The CLI dispatches to it, the MCP bridge generates one tool
+(`Sources/OrchestraCore/CommandRegistry.swift`), with the shared verb schema catalog (`kind`/`phaseGate`)
+in `Sources/OrchestraKit/CommandCatalog.swift`. The CLI dispatches to it, the MCP bridge generates one tool
 per entry from it, and the app calls the same methods. This chapter is the canonical list, plus the
 server-only built-in methods and the wire protocol.
 
@@ -13,7 +14,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | Command | Parameters | What it does |
 |---------|------------|--------------|
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
-| `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; status starts `waiting` if provisional, else `running`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
+| `spawn` | `prompt` (required), `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). Auto-titles from the prompt; on readiness the card lands `live(.waiting(.humanTurn))` if provisional, else `live(.running)`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3), then **wake** the card (F2) so an *idle* agent drains it now rather than at its next unprompted turn. Content still rides the inbox (Stop-hook drain / session seed / resume seed), never typed into tmux — `wake` only starts a turn. A message over `StopDrain.maxMessageChars` (~the 10 000-char delivery budget) is **rejected** with `invalidParams` at enqueue — put large content in a worktree file and reference it — so any accepted message delivers whole. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
 | `inbox` | `ref` (required) | List a card's pending [inbox](03-data-model.md#the-inbox-store-f3) messages (`{id, text, createdAt}`) in FIFO order. Read-only (`Inbox.peek`); backs the [inbox editor](07-app-ui.md#the-inspector)'s list. |
@@ -23,7 +24,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done, a read-only freeform/scratch delegated card finishes its agent turn, or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
 | `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
-| `archive` | `ref` (required) | Finish a card: kill the session, clean the run dir per origin, set `done`/`archived`. |
+| `archive` | `ref` (required) | Finish a card: record the intent (`phase = .archived(teardownComplete: false)`, `archived=true`) and return; the reconciler's Teardown stepper kills the session, cleans the run dir per origin, and flips the phase to `.archived(teardownComplete: true)`. |
 | `reopen` | `ref` (required) | Bring an archived (Done) card back onto the board: recreate the run dir the archive reclaimed, unarchive (keeping its column, clearing stale dead state), then `resume` its transcript when resumable else `restart` a fresh session. Idempotent on a non-archived card. Backs the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers)'s **Reopen** button. |
 | `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
 | `resume` | `ref` (required) | Re-attempt `claude --resume` of the card's existing session. |
@@ -84,11 +85,13 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
 - **`archive` cleans up by origin.** Worktree: `git worktree remove` (kept if dirty, and only if no
   other live worktree card shares it). Scratch: unconditional `rm -rf` (double-gated). Borrowed: nothing
   is deleted.
-- **`reopen` is the inverse — recreate the run dir, then revive.** Archive is no longer terminal:
-  `reopen` re-`ensure`s the worktree (the archive kept its branch) or re-`mkdir`s the scratch dir,
-  unarchives the card back to its original column, then reuses the existing `resume`/`restart`
-  recovery primitives — a *resume* when the transcript survived, else a blank *restart*. Agent-agnostic
-  (no adapter-specific code) and idempotent. See [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
+- **`reopen` is the inverse — record the reopen intent, then let the reconciler revive.** Archive is no
+  longer terminal: `reopen` transitions the card `→ .creatingWorktree` through the funnel (unarchiving it
+  back to its original column and clearing dead metadata) and returns; the reconciler's steppers then
+  re-materialize the run dir (re-`ensure` the worktree — the archive kept its branch — or re-`mkdir` the
+  scratch dir) and relaunch, with `deriveLaunchFlavor` choosing a *resume* when the transcript survived
+  (`isResumable`) else a blank launch. Agent-agnostic (no adapter-specific code) and idempotent. See
+  [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
 - **`exec` vs `shell`.** `exec` is a one-shot non-interactive command with a captured result; `shell`
   opens an interactive window you attach a terminal to. `inspect` is `shell` + a read-only agent.
 - **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent

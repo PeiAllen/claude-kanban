@@ -338,7 +338,7 @@ separated (the tailer never inspects JSON; the parse never touches files):
 - **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
   and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
   `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
-  `turn_complete` / `TurnComplete` all mean a natural turn completion (`status: .waiting`,
+  `turn_complete` / `TurnComplete` all mean a natural turn completion (`run: .waiting(.humanTurn)`,
   `turnCompleted: true`), and token totals read from a
   nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
   yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)
@@ -532,11 +532,14 @@ of being marked dead.
 
 ### The recovery primitives
 
-- **Startup sweep — `recoverSessions()`.** For every non-terminal card whose tmux session is *not* alive:
-  resume it if it has a tracked `agentSessionId` + an on-disk transcript (throttled to
-  `maxConcurrentRevivals`, default 4, in flight); relaunch a **blank** session via `restart()` if it was
-  never prompted / freshly restarted; otherwise mark it **`.dead(.rebootUnrevived)`**. Idempotent — a card
-  whose session is still alive (daemon-only crash) is left untouched.
+- **Startup reconciliation — `reconcilePhasesAtBoot()`.** For every `.live` card at boot, adopt its
+  surviving tmux session **only on epoch identity** (`sessionEpoch` matches the session's stamped
+  `ORCH_EPOCH` — a daemon-only crash); a stale/mismatched epoch means the session isn't ours, so the card
+  is driven `→ .relaunching` to reclaim identity. Transitional (`creatingWorktree`/`launching`/
+  `relaunching`/`archivedPending`) and dead cards are left for the reconcile **tick**, which re-drives
+  them through the phase-keyed steppers (Materialize / Launch / Relaunch / Teardown) — a launch derives
+  `resume`-vs-blank via `deriveLaunchFlavor`, and an unrevivable card lands `.dead(.rebootUnrevived)`.
+  Idempotent — a `.live` card whose session is still alive at the matching epoch is left untouched.
 - **`resume(id, graceSeconds, seed:)`.** Enters `.relaunching` through the funnel (which bumps the
   generation — the atomic **generation claim** — and clears dead metadata in the same patch), kills +
   re-`ensure`s the session **off-actor**, inline-confirms readiness, then finalizes `→ .live` **epoch-fenced**

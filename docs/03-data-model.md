@@ -2,8 +2,8 @@
 
 This chapter is the reference for Orchestra's persisted state: the `Task` (card) schema, the enums that
 classify it, how it is stored and migrated, the configuration and on-disk paths, and the error and
-event types. The types live in `Sources/OrchestraCore/Model.swift`, `Config.swift`, `TaskStore.swift`,
-`Inbox.swift`, and `Errors.swift`.
+event types. The types live in `Sources/OrchestraKit/` (`Model.swift`, `Config.swift`, `Errors.swift`)
+and `Sources/OrchestraCore/` (`TaskStore.swift`, `Inbox.swift`).
 
 ## The `Task` (card)
 
@@ -229,6 +229,9 @@ default-on-malformed discipline.
 | `allowlist` | `[]` | Extra permitted directories beyond the two roots. |
 | `maxConcurrentRevivals` | `4` | Throttle on simultaneous session revivals at startup. |
 | `revivalGraceSeconds` | `15` | How long a resume waits for the `SessionStart(resume)` confirmation. |
+| `worktreeAddTimeout` | `600` | Wall-clock bound (s) on `git worktree add` — generous; worst known checkout ≈9s. |
+| `sessionLaunchTimeout` | `30` | Wall-clock bound (s) on a launch; a card `launching`/`relaunching` past it is classified dead. |
+| `controlTimeout` | `15` | Wall-clock bound (s) on tmux control verbs + fast git queries. |
 | `statusLineMode` | `passthroughGlobal` | How the agent's status line is rendered (see below). |
 | `customStatusLine` | (unset) | The command for `statusLineMode = .custom`. |
 

@@ -789,15 +789,17 @@ actions on a Done row were copy-the-chat-link / copy-the-branch. This change mak
 **Reopen** action recreates the run dir the archive reclaimed and brings the agent back live. Its
 decisions keep it small and provider-neutral:
 
-- **Recreate the run dir, then reuse the existing recovery primitives — no new revival path.**
-  `OrchestraService.reopen(_:source:)` first gives the card its cwd back per `origin` (the archive
-  removed it): `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
+- **Record the reopen intent, then let the reconciler recreate the run dir + revive — no new revival path.**
+  `OrchestraService.reopen(_:source:)` transitions the card `→ .creatingWorktree` through the funnel
+  (`archived=false`, `deadReason`/`deadDetail` cleared, **keeping its stored column**; the non-resumable
+  path additionally rolls prior session ids so the relaunch is blank) and returns. The reconciler's
+  steppers then give the card its cwd back per `origin` (the archive removed it):
+  `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
   [archive keeps the branch](#ownership-orchestra-deletes-only-what-it-made) — a `mkdir` for `.scratch`,
-  and nothing for `.borrowed` (never removed). It then unarchives the card (`archived=false`,
-  `status=.waiting`, `deadReason`/`deadDetail` cleared) **keeping its stored column**, and revives the
-  agent by delegating straight to the shipped [`resume`/`restart`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)
-  seam — `resume` when `isResumable` (the transcript survived), else a blank `restart`. So reopen adds
-  *zero* revival mechanism; it is a thin composition over the crash-recovery code the daemon already runs.
+  and nothing for `.borrowed` (never removed) — then relaunch, walking `creatingWorktree → launching → live`,
+  with `deriveLaunchFlavor` choosing a resume when `isResumable` (the transcript survived) else a blank
+  launch. So reopen adds *zero* revival mechanism; it is a thin composition over the phase steppers +
+  crash-recovery code the daemon already runs.
 - **Agent-agnostic and idempotent.** Because it rides `resume`/`restart` — which every adapter already
   implements — there is **no** Claude/Codex branch in `reopen`; a Codex card reopens through the same
   call. A non-archived card is returned unchanged, so a double-fire is a no-op.
