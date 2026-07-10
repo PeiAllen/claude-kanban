@@ -94,7 +94,11 @@ final class TakeoverController: ObservableObject {
     /// permanently fail? An unknown card (not yet in the store) reads as being-born — the safe default that
     /// keeps retrying instead of failing a card that's merely mid-spawn. Phase-driven → agent-agnostic.
     private var cardIsBeingBorn: Bool {
-        guard let phase = model.tasks.first(where: { $0.id == cardId })?.phase else { return true }
+        // Check BOTH lists: a card that gets archived moves to `model.archived`, and a `tasks`-only lookup
+        // would then read it as "unknown ⇒ being born" and retry forever (it's actually terminal).
+        let card = model.tasks.first(where: { $0.id == cardId })
+            ?? model.archived.first(where: { $0.id == cardId })
+        guard let phase = card?.phase else { return true }   // genuinely not in the store yet = pre-launch
         switch phase.kind {
         case .creatingWorktree, .launching, .relaunching: return true
         default:                                          return false
@@ -108,11 +112,22 @@ final class TakeoverController: ObservableObject {
     func cardPhaseChanged(to cardPhase: OrchestraKit.Phase?) {   // the CARD's phase (nested `Phase` shadows it here)
         let isLive = (cardPhase?.kind == .live)
         defer { lastCardLive = isLive }
-        guard TakeoverRetryDecision.shouldRearmOnLive(wasLive: lastCardLive, isLive: isLive) else { return }
         guard !released, !isHolding else { return }
-        if case .lostToDesktop = phase { return }   // already resolved away — don't revive
-        acquireAttempts = 0                          // re-arm the budget (the running loop, if any, picks it up)
-        phase = .acquiring                           // revive a paused/failed acquire
+        guard case .acquiring = phase else { return }   // only a paused/in-flight acquire can be steered here
+        // The card reached a TERMINAL phase before its `agent` window ever came up (it died / was archived).
+        // No `→ live` edge is coming, so a paused acquire loop (being-born budget exhausted) would spin
+        // "Taking over…" forever — stop it and surface the failure. (`isPermanentFailure` covers the case
+        // where the loop is still running when the card is live/dead; this covers the already-paused case a
+        // `→ terminal` edge produces.)
+        if cardPhase?.isTerminal == true {
+            acquireAttempts = acquirePolicy.maxReconnects   // stop any in-flight loop from retrying further
+            phase = .failed("The card ended before its agent terminal came up — nothing to take over.")
+            return
+        }
+        // On the false→true `→ live` edge — the moment the `agent` window finally exists — re-arm the budget
+        // and restart the paused loop (a long checkout can outlast the fixed backoff).
+        guard TakeoverRetryDecision.shouldRearmOnLive(wasLive: lastCardLive, isLive: isLive) else { return }
+        acquireAttempts = 0
         _Concurrency.Task { [weak self] in await self?.runAcquireLoop() }
     }
 
