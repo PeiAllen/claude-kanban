@@ -44,6 +44,20 @@ enum TestModel {
         #expect(model.tasks.first { $0.id == card.id }?.title == "c2")
     }
 
+    // Cross-PR (PR5 telemetry-persist debounce): on-disk `tasks.json` rev can LAG the in-memory rev, so a
+    // HARD CRASH can reload the daemon at a rev BELOW one this client already observed. A reconnect
+    // snapshot is authoritative and MUST re-seat the cursor DOWNWARD (baseline reset + per-card map
+    // cleared), so the daemon's next post-reload event is NOT dropped by a stale higher cursor.
+    @Test func test_snapshotReseatsCursorDownward() throws {
+        let model = TestModel.make()
+        let card = makeCard("pre-crash")
+        model.apply(EventEnvelope(rev: 20, event: .taskUpserted(card)))         // client has seen up to rev 20
+        model.adoptSnapshotRev(8)                                               // post-crash reconnect snapshot@8 (LOWER)
+        var updated = card; updated.title = "post-crash"
+        model.apply(EventEnvelope(rev: 9, event: .taskUpserted(updated)))       // next reloaded event: 9 > 8, but < old 20
+        #expect(model.tasks.first { $0.id == card.id }?.title == "post-crash")  // applied — NOT dropped by a stale cursor
+    }
+
     // GUARD (sparse-rev contract): a bare forward gap on the LIVE stream applies through — no resync.
     // Structural: apply(_ env:) has no fetch branch, so this documents intent (it cannot fail on the impl).
     @Test func test_forwardGapDoesNotResync() throws {
