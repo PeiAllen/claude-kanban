@@ -272,6 +272,23 @@ public struct SessionManager: Sendable {
         return dead ? .dead : .alive
     }
 
+    /// All orchestra sessions whose `agent` pane's process has exited (`#{pane_dead}` == 1). ONE server-wide
+    /// `list-panes -a` so the continuous reconcile can converge an orphaned dead pane cheaply (no per-card
+    /// query). A dead agent pane only exists while `remain-on-exit` is ON — i.e. a startup-armed pane that
+    /// was orphaned (e.g. `spawnPending` lost on a daemon restart mid-grace).
+    public func agentPaneDeadSessions() throws -> Set<String> {
+        let r = try tmux(["list-panes", "-a", "-F", "#{session_name}\t#{window_name}\t#{pane_dead}"])
+        guard r.ok else { return [] }
+        var out: Set<String> = []
+        for line in r.stdout.split(whereSeparator: \.isNewline) {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 3, f[0].hasPrefix("orchestra-"), f[1] == "agent",
+                  f[2].trimmingCharacters(in: .whitespaces) == "1" else { continue }
+            out.insert(f[0])
+        }
+        return out
+    }
+
     public func kill(_ name: String) throws {
         // Kill every grouped view session first: they share (and so keep alive) the base session's
         // windows — including the agent pane — so killing only the base would leak the processes.

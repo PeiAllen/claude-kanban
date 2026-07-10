@@ -84,6 +84,10 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         if !alive.contains(name) { return .gone }
         return deadPanes.contains(name) ? .dead : .alive
     }
+    func agentPaneDeadSessions() throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return deadPanes.intersection(alive)   // only present sessions with a dead pane
+    }
 
     /// Keystrokes sent to a card's agent window, in order (the read-only shell launcher; historically also
     /// the retired send-keys nudge).

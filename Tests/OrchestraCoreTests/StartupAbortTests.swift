@@ -126,15 +126,16 @@ struct StartupAbortTests {
         #expect(after.deadReason == .agentExited)   // SessionEnd classification preserved, not overwritten
     }
 
-    /// (GPT-Blocker) Daemon restart INSIDE the grace: `spawnPending` is in-memory and lost, but the tmux
-    /// session survives with a dead pane (remain-on-exit). `recoverSessions` must NOT read that as alive —
-    /// it must reap the stale session and recover the card, never leave it wedged-alive-but-dead forever.
-    @Test("daemon restart during grace: a surviving dead-pane session is reaped + recovered, not wedged")
-    func daemonRestartInGraceNotWedged() async throws {
+    /// (GPT-Blocker, boot path) Daemon restart INSIDE the grace: `spawnPending` is in-memory and lost, but
+    /// the tmux session survives with a dead pane (remain-on-exit). `recoverSessions` must NOT read that as
+    /// alive — it converges the orphan (capture stderr → dead), never leaving it wedged-alive-but-dead.
+    @Test("daemon restart (boot recover): a surviving dead-pane session converges to dead, not wedged")
+    func daemonRestartBootConverges() async throws {
         let env = TestEnv.make(grace: 1)
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.setPaneText(t.id, "usage limit reached")
         env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
         await env.svc.clearSpawnPending(t.id)              // simulate the daemon restart losing in-memory pending
 
@@ -142,8 +143,33 @@ struct StartupAbortTests {
 
         #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))   // stale dead-pane session reaped
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)                     // recovered (not resumable, non-provisional)…
-        #expect(after.deadReason == .rebootUnrevived)      // …NOT silently left running-but-dead
+        #expect(after.status == .dead)                     // converged, NOT silently left running-but-dead
+        #expect(after.deadReason == .spawnExitedImmediately)
+        #expect(after.deadDetail?.contains("usage limit") == true)   // evidence preserved
+    }
+
+    /// (GPT-Blocker, CONTINUOUS path — the core convergence requirement) Even if the boot sweep misses it,
+    /// the ongoing 2s reconcile MUST converge an orphaned dead pane (session present, agent pane dead, no
+    /// `spawnPending`) — otherwise the card hangs "running" forever. Keys on the pane, not session-name
+    /// absence (the session is still present), so the generic sessionVanished check would never fire.
+    @Test("continuous reconcile converges an orphaned dead pane (lost pending) → dead, evidence preserved")
+    func reconcileConvergesOrphanedDeadPane() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.setPaneText(t.id, "unauthorized")
+        env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
+        await env.svc.clearSpawnPending(t.id)              // in-memory pending gone (restart), session persists
+
+        await env.svc.reconcileLiveness()                  // the continuous poll must resolve it
+
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.status == .dead)                     // converged — not hanging "running"
+        #expect(after.deadReason == .spawnExitedImmediately)
+        #expect(after.deadReason != .sessionVanished)
+        #expect(after.deadDetail?.contains("unauthorized") == true)
+        #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))   // orphan session reaped
     }
 
     /// (GPT-Important B) If graduation's remain-on-exit→off toggle FAILS, the card must stay startup-pending

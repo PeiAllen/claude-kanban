@@ -41,6 +41,11 @@ public protocol SessionManaging: Sendable {
     func isAlive(_ name: String) throws -> Bool
     /// Liveness of the card's `agent` pane (see `PaneLiveness`).
     func agentPaneState(_ name: String) throws -> PaneLiveness
+    /// The set of orchestra session names whose `agent` pane has a DEAD process (remain-on-exit kept it) —
+    /// one server-wide `list-panes -a` so the continuous reconcile can converge an orphaned dead pane
+    /// (e.g. a startup abort whose in-memory `spawnPending` was lost on a daemon restart) without a
+    /// per-card query. Empty when nothing qualifies.
+    func agentPaneDeadSessions() throws -> Set<String>
     /// Toggle a window's `remain-on-exit` so an exiting process leaves its dead pane (+ final output) in
     /// place instead of tmux tearing the session down — armed on the `agent` window during the spawn grace.
     func setRemainOnExit(_ name: String, window: String, on: Bool) throws
@@ -64,6 +69,8 @@ public extension SessionManaging {
     func agentPaneState(_ name: String) throws -> PaneLiveness {
         (try? isAlive(name)) == true ? .alive : .gone
     }
+    /// Default: no dead-pane detection — a conformer without pane introspection reports none.
+    func agentPaneDeadSessions() throws -> Set<String> { [] }
     /// Default no-op so conformers/mocks needn't implement it; `SessionManager` overrides with tmux.
     func setRemainOnExit(_ name: String, window: String, on: Bool) throws {}
     // Default so test stubs needn't implement it; the real `SessionManager` overrides.

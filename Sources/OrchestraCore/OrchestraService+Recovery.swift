@@ -16,20 +16,21 @@ extension OrchestraService {
         let grace = config.revivalGraceSeconds
         var jobs: [@Sendable () async -> Void] = []
 
-        // One `tmux list-sessions` instead of an `has-session` per card.
+        // One `tmux list-sessions` + one `list-panes -a` instead of a per-card query.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+        let deadPaneNames = (try? sessions.agentPaneDeadSessions()) ?? []
 
         for t in tasks {
             let name = sessions.sessionName(t.id)
-            // A present session is only "still running" if its agent pane is actually live. A dead pane
-            // (remain-on-exit left over from a daemon restart INSIDE a spawn startup-grace, since
-            // `spawnPending` is in-memory and gone after the restart) would otherwise masquerade as alive
-            // forever — no retry, no classification. Treat it as gone: reap the stale session and recover
-            // normally (resume / restart / rebootUnrevived). Pane-check only the alive subset (bounded).
-            if aliveNames.contains(name), (try? sessions.agentPaneState(name)) != .dead {
-                continue   // daemon-crash no-op / still-running
+            // A present session with a DEAD agent pane is an orphaned startup-armed pane (remain-on-exit
+            // left over from a daemon restart INSIDE a spawn grace — `spawnPending` is in-memory and gone).
+            // It would otherwise masquerade as "still running" forever. Converge it (capture stderr → dead)
+            // — same resolution the continuous reconcile uses, so boot + poll agree and the evidence survives.
+            if deadPaneNames.contains(name) {
+                await resolveOrphanedDeadPane(t)
+                continue
             }
-            if aliveNames.contains(name) { _ = try? sessions.kill(name) }   // reap the dead-pane remnant
+            if aliveNames.contains(name) { continue }   // genuinely alive → daemon-crash no-op / still-running
             let id = t.id
             if isResumable(t) {
                 jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
@@ -246,10 +247,12 @@ extension OrchestraService {
     /// guarded against cards mid-resume/restart.
     public func reconcileLiveness() async {
         let tasks = await store.all()
-        // One `tmux list-sessions` per poll tick, not one `has-session` per card.
+        // One `tmux list-sessions` + one `list-panes -a` per poll tick (server-wide, not per card).
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+        let deadPaneNames = (try? sessions.agentPaneDeadSessions()) ?? []
         for t in tasks where !t.archived && t.status != .dead && t.status != .done {
             if recovering.contains(t.id) { continue }
+            let name = sessions.sessionName(t.id)
             // A freshly-spawned card is watched for an immediate exit BEFORE the generic vanish check: its
             // session is still present (remain-on-exit kept the dead pane), so `aliveNames` can't see the
             // abort — only the pane state can. This branch also graduates a card that survived its grace.
@@ -257,7 +260,15 @@ extension OrchestraService {
                 await confirmSpawnStartup(t, deadline: deadline)
                 continue
             }
-            if !aliveNames.contains(sessions.sessionName(t.id)) {
+            // CONVERGENCE: an ORPHANED dead agent pane (session present, agent process exited, no pending
+            // record) — e.g. a startup abort whose `spawnPending` was lost on a daemon restart mid-grace.
+            // `aliveNames` sees the session as present so the vanish check below never fires; resolve it
+            // here so the card ALWAYS converges instead of hanging "running" forever.
+            if deadPaneNames.contains(name) {
+                await resolveOrphanedDeadPane(t)
+                continue
+            }
+            if !aliveNames.contains(name) {
                 await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
             }
         }
@@ -350,6 +361,35 @@ extension OrchestraService {
         // Out of retries → give up. Reap the dead-pane session, then mark dead WITH the captured evidence.
         clearSpawnPending(id)
         try? await offActor { [sessions] in try? sessions.kill(name) }
+        await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
+    }
+
+    /// Converge an ORPHANED dead agent pane — a still-present session whose agent process exited but whose
+    /// `spawnPending` record is gone (the daemon restarted inside the startup grace and lost the in-memory
+    /// state, or an armed pane was orphaned some other way). Unlike `handleStartupAbort` there is NO retry
+    /// budget to consult (it was lost with the pending record), so per the convergence contract we simply
+    /// capture the surviving stderr, clear remain-on-exit, reap the session, and mark it dead — never loop.
+    /// This is the safety net that guarantees such a card ALWAYS resolves instead of hanging "running".
+    func resolveOrphanedDeadPane(_ t: Task) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        // Hold `recovering` so a racing SessionEnd (report's death path gates on it) doesn't double-classify.
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+
+        let evidence = (try? await offActor { [sessions] in
+            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+        }).flatMap { Self.startupEvidence(from: $0) }
+
+        // Re-validate after the capture await — don't fight an intentional teardown / concurrent conclusion.
+        guard let live = await store.get(id),
+              !live.archived, live.status != .dead, live.status != .done else { return }
+
+        clearSpawnPending(id)   // belt-and-suspenders: no record is expected, but never leave one behind
+        try? await offActor { [sessions] in
+            try? sessions.setRemainOnExit(name, window: "agent", on: false)
+            try? sessions.kill(name)
+        }
         await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
     }
 
