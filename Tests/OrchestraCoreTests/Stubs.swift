@@ -432,7 +432,11 @@ enum TestEnv {
         try await pollUntil {
             await svc.reconcile()
             let card = await svc.list(includeArchived: true).first { $0.id == id }
-            if inject, let k = card?.phase.kind {
+            // Deliver the readiness signal only once the stepper's finishLaunch has REGISTERED its waiter
+            // (not merely on phase kind): a signal delivered before the waiter exists is dropped by
+            // finishLaunch's "start clean" pendingReadiness.remove, and under parallel-suite load the
+            // off-actor step can lag the phase write — the race behind the reopen/relaunch flakes.
+            if inject, await svc.hasReadinessWaiter(id), let k = card?.phase.kind {
                 if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume")) }
                 else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup")) }
             }
@@ -489,7 +493,9 @@ enum TestEnv {
         try await pollUntil {
             await svc.reconcile()
             let card = await svc.list(includeArchived: true).first { $0.id == created.id }
-            if card?.phase.kind == .launching {
+            // Deliver on WAITER-REGISTERED, not phase kind (see reconcileToLive): avoids the
+            // pendingReadiness-clear race that flakes under parallel-suite contention.
+            if await svc.hasReadinessWaiter(created.id) {
                 try? await svc.report(created.id, StatusReport(sessionSource: "startup"))
             }
             return card?.phase.kind == .live

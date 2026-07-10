@@ -19,6 +19,13 @@ extension OrchestraService {
     /// Test/introspection: the worktree registry's conservative-mode flag (post-corrupt-boot).
     func worktreeConservativeMode() async -> Bool { await worktrees.conservativeMode }
 
+    /// Test seam: has a card's inline readiness waiter been registered yet? A test that hand-delivers a
+    /// readiness signal to a launching/relaunching stepper must wait for the waiter to exist FIRST — a
+    /// signal delivered before the step reaches `awaitReadiness` is dropped by `finishLaunch`'s
+    /// "start clean" `pendingReadiness.remove`. Polling this (not a fixed sleep) makes the handoff
+    /// deterministic and contention-proof (the flake the orchestrator reproduced under parallel load).
+    func hasReadinessWaiter(_ id: UUID) -> Bool { readinessWaiters[id] != nil }
+
     /// Test seam: force a card's persisted phase (bypassing the funnel's legal-edge gate) so a test can
     /// SEED a transitional card the reconciler then drives — the crash-recovery premise that phase +
     /// persisted fields re-derive everything from disk. Mirrors a raw `store.update { $0.phase = … }`;

@@ -53,8 +53,13 @@ struct MergeWatchTests {
     }
 }
 
-/// Poll a condition up to ~2s; fail if it never holds. Deterministic replacement for fixed sleeps.
+/// Poll a condition until it holds; fail only if it never does. Deterministic replacement for fixed
+/// sleeps. The cap is deliberately GENEROUS (~10s of sleeps + the cond() work each iteration, so the real
+/// wall-clock budget is larger under load) because these are the deterministic-stub GUARD tests: they must
+/// NOT false-fail on a heavily-parallel `swift test` where a loaded machine slows convergence. A generous
+/// cap costs nothing on the happy path (it returns as soon as the condition holds) and only extends the
+/// wait for a genuinely-stuck case — the right trade for a guard that must be reliable under contention.
 func pollUntil(_ cond: @Sendable () async -> Bool) async throws {
-    for _ in 0..<200 { if await cond() { return }; try await _Concurrency.Task.sleep(for: .milliseconds(10)) }
+    for _ in 0..<1000 { if await cond() { return }; try await _Concurrency.Task.sleep(for: .milliseconds(10)) }
     #expect(Bool(false), "condition never became true")
 }
