@@ -338,7 +338,7 @@ separated (the tailer never inspects JSON; the parse never touches files):
 - **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
   and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
   `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
-  `turn_complete` / `TurnComplete` all mean a natural turn completion (`status: .waiting`,
+  `turn_complete` / `TurnComplete` all mean a natural turn completion (`run: .waiting(.humanTurn)`,
   `turnCompleted: true`), and token totals read from a
   nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
   yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)

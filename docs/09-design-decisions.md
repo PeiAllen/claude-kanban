@@ -794,7 +794,9 @@ decisions keep it small and provider-neutral:
   removed it): `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
   [archive keeps the branch](#ownership-orchestra-deletes-only-what-it-made) — a `mkdir` for `.scratch`,
   and nothing for `.borrowed` (never removed). It then unarchives the card (`archived=false`,
-  `status=.waiting`, `deadReason`/`deadDetail` cleared) **keeping its stored column**, and revives the
+  `deadReason`/`deadDetail` cleared) and walks its `phase` back onto the board through the funnel
+  (`archived → creatingWorktree → launching → live`, per [doc 04](04-cards-worktrees-sessions.md#recovery-resume-and-restart))
+  **keeping its stored column**, and revives the
   agent by delegating straight to the shipped [`resume`/`restart`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)
   seam — `resume` when `isResumable` (the transcript survived), else a blank `restart`. So reopen adds
   *zero* revival mechanism; it is a thin composition over the crash-recovery code the daemon already runs.
