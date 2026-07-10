@@ -50,6 +50,10 @@ struct AgentTakeoverView: View {
         .background(Color(red: 0.05, green: 0.05, blue: 0.07).ignoresSafeArea())
         .preferredColorScheme(.dark)
         .task { await controller.begin() }
+        // F1: a phone-spawned card is still being born (no `agent` window) when this surface appears, so the
+        // first acquire fails; feed the card's phase to the controller so the `→ live` edge re-arms the retry
+        // (a long checkout can outlast the fixed backoff). Non-live→live is the "the window now exists" signal.
+        .onChange(of: card?.phase) { _, newPhase in controller.cardPhaseChanged(to: newPhase) }
         // Catch a desktop Retake that arrives as a live owner event *between* heartbeats.
         .onReceive(model.$agentOwners) { _ in controller.reconcile() }
         // Foregrounding revives a terminal that gave up reconnecting while backgrounded (LOW — the "reopen

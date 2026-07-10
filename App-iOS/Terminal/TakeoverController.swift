@@ -30,6 +30,15 @@ final class TakeoverController: ObservableObject {
     /// a flaky mobile link doesn't strand the lease.
     private let heartbeatInterval: UInt64 = 10 * 1_000_000_000
 
+    // F1 — bounded-retry acquire. Non-blocking spawn (PR4b) can return a card BEFORE its tmux `agent`
+    // window exists, so a phone-spawn-into-agent takeover fails transiently (the daemon has no window to
+    // lease yet). Retry while the card is being born; the `→ live` edge re-arms the budget for a long
+    // checkout that outran it. Shares the same bounded backoff (1,2,4,8,8; max 5) as the terminal hosts.
+    private var acquireAttempts = 0
+    private let acquirePolicy = TerminalReconnectPolicy()
+    private var acquiring = false        // an acquire loop is in flight (so a re-arm can't stack a second)
+    private var lastCardLive = false     // edge detector for `cardPhaseChanged` → re-arm on false→true
+
     init(cardId: UUID, model: BoardModel) {
         self.cardId = cardId
         self.model = model
@@ -38,27 +47,73 @@ final class TakeoverController: ObservableObject {
     var isHolding: Bool { if case .holding = phase { return true }; return false }
     var target: TmuxTarget? { if case .holding(let t) = phase { return t }; return nil }
 
-    /// Acquire the lease and start heartbeating. Called once on view appear.
+    /// Acquire the lease and start heartbeating. Called once on view appear. Because non-blocking spawn
+    /// (PR4b) can return the card BEFORE its tmux `agent` window exists, the initial grant may fail
+    /// transiently — so this drives a bounded RETRY loop while the card is being born, and the view re-arms
+    /// it on the `→ live` edge (`cardPhaseChanged`) when a long checkout outran the fixed budget.
     func begin() async {
-        guard case .acquiring = phase else { return }
-        guard let result = await model.takeOverAgentTerminalAsPhone(cardId) else {
-            // A dismissal that raced the acquire (returnToDesktop ran at `.acquiring`, which held nothing to
-            // release) leaves nothing to clean up when the grant itself failed — just don't overwrite the
-            // teardown with a `.failed` cover the user can no longer see.
-            if !released { phase = .failed("Couldn't take over the agent terminal — the daemon didn't grant the lease.") }
-            return
+        await runAcquireLoop()
+    }
+
+    private func runAcquireLoop() async {
+        guard !acquiring else { return }        // one loop at a time; a re-arm resets the budget in place
+        acquiring = true
+        defer { acquiring = false }
+        while !released, case .acquiring = phase {
+            if let result = await model.takeOverAgentTerminalAsPhone(cardId) {
+                epoch = result.state.epoch
+                // The surface may have been dismissed while this acquire RPC was in flight. `returnToDesktop()`
+                // ran at `.acquiring`, where `isHolding` was false, so it released NOTHING — the just-granted
+                // lease would otherwise be orphaned (a heartbeat nobody watches, stale in ~30s). Now that we
+                // know the epoch, release it instead of entering `.holding`.
+                guard !released else { await model.releaseAgentTerminalAsPhone(cardId, epoch: epoch); return }
+                phase = .holding(result.target)
+                startHeartbeat()
+                return
+            }
+            if released { return }
+            acquireAttempts += 1
+            let born = cardIsBeingBorn
+            guard TakeoverRetryDecision.shouldRetry(beingBorn: born, attemptsSoFar: acquireAttempts,
+                                                    maxAttempts: acquirePolicy.maxReconnects),
+                  let delay = acquirePolicy.delay(forAttempt: acquireAttempts) else {
+                // No more retries this round. A live/dead card that STILL fails to grant is a genuine failure
+                // (surface it); a being-born budget-exhaustion instead PAUSES in `.acquiring` (keeps showing
+                // "Taking over…") until the `→ live` edge re-arms via `cardPhaseChanged`. A dismissal that
+                // raced the acquire leaves nothing to cover, so never overwrite a teardown with `.failed`.
+                if !released, TakeoverRetryDecision.isPermanentFailure(beingBorn: born) {
+                    phase = .failed("Couldn't take over the agent terminal — the daemon didn't grant the lease.")
+                }
+                return
+            }
+            try? await _Concurrency.Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
         }
-        epoch = result.state.epoch
-        // #2: the surface may have been dismissed while this acquire RPC was in flight. `returnToDesktop()`
-        // ran at `.acquiring`, where `isHolding` was false, so it released NOTHING — the just-granted lease
-        // would otherwise be orphaned (a heartbeat nobody watches, stale in ~30s). Now that we know the
-        // epoch, release it instead of entering `.holding`.
-        guard !released else {
-            await model.releaseAgentTerminalAsPhone(cardId, epoch: epoch)
-            return
+    }
+
+    /// Is the card still being born (no `agent` window yet), so a failed acquire should retry rather than
+    /// permanently fail? An unknown card (not yet in the store) reads as being-born — the safe default that
+    /// keeps retrying instead of failing a card that's merely mid-spawn. Phase-driven → agent-agnostic.
+    private var cardIsBeingBorn: Bool {
+        guard let phase = model.tasks.first(where: { $0.id == cardId })?.phase else { return true }
+        switch phase.kind {
+        case .creatingWorktree, .launching, .relaunching: return true
+        default:                                          return false
         }
-        phase = .holding(result.target)
-        startHeartbeat()
+    }
+
+    /// The card's phase changed (the view feeds `card.phase` here). On the false→true `→ live` edge — the
+    /// moment the `agent` window finally exists — RE-ARM the acquire budget and restart a paused/failed
+    /// loop, because the fixed backoff (~15–23s) can be shorter than a long checkout. No-op once we hold /
+    /// lost / released, and off the edge.
+    func cardPhaseChanged(to cardPhase: OrchestraKit.Phase?) {   // the CARD's phase (nested `Phase` shadows it here)
+        let isLive = (cardPhase?.kind == .live)
+        defer { lastCardLive = isLive }
+        guard TakeoverRetryDecision.shouldRearmOnLive(wasLive: lastCardLive, isLive: isLive) else { return }
+        guard !released, !isHolding else { return }
+        if case .lostToDesktop = phase { return }   // already resolved away — don't revive
+        acquireAttempts = 0                          // re-arm the budget (the running loop, if any, picks it up)
+        phase = .acquiring                           // revive a paused/failed acquire
+        _Concurrency.Task { [weak self] in await self?.runAcquireLoop() }
     }
 
     private func startHeartbeat() {

@@ -47,7 +47,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     /// keeping the relaunch ON the readiness gate rather than off it. `relaunchLiveness` = the successful
     /// relaunch (tmux `ensure`) IS the confirmation because the agent emits no marker at all; waiting for a
     /// signal that never comes would time out at the grace and fail-DANGEROUSLY `markDead` a live card. The
-    /// continuous liveness reconcile (`reconcileLiveness`, 2s) is the safety net for every variant.
+    /// continuous liveness reconcile (folded into the 2s `reconcile()` tick) is the safety net for every variant.
     public enum ReadinessConfirmation: String, Sendable, Equatable, Codable, CaseIterable {
         case sessionStartHook, rolloutMeta, relaunchLiveness
     }

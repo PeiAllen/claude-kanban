@@ -52,10 +52,12 @@ public func displayState(phase: Phase?, connection: ConnectionState) -> DisplayS
         for schema in CommandCatalog.all where schema.phaseGate.contains(kind) {
             actions.insert(Verb(schema.name))
         }
+        // "Open notes" is NOT a local file op — it's a daemon RPC (`BoardStore.openNotes` → `client.call`)
+        // that fails link-down — so it belongs INSIDE the connected gate like every other action (the
+        // contract is "validActions empty when the link is down"). It also needs a materialized cwd: a
+        // being-born card has no worktree yet; a spawn-failed card never got one.
+        if cwdMaterialized(phase) { actions.insert(.openNotes) }
     }
-    // UI-only extra: opening the worktree notes is a LOCAL file op — available (link or no link) only once
-    // the cwd is materialized. A being-born card has no worktree yet; a spawn-failed card never got one.
-    if cwdMaterialized(phase) { actions.insert(.openNotes) }
 
     let busy = (key == .starting || key == .launching || key == .relaunching)
     return DisplayState(statusKey: key, label: key.label,
