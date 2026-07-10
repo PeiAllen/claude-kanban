@@ -17,7 +17,7 @@ public struct Toast: Identifiable {
     public let title: String
     public let sub: String?
     public var color: ToastColor = .green
-    public enum ToastColor { case green, blue, red }
+    public enum ToastColor: Equatable { case green, blue, red }
 }
 
 /// A request to present the phone's live **takeover** surface for a card (see `BoardModel.phoneTakeoverRequest`).
@@ -56,6 +56,22 @@ public class BoardStore: ObservableObject {
     @Published public var connected = false
     @Published public var connecting = false
     @Published public var toasts: [Toast] = []
+
+    /// True while a `spawn` RPC is in flight — the double-spawn guard both `SpawnSheet`s bind to.
+    @Published public var isSpawning = false
+
+    /// Acquire the spawn in-flight lock; `false` if a spawn is already running (the second click is a no-op).
+    public func beginSpawn() -> Bool {
+        if isSpawning { return false }
+        isSpawning = true
+        return true
+    }
+    public func endSpawn() { isSpawning = false }
+
+    /// The client-minted spawn id for an attempt: reuse the pending (in-flight / just-failed) attempt's id
+    /// so a retry is idempotent (PR6a dedups on it → one card), else mint a fresh one. Pure + `static` so both
+    /// `SpawnSheet`s share the decision and it's unit-testable.
+    public static func spawnAttemptId(reusing pending: UUID?) -> UUID { pending ?? UUID() }
 
     // Spawn-sheet autofill: absolute paths to the repos the daemon can spawn into (enumerated from its
     // disk, which a remote client can't see). These double as the freeform dir candidates. Refreshed when
@@ -705,14 +721,16 @@ public class BoardStore: ObservableObject {
     /// can act on the new card id, such as auto-owning its terminal), or `nil` on failure. Callers that
     /// don't need it can ignore the result.
     @discardableResult
-    public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
+    public func spawn(id: UUID = UUID(), prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                base: String? = nil) async -> Task? {
+        guard beginSpawn() else { return nil }
+        defer { endSpawn() }
         var p: [String: JSONValue] = [
             // Client-minted id (required wire field): the daemon dedups on it. App-side reuse-on-retry
             // (retaining this id across a failed/in-flight spawn) is PR6b's SpawnSheet UX.
-            "id": .string(UUID().uuidString),
+            "id": .string(id.uuidString),
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
         ]
@@ -740,12 +758,17 @@ public class BoardStore: ObservableObject {
         guard tasks.first(where: { $0.id == id })?.origin == .worktree else {
             return
         }
-        _ = try? await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)]))
+        do { _ = try await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)])) }
+        catch { toast("Couldn't move card", sub: "\(error)", color: .red) }
     }
     public func archive(_ id: UUID) async {
-        _ = try? await client.call("archive", .object(["ref": .string(id.uuidString)]))
-        if selectedId == id { selectedId = nil }
-        toast("Archived", sub: nil)
+        do {
+            _ = try await client.call("archive", .object(["ref": .string(id.uuidString)]))
+            if selectedId == id { selectedId = nil }
+            toast("Archived", sub: nil)
+        } catch {
+            toast("Couldn't archive", sub: "\(error)", color: .red)
+        }
     }
     /// Reopen a Done card: the daemon recreates its worktree + resumes the agent; we bring the card back
     /// onto the board. Returns the reopened `Task` (nil on failure) so a caller can navigate to it.
@@ -768,7 +791,8 @@ public class BoardStore: ObservableObject {
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
     public func send(_ id: UUID, _ message: String) async {
-        _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
+        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)])) }
+        catch { toast("Couldn't send message", sub: "\(error)", color: .red) }
     }
 
     /// Register this device for push (N1): hand the APNs device token + the current notification-pref
@@ -900,7 +924,8 @@ public class BoardStore: ObservableObject {
     /// Open a read-only inspect shell for a card (read-only claude in its worktree). Broadcast-only —
     /// same single-writer rationale as `newShell`: the daemon's `shellsChanged` delivers the new tab.
     public func inspect(_ id: UUID) async {
-        _ = try? await client.call("inspect", .object(["ref": .string(id.uuidString)]))
+        do { _ = try await client.call("inspect", .object(["ref": .string(id.uuidString)])) }
+        catch { toast("Couldn't open inspector", sub: "\(error)", color: .red) }
     }
 
     /// Close one shell window. Broadcast-only — same single-writer rationale as `newShell`: the daemon
