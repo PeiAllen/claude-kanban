@@ -282,7 +282,7 @@ struct MissedReadinessConclusionTests {
         let e = batteryEnv(agent.caps, id: agent.id)
 
         let thr = await e.svc.launchReadyTickThreshold
-        let interval = await e.svc.reconcilePollInterval
+        let interval = e.svc.reconcilePollInterval
         let timeout = await e.svc.config.sessionLaunchTimeout
         #expect(Double(thr) * interval < Double(timeout))   // the fallback fires well inside the timeout
 

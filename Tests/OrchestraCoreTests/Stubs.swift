@@ -210,7 +210,14 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     /// Parse the `ORCH_EPOCH` stamped into the session's launch env (the reconciler's identity oracle).
     /// nil when the session is gone (not alive) or was launched without the stamp — mirroring the real
     /// `SessionManager.stampedEpoch` (which returns nil for an absent variable / dead session).
+    /// One-shot hook invoked synchronously INSIDE `stampedEpoch` — which the reconciler runs OFF the
+    /// service actor. Lets a test inject a concurrent restart during the probe's actor-released window
+    /// (to prove the adoption shortcut is epoch-fenced). Fires once, then clears itself.
+    var onStampedEpochProbe: (@Sendable (String) -> Void)?
     func stampedEpoch(name: String) throws -> Int? {
+        let hook: (@Sendable (String) -> Void)?
+        lock.lock(); hook = onStampedEpochProbe; onStampedEpochProbe = nil; lock.unlock()
+        hook?(name)   // run OUTSIDE the lock so the test's concurrent actor work can't deadlock on it
         lock.lock(); defer { lock.unlock() }
         guard alive.contains(name), let v = ensureEnv[name]?["ORCH_EPOCH"] else { return nil }
         return Int(v)

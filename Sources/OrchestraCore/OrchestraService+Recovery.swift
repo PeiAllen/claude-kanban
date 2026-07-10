@@ -181,10 +181,10 @@ extension OrchestraService {
                 if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
                 continue
             case .launching:
-                // Being born under a SYNCHRONOUS launch that owns readiness + the spawnFailed timeout (launchAndConfirm).
-                // Mirror `.relaunching`: tick the N=3 fallback while a waiter is pending; NEVER markDead here — killing a
-                // launching card races the launch's own `transition(.launching)`→`ensure` window and would false-kill a
-                // live spawn. (Stage-4's reconciler will own launching timeouts via phaseChangedAt for the non-blocking path.)
+                // Being born under the reconciler-driven LaunchStepper, which owns readiness; the reconcile tick owns
+                // the spawnFailed launch timeout via `phaseChangedAt`. Mirror `.relaunching`: tick the N=3 fallback while
+                // a waiter is pending; NEVER markDead here — killing a launching card races the launch's own
+                // `transition(.launching)`→`ensure` window and would false-kill a live spawn.
                 if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
                 continue
             case .live:

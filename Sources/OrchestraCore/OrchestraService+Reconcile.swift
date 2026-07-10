@@ -63,10 +63,14 @@ extension OrchestraService {
                 // An OLDER-epoch session is NEVER adopted — the stepper completes the relaunch (kill+launch).
                 // The epoch read hops off-actor (real `stampedEpoch` is a tmux subprocess — keep the tick free).
                 if !bringingUp, alive {
-                    let e = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
-                    if (e ?? nil) == t.sessionEpoch {
+                    // The probe SUSPENDS the actor; a concurrent restart/resume can bump the card to a newer
+                    // `.relaunching` epoch meanwhile. Pass the PROBED epoch as `observedEpoch` so the funnel
+                    // re-reads the current card and no-ops if the generation moved — the newer relaunch wins
+                    // (single-winner fence). `launching→live`/`relaunching→live` are legal for viaSignal too.
+                    let probedEpoch = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
+                    if let probed = probedEpoch ?? nil, probed == t.sessionEpoch {
                         launchReadyTicks[t.id] = nil
-                        _ = await transition(t.id, to: .live(.waiting(.humanTurn)))
+                        _ = await transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: probed)
                         continue
                     }
                 }

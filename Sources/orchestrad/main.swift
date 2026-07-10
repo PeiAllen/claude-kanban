@@ -60,7 +60,7 @@ _Concurrency.Task {
 // `.live` liveness) + telemetry tail. One `sessions.list()` per tick, hopped off the actor.
 _Concurrency.Task {
     while true {
-        try? await _Concurrency.Task.sleep(for: .seconds(2))
+        try? await _Concurrency.Task.sleep(for: .seconds(service.reconcilePollInterval))
         await service.reconcile()
         await service.pollTelemetry()   // tail fileTail (Codex) rollouts → parse → report
     }

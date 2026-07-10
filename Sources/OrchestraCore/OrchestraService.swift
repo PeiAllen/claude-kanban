@@ -60,6 +60,15 @@ public actor OrchestraService {
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
     /// watcher survives a daemon restart (carry #4).
     var watchRegistry: [UUID: Set<UUID>] = [:]
+    /// Lazy-load latch for `watchRegistry` (mirrors `WorktreeRegistry.borrowsLoaded`). The server accepts
+    /// RPCs before boot's `reloadWatchRegistry` runs, so the FIRST access — a boot-window `registerWatch`/
+    /// `unregisterWatch`/`concludeCard` or the reload itself — loads-then-unions rather than clobbering the
+    /// on-disk map with an empty in-memory one.
+    var watchRegistryLoaded = false
+    /// Set when the load found a present-but-torn file (mirrors `borrowsLoadFailed`): the in-memory map is
+    /// kept as-is and mutations REFUSE to `watchStore.save` so a partial in-memory map never overwrites the
+    /// torn (but possibly recoverable) file. Fail-safe: never persist over an ambiguous registry.
+    var watchRegistryLoadFailed = false
     /// Durable backing for `watchRegistry`. Reloaded at boot (`reloadWatchRegistry`), written through on
     /// every mutation. Injected in tests so each temp dir gets its own file.
     let watchStore: WatchRegistryStore
@@ -141,7 +150,7 @@ public actor OrchestraService {
     var steppers: [Phase.Kind: any PhaseStepper] = PhaseSteppers.byKind
     /// Poll cadence the reconciler assumes (main.swift's loop). Also the unit the N=3 launch-readiness
     /// fallback's `threshold × interval < sessionLaunchTimeout` inequality is stated in.
-    let reconcilePollInterval: TimeInterval = 2
+    public nonisolated let reconcilePollInterval: TimeInterval = 2
 
     public init(config: Config,
                 store: TaskStore? = nil,

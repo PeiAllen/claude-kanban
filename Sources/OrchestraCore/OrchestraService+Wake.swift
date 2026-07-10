@@ -9,8 +9,24 @@ extension OrchestraService {
     /// `watchStore` so the registration survives a daemon restart (carry #4).
     public func registerWatch(_ watcher: UUID, _ children: Set<UUID>) {
         guard !children.isEmpty else { return }
+        ensureWatchRegistryLoaded()
         watchRegistry[watcher, default: []].formUnion(children)
-        watchStore.save(watchRegistry)
+        if !watchRegistryLoadFailed { watchStore.save(watchRegistry) }
+    }
+
+    /// Lazy-load the durable watch registry into memory on first access (mirrors
+    /// `WorktreeRegistry.loadBorrows`). `server.start()` accepts RPCs BEFORE boot's `reloadWatchRegistry`
+    /// runs (after the slow phase reconciliation), so a boot-window `wait`/`watch` RPC that mutated the
+    /// STILL-EMPTY in-memory map and saved would CLOBBER the on-disk registry, losing every prior watch.
+    /// Loading here means the boot-window mutation loads-then-unions-then-saves — the disk map is the merge
+    /// and the later `reloadWatchRegistry` sees everything. ALWAYS marks loaded so a torn read never
+    /// retry-loads-and-clobbers; on a torn file `watchRegistryLoadFailed` makes mutations skip the save.
+    func ensureWatchRegistryLoaded() {
+        guard !watchRegistryLoaded else { return }
+        watchRegistryLoaded = true
+        let (map, loadFailed) = watchStore.load()
+        if loadFailed { watchRegistryLoadFailed = true; return }   // torn ⇒ keep in-memory, refuse to persist over
+        watchRegistry = map
     }
 
     /// Reload the persisted watch registry at boot (after phase reconciliation) and deliver conclusions
@@ -18,12 +34,10 @@ extension OrchestraService {
     /// was down (or one just marked `dead(.rebootUnrevived)` by `reconcilePhasesAtBoot`) still notifies its
     /// watcher. An unreadable file is ignored (keep zero watchers rather than trust a torn write).
     public func reloadWatchRegistry() async {
-        let (map, loadFailed) = watchStore.load()
-        guard !loadFailed else { return }
-        watchRegistry = map
+        ensureWatchRegistryLoaded()   // a boot-window register may already have loaded+merged; don't reload-clobber
         // Snapshot the (watcher,child) pairs before mutating; `concludeCard` removes the child from the
         // registry (write-through) as it delivers, so a terminal child notifies exactly once.
-        for (_, children) in map {
+        for (_, children) in watchRegistry {
             for child in children {
                 if let t = await store.get(child), let kind = isConcluded(t) {
                     await concludeCard(child, kind, deadReason: Self.concludedReason(t))
@@ -87,10 +101,11 @@ extension OrchestraService {
     /// Remove one settled child from a watcher's registry (mirror of `concludeCard`'s `remove(id)` +
     /// empty-set cleanup) — used by the `wait`/`watch` short-circuit so a re-death can't re-notify.
     func unregisterWatch(_ watcher: UUID, _ child: UUID) {
+        ensureWatchRegistryLoaded()
         guard watchRegistry[watcher]?.contains(child) == true else { return }   // no-op ⇒ no needless persist
         watchRegistry[watcher]?.remove(child)
         if watchRegistry[watcher]?.isEmpty == true { watchRegistry[watcher] = nil }
-        watchStore.save(watchRegistry)
+        if !watchRegistryLoadFailed { watchStore.save(watchRegistry) }
     }
 
     private func releaseActiveWaitProcess(_ watcher: UUID) {
@@ -105,6 +120,7 @@ extension OrchestraService {
     /// native-reinvoke wake: `orchestra wait` returns → its process exits → the harness re-invokes).
     func concludeCard(_ id: UUID, _ kind: Conclusion.Kind, deadReason: DeadReason? = nil) async {
         guard let t = await store.get(id) else { return }
+        ensureWatchRegistryLoaded()   // a card concluding in the boot window must see the persisted watchers
         let conc = Conclusion(cardId: id, ref: t.ref(), kind: kind, deadReason: deadReason)
         // F3 inbox routing + F2 wake for every registered watcher of this child. If the watcher has a
         // live CLI `orchestra wait`, that process's output is already the conclusion notice, so do not

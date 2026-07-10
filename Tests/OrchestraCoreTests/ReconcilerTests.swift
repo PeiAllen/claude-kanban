@@ -98,7 +98,7 @@ struct ReconcilerTests {
 
         // The inequality the fallback depends on: threshold × pollInterval < sessionLaunchTimeout.
         let thr = await env.svc.launchReadyTickThreshold
-        let interval = await env.svc.reconcilePollInterval
+        let interval = env.svc.reconcilePollInterval
         let timeout = await env.svc.config.sessionLaunchTimeout
         #expect(Double(thr) * interval < Double(timeout))
 
@@ -201,6 +201,49 @@ struct ReconcilerTests {
         #expect(env.sessions.killed.contains(env.sessions.sessionName(o.id)))   // old session was killed
     }
 
+    /// BLOCKER regression: the adoption shortcut probes the session epoch OFF-actor (suspending the
+    /// service), then adopts to `.live`. If a concurrent restart/resume bumps the card to a NEWER
+    /// `.relaunching` epoch during that suspension, the STALE adoption must NOT force-live the card on the
+    /// old generation — the newer relaunch wins (single-winner fence). The fix passes the probed epoch as
+    /// `observedEpoch`, so the funnel re-reads the current card and no-ops on a bumped generation.
+    @Test("adoption is epoch-fenced: a restart bumping the epoch during the off-actor probe wins over stale adoption")
+    func adoptionEpochFencedAgainstConcurrentRestart() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+
+        // Seed a `.relaunching` card at epoch 1 with a live session stamped at the SAME epoch → the
+        // adoption condition (`probed == snapshot.sessionEpoch`) holds at snapshot time.
+        let c = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        await env.svc.seedPhase(c.id, .relaunching, sessionEpoch: 1)
+        env.sessions.setStampedEpoch(c.id, 1)
+
+        // A handshake: the probe (off-actor) signals it has entered, then blocks; while blocked, the actor
+        // is free, so the test drives a concurrent restart that bumps the card to epoch 2; then the probe is
+        // released and returns the still-stale-matching epoch 1.
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        env.sessions.onStampedEpochProbe = { _ in entered.signal(); release.wait() }
+
+        // Run ONE reconcile tick concurrently — it will suspend inside the off-actor epoch probe.
+        let tick = _Concurrency.Task { await env.svc.reconcile() }
+
+        // Wait until the probe is in its actor-released window, then simulate a concurrent restart: bump the
+        // persisted generation to a NEWER `.relaunching` epoch (what `restart`/`resume` would do).
+        await withCheckedContinuation { cont in
+            DispatchQueue.global().async { entered.wait(); cont.resume() }
+        }
+        await env.svc.seedPhase(c.id, .relaunching, sessionEpoch: 2)
+        release.signal()
+        await tick.value
+
+        // The stale adoption must have NO-OPed: the card stays on the newer generation (`.relaunching`,
+        // epoch 2), NOT force-lived on the old epoch-1 generation.
+        let after = try #require(await env.svc.list().first { $0.id == c.id })
+        #expect(after.phase.kind == .relaunching)
+        #expect(after.sessionEpoch == 2)
+        #expect(after.phase.kind != .live)
+    }
+
     // MARK: - startup phase reconciliation
 
     @Test("startup reconciles a persisted in-flight phase (no stuck-Creating): re-driven to .live")
@@ -241,6 +284,51 @@ struct ReconcilerTests {
         #expect(await env2.svc.list().first { $0.id == watcher.id }?.phase.kind == .live)   // adopted
         let inbox = try await env2.svc.inboxPeek(watcher.id)
         #expect(inbox.contains { $0.text.contains("concluded") })
+    }
+
+    /// MAJOR regression: `server.start()` accepts RPCs BEFORE boot's `reloadWatchRegistry` runs (after the
+    /// slow phase reconciliation). A `wait`/`watch` RPC in that window used to mutate the STILL-EMPTY
+    /// in-memory registry and `save`, CLOBBERING the persisted `watch-registry.json` (losing every prior
+    /// watch). The lazy-load fix loads-then-unions on first access, so the boot-window write MERGES.
+    @Test("a boot-window registerWatch does NOT clobber the persisted registry (lazy-load unions)")
+    func bootWindowRegisterWatchDoesNotClobber() async throws {
+        let env = TestEnv.make(grace: 1)
+        let storePath = env.base + "/watch-registry.json"
+        let priorWatcher = UUID(), priorChild = UUID()
+        await env.svc.registerWatch(priorWatcher, [priorChild])   // persisted before the "restart"
+        #expect(WatchRegistryStore(path: storePath).load().map[priorWatcher]?.contains(priorChild) == true)
+
+        // Fresh service over the SAME registry file — a boot-window register BEFORE `reloadWatchRegistry`.
+        let env2 = TestEnv.remake(base: env.base)
+        let newWatcher = UUID(), newChild = UUID()
+        await env2.svc.registerWatch(newWatcher, [newChild])   // the boot-window RPC (pre-reload)
+
+        // The prior watch survives on disk (unioned), and the new one is added — no clobber.
+        let onDisk = WatchRegistryStore(path: storePath).load().map
+        #expect(onDisk[priorWatcher]?.contains(priorChild) == true)
+        #expect(onDisk[newWatcher]?.contains(newChild) == true)
+
+        // The later reload still sees the prior watch — nothing lost.
+        await env2.svc.reloadWatchRegistry()
+        #expect(WatchRegistryStore(path: storePath).load().map[priorWatcher]?.contains(priorChild) == true)
+    }
+
+    /// Fail-safe posture (mirrors `borrowsLoadFailed`): a present-but-TORN `watch-registry.json` must never
+    /// be overwritten by a boot-window mutation — a partial in-memory map replacing an ambiguous-but-maybe-
+    /// recoverable file would be data loss. On `loadFailed` the mutation skips the `watchStore.save`.
+    @Test("a torn watch-registry.json is never overwritten by a boot-window mutation (loadFailed posture)")
+    func tornWatchRegistryNotOverwritten() async throws {
+        let env = TestEnv.make(grace: 1)
+        let storePath = env.base + "/watch-registry.json"
+        let torn = "{ not valid json"
+        try torn.write(toFile: storePath, atomically: true, encoding: .utf8)
+
+        let env2 = TestEnv.remake(base: env.base)
+        await env2.svc.registerWatch(UUID(), [UUID()])   // must REFUSE to persist over the torn file
+
+        let raw = try String(contentsOfFile: storePath, encoding: .utf8)
+        #expect(raw == torn)                                             // torn bytes intact
+        #expect(WatchRegistryStore(path: storePath).load().loadFailed)   // still ambiguous, not clobbered
     }
 
     // MARK: - corrupt-store recovery + conservative mode (carry #3)

@@ -513,6 +513,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
             self.phase = phase
+            // Legacy Bool-bridge `archive()` (PR2/PR3/PR4a) wrote `.dead(.completed)` + `archived == true`.
+            // Post-PR4b that decodes as `.dead`, which `reopen`'s gate ({archivedPending, archivedComplete})
+            // rejects — the card could never be reopened. Normalize it to the real `.archived` terminal, matching
+            // the no-`phase`-key `migratedPhase` path (which already maps archived → `.archived(true)`).
+            if archived, case .dead(.completed) = self.phase { self.phase = .archived(teardownComplete: true) }
         } else {
             self.phase = Task.migratedPhase(
                 status: try? c.decodeIfPresent(String.self, forKey: .status),
