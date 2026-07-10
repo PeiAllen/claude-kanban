@@ -89,9 +89,10 @@ struct CommandsTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
-        try await env.svc.archive(t.id)
+        try await TestEnv.archiveAndTeardown(env.svc, t.id)
         let reg = CommandRegistry()
         let reopen = try #require(reg.command("reopen"))
+        // Intent-only reopen returns the unarchived `.creatingWorktree` card immediately.
         let result = try await reopen.run(env.svc, .object(["ref": .string(t.shortId)]), .app)
         #expect(try result.decode(Task.self).archived == false)
     }

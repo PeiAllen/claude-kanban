@@ -200,8 +200,13 @@ struct WakeMergeWatchTests {
         ]), .mcp)
         #expect(result["watching"]?.boolValue == true)
 
+        // Archiving the child concludes it (at intent) → fan-out wakes the idle parent (resume-seed →
+        // `.relaunching`); the reconciler then drives that relaunch to deliver the seed.
         try await env.svc.archive(child.id)
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         let seed = try #require(env.sessions.ensureArgv[name]?.last)
         #expect(seed.contains(child.shortId))
         #expect(await env.svc.drainForStop(parent.id) == nil)

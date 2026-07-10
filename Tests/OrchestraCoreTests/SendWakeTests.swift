@@ -28,8 +28,12 @@ struct SendWakeTests {
         let name = env.sessions.sessionName(card.id)
 
         try await env.svc.send(card.id, "PING-IDLE")
-        // The wake resume-seeds on a detached task; wait for the relaunch, then feed the resume callback.
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        // The wake resume-seeds on a detached task (`.relaunching` + folded pendingSeed); the reconciler's
+        // RelaunchStepper then brings up the `--resume` session (PR4b Task 4 — intent-only wake).
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
 
         let argv = try #require(env.sessions.ensureArgv[name])

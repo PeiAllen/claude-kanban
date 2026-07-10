@@ -157,7 +157,12 @@ struct SpawnPhaseTests {
         async let w2: Void = env.svc.wake(t.id)
         _ = await (w1, w2)
 
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        // `relaunchClaimed` lets ONE resume-seed proceed → ONE `.relaunching` transition; the reconciler
+        // then drives that single relaunch (the other wake deferred at the claim).
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))     // confirm the ONE resume
         try await _Concurrency.Task.sleep(for: .milliseconds(120))
         #expect(env.sessions.ensureCount == before + 1)                           // one relaunch, not two
@@ -173,15 +178,14 @@ struct SpawnPhaseTests {
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let sid = try #require(t.agentSessionId)
         env.adapter.writeTranscript(for: sid)                                     // resumable
-        try await env.svc.archive(t.id)
+        try await TestEnv.archiveAndTeardown(env.svc, t.id)
 
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        async let reopened = env.svc.reopen(t.id, source: .app)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let updated = try await reopened
+        // Intent-only reopen enqueues `.creatingWorktree`; the reconciler walks it → launching → live.
+        _ = try await env.svc.reopen(t.id, source: .app)
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
 
         #expect(updated.archived == false)
         #expect(updated.agentSessionId == sid)                                    // resumed, id kept
@@ -200,13 +204,15 @@ struct SpawnPhaseTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         let oldId = try #require(t.agentSessionId)
-        try await env.svc.archive(t.id)                                            // no transcript → not resumable
+        try await TestEnv.archiveAndTeardown(env.svc, t.id)                        // no transcript → not resumable
 
-        let updated = try await env.svc.reopen(t.id, source: .app)                 // blank: immediate, no report
+        let intent = try await env.svc.reopen(t.id, source: .app)
+        #expect(intent.agentSessionId != oldId)                                    // fresh id (blank restart)
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id)             // reconciler blank-launches
 
         #expect(updated.archived == false)
         #expect(updated.phase == .live(.waiting(.humanTurn)))
-        #expect(updated.agentSessionId != oldId)                                   // fresh id (blank restart)
+        #expect(updated.agentSessionId != oldId)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(!argv.contains("--resume"))
     }

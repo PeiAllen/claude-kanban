@@ -128,12 +128,16 @@ extension OrchestraService {
         // Any non-archived phase may die.
         case (.creatingWorktree, .dead), (.launching, .dead), (.live, .dead), (.relaunching, .dead):
             return true
-        // Any non-archived phase may be archived (into either teardown state).
-        case (.creatingWorktree, .archivedPending), (.creatingWorktree, .archivedComplete),
-             (.launching, .archivedPending), (.launching, .archivedComplete),
-             (.live, .archivedPending), (.live, .archivedComplete),
-             (.relaunching, .archivedPending), (.relaunching, .archivedComplete),
-             (.dead, .archivedPending), (.dead, .archivedComplete):
+        // Any non-archived phase may be archived — but ONLY into `.archivedPending` (the archive INTENT).
+        // A card reaches `.archivedComplete` SOLELY via `archivedPending → archivedComplete` (above, the
+        // TeardownStepper's final flip) — the direct `(X, .archivedComplete)` edges are removed (PR4b Task 4:
+        // archive is intent-only, so nothing drives a non-`archivedPending` phase straight to complete; the
+        // migration seeds `.archivedComplete` in `Task.init` decode, which is not a funnel edge).
+        case (.creatingWorktree, .archivedPending),
+             (.launching, .archivedPending),
+             (.live, .archivedPending),
+             (.relaunching, .archivedPending),
+             (.dead, .archivedPending):
             return true
         default:
             return false

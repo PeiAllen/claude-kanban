@@ -80,18 +80,23 @@ struct OrchestraServiceTests {
         }
     }
 
-    @Test("archive sets done + archived, kills session, emits")
+    @Test("archive sets archived + off the board immediately; the stepper kills the session")
     func archive() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        // Intent-only (PR4b Task 4): archive returns after recording archivedPending + the archived Bool.
         try await env.svc.archive(t.id, source: .app)
-        let after = await env.svc.list(includeArchived: true).first { $0.id == t.id }
-        #expect(after?.phase == .dead(.completed))
-        #expect(after?.archived == true)
+        let pending = await env.svc.list(includeArchived: true).first { $0.id == t.id }
+        #expect(pending?.phase.kind == .archivedPending)
+        #expect(pending?.archived == true)
+        #expect(await env.svc.list().isEmpty)          // archived cards are off the board immediately
+        // The reconciler's TeardownStepper runs the duty list (kill) + flips → archivedComplete.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list(includeArchived: true).first { $0.id == t.id }?.phase.kind == .archivedComplete
+        }
         #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))
-        // archived cards are off the board
-        #expect(await env.svc.list().isEmpty)
     }
 
     @Test("archive keeps a worktree shared by a live sibling; removes it once the last card leaves")
@@ -104,11 +109,11 @@ struct OrchestraServiceTests {
         #expect(a.cwd == b.cwd)
 
         // Archiving the first must NOT remove the worktree — b still lives there.
-        try await env.svc.archive(a.id, source: .app)
+        try await TestEnv.archiveAndTeardown(env.svc, a.id, source: .app)
         #expect(!env.worktrees.removed.contains(a.cwd))
 
         // Archiving the last card on the worktree removes it.
-        try await env.svc.archive(b.id, source: .app)
+        try await TestEnv.archiveAndTeardown(env.svc, b.id, source: .app)
         #expect(env.worktrees.removed.contains(b.cwd))
     }
 

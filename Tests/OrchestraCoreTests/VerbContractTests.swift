@@ -60,8 +60,9 @@ struct VerbContractTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
-        // Seed the archived terminal state exactly as the sync `archive` handler does (phase + Bool).
-        _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.completed); $0.archived = true }
+        // Seed the archived terminal state as the intent-only `archive` + TeardownStepper leaves it
+        // (PR4b Task 4: `.archived(_)` is the sole archived representation — no Bool-bridge).
+        _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: true); $0.archived = true }
 
         // (1) Wrap the REAL `send` schema around a probe `run` that MUST NOT fire.
         let sendSchema = try #require(CommandRegistry().command("send")).schema
@@ -80,6 +81,32 @@ struct VerbContractTests {
                             .object(["ref": .string(card.shortId), "message": .string("blocked")]), .cli)
         }
         #expect(try await env.svc.inboxPeek(card.id).isEmpty, "gated `send` must not reach the inbox handler")
+    }
+
+    @Test("test_gatePolicyConformance")
+    func test_gatePolicyConformance() async throws {
+        // PR4b Task 4: the gate reads `card.phase.kind` DIRECTLY (Bool-bridge retired). Prove an archived
+        // card gates via its real phase kind — for BOTH archived kinds — and that `archive` (gAll) never
+        // denies an idempotent re-archive.
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let reg = CommandRegistry()
+
+        for (phase, gatedName) in [(Phase.archived(teardownComplete: false), "archivedPending"),
+                                   (Phase.archived(teardownComplete: true), "archivedComplete")] {
+            _ = try await env.svc.store.update(card.id) { $0.phase = phase; $0.archived = true }
+            // `send` (gate = non-archived) is denied, naming the card's ACTUAL phase kind.
+            let send = try #require(reg.command("send"))
+            await #expect(throws: OrchestraError.phaseGated(verb: "send", phase: gatedName)) {
+                _ = try await reg.dispatch(send, env.svc,
+                        .object(["ref": .string(card.shortId), "message": .string("x")]), .cli)
+            }
+            // `archive` (gate = gAll) is admitted by the gate — the handler's own idempotency guard no-ops it.
+            let archive = try #require(reg.command("archive"))
+            _ = try await reg.dispatch(archive, env.svc, .object(["ref": .string(card.shortId)]), .cli)
+            #expect(try #require(await env.svc.store.get(card.id)).phase == phase)   // unchanged (idempotent)
+        }
     }
 
     @Test("test_openShellDeniedWhileLaunching")

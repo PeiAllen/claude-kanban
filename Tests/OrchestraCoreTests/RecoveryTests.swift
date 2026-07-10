@@ -65,10 +65,10 @@ struct RecoveryTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
 
-        async let resumed = env.svc.resume(t.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let updated = try await resumed
+        // Intent-only: resume records `.relaunching` + returns; the RelaunchStepper (reconciler) resumes it.
+        let intent = try await env.svc.resume(t.id)
+        #expect(intent.phase.kind == .relaunching)
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
         #expect(updated.waitReason != nil)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id (no new mint)
@@ -85,49 +85,68 @@ struct RecoveryTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
 
-        // Force the exact ordering behind the parallel-load flake: make the off-actor relaunch slow so
-        // the SessionStart(resume) `report()` lands WHILE resume() is still inside `offActor` — i.e.
-        // before `awaitResume()` has registered its continuation. The confirmation must not be dropped.
+        // Force the exact ordering behind the parallel-load flake: make the off-actor relaunch (now inside the
+        // RelaunchStepper's `finishLaunch`) slow so the SessionStart(resume) `report()` lands WHILE the step is
+        // still inside `offActor` — i.e. before `awaitReadiness` registers its continuation. It must not drop.
+        // Drive the RelaunchStepper DIRECTLY (not the full reconcile loop) so the ordering is deterministic.
         env.sessions.ensureSleepMs = 250
 
-        async let resumed = env.svc.resume(t.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(40))   // well inside the 250ms relaunch window
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-        let updated = try await resumed
+        let intent = try await env.svc.resume(t.id)            // intent → `.relaunching`
+        #expect(intent.phase.kind == .relaunching)
+        let ctx = await env.svc.convergeContext()
+        async let stepping: Void = RelaunchStepper().step(intent, ctx)
+        try await _Concurrency.Task.sleep(for: .milliseconds(40))   // inside the 250ms ensure window
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // lands before the waiter registers
+        try await stepping
 
+        let updated = try #require(await env.svc.store.get(t.id))
+        #expect(updated.phase.kind == .live)
         #expect(updated.waitReason != nil)
         #expect(updated.deadReason == nil)
         #expect(updated.agentSessionId == oldId)   // resume keeps the id
     }
 
-    @Test("resume failure: no transcript → .dead resumeFailed + throws")
+    @Test("resume failure: no transcript (non-provisional) → RelaunchStepper marks .dead resumeFailed")
     func resumeFailNoTranscript() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
         let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
-        // no transcript written → "transcript gone"
-        await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id) }
+        // Intent-only: resume no longer throws — it records `.relaunching`; the RelaunchStepper fails safe
+        // (non-provisional card, no transcript on disk → `.dead(.resumeFailed)` "transcript gone").
+        _ = try await env.svc.resume(t.id)
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list(includeArchived: true).first { $0.id == t.id }?.phase.kind == .dead
+        }
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .resumeFailed)
         #expect(after.deadDetail?.contains("transcript") == true)
     }
 
-    @Test("resume failure: transcript present but no callback within grace → .dead resumeFailed")
+    @Test("resume failure: transcript present but no ready signal → reconciler launch-timeout marks .dead resumeFailed")
     func resumeFailTimeout() async throws {
-        // .claudeCode so the resume awaits its SessionStart(resume) hook; a per-call `graceSeconds: 0` forces
-        // the timeout without starving the setup spawn (which needs a non-zero grace to land via spawnAwaited).
+        // .claudeCode so the relaunch awaits its SessionStart(resume) hook; with NO signal delivered the
+        // RelaunchStepper leaves the card `.relaunching`, and the reconciler's `phaseChangedAt` launch-timeout
+        // (carry #2) marks it dead. Back-date the anchor so the bound trips deterministically.
         let env = TestEnv.make(grace: 2, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
-        await #expect(throws: OrchestraError.self) { _ = try await env.svc.resume(t.id, graceSeconds: 0) }
+
+        _ = try await env.svc.resume(t.id)                     // intent → `.relaunching`
+        env.sessions.setAlive(t.id, false)                     // no stale session to adopt / N=3-tick to live
+        // Back-date the phase anchor past the launch timeout so the reconciler's timeout arm fires.
+        let timeout = await env.svc.config.sessionLaunchTimeout
+        await env.svc.seedPhase(t.id, .relaunching, phaseChangedAt: Date().addingTimeInterval(-Double(timeout) - 5))
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list(includeArchived: true).first { $0.id == t.id }?.phase.kind == .dead
+        }
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .resumeFailed)
-        #expect(after.deadDetail?.contains("callback") == true)
+        #expect(after.deadDetail?.contains("timed out") == true)
     }
 
     @Test("restart: fresh id (old→prior), blank (no prompt), status waiting, provisional, deadReason cleared, initialPrompt intact")
@@ -138,20 +157,48 @@ struct RecoveryTests {
         await env.svc.markDead(t.id, reason: .agentExited, detail: "x", source: .daemon)
         let oldId = try #require(t.agentSessionId)
 
-        let updated = try await env.svc.restart(t.id, source: .app)
-        #expect(updated.waitReason != nil)
-        #expect(updated.titleProvisional == true)
-        #expect(updated.deadReason == nil)
-        #expect(updated.deadDetail == nil)
-        #expect(updated.initialPrompt == "Original ask")    // intact, not re-sent
-        let newId = try #require(updated.agentSessionId)
+        // Intent-only: restart records `.relaunching` with the persist block; the RelaunchStepper blank-launches.
+        let intent = try await env.svc.restart(t.id, source: .app)
+        #expect(intent.phase.kind == .relaunching)
+        #expect(intent.titleProvisional == true)
+        #expect(intent.deadReason == nil)
+        #expect(intent.deadDetail == nil)
+        let newId = try #require(intent.agentSessionId)
         #expect(newId != oldId)
-        #expect(updated.priorSessionIds.contains(oldId))
+        #expect(intent.priorSessionIds.contains(oldId))
+        let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(updated.waitReason != nil)
+        #expect(updated.initialPrompt == "Original ask")    // intact, not re-sent
         // launch argv carries --name <title> as its last pair; NO positional prompt follows it
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
         #expect(argv[nameIdx + 1] == updated.title)
         #expect(argv.count == nameIdx + 2)   // nothing after the name value → the prompt is NOT re-handed
+    }
+
+    @Test("test_restartSingleWinner")
+    func test_restartSingleWinner() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+
+        // Two restarts in quick succession: the second's `.relaunching` supersede self-edge bumps the epoch.
+        let r1 = try await env.svc.restart(t.id)
+        let e1 = r1.sessionEpoch
+        let r2 = try await env.svc.restart(t.id)
+        let e2 = r2.sessionEpoch
+        #expect(e2 == e1 + 1)   // supersede bump — the single-winner mechanism (NOT competing steppers)
+
+        // The earlier attempt's finalize (old epoch) is epoch-fenced to a no-op.
+        let stale = await env.svc.transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: e1)
+        #expect(stale == .noop)
+        #expect(try #require(await env.svc.store.get(t.id)).phase.kind == .relaunching)
+
+        // The reconciler admits ONE step (`inFlightSteps`) and converges a single live session.
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(live.phase.kind == .live)
+        let names = try env.sessions.list().map(\.name)
+        #expect(names.filter { $0 == env.sessions.sessionName(t.id) }.count == 1)   // exactly one session
     }
 
     @Test("reconcilePhasesAtBoot: never-prompted (provisional, no transcript) card blank-restarts, not dead")
@@ -208,21 +255,32 @@ struct RecoveryTests {
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))             // idle
         let name = env.sessions.sessionName(card.id)
 
-        // send A wakes → resume #1 claims and launches; it stays IN FLIGHT (readiness not yet confirmed).
+        // send A wakes → resume-seed transitions `.relaunching` (A drained + folded into pendingSeed). Drive
+        // the RelaunchStepper DIRECTLY (deterministic — no N=3 fallback racing the mid-relaunch window): it
+        // ensures the `--resume` session then AWAITS the SessionStart(resume) hook.
+        let ctx = await env.svc.convergeContext()
         try await env.svc.send(card.id, "A")
+        try await pollUntil { await env.svc.store.get(card.id)?.phase.kind == .relaunching }
+        let relaunchingA = try #require(await env.svc.store.get(card.id))
+        async let steppingA: Void = RelaunchStepper().step(relaunchingA, ctx)
         try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
         let ensureAfterA = env.sessions.ensureCount
 
-        // send B lands mid-relaunch (relaunchClaimed set / card `.relaunching`) → wake defers, B stranded.
+        // send B lands mid-relaunch (card `.relaunching`, readiness pending) → wake defers, B stranded.
         try await env.svc.send(card.id, "B")
-        try await _Concurrency.Task.sleep(for: .milliseconds(100))
+        try await _Concurrency.Task.sleep(for: .milliseconds(80))
         #expect(env.sessions.ensureCount == ensureAfterA)                          // deferred: not resumed yet
-        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])         // stranded
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])         // stranded (A rode the seed)
 
-        // Confirm resume #1 → it settles → clearRelaunchClaimed → wakeIfPending re-drives wake → resume #2.
+        // Confirm resume #1 → `.live` → the funnel's wake-on-live re-drives wake → resume #2 (B folded).
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
+        try await steppingA
+        try await pollUntil { await env.svc.store.get(card.id)?.phase.kind == .relaunching }   // B's resume-seed
+        let relaunchingB = try #require(await env.svc.store.get(card.id))
+        async let steppingB: Void = RelaunchStepper().step(relaunchingB, ctx)
         try await pollUntil { env.sessions.ensureCount > ensureAfterA }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))   // confirm resume #2
+        try await steppingB
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("B") == true)   // B rode the seed
         #expect(try await env.svc.inboxPeek(card.id).isEmpty)                      // drained
     }
@@ -242,55 +300,35 @@ struct RecoveryTests {
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])   // stays for its Stop-drain
     }
 
-    /// Regression: two overlapping `resume(id)` for the SAME card must never leak a continuation. The
-    /// second resume registers a waiter that (before the fix) OVERWROTE the first in `readinessWaiters[id]`
-    /// without resolving it — leaking the first `awaitReadiness` continuation, so `resume` #1 never returns
-    /// and the card can never be woken again (the "idle Claude ignores a send / inbox add" bug). The fix
-    /// resolves the displaced waiter `.superseded` (2.5: the relaunch's own `.relaunching` supersede
-    /// self-edge bumps the epoch, so the loser's finalize is also epoch-fenced). Overlap is reachable in the
-    /// wild: `resume`/`handoff`/`reopen` and `recoverSessions` can all race a send-wake.
-    @Test("overlapping resume(id): the superseded resume returns (no leaked continuation → card stays wakeable)")
+    /// Regression: two overlapping `resume(id)` for the SAME card must never leak a continuation and must
+    /// converge to a single live session (single-winner). Intent-only (PR4b Task 4): each `resume` is now a
+    /// non-blocking `transition(→ .relaunching)` (the supersede self-edge bumps the epoch), so neither call
+    /// holds a continuation to leak; the reconciler admits ONE step (`inFlightSteps`) and any earlier
+    /// bring-up's `.live` finalize is epoch-fenced. The card stays wakeable afterward.
+    @Test("overlapping resume(id): both return immediately; the reconciler converges one live session; card stays wakeable")
     func concurrentResumeNeverLeaks() async throws {
-        // .claudeCode: overlapping resumes both register an awaitReadiness waiter, so the displaced-waiter
-        // supersede/leak path is exercisable (a `.relaunchLiveness` stub confirms with no waiter to leak).
+        // .claudeCode: the relaunch genuinely awaits its SessionStart(resume) hook (a `.relaunchLiveness` stub
+        // would confirm too fast to exercise the overlap).
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                      // idle
-        let name = env.sessions.sessionName(t.id)
 
-        // Does `op` finish at all? A leaked continuation leaves it suspended FOREVER, so the bound only
-        // separates "returned" from "hung" — generous so heavy-load scheduler latency can't flake it.
-        func completes(_ op: @escaping @Sendable () async -> Void) async -> Bool {
-            await withTaskGroup(of: Bool.self) { g in
-                g.addTask { await op(); return true }
-                g.addTask { try? await _Concurrency.Task.sleep(for: .seconds(15)); return false }
-                let first = await g.next() ?? false
-                g.cancelAll()
-                return first
-            }
-        }
+        // Two overlapping resumes — both are intent-only and MUST return (never hang on a leaked continuation).
+        async let r1: Task = env.svc.resume(t.id)
+        async let r2: Task = env.svc.resume(t.id)
+        _ = try await r1
+        _ = try await r2
+        // The reconciler drives the surviving relaunch to a single live session.
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
+        #expect(live.phaseDisplay != .dead)
 
-        // Two resumes for the same card, overlapping.
-        async let c1 = completes { _ = try? await env.svc.resume(t.id) }
-        async let c2 = completes { _ = try? await env.svc.resume(t.id) }
-        // Both land a `--resume` relaunch; deliver ONE SessionStart(resume) to confirm the surviving waiter.
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))
-
-        #expect(await c1)   // one is confirmed, the other superseded — BOTH must return, neither may hang
-        #expect(await c2)
-
-        // And the card must remain wakeable: it is idle+resumable and no claim is stuck, so a fresh send
-        // resume-seeds it.
-        let confirmed = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(confirmed.phaseDisplay != .dead)
+        // And the card must remain wakeable: idle+resumable, no stuck claim, so a fresh send resume-seeds it.
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
         let ensureBefore = env.sessions.ensureCount
         try await env.svc.send(t.id, "PING-AFTER-LEAK")
-        try await pollUntil { env.sessions.ensureCount > ensureBefore }   // a stuck claim → never fires
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // confirm the post-leak wake
+        try await pollUntil { await env.svc.reconcile(); return env.sessions.ensureCount > ensureBefore }
+        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // confirm the post-wake relaunch
     }
 }

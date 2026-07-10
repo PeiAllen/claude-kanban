@@ -667,59 +667,24 @@ public actor OrchestraService {
 
     // MARK: - archive
 
-    public func archive(_ id: UUID, source: ActivitySource = .daemon, removeWorktree: Bool = true) async throws {
+    /// INTENT-ONLY (PR4b Task 4): record the archive intent + the `archived` Bool mirror (so the card leaves
+    /// the board instantly) and RETURN. The reconciler's `TeardownStepper` runs the FULL duty list (kill /
+    /// releaseBorrow / release / cancel debounces+watches / nudge-children) and flips `archivedPending →
+    /// archivedComplete`; the funnel concludes on the non-terminal → `archivedPending` entry (no manual
+    /// `concludeCard` here). No subprocess/teardown runs before the return — the verb is non-blocking.
+    public func archive(_ id: UUID, source: ActivitySource = .daemon) async throws {
         let t = try await require(id)
-        stopRemoteWatch(id)   // BT6: tear down any remote merge-watch before the card goes away
-        remoteWatchGen[id] = nil   // S4: the card is terminal — drop its generation entry (bounds the map)
-        stopMergeRequestNudge(id)   // O2: tear down any pending merge-request re-nudge loop
-        try? await worktrees.releaseBorrow(borrowerCardId: id)   // O3: sweep a borrow the card left open
-        // S3-5: cancel this card's tree debounce slots so a pending recompute/fan-out can't fire against
-        // an archived card (the recompute itself now also guards on !archived — this is the clean-up half).
-        treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil
-        childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
-        // S2-5: a worktree card's branch goes bare on archive — nudge its live children so a stopped child
-        // re-evaluates its ship path instead of waiting on the archived card's (now dead) inbox.
-        if t.origin == .worktree {
-            let childBranches = await lineage.children(repo: t.repo, of: t.branch)
-            if !childBranches.isEmpty {
-                let active = await store.all().filter { $0.id != id }
-                for cb in childBranches {
-                    // S2-6: deterministic (oldest) live child, not an arbitrary co-located sibling.
-                    if let card = derivedCard(repo: t.repo, branch: cb, among: active) {
-                        try? await inbox.enqueue(card.id,
-                            "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship")
-                        await wake(card.id)
-                    }
-                }
-            }
+        // Idempotency guard FIRST (spec §P1/§6/§11): an already-archived card is idempotent success. Without
+        // this the tightened `isLegalEdge` makes `archivedComplete → archivedPending` illegal → a `.rejected`
+        // error, breaking the retried-archive guarantee — the archive HANDLER is the idempotency point (the
+        // PR4a decision that keeps `archive.phaseGate = gAll`).
+        if t.phase.kind == .archivedPending || t.phase.kind == .archivedComplete { return }
+        // The single intent write: phase → archivedPending, companion `archived = true` in the same patch so
+        // the card is off the board before the duty list has run. The TeardownStepper owns the rest.
+        _ = await transition(id, to: .archived(teardownComplete: false), mutate: { $0.archived = true })
+        if let updated = await store.get(id) {
+            emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
         }
-        try? sessions.kill(sessions.sessionName(id))
-        if removeWorktree {                              // gates ALL run-dir reclaim
-            switch t.origin {
-            case .worktree:
-                // Multiple cards can intentionally share one worktree — `release` keeps the tree when any
-                // other non-archived .worktree card (or in-flight `ensure` holder) still references it, and
-                // never silently deletes a dirty tree without `force`.
-                try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
-            case .scratch:
-                // Scratch dirs are truly ephemeral: rm -rf unconditionally (no dirty-guard; the user
-                // moves out anything useful first). The destructive op is double-gated — this `.scratch`
-                // arm, plus a runtime check that the path is under the scratch root. The `assert` is a
-                // debug catch only; the `if` is the release-safe guard a destructive op must never skip.
-                assert(t.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
-                if t.cwd.hasPrefix(Config.scratchRoot + "/") {
-                    try? FileManager.default.removeItem(atPath: t.cwd)
-                }
-            case .borrowed:
-                // Orchestra never deletes a borrowed dir. No-op (also none exist yet).
-                break
-            }
-        }
-        let (updated, rev) = try await store.update(id) { $0.phase = .dead(.completed); $0.archived = true }
-        lastSeqStore[id] = nil   // the agent is gone; don't leak its seq cursor
-        emit(.taskUpserted(updated), rev: rev)
-        emitActivity(.archived, updated, source, "Archived “\(updated.title)”")
-        await concludeCard(id, .done)   // moving to Done is a settled conclusion (F2 / merge-watch)
     }
 
     // MARK: - shells / exec / sessions

@@ -39,10 +39,10 @@ struct ReadinessSignalTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
 
-        async let resumed = env.svc.resume(t.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
-        try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // the relaunch's ready signal
-        let live = try await resumed
+        // Intent-only: resume records `.relaunching`; the RelaunchStepper brings the session up and its
+        // readiness waiter is resolved by the delivered SessionStart(resume) (inject) → `.live`.
+        _ = try await env.svc.resume(t.id)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id, inject: true)
         #expect(live.phase == .live(.waiting(.humanTurn)))
         #expect(live.deadReason == nil)
     }
@@ -101,12 +101,11 @@ struct ReadinessSignalTests {
         // `.rolloutMeta` relaunch inline-awaits — but a `codex resume` emits NO rollout, so NO signal is
         // hand-delivered here. The N=3 liveness-tick fallback (session live + pending waiter) must resolve
         // it within the grace, so the card reaches live rather than timing out and being killed.
-        async let resumed = env.svc.resume(t.id)
-        try await pollUntil {
-            await env.svc.reconcileLiveness()
-            return (await env.svc.list().first { $0.id == t.id })?.phase.kind == .live
-        }
-        let live = try await resumed
+        // Intent-only: resume records `.relaunching`; the RelaunchStepper brings the session up and — since a
+        // `codex resume` emits NO rollout — the reconciler's N=3 liveness fallback (NO signal injected) must
+        // resolve the waiter within the grace so the card reaches live rather than timing out.
+        _ = try await env.svc.resume(t.id)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
         #expect(live.phase.kind == .live)
         #expect(live.deadReason == nil)
     }

@@ -56,14 +56,11 @@ public struct CommandRegistry: Sendable {
         }
     }
 
-    /// The card's EFFECTIVE lifecycle kind for gating. PR4a transitional bridge: an archived card carries
-    /// `phase == .dead(.completed)` + `archived == true` (the sync `archive` handler; `reopen` normalizes
-    /// the Bool back into a real `.archived(_)` phase), so a raw `phase.kind` would read every archived card
-    /// as `.dead` and wrongly deny `reopen`. Mirror `reopen`'s own bridge here. PR4b deletes this once
-    /// `phase == .archived` is the sole archived representation (the gate SETS never change).
-    static func gatedKind(of card: Task) -> Phase.Kind {
-        card.archived ? .archivedComplete : card.phase.kind
-    }
+    /// The card's EFFECTIVE lifecycle kind for gating. PR4b (Task 4): `phase == .archived(_)` is now the
+    /// SOLE archived representation — `archive` is intent-only (`→ archivedPending`) + the TeardownStepper
+    /// flips to `archivedComplete`, and the migration seeds legacy archived records as `.archived(_)`. So the
+    /// PR4a Bool-bridge is retired: the gate reads `phase.kind` directly (the gate SETS never changed).
+    static func gatedKind(of card: Task) -> Phase.Kind { card.phase.kind }
 
     // MARK: - the handler table
 

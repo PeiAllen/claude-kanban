@@ -24,16 +24,19 @@ struct PhaseTransitionTests {
     @Test("isLegalEdge encodes exactly the §P1 edge set; everything else is rejected")
     func test_illegalEdgesRejected() {
         // The legal edge set, keyed by (from.kind, to.kind). `dead → live` is legal ONLY viaSignal.
+        // PR4b Task 4: a card reaches `.archivedComplete` ONLY via `archivedPending → archivedComplete`
+        // (the TeardownStepper) — the direct `(X, .archivedComplete)` edges for X ∈ {creatingWorktree,
+        // launching, live, relaunching, dead} are REMOVED (archive is intent-only → archivedPending).
         let legal: Set<[Phase.Kind]> = [
             [.creatingWorktree, .launching], [.creatingWorktree, .dead],
-            [.creatingWorktree, .archivedPending], [.creatingWorktree, .archivedComplete],
+            [.creatingWorktree, .archivedPending],
             [.launching, .live], [.launching, .dead],
-            [.launching, .archivedPending], [.launching, .archivedComplete],
+            [.launching, .archivedPending],
             [.live, .live], [.live, .relaunching], [.live, .dead],
-            [.live, .archivedPending], [.live, .archivedComplete],
+            [.live, .archivedPending],
             [.relaunching, .relaunching], [.relaunching, .live], [.relaunching, .dead],
-            [.relaunching, .archivedPending], [.relaunching, .archivedComplete],
-            [.dead, .relaunching], [.dead, .archivedPending], [.dead, .archivedComplete],
+            [.relaunching, .archivedPending],
+            [.dead, .relaunching], [.dead, .archivedPending],
             [.archivedPending, .archivedComplete],
             [.archivedPending, .creatingWorktree], [.archivedComplete, .creatingWorktree],
         ]
@@ -146,9 +149,13 @@ struct PhaseTransitionTests {
             #expect(env.sessions.ensureCount == ensureBefore)          // still parked
         }
 
-        // Going live (idle) fires wakeIfPending → resume-seed delivers the parked message.
+        // Going live (idle) fires wakeIfPending → resume-seed enqueues a `.relaunching` intent (PARKED folded
+        // into pendingSeed); the reconciler's RelaunchStepper then delivers it (PR4b Task 4 — intent-only wake).
         #expect(await env.svc.transition(card.id, to: .live(.waiting(.humanTurn))) == .applied)
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
         let argv = try #require(env.sessions.ensureArgv[name])
         #expect(argv.contains("--resume"))

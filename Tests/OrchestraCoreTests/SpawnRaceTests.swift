@@ -65,11 +65,14 @@ struct SpawnRaceTests {
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
 
-        // User clicks "start fresh": the old (still-running) process is killed and a new session ensured.
+        // User clicks "start fresh": intent-only restart records `.relaunching` (fresh id, epoch bumped); the
+        // reconciler's RelaunchStepper kills the old process and blank-launches a new session.
         let restarted = try await env.svc.restart(t.id, source: .app)
-        #expect(restarted.waitReason != nil)
+        #expect(restarted.phase.kind == .relaunching)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(live.waitReason != nil)
 
-        // The killed old process's SessionEnd hook arrives out-of-band right after restart returns.
+        // The killed old process's SessionEnd hook arrives out-of-band; the epoch bump + isAlive probe fence it.
         try await env.svc.report(t.id, StatusReport(endReason: "exit"))
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })

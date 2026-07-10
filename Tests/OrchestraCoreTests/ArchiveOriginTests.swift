@@ -17,12 +17,13 @@ struct ArchiveOriginTests {
         #expect(a.origin == .worktree)       // spawn only ever produces .worktree in this PR
         #expect(b.origin == .worktree)
 
-        // Archiving the first must NOT remove the tree — b still lives there.
-        try await env.svc.archive(a.id, source: .app)
+        // Archiving the first must NOT remove the tree — b still lives there. (Intent-only archive +
+        // reconciler-driven TeardownStepper — PR4b Task 4.)
+        try await TestEnv.archiveAndTeardown(env.svc, a.id, source: .app)
         #expect(!env.worktrees.removed.contains(a.cwd))
 
         // Archiving the last card on the tree removes it.
-        try await env.svc.archive(b.id, source: .app)
+        try await TestEnv.archiveAndTeardown(env.svc, b.id, source: .app)
         #expect(env.worktrees.removed.contains(b.cwd))
     }
 }

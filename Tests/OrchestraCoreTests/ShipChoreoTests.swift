@@ -87,7 +87,8 @@ struct ShipChoreoTests {
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
-        try await env.svc.archive(parentCard.id)
+        // Intent-only archive: the child nudge is a TeardownStepper actor-duty (PR4b Task 4) — drive it.
+        try await TestEnv.archiveAndTeardown(env.svc, parentCard.id)
 
         let msgs = try await env.svc.inboxPeek(child.id)
         #expect(msgs.contains { $0.text.contains("archived") })

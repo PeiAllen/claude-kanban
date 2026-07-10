@@ -401,6 +401,42 @@ enum TestEnv {
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 
+    /// **Intent-only-archive migration helper (PR4b Task 4).** `archive` now records the intent
+    /// (`→ archivedPending` + the `archived` Bool) and RETURNS; the reconciler's `TeardownStepper` runs the
+    /// full duty list (kill / releaseBorrow / release / cancel debounces+watches / nudge-children) and flips
+    /// `→ archivedComplete`. This archives THEN drives `reconcile()` until teardown completes — a behavior-
+    /// preserving drop-in for the pre-flip synchronous `archive` that most tests used as SETUP.
+    static func archiveAndTeardown(_ svc: OrchestraService, _ id: UUID, source: ActivitySource = .daemon) async throws {
+        try await svc.archive(id, source: source)
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == id }?.phase.kind == .archivedComplete
+        }
+    }
+
+    /// **Intent-only relaunch/reopen migration helper (PR4b Task 4).** `resume`/`restart`/`reopen`/`handoff`
+    /// now record the intent (`→ .relaunching` or `→ .creatingWorktree`) and RETURN; the reconciler's steppers
+    /// drive the walk to `.live`. This drives `reconcile()` until `id` is `.live`, hand-delivering the agent's
+    /// readiness signal each transitional tick when `inject` is set (needed for AWAITING caps —
+    /// `.sessionStartHook`/`.rolloutMeta`; harmless for the immediate `.relaunchLiveness` stub). Returns the
+    /// live card.
+    @discardableResult
+    static func reconcileToLive(_ svc: OrchestraService, _ id: UUID, inject: Bool = false) async throws -> Task {
+        try await pollUntil {
+            await svc.reconcile()
+            let card = await svc.list(includeArchived: true).first { $0.id == id }
+            if inject, let k = card?.phase.kind {
+                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume")) }
+                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup")) }
+            }
+            return card?.phase.kind == .live
+        }
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == id }) else {
+            throw OrchestraError.unknownTask(id.uuidString)
+        }
+        return live
+    }
+
     /// Make a repo dir under reposRoot and return its path.
     static func repo(_ base: String, _ name: String = "app") -> String {
         let p = base + "/repos/" + name

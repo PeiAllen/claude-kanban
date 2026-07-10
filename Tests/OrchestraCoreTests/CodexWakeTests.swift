@@ -41,8 +41,11 @@ struct CodexWakeTests {
         let name = env.sessions.sessionName(card.id)
 
         try await env.svc.send(card.id, "PING-CODEX")
-        // The wake resume-seeds on a detached task; wait for the relaunch, then feed the resume callback.
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        // The wake resume-seeds `.relaunching`; the reconciler's RelaunchStepper brings up the resume session.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
 
         let argv = try #require(env.sessions.ensureArgv[name])
@@ -65,7 +68,10 @@ struct CodexWakeTests {
         let name = env.sessions.sessionName(parent.id)
 
         try await env.svc.send(parent.id, "POKE-CODEX")
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }
         try await env.svc.report(parent.id, StatusReport(sessionSource: "resume"))
 
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("POKE-CODEX") == true)
@@ -129,7 +135,10 @@ struct CodexWakeTests {
         let name = env.sessions.sessionName(card.id)
 
         try await env.svc.send(card.id, "PING-CODEX")
-        try await pollUntil { env.sessions.ensureArgv[name]?.contains("--resume") == true }     // relaunched
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[name]?.contains("--resume") == true
+        }     // relaunched
         // Wait PAST the grace: before the fix the resume would time out and markDead by now.
         try await _Concurrency.Task.sleep(for: .milliseconds(1300))
 
