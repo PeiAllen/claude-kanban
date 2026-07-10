@@ -16,8 +16,8 @@ struct MergeRequestTests {
     func requestNudgesParentSetsState() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
@@ -32,8 +32,8 @@ struct MergeRequestTests {
     func requestDedups() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
@@ -48,8 +48,8 @@ struct MergeRequestTests {
     func recomputePreservesMergeRequested() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
@@ -61,8 +61,8 @@ struct MergeRequestTests {
     func shippedClearsMergeRequested() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())

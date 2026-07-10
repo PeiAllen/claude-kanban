@@ -27,13 +27,20 @@ struct LineageModelTests {
         #expect(back.treeStat == TreeStat(state: .stale, behind: 2, parentIsRemote: false))
     }
 
-    @Test("SpawnInput decodes with and without base (back-compat)")
+    @Test("SpawnInput decodes with and without base (back-compat); id is a required wire field")
     func spawnInputBaseDecode() throws {
-        let without = try JSONValue.object(["prompt": .string("p")]).decode(SpawnInput.self)
+        // `id` is now a REQUIRED wire field (client-minted; no id-less spawn). `base` stays optional.
+        let idStr = UUID().uuidString
+        let without = try JSONValue.object(["id": .string(idStr), "prompt": .string("p")]).decode(SpawnInput.self)
         #expect(without.base == nil)
-        let with = try JSONValue.object(["prompt": .string("p"), "base": .string("feature-a")])
+        #expect(without.id.uuidString == idStr)
+        let with = try JSONValue.object(["id": .string(idStr), "prompt": .string("p"), "base": .string("feature-a")])
             .decode(SpawnInput.self)
         #expect(with.base == "feature-a")
+        // An id-less payload must now FAIL to decode (the clean wire break).
+        #expect(throws: (any Error).self) {
+            _ = try JSONValue.object(["prompt": .string("p")]).decode(SpawnInput.self)
+        }
     }
 
     @Test("TreeSnapshot round-trips through JSONValue")

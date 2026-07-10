@@ -15,7 +15,7 @@ struct ConvergeContextTests {
     func test_convergeContextTransitionAppliesMutate() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         _ = try await env.svc.store.update(card.id) { $0.phase = .creatingWorktree }
         let ctx = await env.svc.convergeContext()
         // The mutate form lands the phase AND the companion field-write in ONE store patch.
@@ -51,7 +51,7 @@ struct MaterializeStepperTests {
                               branch: String, prompt: String = "x",
                               _ mutate: @Sendable @escaping (inout Task) -> Void = { _ in }) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: prompt, repo: repo, branch: branch))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: prompt, repo: repo, branch: branch))
         _ = try await env.svc.store.update(card.id) { $0.phase = .creatingWorktree; mutate(&$0) }
         // Remove the tree spawn already cut so `materialize` genuinely re-cuts via `manager.ensure`
         // (an existing dir+marker would be ADOPTED, skipping the manager call the tests observe).
@@ -110,8 +110,8 @@ struct MaterializeStepperTests {
         // (b) a SHARED sibling on the same tree is NEVER removed by the rollback.
         let env2 = TestEnv.make()
         let repo = TestEnv.repo(env2.base)
-        let c1 = try await env2.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "shared"))
-        let c2 = try await env2.svc.spawn(SpawnInput(prompt: "y", repo: repo, branch: "shared"))  // co-located sibling
+        let c1 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "shared"))
+        let c2 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "shared"))  // co-located sibling
         #expect(c1.cwd == c2.cwd)
         _ = try await env2.svc.store.update(c1.id) { $0.phase = .creatingWorktree; $0.spawnBase = "main" }
         try? FileManager.default.removeItem(atPath: c1.cwd)   // force a genuine re-cut so recordSpawnBase runs
@@ -194,7 +194,7 @@ struct LaunchStepperTests {
                                branch: String, prompt: String = "x",
                                _ mutate: @Sendable @escaping (inout Task) -> Void = { _ in }) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: prompt, repo: repo, branch: branch))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: prompt, repo: repo, branch: branch))
         _ = try await env.svc.store.update(card.id) { $0.phase = .launching; mutate(&$0) }
         return try #require(await env.svc.store.get(card.id))
     }
@@ -204,7 +204,7 @@ struct LaunchStepperTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         // Resumable: agentSessionId + a transcript on disk → .resume (pendingSeed folded).
-        let resumable = try await env.svc.spawn(SpawnInput(prompt: "hi", repo: repo, branch: "b"))
+        let resumable = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "hi", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: resumable.agentSessionId!)
         _ = try await env.svc.store.update(resumable.id) { $0.pendingSeed = "SEED" }
         let rc = try #require(await env.svc.store.get(resumable.id))
@@ -215,7 +215,7 @@ struct LaunchStepperTests {
 
         // A real (non-provisional) card with NO transcript → blank, initialPrompt submitted, landing .running.
         let blankReal = try #require(await env.svc.store.get(
-            try await env.svc.spawn(SpawnInput(prompt: "do it", repo: repo, branch: "c")).id))
+            try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "do it", repo: repo, branch: "c")).id))
         guard case .blank(let land, let prompt) = deriveLaunchFlavor(blankReal, env.adapter) else {
             Issue.record("expected .blank"); return
         }
@@ -224,7 +224,7 @@ struct LaunchStepperTests {
 
         // A never-prompted (provisional) card → blank with NO positional, landing .waiting.
         let provisional = try #require(await env.svc.store.get(
-            try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "d")).id))
+            try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "d")).id))
         guard case .blank(let land2, let prompt2) = deriveLaunchFlavor(provisional, env.adapter) else {
             Issue.record("expected .blank"); return
         }
@@ -249,7 +249,7 @@ struct LaunchStepperTests {
     private func seedLaunchingAwaited(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
                                       branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         _ = try await env.svc.store.update(live.id) { $0.phase = .launching }
         return try #require(await env.svc.store.get(live.id))
     }
@@ -285,7 +285,7 @@ struct LaunchStepperTests {
     func test_launchConsumesPendingSeed() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "hi", repo: repo, branch: "b"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "hi", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: card.agentSessionId!)   // resumable ⇒ the seed folds into resume
         _ = try await env.svc.store.update(card.id) { $0.phase = .launching; $0.pendingSeed = "PAYLOAD-42" }
         let fresh = try #require(await env.svc.store.get(card.id))
@@ -308,7 +308,7 @@ struct RelaunchStepperTests {
                                  branch: String,
                                  _ mutate: @Sendable @escaping (inout Task) -> Void = { _ in }) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         env.adapter.writeTranscript(for: card.agentSessionId!)   // resumable by default
         _ = try await env.svc.store.update(card.id) { $0.phase = .relaunching; $0.sessionEpoch = 7; mutate(&$0) }
         return try #require(await env.svc.store.get(card.id))
@@ -366,8 +366,8 @@ struct TeardownStepperTests {
         _ = try Proc.run(["git", "-C", repo, "init"])   // lineage config needs a real git repo
         // Non-blocking spawn: drive to live so the worktree is genuinely materialized (marker recorded) —
         // teardown's release then has a real tree to reclaim.
-        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await env.svc.lineage.set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         _ = try await env.svc.store.update(parent.id) { $0.phase = .archived(teardownComplete: false) }
@@ -389,7 +389,7 @@ struct TeardownStepperTests {
     func test_teardownFullDutyList_scratch() async throws {
         try await withScratchLock {
             let env = TestEnv.make()
-            let card = try await env.svc.spawn(SpawnInput(prompt: "x", scratch: true))
+            let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", scratch: true))
             #expect(FileManager.default.fileExists(atPath: card.cwd))
             #expect(card.cwd.hasPrefix(Config.scratchRoot + "/"))
             _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: false) }
@@ -405,7 +405,7 @@ struct TeardownStepperTests {
         let env = TestEnv.make()
         let dir = env.base + "/borrowed-work"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", cwd: dir))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", cwd: dir))
         #expect(card.origin == .borrowed)
         _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: false) }
         let fresh = try #require(await env.svc.store.get(card.id))
@@ -420,8 +420,8 @@ struct TeardownStepperTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         _ = try Proc.run(["git", "-C", repo, "init"])
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parent = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await env.svc.lineage.set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         _ = try await env.svc.store.update(parent.id) { $0.phase = .archived(teardownComplete: false) }

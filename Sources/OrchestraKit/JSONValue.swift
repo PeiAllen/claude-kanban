@@ -78,6 +78,13 @@ public enum JSONValue: Codable, Sendable, Equatable {
         guard let s = self[key]?.stringValue else { throw OrchestraError.invalidParams("missing string '\(key)'") }
         return s
     }
+    /// Required UUID param — the wire form is a UUID string.
+    public func uuid(_ key: String) throws -> UUID {
+        guard let s = self[key]?.stringValue, let u = UUID(uuidString: s) else {
+            throw OrchestraError.invalidParams("\(key) must be a UUID string")
+        }
+        return u
+    }
     public func optString(_ key: String) -> String? { self[key]?.stringValue }
     public func optInt(_ key: String) -> Int? { self[key]?.intValue }
     public func optBool(_ key: String) -> Bool? { self[key]?.boolValue }

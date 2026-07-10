@@ -78,6 +78,7 @@ public struct CommandRegistry: Sendable {
 
             "spawn": { svc, p, src in
                 let input = SpawnInput(
+                    id: try p.uuid("id"),           // required wire field — clients mint/forward it
                     prompt: try p.string("prompt"),
                     repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
                     model: p.optString("model"),
@@ -328,6 +329,7 @@ public struct CommandRegistry: Sendable {
                 var inputs: [SpawnInput] = []
                 for item in arr {
                     inputs.append(SpawnInput(
+                        id: try item.uuid("id"),    // required per-item wire field (client stamps when absent)
                         prompt: try item.string("prompt"), repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),

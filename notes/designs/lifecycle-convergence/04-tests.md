@@ -148,6 +148,8 @@ flowchart LR
 | Both-agent matrix on every lifecycle test | Repo rule: Claude + Codex are both priority targets | Claude-only (today's state) |
 | Crash tests iterate phases, not verbs | The reconciler dispatches by phase — the real key | Per-verb crash tests (redundant per pruner A7) |
 | Slow-repo E2E kept but labeled smoke | Exercises the real git/tmux path cheaply | Counting it as race proof |
+| **PR6a Task 6.1: idempotency tests in `OrchestraCoreTests`** (not `IntegrationTests`) — `TestEnv.make()`/`env.svc` + `SpawnRaceTests` concurrent precedent + `EventBox` accumulator live there | The deterministic daemon harness and concurrent-spawn precedent are in that target; keeps the tests fast + deterministic | The spec's suggested `IntegrationTests` path (no harness there) |
+| **PR6a Task 6.1: wire-path test drives the real `CommandRegistry` handler** (`CommandRegistry().command("spawn")?.run(env.svc, params, .mcp)`, twice with the same `id` param) | Proves the registry reads `id` from params and dedups — the brief's `env.dispatch` placeholder resolved to the existing `CommandsTests` registry-run precedent, no new harness | A full `ControlClient`↔`ControlServer` round trip (heavier, unnecessary for the registry-reads-`id` assertion) |
 
 ## Open questions — need your call
 

@@ -6,7 +6,7 @@ import Foundation
     @Test("sessionStart returns the live orientation; compact skips it")
     func sessionStart() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
         let ref = card.id.uuidString
 
         let r = await svc.handleHook(ref, event: .sessionStart, report: nil, source: .startup)
@@ -20,7 +20,7 @@ import Foundation
     @Test("stop drains the inbox into the continuation")
     func stop() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
         try await svc.send(card.id, "queued message")
 
         let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil)
@@ -31,7 +31,7 @@ import Foundation
     @Test("stop with an empty inbox yields no continuation")
     func stopEmpty() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
         let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil)
         #expect(r == nil)
     }
@@ -39,7 +39,7 @@ import Foundation
     @Test("a telemetry event applies its report to the store and returns no response")
     func telemetry() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
 
         let r = await svc.handleHook(card.id.uuidString, event: .postToolUse,
                                      report: StatusReport(desc: "Running: ls", run: .waiting(.humanTurn)), source: nil)

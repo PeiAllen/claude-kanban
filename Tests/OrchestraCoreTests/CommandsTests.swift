@@ -26,6 +26,7 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let spawn = try #require(reg.command("spawn"))
         let params = JSONValue.object([
+            "id": .string(UUID().uuidString),
             "prompt": .string("Do the thing"),
             "repo": .string(repo),
             "branch": .string("feat"),
@@ -41,7 +42,7 @@ struct CommandsTests {
     func dispatchByRef() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let reg = CommandRegistry()
 
         // move by shortId
@@ -64,7 +65,7 @@ struct CommandsTests {
     func dispatchCapture() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         // Make the card's tmux session deterministically alive for the read (spawn's ensure is async).
         env.sessions.setAlive(t.id, true)
 
@@ -77,7 +78,7 @@ struct CommandsTests {
         #expect(cap.text.contains(env.sessions.sessionName(t.id)))
 
         // A read of a card whose session isn't running surfaces an error.
-        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "y", repo: repo, branch: "c"))
+        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "c"))
         env.sessions.setAlive(t2.id, false)
         await #expect(throws: OrchestraError.self) {
             _ = try await capture.run(env.svc, .object(["ref": .string(t2.shortId)]), .mcp)
@@ -88,7 +89,7 @@ struct CommandsTests {
     func dispatchReopen() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await TestEnv.archiveAndTeardown(env.svc, t.id)
         let reg = CommandRegistry()
         let reopen = try #require(reg.command("reopen"))
@@ -104,8 +105,8 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let bs = try #require(reg.command("batch-spawn"))
         let params = JSONValue.object(["tasks": .array([
-            .object(["prompt": .string("one"), "repo": .string(repo), "branch": .string("o")]),
-            .object(["prompt": .string("two"), "repo": .string(repo), "branch": .string("t")]),
+            .object(["id": .string(UUID().uuidString), "prompt": .string("one"), "repo": .string(repo), "branch": .string("o")]),
+            .object(["id": .string(UUID().uuidString), "prompt": .string("two"), "repo": .string(repo), "branch": .string("t")]),
         ])])
         let res = try await bs.run(env.svc, params, .cli)
         let result = try res.decode(BatchSpawnResult.self)
@@ -120,9 +121,9 @@ struct CommandsTests {
         let reg = CommandRegistry()
         let bs = try #require(reg.command("batch-spawn"))
         let params = JSONValue.object(["tasks": .array([
-            .object(["prompt": .string("ok"), "repo": .string(repo), "branch": .string("a")]),
+            .object(["id": .string(UUID().uuidString), "prompt": .string("ok"), "repo": .string(repo), "branch": .string("a")]),
             // a non-allowlisted repo fails resolveRepo → recorded, not thrown
-            .object(["prompt": .string("bad"), "repo": .string("/not/allowed"), "branch": .string("b")]),
+            .object(["id": .string(UUID().uuidString), "prompt": .string("bad"), "repo": .string("/not/allowed"), "branch": .string("b")]),
         ])])
         let result = try await bs.run(env.svc, params, .cli).decode(BatchSpawnResult.self)
         #expect(result.spawned.count == 1)
@@ -146,7 +147,7 @@ struct CommandsTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let reg = CommandRegistry()
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await env.svc.send(t.id, "one")
         try await env.svc.send(t.id, "two")
 
@@ -184,7 +185,7 @@ struct CommandsTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let reg = CommandRegistry()
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let edit = try #require(reg.command("inbox-edit"))
         await #expect(throws: OrchestraError.self) {
             _ = try await edit.run(env.svc, .object(["ref": .string(t.shortId),

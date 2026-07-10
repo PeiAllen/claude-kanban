@@ -28,7 +28,7 @@ struct ControlRoundTripTests {
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
 
         // spawn
-        let spawnRes = try await client.call("spawn", .object([
+        let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Build the thing"), "repo": .string(repo), "branch": .string("feat"),
         ]))
         let task = try spawnRes.decode(Task.self)
@@ -65,7 +65,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Snapshot me"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         let snap = try await client.boardSnapshot()
@@ -90,7 +90,7 @@ struct ControlRoundTripTests {
         // First client spawns (producing a .spawned activity into the ring).
         let c1 = ControlClient(socketPath: path, source: .cli)
         try c1.connect()
-        _ = try await c1.call("spawn", .object([
+        _ = try await c1.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Earlier card"), "repo": .string(repo), "branch": .string("b")]))
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         c1.close()
@@ -122,7 +122,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         // empty inbox → no continuation
@@ -145,7 +145,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         _ = try await env.svc.move(task.id, to: .review)
@@ -178,7 +178,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
@@ -217,7 +217,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
@@ -275,7 +275,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .cli)
         try client.connect(); defer { client.close() }
 
-        let spawnRes = try await client.call("spawn", .object([
+        let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("x"), "repo": .string(repo), "branch": .string("feat"),
         ]))
         let task = try spawnRes.decode(Task.self)

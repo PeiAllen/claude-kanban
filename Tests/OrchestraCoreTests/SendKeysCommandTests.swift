@@ -57,7 +57,7 @@ struct SendKeysCommandTests {
     func dispatchesValidChord() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.sessions.setAlive(t.id, true)
 
         let params = JSONValue.object([

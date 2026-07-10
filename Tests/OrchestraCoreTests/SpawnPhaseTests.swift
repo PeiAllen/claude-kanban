@@ -20,7 +20,7 @@ struct SpawnPhaseTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "go", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "go", repo: repo, branch: "b"))
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
 
         let ps = await phases(collector, t.id)
@@ -41,7 +41,7 @@ struct SpawnPhaseTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "go", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "go", repo: repo, branch: "b"))
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
 
         let first = await collector.upserts.first { $0.id == t.id }
@@ -55,14 +55,14 @@ struct SpawnPhaseTests {
         let repo = TestEnv.repo(env.base)
 
         // .relaunching + no session → NOT killed.
-        let r = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "r"))
+        let r = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "r"))
         _ = await env.svc.transition(r.id, to: .relaunching)
         env.sessions.setAlive(r.id, false)
         await env.svc.reconcileLiveness()
         #expect(await env.svc.list(includeArchived: true).first { $0.id == r.id }?.phase.kind == .relaunching)
 
         // .creatingWorktree + no session → NOT killed (reach it via the reopen normalize path).
-        let c = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "c"))
+        let c = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "c"))
         try await env.svc.archive(c.id)
         _ = await env.svc.transition(c.id, to: .archived(teardownComplete: true))
         _ = await env.svc.transition(c.id, to: .creatingWorktree)
@@ -73,7 +73,7 @@ struct SpawnPhaseTests {
         // .launching + vanished session → NOT killed (mirrors .creatingWorktree/.relaunching). The SYNCHRONOUS
         // launchAndConfirm owns readiness + the spawnFailed timeout, so liveness must never markDead a .launching
         // card — doing so races the launch's own transition(.launching)→ensure window and false-kills a live spawn.
-        let l = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "l"))
+        let l = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "l"))
         try await env.svc.archive(l.id)
         _ = await env.svc.transition(l.id, to: .archived(teardownComplete: true))
         _ = await env.svc.transition(l.id, to: .creatingWorktree)
@@ -87,7 +87,7 @@ struct SpawnPhaseTests {
     func test_promptedSpawnLandsRunning() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "do the thing", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "do the thing", repo: repo, branch: "b"))
         #expect(t.phase == .live(.running))
     }
 
@@ -95,7 +95,7 @@ struct SpawnPhaseTests {
     func test_provisionalSpawnLandsWaiting() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
         #expect(t.phase == .live(.waiting(.humanTurn)))
     }
 
@@ -103,7 +103,7 @@ struct SpawnPhaseTests {
     func test_relaunchSupersede() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
         _ = await env.svc.transition(t.id, to: .relaunching)
         let e1 = try #require(await env.svc.store.get(t.id)).sessionEpoch
@@ -126,7 +126,7 @@ struct SpawnPhaseTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
 
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         _ = await env.svc.transition(t.id, to: .dead(.completed))
         let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
         let revived = await env.svc.transition(t.id, to: .live(.running), observedEpoch: epoch)   // viaSignal
@@ -134,7 +134,7 @@ struct SpawnPhaseTests {
         #expect(try #require(await env.svc.store.get(t.id)).phase == .live(.running))
 
         // A verb (no observedEpoch) may NOT drive dead → live.
-        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b2"))
+        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b2"))
         _ = await env.svc.transition(t2.id, to: .dead(.completed))
         let byVerb = await env.svc.transition(t2.id, to: .live(.running))
         #expect(byVerb == .rejected(from: .dead(.completed), to: .live(.running)))
@@ -147,7 +147,7 @@ struct SpawnPhaseTests {
         // fast to exercise it). spawnAwaited drives the setup spawn's launch-ready signal.
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)                       // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))   // idle
         let name = env.sessions.sessionName(t.id)
@@ -175,7 +175,7 @@ struct SpawnPhaseTests {
         // drain) instead of racing a too-fast `.relaunchLiveness` confirm.
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let sid = try #require(t.agentSessionId)
         env.adapter.writeTranscript(for: sid)                                     // resumable
         try await TestEnv.archiveAndTeardown(env.svc, t.id)
@@ -202,7 +202,7 @@ struct SpawnPhaseTests {
     func test_reopenBlankWhenTranscriptGone() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let oldId = try #require(t.agentSessionId)
         try await TestEnv.archiveAndTeardown(env.svc, t.id)                        // no transcript → not resumable
 
@@ -221,8 +221,8 @@ struct SpawnPhaseTests {
     func test_waitResolvesOnCrashDeath() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "parent", repo: repo, branch: "p"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "child", repo: repo, branch: "c"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "parent", repo: repo, branch: "p"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "child", repo: repo, branch: "c"))
 
         async let concl = env.svc.wait(watcher: parent.id, refs: [child.id])
         try await _Concurrency.Task.sleep(for: .milliseconds(50))

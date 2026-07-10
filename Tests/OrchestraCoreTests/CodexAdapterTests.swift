@@ -268,7 +268,7 @@ struct CodexSpawnWiringTests {
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: sessions,
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let t = try await TestEnv.spawnAwaited(svc, SpawnInput(prompt: "look around", agentId: "codex",
+        let t = try await TestEnv.spawnAwaited(svc, SpawnInput(id: UUID(), prompt: "look around", agentId: "codex",
                                                cwd: PathResolver.canonical(work), access: .readOnly))
         #expect(t.agentId == "codex")
         let name = sessions.sessionName(t.id)
@@ -376,7 +376,7 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // Model only — the way the app's flat picker sends it — no agentId.
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -390,7 +390,7 @@ struct CodexModelRoutingTests {
         let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         #expect(t.agentId == "claude-code")                        // default (config.defaultAgentId) preserved
         try? FileManager.default.removeItem(atPath: base)
     }
@@ -402,7 +402,7 @@ struct CodexModelRoutingTests {
         let repo = TestEnv.repo(env.base)
         // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
-            SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex", agentId: "claude-code"))
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex", agentId: "claude-code"))
         #expect(t.agentId == "claude-code")
         try? FileManager.default.removeItem(atPath: base)
     }

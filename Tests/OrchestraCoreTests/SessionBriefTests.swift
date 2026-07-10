@@ -35,7 +35,7 @@ struct SessionBriefTests {
     func liveColumn() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
 
         _ = try await env.svc.move(task.id, to: .review)
         let reviewed = try #require(await env.svc.sessionBrief(task.id))
@@ -58,7 +58,7 @@ struct SessionBriefTests {
     func noPositionalFold() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "build the thing", repo: repo, branch: "cl"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "build the thing", repo: repo, branch: "cl"))
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         // The positional is exactly the user's prompt — no orientation text prepended.
         #expect(argv.last == "build the thing")

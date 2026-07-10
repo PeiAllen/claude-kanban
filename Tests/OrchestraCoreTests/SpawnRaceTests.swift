@@ -21,7 +21,7 @@ struct SpawnRaceTests {
             // Non-blocking spawn persists a `.creatingWorktree` card, then the STEPPING reconciler drives it
             // through the funnel. Interleave `reconcile()` ticks while each card is being born — the
             // being-born phases (creatingWorktree/launching) must never be false-killed by a concurrent tick.
-            let t = try await env.svc.spawn(SpawnInput(prompt: "c\(i)", repo: repo, branch: "b\(i)"))
+            let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c\(i)", repo: repo, branch: "b\(i)"))
             for _ in 0..<4 { await env.svc.reconcile() }
             ids.append(t.id)
         }
@@ -46,14 +46,14 @@ struct SpawnRaceTests {
         let repo = TestEnv.repo(env.base)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        let first = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "parent"))
-        let second = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
+        let first = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "parent"))
+        let second = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
         _ = second
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         #expect(await collector.activities.contains { $0.kind == .warning && $0.text.contains("second live card") })
 
         // A child on `parent`: shipping it (root ship) / notify must resolve to the OLDEST parent card.
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         _ = child
         let active = await env.svc.list()
         #expect(await env.svc.derivedCard(repo: repo, branch: "parent", among: active)?.id == first.id)
@@ -63,7 +63,7 @@ struct SpawnRaceTests {
     func restartIgnoresStaleSessionEnd() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
         // User clicks "start fresh": intent-only restart records `.relaunching` (fresh id, epoch bumped); the
         // reconciler's RelaunchStepper kills the old process and blank-launches a new session.

@@ -93,7 +93,7 @@ struct ResumeSeedTests {
     func resumeWithSeed() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
@@ -120,7 +120,7 @@ struct ResumeInCardTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         return t
@@ -167,7 +167,7 @@ struct ResumeInCardTests {
         // so a crash before launch keeps it on disk and the re-driven relaunch delivers it.
         let env = TestEnv.make(grace: 30)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         try await env.svc.send(t.id, "queued-1")
@@ -188,7 +188,7 @@ struct ResumeInCardTests {
 
         // A resumeFailed KEEPS the seed (fail-safe): a card whose transcript vanished mid-relaunch stays
         // seeded so a later retry still delivers it.
-        let f = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "y", repo: repo, branch: "f"))
+        let f = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "f"))
         await env.svc.markDead(f.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: f.agentSessionId!)
         _ = try await env.svc.resumeInCard(f.id, seed: "KEEPME")
@@ -226,7 +226,7 @@ struct HandoffCommandTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         return t

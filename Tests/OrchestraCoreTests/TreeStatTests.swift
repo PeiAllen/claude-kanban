@@ -47,7 +47,7 @@ struct TreeStatTests {
     /// Spawn a `.worktree` card on `child` linked to `parent` with the given recorded base.
     static func linkedChild(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
                             repo: String, base recorded: String) async throws -> Task {
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: recorded))
         return card
@@ -117,7 +117,7 @@ struct TreeStatTests {
     func noLinkNoStat() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "solo", repo: repo, branch: "solo"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
         await env.svc.recomputeTreeStat(card.id)
         #expect(await treeStat(env, card.id) == nil)
     }
@@ -196,7 +196,7 @@ struct TreeStatTests {
     func syncedNoLink() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "solo", repo: repo, branch: "solo"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
         await #expect(throws: OrchestraError.self) {
             _ = try await env.svc.synced(ref: card.ref())
         }

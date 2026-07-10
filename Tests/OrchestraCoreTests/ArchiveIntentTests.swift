@@ -46,13 +46,13 @@ struct ArchiveIntentTests {
         let input: SpawnInput
         switch origin {
         case .worktree:
-            input = SpawnInput(prompt: "x", repo: TestEnv.repo(e.base), branch: branch, agentId: agentId)
+            input = SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(e.base), branch: branch, agentId: agentId)
         case .scratch:
-            input = SpawnInput(prompt: "x", agentId: agentId, scratch: true)
+            input = SpawnInput(id: UUID(), prompt: "x", agentId: agentId, scratch: true)
         case .borrowed:
             let dir = e.base + "/borrowed-\(branch)"
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            input = SpawnInput(prompt: "x", agentId: agentId, cwd: dir)
+            input = SpawnInput(id: UUID(), prompt: "x", agentId: agentId, cwd: dir)
         }
         // Awaited caps need the ready signal each launching tick; deliver it defensively.
         let created = try await e.svc.spawn(input)
@@ -91,7 +91,7 @@ struct ArchiveIntentTests {
     func test_archiveIsIntentOnly() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
         try await env.svc.archive(t.id)
 
@@ -114,7 +114,7 @@ struct ArchiveIntentTests {
     func test_reArchiveIsIdempotent() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
         // archivedPending: a retried archive is an idempotent no-op success (never throws).
         _ = try await env.svc.store.update(t.id) { $0.phase = .archived(teardownComplete: false); $0.archived = true }

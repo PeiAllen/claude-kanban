@@ -10,7 +10,7 @@ struct SpawnSeedTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
-            SpawnInput(prompt: "Do the fork task", repo: repo, branch: "fk", seed: "PARENT-CONTEXT"))
+            SpawnInput(id: UUID(), prompt: "Do the fork task", repo: repo, branch: "fk", seed: "PARENT-CONTEXT"))
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let positional = try #require(argv.last)
         #expect(positional.contains("PARENT-CONTEXT"))
@@ -25,7 +25,7 @@ struct SpawnSeedTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
-            SpawnInput(prompt: "", repo: repo, branch: "fk2", seed: "SLICE"))
+            SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "fk2", seed: "SLICE"))
         #expect(t.titleProvisional == false)
         #expect(t.phaseDisplay == .running)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -36,7 +36,7 @@ struct SpawnSeedTests {
     func noSeedUnchanged() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "plain", repo: repo, branch: "p"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "plain", repo: repo, branch: "p"))
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.last == "plain")
     }
@@ -48,6 +48,7 @@ struct SpawnSeedTests {
         let reg = CommandRegistry()
         let spawn = try #require(reg.command("spawn"))
         let params = JSONValue.object([
+            "id": .string(UUID().uuidString),
             "prompt": .string("task"), "repo": .string(repo), "branch": .string("s"),
             "seed": .string("FORK-SEED"),
         ])

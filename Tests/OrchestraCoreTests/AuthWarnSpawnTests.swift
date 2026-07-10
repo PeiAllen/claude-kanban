@@ -20,7 +20,7 @@ struct AuthWarnSpawnTests {
         await collector.start(await env.svc.subscribe())
 
         var tasks: [Task] = []
-        for i in 0..<4 { tasks.append(try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p\(i)", repo: repo, branch: "b\(i)"))) }
+        for i in 0..<4 { tasks.append(try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p\(i)", repo: repo, branch: "b\(i)"))) }
 
         // No cap: all four cards were created and launched.
         #expect(tasks.count == 4)
@@ -40,7 +40,7 @@ struct AuthWarnSpawnTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        for i in 0..<3 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
+        for i in 0..<3 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
 
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         let warnings = await collector.activities.filter { $0.kind == .warning }
@@ -54,7 +54,7 @@ struct AuthWarnSpawnTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        for i in 0..<6 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
+        for i in 0..<6 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
 
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         let warnings = await collector.activities.filter { $0.kind == .warning }

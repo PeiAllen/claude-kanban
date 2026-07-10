@@ -672,6 +672,9 @@ public class BoardStore: ObservableObject {
                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                base: String? = nil) async -> Task? {
         var p: [String: JSONValue] = [
+            // Client-minted id (required wire field): the daemon dedups on it. App-side reuse-on-retry
+            // (retaining this id across a failed/in-flight spawn) is PR6b's SpawnSheet UX.
+            "id": .string(UUID().uuidString),
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
         ]

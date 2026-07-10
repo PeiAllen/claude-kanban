@@ -80,7 +80,7 @@ struct ShellSyncRoundTripTests {
 
         // Spawn the card BEFORE the phone subscribes, so the spawn's activity is in the ring and gets
         // replayed to the phone on subscribe — a deterministic registration anchor (see `waitForCard`).
-        let task = try await desktop.call("spawn", .object([
+        let task = try await desktop.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("shells"), "repo": .string(repo), "branch": .string("feat")]))
             .decode(Task.self)
         let ref = task.shortId

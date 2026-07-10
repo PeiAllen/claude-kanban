@@ -14,7 +14,7 @@ struct NotesServiceTests {
     private func worktreeCardWithNotes() async throws -> (env: Env, task: Task) {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "task", repo: repo, branch: "b"))
         let fm = FileManager.default
         try fm.createDirectory(atPath: t.cwd + "/notes", withIntermediateDirectories: true)
         for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
@@ -56,7 +56,7 @@ struct NotesServiceTests {
         let env = TestEnv.make()
         let dir = env.base + "/data"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", cwd: dir, access: .readWrite))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(try await env.svc.changedNotes(t.id).isEmpty)
     }

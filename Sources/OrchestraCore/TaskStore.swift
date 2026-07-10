@@ -155,6 +155,23 @@ public actor TaskStore {
         return (t, currentRev)
     }
 
+    /// Atomic get-or-create keyed on `task.id`: returns the existing card (created:false) if the id is
+    /// already present, else appends it (created:true). No `await` between the presence check and the
+    /// append (the actor owns `tasks`, so get+append is atomic) — this is THE idempotency boundary: a
+    /// check-then-act across the service actor is NOT atomic because every `await` re-enters, so two
+    /// concurrent same-id spawns could both pass a bare `get`-then-`create`. Here they cannot both append.
+    @discardableResult
+    public func createIfAbsent(_ task: Task) throws -> (task: Task, rev: Int, created: Bool) {
+        ensureLoaded()
+        if let existing = tasks.first(where: { $0.id == task.id }) { return (existing, currentRev, false) }
+        var t = task
+        t.order = nextOrder(in: t.column)
+        t.updatedAt = Date()
+        tasks.append(t)
+        try persist()                     // bumps currentRev
+        return (t, currentRev, true)
+    }
+
     /// Next free order slot at the end of a column (excluding `ignoring`, e.g. the card being moved).
     public func nextOrder(in column: Column, ignoring: UUID? = nil) -> Int {
         ensureLoaded()

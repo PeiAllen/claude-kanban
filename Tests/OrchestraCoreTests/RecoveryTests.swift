@@ -20,10 +20,10 @@ struct RecoveryTests {
         // manipulations. Doing the setAlive(false) BEFORE a later spawnAndAwaitLive would let that spawn's
         // reconcile tick markDead the session-gone card early (as `.sessionVanished`) — corrupting the setup
         // this boot pass is meant to classify.
-        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "alive", repo: repo, branch: "a"))
-        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "resumable", repo: repo, branch: "b"))
-        let c = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "unrevivable", repo: repo, branch: "c"))
-        let d = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "archived", repo: repo, branch: "d"))
+        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "alive", repo: repo, branch: "a"))
+        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "resumable", repo: repo, branch: "b"))
+        let c = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "unrevivable", repo: repo, branch: "c"))
+        let d = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "archived", repo: repo, branch: "d"))
 
         // A: alive at the matching epoch → adopted (stays live, not relaunched).
         env.sessions.setAlive(a.id, true)
@@ -60,7 +60,7 @@ struct RecoveryTests {
     func resumeSuccess() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
@@ -80,7 +80,7 @@ struct RecoveryTests {
         // ordering is exercisable (a `.relaunchLiveness` stub never registers a waiter).
         let env = TestEnv.make(grace: 2, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
@@ -110,7 +110,7 @@ struct RecoveryTests {
     func resumeFailNoTranscript() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         // Intent-only: resume no longer throws — it records `.relaunching`; the RelaunchStepper fails safe
         // (non-provisional card, no transcript on disk → `.dead(.resumeFailed)` "transcript gone").
@@ -131,7 +131,7 @@ struct RecoveryTests {
         // (carry #2) marks it dead. Back-date the anchor so the bound trips deterministically.
         let env = TestEnv.make(grace: 2, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
         env.adapter.writeTranscript(for: t.agentSessionId!)
 
@@ -153,7 +153,7 @@ struct RecoveryTests {
     func restart() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Original ask", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "Original ask", repo: repo, branch: "b"))
         await env.svc.markDead(t.id, reason: .agentExited, detail: "x", source: .daemon)
         let oldId = try #require(t.agentSessionId)
 
@@ -180,7 +180,7 @@ struct RecoveryTests {
     func test_restartSingleWinner() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
         // Two restarts in quick succession: the second's `.relaunching` supersede self-edge bumps the epoch.
         let r1 = try await env.svc.restart(t.id)
@@ -206,7 +206,7 @@ struct RecoveryTests {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
         // No initial prompt → titleProvisional, and no transcript ever written.
-        let p = try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "fresh"))
+        let p = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "fresh"))
         #expect(p.titleProvisional == true)
         env.sessions.setAlive(p.id, false)   // session gone (reboot), no transcript on disk
 
@@ -227,7 +227,7 @@ struct RecoveryTests {
     func reconcile() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.sessions.setAlive(t.id, false)   // vanished (crash / tmux kill, no SessionEnd)
         await env.svc.reconcileLiveness()
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
@@ -250,7 +250,7 @@ struct RecoveryTests {
         // a second send genuinely arrives mid-relaunch (a `.relaunchLiveness` stub confirms too fast to race).
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))             // idle
         let name = env.sessions.sessionName(card.id)
@@ -289,7 +289,7 @@ struct RecoveryTests {
     func wakeIfPendingSkipsRunningCard() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
         try await env.svc.send(card.id, "later")                         // queues (gate B), not delivered now
         let ensureBefore = env.sessions.ensureCount
@@ -311,7 +311,7 @@ struct RecoveryTests {
         // would confirm too fast to exercise the overlap).
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                 // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                      // idle
 
