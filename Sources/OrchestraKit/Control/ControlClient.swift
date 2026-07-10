@@ -31,6 +31,10 @@ public final class ControlClient: @unchecked Sendable {
     private let probeTimeout: Duration                     // first-connect probe bound — DECOUPLED from callTimeout
     private var pingTask: _Concurrency.Task<Void, Never>?
     private var eventContinuation: AsyncStream<Event>.Continuation?
+    /// The rev-carrying continuation for BoardStore's per-card gate (Stage 6.3). Separate from
+    /// `eventContinuation` so the ~18 test files consuming `subscribe()`'s bare `Event` stream are
+    /// untouched; `readUntilEOF` yields the same wire event to both.
+    private var envelopeContinuation: AsyncStream<EventEnvelope>.Continuation?
     private var subscribed = false
     private var stopping = false
     /// Idempotency guard (#4): true once a `connect()`/`connectAsync()` has a live read/reconnect loop
@@ -209,7 +213,7 @@ public final class ControlClient: @unchecked Sendable {
         // happen under `stateLock` — NSLock is non-recursive). `resolve` cancels each call's timer.
         let ids = stateLock.withLock { Array(pending.keys) }
         for id in ids { resolve(id, .failure(OrchestraError.io("connection closed"))) }
-        stateLock.withLock { eventContinuation?.finish() }
+        stateLock.withLock { eventContinuation?.finish(); envelopeContinuation?.finish() }
         setState(.down)
     }
 
@@ -353,6 +357,26 @@ public final class ControlClient: @unchecked Sendable {
         }
     }
 
+    /// Rev-carrying subscription for BoardStore's per-card gate. Unlike `subscribe()`, this does NOT
+    /// auto-issue the `subscribe` RPC — the caller awaits `call("subscribe")` as a registration BARRIER
+    /// BEFORE `boardSnapshot`, closing the subscribe→snapshot loss window (the daemon dispatches requests
+    /// concurrently, so registration must be acknowledged before snapshotting). Sets `subscribed` so the
+    /// runLoop re-subscribes on reconnect. The stream persists across reconnects — only `close()` ends it.
+    public func subscribeWithRev() -> AsyncStream<EventEnvelope> {
+        AsyncStream { cont in
+            stateLock.withLock {
+                self.envelopeContinuation?.finish()
+                self.envelopeContinuation = cont
+                self.subscribed = true                      // so runLoop re-subscribes on reconnect
+            }
+        }
+    }
+
+    /// Shut the current transport so the reader EOFs and the runLoop reconnects (with the success-gated
+    /// re-subscribe barrier). Used when the initial/reconnect subscribe barrier fails — we must NOT
+    /// snapshot while unsubscribed. `shutdown()` (not `close()`) so the reader thread owns the fd close.
+    public func forceReconnect() { (writeLock.withLock { transport })?.shutdown() }
+
     // MARK: - read / reconnect loop
 
     private func runLoop() {
@@ -375,12 +399,22 @@ public final class ControlClient: @unchecked Sendable {
                 do {
                     try openOnce()
                     attempt = 0
-                    // Re-subscribe FIRST (so the daemon re-registers us before we snapshot), then fire the
-                    // re-assert hook (#1) — the UI re-runs `refresh()` here, reconciling a board that would
-                    // otherwise stay silently stale after a daemon restart / link drop.
-                    if stateLock.withLock({ subscribed }) { _Concurrency.Task { try? await self.call("subscribe") } }
-                    onReconnect?()
-                    break
+                    // Success-gate the re-subscribe BARRIER, but do NOT block THIS (the sole reader) thread
+                    // on the ack (Opus NB-1): `readUntilEOF` — which delivers the subscribe reply — only runs
+                    // after `break`, so parking here waiting for the ack would deadlock (the call resolves
+                    // only via its `callTimeout` deadline → a healthy subscribe false-fails → infinite loop).
+                    // So: `break` first (reader starts), success-gate `onReconnect` INSIDE a detached Task —
+                    // it fires (→ UI `refresh → boardSnapshot`) only after the subscribe is acked; a failed
+                    // re-subscribe forces another reconnect instead of snapshotting unsubscribed.
+                    if stateLock.withLock({ subscribed }) {
+                        _Concurrency.Task { [weak self] in
+                            do { _ = try await self?.call("subscribe"); self?.onReconnect?() }  // registered → refresh
+                            catch { self?.forceReconnect() }                                    // NOT registered → drop → reconnect
+                        }
+                    } else {
+                        onReconnect?()
+                    }
+                    break                       // reader runs now, delivers the subscribe ack that resolves the call above
                 } catch { setState(.retrying); continue }
             }
         }
@@ -395,9 +429,12 @@ public final class ControlClient: @unchecked Sendable {
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
             if msg.method == "event" {
                 if let env = try? msg.params?.decode(EventEnvelope.self) {
-                    // Stage 6 consumes env.rev for gap detection; Stage 1 forwards the inner event
-                    // unchanged — the client's own `subscribe()` still yields a bare `Event`.
-                    stateLock.withLock { eventContinuation }?.yield(env.event)
+                    // Take both continuations under ONE lock scope, then yield after releasing (yielding
+                    // under the lock could re-enter). `subscribeWithRev()` carries `env.rev` to BoardStore's
+                    // per-card gate; `subscribe()` still yields the bare `Event` for existing consumers.
+                    let (envCont, evtCont) = stateLock.withLock { (envelopeContinuation, eventContinuation) }
+                    envCont?.yield(env)          // BoardStore (rev-gated)
+                    evtCont?.yield(env.event)    // existing consumers (bare Event)
                 }
             } else if let id = msg.id {
                 resolve(id, msg.error.map { .failure($0) } ?? .success(msg.result ?? .null))

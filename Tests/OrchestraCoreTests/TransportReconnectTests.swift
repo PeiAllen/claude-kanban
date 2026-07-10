@@ -44,9 +44,12 @@ struct TransportReconnectTests {
         func write(_ data: Data) -> Bool {
             box.record(data)
             // Stand in for a live daemon: answer the `version` probe (ControlClient now gates `.live` on
-            // it, #10) so the fake reconnect flow reaches `.live` exactly as a real one does.
+            // it, #10) so the fake reconnect flow reaches `.live` exactly as a real one does. Also answer
+            // the `subscribe` RPC: since Task 6.3 SUCCESS-GATES the reconnect re-assert hook on the
+            // subscribe ack (onReconnect fires only once registration is acknowledged — closing the
+            // subscribe→snapshot window), a reconnect can only complete when the daemon acks subscribe.
             if box.answerVersion, let req = try? RPCCodec.decoder.decode(RPCRequest.self, from: data),
-               req.method == "version", let id = req.id {
+               (req.method == "version" || req.method == "subscribe"), let id = req.id {
                 let resp = (try? RPCCodec.line(RPCResponse(id: id, result: .object(["version": .string("fake")])))) ?? Data()
                 lock.withLock { lines.append(resp) }
                 sema.signal()

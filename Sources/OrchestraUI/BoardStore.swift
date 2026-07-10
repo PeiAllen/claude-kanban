@@ -98,6 +98,16 @@ public class BoardStore: ObservableObject {
     /// `shellsChanged` broadcast. Reads are unchanged (`.contains`); it just can't be mutated directly.
     public var shellOpen: Set<UUID> { Set(shellWindows.keys) }
 
+    /// Highest board `rev` applied per card — the per-card staleness gate. Board-global tracking is
+    /// UNSOUND: `rev` is sparse AND non-monotonic in wire order (spawn's deferred emit), so a legit
+    /// lower-rev event for card B can arrive after a higher-rev event for card A, and a global cursor
+    /// would drop B. (PR1 sparse-rev decision.) Cleared on every snapshot adoption.
+    private var appliedRev: [UUID: Int] = [:]
+    /// The rev of the last adopted `boardSnapshot` — the resync floor. Reconnect (the only loss channel,
+    /// given the subscribe barrier) adopts a fresh snapshot rev here so pre-outage in-flight events can't
+    /// clobber the post-outage board.
+    private var baselineRev: Int = 0
+
     /// Per-card monotonic counter bumped every time a live `shellsChanged` broadcast reconciles a card.
     /// The (re)connect `refreshShellPanels` snapshots this per card BEFORE its suspending `sessions()`
     /// pull and skips the write if a fresher broadcast landed meanwhile — an older poll snapshot must
@@ -451,14 +461,20 @@ public class BoardStore: ObservableObject {
         // re-subscribing. `streamStarted` guards against double-subscribing within one activation.
         if !streamStarted {
             streamStarted = true
-            let stream = client.subscribe()
+            let stream = client.subscribeWithRev()
             _Concurrency.Task { [weak self] in
-                for await event in stream {
+                for await env in stream {
                     guard let self, self.connGeneration == gen else { break }
-                    self.apply(event)
+                    self.apply(env)                                  // rev-gated
                 }
                 self?.handleStreamEnded(gen: gen)
             }
+            // Success-gated BARRIER: registration must be acked before the snapshot (the daemon dispatches
+            // requests concurrently, so `boardSnapshot` could otherwise be handled before we're registered,
+            // dropping a task event emitted in that window). On failure, do NOT snapshot unsubscribed —
+            // force a reconnect; the reconnect path re-runs the gated barrier + `refresh()` via onReconnect.
+            do { try await client.call("subscribe") }
+            catch { client.forceReconnect(); return }
         }
         await refresh()
     }
@@ -477,6 +493,7 @@ public class BoardStore: ObservableObject {
         // card's shell sessions + owner. Falls back to the individual RPCs if the daemon predates
         // `boardSnapshot` (version skew during an upgrade).
         if let snap = try? await client.boardSnapshot() {
+            adoptSnapshotRev(snap.rev)              // seed the per-card rev gate from this fresh baseline
             tasks = snap.tasks
             archived = snap.archived
             config = snap.config
@@ -581,6 +598,27 @@ public class BoardStore: ObservableObject {
             }
         }
     }
+
+    /// The rev-gated ingestion entry the live envelope stream calls (Task 6.3). Task-state events apply
+    /// iff their envelope `rev` beats this card's applied rev AND the snapshot floor; activity/owner/
+    /// shells are NOT gated (they carry their own dedup/last-writer semantics). Internal for unit tests.
+    func apply(_ env: EventEnvelope) {
+        switch env.event {
+        case .taskUpserted(let t):
+            guard env.rev > max(baselineRev, appliedRev[t.id] ?? Int.min) else { return }
+            appliedRev[t.id] = env.rev; apply(env.event)
+        case .taskRemoved(let id):
+            guard env.rev > max(baselineRev, appliedRev[id] ?? Int.min) else { return }
+            appliedRev[id] = env.rev; apply(env.event)
+        case .activity, .agentTerminalOwner, .shellsChanged:
+            apply(env.event)
+        }
+    }
+
+    /// Resync floor adoption — `refresh()` calls this after a fresh `boardSnapshot`. Seeds the gate from
+    /// the snapshot's rev so pre-outage in-flight events (delivered ≤ this rev) can't clobber it, and
+    /// clears the per-card cursors (the snapshot is a fresh baseline for every card).
+    func adoptSnapshotRev(_ rev: Int) { baselineRev = rev; appliedRev.removeAll() }
 
     /// Apply one live event to the board. Internal (not private) so the dedup/reconcile branches can be
     /// unit-tested without a live daemon — same rationale as `ingestShellsChanged`.
