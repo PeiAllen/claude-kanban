@@ -31,11 +31,16 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
 2. **Starts the `ControlServer`** on its unix-domain socket. (The daemon renders **no** hook files — each
    adapter renders its own in `prepareToLaunch`, per launch, so a new session always reflects the current
    binary path + statusLine config. See [the hooks channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
-3. **Runs recovery** asynchronously without blocking startup: sweeps orphaned scratch dirs, then
-   revives sessions for cards whose tmux session died (see [Recovery](04-cards-worktrees-sessions.md#recovery-resume-and-restart)).
-4. **Starts a 2-second poll loop** that reconciles liveness (a safety net that flips a card to `dead`
-   if its tmux session vanished without a `SessionEnd` hook) and, alongside it, drives
-   [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter) — the rollout-tail tick that
+3. **Runs boot recovery** asynchronously without blocking startup, in order: sweeps orphaned scratch
+   dirs, a one-time worktree-marker migration, then **`reconcilePhasesAtBoot()`** — re-derives every
+   card's session state from its *persisted* `phase` alone, folding what used to be a separate
+   `recoverSessions` sweep (see [the Convergence model](#the-convergence-model)) — then an orphan-borrow
+   sweep, the watch-registry reload, remote-watch rebuild, and merge-request re-nudge rearm.
+4. **Starts a 2-second poll loop** that calls **`reconcile()`** — the per-tick driver that steps every
+   transitional card one edge closer to its target phase, enforces launch/relaunch timeouts, sweeps
+   orphaned tmux sessions, and (as a safety net) flips a `.live` card to `dead` if its session vanished
+   without a `SessionEnd` hook (see [the Convergence model](#the-convergence-model)) — and, alongside it,
+   drives [`pollTelemetry`](04-cards-worktrees-sessions.md#the-codex-adapter), the rollout-tail tick that
    pulls live state for `fileTail` agents (Codex) that don't push it.
 5. Parks on `dispatchMain()`.
 
@@ -51,6 +56,97 @@ ground truth is deliberately *federated* rather than held in memory:
 Because liveness comes from tmux and not from in-memory bookkeeping, the daemon can crash and restart
 (or the machine can reboot) and still correctly reconstruct which agents are alive and which need
 reviving. tmux also gives each agent a real PTY that the app and CLI attach to directly.
+
+## The Convergence model
+
+Every card's lifecycle is **one persisted variable** — `Task.phase` — with **one writer**. This is the
+*lifecycle-convergence* redesign (full spec: the [design vault](../notes/designs/lifecycle-convergence/index.md)
+and [design decisions](09-design-decisions.md#the-phase-funnel-one-writer-epochs-and-capability-gated-readiness));
+this section is the as-shipped daemon-side picture, agent-agnostic throughout (nothing here branches on
+`claude-code` vs `codex`).
+
+### The `transition()` funnel — the sole writer
+
+`OrchestraService.transition(_:to:observedEpoch:mutate:)` (`OrchestraService+Lifecycle.swift`) is the only
+code that ever writes `Task.phase`. Every mover — a verb's intent, a liveness signal, `markDead`, a
+reconciler step — routes through it, which in one call:
+
+1. validates the edge against the pure `isLegalEdge(from:to:viaSignal:)` machine (an edge outside the legal
+   set is `.rejected`, the stored phase untouched; a same-phase call is a `.noop` — except the
+   `relaunching → relaunching` supersede self-edge, which re-arms a fresh generation instead of being
+   swallowed);
+2. stamps `phaseChangedAt` and, on a (re)launch-bound entry, bumps `sessionEpoch` — all inside **one**
+   `store.update` patch that also applies the caller's `mutate` closure, so companion field writes
+   (`archived = true`, a cleared `agentSessionId`, a `deadReason`, a folded `pendingSeed`) land atomically
+   with the phase;
+3. fires the terminal `Conclusion` exactly once, on entry into a terminal phase from a non-terminal one —
+   `wait` resolves off this, never off `git`;
+4. wakes a message parked while the card was being born (`wakeIfPending`) on entry into `.live`.
+
+### `sessionEpoch` — making stale signals harmless
+
+`sessionEpoch` is a monotonic per-card generation the funnel bumps on every (re)launch entry, stamped into
+the launched session as the **`ORCH_EPOCH`** env var (`withEpoch` — agent-agnostic, rides every launch call
+site's `-e` env) and read back out-of-band via `SessionManaging.stampedEpoch(name:)`. A liveness signal (a
+late hook, a poll) carries the epoch it observed; the funnel drops any signal whose epoch no longer matches
+the card's *current* `sessionEpoch`. That fence is what lets both the reconciler and the funnel treat a
+session from a torn-down or superseded generation as harmless noise instead of something that has to be
+raced against.
+
+### The reconciler — driving cards through their transitional phases
+
+The daemon's 2-second poll calls `OrchestraService.reconcile()` every tick (`OrchestraService+Reconcile.swift`).
+For each card in a **transitional** phase (`creatingWorktree` / `launching` / `relaunching` /
+`archivedPending`) it dispatches one **`PhaseStepper`** (`PhaseStepper.swift`) — a stateless, idempotent
+driver keyed by `Phase.Kind` that holds no per-card state of its own, so re-running a step after a crash is
+exactly as safe as running it the first time:
+
+| Stepper | Drives | Advances to |
+|---|---|---|
+| `MaterializeStepper` | `.creatingWorktree` | `.launching` (worktree cut/adopted, lineage recorded) or `.dead(.spawnFailed)` |
+| `LaunchStepper` | `.launching` | `.live` once the agent confirms readiness |
+| `RelaunchStepper` | `.relaunching` | `.live` (re-materializing a missing worktree first) or `.dead(.resumeFailed)` |
+| `TeardownStepper` | `.archivedPending` | `.archivedComplete` (kill the session, release a borrow, reclaim the run dir by origin, cancel debounces/watches, nudge children) |
+
+Each tick also, for `.launching`/`.relaunching` cards:
+
+- checks `phaseChangedAt` against `config.sessionLaunchTimeout` and marks a card that never confirmed
+  `dead` rather than re-stepping it forever (checked *before* stepping, so a doomed launch is never driven
+  past its deadline);
+- backs a failing step off with a capped exponential delay (2s, 4s, 8s, … capped at 64s) so a
+  persistently-failing step never hot-loops the actor;
+- adopts a card whose session is *already* alive **at the matching epoch** straight to `.live` (the session
+  came up before a crash cut the phase write) — an older-epoch session is never adopted; only the
+  stepper's own kill-then-relaunch reclaims that identity.
+
+After the per-card pass, the tick sweeps orphaned `orchestra-<uuid>` tmux sessions (no card, or an archived
+one) — but only after a *fresh*, off-actor liveness probe taken at sweep time, never off the tick's initial
+snapshot, so a session that already died in between is never double-killed and one that's still
+legitimately alive is never torn down early.
+
+### Boot: crash-equivalence
+
+`reconcilePhasesAtBoot()` runs once, before the poll loop starts, and re-derives every card's session state
+from its **persisted phase alone** — a daemon-only crash and a full machine reboot converge through the
+same code path; there is no separate "was the daemon actually down" branch. A `.live` card whose session
+survived is adopted only on epoch-identity match; otherwise (or if the session is gone entirely) it is
+routed through the funnel to `.relaunching` — or marked `dead(.rebootUnrevived)` if it has neither a
+resumable transcript nor a never-prompted (provisional) blank-restart path. Transitional cards are left
+as-is for the steady-state `reconcile()` tick to pick up (steps are guarded so nothing double-drives a card
+already mid-step). If `tasks.json` itself is unparseable, `TaskStore` side-lines it to a timestamped
+`.corrupt-<ISO8601>` backup and boots an empty board; boot then flips the `WorktreeRegistry` into
+**conservative mode**, which suppresses every reclaim (worktree removal, scratch `rm -rf`) until ownership
+can be positively re-established. Nothing in-process clears it — conservative mode holds for that daemon's
+entire run; only a fresh daemon start against a clean store comes up un-conservative.
+
+### Verbs are intent-only
+
+The seven `Convergence`-kind verbs — `spawn`, `batch-spawn`, `archive`, `reopen`, `resume`, `restart`,
+`handoff` (see [the verb taxonomy](05-command-reference.md#verb-kinds-and-the-phase-gate)) — each persist a
+target phase through `transition()` and return immediately; none of them awaits a worktree checkout, an
+agent bring-up, or a teardown duty before its RPC returns. The reconciler's steppers do that work off the
+request path, so a client sees its card converge live (via `taskUpserted` events) rather than blocking the
+original call on it.
 
 ## The control plane
 
@@ -112,8 +208,11 @@ socket is just another path the `UDSTransport` opens. See
 1. **Built-in methods** handled inline: `ping`, `version`, `subscribe`, `getConfig`, `setConfig`,
    `models`, `agents`, `archivedList`, `openInZed`, `openNotes`, `report`, and the app-only `diffText`/`diffStat`
    (the [code-review diff](05-command-reference.md#server-only-built-in-methods), axis 7).
-2. **Registry commands** looked up in the `CommandRegistry` and run via
-   `command.run(service, params, source)` against the `OrchestraService` actor.
+2. **Registry commands** looked up in the `CommandRegistry` and run via `registry.dispatch(command, service,
+   params, source)` — the single chokepoint that, for any non-`Query` verb naming a target card, checks the
+   card's current `Phase.Kind` against the verb's `phaseGate` (see [the verb
+   taxonomy](05-command-reference.md#verb-kinds-and-the-phase-gate)) before calling `command.run` against
+   the `OrchestraService` actor; a gated-out call never reaches its handler.
 
 Responses and events are written through a **non-blocking per-connection queue**; a broken write marks
 the connection dead exactly once. A bounded **200-item ring buffer** holds recent events so that a

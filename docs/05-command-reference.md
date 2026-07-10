@@ -36,6 +36,47 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `trust` | `path` (required) | Grant a **human's** write-trust for a directory (record it in the [trust ledger](03-data-model.md#the-trust-ledger-t1)) so agents may run there with write access. A human must approve — the MCP tool elicits a decision from the agent's own client; the CLI verb gates on an interactive terminal. An agent can only *trigger* it, **never self-grant** (`.agent`/`.daemon` sources are denied → `trustDenied`). |
 | `trustState` | `path` (required) | **Read-only** query (PR D3): returns `{trusted}` for a directory — a pure [trust ledger](03-data-model.md#the-trust-ledger-t1) lookup (`OrchestraService.isPathTrusted`) that **records nothing**. The app [`SpawnSheet`](07-app-ui.md#the-spawn-sheet) uses it to warn and force read-only on an untrusted freeform dir; granting stays the human-only `trust` above. |
 
+### Verb kinds and the phase gate
+
+Every command above also classifies itself as one of three **kinds** (`CommandSchema.kind`,
+`Sources/OrchestraKit/CommandCatalog.swift`) and declares a **`phaseGate`** — a deny-by-default *allow-set*
+of the target card's `Phase.Kind` (see [the data model](03-data-model.md#the-task-card)). Both are
+required on every schema, so a new verb must classify itself before it can ship:
+
+- **Query** — read-only, retry-free, never touches `phase`. `list`, `inbox`, `status`, `tree`, `sessions`,
+  `trustState`, `capture`.
+- **Mutation** — completes inline and returns its result; may hop off-actor (a shell command, a tmux
+  attach) but never changes `phase`. `move`, `send`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
+  `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-parent`, `synced`, `shipped`,
+  `merge-request`, `borrow`, `release`.
+- **Convergence** — the only kind that touches `phase`. The synchronous half persists an **intent** — one
+  `transition()` call — and returns immediately; the reconciler's phase-keyed
+  [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `spawn`,
+  `batch-spawn`, `archive`, `reopen`, `resume`, `restart`, and `handoff` are Convergence — none of them
+  awaits a worktree checkout, an agent bring-up, or a teardown duty before its RPC returns.
+
+`phaseGate` is enforced once, at the single dispatch chokepoint (`CommandRegistry.dispatch`): for any
+non-query verb that names a target `ref`, the card's *current* `Phase.Kind` is checked against the
+allow-set **before** the handler runs — a gated-out call throws `phaseGated` and never reaches its handler.
+A `Phase.Kind` absent from a verb's set is denied by default, so a future kind is denied until a schema is
+updated to admit it (the fail-safe direction). `spawn`/`batch-spawn`/`trust`/`trustState`/`wait`/`list` name
+no single pre-existing target card, so they skip the gate.
+
+The seven Convergence verbs and what each persists:
+
+| Verb | Allowed phases | Intent persisted |
+|------|-----------------|-------------------|
+| `spawn`, `batch-spawn` | *(creates a card — ungated)* | new card enters `.creatingWorktree` |
+| `archive` | any (idempotent re-archive) | `→ .archivedPending` (+ `archived = true`) |
+| `reopen` | `archivedPending`, `archivedComplete` | `→ .creatingWorktree` |
+| `restart`, `resume` | `live`, `dead`, `relaunching` | `→ .relaunching` |
+| `handoff` | `live`, `dead` | `→ .relaunching` (seeded) |
+
+The interactive/session verbs — `shell`, `inspect`, `closeShell`, `exec`, `send-keys` — plus several
+tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`) share a
+`live`/`dead`-only gate, so they are **denied on the being-born phases** — `creatingWorktree`, `launching`,
+`relaunching` — where there is no worktree or session yet to shell into, inspect, or run a command in.
+
 ### Notes on key commands
 
 - **`spawn` picks the mode from its params.** `scratch:true` → a scratch card; a `cwd` → a borrowed/
