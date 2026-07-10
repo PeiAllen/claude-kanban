@@ -7,8 +7,13 @@ delegation tools below are the **same MCP/CLI surface** every agent sees — the
 
 ## Your column is your phase — start on it, and keep it honest
 
-Your card lives in one of three columns, which are the lifecycle stages of the work: **Plan** (scoping /
-figuring out what to do), **Implementation** (actively building), and **Review** (ready to be looked at
+**This applies only to worktree cards** (spawned with a `repo` + `branch`). A standalone **Freeform** or
+**Scratch** card runs on its own — it is NOT on the board, has no lifecycle column, and *cannot* `move`
+between columns (the daemon rejects the move); its SessionStart orientation says as much. Skip this section
+if that's you.
+
+A worktree card lives in one of three columns, which are the lifecycle stages of the work: **Plan** (scoping
+/ figuring out what to do), **Implementation** (actively building), and **Review** (ready to be looked at
 by a human or a later automated pass). Your **access mode** is orthogonal: a **read-only** card can
 read/search/git but must not edit, write, or commit — report findings instead.
 
