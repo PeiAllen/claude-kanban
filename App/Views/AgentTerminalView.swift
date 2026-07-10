@@ -28,17 +28,22 @@ struct AgentTerminalView: NSViewRepresentable {
     /// mouse click into it. Lets the owner keep `focusZone` (and thus the inspector focus ring + chip)
     /// honest without polling the responder chain.
     var onFocused: (() -> Void)?
+    /// When set, a dead pane auto-re-attaches while this returns true (a `.live` card on a live link).
+    /// nil (default) → no auto-reattach, so ShellTabsView's shells opt out unchanged.
+    var attachWhileLiveGate: (() -> Bool)? = nil   // named distinctly from the Coordinator's own `attachWhileLive`
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
          terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
-         onFocused: (() -> Void)? = nil) {
+         onFocused: (() -> Void)? = nil,
+         attachWhileLiveGate: (() -> Bool)? = nil) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
         self.terminalImagePaste = terminalImagePaste
         self.onFocused = onFocused
+        self.attachWhileLiveGate = attachWhileLiveGate
     }
 
     #if canImport(SwiftTerm)
@@ -58,6 +63,8 @@ struct AgentTerminalView: NSViewRepresentable {
         term.terminalImagePaste = terminalImagePaste
         applyColors(term)
         context.coordinator.attached = "\(session):\(window)"
+        context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
+        context.coordinator.reattach = { [weak term] in if let term { self.attach(term) } }
         attach(term)
         // The view has no window yet at make time, so we can't grab focus now. Flag it and let the view
         // claim first responder the instant it's actually mounted (see ScrollableTerminalView).
@@ -66,6 +73,11 @@ struct AgentTerminalView: NSViewRepresentable {
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
         applyColors(nsView)   // re-tint when the app toggles light/dark
+        // Re-install every update so the gate closure snapshots the CURRENT phase/connection (a stale
+        // closure captured at makeNSView time would gate reattach on the card's state when it first
+        // mounted, not its state at the moment the pane actually dies).
+        context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
+        context.coordinator.reattach = { [weak nsView] in if let nsView { self.attach(nsView) } }
         // Safety net: if SwiftUI reused this NSView for a different card (despite the `.id` upstream),
         // re-point it at the right tmux target instead of leaving it on the previous card's session.
         let target = "\(session):\(window)"
@@ -74,6 +86,7 @@ struct AgentTerminalView: NSViewRepresentable {
         (nsView as? ScrollableTerminalView)?.terminalImagePaste = terminalImagePaste
         if context.coordinator.attached != target {
             context.coordinator.attached = target
+            context.coordinator.resetForNewTarget()   // a genuinely new terminal ⇒ fresh reconnect budget
             attach(nsView)
             // By updateNSView the view is already in a window, so focus it directly.
             if autofocus { (nsView as? ScrollableTerminalView)?.claimFocusNow() }
@@ -163,14 +176,72 @@ struct AgentTerminalView: NSViewRepresentable {
         TmuxAttach.attachScript(socket: socket, session: session, window: window)
     }
 
-    final class Coordinator: NSObject, LocalProcessTerminalViewDelegate {
+    // `@MainActor` + `@preconcurrency`: SwiftTerm's `LocalProcessTerminalViewDelegate` predates Swift
+    // concurrency (its callbacks aren't actor-isolated), but it only ever calls back on the main thread —
+    // so a main-actor coordinator is correct, and it lets the `DispatchQueue.main` reconnect closure (which
+    // is main-actor-isolated) capture `self` without a data-race diagnostic. Mirrors the iOS Coordinator.
+    @MainActor
+    final class Coordinator: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
         /// The "session:window" this NSView is currently attached to, so updateNSView can detect reuse.
         var attached: String?
+        private let reconnectPolicy = TerminalReconnectPolicy()
+        private var reconnects = 0
+        private var reconnectPending = false
+        /// A reattach only counts as SUCCESS if the process stays alive past this window — see below. Cancelled
+        /// (never fires) if the pane re-exits first, so a rapid tmux-gone flap can never reset the budget.
+        private var stabilizeWork: DispatchWorkItem?
+        private let stabilizeWindow: TimeInterval = 5   // a failed `tmux attach` exits ~instantly; 5s ⇒ genuinely up
+        /// Bumped when the attach target changes; a backoff block captures it and bails if it no longer matches,
+        /// so a stale reattach queued against the OLD target can't fire against the new one.
+        private var attachGeneration = 0
+        /// Set by the representable's update from the owning view: is this card renderable-live right now?
+        /// (Derived from `displayState(phase:connection:).statusKey == .running/.idle/.needsPermission` — i.e.
+        /// a `.live` phase on a live link. A dead/creating card must NOT auto-re-attach.)
+        var attachWhileLive: () -> Bool = { false }
+        /// Re-attach closure the representable installs (calls `attach(term)` on the tracked view).
+        var reattach: () -> Void = {}
 
         func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func processTerminated(source: TerminalView, exitCode: Int32?) {}
+
+        func processTerminated(source: TerminalView, exitCode: Int32?) {
+            // The pane died: if a stabilize window was pending, this reattach did NOT survive it → keep the
+            // (already-incremented) budget so the flap stays bounded. Never reset here.
+            stabilizeWork?.cancel(); stabilizeWork = nil
+            guard !reconnectPending, attachWhileLive() else { return }
+            guard let delaySecs = reconnectPolicy.delay(forAttempt: reconnects + 1) else { return }  // budget spent → stop
+            reconnectPending = true
+            reconnects += 1
+            let gen = attachGeneration   // capture: a target change (resetForNewTarget) invalidates this block
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(delaySecs)) { [weak self] in
+                guard let self, self.attachGeneration == gen, self.attachWhileLive() else {
+                    self?.reconnectPending = false; return
+                }
+                self.reconnectPending = false
+                self.reattach()
+                self.scheduleStabilize()   // if THIS reattach survives the window, restore the full budget
+            }
+        }
+
+        /// A reattach that survives `stabilizeWindow` is a genuine success (the iOS `.connected` analog — the
+        /// local process has no explicit "connected" callback, so staying alive IS the signal). Restoring the
+        /// budget means a LATER, independent drop gets a fresh [1,2,4,8,8]; a pane that re-exits inside the
+        /// window cancels this in `processTerminated`, so a tmux-gone flap stays bounded by `maxReconnects`.
+        private func scheduleStabilize() {
+            stabilizeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.reconnects = 0 }
+            stabilizeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + stabilizeWindow, execute: work)
+        }
+
+        /// The attach TARGET changed (a genuinely new session/window) → a fresh terminal, fresh budget. Bumping
+        /// `attachGeneration` also invalidates any in-flight backoff block queued against the old target.
+        func resetForNewTarget() {
+            attachGeneration &+= 1
+            stabilizeWork?.cancel(); stabilizeWork = nil
+            reconnects = 0; reconnectPending = false
+        }
     }
     #else
     func makeNSView(context: Context) -> NSView {

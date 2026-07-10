@@ -13,6 +13,8 @@ struct RecoveryView: View {
     @State private var resuming = false
     @State private var promptCopied = false
 
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
+
     private var whyLine: String {
         switch task.deadReason {
         case .agentExited:     return "The agent exited."
@@ -20,7 +22,7 @@ struct RecoveryView: View {
         case .rebootUnrevived: return "Lost on reboot and couldn't be auto-resumed."
         case .resumeFailed:    return "Resume failed — \(task.deadDetail ?? "")."
         case .completed:       return "The agent completed its work."
-        case .spawnFailed:     return "The initial spawn never came up."
+        case .spawnFailed:     return "Creating the workspace failed" + (task.deadDetail.map { " — \($0)" } ?? "") + "."
         case .none:            return "The session is no longer running."
         }
     }
@@ -97,6 +99,7 @@ struct RecoveryView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(!ds.validActions.contains(.restart))
 
                         Button {
                             _Concurrency.Task { await model.archive(task.id) }
@@ -107,8 +110,9 @@ struct RecoveryView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(!ds.validActions.contains(.archive))
 
-                        if task.agentSessionId != nil {
+                        if task.agentSessionId != nil && ds.validActions.contains(.resume) {
                             Button {
                                 resuming = true
                                 _Concurrency.Task {

@@ -261,11 +261,15 @@ enum CLIRunner {
     static func renderTasks(_ result: JSONValue) {
         guard let tasks = try? result.decode([Task].self) else { printJSON(result); return }
         if tasks.isEmpty { print("(no cards)"); return }
-        // Pad to the longest PhaseDisplayKey rawValue so no key is truncated (e.g. `needsPermission`,
-        // `relaunching`) and the column stays aligned; self-maintaining as keys evolve.
-        let pillWidth = PhaseDisplayKey.allCases.map(\.rawValue.count).max() ?? 7
+        // Pad to the longest label so no pill is truncated, and the column stays aligned; self-maintaining
+        // as labels evolve. Unified onto the one label vocabulary `displayState` renders everywhere else
+        // (was the terser machine rawValue — `idle`/`needsPermission` — which no other surface shows).
+        let pillWidth = PhaseDisplayKey.allCases.map(\.label.count).max() ?? 7
         for t in tasks {
-            let pill = t.phaseDisplay.rawValue.padding(toLength: pillWidth, withPad: " ", startingAt: 0)
+            // CLI is a one-shot fetch — there's no persistent link to go stale mid-render, so `connection:
+            // .live` is the honest read (matches the `list` RPC returning a live daemon snapshot).
+            let pill = displayState(phase: t.phase, connection: .live).label
+                .padding(toLength: pillWidth, withPad: " ", startingAt: 0)
             print("\(t.shortId)  \(pill)  [\(t.column.rawValue)]  \(t.title)  ·  \((t.repo as NSString).lastPathComponent)/\(t.branch)")
         }
     }

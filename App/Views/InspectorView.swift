@@ -51,6 +51,8 @@ private struct HeaderBar: View {
     // Inbox editor popover state.
     @State private var showInbox = false
 
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
+
     var body: some View {
         HStack(spacing: 6) {
             // Agent terminal vs the read-only in-app diff (axis 7).
@@ -93,6 +95,7 @@ private struct HeaderBar: View {
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.phaseDisplay != .dead {
                 inboxAction
+                    .disabled(!ds.validActions.contains(.send))
 
                 Button {
                     _Concurrency.Task { await model.archive(task.id) }
@@ -107,6 +110,7 @@ private struct HeaderBar: View {
                     .surface(theme.card, corner: 8, hair: theme.hair)
                 }
                 .buttonStyle(.plain)
+                .disabled(!ds.validActions.contains(.archive))
             }
 
             Spacer(minLength: 0)
@@ -365,7 +369,11 @@ private struct AgentChrome: View {
                                       terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
                                       // A mouse click into the terminal also counts as descending: keep the
                                       // zone (and the focus ring / chip) honest.
-                                      onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
+                                      onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } },
+                                      // Auto-reattach on a dead pane while the card is genuinely live on a
+                                      // live link — never for a dead/creating card or a down link.
+                                      attachWhileLiveGate: { !displayState(phase: task.phase, connection: model.connectionState).isStale
+                                                         && [.running, .idle, .needsPermission].contains(task.phaseDisplay) })
                         // Key by session AND active connection so switching cards OR connections tears down the
                         // old terminal and attaches a fresh one against the right host — without this, SwiftUI
                         // reuses the same NSView and every card shows card #1's tmux.
@@ -411,6 +419,7 @@ private struct TerminalHeader: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
     private var family: String { task.model.family }
     private var modelColor: Color {
         switch family {
@@ -482,9 +491,10 @@ private struct TerminalHeader: View {
                     .foregroundColor(theme.text2)
             }
             .buttonStyle(.plain)
+            .disabled(!ds.validActions.contains(.inspect))
             .help("Open a read-only agent in this worktree (can read/search/git, cannot edit)")
 
-            StatusPill(status: task.phaseDisplay)
+            StatusPill(status: ds.statusKey, label: ds.label)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -495,11 +505,12 @@ private struct TerminalHeader: View {
 private struct StatusPill: View {
     @Environment(\.theme) var theme: Theme
     let status: PhaseDisplayKey
+    let label: String
     var body: some View {
         let sem = theme.statusColor(status)
         HStack(spacing: 6) {
             Circle().fill(sem.dot).frame(width: 6, height: 6)
-            Text(theme.statusLabel(status)).font(F.ui(10.5, .semibold)).foregroundColor(sem.text)
+            Text(label).font(F.ui(10.5, .semibold)).foregroundColor(sem.text)
         }
         .padding(.leading, 7).padding(.trailing, 8).padding(.vertical, 3)
         .background(sem.tint)
