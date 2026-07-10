@@ -126,7 +126,10 @@ legitimately alive is never torn down early.
 
 ### Boot: crash-equivalence
 
-`reconcilePhasesAtBoot()` runs once, before the poll loop starts, and re-derives every card's session state
+`reconcilePhasesAtBoot()` runs once, in its own boot task fired detached from the poll loop's task (so a
+slow revival never blocks the daemon coming up) — the two aren't sequenced against each other, though the
+poll loop's own 2 s pre-tick sleep means boot recovery typically completes before the first `reconcile()`
+tick. It re-derives every card's session state
 from its **persisted phase alone** — a daemon-only crash and a full machine reboot converge through the
 same code path; there is no separate "was the daemon actually down" branch. A `.live` card whose session
 survived is adopted only on epoch-identity match; otherwise (or if the session is gone entirely) it is

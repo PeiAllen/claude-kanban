@@ -29,7 +29,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `phase` | `Phase` | The **persisted lifecycle SSOT** (Stage 2 — replaces the retired `status`/`waitReason` pair). `creatingWorktree` \| `launching` \| `live(RunState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer. |
 | `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
 | `phaseChangedAt` | `Date` | When `phase` last changed — drives phase-relative timers and terminal-dwell checks. |
-| `pendingSeed` | `String?` | Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. **Field only in Stage 2** — no writer/consumer yet (see [migration & persistence](#persistence-and-migration)). |
+| `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared by the `RelaunchStepper`/`LaunchStepper` on readiness (see [migration & persistence](#persistence-and-migration)). |
 | `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
@@ -43,8 +43,12 @@ A `Task` is the single persisted record behind every card. Its fields:
 ### Classifying enums
 
 - **`Column`** — `plan`, `impl`, `review` (display: Plan / Implementation / Review). There is no `done`
-  case; archiving sets `phase = .dead(.completed)` + `archived = true` (the Bool bridge is retained for
-  Stage 2; archive-verb funnel routing lands in Stage 4). A read-only freeform/scratch delegated card
+  case; archiving now routes through the `transition()` funnel like every other `Convergence` verb: `archive`
+  persists the intent (`phase = .archived(teardownComplete: false)`, companion `archived = true` in the same
+  patch) and returns, and the reconciler's `TeardownStepper` drives `.archivedPending → .archivedComplete`
+  (kill the session, release a borrow/worktree, reclaim the run dir, cancel debounces/watches, nudge
+  children). The `archived` Bool mirror is retained alongside `phase` for display/filtering. A read-only
+  freeform/scratch delegated card
   can also conclude to `.dead(.completed)` without being archived when its agent reports task completion
   (for example Codex `task_complete` / `turn_complete` or Claude `TaskCompleted`, not Claude `Stop`).
   [`reopen`](05-command-reference.md#registry-commands)
@@ -155,9 +159,12 @@ Other schema compat is unchanged: the legacy `worktree: String` field is decode-
 store always writes `cwd` + `origin`), and optional fields decode with sane defaults, so a board created
 before borrowed/scratch cards existed still opens.
 
-> **Note on `pendingSeed`.** The field exists on `Task` (and round-trips through Codable) but **has no
-> writer or consumer in Stage 2** — persisting it is deferred to Stage 4, which wires its write + consume
-> together with the reconciler. Handoff still works today via `resume(seed:)`'s argv, not a persisted seed.
+> **Note on `pendingSeed`.** Wired in PR4b: `resume(id, seed:)` (driving handoff's `resumeInCard` and
+> seeded-wake) persists the folded seed as `pendingSeed` in the **same** funnel patch as
+> `transition(.relaunching)`; `restart` clears it (a blank restart carries no seed). The `RelaunchStepper`
+> — and `LaunchStepper` for a reopened resumable card — consumes and clears `pendingSeed` on readiness-at-
+> current-epoch (the same `mutate` closure that lands `.live`); a `resumeFailed` leaves it in place so a
+> retried relaunch still carries the seed.
 
 ## The inbox store (F3)
 

@@ -58,8 +58,10 @@ The decisions that shape it:
   no marker at all. No `if agentId ==` anywhere. This is recorded as a **spec amendment** in the vault's
   [Decisions tables](../notes/designs/lifecycle-convergence/03-implementation.md).
 
-**Stage 2 keeps spawn/resume/restart/reopen synchronous** (they walk the phases inline); the reconciler,
-the four phase-steppers, and non-blocking spawn are Stage 4, built once rather than twice.
+**Stage 2 kept spawn/resume/restart/reopen synchronous** (they walked the phases inline) so the phase
+enum + funnel + epochs landed correctly first; the reconciler, the four phase-steppers, and non-blocking
+spawn shipped in PR4b (Stage 4) — built once against the settled Stage-2 model rather than twice. Every
+`Convergence`-kind verb is intent-only now: see [the Convergence model](02-architecture.md#the-convergence-model).
 
 ### The Stage-2 wire break: `status` → `phase`
 
@@ -213,9 +215,13 @@ same file, a compile-time guarantee that nothing else can call a git worktree op
   a future non-blocking spawn, risk marking a half-created (mid-materialization) dir adoptable; the
   persisted sentinel makes the migration run exactly once, at the first post-upgrade boot when every
   persisted tree is at-rest and complete.
-- **A conservative-mode seam is left for Stage 4.** `setConservativeMode(_:)` gates `release` to a hard
-  no-op when set; unused today (`conservativeMode` defaults `false`), reserved for a future
-  post-corrupt-recovery mode where nothing is removed until ownership is positively re-established.
+- **Conservative mode is wired (PR4b).** `setConservativeMode(_:)` gates `release` to a hard no-op when
+  set, and `TeardownStepper` gates the scratch-origin `rm -rf` reclaim on the same flag. Boot's
+  `reconcilePhasesAtBoot()` sets it the moment a corrupt `tasks.json` forces `TaskStore` to side-line the
+  file and boot an empty board (`WorktreeRegistry.swift:407`; `OrchestraService+Reconcile.swift`) — ownership
+  can't be positively re-established against an empty board, so nothing is removed. Nothing in-process
+  clears it: conservative mode holds for that corrupt-boot daemon's entire run, and only a fresh daemon
+  start against a clean store comes up un-conservative.
 - **An in-flight holder set closes the concurrent-spawn rollback race.** Between `ensure` returning and
   the card's persistence to the store, a second same-branch spawn can interleave at the service actor's
   `await` and adopt the first spawn's tree while still unpersisted. A store-only sibling scan in `release`
