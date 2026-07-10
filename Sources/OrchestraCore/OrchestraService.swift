@@ -56,8 +56,13 @@ public actor OrchestraService {
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
-    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2).
+    /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
+    /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
+    /// watcher survives a daemon restart (carry #4).
     var watchRegistry: [UUID: Set<UUID>] = [:]
+    /// Durable backing for `watchRegistry`. Reloaded at boot (`reloadWatchRegistry`), written through on
+    /// every mutation. Injected in tests so each temp dir gets its own file.
+    let watchStore: WatchRegistryStore
     /// Watchers with a live CLI `orchestra wait` process. A native-reinvoke card only defers wake to
     /// wait-exit when this is present; MCP/tool watches register interest without a CLI process.
     var activeWaitProcesses: [UUID: Int] = [:]
@@ -119,6 +124,21 @@ public actor OrchestraService {
     // --get-regexp` child lookup OFF the hot report path — one lookup per activity burst, not per report.
     var childFanoutDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
+    // MARK: - Stage-4 reconciler driving discipline (PR4b Task 2)
+    /// Cards with a phase-step currently dispatched off-actor. At most ONE step in flight per card — set
+    /// SYNCHRONOUSLY before dispatching, cleared in the step's completion — so a slow step is never
+    /// double-driven by the next tick, by a concurrent verb, or by boot revival.
+    var inFlightSteps: Set<UUID> = []
+    /// Per-card capped-exponential backoff for a FAILING step: `count` bumps on each throw (reset on
+    /// success), `nextEligible` gates the next retry so a persistently-failing stepper never hot-loops.
+    var stepAttempts: [UUID: (count: Int, nextEligible: Date)] = [:]
+    /// The reconciler's `Phase.Kind → PhaseStepper` dispatch table. Defaults to the real four; a test may
+    /// override an entry (e.g. a throwing stepper for the backoff test) via `setStepper`.
+    var steppers: [Phase.Kind: any PhaseStepper] = PhaseSteppers.byKind
+    /// Poll cadence the reconciler assumes (main.swift's loop). Also the unit the N=3 launch-readiness
+    /// fallback's `threshold × interval < sessionLaunchTimeout` inequality is stated in.
+    let reconcilePollInterval: TimeInterval = 2
+
     public init(config: Config,
                 store: TaskStore? = nil,
                 registry: AgentRegistry = AgentRegistry(),
@@ -130,9 +150,11 @@ public actor OrchestraService {
                 inbox: Inbox? = nil,
                 devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
+                watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra")) {
         self.config = config
         self.orchestraBin = orchestraBin
+        self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
         self.store = store ?? TaskStore()

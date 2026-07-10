@@ -2,24 +2,30 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-@Suite("OrchestraService — recovery: recoverSessions / resume / restart / reconcile")
+@Suite("OrchestraService — recovery: reconcilePhasesAtBoot / resume / restart / reconcile")
 struct RecoveryTests {
 
-    @Test("recoverSessions: alive skipped; gone+transcript queues resume; gone+no transcript → dead; archived skipped")
+    /// Drive `reconcile()` ticks (like `reconcileUntilLive`) until `cond` holds — the steppers run
+    /// off-actor, so a single tick only DISPATCHES a step; polling lets it complete.
+    static func reconcileUntil(_ svc: OrchestraService, _ cond: @escaping @Sendable () async -> Bool) async throws {
+        try await pollUntil { await svc.reconcile(); return await cond() }
+    }
+
+    @Test("reconcilePhasesAtBoot: alive+epoch adopted; gone+transcript → relaunch/resume; gone+no transcript → dead; archived skipped")
     func recoverDecisions() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
 
-        // A: alive → must be skipped
+        // A: alive at the matching epoch → adopted (stays live, not relaunched)
         let a = try await env.svc.spawn(SpawnInput(prompt: "alive", repo: repo, branch: "a"))
         env.sessions.setAlive(a.id, true)
 
-        // B: gone + transcript exists → resumable (will be relaunched)
+        // B: gone + transcript exists → resumable (relaunch → resume)
         let b = try await env.svc.spawn(SpawnInput(prompt: "resumable", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: b.agentSessionId!)
         env.sessions.setAlive(b.id, false)
 
-        // C: gone + no transcript → dead (rebootUnrevived)
+        // C: gone + no transcript, prompted → dead (rebootUnrevived)
         let c = try await env.svc.spawn(SpawnInput(prompt: "unrevivable", repo: repo, branch: "c"))
         env.sessions.setAlive(c.id, false)   // no transcript written
 
@@ -29,25 +35,23 @@ struct RecoveryTests {
 
         let aEnsureBefore = env.sessions.ensureCount
 
-        // Drive recovery; concurrently satisfy B's resume callback so it confirms.
-        async let recovered: Void = env.svc.recoverSessions()
-        // B's resume awaits a SessionStart(resume) callback — deliver it.
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
-        try? await env.svc.report(b.id, StatusReport(sessionSource: "resume"))
-        await recovered
+        await env.svc.reconcilePhasesAtBoot()
+        // B was routed to `.relaunching`; drive ticks so the RelaunchStepper resumes it to `.live`.
+        try await Self.reconcileUntil(env.svc) {
+            await env.svc.list(includeArchived: true).first { $0.id == b.id }?.phase.kind == .live
+        }
 
         let all = await env.svc.list(includeArchived: true)
         let cAfter = all.first { $0.id == c.id }
         #expect(cAfter?.phaseDisplay == .dead)
         #expect(cAfter?.deadReason == .rebootUnrevived)
-        // A (alive) was not relaunched
-        let aArgv = env.sessions.ensureArgv[env.sessions.sessionName(a.id)]
-        // a was launched once at spawn; ensure count for A shouldn't grow from recovery
-        #expect(aArgv != nil)
-        // B was relaunched with a --resume argv
+        // A (alive, epoch-matched) was adopted — still live.
+        #expect(all.first { $0.id == a.id }?.phase.kind == .live)
+        // Only B relaunched (A adopted, C dead, D archived) → exactly one recovery ensure.
+        #expect(env.sessions.ensureCount == aEnsureBefore + 1)
+        // B was relaunched with a --resume argv.
         let bArgv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(b.id)])
         #expect(bArgv.contains("--resume"))
-        #expect(env.sessions.ensureCount > aEnsureBefore)  // at least B relaunched
     }
 
     @Test("resume success: confirmed within grace → .waiting, deadReason cleared, same id kept")
@@ -148,25 +152,24 @@ struct RecoveryTests {
         #expect(argv.count == nameIdx + 2)   // nothing after the name value → the prompt is NOT re-handed
     }
 
-    @Test("recoverSessions: never-prompted (provisional, no transcript) card restarts fresh, not dead")
+    @Test("reconcilePhasesAtBoot: never-prompted (provisional, no transcript) card blank-restarts, not dead")
     func recoverRestartsNeverPrompted() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
         // No initial prompt → titleProvisional, and no transcript ever written.
         let p = try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "fresh"))
         #expect(p.titleProvisional == true)
-        let oldId = try #require(p.agentSessionId)
         env.sessions.setAlive(p.id, false)   // session gone (reboot), no transcript on disk
 
-        await env.svc.recoverSessions()
+        await env.svc.reconcilePhasesAtBoot()   // provisional → `.relaunching` (blank-restart intent)
+        try await Self.reconcileUntil(env.svc) {
+            await env.svc.list(includeArchived: true).first { $0.id == p.id }?.phase.kind == .live
+        }
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == p.id })
-        #expect(after.waitReason != nil)        // restarted fresh, NOT marked dead
+        #expect(after.waitReason != nil)        // blank-restarted (idle waiting), NOT marked dead
         #expect(after.deadReason == nil)
-        let newId = try #require(after.agentSessionId)
-        #expect(newId != oldId)                   // restart mints a fresh session id
-        #expect(after.priorSessionIds.contains(oldId))
-        // Relaunched via a fresh `start` (no --resume).
+        // Relaunched via a fresh `start` (no --resume) — the RelaunchStepper's provisional blank path.
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(p.id)])
         #expect(!argv.contains("--resume"))
     }
@@ -183,22 +186,9 @@ struct RecoveryTests {
         #expect(after.deadReason == .sessionVanished)
     }
 
-    @Test("recover throttle: peak concurrent revivals never exceeds maxConcurrentRevivals")
-    func throttle() async throws {
-        let env = TestEnv.make(maxRevivals: 3, grace: 1)
-        let repo = TestEnv.repo(env.base)
-        env.sessions.ensureSleepMs = 120   // create overlap so concurrency is observable
-
-        for i in 0..<9 {
-            let t = try await env.svc.spawn(SpawnInput(prompt: "card\(i)", repo: repo, branch: "br\(i)"))
-            env.adapter.writeTranscript(for: t.agentSessionId!)
-            env.sessions.setAlive(t.id, false)
-        }
-        let countBefore = env.sessions.peakConcurrentEnsure
-        await env.svc.recoverSessions()   // no callbacks → each resume times out after grace
-        #expect(env.sessions.peakConcurrentEnsure <= 3)
-        #expect(env.sessions.peakConcurrentEnsure >= countBefore)
-    }
+    // (The old windowed-revival `throttle` test is retired: the reconciler paces recovery per-card via
+    // `inFlightSteps` + capped backoff — one step in flight per card — rather than a global revival window,
+    // so `maxConcurrentRevivals` no longer governs boot recovery. Backoff is covered by `stepFailureBacksOff`.)
 
     /// The ONE place a `send` to an idle card is otherwise silently dropped: it lands WHILE a prior
     /// wake-driven resume is in flight (`relaunchClaimed` set / the card mid-`.relaunching`), so `wake`

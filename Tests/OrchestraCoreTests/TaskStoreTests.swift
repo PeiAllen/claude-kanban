@@ -54,8 +54,8 @@ struct TaskStoreTests {
         #expect(loaded.first?.title == "Persisted")
     }
 
-    @Test("malformed file is moved to .bak and load yields []")
-    func malformedToBak() async throws {
+    @Test("malformed file is moved to a timestamped .corrupt backup, load yields [], and loadWasCorrupt is set")
+    func malformedToCorruptBackup() async throws {
         let path = tempPath()
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -63,7 +63,31 @@ struct TaskStoreTests {
         let store = TaskStore(path: path)
         let tasks = await store.load()
         #expect(tasks.isEmpty)
-        #expect(FileManager.default.fileExists(atPath: path + ".bak"))
+        #expect(await store.wasCorrupt())
+        // Timestamped backup (`tasks.json.corrupt-<ISO8601>`), NOT the old fixed `.bak`.
+        let base = (path as NSString).lastPathComponent
+        let backups = (try? FileManager.default.contentsOfDirectory(atPath: dir))?
+            .filter { $0.hasPrefix(base + ".corrupt-") } ?? []
+        #expect(backups.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
+    }
+
+    @Test("a second corruption does NOT clobber the first .corrupt backup")
+    func secondCorruptionKeepsBoth() async throws {
+        let path = tempPath()
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let base = (path as NSString).lastPathComponent
+        func corruptAndLoad() async {
+            try? "{ not json".write(toFile: path, atomically: true, encoding: .utf8)
+            _ = await TaskStore(path: path).load()
+        }
+        await corruptAndLoad()
+        try await _Concurrency.Task.sleep(for: .milliseconds(1100))   // ensure a distinct ISO8601 second
+        await corruptAndLoad()
+        let backups = (try? FileManager.default.contentsOfDirectory(atPath: dir))?
+            .filter { $0.hasPrefix(base + ".corrupt-") } ?? []
+        #expect(backups.count == 2)   // both preserved
     }
 
     @Test("atomic save survives concurrent writers without corruption")

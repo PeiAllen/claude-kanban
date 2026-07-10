@@ -112,6 +112,17 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); if value { alive.insert(sessionName(id)) } else { alive.remove(sessionName(id)) }; lock.unlock()
     }
 
+    /// Seed a session as alive AND stamp its `ORCH_EPOCH` (as an `ensure` would) so `stampedEpoch` reads
+    /// it back — drives the reconciler's epoch-identity adoption / orphan-probe tests without a real launch.
+    func setStampedEpoch(_ id: UUID, _ epoch: Int) {
+        lock.lock(); let n = sessionName(id); alive.insert(n)
+        ensureEnv[n, default: [:]]["ORCH_EPOCH"] = String(epoch); lock.unlock()
+    }
+
+    /// Optional off-actor latency injected into `isAlive` (the reconciler's pre-kill probe), so a test can
+    /// prove the probe runs OFF the service actor: a concurrent fast RPC returns while the probe sleeps.
+    var isAliveSleepMs: UInt32 = 0
+
     func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
     func ensure(_ task: Task, argv: [String], env: [String: String] = [:]) throws -> (name: String, created: Bool) {
@@ -125,9 +136,9 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     /// a pre-upgrade SessionEnd must consult `isAlive` before it is allowed to kill the card.
     private(set) var isAliveQueries: [String] = []
     func isAlive(_ name: String) throws -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        isAliveQueries.append(name)
-        return alive.contains(name)
+        lock.lock(); isAliveQueries.append(name); let sleepMs = isAliveSleepMs; let a = alive.contains(name); lock.unlock()
+        if sleepMs > 0 { usleep(sleepMs * 1000) }   // simulate a slow off-actor probe (isAliveSleepMs)
+        return a
     }
 
     /// Non-recording liveness read for test setup/assertions (doesn't pollute `isAliveQueries`).
@@ -353,7 +364,8 @@ enum TestEnv {
         let svc = OrchestraService(config: config, store: store,
                                    registry: registry ?? AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
-                                   grantResolver: grantResolver)
+                                   grantResolver: grantResolver,
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
@@ -378,7 +390,8 @@ enum TestEnv {
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
-                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox)
+                                   worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 

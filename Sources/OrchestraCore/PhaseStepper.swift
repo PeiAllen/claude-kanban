@@ -221,8 +221,10 @@ public struct TeardownStepper: PhaseStepper {
             try? await ctx.worktrees.release(cardId: card.id, cards: await ctx.store.all(), force: false)
         case .scratch:
             // Truly ephemeral — rm -rf, DOUBLE-guarded (debug `assert` + the release-safe runtime `if`).
+            // Conservative mode (post-corrupt boot, carry #3) removes NOTHING — the scratch dir's ownership
+            // is as unprovable as a worktree's from an empty board, so the reclaim is gated on it too.
             assert(card.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
-            if card.cwd.hasPrefix(Config.scratchRoot + "/") {
+            if !(await ctx.worktrees.conservativeMode), card.cwd.hasPrefix(Config.scratchRoot + "/") {
                 try? FileManager.default.removeItem(atPath: card.cwd)
             }
         case .borrowed:

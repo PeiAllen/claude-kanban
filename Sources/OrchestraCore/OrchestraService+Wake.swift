@@ -5,9 +5,31 @@ extension OrchestraService {
     // MARK: - F2 wake + merge-watch (C2)
 
     /// Register a watcher's interest in `children` so each child's conclusion routes into the watcher's
-    /// durable inbox (F3, coalesces) and wakes it (F2). Idempotent (unions).
+    /// durable inbox (F3, coalesces) and wakes it (F2). Idempotent (unions). Writes through to the durable
+    /// `watchStore` so the registration survives a daemon restart (carry #4).
     public func registerWatch(_ watcher: UUID, _ children: Set<UUID>) {
+        guard !children.isEmpty else { return }
         watchRegistry[watcher, default: []].formUnion(children)
+        watchStore.save(watchRegistry)
+    }
+
+    /// Reload the persisted watch registry at boot (after phase reconciliation) and deliver conclusions
+    /// for any watched child that is ALREADY terminal at reload — a child that concluded while the daemon
+    /// was down (or one just marked `dead(.rebootUnrevived)` by `reconcilePhasesAtBoot`) still notifies its
+    /// watcher. An unreadable file is ignored (keep zero watchers rather than trust a torn write).
+    public func reloadWatchRegistry() async {
+        let (map, loadFailed) = watchStore.load()
+        guard !loadFailed else { return }
+        watchRegistry = map
+        // Snapshot the (watcher,child) pairs before mutating; `concludeCard` removes the child from the
+        // registry (write-through) as it delivers, so a terminal child notifies exactly once.
+        for (_, children) in map {
+            for child in children {
+                if let t = await store.get(child), let kind = isConcluded(t) {
+                    await concludeCard(child, kind, deadReason: Self.concludedReason(t))
+                }
+            }
+        }
     }
 
     /// Register a durable watch without a CLI wait process. Returns an already-settled child if one exists;
@@ -65,8 +87,10 @@ extension OrchestraService {
     /// Remove one settled child from a watcher's registry (mirror of `concludeCard`'s `remove(id)` +
     /// empty-set cleanup) — used by the `wait`/`watch` short-circuit so a re-death can't re-notify.
     func unregisterWatch(_ watcher: UUID, _ child: UUID) {
+        guard watchRegistry[watcher]?.contains(child) == true else { return }   // no-op ⇒ no needless persist
         watchRegistry[watcher]?.remove(child)
         if watchRegistry[watcher]?.isEmpty == true { watchRegistry[watcher] = nil }
+        watchStore.save(watchRegistry)
     }
 
     private func releaseActiveWaitProcess(_ watcher: UUID) {
@@ -92,8 +116,10 @@ extension OrchestraService {
                 try? await inbox.enqueue(watcher, "Card \(t.shortId) concluded (\(kind.rawValue)\(detail)).")
                 await wake(watcher)
             }
-            watchRegistry[watcher]?.remove(id)
-            if watchRegistry[watcher]?.isEmpty == true { watchRegistry[watcher] = nil }
+            // Route through `unregisterWatch` so the removal PERSISTS (write-through). A missed inline
+            // remove would leave a concluded child registered on disk → duplicate conclusion on the next
+            // boot reload (carry #4 / Opus finding 5).
+            unregisterWatch(watcher, id)
         }
         // Resolve any active CLI `orchestra wait` subscribed to this child (per-child, first-wins).
         await mergeWatch.conclude(conc)

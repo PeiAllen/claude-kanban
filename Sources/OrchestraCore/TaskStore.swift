@@ -9,6 +9,11 @@ public actor TaskStore {
     /// Monotonic board version, bumped in `persist()` and persisted in the `{rev, tasks}` payload.
     /// A pre-upgrade bare-array `tasks.json` loads as `rev = 0` (the one on-disk compat we keep).
     public private(set) var currentRev: Int = 0
+    /// Set true (once, at load) when the on-disk `tasks.json` was top-level-UNPARSEABLE and had to be
+    /// side-lined to a timestamped `.corrupt-<ISO8601>` backup, booting the board empty. The daemon reads
+    /// this at boot to enter conservative worktree mode (carry #3) — a corrupt board can't prove ownership
+    /// of any pre-existing tree, so no reclaim may run until a later clean restart re-establishes the map.
+    public private(set) var loadWasCorrupt = false
 
     public init(path: String = Config.tasksPath) {
         self.path = path
@@ -48,13 +53,27 @@ public actor TaskStore {
                 currentRev = 0                                              // pre-upgrade bare array → rev 0
             }
         } catch {
-            let bak = path + ".bak"
-            try? FileManager.default.removeItem(atPath: bak)
-            try? FileManager.default.moveItem(atPath: path, toPath: bak)
-            tasks = []; currentRev = 0
+            // Top-level unparseable: side-line to a TIMESTAMPED backup so a second corruption never
+            // clobbers the first (`.corrupt-<ISO8601>`), then boot empty and raise `loadWasCorrupt` so the
+            // daemon enters conservative worktree mode (carry #3). Never `removeItem` the prior corrupt file.
+            let stamp = Self.corruptStamp(Date())
+            let backup = path + ".corrupt-\(stamp)"
+            try? FileManager.default.moveItem(atPath: path, toPath: backup)
+            FileHandle.standardError.write(Data(
+                "TaskStore.load: tasks.json is corrupt (top-level unparseable) — moved to \(backup); booting empty in conservative mode\n".utf8))
+            tasks = []; currentRev = 0; loadWasCorrupt = true
         }
         loaded = true
         return tasks
+    }
+
+    /// A filesystem-safe ISO8601 timestamp for the corrupt-backup suffix (`:` replaced so the name is
+    /// portable). Collision-resistant enough that two corruptions in the same second still don't clobber —
+    /// each rename targets a fresh name and `moveItem` refuses to overwrite an existing file.
+    static func corruptStamp(_ date: Date) -> String {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt.string(from: date).replacingOccurrences(of: ":", with: "-")
     }
 
     /// Keep the recoverable records; log-and-drop the id-less ones (the only records `FailableTask` yields
@@ -86,6 +105,13 @@ public actor TaskStore {
     public func all() -> [Task] {
         ensureLoaded()
         return tasks
+    }
+
+    /// Whether the on-disk board was corrupt at load (top-level unparseable → side-lined + booted empty).
+    /// Forces a load so a boot caller reads the real signal even before the first `all()`.
+    public func wasCorrupt() -> Bool {
+        ensureLoaded()
+        return loadWasCorrupt
     }
 
     public func get(_ id: UUID) -> Task? {

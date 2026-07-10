@@ -17,47 +17,6 @@ public enum LaunchFlavor: Sendable {
 
 extension OrchestraService {
 
-    /// Daemon-startup recovery pass. For every non-terminal card whose tmux session is not alive
-    /// (true for ALL after a reboot; a no-op after a daemon-only crash since the external tmux server
-    /// outlived it): resumable cards (agentSessionId + transcript on disk) are revived via a throttled
-    /// `resume`; the rest are marked `.dead` (rebootUnrevived). Idempotent.
-    public func recoverSessions() async {
-        let tasks = await store.all().filter { !$0.phase.isTerminal }
-        let grace = config.revivalGraceSeconds
-        var jobs: [@Sendable () async -> Void] = []
-
-        // One `tmux list-sessions` instead of an `has-session` per card.
-        let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
-
-        for t in tasks {
-            if aliveNames.contains(sessions.sessionName(t.id)) { continue }   // daemon-crash no-op / still-running
-            let id = t.id
-            if isResumable(t) {
-                jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
-            } else if t.titleProvisional {
-                // Never-prompted (or freshly restarted/cleared): no current-session work to lose and no
-                // transcript to resume, so relaunch a blank session rather than killing the card.
-                jobs.append { _ = try? await self.restart(id, source: .daemon) }
-            } else {
-                await markDead(t.id, reason: .rebootUnrevived, detail: nil, source: .daemon)
-            }
-        }
-
-        guard !jobs.isEmpty else { return }
-        let cap = max(1, config.maxConcurrentRevivals)
-        // Windowed task group: keep at most `cap` revivals (resume or restart) in flight (start one more
-        // each time one finishes). resume is inert until prompted, so the cap only paces process launches.
-        await withTaskGroup(of: Void.self) { group in
-            var iter = jobs.makeIterator()
-            func startNext() {
-                guard let job = iter.next() else { return }
-                group.addTask { await job() }
-            }
-            for _ in 0..<cap { startNext() }
-            while await group.next() != nil { startNext() }
-        }
-    }
-
     /// Revive THIS card's existing session: recreate the tmux session + relaunch `claude --resume`.
     /// Routes through the funnel — `transition(→.relaunching)` (bumps the generation, the atomic claim) →
     /// kill+ensure off-actor → inline readiness confirmation → `transition(→.live)`, epoch-fenced so a
