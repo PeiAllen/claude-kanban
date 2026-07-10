@@ -369,7 +369,11 @@ private struct AgentChrome: View {
                                       terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
                                       // A mouse click into the terminal also counts as descending: keep the
                                       // zone (and the focus ring / chip) honest.
-                                      onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } })
+                                      onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } },
+                                      // Auto-reattach on a dead pane while the card is genuinely live on a
+                                      // live link — never for a dead/creating card or a down link.
+                                      attachWhileLiveGate: { !displayState(phase: task.phase, connection: model.connectionState).isStale
+                                                         && [.running, .idle, .needsPermission].contains(task.phaseDisplay) })
                         // Key by session AND active connection so switching cards OR connections tears down the
                         // old terminal and attaches a fresh one against the right host — without this, SwiftUI
                         // reuses the same NSView and every card shows card #1's tmux.

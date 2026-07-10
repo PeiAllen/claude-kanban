@@ -171,7 +171,7 @@ struct IOSTerminalView: UIViewRepresentable {
         private var started = false
         private var intentionalClose = false
         private var reconnects = 0
-        private let maxReconnects = 5
+        private let reconnectPolicy = TerminalReconnectPolicy()   // maxReconnects = 5 (was a local constant)
         /// A reconnect timer is already scheduled — so the `.failed`+`.closed` pair a single drop produces
         /// (or a stray later event) can't stack a second timer (#6).
         private var reconnectPending = false
@@ -325,17 +325,17 @@ struct IOSTerminalView: UIViewRepresentable {
             }
             // #6: one drop emits at most one reconnect. Never stack a second timer.
             guard !reconnectPending else { return }
-            guard reconnects < maxReconnects else {
+            guard let delaySecs = reconnectPolicy.delay(forAttempt: reconnects + 1) else {
                 // Give up — but tear the channel down so an owned SSH session isn't left leaking (#5); the
                 // scenePhase-active reset (`retryConnection`) is the way back.
                 intentionalClose = true
                 channel?.close()
-                feedStatus("[giving up after \(maxReconnects) attempts — reopen or foreground to retry]")
+                feedStatus("[giving up after \(reconnectPolicy.maxReconnects) attempts — reopen or foreground to retry]")
                 return
             }
             reconnectPending = true
             reconnects += 1
-            let delay = Double(min(8, 1 << (reconnects - 1)))   // 1,2,4,8,8…
+            let delay = Double(delaySecs)   // 1,2,4,8,8…
             let cols = term.getTerminal().cols, rows = term.getTerminal().rows
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, !self.intentionalClose else { return }
@@ -355,7 +355,7 @@ struct IOSTerminalView: UIViewRepresentable {
         /// to retry" affordance the copy used to promise but never had a gesture for — LOW).
         func retryConnection() {
             guard let term = terminal, started else { return }
-            guard intentionalClose || reconnects >= maxReconnects else { return }   // only revive a dead one
+            guard intentionalClose || reconnects >= reconnectPolicy.maxReconnects else { return }   // only revive a dead one
             // Never revive a takeover terminal we no longer hold the lease for — that would re-run the
             // exclusive recipe and kick the current owner (#7 again, via the manual retry path).
             guard shouldReconnect() else { return }
