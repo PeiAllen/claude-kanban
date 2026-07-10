@@ -672,7 +672,7 @@ Expected: FAIL — no `debounceFlush`/`diskWriteCount`/`flushPendingWrites`/`set
   - `private func cancelPendingFlush()`: cancel timer; `pendingDirty = false; firstDeferredAt = nil` (an immediate persist supersedes — memory already includes the pending deltas).
   - Extend `update` with `debounceFlush: Bool = false`: same body as `:178-189` incl. the `guard tasks[idx] != before` no-op gate (so a no-op neither bumps rev nor schedules a flush); the terminal `try persist()` (`:187`) becomes `if debounceFlush { persistDebounced() } else { try persist() }`.
   - Test seams: `var diskWriteCount = 0`; `func setPersistDebounce(_ d: Duration) { debounceInterval = d }`; `func setMaxDeferral(_ d: Duration) { maxDeferral = d }`.
-  
+
   In `report()` (`+Report.swift:153`) opt the field-delta telemetry write into debounce (the `transition()` phase write at `:162` stays immediate):
 ```swift
 let (saved, rev) = try await store.update(id, debounceFlush: true) { $0.applyReportFields(from: task) }

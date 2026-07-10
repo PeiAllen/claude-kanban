@@ -31,7 +31,8 @@ extension OrchestraService {
         // Re-derive the base classification from the persisted carrier (identical to spawn's inline path).
         let trimmedBase = card.spawnBase?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedBase: String? = (trimmedBase?.isEmpty == false) ? trimmedBase : nil
-        let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
+        let remotesForBase = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+        let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: remotesForBase) }
         var remoteFetchedOID: String? = nil
         var ensureBase = normalizedBase
         if let remoteRef {
@@ -92,13 +93,17 @@ extension OrchestraService {
             // (Task-1 Minor #3) so the actor keeps servicing `report` during the rollback.
             _ = try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
             if !ensured.branchExisted {
-                _ = try? await offActor { try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch]) }
+                let ctl = Duration.seconds(config.controlTimeout)
+                _ = try? await offActor {
+                    try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch], timeout: ctl)
+                }
             }
             return .failed(detail: "spawn rolled back (worktree/branch removed): \(error)")
         }
         // BT6: a fresh remote-base spawn opts into merge-watch (moved off spawn's inline tail — spawn no
         // longer knows the derived parent). Start it now that the remote lineage is recorded.
-        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
+        let remotesForWatch = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: remotesForWatch) != nil,
            await lineage.read(repo: realRepo, branch: card.branch)?.watch == true {
             startRemoteWatch(cardId: id)
         }

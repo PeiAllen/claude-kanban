@@ -405,12 +405,14 @@ public actor OrchestraService {
             // re-derives the remote/local classification (`RemoteParentRef.parse`) and cuts the worktree.
             // Non-blocking flip: spawn does NO remote fetch / `worktrees.ensure` / lineage record / checkout.
             var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let b = normalizedBase, b.hasPrefix("refs/"),
-               RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
-                guard b.hasPrefix("refs/heads/") else {
-                    throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+            if let b = normalizedBase, b.hasPrefix("refs/") {
+                let remotesForSpawnBase = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+                if RemoteParentRef.parse(b, remotes: remotesForSpawnBase) == nil {
+                    guard b.hasPrefix("refs/heads/") else {
+                        throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+                    }
+                    normalizedBase = String(b.dropFirst("refs/heads/".count))
                 }
-                normalizedBase = String(b.dropFirst("refs/heads/".count))
             }
             spawnBaseCarrier = (normalizedBase?.isEmpty == false) ? normalizedBase : nil
             // PURE cwd (no checkout — the MaterializeStepper cuts/adopts the tree from `spawnBase`).

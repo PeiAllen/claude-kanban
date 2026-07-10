@@ -22,7 +22,8 @@ extension OrchestraService {
                 "card has no parent link — nothing to merge up into; set one with "
                 + "`orchestra set-parent \(child.shortId) <branch>`")
         }
-        if RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: child.repo)) != nil {
+        let remotes = (try? await offActor { self.gitRemotes(repo: child.repo) }) ?? []
+        if RemoteParentRef.parse(link.parent, remotes: remotes) != nil {
             throw OrchestraError.invalidParams(
                 "parent \(link.parent) is remote — publish a stacked PR instead "
                 + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")

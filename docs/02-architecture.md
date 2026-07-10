@@ -48,15 +48,17 @@ On startup the daemon (`Sources/orchestrad/main.swift`):
 ### Actor hygiene, the snapshot cache, and telemetry debounce
 
 The daemon is a **single `OrchestraService` actor** — one serialized owner of all mutable state, no
-per-card executors. That design is only responsive if the actor never blocks on IO, so every slow
-subprocess/file operation is hopped **off the actor** onto a background queue via one primitive,
-`offActor { … }` (a `nonisolated` GCD/continuation bridge). `exec`, git diff/notes/tree probes,
-`pollTelemetry`'s rollout resolution, the every-tick `sessions.list()`, `prepareToLaunch`'s
-`~/.claude.json` read-merge, the scratch sweep, `spawnBranches`' `git for-each-ref`, and the shell-window
-listing all run off-actor and bounded by the `controlTimeout`/`sessionLaunchTimeout` config knobs, so a
-slow git repo or a hung tmux call **never freezes RPC servicing** — a concurrent `list`/`spawn` stays
-prompt. Read-only git helpers are `nonisolated` and their `git remote` lookup is memoized per repo,
-invalidated on `.git/config` mtime.
+per-card executors. That design is only responsive if the actor doesn't block on IO on its hot paths, so
+the blocking git, tmux-listing, exec, telemetry, and launch-prep operations are hopped **off the actor**
+onto a background queue via one primitive, `offActor { … }` (a `nonisolated` GCD/continuation bridge).
+`exec`, git diff/notes/tree probes, `pollTelemetry`'s rollout resolution, the every-tick
+`sessions.list()`, `prepareToLaunch`'s `~/.claude.json` read-merge, the scratch sweep, `spawnBranches`'
+`git for-each-ref`, the shell-window listing, and the remaining on-actor `gitRemotes`/parent-classification
+call sites all run off-actor and bounded by the `controlTimeout`/`sessionLaunchTimeout` config knobs, so a
+slow git repo or a hung tmux call **never freezes RPC servicing** on those paths — a concurrent
+`list`/`spawn` stays prompt. Read-only git helpers are `nonisolated` and their `git remote` lookup is
+memoized per repo, invalidated on `.git/config` mtime. (Some interactive shell-control, capture, and
+directory-listing paths still do synchronous IO on the actor — out of this pass's scope.)
 
 Two caches keep hot paths cheap without changing observable behavior:
 

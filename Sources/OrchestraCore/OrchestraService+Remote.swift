@@ -211,8 +211,9 @@ extension OrchestraService {
 
     private func shouldStopRemoteWatch(_ id: UUID) async -> Bool {
         guard let t = await store.get(id), !t.archived, t.origin == .worktree,
-              let link = await lineage.read(repo: t.repo, branch: t.branch),
-              RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil, link.watch else { return true }
+              let link = await lineage.read(repo: t.repo, branch: t.branch) else { return true }
+        let remotes = (try? await offActor { self.gitRemotes(repo: t.repo) }) ?? []
+        guard RemoteParentRef.parse(link.parent, remotes: remotes) != nil, link.watch else { return true }
         return false
     }
 
@@ -236,8 +237,9 @@ extension OrchestraService {
     public func rebuildRemoteWatches() async {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         for t in active {
-            guard let link = await lineage.read(repo: t.repo, branch: t.branch),
-                  link.watch, RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) != nil else { continue }
+            guard let link = await lineage.read(repo: t.repo, branch: t.branch), link.watch else { continue }
+            let remotes = (try? await offActor { self.gitRemotes(repo: t.repo) }) ?? []
+            guard RemoteParentRef.parse(link.parent, remotes: remotes) != nil else { continue }
             startRemoteWatch(cardId: t.id)
         }
     }
