@@ -32,6 +32,17 @@ final class ActorHygieneTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor diff")
         gate.open(); _ = await slow.value
     }
+
+    func test_actorNotBlockedByPollTelemetry() async throws {
+        let gate = ActorHygieneSupport.Gate()
+        let (service, _) = try await ActorHygieneSupport.liveCard(adapter: ActorHygieneSupport.BlockingTelemetryAdapter(gate: gate))
+        let slow = _Concurrency.Task { await service.pollTelemetry() }
+        gate.waitUntilEntered()                              // adapter.sessionInfo is now parked inside the hop
+        let start = Date()
+        _ = await service.list()
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor pollTelemetry")
+        gate.open(); await slow.value
+    }
 }
 
 // MARK: - Shared Stage-5.1 test harness (reused by the 5.1.2–5.1.5 gate tests)
@@ -180,6 +191,32 @@ enum ActorHygieneSupport {
             gate.markEntered()
             gate.blockUntilOpen()
             return ""
+        }
+    }
+
+    /// An `Adapter` stub for `test_actorNotBlockedByPollTelemetry` (5.1.3): `sessionInfo` marks the gate
+    /// entered (proving `pollTelemetry`'s per-card rollout resolution genuinely reached the hop) then
+    /// parks until the test opens it — a deterministic stand-in for Codex's rollout-file enumeration.
+    /// `capabilities == .codex` (`telemetry == .fileTail`) so `pollTelemetry`'s capability gate lets the
+    /// card through to the blocking call.
+    final class BlockingTelemetryAdapter: Adapter, @unchecked Sendable {
+        let id = "codex"
+        let name = "Blocking Telemetry Stub"
+        let icon = "sparkle"
+        let bin = "fake-agent"
+        let enabled = true
+        let capabilities = AgentCapabilities.codex
+        private let gate: Gate
+        init(gate: Gate) { self.gate = gate }
+
+        func models() -> [AgentModel] { [AgentModel(id: "m1")] }
+        func newSessionId() -> String? { nil }
+        func start(_ ctx: AdapterContext) -> [String] { [bin] }
+        func resume(_ ctx: AdapterContext) -> [String]? { nil }
+        func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
+            gate.markEntered()
+            gate.blockUntilOpen()
+            return nil
         }
     }
 }

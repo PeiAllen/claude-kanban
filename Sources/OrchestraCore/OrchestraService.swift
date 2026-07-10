@@ -310,10 +310,16 @@ public actor OrchestraService {
             let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                      name: t.title, access: t.access,
                                      since: beingBorn ? t.phaseChangedAt : nil)
-            guard let path = adapter.sessionInfo(ctx, current: t.agentSessionId,
-                                                 prior: t.priorSessionIds)?.transcriptPath,
-                  FileManager.default.fileExists(atPath: path) else { continue }
-            for line in await tailer.newLines(cardId: t.id, path: path) {
+            let a = adapter
+            let sessionId = t.agentSessionId
+            let priorSessionIds = t.priorSessionIds
+            let resolved: (path: String, exists: Bool)? = try? await offActor {
+                guard let info = a.sessionInfo(ctx, current: sessionId, prior: priorSessionIds),
+                      let p = info.transcriptPath else { return nil }
+                return (p, FileManager.default.fileExists(atPath: p))
+            }
+            guard let resolved, resolved.exists else { continue }
+            for line in await tailer.newLines(cardId: t.id, path: resolved.path) {
                 if let patch = adapter.parse(.fileTail(line: line)) {
                     try? await report(t.id, patch)
                 }
