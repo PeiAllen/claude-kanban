@@ -185,7 +185,7 @@ extension OrchestraService {
     /// leaves it for the next turn). No loop: the resumed session runs ONE turn off the drained seed and its
     /// Stop finds the inbox empty.
     func resumeSeedWake(_ t: Task, watcherWillReinvoke: Bool) async {
-        guard case .live(.waiting) = t.phase, isResumable(t) else { return }
+        guard case .live(.waiting) = t.phase, await isResumable(t) else { return }
         if watcherWillReinvoke, activeWaitProcesses[t.id] != nil { return }
         // Claim the relaunch SYNCHRONOUSLY (before the detached hop) so a concurrent wake sees the claim and
         // defers — else two resumes race and the second drains an already-emptied inbox and kills the first's

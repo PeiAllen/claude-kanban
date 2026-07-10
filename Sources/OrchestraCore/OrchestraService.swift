@@ -15,6 +15,17 @@ public actor OrchestraService {
     var sessions: any SessionManaging
     let launcher: Launcher
     var resolver: PathResolver
+    /// Code-review diff/stat renderer (code-review-on-board). Defaults to the real `git`-backed
+    /// provider; a test injects a blocking stub (`_setDiffProviderForTest`) to prove `diffText`/
+    /// `recomputeDiffStat` run their git work off-actor (PR5 actor-hygiene, Task 5.1.2).
+    var diffProvider: any DiffProvider = GitDiffProvider()
+    /// Per-repo `git remote` memo (PR5 actor-hygiene, Task 5.1.4) — keyed by `.git/config` mtime, so
+    /// `nonisolated` git-probe code (`gitRemotes`) can call it off-actor without an actor-state read.
+    let gitRemotesCache = GitRemotesCache()
+    /// Test-only probe for `computeTreeStat` (PR5 actor-hygiene, Task 5.1.4): read ON-ACTOR by
+    /// `recomputeTreeStat` and passed as a call-scoped argument into the `nonisolated computeTreeStat` —
+    /// never itself read from inside the offActor hop. `nil` in production.
+    let treeProbeHolder = TreeProbeHolder()
     /// Per-adapter subscription rate state for the authMode soft-warn (E2 / q4 — advisory only, no cap).
     let authRate = AuthRateMonitor()
     /// Daemon-side rollout TRANSPORT for `fileTail` agents (Codex). Tracks a per-card byte offset; the
@@ -88,6 +99,18 @@ public actor OrchestraService {
     /// `store.peekPersistedRev()` (before the control server can accept any RPC), and refreshed by
     /// every `emit(_:rev:)` thereafter.
     private var lastRev: Int = 0
+    /// A card's tmux session state as of the reconciler's last off-actor `windows()` probe (PR5 actor-
+    /// hygiene, Task 5.2). `observedAt` lets `boardSnapshot` tell a fresh capture from one taken before the
+    /// card's CURRENT session (`phaseChangedAt`) — a stale entry (or a miss) falls back to a live shell.
+    struct ObservedSession: Sendable, Equatable {
+        let targets: [TmuxTarget]
+        let running: Bool
+        let observedAt: Date
+    }
+    /// Reconcile-tick-maintained cache of each non-archived card's session state, keyed by card id.
+    /// Populated every tick (`reconcile()`), evicted on teardown and on any user-driven shell op
+    /// (`openShell`/`closeShell`/`inspect`) so a stale entry never masks a real change.
+    var observedSessions: [UUID: ObservedSession] = [:]
     // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
     var terminalOwnership = TerminalOwnershipStore()
     // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
@@ -210,6 +233,12 @@ public actor OrchestraService {
         for cont in subscribers.values { cont.yield(envelope) }
     }
 
+    /// Flush any debounced telemetry `tasks.json` write before the daemon exits (SIGTERM path). Makes a
+    /// clean restart lossless — the on-disk `rev` catches up to the in-memory `rev` (bug #13 debounce).
+    public func flushBeforeShutdown() async {
+        await store.flushPendingWrites()
+    }
+
     /// Ephemeral: stamps the current board rev via the `lastRev` mirror (ephemeral events never bump
     /// the store's rev, so the last task-state rev IS the current board rev).
     func emitActivity(_ kind: ActivityKind, _ task: Task?, _ source: ActivitySource, _ text: String) {
@@ -222,6 +251,8 @@ public actor OrchestraService {
     #if DEBUG
     func storeCurrentRevForTest() async -> Int { await store.currentRev }
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
+    func _setDiffProviderForTest(_ provider: any DiffProvider) { diffProvider = provider }
+    func _setTreeProbeForTest(_ probe: (@Sendable () -> Void)?) { treeProbeHolder.set(probe) }
     #endif
 
     // MARK: - trust
@@ -305,10 +336,16 @@ public actor OrchestraService {
             let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                      name: t.title, access: t.access,
                                      since: beingBorn ? t.phaseChangedAt : nil)
-            guard let path = adapter.sessionInfo(ctx, current: t.agentSessionId,
-                                                 prior: t.priorSessionIds)?.transcriptPath,
-                  FileManager.default.fileExists(atPath: path) else { continue }
-            for line in await tailer.newLines(cardId: t.id, path: path) {
+            let a = adapter
+            let sessionId = t.agentSessionId
+            let priorSessionIds = t.priorSessionIds
+            let resolved: (path: String, exists: Bool)? = try? await offActor {
+                guard let info = a.sessionInfo(ctx, current: sessionId, prior: priorSessionIds),
+                      let p = info.transcriptPath else { return nil }
+                return (p, FileManager.default.fileExists(atPath: p))
+            }
+            guard let resolved, resolved.exists else { continue }
+            for line in await tailer.newLines(cardId: t.id, path: resolved.path) {
                 if let patch = adapter.parse(.fileTail(line: line)) {
                     try? await report(t.id, patch)
                 }
@@ -368,12 +405,14 @@ public actor OrchestraService {
             // re-derives the remote/local classification (`RemoteParentRef.parse`) and cuts the worktree.
             // Non-blocking flip: spawn does NO remote fetch / `worktrees.ensure` / lineage record / checkout.
             var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let b = normalizedBase, b.hasPrefix("refs/"),
-               RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
-                guard b.hasPrefix("refs/heads/") else {
-                    throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+            if let b = normalizedBase, b.hasPrefix("refs/") {
+                let remotesForSpawnBase = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+                if RemoteParentRef.parse(b, remotes: remotesForSpawnBase) == nil {
+                    guard b.hasPrefix("refs/heads/") else {
+                        throw OrchestraError.invalidParams("base must be a branch name, origin/<b>, or pr#<N> — not \(b)")
+                    }
+                    normalizedBase = String(b.dropFirst("refs/heads/".count))
                 }
-                normalizedBase = String(b.dropFirst("refs/heads/".count))
             }
             spawnBaseCarrier = (normalizedBase?.isEmpty == false) ? normalizedBase : nil
             // PURE cwd (no checkout — the MaterializeStepper cuts/adopts the tree from `spawnBase`).
@@ -472,30 +511,35 @@ public actor OrchestraService {
     ///      session hasn't registered yet must survive the race.
     public func sweepOrphanScratch(root: String = Config.scratchRoot,
                                    graceInterval: TimeInterval = 300) async {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return }
-
         // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
-        // "nothing is live" — bail rather than delete every scratch dir, live ones included.
+        // "nothing is live" — bail rather than delete every scratch dir, live ones included. Kept
+        // on-actor (a pure store read, no IO) so the off-actor hop below only runs once we know
+        // there is something to sweep against.
         let cards = await store.all()
         guard !cards.isEmpty else { return }
         let liveScratchDirs = Set(cards
             .filter { $0.origin == .scratch && !$0.archived }
             .map { $0.cwd })
 
-        // (a) Dir names are lowercase UUIDs; `UUID(uuidString:)` is case-insensitive, so `sessionName`
-        // matches the live tmux set even though the id's canonical form is uppercase.
-        let liveSessions = Set((try? sessions.list())?.filter(\.running).map(\.name) ?? [])
-        let now = Date()
+        let s = sessions
+        try? await offActor {
+            let fm = FileManager.default
+            guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return }
 
-        for name in entries {
-            let path = "\(root)/\(name)"
-            if liveScratchDirs.contains(path) { continue }
-            if let id = UUID(uuidString: name), liveSessions.contains(sessions.sessionName(id)) { continue }
-            // (b) Skip anything modified within the grace window (freshly created / actively touched).
-            if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
-               now.timeIntervalSince(mtime) < graceInterval { continue }
-            try? fm.removeItem(atPath: path)
+            // (a) Dir names are lowercase UUIDs; `UUID(uuidString:)` is case-insensitive, so `sessionName`
+            // matches the live tmux set even though the id's canonical form is uppercase.
+            let liveSessions = Set((try? s.list())?.filter(\.running).map(\.name) ?? [])
+            let now = Date()
+
+            for name in entries {
+                let path = "\(root)/\(name)"
+                if liveScratchDirs.contains(path) { continue }
+                if let id = UUID(uuidString: name), liveSessions.contains(s.sessionName(id)) { continue }
+                // (b) Skip anything modified within the grace window (freshly created / actively touched).
+                if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
+                   now.timeIntervalSince(mtime) < graceInterval { continue }
+                try? fm.removeItem(atPath: path)
+            }
         }
     }
 
@@ -659,7 +703,8 @@ public actor OrchestraService {
 
     public func status(_ id: UUID) async throws -> TaskStatus {
         let t = try await require(id)
-        let running = (try? sessions.isAlive(sessions.sessionName(id))) ?? false
+        let name = sessions.sessionName(id), s = sessions
+        let running = (try? await offActor { try s.isAlive(name) }) ?? false
         return TaskStatus(task: t, running: running)
     }
 
@@ -708,7 +753,8 @@ public actor OrchestraService {
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
         let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
             ?? sessions.newShellWindow(name, cwd: t.cwd)
-        emitShells(t)
+        await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -720,9 +766,9 @@ public actor OrchestraService {
     /// SKIPPED rather than broadcast as empty — emitting `[]` on a hiccup would wholesale-wipe every
     /// client's shell panel/selection until the next reconnect. The caller's own mutation already
     /// succeeded, and the next successful open/close (or reconnect reconcile) re-broadcasts the truth.
-    private func emitShells(_ t: Task) {
-        let name = sessions.sessionName(t.id)
-        guard let targets = try? sessions.windows(name) else { return }
+    private func emitShells(_ t: Task) async {
+        let name = sessions.sessionName(t.id), s = sessions
+        guard let targets = try? await offActor({ try s.windows(name) }) else { return }
         let shells = targets.filter { $0.kind == .shell }
             .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
         emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)), rev: lastRev)
@@ -751,14 +797,16 @@ public actor OrchestraService {
         // literal argv; sendKeys sends the line + Enter itself.
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
-        emitShells(t)
+        await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
-        emitShells(t)
+        await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
@@ -766,7 +814,9 @@ public actor OrchestraService {
         // Only worktree cards are gated by the repo allowlist; borrowed/scratch cwds are trusted via
         // the OS sandbox (the path may live outside any allowlisted repo).
         if t.origin == .worktree { try resolver.assertAllowed(t.cwd) }
-        let r = try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
+        let r = try await offActor {
+            try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
+        }
         let cap = 256 * 1024
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)
     }
@@ -791,7 +841,28 @@ public actor OrchestraService {
         sessionsList.reserveCapacity(active.count)
         owners.reserveCapacity(active.count)
         for card in active {
-            if let s = try? await sessions(card.id) { sessionsList.append(s) }
+            // Cache HIT: fresh vs the card's CURRENT session (`observedAt >= phaseChangedAt`) — serve the
+            // reconciler's off-actor `windows()` capture instead of shelling out again (Task 5.2). A MISS
+            // or a STALE entry (session changed since capture) falls back to one live shell so nothing is
+            // mis-shown; the trade is up-to-one-tick staleness on the hit path, self-healed by the next
+            // tick / live `shellsChanged` events.
+            if let obs = observedSessions[card.id], obs.observedAt >= card.phaseChangedAt {
+                // Agent identity is an fs read (non-tmux) — hop it off-actor like 5.1.3 so the hit path
+                // stays fully off the tmux path. A nil `sessionInfo` (early-life, before the session id
+                // binds) MUST serve the SAME fallback `AgentSessionInfo` `sessions(_:)` builds below, or
+                // the hit branch is skipped and an early-life card live-shells every snapshot.
+                let ctx = AdapterContext(cwd: card.cwd, model: card.model.id, sessionId: card.agentSessionId,
+                                         name: card.title, orchestraBin: orchestraBin)
+                let a = try? registry.get(card.agentId)
+                let agent = (try? await offActor { a?.sessionInfo(ctx, current: card.agentSessionId, prior: card.priorSessionIds) }) ?? nil
+                    ?? AgentSessionInfo(agentId: card.agentId, sessionId: card.agentSessionId, transcriptPath: nil,
+                                        priorSessionIds: card.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
+                sessionsList.append(CardSessions(ref: card.ref(), id: card.id, worktree: card.cwd,
+                    tmuxSocket: Config.tmuxSocket, session: sessions.sessionName(card.id),
+                    running: obs.running, targets: obs.targets, agent: agent))
+            } else if let s = try? await sessions(card.id) {
+                sessionsList.append(s)
+            }
             owners.append(terminalOwnership.snapshot(cardId: card.id, ref: card.ref(), now: now))
         }
         return BoardSnapshot(rev: rev, tasks: active, archived: archived, config: config,
@@ -960,33 +1031,37 @@ public actor OrchestraService {
     /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
     /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
     /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
-    public func spawnRepos() -> [String] {
+    public func spawnRepos() async -> [String] {
         let root = (config.reposRoot as NSString).expandingTildeInPath
-        let fm = FileManager.default
-        let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
-        // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
-        // (running a read-only/freeform agent inside a repo is the common case) — the client unions them
-        // with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
-        return entries
-            .filter { !$0.hasPrefix(".") }
-            .map { "\(root)/\($0)" }
-            .filter { fm.fileExists(atPath: "\($0)/.git") }
-            .sorted {
-                ($0 as NSString).lastPathComponent
-                    .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-            }
+        return (try? await offActor {
+            let fm = FileManager.default
+            let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+            // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
+            // (running a read-only/freeform agent inside a repo is the common case) — the client unions
+            // them with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
+            return entries
+                .filter { !$0.hasPrefix(".") }
+                .map { "\(root)/\($0)" }
+                .filter { fm.fileExists(atPath: "\($0)/.git") }
+                .sorted {
+                    ($0 as NSString).lastPathComponent
+                        .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
+                }
+        }) ?? []
     }
 
     /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).
     /// Empty on any failure (bad repo, git missing, not a worktree) so the picker degrades to free-text
     /// branch creation. Defense-in-depth: only runs git on an allowlisted repo path.
-    public func spawnBranches(repo: String) -> [String] {
+    public func spawnBranches(repo: String) async -> [String] {
         guard !repo.isEmpty, let real = try? resolver.resolveRepo(repo) else { return [] }
-        guard let res = try? Proc.run(
-            ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
-             "--sort=-committerdate", "refs/heads"],
-            timeout: .seconds(5)), res.ok else { return [] }
-        return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        return (try? await offActor {
+            guard let res = try? Proc.run(
+                ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
+                 "--sort=-committerdate", "refs/heads"],
+                timeout: .seconds(5)), res.ok else { return [] }
+            return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        }) ?? []
     }
 
     /// Convenient starting points for the phone's remote directory browser (`listDir`): the daemon's

@@ -327,4 +327,99 @@ struct TaskStoreTests {
         #expect(loaded.count == 1)
         #expect(await store.currentRev == 0)
     }
+
+    // MARK: - Telemetry-persist debounce (bug #13). rev/memory/emit stay SYNCHRONOUS; only the file write coalesces.
+
+    @Test("telemetry writes debounce: rev advances synchronously per delta, but the burst coalesces to one disk write")
+    func test_telemetryPersistDebounced() async throws {
+        let store = TaskStore(path: tmpPath())
+        let created = try await store.create(sample()).task          // one immediate write
+        await store.setPersistDebounce(.seconds(10)); await store.setMaxDeferral(.seconds(30))
+        let base = await store.diskWriteCount
+        var lastRev = await store.currentRev
+        for pct in 1...20 {                                          // 20 rapid telemetry deltas
+            let (_, rev) = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = Double(pct) }
+            #expect(rev > lastRev); lastRev = rev                    // rev advances synchronously per real change
+        }
+        #expect(await store.diskWriteCount == base)                 // debounced: no write yet
+        #expect(await store.get(created.id)?.ctxPct == 20)          // memory current despite deferred write
+        await store.flushPendingWrites()
+        #expect(await store.diskWriteCount == base + 1)             // burst coalesced to ONE write
+    }
+
+    @Test("an immediate mutation force-flushes the pending telemetry write (one write carries both)")
+    func test_immediateMutationFlushesPendingTelemetry() async throws {
+        let path = tmpPath()
+        let store = TaskStore(path: path)
+        let created = try await store.create(sample()).task
+        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        _ = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 5 }
+        let c0 = await store.diskWriteCount
+        _ = try await store.move(created.id, to: .impl)             // immediate → absorbs the pending delta
+        #expect(await store.diskWriteCount == c0 + 1)              // exactly one write, not two
+        // A fresh store over the same path sees BOTH the telemetry delta AND the move.
+        let reloaded = TaskStore(path: path)
+        let onDisk = await reloaded.load().first { $0.id == created.id }
+        #expect(onDisk?.ctxPct == 5)
+        #expect(onDisk?.column == .impl)
+    }
+
+    @Test("reload before a flush sees the LAST FLUSHED rev, not the debounced-but-unwritten one")
+    func test_reloadBeforeFlushSeesLastFlushedRev() async throws {
+        let path = tmpPath()
+        let store = TaskStore(path: path)
+        _ = try await store.create(sample()).task                  // immediate write; on-disk rev == this
+        let flushedRev = await store.currentRev
+        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        let (_, bumpedRev) = try await store.update(await store.all().first!.id, debounceFlush: true) { $0.ctxPct = 9 }
+        #expect(bumpedRev == flushedRev + 1)                       // in-memory rev advanced synchronously
+        // A fresh store (crash before flush) restores the last FLUSHED rev, below the in-memory rev.
+        let reloaded = TaskStore(path: path)
+        _ = await reloaded.load()
+        #expect(await reloaded.currentRev == flushedRev)
+    }
+
+    @Test("reload after flushPendingWrites() sees the current rev AND the delta on disk")
+    func test_reloadAfterFlushSeesCurrentRev() async throws {
+        let path = tmpPath()
+        let store = TaskStore(path: path)
+        let created = try await store.create(sample()).task
+        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        let (_, bumpedRev) = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 11 }
+        await store.flushPendingWrites()
+        let reloaded = TaskStore(path: path)
+        let onDisk = await reloaded.load().first { $0.id == created.id }
+        #expect(await reloaded.currentRev == bumpedRev)
+        #expect(onDisk?.ctxPct == 11)
+    }
+
+    @Test("a no-op debounced update advances neither rev nor schedules a flush")
+    func test_noOpUpdateDoesNotAdvanceRev() async throws {
+        let store = TaskStore(path: tmpPath())
+        let created = try await store.create(sample()).task
+        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        let revBefore = await store.currentRev
+        let writesBefore = await store.diskWriteCount
+        let (unchanged, rev) = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = created.ctxPct }
+        #expect(rev == revBefore)                                  // no-op: rev unchanged
+        #expect(unchanged == created)
+        #expect(await store.currentRev == revBefore)
+        // No pending flush was scheduled — a flush now writes nothing.
+        await store.flushPendingWrites()
+        #expect(await store.diskWriteCount == writesBefore)
+    }
+
+    @Test("OrchestraService.flushBeforeShutdown() forwards to the store — a debounced delta lands on disk")
+    func test_flushBeforeShutdownPersists() async throws {
+        let env = TestEnv.make()
+        await env.svc.store.setPersistDebounce(.seconds(30)); await env.svc.store.setMaxDeferral(.seconds(60))
+        let created = try await env.svc.store.create(sample()).task
+        _ = try await env.svc.store.update(created.id, debounceFlush: true) { $0.ctxPct = 7 }
+        // Not yet on disk (debounced).
+        let peek = TaskStore(path: env.base + "/tasks.json")
+        #expect(await peek.load().first { $0.id == created.id }?.ctxPct != 7)
+        await env.svc.flushBeforeShutdown()                        // the SIGTERM path
+        let peek2 = TaskStore(path: env.base + "/tasks.json")
+        #expect(await peek2.load().first { $0.id == created.id }?.ctxPct == 7)
+    }
 }
