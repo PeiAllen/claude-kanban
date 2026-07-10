@@ -12,6 +12,17 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     var ensureSleepMs: UInt32 = 0
     init(root: String) { self.root = root }
 
+    /// A test-armed gate proving an RPC can return WHILE `ensure` is still provisioning: `blockEnsure`
+    /// parks the next `ensure` call on a semaphore (bounded by a safety timeout so a mis-armed test can't
+    /// hang the suite); `releaseEnsure` opens it. Distinct from `ensureSleepMs` (a fixed latency).
+    private let ensureGate = DispatchSemaphore(value: 0)
+    private var ensureBlocked = false
+    func blockEnsure() { lock.lock(); ensureBlocked = true; lock.unlock() }
+    func releaseEnsure() {
+        lock.lock(); let wasBlocked = ensureBlocked; ensureBlocked = false; lock.unlock()
+        if wasBlocked { ensureGate.signal() }
+    }
+
     /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
     /// re-spawn onto a branch whose worktree was removed but whose branch + lineage config remain).
     func markBranchExists(_ branch: String) {
@@ -22,14 +33,21 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         "\(root)/\((repo as NSString).lastPathComponent)/\(branch)"
     }
     private(set) var ensuredBases: [String: String?] = [:]   // branch -> base ensure() saw
+    /// When set, `ensure` throws it (drives the materialize failure-classification tests). An error whose
+    /// description contains "timed out" exercises the explicit timeout wording.
+    var ensureError: Error?
     func ensure(repo: String, branch: String, base: String?) throws
         -> (worktree: String, created: Bool, branchExisted: Bool) {
         lock.lock()
         ensured.append("\(repo)#\(branch)")
         ensuredBases[branch] = base
         let existed = existingBranches.contains(branch)
+        let blocked = ensureBlocked
+        let err = ensureError
         lock.unlock()
+        if let err { throw err }
         if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
+        if blocked { _ = ensureGate.wait(timeout: .now() + .seconds(30)) }   // parked until releaseEnsure (safety-bounded)
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return (wt, true, existed)
@@ -171,6 +189,15 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }
     func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
+
+    /// Parse the `ORCH_EPOCH` stamped into the session's launch env (the reconciler's identity oracle).
+    /// nil when the session is gone (not alive) or was launched without the stamp — mirroring the real
+    /// `SessionManager.stampedEpoch` (which returns nil for an absent variable / dead session).
+    func stampedEpoch(name: String) throws -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard alive.contains(name), let v = ensureEnv[name]?["ORCH_EPOCH"] else { return nil }
+        return Int(v)
+    }
 }
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is

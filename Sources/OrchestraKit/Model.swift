@@ -367,6 +367,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var phaseChangedAt: Date
     /// Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. nil ⇒ none.
     public var pendingSeed: String?
+    /// The RAW normalized base string exactly as `spawn` received it (`input.base` after the refs/heads
+    /// strip). Carried on the card so a reconciler-driven `materialize` can re-derive the base
+    /// classification (`RemoteParentRef.parse`) after a restart — a remote base (`origin/<b>` / `pr#<N>`)
+    /// survives deterministically. Set at spawn's `store.create`, read by `materialize`, cleared on the
+    /// `→.launching` transition. nil ⇒ HEAD / no base. Additive-optional Codable (mirrors `pendingSeed`).
+    public var spawnBase: String?
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
@@ -398,6 +404,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
         pendingSeed: String? = nil,
+        spawnBase: String? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
@@ -429,6 +436,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
         self.pendingSeed = pendingSeed
+        self.spawnBase = spawnBase
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
@@ -453,7 +461,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail
-        case phase, sessionEpoch, phaseChangedAt, pendingSeed
+        case phase, sessionEpoch, phaseChangedAt, pendingSeed, spawnBase
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
@@ -500,6 +508,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
             ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
+        self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
         // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
@@ -552,6 +561,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(sessionEpoch, forKey: .sessionEpoch)
         try c.encode(phaseChangedAt, forKey: .phaseChangedAt)
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
+        try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encodeIfPresent(treeStat, forKey: .treeStat)

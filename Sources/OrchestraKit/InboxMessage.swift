@@ -10,8 +10,15 @@ public struct InboxMessage: Codable, Sendable, Equatable {
     public let id: UUID
     public let cardId: UUID
     public let text: String
+    /// Optional idempotency key. When an `enqueue` supplies a `dedupKey`, a pending message already
+    /// carrying the same `(cardId, dedupKey)` suppresses the new append — so a crash-then-redrive
+    /// (e.g. Teardown's child "parent archived" nudge) never double-delivers. Additive-optional Codable:
+    /// absent on legacy records ⇒ nil ⇒ never dedups.
+    public let dedupKey: String?
     public let createdAt: Date
-    public init(id: UUID = UUID(), cardId: UUID, text: String, createdAt: Date = Date()) {
-        self.id = id; self.cardId = cardId; self.text = text; self.createdAt = createdAt
+    public init(id: UUID = UUID(), cardId: UUID, text: String, dedupKey: String? = nil,
+                createdAt: Date = Date()) {
+        self.id = id; self.cardId = cardId; self.text = text
+        self.dedupKey = dedupKey; self.createdAt = createdAt
     }
 }

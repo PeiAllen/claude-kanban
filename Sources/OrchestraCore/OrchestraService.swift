@@ -1141,10 +1141,18 @@ public actor OrchestraService {
     /// Bundle the live dependencies a `PhaseStepper` needs. PR4b's reconciler builds one per tick; the
     /// `transition` closure re-enters this actor so the funnel stays the sole `phase` writer.
     func convergeContext() -> ConvergeContext {
-        ConvergeContext(store: store, worktrees: worktrees, sessions: sessions, adapters: registry,
-                        transition: { [self] id, to, epoch in
-                            await transition(id, to: to, observedEpoch: epoch)
-                        })
+        ConvergeContext(
+            store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            transition: { [self] id, to, epoch, mutate in
+                await transition(id, to: to, observedEpoch: epoch, mutate: mutate)
+            },
+            materialize: { [self] id in await materialize(id) },
+            finishLaunch: { [self] id, flavor in await finishLaunch(id, flavor: flavor) },
+            teardownActorDuties: { [self] id in await teardownActorDuties(id) },
+            emitActivity: { [self] id, kind, text in
+                let task = await store.get(id)
+                await emitActivity(kind, task, .daemon, text)
+            })
     }
 
     // (column display names live on `Column.displayName`)

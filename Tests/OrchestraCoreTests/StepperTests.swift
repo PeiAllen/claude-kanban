@@ -12,16 +12,20 @@ struct StepperTests {
     private struct DoubleStepper: PhaseStepper {
         static var drives: Phase.Kind { .creatingWorktree }
         func step(_ card: Task, _ ctx: ConvergeContext) async throws {
-            _ = await ctx.transition(card.id, .launching, nil)
+            _ = await ctx.transition(card.id, .launching, nil, { _ in })
         }
         func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
             (await ctx.store.get(card.id))?.phase.kind == .launching
         }
     }
 
-    @Test("the reconciler-owned stepper map is an empty skeleton in PR4a")
-    func test_stepperMapEmptyInPR4a() {
-        #expect(PhaseSteppers.byKind.isEmpty)
+    @Test("the reconciler-owned stepper map has the four PR4b steppers")
+    func test_stepperMapHasFourSteppers() {
+        #expect(PhaseSteppers.byKind.count == 4)
+        #expect(PhaseSteppers.byKind[.creatingWorktree] is MaterializeStepper)
+        #expect(PhaseSteppers.byKind[.launching] is LaunchStepper)
+        #expect(PhaseSteppers.byKind[.relaunching] is RelaunchStepper)
+        #expect(PhaseSteppers.byKind[.archivedPending] is TeardownStepper)
     }
 
     @Test("test_stepperStepIsIdempotent")
