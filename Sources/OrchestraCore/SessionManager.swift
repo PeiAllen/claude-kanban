@@ -246,6 +246,30 @@ public struct SessionManager: Sendable {
         return CaptureResult(window: window, text: text, truncated: truncated)
     }
 
+    /// Set `remain-on-exit` on a window so a process that exits leaves its dead pane (and its final
+    /// output) in place instead of tmux destroying the window/session. Armed on the `agent` window during
+    /// the spawn startup grace so an immediate abort's stderr survives for `capture`; cleared on graduation.
+    public func setRemainOnExit(_ name: String, window: String = "agent", on: Bool) throws {
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
+        // A missing session/window isn't an error here — the caller just wants the option cleared/set
+        // best-effort; a real failure surfaces via the subsequent liveness read, not this toggle.
+        _ = try tmux(["set-option", "-w", "-t", "\(name):\(window)", "remain-on-exit", on ? "on" : "off"])
+    }
+
+    /// Liveness of the `agent` pane. `.gone` when the session is absent; otherwise `.dead` iff the pane's
+    /// process has exited (`#{pane_dead}` == 1 — requires `remain-on-exit` to have kept it), else `.alive`.
+    /// Lets the startup-abort reconcile tell an immediate launch abort from a healthy just-spawned agent.
+    public func agentPaneState(_ name: String) throws -> PaneLiveness {
+        guard try isAlive(name) else { return .gone }
+        let r = try tmux(["list-panes", "-t", "\(name):agent", "-F", "#{pane_dead}"])
+        guard r.ok else { return .gone }
+        let dead = r.stdout.split(whereSeparator: \.isNewline)
+            .contains { $0.trimmingCharacters(in: .whitespaces) == "1" }
+        return dead ? .dead : .alive
+    }
+
     public func kill(_ name: String) throws {
         // Kill every grouped view session first: they share (and so keep alive) the base session's
         // windows — including the agent pane — so killing only the base would leak the processes.

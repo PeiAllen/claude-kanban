@@ -31,6 +31,8 @@ struct RecoveryView: View {
         switch task.deadReason {
         case .agentExited:     return "The agent session exited."
         case .sessionVanished: return "The session stopped unexpectedly (crashed or was killed)."
+        case .spawnExitedImmediately:
+            return "The agent exited right after launching." + (task.deadDetail.map { " \($0)" } ?? "")
         case .rebootUnrevived: return "Lost on reboot and couldn't be auto-resumed."
         case .resumeFailed:    return "A resume attempt failed." + (task.deadDetail.map { " \($0)" } ?? "")
         case .none:            return "The session is no longer running."

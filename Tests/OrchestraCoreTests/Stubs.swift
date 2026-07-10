@@ -60,6 +60,27 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private var curConcurrentEnsure = 0
     var ensureSleepMs: UInt32 = 0
     private(set) var sentKeys: [(name: String, text: String)] = []
+    private var deadPanes: Set<String> = []       // sessions whose agent pane process exited (remain-on-exit)
+    private var paneText: [String: String] = [:]  // canned capture-pane text per session (the "stderr")
+    private(set) var remainOnExit: [String: Bool] = [:]
+
+    /// Simulate an immediate startup abort: the agent pane's process exited, but remain-on-exit keeps the
+    /// session PRESENT with a dead pane (the exact state a real startup abort leaves behind).
+    func setPaneDead(_ id: UUID) {
+        lock.lock(); deadPanes.insert(sessionName(id)); lock.unlock()
+    }
+    /// Canned final pane output (the dying process's stderr) returned by `capture` for this session.
+    func setPaneText(_ id: UUID, _ text: String) {
+        lock.lock(); paneText[sessionName(id)] = text; lock.unlock()
+    }
+    func setRemainOnExit(_ name: String, window: String, on: Bool) throws {
+        lock.lock(); remainOnExit[name] = on; lock.unlock()
+    }
+    func agentPaneState(_ name: String) throws -> PaneLiveness {
+        lock.lock(); defer { lock.unlock() }
+        if !alive.contains(name) { return .gone }
+        return deadPanes.contains(name) ? .dead : .alive
+    }
 
     /// Keystrokes sent to a card's agent window, in order (the read-only shell launcher; historically also
     /// the retired send-keys nudge).
@@ -80,7 +101,8 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         let name = sessionName(task.id)
         lock.lock(); curConcurrentEnsure += 1; peakConcurrentEnsure = max(peakConcurrentEnsure, curConcurrentEnsure); ensureCount += 1; lock.unlock()
         if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
-        lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()
+        // A fresh launch re-mints a LIVE pane — clear any prior dead-pane mark (models a healthy retry).
+        lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); deadPanes.remove(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()
         return (name, true)
     }
     func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }
@@ -137,10 +159,11 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     }
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
-        let text = "stub-pane:\(name):\(window)"
+        lock.lock(); let canned = paneText[name]; lock.unlock()
+        let text = canned ?? "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }
-    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
+    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; deadPanes.remove(name); paneText[name] = nil; killed.append(name); lock.unlock() }
 }
 
 /// An adapter whose transcript path is under a test-controlled dir, so resumable/transcript-exists is

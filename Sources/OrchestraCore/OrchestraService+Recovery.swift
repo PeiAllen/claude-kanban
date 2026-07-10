@@ -239,10 +239,105 @@ extension OrchestraService {
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
         for t in tasks where !t.archived && t.status != .dead && t.status != .done {
             if recovering.contains(t.id) { continue }
+            // A freshly-spawned card is watched for an immediate exit BEFORE the generic vanish check: its
+            // session is still present (remain-on-exit kept the dead pane), so `aliveNames` can't see the
+            // abort — only the pane state can. This branch also graduates a card that survived its grace.
+            if let deadline = spawnPending[t.id] {
+                await confirmSpawnStartup(t, deadline: deadline)
+                continue
+            }
             if !aliveNames.contains(sessions.sessionName(t.id)) {
                 await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
             }
         }
+    }
+
+    /// Resolve a startup-pending card by inspecting its `agent` pane (remain-on-exit keeps a dead one
+    /// visible):
+    ///  • `.alive` past its deadline → GRADUATE: clear remain-on-exit + drop pending (normal monitoring
+    ///    resumes, so a later exit vanishes the session and reads as `.sessionVanished` as before).
+    ///  • `.alive` before its deadline → keep watching.
+    ///  • `.dead` (session present, pane process exited) → STARTUP ABORT → capture evidence + bounded retry
+    ///    / mark dead.
+    ///  • `.gone` (session absent — a deliberate kill or a lost remain-on-exit race) → hand to the normal
+    ///    `.sessionVanished` path (revivable), NOT a startup abort, and never re-spawned (don't fight a kill).
+    func confirmSpawnStartup(_ t: Task, deadline: Date) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        let state = (try? await offActor { [sessions] in try sessions.agentPaneState(name) }) ?? .gone
+        switch state {
+        case .alive:
+            guard Date() >= deadline else { return }   // still within grace — keep watching
+            try? await offActor { [sessions] in try? sessions.setRemainOnExit(name, window: "agent", on: false) }
+            clearSpawnPending(id)
+        case .dead:
+            await handleStartupAbort(t)
+        case .gone:
+            clearSpawnPending(id)
+            await markDead(id, reason: .sessionVanished, detail: nil, source: .daemon)
+        }
+    }
+
+    /// A startup abort: capture the dying pane's final output as evidence, then bounded-retry the launch
+    /// (an immediate exit is usually a transient launch hiccup) or give up with `.spawnExitedImmediately`.
+    /// The retry re-`ensure`s the SAME session + cwd (kill-then-ensure — no double-create, no worktree churn).
+    private func handleStartupAbort(_ t: Task) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        let evidence = (try? await offActor { [sessions] in
+            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+        }).flatMap { Self.startupEvidence(from: $0) }
+
+        let attempt = spawnAttempts[id] ?? 0
+        if attempt < maxStartupRetries,
+           let spec = spawnRelaunch[id],
+           let adapter = try? registry.get(spec.adapterId) {
+            spawnAttempts[id] = attempt + 1
+            try? adapter.prepareToLaunch(spec.ctx)
+            let env = adapter.env
+            let argv = adapter.start(spec.ctx)
+            let launchTask = t
+            do {
+                try await offActor { [sessions] in
+                    _ = try sessions.kill(name)                      // reap the dead-pane session first
+                    _ = try sessions.ensure(launchTask, argv: argv, env: env)
+                    try? sessions.setRemainOnExit(name, window: "agent", on: true)
+                }
+                spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
+                emitActivity(.recovered, t, .daemon,
+                             "restarted “\(t.title)” after a startup abort (retry \(attempt + 1))")
+                return
+            } catch {
+                clearSpawnPending(id)
+                await markDead(id, reason: .spawnExitedImmediately,
+                               detail: evidence ?? "\(error)", source: .daemon)
+                return
+            }
+        }
+        // Out of retries → give up. Reap the dead-pane session, then mark dead WITH the captured evidence.
+        clearSpawnPending(id)
+        try? await offActor { [sessions] in try? sessions.kill(name) }
+        await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
+    }
+
+    /// Drop a card's startup-pending bookkeeping (on graduation, give-up, or any death).
+    func clearSpawnPending(_ id: UUID) {
+        spawnPending[id] = nil; spawnAttempts[id] = nil; spawnRelaunch[id] = nil
+    }
+
+    /// Test hook: tighten the startup-confirmation grace + retry budget (production uses the defaults).
+    func setStartupConfirmation(graceSeconds: Int, maxRetries: Int) {
+        spawnGraceSeconds = graceSeconds; maxStartupRetries = maxRetries
+    }
+
+    /// Distil captured pane text to its meaningful tail (last few non-empty lines), trimmed + capped, so
+    /// `deadDetail` surfaces the real error ("usage limit", "unauthorized", a config parse error) not noise.
+    static func startupEvidence(from pane: String) -> String? {
+        let lines = pane.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+        return String(lines.suffix(6).joined(separator: " | ").prefix(500))
     }
 
     // MARK: - helpers
@@ -299,6 +394,7 @@ extension OrchestraService {
         guard let updated = try? await store.update(id, {
             $0.status = .dead; $0.deadReason = reason; $0.deadDetail = detail
         }) else { return }
+        clearSpawnPending(id)   // a dead card is never startup-pending (covers give-up + any other death)
         emit(.taskUpserted(updated))
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
     }
