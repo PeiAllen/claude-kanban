@@ -15,6 +15,30 @@ public actor TaskStore {
     /// of any pre-existing tree, so no reclaim may run until a later clean restart re-establishes the map.
     public private(set) var loadWasCorrupt = false
 
+    /// Test-visible count of ACTUAL `tasks.json` disk writes (bumped in `writeToDisk`). Debounced
+    /// telemetry mutations bump `currentRev` synchronously but coalesce into ONE write, so this lags
+    /// `currentRev` while a telemetry burst is pending.
+    var diskWriteCount = 0
+
+    // MARK: Persist debounce (telemetry-origin writes) — bug #13
+    // Telemetry (`report()` field deltas) bumps `rev` + updates memory + emits SYNCHRONOUSLY; only the
+    // `tasks.json` FILE WRITE is coalesced through this debounce, so the wire/event stream is byte-identical.
+    /// The scheduled coalesce timer (nil when no write is pending or an immediate write superseded it).
+    private var persistDebounce: _Concurrency.Task<Void, Never>? = nil
+    /// True while a debounced write is owed (memory is ahead of disk).
+    private var pendingDirty = false
+    /// Quiet-period after which a coalesced burst is flushed (test-tunable).
+    private var debounceInterval: Duration = .milliseconds(500)
+    /// Hard cap: an always-active card is checkpointed at least this often since its first deferred write.
+    private var maxDeferral: Duration = .seconds(2)
+    /// When the current pending burst first deferred a write — drives the `maxDeferral` checkpoint.
+    private var firstDeferredAt: ContinuousClock.Instant? = nil
+
+    /// Test seam: tune the debounce quiet-period.
+    func setPersistDebounce(_ d: Duration) { debounceInterval = d }
+    /// Test seam: tune the max-deferral checkpoint.
+    func setMaxDeferral(_ d: Duration) { maxDeferral = d }
+
     public init(path: String = Config.tasksPath) {
         self.path = path
     }
@@ -126,8 +150,18 @@ public actor TaskStore {
         try persist()
     }
 
+    /// Immediate persist: bump `currentRev`, cancel any pending debounced write (memory already holds the
+    /// pending telemetry deltas, so this write absorbs them — this is what BOUNDS the cross-restart rev
+    /// regression), and write to disk now.
     private func persist() throws {
         currentRev += 1                                                // single bump funnel
+        cancelPendingFlush()                                           // an immediate write supersedes + absorbs pending telemetry
+        try writeToDisk()
+    }
+
+    /// The actual `tasks.json` write: `createDirectory` + encode + atomic replace. Bumps `diskWriteCount`.
+    /// Callers own the `currentRev` bump and the debounce bookkeeping — this only touches the file.
+    private func writeToDisk() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let data = try OrchestraJSON.pretty.encode(BoardEnvelope(rev: currentRev, tasks: tasks))
@@ -139,6 +173,53 @@ public actor TaskStore {
         } else {
             try FileManager.default.moveItem(at: tmp, to: url)
         }
+        diskWriteCount += 1
+    }
+
+    /// Telemetry-origin persist: bump `currentRev` + mark the file dirty SYNCHRONOUSLY (memory/rev/emit are
+    /// unchanged — the wire is byte-identical), but COALESCE the `tasks.json` write. Flushes immediately at
+    /// the `maxDeferral` checkpoint (bounding an always-active card's on-disk lag); otherwise (re)schedules a
+    /// debounce timer that flushes after `debounceInterval` of quiet.
+    private func persistDebounced() {
+        currentRev += 1
+        pendingDirty = true
+        let now = ContinuousClock.now
+        if let first = firstDeferredAt {
+            if now - first >= maxDeferral { flushPendingWrites(); return }   // max-deferral checkpoint
+        } else {
+            firstDeferredAt = now
+        }
+        persistDebounce?.cancel()
+        persistDebounce = _Concurrency.Task { [debounceInterval] in
+            try? await _Concurrency.Task.sleep(for: debounceInterval)
+            guard !_Concurrency.Task.isCancelled else { return }
+            await self.flushPendingWrites()
+        }
+    }
+
+    /// Flush any coalesced telemetry write NOW (debounce fire, max-deferral checkpoint, SIGTERM/shutdown,
+    /// or explicit test call). A write failure RE-ARMS the dirty bit + logs to stderr (never a silent drop)
+    /// so a later mutation retries.
+    public func flushPendingWrites() {
+        persistDebounce?.cancel(); persistDebounce = nil
+        firstDeferredAt = nil
+        guard pendingDirty else { return }
+        pendingDirty = false
+        do {
+            try writeToDisk()
+        } catch {
+            pendingDirty = true                                        // re-arm: a later mutation retries the write
+            FileHandle.standardError.write(Data(
+                "TaskStore.flushPendingWrites: tasks.json write failed (\(error)); keeping dirty bit for retry\n".utf8))
+        }
+    }
+
+    /// Drop a pending debounced write WITHOUT writing — an immediate `persist()` is about to `writeToDisk()`
+    /// and memory already includes the deferred deltas, so its write absorbs them.
+    private func cancelPendingFlush() {
+        persistDebounce?.cancel(); persistDebounce = nil
+        pendingDirty = false
+        firstDeferredAt = nil
     }
 
     /// Insert a new task at the end of its column's order. Fills order; persists. Returns the created
@@ -191,17 +272,21 @@ public actor TaskStore {
 
     /// Apply a mutation to the task with `id`, persist, and return the updated task ALONGSIDE the rev
     /// `persist()` just bumped to (see `create`).
+    ///
+    /// `debounceFlush: true` (telemetry-origin) keeps the `rev` bump + memory update SYNCHRONOUS but
+    /// COALESCES the `tasks.json` write through the persist debounce; the returned `rev` is still fresh and
+    /// monotonic. A no-op mutation neither bumps `rev` nor schedules a flush.
     @discardableResult
-    public func update(_ id: UUID, _ mutate: (inout Task) -> Void) throws -> (task: Task, rev: Int) {
+    public func update(_ id: UUID, debounceFlush: Bool = false, _ mutate: (inout Task) -> Void) throws -> (task: Task, rev: Int) {
         ensureLoaded()
         guard let idx = tasks.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.unknownTask(id.uuidString)
         }
         let before = tasks[idx]
         mutate(&tasks[idx])
-        guard tasks[idx] != before else { return (tasks[idx], currentRev) }  // no-op: no persist, no rev bump
+        guard tasks[idx] != before else { return (tasks[idx], currentRev) }  // no-op: no persist, no rev bump, no flush
         tasks[idx].updatedAt = Date()
-        try persist()
+        if debounceFlush { persistDebounced() } else { try persist() }
         return (tasks[idx], currentRev)
     }
 

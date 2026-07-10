@@ -19,7 +19,8 @@ extension OrchestraService {
             throw OrchestraError.invalidParams(
                 "card has no parent link to borrow — set one with `orchestra set-parent \(child.shortId) <branch>`")
         }
-        guard RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: child.repo)) == nil else {
+        let remotes = (try? await offActor { self.gitRemotes(repo: child.repo) }) ?? []
+        guard RemoteParentRef.parse(link.parent, remotes: remotes) == nil else {
             throw OrchestraError.invalidParams(
                 "parent \(link.parent) is remote — publish a stacked PR instead of borrowing "
                 + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")

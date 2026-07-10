@@ -66,5 +66,13 @@ _Concurrency.Task {
     }
 }
 
+// Clean-shutdown flush (bug #13): launchd sends SIGTERM before SIGKILL. Flush any debounced telemetry
+// `tasks.json` write so a clean restart is lossless (on-disk `rev` catches up to in-memory `rev`), then
+// exit. Ignore the default SIGTERM disposition first, then service it on a GCD source off the main queue.
+signal(SIGTERM, SIG_IGN)
+let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+sigterm.setEventHandler { _Concurrency.Task { await service.flushBeforeShutdown(); exit(0) } }
+sigterm.resume()
+
 // Park the main thread servicing GCD (accept loop + connection readers).
 dispatchMain()

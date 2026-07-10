@@ -13,6 +13,9 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.origin == .worktree else { return [] }
         try resolver.assertAllowed(t.cwd)
-        return launcher.changedNoteFiles(worktree: t.cwd, parentRef: resolvedParentRef(t))
+        // PR5 actor-hygiene (Task 5.1.4 fold-back): `resolvedParentRef` is `nonisolated`, so it moves
+        // INSIDE the hop alongside `changedNoteFiles` — full purity, no residual on-actor git call.
+        let l = launcher, cwd = t.cwd
+        return try await offActor { l.changedNoteFiles(worktree: cwd, parentRef: self.resolvedParentRef(t)) }
     }
 }

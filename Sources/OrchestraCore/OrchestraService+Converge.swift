@@ -31,7 +31,8 @@ extension OrchestraService {
         // Re-derive the base classification from the persisted carrier (identical to spawn's inline path).
         let trimmedBase = card.spawnBase?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedBase: String? = (trimmedBase?.isEmpty == false) ? trimmedBase : nil
-        let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
+        let remotesForBase = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+        let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: remotesForBase) }
         var remoteFetchedOID: String? = nil
         var ensureBase = normalizedBase
         if let remoteRef {
@@ -92,13 +93,17 @@ extension OrchestraService {
             // (Task-1 Minor #3) so the actor keeps servicing `report` during the rollback.
             _ = try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
             if !ensured.branchExisted {
-                _ = try? await offActor { try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch]) }
+                let ctl = Duration.seconds(config.controlTimeout)
+                _ = try? await offActor {
+                    try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch], timeout: ctl)
+                }
             }
             return .failed(detail: "spawn rolled back (worktree/branch removed): \(error)")
         }
         // BT6: a fresh remote-base spawn opts into merge-watch (moved off spawn's inline tail — spawn no
         // longer knows the derived parent). Start it now that the remote lineage is recorded.
-        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
+        let remotesForWatch = (try? await offActor { self.gitRemotes(repo: realRepo) }) ?? []
+        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: remotesForWatch) != nil,
            await lineage.read(repo: realRepo, branch: card.branch)?.watch == true {
             startRemoteWatch(cardId: id)
         }
@@ -141,20 +146,27 @@ extension OrchestraService {
                                      sessionId: task.agentSessionId, prompt: prompt, name: task.title,
                                      orchestraBin: orchestraBin, access: task.access,
                                      trustCwd: trustDecision == .trusted)
-            try? adapter.prepareToLaunch(ctx)
+            let a = adapter, c = ctx
+            try? await offActor { try? a.prepareToLaunch(c) }
             argv = adapter.start(ctx)
         case .resume(let seed):
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
                                      trustCwd: trustDecision == .trusted, seed: seed)
-            guard let sid = task.agentSessionId,
-                  let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
-                  let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp),
-                  let a = adapter.resume(ctx) else {
+            guard let sid = task.agentSessionId else { return .timedOut }
+            let a = adapter, c = ctx, priorIds = task.priorSessionIds
+            // 5.1.3 pattern: hop the adapter's fs-touching sessionInfo() + the transcript existence check
+            // off-actor before the `.timedOut` decision — same guard, same short-circuit order.
+            let transcriptOK: Bool = (try? await offActor {
+                guard let info = a.sessionInfo(c, current: sid, prior: priorIds),
+                      let tp = info.transcriptPath else { return false }
+                return FileManager.default.fileExists(atPath: tp)
+            }) ?? false
+            guard transcriptOK, let resumeArgv = adapter.resume(ctx) else {
                 return .timedOut   // transcript vanished between the stepper's pre-check and here
             }
-            try? adapter.prepareToLaunch(ctx)
-            argv = a
+            try? await offActor { try? a.prepareToLaunch(c) }
+            argv = resumeArgv
         }
         do {
             try await offActor { [sessions] in
@@ -182,6 +194,7 @@ extension OrchestraService {
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil     // S3-5
         childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
+        observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
         // S2-5: a worktree card's branch goes bare on archive — nudge its live children (deterministic,
         // oldest) so a stopped child re-evaluates its ship path instead of waiting on a dead inbox.
         guard t.origin == .worktree else { return }

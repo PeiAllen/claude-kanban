@@ -150,7 +150,9 @@ extension OrchestraService {
 
         // Field-delta write (non-phase). Idempotent: no delta -> no persist, no event.
         if task != before {
-            let (saved, rev) = try await store.update(id) { $0.applyReportFields(from: task) }
+            // Telemetry-origin: bump rev + memory + emit SYNCHRONOUSLY, but COALESCE the tasks.json write
+            // (bug #13). The phase write via `transition()` below stays IMMEDIATE and force-flushes this.
+            let (saved, rev) = try await store.update(id, debounceFlush: true) { $0.applyReportFields(from: task) }
             emit(.taskUpserted(saved), rev: rev)
             didChange = true
         }
