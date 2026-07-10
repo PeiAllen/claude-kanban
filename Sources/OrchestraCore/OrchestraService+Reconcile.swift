@@ -102,7 +102,12 @@ extension OrchestraService {
                         // the adapter is momentarily unavailable (never worse than the old hardcode).
                         let land = (try? registry.get(t.agentId)).map { landing(of: deriveLaunchFlavor(t, $0)) }
                             ?? .waiting(.humanTurn)
-                        _ = await transition(t.id, to: .live(land), observedEpoch: probed)
+                        // Mirror the Launch/RelaunchStepper's COMPANION cleanup, not just its landing: both
+                        // clear `pendingSeed` on the successful `→ live` transition. Adopt jumps straight to
+                        // live WITHOUT the stepper, so a crash between "session consumed the seed + came up"
+                        // and the stepper's transition would otherwise leave `pendingSeed` set — and a later
+                        // `resume(seed: nil)` preserves it, so `deriveLaunchFlavor` would REPLAY the seed.
+                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) { $0.pendingSeed = nil }
                         continue
                     }
                 }
