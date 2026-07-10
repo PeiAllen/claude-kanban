@@ -18,14 +18,18 @@ struct SpawnRaceTests {
 
         var ids: [UUID] = []
         for i in 0..<40 {
-            // Start the spawn, then drive the liveness reconcile a few times while it is parked at
-            // `await resolveTrust` — the window between `store.create` and `sessions.ensure` the guard
-            // must cover. Bounded pokes (not a free-running spin loop) so sibling suites running in
-            // parallel aren't starved of the shared cooperative thread pool.
-            async let spawned = env.svc.spawn(SpawnInput(prompt: "c\(i)", repo: repo, branch: "b\(i)"))
-            for _ in 0..<4 { await env.svc.reconcileLiveness() }
-            let t = try await spawned
+            // Non-blocking spawn persists a `.creatingWorktree` card, then the STEPPING reconciler drives it
+            // through the funnel. Interleave `reconcile()` ticks while each card is being born — the
+            // being-born phases (creatingWorktree/launching) must never be false-killed by a concurrent tick.
+            let t = try await env.svc.spawn(SpawnInput(prompt: "c\(i)", repo: repo, branch: "b\(i)"))
+            for _ in 0..<4 { await env.svc.reconcile() }
             ids.append(t.id)
+        }
+        // Drive all the way to live; still nothing may have been marked dead in the process.
+        let expected = ids.count
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list().filter { $0.phase.kind == .live }.count == expected
         }
 
         let all = await env.svc.list(includeArchived: true)
@@ -59,7 +63,7 @@ struct SpawnRaceTests {
     func restartIgnoresStaleSessionEnd() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
 
         // User clicks "start fresh": the old (still-running) process is killed and a new session ensured.
         let restarted = try await env.svc.restart(t.id, source: .app)

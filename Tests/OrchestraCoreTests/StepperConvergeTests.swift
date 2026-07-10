@@ -361,8 +361,10 @@ struct TeardownStepperTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         _ = try Proc.run(["git", "-C", repo, "init"])   // lineage config needs a real git repo
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        // Non-blocking spawn: drive to live so the worktree is genuinely materialized (marker recorded) —
+        // teardown's release then has a real tree to reclaim.
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
         try await env.svc.lineage.set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         _ = try await env.svc.store.update(parent.id) { $0.phase = .archived(teardownComplete: false) }

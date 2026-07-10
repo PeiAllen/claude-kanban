@@ -57,28 +57,50 @@ extension OrchestraService {
 
         // Stale-child prune (S2-3(ii)) + lineage recording (S2-3(iii) rollback on failure).
         var derivedParentBranch: String? = card.parentBranch
+        // A brand-new branch had no children before it existed, so record the base directly; a branch the
+        // `ensure` found PRE-EXISTING is either a durable-lineage card (churn — derive from config, ignore
+        // base) OR the crash-window case (a prior materialize run cut the branch but crashed BEFORE
+        // `recordSpawnBase` ran — the branch exists yet has no link). Task-1 Minor #2: a re-run must then
+        // RE-RECORD the carried base so the parent link is not lost. Distinguish the two by whether a durable
+        // link is already present.
+        let recordBase: Bool
+        if !ensured.branchExisted {
+            recordBase = true
+        } else {
+            recordBase = (await lineage.read(repo: realRepo, branch: card.branch)?.parent == nil)
+        }
         do {
             if !ensured.branchExisted {
                 for stale in await lineage.children(repo: realRepo, of: card.branch) {
                     try? await lineage.clear(repo: realRepo, branch: stale)
                 }
             }
-            if ensured.branchExisted {
+            if !recordBase {
+                // Existing branch with a durable link: `base` is deliberately ignored (L2 contract).
                 derivedParentBranch = await lineage.read(repo: realRepo, branch: card.branch)?.parent
             } else if let remoteRef, let oid = remoteFetchedOID {
                 derivedParentBranch = try await recordSpawnRemoteBase(
                     repo: realRepo, branch: card.branch, ref: remoteRef, oid: oid)
             } else if let base = normalizedBase {
                 derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: card.branch, base: base)
+            } else {
+                derivedParentBranch = nil   // no base → no lineage
             }
         } catch {
             // Roll back the cut worktree + brand-new branch (routes the tree through the SINGLE removal
-            // policy so a shared/dirty tree is never force-dropped).
+            // policy so a shared/dirty tree is never force-dropped). The `git branch -D` hops off-actor
+            // (Task-1 Minor #3) so the actor keeps servicing `report` during the rollback.
             _ = try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
             if !ensured.branchExisted {
-                _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch])
+                _ = try? await offActor { try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch]) }
             }
             return .failed(detail: "spawn rolled back (worktree/branch removed): \(error)")
+        }
+        // BT6: a fresh remote-base spawn opts into merge-watch (moved off spawn's inline tail — spawn no
+        // longer knows the derived parent). Start it now that the remote lineage is recorded.
+        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
+           await lineage.read(repo: realRepo, branch: card.branch)?.watch == true {
+            startRemoteWatch(cardId: id)
         }
         return .launching(parentBranch: derivedParentBranch)
     }

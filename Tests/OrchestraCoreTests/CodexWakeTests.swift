@@ -35,7 +35,7 @@ struct CodexWakeTests {
     func sendResumeSeedsIdleCodex() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))                       // idle
         let name = env.sessions.sessionName(card.id)
@@ -57,8 +57,8 @@ struct CodexWakeTests {
     func codexResumesEvenWhenWatching() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
         await env.svc.registerWatch(parent.id, [child.id])                    // parent has a durable watch
         try await env.svc.report(parent.id, StatusReport(run: .waiting(.humanTurn)))   // idle, but watching
@@ -75,8 +75,8 @@ struct CodexWakeTests {
     func mcpWaitRegistersAndReturnsImmediatelyForCodex() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
         let cmd = try #require(CommandRegistry().command("wait"))
 
         let result = try await withThrowingTaskGroup(of: JSONValue.self) { group in
@@ -103,7 +103,7 @@ struct CodexWakeTests {
     func codexDefersRunning() async throws {
         let env = TestEnv.make(grace: 2, capabilities: Self.relaunchCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
         let ensureBefore = env.sessions.ensureCount
 
@@ -123,7 +123,7 @@ struct CodexWakeTests {
     func codexWakeConfirmsOnRelaunchLiveness() async throws {
         let env = TestEnv.make(grace: 1, capabilities: Self.realCodexCaps)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))                       // idle
         let name = env.sessions.sessionName(card.id)

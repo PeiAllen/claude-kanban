@@ -59,7 +59,7 @@ struct VerbContractTests {
         // archived card (effective kind archivedComplete via the bridge).
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         // Seed the archived terminal state exactly as the sync `archive` handler does (phase + Bool).
         _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.completed); $0.archived = true }
 
@@ -89,7 +89,7 @@ struct VerbContractTests {
             for verb in ["shell", "inspect"] {
                 let env = TestEnv.make()
                 let repo = TestEnv.repo(env.base)
-                let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+                let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
                 _ = try await env.svc.store.update(card.id) { $0.phase = phase }
                 // Make the session NOT alive, so an UNGATED shell/inspect WOULD call
                 // `sessions.ensure(argv:["/bin/sh"])` (both guard behind `if !isAlive`). This makes the

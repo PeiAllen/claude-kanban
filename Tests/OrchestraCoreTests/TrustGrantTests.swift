@@ -78,7 +78,7 @@ struct UntrustedSpawnTests {
         await collector.start(await env.svc.subscribe())
         let dir = env.base + "/borrowed-needsgrant"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "peek", cwd: dir, access: .readWrite))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "peek", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(await env.trust.isTrusted(dir) == false)   // still untrusted (no auto-trust, no block)
         // wait a tick for the async event fan-out, then assert an actionable warning was emitted

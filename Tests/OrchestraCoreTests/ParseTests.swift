@@ -87,7 +87,7 @@ struct ParseTests {
     func test_parse_report_reaches_board() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "Task", repo: repo, branch: "b"))
 
         let raw = RawTelemetry.hooksPush(
             kind: "posttool",
@@ -108,7 +108,7 @@ struct ParseTests {
     func test_codex_permission_reaches_board() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "Task", repo: repo, branch: "b"))
 
         let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
         let report = try #require(CodexAdapter().parse(raw))

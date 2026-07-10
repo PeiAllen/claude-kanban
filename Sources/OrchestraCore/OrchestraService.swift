@@ -323,7 +323,7 @@ public actor OrchestraService {
         let realRepo: String
         let cwd: String
         let origin: CardOrigin
-        var derivedParentBranch: String? = nil
+        var spawnBaseCarrier: String? = nil   // normalized base carried to the reconciler's MaterializeStepper
         if input.scratch {
             cwd = Config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -334,7 +334,7 @@ public actor OrchestraService {
             origin = .borrowed
             realRepo = input.repo            // optional context only; never resolved/allowlisted
         } else {
-            // Security: reject a non-allowlisted repo BEFORE creating anything.
+            // Security: reject a non-allowlisted repo BEFORE creating anything (synchronous fail-fast).
             realRepo = try resolver.resolveRepo(input.repo)
             // S2-6: co-located `.worktree` cards sharing one branch/worktree are still permitted (the
             // cwd-keyed archive refcount + worktreeSiblings badge depend on it; full 1:1 enforcement is
@@ -348,11 +348,12 @@ public actor OrchestraService {
                     "spawning a second live card onto branch \(input.branch) (already owned by "
                     + "\(existing.shortId)) — derived parent lookups use the oldest card")
             }
-            // S2-3(i): normalize a user-supplied LOCAL base to a bare branch name BEFORE `ensure`. `ensure`
-            // accepts a refs/-prefixed base verbatim (for the internal remote private-ref path), but
-            // `recordSpawnBase` then resolves refs/heads/<base> → refs/heads/refs/heads/foo and throws AFTER
-            // the worktree is cut. Strip a refs/heads/ prefix; reject any other refs/… (remote forms —
-            // origin/<b>, pr#<N> — are classified separately and left untouched).
+            // S2-3(i): normalize + VALIDATE a user-supplied base SYNCHRONOUSLY (must-fail-fast — the security
+            // gate stays before anything is created). Strip a `refs/heads/` prefix; reject any other `refs/…`
+            // (remote forms — origin/<b>, pr#<N> — are classified separately and left untouched). The
+            // normalized string is CARRIED on the card (`spawnBase`); the reconciler-driven `materialize`
+            // re-derives the remote/local classification (`RemoteParentRef.parse`) and cuts the worktree.
+            // Non-blocking flip: spawn does NO remote fetch / `worktrees.ensure` / lineage record / checkout.
             var normalizedBase = input.base?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let b = normalizedBase, b.hasPrefix("refs/"),
                RemoteParentRef.parse(b, remotes: gitRemotes(repo: realRepo)) == nil {
@@ -361,65 +362,10 @@ public actor OrchestraService {
                 }
                 normalizedBase = String(b.dropFirst("refs/heads/".count))
             }
-            // Classify the base: a remote form (origin/<b>, pr#<N>, BT6) is fetched into a private ref
-            // FIRST, and that ref becomes the new branch's start-point. A local base flows through unchanged.
-            let remoteRef = normalizedBase.flatMap { RemoteParentRef.parse($0, remotes: gitRemotes(repo: realRepo)) }
-            var remoteFetchedOID: String? = nil
-            var ensureBase = normalizedBase
-            if let remoteRef {
-                let b = normalizedBase ?? remoteRef.canonical
-                remoteFetchedOID = try await remoteParents.fetch(repo: realRepo, remoteRef,
-                    context: "spawn base \(b): could not fetch remote parent \(b)")
-                ensureBase = remoteRef.privateRef
-            }
-            let ensured = try await worktrees.ensure(repo: realRepo, branch: input.branch, cardId: id, base: ensureBase)
-            cwd = ensured.path
+            spawnBaseCarrier = (normalizedBase?.isEmpty == false) ? normalizedBase : nil
+            // PURE cwd (no checkout — the MaterializeStepper cuts/adopts the tree from `spawnBase`).
+            cwd = worktrees.path(repo: realRepo, branch: input.branch)
             origin = .worktree
-            // S2-3(ii): a brand-new branch cannot have had children before it existed, so any pre-existing
-            // `orchestra-parent == <this branch>` is a dangling value left by a deleted same-named branch
-            // (name reuse). Prune those stale links before recording, so the cycle guard doesn't walk the
-            // dangling chain and reject a legitimate reuse (fixture-proven false "would create a cycle").
-            if !ensured.branchExisted {
-                for stale in await lineage.children(repo: realRepo, of: input.branch) {
-                    try? await lineage.clear(repo: realRepo, branch: stale)
-                }
-            }
-            // S2-3(iii): a lineage-record failure fires AFTER the worktree + branch were created. Roll them
-            // back so the failed spawn leaves no orphan worktree/branch that a retry's fileExists fast-path
-            // would silently adopt with no base.
-            do {
-                // Churn derivation: only a PRE-EXISTING branch can carry durable lineage config (the parent
-                // link survives card archival), so re-derive the parentBranch cache only then — gated on
-                // `ensure`'s branch-existence signal so a brand-new branch's spawn never pays for a wasted
-                // `git config` read on the hot path.
-                if ensured.branchExisted {
-                    // Existing branch: `base` is deliberately ignored (L2 contract); derive parent from config.
-                    derivedParentBranch = await lineage.read(repo: realRepo, branch: input.branch)?.parent
-                } else if let remoteRef, let oid = remoteFetchedOID {
-                    // Remote spawn-with-base (BT6): branch created on the fetched private ref — record the
-                    // canonical remote lineage (+prNumber, watch on by default) with the fetched tip as base.
-                    derivedParentBranch = try await recordSpawnRemoteBase(
-                        repo: realRepo, branch: input.branch, ref: remoteRef, oid: oid)
-                } else if let base = normalizedBase, !base.isEmpty {
-                    // Spawn-with-base (BT2): the branch was just CREATED on `base` — record the parent link
-                    // (parent = base, recorded base OID = base tip) so the card is parent-aware from spawn.
-                    derivedParentBranch = try await recordSpawnBase(repo: realRepo, branch: input.branch, base: base)
-                }
-            } catch {
-                // S2-3(iii) rollback: the card was never persisted (store.create hasn't run yet), so
-                // build a synthetic Task carrying only what `release` reads (id/cwd/origin/archived) —
-                // routes through the SINGLE removal policy so a shared/dirty tree is never force-dropped.
-                let synthetic = Task(id: id, title: input.branch, repo: realRepo, branch: input.branch,
-                                     cwd: ensured.path, origin: .worktree, access: input.access,
-                                     model: AgentModel(id: input.model ?? ""), startIn: input.startIn ?? .plan,
-                                     column: (input.startIn ?? .plan).column, order: 0,
-                                     phase: .creatingWorktree, initialPrompt: "")
-                _ = try? await worktrees.release(cardId: id, cards: (await store.all()) + [synthetic], force: false)
-                if !ensured.branchExisted {
-                    _ = try? Proc.run(["git", "-C", realRepo, "branch", "-D", input.branch])
-                }
-                throw OrchestraError.io("spawn rolled back (worktree/branch removed): \(error)")
-            }
         }
         // Session identity is capability-gated, not inferred from a nil return: a `.seeded` agent
         // (Claude) gets its id minted pre-launch; a `.discovered` agent is left nil and reads its id
@@ -457,14 +403,12 @@ public actor OrchestraService {
         // A provisional card is idle awaiting the user's first prompt, so it lands `.waiting`; a real
         // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
         // when provisional (a whitespace-only prompt must not be submitted to the agent).
-        let launchPrompt: String? = folded
-        let landing: RunState = provisional ? .waiting(.humanTurn) : .running
-
-        // Stage 2: the card is CREATED at `.creatingWorktree, sessionEpoch: 1` — creation IS spawn's single
-        // generation bump (do NOT also `transition(→.creatingWorktree)`). The cwd was materialized above
-        // (worktree cut / scratch mkdir), so this phase is instant here. The funnel then walks it
-        // `→.launching →.live`. A liveness poll that interleaves while the card is still `.creatingWorktree`
-        // (e.g. at the `resolveTrust` await below) SKIPS it by phase — no `recovering` set required.
+        // NON-BLOCKING FLIP (PR4b Task 3): the card is CREATED at `.creatingWorktree, sessionEpoch: 1`
+        // carrying `spawnBase` (creation IS spawn's single generation bump — no `transition(→.creatingWorktree)`),
+        // then spawn RETURNS. The reconciler's steppers (MaterializeStepper cuts/adopts the worktree + records
+        // lineage → LaunchStepper brings the agent up + confirms readiness) drive it `→.launching →.live` off
+        // the poll loop. The launch's landing (.running / .waiting) + the prompt are re-derived from the
+        // persisted `titleProvisional`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
         let task = Task(
             id: id,
             title: title, titleProvisional: provisional, desc: "",
@@ -473,50 +417,30 @@ public actor OrchestraService {
             agentId: adapter.id, model: model, startIn: startIn,
             column: startIn.column, order: 0, phase: .creatingWorktree,
             sessionEpoch: 1, phaseChangedAt: Date(),
+            pendingSeed: nil, spawnBase: spawnBaseCarrier,
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
-            parentBranch: derivedParentBranch
+            parentBranch: nil            // materialize re-derives + records the parent link from `spawnBase`
         )
         let (created, createdRev) = try await store.create(task)
         emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
 
-        // Resolve trust while still in `.creatingWorktree` (reconcile-safe), then bring the agent up through
-        // the funnel: `→.launching` (no bump) → launch (stamping ORCH_EPOCH=1) → readiness → `→.live`.
-        // Any inline failure routes the card to `.dead(.spawnFailed)`.
-        let trustDecision = await resolveTrust(origin: origin, cwd: cwd, repo: realRepo)
-        do {
-            try await launchAndConfirm(id, flavor: .blank(landing: landing, prompt: launchPrompt),
-                                       trustCwd: trustDecision == .trusted)
-        } catch {
-            await transition(id, to: .dead(.spawnFailed), mutate: { $0.deadDetail = "\(error)" })
-            throw error
-        }
-        let live = await store.get(id) ?? created
-
-        // T2: an untrusted cwd (needsGrant) spawns sandboxed (trustCwd=false above) but tells the
-        // human how to grant it. Autonomy-exempt: this never blocks the spawn — the card just runs
-        // read-only-ish until a human runs `orchestra trust`.
-        if trustDecision == .needsGrant {
-            emitActivity(.warning, live, source,
-                "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
-                + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
-        }
-
         // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
         // for this adapter (the just-created card is already in the store) and warn past the threshold.
         let active = await store.all().filter { !$0.archived && $0.phase.kind != .dead }
         if let warn = authRate.warning(for: adapter.id, active: active, registry: registry) {
-            emitActivity(.warning, live, source, warn.message)
+            emitActivity(.warning, created, source, warn.message)
         }
 
-        // BT6: a card whose recorded lineage is a WATCHED remote parent starts its merge-watch. Gate on the
-        // link's `watch` flag (a fresh remote-base spawn sets it true; a churn re-spawn onto an existing
-        // branch with watch=false must not start one) rather than relying on the loop to bail on tick 1.
-        if RemoteParentRef.parse(derivedParentBranch ?? "", remotes: gitRemotes(repo: realRepo)) != nil,
-           await lineage.read(repo: realRepo, branch: input.branch)?.watch == true {
-            startRemoteWatch(cardId: id)
+        // T2 (advisory only): an untrusted borrowed cwd will spawn sandboxed — tell the human how to grant
+        // it. Resolve trust read-only here for the message; the LaunchStepper's `finishLaunch` resolves it
+        // again for the actual launch (idempotent). Never blocks the spawn.
+        if await resolveTrust(origin: origin, cwd: cwd, repo: realRepo) == .needsGrant {
+            emitActivity(.warning, created, source,
+                "“\(title)” runs untrusted (sandboxed) in \(cwd). To grant write trust, run "
+                + "`orchestra trust \(cwd)` in a terminal, or keep it read-only.")
         }
-        return live
+        return created
     }
 
     /// Remove orphaned scratch dirs — `~/.orchestra/scratch/<id>` subdirs with no matching non-archived

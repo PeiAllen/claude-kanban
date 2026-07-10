@@ -199,7 +199,13 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         let text = "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }
-    func kill(_ name: String) throws { lock.lock(); alive.remove(name); shellWins[name] = nil; killed.append(name); lock.unlock() }
+    func kill(_ name: String) throws {
+        // Mirror real tmux: killing a session that isn't alive is a no-op — do NOT record it. (finishLaunch
+        // idempotently kills any predecessor before `ensure`; for a FRESH launch there is none, so that
+        // harmless no-op must not show up as a spurious `killed` entry.)
+        lock.lock(); let wasAlive = alive.remove(name) != nil; shellWins[name] = nil
+        if wasAlive { killed.append(name) }; lock.unlock()
+    }
 
     /// Parse the `ORCH_EPOCH` stamped into the session's launch env (the reconciler's identity oracle).
     /// nil when the session is gone (not alive) or was launched without the stamp — mirroring the real
@@ -402,32 +408,63 @@ enum TestEnv {
         return p
     }
 
-    /// Spawn through the AWAITING launch path (`.sessionStartHook`/`.rolloutMeta` caps) and drive the
-    /// launch's readiness signal so it reaches `.live`. Under 2.6 a capability-gated blank spawn inline-
-    /// awaits its ready signal; a test using such caps merely as setup has no live poll loop, so this
-    /// finds the card mid-launch (spawn persists it at `.creatingWorktree`→`.launching` before it awaits)
-    /// and delivers SessionStart(startup) to unblock it. Use for resume/relaunch-mechanics tests that need
-    /// `.claudeCode` (the awaited resume path) but still spawn a live card first.
+    /// **Non-blocking-spawn migration helper (PR4b Task 3).** `spawn` now returns a `.creatingWorktree`
+    /// card; the reconciler's steppers (Materialize → Launch) drive it to `.live`. This spawns then drives
+    /// `reconcile()` in a poll loop (~2s cap) until the card is `.live`, returning it — a behavior-preserving
+    /// drop-in for the pre-flip synchronous `spawn` that most tests used purely as SETUP.
+    ///
+    /// Readiness-cap contract: the DEFAULT stub adapter is `.relaunchLiveness` (readiness = a successful
+    /// `ensure`, immediate — the reconcile ticks alone suffice). For an AWAITING cap
+    /// (`.sessionStartHook`/`.rolloutMeta`) the N=3 `launchReadyTicks` fallback (now `inFlightSteps`-
+    /// independent, per Task 2 finding 2) resolves the launch waiter within three ticks, so this STILL
+    /// converges with no hand-delivered signal. Use `spawnAwaited` when a test must exercise the agent's
+    /// OWN readiness signal deterministically (it injects `report(sessionSource:)`).
     @discardableResult
-    static func spawnAwaited(_ svc: OrchestraService, _ input: SpawnInput) async throws -> Task {
-        async let spawned = svc.spawn(input)
+    static func spawnAndAwaitLive(_ svc: OrchestraService, _ input: SpawnInput,
+                                 source: ActivitySource = .daemon) async throws -> Task {
+        let created = try await svc.spawn(input, source: source)
         try await pollUntil {
-            await svc.list().contains { $0.branch == input.branch && $0.phase.kind == .launching }
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == created.id }?.phase.kind == .live
         }
-        if let id = await svc.list().first(where: { $0.branch == input.branch })?.id {
-            try? await svc.report(id, StatusReport(sessionSource: "startup"))
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == created.id }) else {
+            throw OrchestraError.unknownTask(created.id.uuidString)
         }
-        return try await spawned
+        return live
     }
 
-    /// Drive being-born cards to `.live` via the universal N=3 liveness-tick fallback (no readiness signal
-    /// hand-delivered): repeatedly run `reconcileLiveness` until at least `count` cards are live. Used by
-    /// Codex (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime
-    /// predates the card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback
-    /// reaches live, then post-live discovery (unrestricted) binds the rollout for telemetry.
+    /// Spawn through the AWAITING launch path and reach `.live` by hand-delivering the agent's readiness
+    /// signal. `spawn` persists the card at `.creatingWorktree`; this drives `reconcile()` (Materialize →
+    /// Launch), and each tick the card is `.launching` with a pending waiter it delivers
+    /// SessionStart(startup) so an awaiting cap (`.sessionStartHook`/`.rolloutMeta`) confirms on its OWN
+    /// signal (not the N=3 fallback). Returns the live card. Use for resume/relaunch-mechanics tests that
+    /// need `.claudeCode`/`.codex` but still want a deterministically-live card first.
+    @discardableResult
+    static func spawnAwaited(_ svc: OrchestraService, _ input: SpawnInput,
+                            source: ActivitySource = .daemon) async throws -> Task {
+        let created = try await svc.spawn(input, source: source)
+        try await pollUntil {
+            await svc.reconcile()
+            let card = await svc.list(includeArchived: true).first { $0.id == created.id }
+            if card?.phase.kind == .launching {
+                try? await svc.report(created.id, StatusReport(sessionSource: "startup"))
+            }
+            return card?.phase.kind == .live
+        }
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == created.id }) else {
+            throw OrchestraError.unknownTask(created.id.uuidString)
+        }
+        return live
+    }
+
+    /// Drive being-born cards to `.live` via the reconciler: repeatedly run `reconcile()` (steps
+    /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live. Used by Codex
+    /// (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime predates the
+    /// card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback reaches live, then
+    /// post-live discovery (unrestricted) binds the rollout for telemetry.
     static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
         try await pollUntil {
-            await svc.reconcileLiveness()
+            await svc.reconcile()
             return await svc.list().filter { $0.phase.kind == .live }.count >= count
         }
     }

@@ -15,7 +15,7 @@ struct SendWakeTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))   // .running
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))   // .running
         env.adapter.writeTranscript(for: t.agentSessionId!)                                     // resumable
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))                          // idle/Waiting
         return t
@@ -44,7 +44,7 @@ struct SendWakeTests {
     func sendDefersRunningClaude() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)
         let ensureBefore = env.sessions.ensureCount
 
@@ -60,8 +60,8 @@ struct SendWakeTests {
     func sendDefersLiveNativeWaitSubscription() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "p"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
         env.adapter.writeTranscript(for: parent.agentSessionId!)
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: parent.id, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 } // parent has a live `orchestra wait`
@@ -81,7 +81,7 @@ struct SendWakeTests {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
         // Provisional spawn (no prompt) → .waiting, but no transcript on disk yet → not resumable.
-        let card = try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "", repo: repo, branch: "b"))
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(card.id, "hello")

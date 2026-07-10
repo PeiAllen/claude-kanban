@@ -16,21 +16,23 @@ struct RecoveryTests {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
 
-        // A: alive at the matching epoch → adopted (stays live, not relaunched)
-        let a = try await env.svc.spawn(SpawnInput(prompt: "alive", repo: repo, branch: "a"))
-        env.sessions.setAlive(a.id, true)
+        // Bring all four LIVE first (non-blocking spawn + reconciler), THEN apply the session-liveness
+        // manipulations. Doing the setAlive(false) BEFORE a later spawnAndAwaitLive would let that spawn's
+        // reconcile tick markDead the session-gone card early (as `.sessionVanished`) — corrupting the setup
+        // this boot pass is meant to classify.
+        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "alive", repo: repo, branch: "a"))
+        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "resumable", repo: repo, branch: "b"))
+        let c = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "unrevivable", repo: repo, branch: "c"))
+        let d = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "archived", repo: repo, branch: "d"))
 
-        // B: gone + transcript exists → resumable (relaunch → resume)
-        let b = try await env.svc.spawn(SpawnInput(prompt: "resumable", repo: repo, branch: "b"))
+        // A: alive at the matching epoch → adopted (stays live, not relaunched).
+        env.sessions.setAlive(a.id, true)
+        // B: gone + transcript exists → resumable (relaunch → resume).
         env.adapter.writeTranscript(for: b.agentSessionId!)
         env.sessions.setAlive(b.id, false)
-
-        // C: gone + no transcript, prompted → dead (rebootUnrevived)
-        let c = try await env.svc.spawn(SpawnInput(prompt: "unrevivable", repo: repo, branch: "c"))
-        env.sessions.setAlive(c.id, false)   // no transcript written
-
-        // D: archived → skipped
-        let d = try await env.svc.spawn(SpawnInput(prompt: "archived", repo: repo, branch: "d"))
+        // C: gone + no transcript, prompted → dead (rebootUnrevived).
+        env.sessions.setAlive(c.id, false)
+        // D: archived → skipped.
         try await env.svc.archive(d.id)
 
         let aEnsureBefore = env.sessions.ensureCount
@@ -178,7 +180,7 @@ struct RecoveryTests {
     func reconcile() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         env.sessions.setAlive(t.id, false)   // vanished (crash / tmux kill, no SessionEnd)
         await env.svc.reconcileLiveness()
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })

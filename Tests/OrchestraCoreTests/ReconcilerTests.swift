@@ -99,16 +99,13 @@ struct ReconcilerTests {
         let timeout = await env.svc.config.sessionLaunchTimeout
         #expect(Double(thr) * interval < Double(timeout))
 
-        // Spawn awaits its SessionStart hook; DON'T deliver it — the card sits `.launching` with a pending
-        // readiness waiter. The reconcile tick's N=3 fallback is the only resolver.
-        async let spawned = env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
-        try await pollUntil {
-            await env.svc.list().contains { $0.branch == "b" && $0.phase.kind == .launching }
-        }
+        // Non-blocking spawn persists `.creatingWorktree`; the reconciler drives it to `.launching`, where it
+        // awaits its SessionStart hook. We DON'T deliver the hook — the reconcile tick's N=3 launch-readiness
+        // fallback is the only resolver that carries it the rest of the way to `.live`.
+        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         try await Self.reconcileUntil(env.svc) {
             await env.svc.list().first { $0.branch == "b" }?.phase.kind == .live
         }
-        _ = try await spawned
     }
 
     // MARK: - orphan-session sweep + fresh probe + epoch-identity adoption
@@ -226,8 +223,9 @@ struct ReconcilerTests {
     func mcpWatchSurvivesRestart() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let watcher = try await env.svc.spawn(SpawnInput(prompt: "w", repo: repo, branch: "w"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        // Both must be genuinely `.live` (a boot pass only adopts/revives `.live`-persisted cards).
+        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "w", repo: repo, branch: "w"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
         _ = await env.svc.watch(watcher: watcher.id, refs: [child.id])   // durable MCP watch (no CLI process)
         env.sessions.setAlive(child.id, false)                           // child dies while daemon is down
 

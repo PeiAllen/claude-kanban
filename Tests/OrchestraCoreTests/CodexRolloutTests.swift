@@ -229,7 +229,7 @@ struct CodexTelemetryE2ETests {
         // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
         // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
         // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
-        async let spawned = svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
+        async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "look", model: "gpt-5.3-codex",
                                                  agentId: "codex",
                                                  cwd: PathResolver.canonical(work)))
         try await TestEnv.reconcileUntilLive(svc, count: 1)
@@ -271,9 +271,9 @@ struct CodexTelemetryE2ETests {
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        async let sa = svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
+        async let sa = TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
                                             agentId: "codex", cwd: workA))
-        async let sb = svc.spawn(SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
+        async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
                                             agentId: "codex", cwd: workB))
         try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback (fixture rollouts predate launch)
         let cardA = try await sa
@@ -349,7 +349,7 @@ struct CodexTelemetryE2ETests {
     func claudeNotTailed() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         await env.svc.pollTelemetry()   // must be a no-op for hooksPush; no crash, no change
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.phase == t.phase)

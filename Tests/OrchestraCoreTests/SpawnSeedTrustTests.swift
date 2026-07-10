@@ -9,7 +9,7 @@ struct SpawnSeedTests {
     func seedFoldedIntoLaunch() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "Do the fork task", repo: repo, branch: "fk", seed: "PARENT-CONTEXT"))
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let positional = try #require(argv.last)
@@ -24,7 +24,7 @@ struct SpawnSeedTests {
     func seedOnlyNotProvisional() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "", repo: repo, branch: "fk2", seed: "SLICE"))
         #expect(t.titleProvisional == false)
         #expect(t.phaseDisplay == .running)
@@ -36,7 +36,7 @@ struct SpawnSeedTests {
     func noSeedUnchanged() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "plain", repo: repo, branch: "p"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "plain", repo: repo, branch: "p"))
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.last == "plain")
     }
@@ -52,6 +52,12 @@ struct SpawnSeedTests {
             "seed": .string("FORK-SEED"),
         ])
         let task = try await spawn.run(env.svc, params, .mcp).decode(Task.self)
+        // Non-blocking spawn: drive the reconciler so the LaunchStepper brings the session up, then assert
+        // the seed rode the launch positional.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return env.sessions.ensureArgv[env.sessions.sessionName(task.id)] != nil
+        }
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(task.id)])
         #expect(try #require(argv.last).contains("FORK-SEED"))
     }

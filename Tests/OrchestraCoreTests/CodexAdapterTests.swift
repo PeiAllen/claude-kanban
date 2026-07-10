@@ -390,7 +390,7 @@ struct CodexModelRoutingTests {
         let base = NSTemporaryDirectory() + "codex-route-\(UUID().uuidString)"
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
         #expect(t.agentId == "claude-code")                        // default (config.defaultAgentId) preserved
         try? FileManager.default.removeItem(atPath: base)
     }
@@ -401,7 +401,7 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
-        let t = try await env.svc.spawn(
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
             SpawnInput(prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex", agentId: "claude-code"))
         #expect(t.agentId == "claude-code")
         try? FileManager.default.removeItem(atPath: base)
