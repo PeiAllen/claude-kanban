@@ -27,7 +27,7 @@ struct ReadinessSignalTests {
 
         // Non-blocking spawn: the reconciler drives the card to `.launching`, where its readiness waiter
         // blocks; spawnAwaited hand-delivers SessionStart(startup), which resolves it → the card lands `.live`.
-        let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "do it", repo: repo, branch: "b"))
+        let live = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "do it", repo: repo, branch: "b"))
         #expect(live.phase == .live(.running))   // a prompt was in flight → running (per the landing rule)
     }
 
@@ -35,7 +35,7 @@ struct ReadinessSignalTests {
     func test_relaunchingToLive_onReady_claude() async throws {
         let env = TestEnv.make(grace: 10, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
 
@@ -67,7 +67,7 @@ struct ReadinessSignalTests {
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
 
-        let created = try await svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
+        let created = try await svc.spawn(SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.3-codex",
                                                      agentId: "codex", cwd: work))
         // Non-blocking spawn: drive the reconciler ONLY until the card is `.launching` (its readiness waiter
         // registers), then STOP reconciling so the N=3 fallback can't fire — the rollout's session_meta is the
@@ -94,7 +94,7 @@ struct ReadinessSignalTests {
     func test_relaunchingToLive_fallback_codex() async throws {
         let env = TestEnv.make(grace: 30, capabilities: Self.codexStubCaps)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)                  // resumable
         await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
 
@@ -119,7 +119,7 @@ struct ReadinessSignalTests {
         let n = await env.svc.launchReadyTickThreshold
         #expect(n * 2 < 30)   // N × tickInterval(2s poll) < sessionLaunchTimeout(grace) — fallback beats the timeout
 
-        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        _ = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await TestEnv.reconcileUntilLive(env.svc, count: 1)   // reconcile ticks → N=3 → resolveReadiness → live
         let live = try #require(await env.svc.list().first { $0.branch == "b" })
         #expect(live.phase.kind == .live)

@@ -41,7 +41,7 @@ struct RemoteSpawnTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let prTip = try await RemoteParents().fetch(repo: repo, .pullRequest(7))  // expected OID
-        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         #expect(t.parentBranch == "pr#7")                    // canonical remote form stored
         let link = try #require(await svc.lineage.read(repo: repo, branch: "childP"))
         #expect(link.parent == "pr#7")
@@ -59,7 +59,7 @@ struct RemoteSpawnTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childB", base: "origin/feature-b"))
+        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childB", base: "origin/feature-b"))
         #expect(t.parentBranch == "origin/feature-b")
         let link = try #require(await svc.lineage.read(repo: repo, branch: "childB"))
         #expect(link.prNumber == nil)

@@ -356,6 +356,11 @@ public actor OrchestraService {
     // MARK: - spawn
 
     public func spawn(_ input: SpawnInput, source: ActivitySource = .daemon) async throws -> Task {
+        // Idempotency (#15): a retried spawn carrying the SAME client-minted id returns the existing card
+        // AS-IS, whatever its phase. Fast-path exit BEFORE any side effect (adapter resolution, resolveRepo,
+        // scratch mkdir, sibling scan); the authoritative single-winner guarantee is the atomic
+        // `createIfAbsent` at the create point below (it covers the concurrent race the fast path can't).
+        if let existing = await store.get(input.id) { return existing }
         // Route to the adapter: an explicit `agentId` wins; else the adapter that owns the chosen model
         // (the app's flat picker sends only a model id — this is what makes Codex startable from a
         // model-only selection); else the configured default.
@@ -363,8 +368,9 @@ public actor OrchestraService {
             ?? input.model.flatMap { registry.adapter(forModel: $0)?.id }
             ?? config.defaultAgentId
         let adapter = try registry.get(resolvedAgentId)
-        // The card id is generated up front so a scratch spawn can name its dir after the card.
-        let id = UUID()
+        // The card id is CLIENT-MINTED (a required wire field) so a scratch spawn can name its dir after
+        // the card and a retried spawn dedups on it (createIfAbsent at the create point below).
+        let id = input.id
         // Scratch vs freeform (borrowed) vs worktree. A scratch spawn mkdir's a fresh throwaway
         // `~/.orchestra/scratch/<id>` and owns it (rm -rf on archive). A borrowed spawn runs in a
         // user-chosen dir: no worktree is cut and the allowlist gate is skipped — the OS sandbox is the
@@ -374,6 +380,10 @@ public actor OrchestraService {
         let cwd: String
         let origin: CardOrigin
         var spawnBaseCarrier: String? = nil   // normalized base carried to the reconciler's MaterializeStepper
+        // Sibling-multiplicity: captured BEFORE createIfAbsent (this card isn't in the store yet → no
+        // self-match) and emitted only for the actual create-winner below, so a concurrent same-id loser
+        // never fires a spurious warning.
+        var siblingCard: Task? = nil
         if input.scratch {
             cwd = Config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
@@ -391,13 +401,9 @@ public actor OrchestraService {
             // the separate worktree-coupling design). But every derived parent-card lookup must be
             // DETERMINISTIC (oldest live card wins — see `derivedCard`), not an arbitrary sibling. Warn on
             // multiplicity so the operator sees the ambiguity they just created.
-            if let existing = await store.all().first(where: {
+            siblingCard = await store.all().first(where: {
                 !$0.archived && $0.origin == .worktree && $0.repo == realRepo && $0.branch == input.branch
-            }) {
-                emitActivity(.warning, existing, source,
-                    "spawning a second live card onto branch \(input.branch) (already owned by "
-                    + "\(existing.shortId)) — derived parent lookups use the oldest card")
-            }
+            })
             // S2-3(i): normalize + VALIDATE a user-supplied base SYNCHRONOUSLY (must-fail-fast — the security
             // gate stays before anything is created). Strip a `refs/heads/` prefix; reject any other `refs/…`
             // (remote forms — origin/<b>, pr#<N> — are classified separately and left untouched). The
@@ -473,9 +479,19 @@ public actor OrchestraService {
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
             parentBranch: nil            // materialize re-derives + records the parent link from `spawnBase`
         )
-        let (created, createdRev) = try await store.create(task)
+        // Atomic dedup: if a concurrent same-id spawn won the race, `wasCreated == false` → return its card
+        // AS-IS and emit nothing (idempotent). Scratch dir is id-named + idempotent and a worktree is
+        // join-by-branch, so anything this losing call materialized is safe to leave.
+        let (created, createdRev, wasCreated) = try await store.createIfAbsent(task)
+        if !wasCreated { return created }
         emit(.taskUpserted(created), rev: createdRev)
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
+        // Emit the multiplicity warning only for the actual winner (captured before the create).
+        if let sibling = siblingCard {
+            emitActivity(.warning, sibling, source,
+                "spawning a second live card onto branch \(input.branch) (already owned by "
+                + "\(sibling.shortId)) — derived parent lookups use the oldest card")
+        }
 
         // authMode soft-warn (E2 / q4 — advisory only, NEVER caps). Count active subscription-auth cards
         // for this adapter (the just-created card is already in the store) and warn past the threshold.

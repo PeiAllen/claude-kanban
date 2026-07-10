@@ -14,7 +14,7 @@ struct MoveNotifyTests {
         _ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
         branch: String) async throws -> Task {
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: branch))   // .running, .plan
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))   // .running, .plan
         env.adapter.writeTranscript(for: t.agentSessionId!)                                     // resumable
         return t
     }

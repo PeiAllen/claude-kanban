@@ -28,7 +28,7 @@ struct NonBlockingSpawnTests {
         env.worktrees.blockEnsure()   // the NEXT ensure (materialize's) parks on a gate
 
         // spawn does NO checkout — it returns a `.creatingWorktree` card with a PURE cwd immediately.
-        let created = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         #expect(created.phase.kind == .creatingWorktree)
         #expect(created.cwd.contains("/b"))                         // cwd computed (no ensure)
         #expect(env.worktrees.ensured.isEmpty)                      // spawn never called ensure
@@ -56,7 +56,7 @@ struct NonBlockingSpawnTests {
 
         // spawn persists `.creatingWorktree`; drive ONE materialize step so it lands `.launching`, then
         // simulate a daemon crash BEFORE the launch confirmed — `remake` reloads the persisted card only.
-        let created = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await pollUntil {
             await env.svc.reconcile()
             return await env.svc.list().first { $0.id == created.id }?.phase.kind == .launching
@@ -80,7 +80,7 @@ struct NonBlockingSpawnTests {
         // (a) a checkout failure → dead(.spawnFailed) with the git stderr in deadDetail.
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let created = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.worktrees.ensureError = OrchestraError.io("fatal: could not checkout branch")
         try await pollUntil {
             await env.svc.reconcile()
@@ -93,7 +93,7 @@ struct NonBlockingSpawnTests {
         // (b) a timeout → the explicit "timed out after Ns" wording (no generic git passthrough).
         let env2 = TestEnv.make()
         let repo2 = TestEnv.repo(env2.base)
-        let c2 = try await env2.svc.spawn(SpawnInput(prompt: "x", repo: repo2, branch: "b"))
+        let c2 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo2, branch: "b"))
         env2.worktrees.ensureError = OrchestraError.io("git worktree add: operation timed out")
         try await pollUntil {
             await env2.svc.reconcile()
@@ -112,7 +112,7 @@ struct NonBlockingSpawnTests {
     func test_materializeReRecordsBaseAfterCrashWindow() async throws {
         let env = TestEnv.make()
         let repo = try SpawnBaseTests.repoWithParent(env.base)          // real git repo with a `parent` branch
-        let created = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "child", base: "parent"))
+        let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(created.spawnBase == "parent")                          // base carried, not yet recorded
 
         // Simulate the crash window: the branch already exists (a prior run cut it) but NO lineage link was
@@ -154,7 +154,7 @@ struct NonBlockingSpawnTests {
 
         // Reuse the name: spawn a NEW feat-x on top of feat-x-fix. Materialize's prune must clear the dangling
         // link so no false cycle is tripped; the card reaches launching with parentBranch = feat-x-fix.
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
         try await pollUntil {
             await svc.reconcile()
             let p = await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind

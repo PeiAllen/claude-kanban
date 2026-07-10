@@ -9,7 +9,7 @@ struct RemoteWatchLoopTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         return (svc, repo, card)
     }
 

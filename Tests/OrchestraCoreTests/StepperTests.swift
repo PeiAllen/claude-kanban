@@ -72,7 +72,7 @@ private func batteryRemake(base: String, caps: AgentCapabilities, id: String) ->
 /// confirms deterministically. The common starting point for the crash framings.
 private func batterySpawnLive(_ e: BEnv, branch: String) async throws -> Task {
     let created = try await e.svc.spawn(
-        SpawnInput(prompt: "x", repo: TestEnv.repo(e.base), branch: branch, agentId: e.adapter.id))
+        SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(e.base), branch: branch, agentId: e.adapter.id))
     try await pollUntil {
         await e.svc.reconcile()
         let card = await e.svc.list(includeArchived: true).first { $0.id == created.id }
@@ -289,7 +289,7 @@ struct MissedReadinessConclusionTests {
         // Non-blocking spawn → the reconciler drives it to `.launching`, where its readiness waiter blocks.
         // We DELIVER NO signal — only the N=3 launch-readiness fallback carries it the rest of the way to live.
         let created = try await e.svc.spawn(
-            SpawnInput(prompt: "x", repo: TestEnv.repo(e.base), branch: "b", agentId: e.adapter.id))
+            SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(e.base), branch: "b", agentId: e.adapter.id))
         try await pollUntil {
             await e.svc.reconcile()
             return await e.svc.list().first { $0.id == created.id }?.phase.kind == .live
@@ -303,8 +303,8 @@ struct MissedReadinessConclusionTests {
     func test_waitShortCircuitsOnPersistedTerminalPhase() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "w", repo: repo, branch: "w"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "w", repo: repo, branch: "w"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
 
         // Child concludes (persisted-terminal) BEFORE any watch is registered — no notice is owed yet.
         await env.svc.markDead(child.id, reason: .completed, detail: nil, source: .daemon)   // dead(.completed) ⇒ .done
@@ -332,9 +332,9 @@ struct MissedReadinessConclusionTests {
         let goodRepo = TestEnv.repo(env.base)
         let badRepo = "/nonexistent-outside-allowlist-\(UUID().uuidString)"   // non-allowlisted ⇒ deterministic fail
         let batch = [
-            SpawnInput(prompt: "a", repo: goodRepo, branch: "a"),
-            SpawnInput(prompt: "b", repo: badRepo,  branch: "b"),
-            SpawnInput(prompt: "c", repo: goodRepo, branch: "c"),
+            SpawnInput(id: UUID(), prompt: "a", repo: goodRepo, branch: "a"),
+            SpawnInput(id: UUID(), prompt: "b", repo: badRepo,  branch: "b"),
+            SpawnInput(id: UUID(), prompt: "c", repo: goodRepo, branch: "c"),
         ]
         let r1 = await env.svc.batchSpawn(batch)
         #expect(r1.spawned.count == 2)
@@ -344,7 +344,7 @@ struct MissedReadinessConclusionTests {
         let ackedIds = Set(r1.spawned.map(\.id))
 
         // Retry ONLY the failed slot (now with a valid repo) — the acked two are NOT re-submitted.
-        let r2 = await env.svc.batchSpawn([SpawnInput(prompt: "b", repo: goodRepo, branch: "b")])
+        let r2 = await env.svc.batchSpawn([SpawnInput(id: UUID(), prompt: "b", repo: goodRepo, branch: "b")])
         #expect(r2.spawned.count == 1)
         #expect(r2.failed.isEmpty)
 
@@ -385,7 +385,7 @@ struct StepperTests {
     func test_stepperStepIsIdempotent() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         // Seed a being-born phase directly (live→creatingWorktree is not a legal verb edge).
         _ = try await env.svc.store.update(card.id) { $0.phase = .creatingWorktree }
 

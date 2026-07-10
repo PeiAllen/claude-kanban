@@ -78,7 +78,7 @@ struct PhaseTransitionTests {
     func test_transitionRejectsIllegalEdge() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.completed) }
 
         // Verb-path (observedEpoch: nil) revival is illegal — only a signal may drive dead→live.
@@ -92,7 +92,7 @@ struct PhaseTransitionTests {
     func test_transitionNoopIsIdempotent() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: true) }
         let epochBefore = try #require(await env.svc.store.get(card.id)).sessionEpoch
 
@@ -107,7 +107,7 @@ struct PhaseTransitionTests {
     func test_relaunchSupersedeIsNotNoop() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         _ = try await env.svc.store.update(card.id) { $0.phase = .relaunching }
         let epochBefore = try #require(await env.svc.store.get(card.id)).sessionEpoch
 
@@ -131,7 +131,7 @@ struct PhaseTransitionTests {
     private func runProvisioningDelivery(seed: Phase, branch: String) async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: branch))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         env.adapter.writeTranscript(for: card.agentSessionId!)          // resumable
         let name = env.sessions.sessionName(card.id)
         // Seed the provisioning phase directly (live→creatingWorktree is not a legal verb edge).
@@ -166,8 +166,8 @@ struct PhaseTransitionTests {
     func test_deadToArchivedDoesNotReconclude() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let parent = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         await env.svc.registerWatch(parent.id, [child.id])
 
         // Conclusion #1: live → dead(agentExited).
@@ -186,8 +186,8 @@ struct PhaseTransitionTests {
     func test_waitShortCircuitUnregistersChild() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let parent = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "p"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let parent = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "p"))
+        let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
 
         // Child concludes BEFORE the parent watches it (no watcher yet → no notice).
         #expect(await env.svc.transition(child.id, to: .dead(.agentExited)) == .applied)
@@ -219,7 +219,7 @@ struct EpochGuardReportFunnelTests {
     private func readOnlyCard(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String), _ name: String) async throws -> Task {
         let dir = env.base + "/borrow-\(name)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return try await env.svc.spawn(SpawnInput(prompt: "work", cwd: dir, access: .readOnly))
+        return try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "work", cwd: dir, access: .readOnly))
     }
 
     // MARK: - epoch fence on the SessionEnd (kill-class) signal
@@ -228,7 +228,7 @@ struct EpochGuardReportFunnelTests {
     func test_staleSessionEndIgnored() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         _ = try await env.svc.store.update(card.id) { $0.sessionEpoch = 2 }
 
         // A SessionEnd stamped with the SUPERSEDED generation (1 ≠ 2) is fenced out by the funnel.
@@ -249,7 +249,7 @@ struct EpochGuardReportFunnelTests {
         let repo = TestEnv.repo(env.base)
 
         // Kill-class, nil epoch, session STILL ALIVE → the probe blocks the kill.
-        let live = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "a", repo: repo, branch: "a"))
+        let live = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "a"))
         #expect(env.sessions.isAliveTest(live.id))   // spawn ensured it
         try await env.svc.report(live.id, StatusReport(endReason: "exit"), observedEpoch: nil)
         var after = try #require(await env.svc.store.get(live.id))
@@ -264,7 +264,7 @@ struct EpochGuardReportFunnelTests {
         #expect(env.sessions.isAliveQueries.contains(env.sessions.sessionName(live.id)))
 
         // A nil-epoch STATUS signal (running↔waiting) is NOT kill-class → it passes unprobed.
-        let status = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "b", repo: repo, branch: "b"))
+        let status = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "b"))
         try await env.svc.report(status.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: nil)
         let s = try #require(await env.svc.store.get(status.id))
         #expect(s.phaseDisplay == .idle)
@@ -276,7 +276,7 @@ struct EpochGuardReportFunnelTests {
     func test_reportStatusWritesGoThroughFunnel() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
@@ -297,7 +297,7 @@ struct EpochGuardReportFunnelTests {
         let inbox = await env.svc.inbox
 
         // Read-only card: a completed turn is terminal (.dead(.completed)) and concludes exactly once.
-        let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wA", repo: repo, branch: "wa"))
+        let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wA", repo: repo, branch: "wa"))
         let readOnly = try await readOnlyCard(env, "ro")
         await env.svc.registerWatch(watcherA.id, [readOnly.id])
         try await env.svc.report(readOnly.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
@@ -307,8 +307,8 @@ struct EpochGuardReportFunnelTests {
         #expect(await inbox.peek(watcherA.id).count == 1)     // EXACTLY one conclusion
 
         // Worktree card: a completed turn stays long-lived (.live(.waiting(.humanTurn))), never concludes.
-        let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wB", repo: repo, branch: "wb"))
-        let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "wt", repo: repo, branch: "wt"))
+        let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wB", repo: repo, branch: "wb"))
+        let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wt", repo: repo, branch: "wt"))
         await env.svc.registerWatch(watcherB.id, [worktree.id])
         try await env.svc.report(worktree.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
         try await _Concurrency.Task.sleep(for: .milliseconds(60))

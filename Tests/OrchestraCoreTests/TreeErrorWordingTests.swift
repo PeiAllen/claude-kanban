@@ -56,7 +56,7 @@ struct TreeErrorWordingTests {
     func noParentLinkWording() async throws {
         let env = TestEnv.make()
         let repo = try TreeStatTests.repoWithParent(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "solo", repo: repo, branch: "solo"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
 
         await #expect { _ = try await env.svc.mergeRequest(ref: card.ref()) } throws: { error in
             guard case let OrchestraError.invalidParams(m) = error else { return false }

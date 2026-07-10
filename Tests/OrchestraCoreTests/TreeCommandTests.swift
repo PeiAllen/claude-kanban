@@ -27,7 +27,7 @@ struct TreeCommandTests {
     func adopt() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
         let updated = try await env.svc.setParent(ref: t.shortId, parent: "parent")
         #expect(updated.parentBranch == "parent")
         let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
@@ -41,7 +41,7 @@ struct TreeCommandTests {
     func clear() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
         _ = try await env.svc.setParent(ref: t.shortId, parent: "parent")
         let cleared = try await env.svc.setParent(ref: t.shortId, parent: nil)
         #expect(cleared.parentBranch == nil)
@@ -52,7 +52,7 @@ struct TreeCommandTests {
     func moveRepoints() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
         let updated = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "move")
         #expect(updated.parentBranch == "parent")
         #expect(updated.treeStat?.state == .restackNeeded)
@@ -67,7 +67,7 @@ struct TreeCommandTests {
     func setParentViaRegistry() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "child"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
         let reg = CommandRegistry()
         let cmd = try #require(reg.command("set-parent"))
         let out = try await cmd.run(env.svc,
@@ -81,8 +81,8 @@ struct TreeCommandTests {
     func treeSnapshot() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         _ = try await env.svc.setParent(ref: child.shortId, parent: "parent")
 
         let snap = try await env.svc.tree(ref: nil, repo: nil)
@@ -102,8 +102,8 @@ struct TreeCommandTests {
     func treeScopedByRef() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         let snap = try await env.svc.tree(ref: child.shortId, repo: nil)
         #expect(snap.nodes.map(\.branch) == ["child"])
     }
@@ -112,7 +112,7 @@ struct TreeCommandTests {
     func treeViaRegistry() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithBranches(env.base)
-        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         let reg = CommandRegistry()
         let cmd = try #require(reg.command("tree"))
         let out = try await cmd.run(env.svc, .object([:]), .mcp)

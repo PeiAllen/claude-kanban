@@ -26,7 +26,7 @@ struct SpawnBaseValidationTests {
     func normalizesRefsHeadsBase() async throws {
         let (svc, repo) = try Self.repo()
         // Normalization is a SYNCHRONOUS spawn-time step: the carrier is the bare name.
-        let card = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "refs/heads/foo"))
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "refs/heads/foo"))
         #expect(card.spawnBase == "foo")
         // The reconciler-driven materialize records the lineage from that carrier.
         try await pollUntil {
@@ -42,7 +42,7 @@ struct SpawnBaseValidationTests {
     func rejectsNonBranchRefsBase() async throws {
         let (svc, repo) = try Self.repo()
         await #expect(throws: OrchestraError.self) {
-            _ = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "refs/tags/v1"))
+            _ = try await svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "refs/tags/v1"))
         }
         // No orphan worktree/branch left behind.
         #expect(try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/child"]).ok == false)
@@ -64,7 +64,7 @@ struct SpawnBaseValidationTests {
 
         // Reuse the name: spawn a NEW feat-x on top of feat-x-fix. Materialize's prune must clear the
         // dangling link so no false cycle is tripped.
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
         try await pollUntil {
             await svc.reconcile()
             return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .live
@@ -83,7 +83,7 @@ struct SpawnBaseValidationTests {
 
         // Non-blocking spawn: the lineage-record failure + rollback now fire inside the reconciler-driven
         // MaterializeStepper (the card goes .dead(.spawnFailed)), not as a synchronous throw from spawn.
-        let card = try await svc.spawn(SpawnInput(prompt: "n", repo: repo, branch: "nb", base: "foo"))
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "n", repo: repo, branch: "nb", base: "foo"))
         try await pollUntil {
             await svc.reconcile()
             return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .dead

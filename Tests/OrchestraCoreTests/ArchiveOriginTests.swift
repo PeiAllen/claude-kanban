@@ -11,8 +11,8 @@ struct ArchiveOriginTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         // Two cards on the SAME branch resolve to the SAME worktree (ensure is idempotent on the path).
-        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "a", repo: repo, branch: "feat"))
-        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "b", repo: repo, branch: "feat"))
+        let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "feat"))
+        let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "feat"))
         #expect(a.cwd == b.cwd)              // idempotent ensure → shared tree
         #expect(a.origin == .worktree)       // spawn only ever produces .worktree in this PR
         #expect(b.origin == .worktree)

@@ -30,7 +30,7 @@ struct TerminalOwnershipRoundTripTests {
         _Concurrency.Task { for await e in stream { await box.add(e) } }
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
 
-        let task = try await desktop.call("spawn", .object([
+        let task = try await desktop.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("own me"), "repo": .string(repo), "branch": .string("feat")]))
             .decode(Task.self)
         let ref = task.shortId
@@ -83,7 +83,7 @@ struct TerminalOwnershipRoundTripTests {
         let phone = ControlClient(socketPath: path, source: .app)
         try phone.connect(); defer { phone.close() }
 
-        let task = try await phone.call("spawn", .object([
+        let task = try await phone.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("x"), "repo": .string(repo), "branch": .string("b")])).decode(Task.self)
         let ref = task.shortId
         // Non-blocking spawn: drive the reconciler so the card is live (session up) before terminal takeover.

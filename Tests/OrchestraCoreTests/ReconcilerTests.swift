@@ -31,7 +31,7 @@ struct ReconcilerTests {
     func strandedTransitionalCardRedriven() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .live
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .live
         await env.svc.seedPhase(t.id, .creatingWorktree)                                     // strand it
         #expect(await env.svc.list().first { $0.id == t.id }?.phase.kind == .creatingWorktree)
 
@@ -48,7 +48,7 @@ struct ReconcilerTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let stepper = CountingThrowStepper()
         await env.svc.setStepper(stepper, for: .creatingWorktree)
         // Pin a large backoff so the "re-ticks stay inside the window" assertion is load-proof: the real
@@ -77,7 +77,7 @@ struct ReconcilerTests {
     func launchTimeoutSurvivesCrash() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         // Back-date `phaseChangedAt` well past the timeout and persist at `.launching`.
         await env.svc.seedPhase(t.id, .launching, phaseChangedAt: Date().addingTimeInterval(-120))
 
@@ -105,7 +105,7 @@ struct ReconcilerTests {
         // Non-blocking spawn persists `.creatingWorktree`; the reconciler drives it to `.launching`, where it
         // awaits its SessionStart hook. We DON'T deliver the hook — the reconcile tick's N=3 launch-readiness
         // fallback is the only resolver that carries it the rest of the way to `.live`.
-        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        _ = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await Self.reconcileUntil(env.svc) {
             await env.svc.list().first { $0.branch == "b" }?.phase.kind == .live
         }
@@ -119,12 +119,12 @@ struct ReconcilerTests {
         let repo = TestEnv.repo(env.base)
 
         // X: an archived card with a lingering alive session → swept.
-        let x = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "x"))
+        let x = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "x"))
         await env.svc.seedPhase(x.id, .archived(teardownComplete: true))
         env.sessions.setAlive(x.id, true)
 
         // Y: a dead(.completed) card (NOT archived) with an alive session → kept (revival possible).
-        let y = try await env.svc.spawn(SpawnInput(prompt: "y", repo: repo, branch: "y"))
+        let y = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "y"))
         await env.svc.markDead(y.id, reason: .completed, detail: nil, source: .daemon)
         env.sessions.setAlive(y.id, true)
 
@@ -143,7 +143,7 @@ struct ReconcilerTests {
     func preKillProbeIsFresh() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let x = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "x"))
+        let x = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "x"))
         await env.svc.seedPhase(x.id, .archived(teardownComplete: true))
         env.sessions.setAlive(x.id, true)
         let name = env.sessions.sessionName(x.id)
@@ -158,7 +158,7 @@ struct ReconcilerTests {
     func preKillProbeOffActor() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let x = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "x"))
+        let x = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "x"))
         await env.svc.seedPhase(x.id, .archived(teardownComplete: true))
         env.sessions.setAlive(x.id, true)
         env.sessions.isAliveSleepMs = 500   // slow probe
@@ -179,12 +179,12 @@ struct ReconcilerTests {
         let repo = TestEnv.repo(env.base)
 
         // M: seeded `.launching` with a live session at the MATCHING epoch → adopt to `.live` (no relaunch).
-        let m = try await env.svc.spawn(SpawnInput(prompt: "m", repo: repo, branch: "m"))
+        let m = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "m", repo: repo, branch: "m"))
         await env.svc.seedPhase(m.id, .launching, sessionEpoch: 1)
         env.sessions.setStampedEpoch(m.id, 1)
 
         // O: seeded `.relaunching` (provisional) whose surviving session is at an OLDER epoch → relaunch.
-        let o = try await env.svc.spawn(SpawnInput(prompt: "", repo: repo, branch: "o"))
+        let o = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "o"))
         await env.svc.seedPhase(o.id, .relaunching, sessionEpoch: 5)
         env.sessions.setStampedEpoch(o.id, 3)   // old-epoch session
 
@@ -213,7 +213,7 @@ struct ReconcilerTests {
 
         // Seed a `.relaunching` card at epoch 1 with a live session stamped at the SAME epoch → the
         // adoption condition (`probed == snapshot.sessionEpoch`) holds at snapshot time.
-        let c = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let c = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         await env.svc.seedPhase(c.id, .relaunching, sessionEpoch: 1)
         env.sessions.setStampedEpoch(c.id, 1)
 
@@ -250,7 +250,7 @@ struct ReconcilerTests {
     func startupReconcilesInFlightPhases() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: t.agentSessionId!)     // resumable
         await env.svc.seedPhase(t.id, .creatingWorktree)        // stranded mid-spawn, persisted
 
@@ -270,8 +270,8 @@ struct ReconcilerTests {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
         // Both must be genuinely `.live` (a boot pass only adopts/revives `.live`-persisted cards).
-        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "w", repo: repo, branch: "w"))
-        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "c", repo: repo, branch: "c"))
+        let watcher = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "w", repo: repo, branch: "w"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         _ = await env.svc.watch(watcher: watcher.id, refs: [child.id])   // durable MCP watch (no CLI process)
         env.sessions.setAlive(child.id, false)                           // child dies while daemon is down
 
@@ -337,7 +337,7 @@ struct ReconcilerTests {
     func corruptTasksJsonRecovers() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        _ = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try "{ this is not valid json".write(toFile: env.base + "/tasks.json", atomically: true, encoding: .utf8)
 
         let env2 = TestEnv.remake(base: env.base)
@@ -354,7 +354,7 @@ struct ReconcilerTests {
     func conservativeModePersistsForDaemonLifetime() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        _ = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        _ = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try "{ corrupt".write(toFile: env.base + "/tasks.json", atomically: true, encoding: .utf8)
 
         // Corrupt boot → conservative ON.
@@ -363,7 +363,7 @@ struct ReconcilerTests {
         #expect(await env2.svc.worktreeConservativeMode())
 
         // A fresh spawn + archive in the SAME daemon removes NOTHING (conservative not cleared by writes).
-        let s = try await env2.svc.spawn(SpawnInput(prompt: "new", repo: repo, branch: "new"))
+        let s = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "new", repo: repo, branch: "new"))
         let removedBefore = env2.worktrees.removed.count
         try await env2.svc.archive(s.id)
         #expect(env2.worktrees.removed.count == removedBefore)          // reclaim suppressed

@@ -10,7 +10,7 @@ struct BorrowedSpawnTests {
         let dir = env.base + "/data"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "process", cwd: dir, access: .readWrite))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "process", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(t.cwd == dir)
         #expect(env.worktrees.ensured.isEmpty)        // never cut a worktree

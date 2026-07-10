@@ -59,7 +59,7 @@ struct VerbContractTests {
         // archived card (effective kind archivedComplete via the bridge).
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         // Seed the archived terminal state as the intent-only `archive` + TeardownStepper leaves it
         // (PR4b Task 4: `.archived(_)` is the sole archived representation — no Bool-bridge).
         _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: true); $0.archived = true }
@@ -90,7 +90,7 @@ struct VerbContractTests {
         // denies an idempotent re-archive.
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let reg = CommandRegistry()
 
         for (phase, gatedName) in [(Phase.archived(teardownComplete: false), "archivedPending"),
@@ -116,7 +116,7 @@ struct VerbContractTests {
             for verb in ["shell", "inspect"] {
                 let env = TestEnv.make()
                 let repo = TestEnv.repo(env.base)
-                let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(prompt: "x", repo: repo, branch: "b"))
+                let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
                 _ = try await env.svc.store.update(card.id) { $0.phase = phase }
                 // Make the session NOT alive, so an UNGATED shell/inspect WOULD call
                 // `sessions.ensure(argv:["/bin/sh"])` (both guard behind `if !isAlive`). This makes the

@@ -25,7 +25,7 @@ struct BorrowLifecycleTests {
     static func linkedChild(_ svc: OrchestraService, repo: String) async throws -> Task {
         let tip = try Proc.run(["git", "-C", repo, "rev-parse", "parent"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "c", repo: repo, branch: "child", base: "parent"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "parent"))
         // spawn(base: parent) already records the link; ensure base == parent tip.
         _ = tip
         return card
@@ -58,14 +58,14 @@ struct BorrowLifecycleTests {
     @Test("borrow refuses when the parent has a live card (send a merge-request instead)")
     func borrowRefusesLiveParent() async throws {
         let (svc, repo) = try Self.repo()
-        _ = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "p", repo: repo, branch: "parent"))   // parent now live
+        _ = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))   // parent now live
         let child = try await Self.linkedChild(svc, repo: repo)
         await #expect(throws: OrchestraError.self) { _ = try await svc.borrow(ref: child.ref()) }
     }
 
     /// A second sibling child on `branch`, also linked to the bare `parent`.
     static func sibling(_ svc: OrchestraService, repo: String, branch: String) async throws -> Task {
-        try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: branch, repo: repo, branch: branch, base: "parent"))
+        try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: branch, repo: repo, branch: branch, base: "parent"))
     }
 
     // MARK: exactly-one-borrower (OrchestraService.borrow ownership)

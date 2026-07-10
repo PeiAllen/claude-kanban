@@ -57,6 +57,9 @@ public enum CommandCatalog {
         CommandSchema(name: "spawn",
                       summary: "Spawn a new agent. Only `prompt` is free text — no title/desc.",
                       params: schema([
+                          "id": strProp("Client-minted UUID for idempotent retry — reuse the SAME id when "
+                              + "re-issuing after a timeout to avoid a duplicate card; omit to have one minted "
+                              + "(not retry-safe)."),
                           "prompt": strProp("Initial prompt — what the agent should start working on"),
                           "repo": strProp("Repository root (allowlisted). Omit for a freeform (cwd) card."),
                           "branch": strProp("Working branch. Omit for a freeform (cwd) card."),
@@ -291,7 +294,9 @@ public enum CommandCatalog {
         CommandSchema(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
                       params: schema(["tasks": .object([
                           "type": .string("array"),
-                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, base?}"),
+                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, "
+                              + "base?, id?}. Per-item `id` is a client-minted UUID for idempotent retry — reuse "
+                              + "the same per-item ids when re-issuing a batch; omit to have them minted."),
                       ])], required: ["tasks"]),
                       kind: .convergence, phaseGate: gAll),
 

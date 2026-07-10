@@ -1059,6 +1059,11 @@ public struct Worktree: Sendable, Equatable {
 // MARK: - Spawn input
 
 public struct SpawnInput: Codable, Sendable, Equatable {
+    /// Client-minted card id — a REQUIRED wire field (no back-compat for id-less spawns). Every client
+    /// (BoardStore / CLI / MCP bridge) mints or forwards it; the daemon dedups atomically on it
+    /// (`TaskStore.createIfAbsent`), so reusing the SAME id on a manual retry is idempotent. No default:
+    /// each construction site must supply an id explicitly (a bare per-call mint isn't retry-safe).
+    public var id: UUID
     public var prompt: String
     public var repo: String
     public var branch: String
@@ -1082,10 +1087,11 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// `WorktreeRegistry.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
     /// carries the field on the model; the spawn threading lands in BT2.
     public var base: String?
-    public init(prompt: String, repo: String = "", branch: String = "", model: String? = nil,
+    public init(id: UUID, prompt: String, repo: String = "", branch: String = "", model: String? = nil,
                 startIn: StartIn? = nil, agentId: String? = nil,
                 cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                 seed: String? = nil, base: String? = nil) {
+        self.id = id
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
         self.cwd = cwd; self.access = access; self.scratch = scratch; self.seed = seed
@@ -1094,6 +1100,7 @@ public struct SpawnInput: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)          // required: no id-less spawn on the wire
         self.prompt = try c.decode(String.self, forKey: .prompt)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
