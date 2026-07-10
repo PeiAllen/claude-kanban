@@ -140,6 +140,24 @@ public enum Phase: Codable, Equatable, Sendable {
     }
 }
 
+extension Phase {
+    /// The coarse UI classification — the single `phase → display` map. `Task.phaseDisplay` delegates here
+    /// so a phase with no `Task` (e.g. the `displayState` contract) classifies identically.
+    public var displayKey: PhaseDisplayKey {
+        switch self {
+        case .creatingWorktree:            return .starting
+        case .launching:                   return .launching
+        case .relaunching:                 return .relaunching
+        case .live(.running):              return .running
+        case .live(.waiting(.permission)): return .needsPermission
+        case .live(.waiting(.humanTurn)):  return .idle
+        case .dead(.completed):            return .done
+        case .archived:                    return .done
+        case .dead:                        return .dead
+        }
+    }
+}
+
 /// A coarse UI label for a card's `phase` — the display-only classification the board cells, detail
 /// headers, and status pills render. Deliberately **non-Codable and non-wire**: it is derived from
 /// `phase` on demand (`Task.phaseDisplay`) and never persisted, so the display vocabulary can evolve
@@ -154,6 +172,23 @@ public enum PhaseDisplayKey: String, Sendable, Equatable, CaseIterable {
     case needsPermission // .live(.waiting(.permission)) — blocked on tool approval
     case dead            // .dead(non-completed) — needs recovery
     case done            // .dead(.completed) / .archived — finished + retired
+}
+
+extension PhaseDisplayKey {
+    /// The canonical human label — the ONE place `phaseDisplay → label` text lives, shared by the GUI
+    /// (`Theme.statusLabel`), the CLI, and `DisplayState.label`.
+    public var label: String {
+        switch self {
+        case .starting:        return "Starting"
+        case .launching:       return "Launching"
+        case .relaunching:     return "Relaunching"
+        case .running:         return "Running"
+        case .idle:            return "Waiting"
+        case .needsPermission: return "Waiting"
+        case .dead:            return "Dead"
+        case .done:            return "Done"
+        }
+    }
 }
 
 /// Spawn sheet "Start in".
@@ -611,19 +646,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
 
     /// The coarse UI label for this card, derived from `phase`. The one place `phase → display`
     /// classification lives, so board cells / detail headers / status pills no longer each re-map it.
-    public var phaseDisplay: PhaseDisplayKey {
-        switch phase {
-        case .creatingWorktree:            return .starting
-        case .launching:                   return .launching
-        case .relaunching:                 return .relaunching
-        case .live(.running):              return .running
-        case .live(.waiting(.permission)): return .needsPermission
-        case .live(.waiting(.humanTurn)):  return .idle
-        case .dead(.completed):            return .done
-        case .archived:                    return .done
-        case .dead:                        return .dead
-        }
-    }
+    public var phaseDisplay: PhaseDisplayKey { phase.displayKey }
 
     /// Why this card is waiting, derived from `phase` — `nil` unless it is `.live(.waiting(_))`.
     public var waitReason: WaitReason? {
