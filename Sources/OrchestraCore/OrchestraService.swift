@@ -766,7 +766,9 @@ public actor OrchestraService {
         // Only worktree cards are gated by the repo allowlist; borrowed/scratch cwds are trusted via
         // the OS sandbox (the path may live outside any allowlisted repo).
         if t.origin == .worktree { try resolver.assertAllowed(t.cwd) }
-        let r = try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
+        let r = try await offActor {
+            try Proc.run(["sh", "-c", cmd], cwd: t.cwd, timeout: timeout ?? .seconds(120))
+        }
         let cap = 256 * 1024
         return ExecResult(stdout: String(r.stdout.prefix(cap)), stderr: String(r.stderr.prefix(cap)), exitCode: r.exitCode)
     }
