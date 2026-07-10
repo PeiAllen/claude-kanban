@@ -162,6 +162,93 @@ struct CodexAdapterArgvTests {
         let a = CodexAdapter(codexHome: "/tmp/ch")
         #expect(a.env["CODEX_HOME"] == "/tmp/ch")
     }
+
+    // Defect 2 · hook-trust. This customized Codex build TRUST-GATES hooks behind a launch modal Orchestra
+    // can't answer → the Stop hook never runs → the inbox never drains. `--dangerously-bypass-hook-trust`
+    // establishes trust by construction (Orchestra AUTHORS the hooks). It is the ONLY empirically-verified
+    // mechanism (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a
+    // config-seed is fragile). Build-gated so a stock codex-rs build (no gate, no flag) still launches;
+    // `hookTrustBypass:` injects the probe result for hermetic tests.
+    @Test("start/resume carry --dangerously-bypass-hook-trust when the build supports it")
+    func hookTrustBypassPresentWhenSupported() throws {
+        let a = CodexAdapter(binOverride: "codex", hookTrustBypass: true)
+        let start = a.start(AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go"))
+        #expect(start.contains("--dangerously-bypass-hook-trust"))
+        #expect(start.last == "go")                            // positional prompt still last
+        let resume = try #require(a.resume(AdapterContext(cwd: "/wt", sessionId: "sess-9", seed: "drain")))
+        #expect(resume.contains("--dangerously-bypass-hook-trust"))
+        #expect(adjacent(resume, "resume", "sess-9"))          // flag must NOT split `resume <sid>`
+        #expect(resume.last == "drain")                        // folded seed still last
+    }
+
+    @Test("start/resume OMIT the flag on a build that lacks it (graceful degradation)")
+    func hookTrustBypassAbsentWhenUnsupported() throws {
+        let a = CodexAdapter(binOverride: "codex", hookTrustBypass: false)
+        #expect(!a.start(AdapterContext(cwd: "/wt", prompt: "go")).contains("--dangerously-bypass-hook-trust"))
+        let resume = try #require(a.resume(AdapterContext(cwd: "/wt", sessionId: "sess-9")))
+        #expect(!resume.contains("--dangerously-bypass-hook-trust"))
+    }
+
+    @Test("the hook-trust flag is Codex-local: Claude's argv never carries it")
+    func claudeUnaffectedByHookTrust() {
+        let claude = ClaudeCodeAdapter()
+        #expect(!claude.start(AdapterContext(cwd: "/wt", prompt: "go")).contains("--dangerously-bypass-hook-trust"))
+        let r = claude.resume(AdapterContext(cwd: "/wt", sessionId: "abc")) ?? []
+        #expect(!r.contains("--dangerously-bypass-hook-trust"))
+    }
+}
+
+// Directly exercises the hook-trust build-probe's caching + graceful-degradation logic (the highest-value,
+// most-regression-prone part of Defect 2) against REAL tiny script "binaries" — the argv tests inject
+// `hookTrustBypass:` and so never reach `probeBypassHookTrust`. Unique bin paths per test avoid the
+// process-global cache colliding across tests.
+@Suite("CodexAdapter — hook-trust build-probe caching + degradation")
+struct CodexHookTrustProbeTests {
+    private static let flag = "--dangerously-bypass-hook-trust"
+
+    /// Write a unique executable script that ignores its args, prints `out`, and exits `code`.
+    private func fakeBin(exit code: Int, prints out: String) throws -> String {
+        let path = NSTemporaryDirectory() + "cxprobe-\(UUID().uuidString).sh"
+        try "#!/bin/sh\nprintf '%s' '\(out)'\nexit \(code)\n".write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+    private func rewrite(_ path: String, exit code: Int, prints out: String) throws {
+        try "#!/bin/sh\nprintf '%s' '\(out)'\nexit \(code)\n".write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+    }
+
+    @Test("a --help that lists the flag (exit 0) → supported")
+    func supportedWhenFlagPresent() throws {
+        let bin = try fakeBin(exit: 0, prints: Self.flag)
+        defer { try? FileManager.default.removeItem(atPath: bin) }
+        #expect(CodexAdapter.probeBypassHookTrust(bin) == true)
+    }
+
+    @Test("a --help without the flag (exit 0) → unsupported, and the definitive result IS cached")
+    func unsupportedExit0IsCached() throws {
+        let bin = try fakeBin(exit: 0, prints: "no such flag here")
+        defer { try? FileManager.default.removeItem(atPath: bin) }
+        #expect(CodexAdapter.probeBypassHookTrust(bin) == false)
+        // Rewrite the SAME path to now advertise the flag. A cached exit-0 `false` must NOT re-probe.
+        try rewrite(bin, exit: 0, prints: Self.flag)
+        #expect(CodexAdapter.probeBypassHookTrust(bin) == false)   // still false → the exit-0 result was cached
+    }
+
+    @Test("a non-zero --help (timeout/failure proxy) → unsupported, but NOT cached → retries")
+    func nonzeroExitNotCached() throws {
+        let bin = try fakeBin(exit: 1, prints: Self.flag)   // flag present but the probe FAILED (non-zero)
+        defer { try? FileManager.default.removeItem(atPath: bin) }
+        #expect(CodexAdapter.probeBypassHookTrust(bin) == false)   // degrade, do not cache
+        // Rewrite to a clean exit 0. Because the failure wasn't cached, the retry now sees the flag.
+        try rewrite(bin, exit: 0, prints: Self.flag)
+        #expect(CodexAdapter.probeBypassHookTrust(bin) == true)    // retried → proves the failure wasn't cached
+    }
+
+    @Test("an absent binary → unsupported (never blocks launch)")
+    func absentBinaryUnsupported() {
+        #expect(CodexAdapter.probeBypassHookTrust("/no/such/codex-\(UUID().uuidString)") == false)
+    }
 }
 
 @Suite("CodexAdapter — rollout session-id discovery")

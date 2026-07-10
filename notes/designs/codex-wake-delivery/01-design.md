@@ -145,6 +145,8 @@ stateDiagram-v2
 | Caps: `wakeTransport .sendKeys→.relaunch`, `inboxDrain .sessionSeed→.stopHook` | Existing variants; `.relaunch` == "kill + resume"; makes `inboxDrain` truthful | new variants (breaks A1 freeze) |
 | Keep `.sendKeys`/`.sessionSeed` **declared but unused** | A1 freezes enum spellings — don't delete cases | remove the cases |
 | `controlChannel` seam-only | The no-relaunch cure, but needs the app-server viewer (q10 / §9) | build it now |
+| **Layer A — replace a stale Orchestra hooks.json** | An older install wired the retired `_report --event orient` (no `session` sentinel), so `CodexHooks.installIfSafe` treated the current 3-hook file as foreign and never installed it → the Stop hook could not fire. Broaden the "ours" marker to `_report --event` (matches any Orchestra event; no other tool emits it) while still never clobbering a genuinely foreign file. | keep the narrow `session` sentinel (strands old installs) |
+| **Layer A — hook trust via build-probed `--dangerously-bypass-hook-trust`** | This customized Codex build (`codex-cli 0.142.5`) trust-gates hooks behind a launch modal Orchestra can't answer; the flag is the ONLY empirically-verified way to run untrusted hooks (A/B SessionStart-marker probe: flag → hook fires, `-c bypass_hook_trust` → inert; persisted trust is hash-keyed → config-seed fragile). Added to Codex `start`/`resume` argv, **build-probed** via `<bin> --help` so a stock `codex-rs` build (no gate, no flag) still launches — an unknown flag aborts launch (`exit 2`). Adapter-local — Claude unaffected. | config.toml `[hooks.state]` hash seed (fragile); `-c bypass_hook_trust=true` (inert) |
 
 ## Open questions — need your call
 

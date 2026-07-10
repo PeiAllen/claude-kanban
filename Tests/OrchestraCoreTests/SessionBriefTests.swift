@@ -95,6 +95,22 @@ struct CodexHooksTests {
         #expect(try String(contentsOfFile: dest, encoding: .utf8) == mine)   // untouched
     }
 
+    // Defect 1: a pre-change Orchestra install wired the RETIRED `_report --event orient` hook, which
+    // lacks the old narrow `_report --event session` sentinel — so it was mistaken for a foreign file and
+    // NEVER replaced, structurally preventing the current 3-hook file (incl. Stop) from installing. The
+    // broadened `_report --event` marker recognizes it as ours and replaces it.
+    @Test("a stale Orchestra file wired to the retired --event orient hook IS overwritten")
+    func overwritesRetiredOrient() throws {
+        let dest = tmp() + "/hooks.json"
+        let stale = #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event orient --agent codex"}]}]}}"#
+        try FileManager.default.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try stale.write(toFile: dest, atomically: true, encoding: .utf8)
+        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == true)   // recognized as ours → replaced
+        let got = try String(contentsOfFile: dest, encoding: .utf8)
+        #expect(got.contains("_report --event session"))   // now the current file
+        #expect(!got.contains("--event orient"))            // stale hook gone
+    }
+
     @Test("renderCodex substitutes the orchestra bin + agent id and emits the session command")
     func renderCodexSubstitutes() throws {
         let dest = tmp() + "/codex-hooks.json"

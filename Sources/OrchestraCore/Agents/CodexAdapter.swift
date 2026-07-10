@@ -22,10 +22,14 @@ public struct CodexAdapter: Adapter {
     /// Test injection (fake binary / isolated home) — never spawns real Codex.
     let binOverride: String?
     let codexHomeOverride: String?
+    /// Test injection for the hook-trust build-probe. `nil` ⇒ probe the real binary once (cached);
+    /// `true`/`false` ⇒ force the result (hermetic tests, no subprocess).
+    let hookTrustBypassOverride: Bool?
 
-    public init(binOverride: String? = nil, codexHome: String? = nil) {
+    public init(binOverride: String? = nil, codexHome: String? = nil, hookTrustBypass: Bool? = nil) {
         self.binOverride = binOverride
         self.codexHomeOverride = codexHome
+        self.hookTrustBypassOverride = hookTrustBypass
     }
 
     private var binary: String { binOverride ?? bin }
@@ -167,6 +171,56 @@ public struct CodexAdapter: Adapter {
         access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
     }
 
+    // Defect 2 · Codex hook-trust. This customized Codex build TRUST-GATES hooks behind a launch-time
+    // modal ("Hooks need review") Orchestra can't answer — so without intervention the Stop hook never
+    // runs and the durable inbox never drains ("Codex won't wake"). `--dangerously-bypass-hook-trust`
+    // establishes trust by construction: Orchestra AUTHORS the hooks (it owns CODEX_HOME + writes
+    // hooks.json), so trusting them is correct. Empirically it is the ONLY mechanism that runs untrusted
+    // hooks (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a config-seed
+    // is fragile). It is DANGEROUS only re: hook trust — it does NOT touch approvals/sandbox.
+    private var hookTrustFlags: [String] {
+        bypassHookTrustSupported ? ["--dangerously-bypass-hook-trust"] : []
+    }
+
+    /// Does the installed Codex build accept `--dangerously-bypass-hook-trust`? An unknown flag would
+    /// abort launch (`exit 2, unexpected argument`), so this is build-gated. The flag's presence exactly
+    /// tracks the trust gate's presence: this customized build has BOTH; a stock codex-rs build has
+    /// NEITHER — so probing the flag is the correct capability gate. Probed per binary via `--help`.
+    /// A launch that doesn't inject `hookTrustBypass:` and runs a bin whose `--help` can't complete
+    /// cleanly (absent bin, timeout) degrades to no-flag; only a definitive `exit 0` result is cached.
+    private var bypassHookTrustSupported: Bool {
+        if let forced = hookTrustBypassOverride { return forced }
+        return Self.probeBypassHookTrust(binary)
+    }
+
+    private static let probeLock = NSLock()
+    nonisolated(unsafe) private static var probeCache: [String: Bool] = [:]   // guarded by probeLock
+    /// Probe `<bin> --help` for the flag. CRITICAL: only cache a DEFINITIVE outcome — a `--help` that ran
+    /// to completion (`exit 0`, whose output we can trust to fully list flags; conventional for clap CLIs
+    /// and confirmed for codex-cli 0.142.5). A timeout (`Proc.run` returns a SIGTERM, non-zero exit — it
+    /// does NOT throw) or a spawn failure is TRANSIENT (cold first-exec under load, AV scan): return
+    /// `false` for this launch but DON'T cache it, so the next launch retries. Caching a transient `false`
+    /// would silently disable the flag for the whole daemon session → the exact non-delivery bug this
+    /// fixes. (A build whose `--help` exits non-zero would re-probe every launch and never cache — safe,
+    /// just not the target build.) The subprocess runs OUTSIDE the lock so a concurrent launch isn't
+    /// stalled up to 5s; two concurrent first-probes may both spawn and store the same idempotent value.
+    /// Stale on an in-place codex upgrade until daemon restart — acceptable; daemons restart on upgrade.
+    static func probeBypassHookTrust(_ bin: String) -> Bool {
+        probeLock.lock()
+        let cached = probeCache[bin]
+        probeLock.unlock()
+        if let cached { return cached }
+
+        guard let r = try? Proc.run([bin, "--help"], timeout: .seconds(5)), r.exitCode == 0 else {
+            return false   // transient/failed probe → no flag THIS launch, but NOT cached (retry next time)
+        }
+        let supported = (r.stdout + r.stderr).contains("--dangerously-bypass-hook-trust")
+        probeLock.lock()
+        probeCache[bin] = supported   // definitive → cache
+        probeLock.unlock()
+        return supported
+    }
+
     private func modelFlag(_ model: String?) -> [String] {
         guard let m = model, !m.isEmpty else { return [] }
         return ["-m", m]
@@ -174,6 +228,7 @@ public struct CodexAdapter: Adapter {
 
     public func start(_ ctx: AdapterContext) -> [String] {
         var argv = [binary]
+        argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
         if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
@@ -183,6 +238,7 @@ public struct CodexAdapter: Adapter {
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
         var argv = [binary, "resume", sid]
+        argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
         // F1: the folded seed (handoff ctx + pending inbox) rides the resume as its opening positional

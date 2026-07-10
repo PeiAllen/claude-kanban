@@ -11,9 +11,12 @@ import Foundation
 /// FOREIGN user hooks.json**. It writes only when the destination is absent or already Orchestra's
 /// (identified by the [[sentinel]] command). Best-effort: never throws into a launch path.
 public enum CodexHooks {
-    /// Marker identifying an Orchestra-rendered hooks file — the `orchestra _report` command no other
-    /// tool emits. (A pre-change file wired the retired `--event orient`; those are cleared, not migrated.)
-    public static let sentinel = "_report --event session"
+    /// Marker identifying an Orchestra-rendered hooks file: the `_report --event` command no other tool
+    /// emits. Matches ANY Orchestra event — `session`, `stop`, the retired `orient`, and any future one —
+    /// so a stale pre-change install (e.g. the retired `--event orient`) is recognized as OURS and
+    /// replaced by the current file, while a genuinely foreign hooks.json (no `_report --event` at all)
+    /// is still left untouched.
+    public static let sentinel = "_report --event"
 
     /// Install `content` (the rendered hooks JSON) at `dest`, unless `dest` already exists and is a
     /// foreign (non-Orchestra) hooks file. Returns `true` iff it wrote. Idempotent for our own file.
