@@ -57,17 +57,17 @@ enum BoardSnapshotSupport {
     static func serviceWithLiveCards(count: Int) async throws -> (service: OrchestraService, stub: StubSessions) {
         let (svc, sessions, repo, nilInfoId) = makeService()
         for i in 0..<count {
-            _ = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "card\(i)", repo: repo, branch: "b\(i)"))
+            _ = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "card\(i)", repo: repo, branch: "b\(i)"))
         }
         _ = try await TestEnv.spawnAndAwaitLive(
-            svc, SpawnInput(prompt: "nil-info", repo: repo, branch: "b-nilinfo", agentId: nilInfoId))
+            svc, SpawnInput(id: UUID(), prompt: "nil-info", repo: repo, branch: "b-nilinfo", agentId: nilInfoId))
         return (svc, sessions)
     }
 
     /// One live card (agent window) with exactly one shell window already open.
     static func liveCardWithShell() async throws -> (service: OrchestraService, stub: StubSessions, cardId: UUID) {
         let (svc, sessions, repo, _) = makeService()
-        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(prompt: "shell-card", repo: repo, branch: "b"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "shell-card", repo: repo, branch: "b"))
         _ = try await svc.openShell(card.id)
         return (svc, sessions, card.id)
     }
