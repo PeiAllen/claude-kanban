@@ -20,7 +20,16 @@ extension OrchestraService {
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
 
         for t in tasks {
-            if aliveNames.contains(sessions.sessionName(t.id)) { continue }   // daemon-crash no-op / still-running
+            let name = sessions.sessionName(t.id)
+            // A present session is only "still running" if its agent pane is actually live. A dead pane
+            // (remain-on-exit left over from a daemon restart INSIDE a spawn startup-grace, since
+            // `spawnPending` is in-memory and gone after the restart) would otherwise masquerade as alive
+            // forever — no retry, no classification. Treat it as gone: reap the stale session and recover
+            // normally (resume / restart / rebootUnrevived). Pane-check only the alive subset (bounded).
+            if aliveNames.contains(name), (try? sessions.agentPaneState(name)) != .dead {
+                continue   // daemon-crash no-op / still-running
+            }
+            if aliveNames.contains(name) { _ = try? sessions.kill(name) }   // reap the dead-pane remnant
             let id = t.id
             if isResumable(t) {
                 jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
@@ -270,8 +279,13 @@ extension OrchestraService {
         switch state {
         case .alive:
             guard Date() >= deadline else { return }   // still within grace — keep watching
-            try? await offActor { [sessions] in try? sessions.setRemainOnExit(name, window: "agent", on: false) }
-            clearSpawnPending(id)
+            // Graduate ONLY once remain-on-exit is confirmed OFF: otherwise a later mid-run crash would
+            // leave a dead pane in a still-present session and never be seen as `.sessionVanished`. If the
+            // toggle fails (tmux hiccup), stay pending and retry next tick — the card is alive, nothing lost.
+            let toggledOff = (try? await offActor { [sessions] () -> Bool in
+                try sessions.setRemainOnExit(name, window: "agent", on: false); return true
+            }) ?? false
+            if toggledOff { clearSpawnPending(id) }
         case .dead:
             await handleStartupAbort(t)
         case .gone:
@@ -296,11 +310,13 @@ extension OrchestraService {
             (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
         }).flatMap { Self.startupEvidence(from: $0) }
 
-        // The card may have been archived / killed / restarted / concluded during the capture await — stand
-        // down rather than resurrect it or fight an intentional teardown (requirement D). A fresh
+        // The card may have been archived / killed / restarted / concluded (done) during the capture await —
+        // stand down rather than resurrect it or fight an intentional teardown (requirement D). `.done`
+        // matters for a fast read-only/freeform child that reports task_complete mid-capture. A fresh
         // restart/resume already cleared `spawnPending`, so a nil entry also means "superseded".
         guard spawnPending[id] != nil,
-              let live = await store.get(id), !live.archived, live.status != .dead else {
+              let live = await store.get(id),
+              !live.archived, live.status != .dead, live.status != .done else {
             clearSpawnPending(id)
             return
         }

@@ -126,6 +126,86 @@ struct StartupAbortTests {
         #expect(after.deadReason == .agentExited)   // SessionEnd classification preserved, not overwritten
     }
 
+    /// (GPT-Blocker) Daemon restart INSIDE the grace: `spawnPending` is in-memory and lost, but the tmux
+    /// session survives with a dead pane (remain-on-exit). `recoverSessions` must NOT read that as alive —
+    /// it must reap the stale session and recover the card, never leave it wedged-alive-but-dead forever.
+    @Test("daemon restart during grace: a surviving dead-pane session is reaped + recovered, not wedged")
+    func daemonRestartInGraceNotWedged() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
+        await env.svc.clearSpawnPending(t.id)              // simulate the daemon restart losing in-memory pending
+
+        await env.svc.recoverSessions()                    // tmux session survived (still "alive" in the stub)
+
+        #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))   // stale dead-pane session reaped
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.status == .dead)                     // recovered (not resumable, non-provisional)…
+        #expect(after.deadReason == .rebootUnrevived)      // …NOT silently left running-but-dead
+    }
+
+    /// (GPT-Important B) If graduation's remain-on-exit→off toggle FAILS, the card must stay startup-pending
+    /// (not clear + wedge), so a later crash is still caught — otherwise a dead pane in a present session
+    /// would never be seen as vanished.
+    @Test("failed graduation toggle keeps the card pending so a later crash is still classified")
+    func failedGraduationTogglePreservesPending() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.failRemainOnExitOff = true            // graduation's toggle-off will throw
+
+        await env.svc.reconcileLiveness()                  // alive + past deadline → toggle fails → STAY pending
+        let mid = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(mid.status != .dead)                       // still healthy, not clobbered
+
+        env.sessions.setPaneDead(t.id)                     // the card later aborts/crashes while still watched
+        await env.svc.reconcileLiveness()
+
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        // Proof pending survived the failed toggle: the crash is classified, not masked as a live session.
+        #expect(after.status == .dead)
+        #expect(after.deadReason == .spawnExitedImmediately)
+    }
+
+    /// (GPT-Important C) A card concluded to `.done` DURING the capture await (a fast read-only/freeform
+    /// child reporting task_complete) must be left alone — not retried, not marked dead by the abort path.
+    @Test("card that turns .done during the capture await is not retried or marked dead")
+    func doneDuringCaptureLeftAlone() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.setPaneDead(t.id)
+        env.sessions.captureSleepMs = 200                  // widen the capture window
+        let ensureAfterSpawn = env.sessions.ensureCount
+
+        async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, suspends in capture
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))  // land inside the capture await
+        try await env.svc.report(t.id, StatusReport(status: .done))// card concludes mid-capture
+        await reconciled
+
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.status == .done)                     // preserved…
+        #expect(after.deadReason == nil)                   // …not marked dead
+        #expect(env.sessions.ensureCount == ensureAfterSpawn)      // …and not re-spawned
+    }
+
+    /// A `send` arriving during the startup grace is NOT swallowed (startup-pending is separate from
+    /// `recovering`, so wake gate A stays open) — it queues and is available for delivery.
+    @Test("a send during the startup grace is not dropped")
+    func sendDuringGraceNotDropped() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // stay pending across the send
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
+        try await env.svc.send(t.id, "hello during grace")
+        // A running card queues the send for its Stop-drain (gate B) — the point is it is NOT lost at gate A.
+        #expect(try await env.svc.inboxPeek(t.id).map(\.text) == ["hello during grace"])
+    }
+
     /// (v) Agent-agnostic: the SAME startup-abort classification runs for a Claude-shaped and a Codex-shaped
     /// adapter (capability profiles differ; the path does not). Proves there is no `if agent==…` branch.
     @Test("agent-agnostic: startup abort classified identically for Claude- and Codex-shaped adapters",

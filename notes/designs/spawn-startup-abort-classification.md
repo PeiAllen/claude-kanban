@@ -54,23 +54,27 @@ hook.
 `handleStartupAbort` holds `recovering` across its capture/relaunch suspensions (so a late SessionEnd
 for the exited agent — `report`'s death path gates on `!recovering` — can't race the classification) and
 NEVER inherits it (dropped on every exit, so the next reconcile can re-examine). After the capture
-`await` it re-validates the card (`spawnPending` still set, not archived, not dead) before relaunching, so
-a card the user archived/killed/restarted/concluded mid-grace is not resurrected (requirement D).
-`spawnPending` is cleared on: `markDead` (any death), `report`'s SessionEnd death, `resume`/`restart`
-(user supersede), and `archive`.
+`await` it re-validates the card (`spawnPending` still set, not archived, not **dead**, not **done**)
+before relaunching, so a card the user archived/killed/restarted, or a fast read-only child that concluded
+mid-capture, is not resurrected (requirement D). `spawnPending` is cleared on: `markDead` (any death),
+`report`'s SessionEnd death, `resume`/`restart` (user supersede), and `archive`.
 
-## Known limitations (accepted / for the convergence reconciler)
+**Graduation is toggle-gated.** A card graduates (drops `spawnPending`) ONLY once `setRemainOnExit(off)`
+is confirmed (the tmux verb now checks its exit status and throws on failure); if the toggle fails the
+card stays pending and retries next tick. Otherwise a stuck-ON remain-on-exit would leave a later mid-run
+crash as a dead pane in a present session that the generic vanish check (session-presence) never sees.
 
-- **Daemon restart inside the ≤`spawnGraceSeconds` window:** `spawnPending` is in-memory. If the daemon
-  restarts while a just-aborted card's dead-pane session is still present (remain-on-exit ON), the reboot
-  `recoverSessions` sees the session in `sessions.list()` and treats the card as alive — leaving it wedged
-  with a stuck remain-on-exit. Narrow (needs a restart within a few seconds of an abort). The
-  lifecycle-convergence reconciler (persisted phase) is the natural place to close this; until then a
-  user restart clears it.
-- **Residual `ensure`→arm race + `setRemainOnExit` failure:** `remain-on-exit` is armed the statement
-  after `ensure`, and best-effort (`try?`). An agent that exits in that sub-ms window (or a tmux hiccup
-  arming the option) tears the session down → `.gone` → falls back to the old `.sessionVanished` (no
-  evidence). Graceful degradation, not a regression; a true fix needs arming at session-creation time.
+**Daemon restart inside the grace is handled.** `spawnPending` is in-memory, so a restart within the grace
+loses it while the tmux session (with its dead pane, remain-on-exit ON) survives. `recoverSessions` now
+pane-checks the *alive* subset: a present-but-dead-pane session is reaped and the card recovered
+(resume / restart / rebootUnrevived) instead of being read as "still running" and wedged forever.
+
+## Known limitations (accepted)
+
+- **Residual `ensure`→arm race + `setRemainOnExit(on)` failure:** `remain-on-exit` is armed the statement
+  after `ensure`, and arming is best-effort (`try?`). An agent that exits in that sub-ms window (or a tmux
+  hiccup arming the option) tears the session down → `.gone` → falls back to the old `.sessionVanished`
+  (no evidence). Graceful degradation, not a regression; a true fix needs arming at session-creation time.
 
 ## Files
 

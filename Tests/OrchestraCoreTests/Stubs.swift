@@ -63,6 +63,8 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private var deadPanes: Set<String> = []       // sessions whose agent pane process exited (remain-on-exit)
     private var paneText: [String: String] = [:]  // canned capture-pane text per session (the "stderr")
     private(set) var remainOnExit: [String: Bool] = [:]
+    var captureSleepMs: UInt32 = 0                 // delay `capture` to open a race window in tests
+    var failRemainOnExitOff = false               // make `setRemainOnExit(on:false)` throw (tmux-hiccup sim)
 
     /// Simulate an immediate startup abort: the agent pane's process exited, but remain-on-exit keeps the
     /// session PRESENT with a dead pane (the exact state a real startup abort leaves behind).
@@ -74,6 +76,7 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); paneText[sessionName(id)] = text; lock.unlock()
     }
     func setRemainOnExit(_ name: String, window: String, on: Bool) throws {
+        if !on, failRemainOnExitOff { throw OrchestraError.io("stub: remain-on-exit off failed") }
         lock.lock(); remainOnExit[name] = on; lock.unlock()
     }
     func agentPaneState(_ name: String) throws -> PaneLiveness {
@@ -159,7 +162,8 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     }
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
-        lock.lock(); let canned = paneText[name]; lock.unlock()
+        lock.lock(); let canned = paneText[name]; let sleepMs = captureSleepMs; lock.unlock()
+        if sleepMs > 0 { usleep(sleepMs * 1000) }   // widen the capture window so a concurrent report can race
         let text = canned ?? "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }

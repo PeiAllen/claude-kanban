@@ -253,9 +253,11 @@ public struct SessionManager: Sendable {
         guard window == "agent" || Self.isValidShellWindowName(window) else {
             throw OrchestraError.invalidParams("invalid window name: \(window)")
         }
-        // A missing session/window isn't an error here — the caller just wants the option cleared/set
-        // best-effort; a real failure surfaces via the subsequent liveness read, not this toggle.
-        _ = try tmux(["set-option", "-w", "-t", "\(name):\(window)", "remain-on-exit", on ? "on" : "off"])
+        // Surface a genuine tmux failure (non-zero exit) so a caller that MUST know the option took —
+        // graduation turning remain-on-exit back OFF — can stay pending and retry rather than silently
+        // leaving a dead pane undetectable on a later crash.
+        let r = try tmux(["set-option", "-w", "-t", "\(name):\(window)", "remain-on-exit", on ? "on" : "off"])
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux set-option remain-on-exit failed" : r.stderr) }
     }
 
     /// Liveness of the `agent` pane. `.gone` when the session is absent; otherwise `.dead` iff the pane's
