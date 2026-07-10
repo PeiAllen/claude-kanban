@@ -711,6 +711,7 @@ public actor OrchestraService {
             }
         }
         try? sessions.kill(sessions.sessionName(id))
+        clearSpawnPending(id)   // an archived card is never startup-pending — don't let a retry resurrect it
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
             case .worktree:

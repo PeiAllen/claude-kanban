@@ -28,6 +28,7 @@ extension OrchestraService {
                     task.status = .dead
                     task.deadReason = .agentExited
                     task.deadDetail = "agent exited (\(reason))"
+                    clearSpawnPending(id)   // a card that died via SessionEnd is no longer startup-pending
                 }
             }
 

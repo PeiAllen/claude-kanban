@@ -62,6 +62,7 @@ extension OrchestraService {
         // SessionEnd from the killed process (and the poll's liveness reconcile) is ignored mid-revival
         // — both gate on `!recovering.contains(id)`. Do not narrow this window.
         recovering.insert(id)
+        clearSpawnPending(id)   // a user-driven resume supersedes any in-flight spawn startup-watch
         var keepRecoveringAfterReturn = false
         defer { if !keepRecoveringAfterReturn { recovering.remove(id) } }
         // Start clean: drop any confirmation left over from a prior attempt so only THIS relaunch's
@@ -148,6 +149,7 @@ extension OrchestraService {
         let adapter = try registry.get(task.agentId)
 
         recovering.insert(id)
+        clearSpawnPending(id)   // a user-driven restart supersedes any in-flight spawn startup-watch
         // On the error path, release immediately; on success we hand off to a delayed release (below) so
         // the killed old process's stale SessionEnd is absorbed during a grace window.
         var launched = false
@@ -284,9 +286,24 @@ extension OrchestraService {
     private func handleStartupAbort(_ t: Task) async {
         let id = t.id
         let name = sessions.sessionName(id)
+        // Own this card's outcome across the capture/relaunch suspensions: hold `recovering` so a late
+        // SessionEnd for the just-exited agent (report's death path gates on `!recovering`) can't race our
+        // classification, and NEVER inherit it (drop it on every exit) so the next reconcile can re-examine.
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+
         let evidence = (try? await offActor { [sessions] in
             (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
         }).flatMap { Self.startupEvidence(from: $0) }
+
+        // The card may have been archived / killed / restarted / concluded during the capture await — stand
+        // down rather than resurrect it or fight an intentional teardown (requirement D). A fresh
+        // restart/resume already cleared `spawnPending`, so a nil entry also means "superseded".
+        guard spawnPending[id] != nil,
+              let live = await store.get(id), !live.archived, live.status != .dead else {
+            clearSpawnPending(id)
+            return
+        }
 
         let attempt = spawnAttempts[id] ?? 0
         if attempt < maxStartupRetries,

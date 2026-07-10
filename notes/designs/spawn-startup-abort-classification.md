@@ -49,6 +49,29 @@ because `ConfigStore.load` falls back to all-defaults on any decode failure — 
 would silently reset every user setting on an old config.json. `setStartupConfirmation(_:_:)` is the test
 hook.
 
+## Reentrancy / lifecycle safety
+
+`handleStartupAbort` holds `recovering` across its capture/relaunch suspensions (so a late SessionEnd
+for the exited agent — `report`'s death path gates on `!recovering` — can't race the classification) and
+NEVER inherits it (dropped on every exit, so the next reconcile can re-examine). After the capture
+`await` it re-validates the card (`spawnPending` still set, not archived, not dead) before relaunching, so
+a card the user archived/killed/restarted/concluded mid-grace is not resurrected (requirement D).
+`spawnPending` is cleared on: `markDead` (any death), `report`'s SessionEnd death, `resume`/`restart`
+(user supersede), and `archive`.
+
+## Known limitations (accepted / for the convergence reconciler)
+
+- **Daemon restart inside the ≤`spawnGraceSeconds` window:** `spawnPending` is in-memory. If the daemon
+  restarts while a just-aborted card's dead-pane session is still present (remain-on-exit ON), the reboot
+  `recoverSessions` sees the session in `sessions.list()` and treats the card as alive — leaving it wedged
+  with a stuck remain-on-exit. Narrow (needs a restart within a few seconds of an abort). The
+  lifecycle-convergence reconciler (persisted phase) is the natural place to close this; until then a
+  user restart clears it.
+- **Residual `ensure`→arm race + `setRemainOnExit` failure:** `remain-on-exit` is armed the statement
+  after `ensure`, and best-effort (`try?`). An agent that exits in that sub-ms window (or a tmux hiccup
+  arming the option) tears the session down → `.gone` → falls back to the old `.sessionVanished` (no
+  evidence). Graceful degradation, not a regression; a true fix needs arming at session-creation time.
+
 ## Files
 
 `Model.swift` (enum), `Protocols.swift` (`PaneLiveness` + `SessionManaging` additions w/ defaults),

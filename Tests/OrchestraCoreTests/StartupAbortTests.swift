@@ -90,6 +90,42 @@ struct StartupAbortTests {
         #expect(after.deadDetail?.contains("unauthorized") == true)
     }
 
+    /// (vi) Don't fight a kill: a card ARCHIVED while startup-pending is not resurrected by a later retry.
+    @Test("archive during startup grace clears pending → no resurrecting re-spawn")
+    func archiveDuringGraceNotResurrected() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        env.sessions.setPaneDead(t.id)
+        let ensureAfterSpawn = env.sessions.ensureCount
+
+        try await env.svc.archive(t.id)                    // user archives the card (kills session, clears pending)
+        await env.svc.reconcileLiveness()                  // must NOT retry/re-ensure an archived card
+
+        #expect(env.sessions.ensureCount == ensureAfterSpawn)   // no resurrecting launch
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.archived == true)
+    }
+
+    /// (vii) A SessionEnd death while startup-pending wins + clears pending → no retry resurrects it.
+    @Test("SessionEnd death during startup grace clears pending → stays dead(agentExited), no retry")
+    func sessionEndDuringGraceStaysDead() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let ensureAfterSpawn = env.sessions.ensureCount
+
+        try await env.svc.report(t.id, StatusReport(endReason: "exit"))   // genuine SessionEnd → dead(agentExited)
+        await env.svc.reconcileLiveness()                                 // must NOT re-spawn the dead card
+
+        #expect(env.sessions.ensureCount == ensureAfterSpawn)
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.status == .dead)
+        #expect(after.deadReason == .agentExited)   // SessionEnd classification preserved, not overwritten
+    }
+
     /// (v) Agent-agnostic: the SAME startup-abort classification runs for a Claude-shaped and a Codex-shaped
     /// adapter (capability profiles differ; the path does not). Proves there is no `if agent==…` branch.
     @Test("agent-agnostic: startup abort classified identically for Claude- and Codex-shaped adapters",
