@@ -233,6 +233,12 @@ public actor OrchestraService {
         for cont in subscribers.values { cont.yield(envelope) }
     }
 
+    /// Flush any debounced telemetry `tasks.json` write before the daemon exits (SIGTERM path). Makes a
+    /// clean restart lossless — the on-disk `rev` catches up to the in-memory `rev` (bug #13 debounce).
+    public func flushBeforeShutdown() async {
+        await store.flushPendingWrites()
+    }
+
     /// Ephemeral: stamps the current board rev via the `lastRev` mirror (ephemeral events never bump
     /// the store's rev, so the last task-state rev IS the current board rev).
     func emitActivity(_ kind: ActivityKind, _ task: Task?, _ source: ActivitySource, _ text: String) {
