@@ -29,7 +29,7 @@ struct CardDetailView: View {
         Group {
             if let task {
                 VStack(spacing: 0) {
-                    CardDetailHeader(task: task)
+                    CardDetailHeader(task: task, connection: model.connectionState)
                     CardTabBar(selection: $tab)
                     Divider().overlay(theme.hair)
                     tabBody(task)

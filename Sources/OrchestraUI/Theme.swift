@@ -141,19 +141,9 @@ extension Theme {
         case .dead:                           return red
         }
     }
-    /// Typed convenience over the string form — the one place `phaseDisplay → label` lives.
-    public func statusLabel(_ key: PhaseDisplayKey) -> String {
-        switch key {
-        case .starting:        return "Starting"
-        case .launching:       return "Launching"
-        case .relaunching:     return "Relaunching"
-        case .running:         return "Running"
-        case .idle:            return "Waiting"
-        case .needsPermission: return "Waiting"
-        case .dead:            return "Dead"
-        case .done:            return "Done"
-        }
-    }
+    /// Typed convenience over the string form — delegates to `PhaseDisplayKey.label`, the ONE place
+    /// `phaseDisplay → label` text lives (shared by the GUI, the CLI, and `DisplayState.label`).
+    public func statusLabel(_ key: PhaseDisplayKey) -> String { key.label }
 }
 
 // MARK: - Fonts

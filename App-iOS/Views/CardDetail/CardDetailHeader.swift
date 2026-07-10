@@ -8,9 +8,11 @@ import OrchestraUI
 /// tick as the daemon streams events.
 struct CardDetailHeader: View {
     let task: Task
+    let connection: ConnectionState
     @Environment(\.theme) private var theme: Theme
 
-    private var sem: SemColor { theme.statusColor(task.phaseDisplay) }
+    private var ds: DisplayState { displayState(phase: task.phase, connection: connection) }
+    private var sem: SemColor { theme.statusColor(ds.statusKey) }
     private var isLive: Bool { if case .live = task.phase { return true } else { return false } }
 
     var body: some View {
@@ -22,7 +24,7 @@ struct CardDetailHeader: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                DetailStatusPill(status: task.phaseDisplay, sem: sem, updatedAt: task.updatedAt, live: isLive)
+                DetailStatusPill(status: ds.statusKey, label: ds.label, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
 
             HStack(spacing: 8) {
@@ -56,6 +58,7 @@ struct CardDetailHeader: View {
 /// Status pill matching the board cell's language, scaled up a touch for the header.
 private struct DetailStatusPill: View {
     let status: PhaseDisplayKey
+    let label: String
     let sem: SemColor
     let updatedAt: Date
     let live: Bool
@@ -78,7 +81,6 @@ private struct DetailStatusPill: View {
         .background(Capsule().fill(sem.tint))
         .fixedSize()
     }
-    private var label: String { theme.statusLabel(status) }
 }
 
 /// The model handle as a display chip (family-accented). Model *switching* is not a shipped RPC, so this

@@ -20,6 +20,8 @@ struct InfoTab: View {
     @State private var confirmArchive = false
     @State private var copied: String?   // transient "Copied ✓" feedback keyed by which row
 
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
+
     var body: some View {
         List {
             metadataSection
@@ -86,14 +88,15 @@ struct InfoTab: View {
 
     private var actionsSection: some View {
         Section {
-            // Restart session — a fresh agent session (clears context). Direct, with feedback.
+            // Restart session — a fresh agent session (clears context). `model.restart` already toasts
+            // truthfully on both success and failure, so this is the single signal — no local optimistic
+            // flash here (that was dishonest: it fired unconditionally, before the RPC even resolved).
             Button {
                 _Concurrency.Task { await model.restart(task.id) }
-                flash("restart")
             } label: {
-                actionLabel(copied == "restart" ? "Started a new session" : "Restart session",
-                            systemImage: "arrow.clockwise", tint: theme.text)
+                actionLabel("Restart session", systemImage: "arrow.clockwise", tint: theme.text)
             }
+            .disabled(!ds.validActions.contains(.restart))
 
             // Copy branch name — the injected iOS clipboard.
             if task.origin == .worktree {
@@ -135,6 +138,7 @@ struct InfoTab: View {
             } label: {
                 actionLabel("Archive", systemImage: "archivebox", tint: theme.red.text)
             }
+            .disabled(!ds.validActions.contains(.archive))
         } footer: {
             Text("Hand off · Fork · Fan-out are agent/CLI moves, not surfaced here. Viewing changes is the Diff tab.")
         }

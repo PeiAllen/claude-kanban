@@ -22,7 +22,6 @@ struct AgentTakeoverView: View {
 
     @EnvironmentObject private var model: BoardModel
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.theme) private var theme: Theme
     @StateObject private var control = TerminalControl()
     @StateObject private var controller: TakeoverController
 
@@ -90,9 +89,10 @@ struct AgentTakeoverView: View {
                     Text("·").foregroundStyle(.white.opacity(0.3))
                     Circle().fill(connectionColor).frame(width: 6, height: 6)
                     Text(connectionLabel).foregroundStyle(.white.opacity(0.6))
-                    if let s = card?.phaseDisplay {
+                    if let phase = card?.phase {
                         Text("·").foregroundStyle(.white.opacity(0.3))
-                        Text(theme.statusLabel(s)).foregroundStyle(.white.opacity(0.6))
+                        Text(displayState(phase: phase, connection: model.connectionState).label)
+                            .foregroundStyle(.white.opacity(0.6))
                     }
                 }
                 .font(.caption2)

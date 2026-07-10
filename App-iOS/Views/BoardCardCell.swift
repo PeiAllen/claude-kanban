@@ -12,7 +12,8 @@ struct BoardCardCell: View {
     @Environment(\.theme) private var theme: Theme
 
     private var isFreeform: Bool { task.origin != .worktree }
-    private var sem: SemColor { theme.statusColor(task.phaseDisplay) }
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
+    private var sem: SemColor { theme.statusColor(ds.statusKey) }
     private var isLive: Bool { if case .live = task.phase { return true } else { return false } }
 
     var body: some View {
@@ -46,7 +47,7 @@ struct BoardCardCell: View {
             }
         }
         .shadow(color: theme.shadowCard, radius: 3, x: 0, y: 1)
-        .opacity(task.phaseDisplay == .dead ? 0.72 : 1)
+        .opacity((task.phaseDisplay == .dead || ds.isStale) ? 0.72 : 1)
     }
 
     // MARK: header — status pill (worktree) or mode chip + read-only (freeform)
@@ -57,7 +58,7 @@ struct BoardCardCell: View {
                 ModeChip(origin: task.origin)
                 if task.access == .readOnly { ReadOnlyBadge() }
             } else {
-                StatusPill(status: task.phaseDisplay, sem: sem, updatedAt: task.updatedAt, live: isLive)
+                StatusPill(status: ds.statusKey, label: ds.label, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
             Spacer(minLength: 4)
             if isFreeform {
@@ -177,6 +178,7 @@ private func abbreviatedPath(_ path: String) -> String {
 
 private struct StatusPill: View {
     let status: PhaseDisplayKey
+    let label: String
     let sem: SemColor
     let updatedAt: Date
     let live: Bool
@@ -199,7 +201,6 @@ private struct StatusPill: View {
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(sem.tint))
     }
-    private var label: String { theme.statusLabel(status) }
 }
 
 /// A breathing pulse dot while the card is live (running/waiting), static otherwise.
