@@ -25,8 +25,22 @@ struct TmuxAttachTests {
         #expect(script == """
         tmux -L 'orchestra' new-session -d -s 'orchestra-abc__agent' -t 'orchestra-abc' 2>/dev/null
         tmux -L 'orchestra' select-window -t 'orchestra-abc__agent:agent' 2>/dev/null
-        exec tmux -L 'orchestra' attach -t 'orchestra-abc__agent'
+        exec tmux -L 'orchestra' attach -t 'orchestra-abc__agent:agent'
         """)
+    }
+
+    @Test("attach targets the WINDOW, not just the view session, so a shell can never land on the agent")
+    func attachTargetsTheWindowNotJustTheSession() {
+        // A freshly grouped view session (`new-session -t base`) inherits the BASE session's *current*
+        // window — which is normally the `agent` window (verified empirically). The `select-window` step
+        // moves it, but it is best-effort (`2>/dev/null`); if it is ever skipped/fails, attaching to the
+        // bare view session would show the LIVE agent's Claude CLI inside a "shell" tab. Targeting the
+        // window in the attach itself pins it at attach time, and if the window is gone the attach errors
+        // (blank pane) rather than silently falling through to the agent.
+        let shell = TmuxAttach.attachScript(socket: "orchestra", session: "orchestra-abc", window: "shell-1")
+        #expect(shell.hasSuffix("attach -t 'orchestra-abc__shell-1:shell-1'"))
+        #expect(!shell.contains("attach -t 'orchestra-abc__shell-1'\n"))
+        #expect(!shell.hasSuffix("attach -t 'orchestra-abc__shell-1'"))
     }
 
     @Test("takeover inserts a detach-client before the attach")
@@ -37,7 +51,7 @@ struct TmuxAttachTests {
         tmux -L 'orchestra' new-session -d -s 'orchestra-abc__agent' -t 'orchestra-abc' 2>/dev/null
         tmux -L 'orchestra' select-window -t 'orchestra-abc__agent:agent' 2>/dev/null
         tmux -L 'orchestra' detach-client -s 'orchestra-abc__agent' 2>/dev/null
-        exec tmux -L 'orchestra' attach -t 'orchestra-abc__agent'
+        exec tmux -L 'orchestra' attach -t 'orchestra-abc__agent:agent'
         """)
     }
 
