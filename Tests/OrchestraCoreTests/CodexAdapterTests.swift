@@ -162,6 +162,40 @@ struct CodexAdapterArgvTests {
         let a = CodexAdapter(codexHome: "/tmp/ch")
         #expect(a.env["CODEX_HOME"] == "/tmp/ch")
     }
+
+    // Defect 2 · hook-trust. This customized Codex build TRUST-GATES hooks behind a launch modal Orchestra
+    // can't answer → the Stop hook never runs → the inbox never drains. `--dangerously-bypass-hook-trust`
+    // establishes trust by construction (Orchestra AUTHORS the hooks). It is the ONLY empirically-verified
+    // mechanism (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a
+    // config-seed is fragile). Build-gated so a stock codex-rs build (no gate, no flag) still launches;
+    // `hookTrustBypass:` injects the probe result for hermetic tests.
+    @Test("start/resume carry --dangerously-bypass-hook-trust when the build supports it")
+    func hookTrustBypassPresentWhenSupported() throws {
+        let a = CodexAdapter(binOverride: "codex", hookTrustBypass: true)
+        let start = a.start(AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go"))
+        #expect(start.contains("--dangerously-bypass-hook-trust"))
+        #expect(start.last == "go")                            // positional prompt still last
+        let resume = try #require(a.resume(AdapterContext(cwd: "/wt", sessionId: "sess-9", seed: "drain")))
+        #expect(resume.contains("--dangerously-bypass-hook-trust"))
+        #expect(adjacent(resume, "resume", "sess-9"))          // flag must NOT split `resume <sid>`
+        #expect(resume.last == "drain")                        // folded seed still last
+    }
+
+    @Test("start/resume OMIT the flag on a build that lacks it (graceful degradation)")
+    func hookTrustBypassAbsentWhenUnsupported() throws {
+        let a = CodexAdapter(binOverride: "codex", hookTrustBypass: false)
+        #expect(!a.start(AdapterContext(cwd: "/wt", prompt: "go")).contains("--dangerously-bypass-hook-trust"))
+        let resume = try #require(a.resume(AdapterContext(cwd: "/wt", sessionId: "sess-9")))
+        #expect(!resume.contains("--dangerously-bypass-hook-trust"))
+    }
+
+    @Test("the hook-trust flag is Codex-local: Claude's argv never carries it")
+    func claudeUnaffectedByHookTrust() {
+        let claude = ClaudeCodeAdapter()
+        #expect(!claude.start(AdapterContext(cwd: "/wt", prompt: "go")).contains("--dangerously-bypass-hook-trust"))
+        let r = claude.resume(AdapterContext(cwd: "/wt", sessionId: "abc")) ?? []
+        #expect(!r.contains("--dangerously-bypass-hook-trust"))
+    }
 }
 
 @Suite("CodexAdapter — rollout session-id discovery")
