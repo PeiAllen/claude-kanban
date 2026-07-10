@@ -32,7 +32,7 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | Runner | `swift test` (swift-testing / XCTest, existing targets) |
 | Race/crash seams | `Tests/OrchestraCoreTests/Stubs.swift` extended with `blockEnsure` / `ensureSleepMs` / `isAlive` / `removed` / `killed` / `ensureArgv` recorders |
 | Async settling | `spawnAndAwaitLive` helper (poll store until `phase == .live`, ~3s cap); E2E polls `sessions <id> --json` for the `:agent` window (~15s cap) |
-| Fixtures | Pre-upgrade `tasks.json` (incl. dirty worktree); ~28k-file slow repo (~9s checkout) |
+| Fixtures | Pre-upgrade `tasks.json` (incl. dirty worktree); ~12k-file slow repo (multi-second checkout — as-built; see Decisions) |
 
 ## Unit tests (per L2 contract)
 
@@ -92,7 +92,7 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 - **Dirty-tree half of that fixture:** a dirty marker-less worktree that must survive byte-intact.
 - **Stub seams:** blockable `ensure` (spawn-returns-early + mid-checkout races), sleep-injecting
   session stubs, kill-at-step hooks, argv/removal/kill recorders.
-- **Slow-repo fixture:** ~28k files, scripted generation, both agents.
+- **Slow-repo fixture:** ~12k files (as-built — see Decisions; 28k was too slow to generate), scripted generation via a single `awk` pass, both agents.
 
 ## Coverage map
 
@@ -154,6 +154,8 @@ flowchart LR
 | **PR6a Task 6.3: `test_subscribeSuccessFiresOnReconnect` is the break-first regression guard** — subscribe answered → `onReconnect` fires under `callTimeout`; empirically FAILS on a semaphore-bridged reconnect (reader parked → ack unread → deadline-fail) and PASSES on break-first (~0.5 s) | A reader-parking reconnect bridge deadlocks; this positive-path test discriminates it, where the failure-only test (`test_subscribeFailureDoesNotFireOnReconnect`, asserts only "onReconnect not fired") would pass on the broken bridge | Only the failure-path test (masks the deadlock) |
 | **PR6a Task 6.3: `test_forwardGapDoesNotResync` is a documented STRUCTURAL guard** — asserts the event applies through with no fetch; `apply(_ env:)` has no resync branch so it can't fail on the impl | Encodes the sparse-rev contract ("never resync on a bare forward gap") as an intent marker; a behavioral version would need a client-fetch spy BoardStore has no seam for | A behavioral resync-count assertion (no injection seam) |
 | **PR6a Task 6.3 × PR5: `test_snapshotReseatsCursorDownward`** — apply rev 20, `adoptSnapshotRev(8)` (post-crash lower snapshot), then a rev-9 event must APPLY (not be dropped by the old cursor) | Guards the cross-PR interaction with PR5's telemetry debounce (on-disk rev can lag → crash reloads below an observed rev); the test fails if `adoptSnapshotRev` ever `max`es with the old baseline or keeps the per-card map | Only the upward-reseat test (`test_revGapTriggersResync`) — wouldn't catch a stale-higher cursor after a crash-reload |
+| **PR7: slow-repo E2E non-frozen proof is PHASE ORDERING, not a wall-clock latency sample** — a concurrently-spawned fast BORROWED card `c` must reach `.live` while both same-branch worktree cards are still `.creatingWorktree`; if the service actor were frozen by an on-actor `git worktree add`, the reconciler could not advance `c` | A timed `list()` sample during the checkout is either vacuous (races ahead of the checkout, or lands post-checkout in `.launching`) or flaky (a tight frozen-actor inequality trips under CI/PTY load) — GPT-5.5 review blocked the timing variant twice; phase ordering discriminates the bug with a wide, non-flaky ~0.8s-vs-multi-second margin (see [[e2e-non-frozen-actor-smoke-design]] pattern) | The wall-clock latency-sample approach; a `scratch` card (leaks under real `~/.orchestra/scratch` → full-suite flake) — borrowed dir under `base` instead |
+| **PR7: slow-repo fixture default is 12k files (not 28k), generated via a single `awk` pass** — 12k already yields a multi-second `git worktree add` (~4-10s), far above the ~0.8s a borrowed card needs to overtake it, while keeping generation cheap; `awk` avoids a per-file subprocess fork | 28k made generation ~80s × 2 agent cases (~160s) — violates the "generation stays cheap" constraint for no added coverage (checkout only needs to outlast `c`'s launch) | 28k default; a plain bash file-writing loop |
 
 ## Open questions — need your call
 

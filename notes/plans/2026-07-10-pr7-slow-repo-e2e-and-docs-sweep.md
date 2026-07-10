@@ -1,5 +1,11 @@
 # PR7 — Slow-repo E2E fixture (both agents) + final docs coherence sweep
 
+> **AS-BUILT NOTE (2026-07-10):** the fixture default shipped at **12k files**, not the **28k** written
+> throughout this plan — 12k already yields a multi-second `git worktree add` (~4-10s), far above the
+> ~0.8s a borrowed card needs to overtake it, while keeping generation cheap (28k was ~80s × 2 agent
+> cases). Generation uses a single `awk` pass. Wherever this plan says "~28k", read the 12k as-built
+> value. The deviation is recorded in `notes/designs/lifecycle-convergence/04-tests.md` (Decisions made).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add one end-to-end **smoke** test (`test_slowRepoSpawn`, run for **both** claude-code and codex) that exercises the shipped lifecycle-convergence machinery over a real git checkout + real tmux, and reconcile `docs/` (the project SSOT) so it is internally consistent and matches the shipped code after PR1–PR6b.

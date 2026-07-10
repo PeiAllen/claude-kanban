@@ -1,6 +1,6 @@
 #!/bin/bash
 # gen-slow-repo.sh — generate a large git repo whose `git worktree add` checkout takes multiple seconds.
-# Usage: gen-slow-repo.sh <repo-dir> [file-count]   (default 28000)
+# Usage: gen-slow-repo.sh <repo-dir> [file-count]   (default 12000; the Swift caller always passes one)
 # Files are tiny and spread across nested dirs so file COUNT (not size) drives checkout time. The repo is
 # generated fresh at test setup and torn down after — it is never committed to THIS repository.
 #
@@ -9,7 +9,7 @@
 # by inode creation + git hashing, so the count is chosen to bound total setup time).
 set -euo pipefail
 repo="${1:?repo dir required}"
-count="${2:-28000}"
+count="${2:-12000}"
 per_dir=200                                   # files per leaf dir → count/200 dirs
 
 mkdir -p "$repo"

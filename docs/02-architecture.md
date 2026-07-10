@@ -365,10 +365,13 @@ Spawning a card from the CLI:
    source:"cli"}` and writes it to the socket.
 2. `ControlServer` decodes it, finds `spawn` in the registry, and calls
    `OrchestraService.spawn(input, source:.cli)`.
-3. `OrchestraService` resolves and allowlists the repo, asks `WorktreeManager` to cut the worktree,
-   asks `AgentRegistry` for the Claude adapter, builds the launch argv, and asks `SessionManager` to
-   create the tmux session running that argv. It persists the new `Task` via `TaskStore` and emits a
-   `taskUpserted` event plus a `spawned` activity item.
+3. `OrchestraService.spawn` is **intent-only**: it resolves and allowlists the repo, persists the new
+   `Task` at `phase = .creatingWorktree` (the cwd path is computed, but no worktree is cut yet) via the
+   `transition()` funnel + `TaskStore`, emits a `taskUpserted` event plus a `spawned` activity item, and
+   **returns immediately**. The reconciler then converges the card: `MaterializeStepper` asks
+   `WorktreeRegistry` to cut/join the worktree (`→ .launching`), and `LaunchStepper` derives the launch
+   flavor, builds the argv, and asks `SessionManager` to create the tmux session; on the readiness signal
+   (or the N-tick fallback) the card reaches `.live`.
 4. `ControlServer` returns the new task to the CLI and fans the events out to every subscriber — so the
    app's board updates live, even though the spawn came from the CLI.
 5. The agent starts, its `SessionStart`/statusLine hooks fire, and `_report` begins pushing live state

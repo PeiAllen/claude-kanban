@@ -532,11 +532,14 @@ of being marked dead.
 
 ### The recovery primitives
 
-- **Startup sweep — `recoverSessions()`.** For every non-terminal card whose tmux session is *not* alive:
-  resume it if it has a tracked `agentSessionId` + an on-disk transcript (throttled to
-  `maxConcurrentRevivals`, default 4, in flight); relaunch a **blank** session via `restart()` if it was
-  never prompted / freshly restarted; otherwise mark it **`.dead(.rebootUnrevived)`**. Idempotent — a card
-  whose session is still alive (daemon-only crash) is left untouched.
+- **Startup reconciliation — `reconcilePhasesAtBoot()`.** For every `.live` card at boot, adopt its
+  surviving tmux session **only on epoch identity** (`sessionEpoch` matches the session's stamped
+  `ORCH_EPOCH` — a daemon-only crash); a stale/mismatched epoch means the session isn't ours, so the card
+  is driven `→ .relaunching` to reclaim identity. Transitional (`creatingWorktree`/`launching`/
+  `relaunching`/`archivedPending`) and dead cards are left for the reconcile **tick**, which re-drives
+  them through the phase-keyed steppers (Materialize / Launch / Relaunch / Teardown) — a launch derives
+  `resume`-vs-blank via `deriveLaunchFlavor`, and an unrevivable card lands `.dead(.rebootUnrevived)`.
+  Idempotent — a `.live` card whose session is still alive at the matching epoch is left untouched.
 - **`resume(id, graceSeconds, seed:)`.** Enters `.relaunching` through the funnel (which bumps the
   generation — the atomic **generation claim** — and clears dead metadata in the same patch), kills +
   re-`ensure`s the session **off-actor**, inline-confirms readiness, then finalizes `→ .live` **epoch-fenced**

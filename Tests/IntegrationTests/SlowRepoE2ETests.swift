@@ -123,21 +123,26 @@ final class SlowRepoE2ETests {
         try FileManager.default.createDirectory(atPath: cDir, withIntermediateDirectories: true)
         let c = try await service.spawn(SpawnInput(id: UUID(), prompt: "z", agentId: agentId, cwd: cDir))
 
-        var sawBeingBorn = false
+        // Record each slow card's OBSERVED phases across the walk. `.creatingWorktree` is already asserted
+        // at spawn (lines above) and `.live` is asserted below; the missing link is `.launching`, so we
+        // assert each slow card is actually SEEN in `.launching` — otherwise "phase walk" would be vacuous
+        // (it would pass having only ever observed the two endpoints). `.launching` lasts ≥ the N=3
+        // readiness fallback (~600ms = 3 reconcile ticks before `→ live`), so a 200ms poll reliably samples
+        // it — it cannot be skipped between two polls.
+        var observed: [UUID: Set<Phase.Kind>] = [a.id: [], b.id: []]
         var overtook = false                                     // c reached .live while BOTH A and B still creating
         for _ in 0..<100 {                                       // 100 × 200ms = 20s cap
             let cards = await service.list(includeArchived: true)
             func phase(_ id: UUID) -> Phase.Kind? { cards.first { $0.id == id }?.phase.kind }
-            if [a.id, b.id].contains(where: { phase($0) == .creatingWorktree || phase($0) == .launching }) {
-                sawBeingBorn = true                              // Stage 2 being-born phases observed
-            }
+            for id in [a.id, b.id] { if let k = phase(id) { observed[id, default: []].insert(k) } }
             if phase(c.id) == .live && phase(a.id) == .creatingWorktree && phase(b.id) == .creatingWorktree {
                 overtook = true                                 // fast card advanced during the slow checkout
             }
             if [a.id, b.id].filter({ phase($0) == .live }).count == 2 { break }
             try await _Concurrency.Task.sleep(for: .milliseconds(200))
         }
-        #expect(sawBeingBorn)                                     // Stage 2 phase walk observed
+        // Stage 2: the full `creatingWorktree → launching → live` walk — each slow card observed IN `.launching`.
+        for id in [a.id, b.id] { #expect(observed[id]?.contains(.launching) == true) }
         #expect(overtook)                                        // Stages 4-5: service actor stayed responsive during the checkout
 
         let final = await service.list(includeArchived: true).filter { $0.id == a.id || $0.id == b.id }

@@ -85,11 +85,13 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
 - **`archive` cleans up by origin.** Worktree: `git worktree remove` (kept if dirty, and only if no
   other live worktree card shares it). Scratch: unconditional `rm -rf` (double-gated). Borrowed: nothing
   is deleted.
-- **`reopen` is the inverse — recreate the run dir, then revive.** Archive is no longer terminal:
-  `reopen` re-`ensure`s the worktree (the archive kept its branch) or re-`mkdir`s the scratch dir,
-  unarchives the card back to its original column, then reuses the existing `resume`/`restart`
-  recovery primitives — a *resume* when the transcript survived, else a blank *restart*. Agent-agnostic
-  (no adapter-specific code) and idempotent. See [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
+- **`reopen` is the inverse — record the reopen intent, then let the reconciler revive.** Archive is no
+  longer terminal: `reopen` transitions the card `→ .creatingWorktree` through the funnel (unarchiving it
+  back to its original column and clearing dead metadata) and returns; the reconciler's steppers then
+  re-materialize the run dir (re-`ensure` the worktree — the archive kept its branch — or re-`mkdir` the
+  scratch dir) and relaunch, with `deriveLaunchFlavor` choosing a *resume* when the transcript survived
+  (`isResumable`) else a blank launch. Agent-agnostic (no adapter-specific code) and idempotent. See
+  [recovery, resume, and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart).
 - **`exec` vs `shell`.** `exec` is a one-shot non-interactive command with a captured result; `shell`
   opens an interactive window you attach a terminal to. `inspect` is `shell` + a read-only agent.
 - **`send` is durable, not keystrokes.** As of C1 (F3), `send` enqueues to the card's persistent
