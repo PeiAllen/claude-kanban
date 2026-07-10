@@ -182,7 +182,16 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); let ws = shellWins[name] ?? []; lock.unlock()
         return [t("agent", .agent)] + ws.map { t($0, .shell) }
     }
-    func list() throws -> [SessionInfo] { lock.lock(); defer { lock.unlock() }; return alive.map { SessionInfo(name: $0, running: true) } }
+    /// Optional off-actor latency injected into `list()` (the reconcile/reconcileLiveness batched liveness
+    /// snapshot), so a test can prove the call runs OFF the service actor: a concurrent fast RPC returns
+    /// while the stub sleeps. `listCount` records how many times it was queried.
+    var listSleepMs: UInt32 = 0
+    private(set) var listCount = 0
+    func list() throws -> [SessionInfo] {
+        lock.lock(); listCount += 1; let ms = listSleepMs; let out = alive.map { SessionInfo(name: $0, running: true) }; lock.unlock()
+        if ms > 0 { usleep(ms * 1000) }
+        return out
+    }
     func sendKeys(_ name: String, text: String, window: String) throws {
         lock.lock(); sentKeys.append((name, text)); lock.unlock()
     }

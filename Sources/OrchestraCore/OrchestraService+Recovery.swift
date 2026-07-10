@@ -165,8 +165,10 @@ extension OrchestraService {
     /// fire route through the funnel (`markDead`) so they conclude.
     public func reconcileLiveness() async {
         let tasks = await store.all()
-        // One `tmux list-sessions` per poll tick, not one `has-session` per card.
-        let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+        // One `tmux list-sessions` per poll tick, not one `has-session` per card. Hopped off-actor
+        // (mirrors `reconcile()`'s hop exactly) so this slow tmux probe never freezes the actor.
+        let s = sessions
+        let aliveNames = Set((try? await offActor { try? s.list() })??.map(\.name) ?? [])
         for t in tasks where !t.phase.isTerminal {
             let alive = aliveNames.contains(sessions.sessionName(t.id))
             switch t.phase.kind {

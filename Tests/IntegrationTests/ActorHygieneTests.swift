@@ -56,6 +56,31 @@ final class ActorHygieneTests: XCTestCase {
         gate.open(); await slow.value
     }
 
+    func test_actorNotBlockedByLivenessList() async throws {
+        let (service, stub) = try await ActorHygieneSupport.liveCardWithSlowListSessions()
+        stub.listSleepMs = 4000
+        // `reconcile()`'s `sessions.list()` is ALREADY off-actor (PR4b) — this locks that invariant.
+        let slow = _Concurrency.Task { await service.reconcile() }
+        stub.enteredGate.waitUntilEntered()               // list() has genuinely started (now sleeping)
+        let start = Date()
+        _ = await service.list()                         // must return while the stub `list()` is still sleeping
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() RPC blocked behind on-actor reconcile liveness list")
+        await slow.value
+    }
+
+    func test_reconcileLivenessNotBlockedByList() async throws {
+        let (service, stub) = try await ActorHygieneSupport.liveCardWithSlowListSessions()
+        stub.listSleepMs = 4000
+        // The legacy test-retained `reconcileLiveness()` — still driven by SpawnPhase/Recovery/
+        // WakeMergeWatch tests — must hop its `sessions.list()` off-actor too.
+        let slow = _Concurrency.Task { await service.reconcileLiveness() }
+        stub.enteredGate.waitUntilEntered()               // list() has genuinely started (now sleeping)
+        let start = Date()
+        _ = await service.list()                         // must return while the stub `list()` is still sleeping
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() RPC blocked behind on-actor reconcileLiveness list")
+        await slow.value
+    }
+
     func test_gitRemotesInvalidatesOnConfigChange() async throws {
         let (service, _, repo) = try await ActorHygieneSupport.liveCardWorktree()
         XCTAssertEqual(service.gitRemotes(repo: repo), [])
@@ -166,6 +191,31 @@ enum ActorHygieneSupport {
                         startIn: .impl, column: .impl, order: 0, initialPrompt: "")
         _ = try await service.store.create(card)
         return (service, card.id)
+    }
+
+    /// Build a real `OrchestraService` wired to a `SlowListSessionStub` (instead of the real tmux-backed
+    /// `SessionManager`), and a `.live` card seeded directly into the store. No real git repo needed —
+    /// the liveness-list gate tests (5.1.5) never touch git. Returns the service and the injected stub so
+    /// the test can arm `listSleepMs` before driving `reconcile()`/`reconcileLiveness()`.
+    static func liveCardWithSlowListSessions() async throws -> (service: OrchestraService, sessions: SlowListSessionStub) {
+        let base = IntegrationSupport.tempDir("actor-hygiene-list")
+        let cwd = base + "/cwd"
+        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)])
+        let stub = SlowListSessionStub()
+        let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
+                                       sessions: stub,
+                                       trust: TrustLedger(path: base + "/trust-ledger.json"),
+                                       inbox: Inbox(path: base + "/inbox.json"),
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+        let card = Task(title: "actor-hygiene-list", repo: cwd, branch: "work", cwd: cwd,
+                        model: AgentModel(id: "m1"), startIn: .impl, column: .impl, order: 0,
+                        initialPrompt: "")
+        _ = try await service.store.create(card)
+        return (service, stub)
     }
 
     /// Poll `FileManager.fileExists` on a short loop until `path` appears, or throw once `timeout`
@@ -280,5 +330,49 @@ enum ActorHygieneSupport {
             gate.blockUntilOpen()
             return nil
         }
+    }
+
+    /// A minimal `SessionManaging` stub for the 5.1.5 liveness-list gate tests: `list()` honors an
+    /// injectable sleep (mirrors `Tests/OrchestraCoreTests/Stubs.swift`'s `StubSessions.listSleepMs`,
+    /// duplicated here because `IntegrationTests` doesn't depend on the `OrchestraCoreTests` target).
+    /// Every other member is a lock-guarded no-op/empty-return — `reconcile()`/`reconcileLiveness()` only
+    /// call `sessionName` and `list()`.
+    final class SlowListSessionStub: SessionManaging, @unchecked Sendable {
+        private let lock = NSLock()
+        private var alive: Set<String> = []
+        /// Set by the test BEFORE driving `reconcile()`/`reconcileLiveness()` to simulate a slow
+        /// `tmux list-sessions`.
+        var listSleepMs: UInt32 = 0
+        /// Signaled the moment `list()` is about to sleep — the deterministic "entered" rendezvous (see
+        /// `Gate`'s doc comment). Required here (unlike `reconcile()`'s own gate tests) because
+        /// `reconcileLiveness()`'s UNFIXED call is synchronous with no intervening `await` before it: a
+        /// plain "spawn the Task then immediately race a concurrent RPC" is a genuine ordering race (the
+        /// concurrent RPC can win the actor's queue before the slow call ever starts), which would let the
+        /// on-actor bug slip through as a false-pass. Waiting for this gate makes the RPC start only once
+        /// the slow call has demonstrably begun, mirroring every other test in this file.
+        let enteredGate = Gate()
+
+        func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
+        func ensure(_ task: Task, argv: [String], env: [String: String]) throws -> (name: String, created: Bool) {
+            let name = sessionName(task.id)
+            lock.lock(); alive.insert(name); lock.unlock()
+            return (name, true)
+        }
+        func isAlive(_ name: String) throws -> Bool { lock.lock(); defer { lock.unlock() }; return alive.contains(name) }
+        func newShellWindow(_ name: String, cwd: String) throws -> String { "shell-1" }
+        func windows(_ name: String) throws -> [TmuxTarget] { [] }
+        func list() throws -> [SessionInfo] {
+            let ms = listSleepMs
+            enteredGate.markEntered()
+            if ms > 0 { usleep(ms * 1000) }
+            lock.lock(); let names = alive; lock.unlock()
+            return names.map { SessionInfo(name: $0, running: true) }
+        }
+        func sendKeys(_ name: String, text: String, window: String) throws {}
+        func sendChord(_ name: String, tokens: [KeyToken], window: String) throws {}
+        func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
+            CaptureResult(window: window, text: "", truncated: false)
+        }
+        func kill(_ name: String) throws { lock.lock(); alive.remove(name); lock.unlock() }
     }
 }
