@@ -189,6 +189,7 @@ extension OrchestraService {
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil     // S3-5
         childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
+        observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
         // S2-5: a worktree card's branch goes bare on archive — nudge its live children (deterministic,
         // oldest) so a stopped child re-evaluates its ship path instead of waiting on a dead inbox.
         guard t.origin == .worktree else { return }

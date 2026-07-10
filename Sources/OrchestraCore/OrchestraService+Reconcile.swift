@@ -49,6 +49,24 @@ extension OrchestraService {
         let tasks = await store.all()
         let now = Date()
 
+        // Populate the `boardSnapshot` observed-session cache (PR5 actor-hygiene, Task 5.2) — non-archived
+        // cards only. A session-alive card gets ONE off-actor `windows()` call (batched below, all in one
+        // hop); a dead card's entry is the empty/not-running placeholder WITHOUT a `windows()` call, so this
+        // bounds idle-daemon tmux cost to the live-card count, not the whole board.
+        let toObserve = tasks.filter { !$0.archived && aliveNames.contains(sessions.sessionName($0.id)) }
+                             .map { ($0.id, sessions.sessionName($0.id)) }
+        let deadIds = tasks.filter { !$0.archived && !aliveNames.contains(sessions.sessionName($0.id)) }.map(\.id)
+        let s = sessions
+        let observedAlive: [UUID: [TmuxTarget]] = (try? await offActor {
+            var out: [UUID: [TmuxTarget]] = [:]
+            for (id, name) in toObserve { out[id] = (try? s.windows(name)) ?? [] }
+            return out
+        }) ?? [:]
+        for (id, ts) in observedAlive {
+            observedSessions[id] = ObservedSession(targets: ts, running: !ts.isEmpty, observedAt: now)
+        }
+        for id in deadIds { observedSessions[id] = ObservedSession(targets: [], running: false, observedAt: now) }
+
         for t in tasks {
             let name = sessions.sessionName(t.id)
             let alive = aliveNames.contains(name)

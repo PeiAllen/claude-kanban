@@ -99,6 +99,18 @@ public actor OrchestraService {
     /// `store.peekPersistedRev()` (before the control server can accept any RPC), and refreshed by
     /// every `emit(_:rev:)` thereafter.
     private var lastRev: Int = 0
+    /// A card's tmux session state as of the reconciler's last off-actor `windows()` probe (PR5 actor-
+    /// hygiene, Task 5.2). `observedAt` lets `boardSnapshot` tell a fresh capture from one taken before the
+    /// card's CURRENT session (`phaseChangedAt`) — a stale entry (or a miss) falls back to a live shell.
+    struct ObservedSession: Sendable, Equatable {
+        let targets: [TmuxTarget]
+        let running: Bool
+        let observedAt: Date
+    }
+    /// Reconcile-tick-maintained cache of each non-archived card's session state, keyed by card id.
+    /// Populated every tick (`reconcile()`), evicted on teardown and on any user-driven shell op
+    /// (`openShell`/`closeShell`/`inspect`) so a stale entry never masks a real change.
+    var observedSessions: [UUID: ObservedSession] = [:]
     // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
     var terminalOwnership = TerminalOwnershipStore()
     // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
@@ -734,6 +746,7 @@ public actor OrchestraService {
         let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
             ?? sessions.newShellWindow(name, cwd: t.cwd)
         await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -777,6 +790,7 @@ public actor OrchestraService {
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
         await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -784,6 +798,7 @@ public actor OrchestraService {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
         await emitShells(t)
+        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
@@ -818,7 +833,28 @@ public actor OrchestraService {
         sessionsList.reserveCapacity(active.count)
         owners.reserveCapacity(active.count)
         for card in active {
-            if let s = try? await sessions(card.id) { sessionsList.append(s) }
+            // Cache HIT: fresh vs the card's CURRENT session (`observedAt >= phaseChangedAt`) — serve the
+            // reconciler's off-actor `windows()` capture instead of shelling out again (Task 5.2). A MISS
+            // or a STALE entry (session changed since capture) falls back to one live shell so nothing is
+            // mis-shown; the trade is up-to-one-tick staleness on the hit path, self-healed by the next
+            // tick / live `shellsChanged` events.
+            if let obs = observedSessions[card.id], obs.observedAt >= card.phaseChangedAt {
+                // Agent identity is an fs read (non-tmux) — hop it off-actor like 5.1.3 so the hit path
+                // stays fully off the tmux path. A nil `sessionInfo` (early-life, before the session id
+                // binds) MUST serve the SAME fallback `AgentSessionInfo` `sessions(_:)` builds below, or
+                // the hit branch is skipped and an early-life card live-shells every snapshot.
+                let ctx = AdapterContext(cwd: card.cwd, model: card.model.id, sessionId: card.agentSessionId,
+                                         name: card.title, orchestraBin: orchestraBin)
+                let a = try? registry.get(card.agentId)
+                let agent = (try? await offActor { a?.sessionInfo(ctx, current: card.agentSessionId, prior: card.priorSessionIds) }) ?? nil
+                    ?? AgentSessionInfo(agentId: card.agentId, sessionId: card.agentSessionId, transcriptPath: nil,
+                                        priorSessionIds: card.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
+                sessionsList.append(CardSessions(ref: card.ref(), id: card.id, worktree: card.cwd,
+                    tmuxSocket: Config.tmuxSocket, session: sessions.sessionName(card.id),
+                    running: obs.running, targets: obs.targets, agent: agent))
+            } else if let s = try? await sessions(card.id) {
+                sessionsList.append(s)
+            }
             owners.append(terminalOwnership.snapshot(cardId: card.id, ref: card.ref(), now: now))
         }
         return BoardSnapshot(rev: rev, tasks: active, archived: archived, config: config,
