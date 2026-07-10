@@ -241,7 +241,7 @@ extension OrchestraService {
             // NOTE: the brief's literal "provisional → .creatingWorktree" is unreachable (`.live →
             // .creatingWorktree` is not a legal funnel edge); `.relaunching` is the sanctioned restart intent
             // and the RelaunchStepper already blank-restarts a provisional card — same outcome, legal edge.
-            if isResumable(t) || t.titleProvisional {
+            if await isResumable(t) || t.titleProvisional {
                 _ = await transition(t.id, to: .relaunching,
                                      mutate: { $0.deadReason = nil; $0.deadDetail = nil })
             } else {

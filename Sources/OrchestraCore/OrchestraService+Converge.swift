@@ -141,20 +141,27 @@ extension OrchestraService {
                                      sessionId: task.agentSessionId, prompt: prompt, name: task.title,
                                      orchestraBin: orchestraBin, access: task.access,
                                      trustCwd: trustDecision == .trusted)
-            try? adapter.prepareToLaunch(ctx)
+            let a = adapter, c = ctx
+            try? await offActor { try? a.prepareToLaunch(c) }
             argv = adapter.start(ctx)
         case .resume(let seed):
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
                                      trustCwd: trustDecision == .trusted, seed: seed)
-            guard let sid = task.agentSessionId,
-                  let info = adapter.sessionInfo(ctx, current: sid, prior: task.priorSessionIds),
-                  let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp),
-                  let a = adapter.resume(ctx) else {
+            guard let sid = task.agentSessionId else { return .timedOut }
+            let a = adapter, c = ctx, priorIds = task.priorSessionIds
+            // 5.1.3 pattern: hop the adapter's fs-touching sessionInfo() + the transcript existence check
+            // off-actor before the `.timedOut` decision — same guard, same short-circuit order.
+            let transcriptOK: Bool = (try? await offActor {
+                guard let info = a.sessionInfo(c, current: sid, prior: priorIds),
+                      let tp = info.transcriptPath else { return false }
+                return FileManager.default.fileExists(atPath: tp)
+            }) ?? false
+            guard transcriptOK, let resumeArgv = adapter.resume(ctx) else {
                 return .timedOut   // transcript vanished between the stepper's pre-check and here
             }
-            try? adapter.prepareToLaunch(ctx)
-            argv = a
+            try? await offActor { try? a.prepareToLaunch(c) }
+            argv = resumeArgv
         }
         do {
             try await offActor { [sessions] in

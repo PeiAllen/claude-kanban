@@ -109,7 +109,7 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.archived else { return t }
         let adapter = try registry.get(t.agentId)
-        let resumable = isResumable(t)
+        let resumable = await isResumable(t)
 
         // Enter `.creatingWorktree` (bumps the generation), clearing the archived Bool + dead metadata. The
         // resume path keeps the id so the transcript carries forward; the blank path mints a fresh id / rolls
@@ -222,15 +222,18 @@ extension OrchestraService {
     /// keyed on `capabilities.sessionId` + `sessionInfo`, NOT a hardcoded `~/.claude` transcript stat in
     /// core. Both current variants require a stored session id and the adapter's own state path to be
     /// present on disk; a discovered agent with no id short-circuits.
-    func isResumable(_ t: Task) -> Bool {
+    func isResumable(_ t: Task) async -> Bool {
         guard let adapter = try? registry.get(t.agentId) else { return false }
         switch adapter.capabilities.sessionId {
         case .seeded, .discovered:
             guard let sid = t.agentSessionId, !sid.isEmpty else { return false }
             let ctx = AdapterContext(cwd: t.cwd, sessionId: sid, name: t.title, orchestraBin: orchestraBin)
-            guard let statePath = adapter.sessionInfo(ctx, current: sid, prior: t.priorSessionIds)?.transcriptPath
-            else { return false }
-            return FileManager.default.fileExists(atPath: statePath)
+            let a = adapter, priorIds = t.priorSessionIds
+            return (try? await offActor {
+                guard let statePath = a.sessionInfo(ctx, current: sid, prior: priorIds)?.transcriptPath
+                else { return false }
+                return FileManager.default.fileExists(atPath: statePath)
+            }) ?? false
         }
     }
 

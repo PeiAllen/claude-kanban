@@ -1,5 +1,9 @@
 import Foundation
 
+/// Sendable payload for `synced`'s batched resolve→tip→merge-base off-actor hop (PR5 actor-hygiene,
+/// Task 5.1.6): all three git leaves are sequential (no intervening `await`) in the original.
+private struct SyncProbe: Sendable { let tip: String?; let syncBase: String? }
+
 extension OrchestraService {
 
     /// `set-parent` (BT1: adopt + clear). `parent == nil`/empty clears the link; otherwise adopts it
@@ -24,10 +28,12 @@ extension OrchestraService {
                 throw OrchestraError.invalidParams(
                     "a branch cannot be its own parent: \(p) — pick a different branch as the parent")
             }
+            let repo = t.repo, branch = t.branch, ctl = Duration.seconds(config.controlTimeout)
             // BT6: a remote parent (origin/<b>, pr#<N>) is fetched into a private ref, recorded with its
             // canonical form + prNumber, and watched per the flag (default off). `mode` doesn't apply —
             // there is no local history to rebase yet; the child restacks only once the remote parent moves.
-            if let remote = RemoteParentRef.parse(p, remotes: gitRemotes(repo: t.repo)) {
+            let remotes = (try? await offActor { self.gitRemotes(repo: repo) }) ?? []
+            if let remote = RemoteParentRef.parse(p, remotes: remotes) {
                 let oid = try await remoteParents.fetch(repo: t.repo, remote,
                     context: "could not fetch remote parent \(p)")
                 let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
@@ -51,14 +57,20 @@ extension OrchestraService {
                 // prior base and would otherwise accept a typo'd parent (leaving a nudge to rebase onto a
                 // ref that isn't there). Local refs only in BT5; remote parents are BT6.
                 // S3-6: pin refs/heads/ so a same-named tag can't shadow the local parent branch.
-                guard treeTip(repo: t.repo, "refs/heads/\(p)", timeout: .seconds(config.controlTimeout)) != nil else {
+                let tip = (try? await offActor { self.treeTip(repo: repo, "refs/heads/\(p)", timeout: ctl) }) ?? nil
+                guard tip != nil else {
                     throw OrchestraError.invalidParams(
                         "parent branch not found: \(p) — create or fetch it, or run `git branch` to see valid parents")
                 }
                 let existing = await lineage.read(repo: t.repo, branch: t.branch)
-                let anchor = try existing?.base
-                    ?? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)",
-                                    timeout: .seconds(config.controlTimeout))
+                let anchor: String
+                if let base = existing?.base {
+                    anchor = base
+                } else {
+                    anchor = try await offActor {
+                        try self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
+                    }
+                }
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
                 let (updated, rev) = try await store.update(t.id) {
                     $0.parentBranch = p
@@ -72,8 +84,9 @@ extension OrchestraService {
                 emitActivity(.command, updated, source, "moved parent → \(p)")
                 return updated
             }
-            let base = try mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", "refs/heads/\(p)",
-                                        timeout: .seconds(config.controlTimeout))
+            let base = try await offActor {
+                try self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
+            }
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
             // Nil treeStat so the scheduled recompute computes fresh against the NEW parent (and doesn't
             // preserve a sticky mergeRequested from the old parent, O2).
@@ -151,18 +164,29 @@ extension OrchestraService {
                 "card has no parent link to sync — set one with `orchestra set-parent \(t.shortId) <branch>`")
         }
         let syncTimeout = Duration.seconds(config.controlTimeout)
-        guard let tip = treeTip(repo: t.repo, resolvableRef(link, repo: t.repo), timeout: syncTimeout) else {
+        let repo = t.repo, branch = t.branch
+        // Batched hop: resolve the parent ref, look up its tip, then (S2-1) the merge-base against the
+        // child's own branch — sequential, no intervening `await` in the original, so one hop covers all
+        // three git leaves.
+        let probe: SyncProbe = (try? await offActor {
+            let rref = self.resolvableRef(link, repo: repo)
+            guard let tip = self.treeTip(repo: repo, rref, timeout: syncTimeout) else {
+                return SyncProbe(tip: nil, syncBase: nil)
+            }
+            // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
+            // trusting the agent's implicit "I merged the tip down" claim. After an honest merge-down this
+            // equals the merged tip; after a racy/bogus `synced` (parent advanced, or no merge happened)
+            // it equals the real fork, so it can't silently over-record and mask un-merged parent work.
+            // Falls back to the tip only if the child's own branch ref can't be resolved (never live).
+            let syncBase = (try? self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", rref, timeout: syncTimeout)) ?? tip
+            return SyncProbe(tip: tip, syncBase: syncBase)
+        }) ?? SyncProbe(tip: nil, syncBase: nil)
+        guard let tip = probe.tip else {
             throw OrchestraError.invalidParams(
                 "parent ref not found: \(link.parent) — the parent branch was deleted; re-point with "
                 + "`orchestra set-parent \(t.shortId) <newBranch>`, or run `orchestra shipped \(t.shortId)` if it merged")
         }
-        // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
-        // trusting the agent's implicit "I merged the tip down" claim. After an honest merge-down this
-        // equals the merged tip; after a racy/bogus `synced` (parent advanced, or no merge happened) it
-        // equals the real fork, so it can't silently over-record and mask un-merged parent work. Falls
-        // back to the tip only if the child's own branch ref can't be resolved (never for a live card).
-        let syncBase = (try? mergeBaseOID(repo: t.repo, "refs/heads/\(t.branch)", resolvableRef(link, repo: t.repo),
-                                          timeout: syncTimeout)) ?? tip
+        let syncBase = probe.syncBase ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
         // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
         // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
@@ -204,8 +228,14 @@ extension OrchestraService {
         // shipped straight to main — the repo's default branch, so its children never strand on a dead
         // parent (inSync-forever). A root ship is not an anomaly (no "no recorded parent link" warning).
         let hadParentLink = link?.parent != nil
+        let repo = child.repo
         let shipTimeout = Duration.seconds(config.controlTimeout)
-        let grandparent = link?.parent ?? defaultBranch(repo: child.repo, timeout: shipTimeout)
+        let grandparent: String
+        if let p = link?.parent {
+            grandparent = p
+        } else {
+            grandparent = (try? await offActor { self.defaultBranch(repo: repo, timeout: shipTimeout) }) ?? "main"
+        }
 
         // S2-2: sanity gate — refuse to retarget grandchildren / clear lineage when the parent tip has NOT
         // advanced past the child's recorded base (i.e. nothing was merged since the last sync). This
@@ -214,12 +244,19 @@ extension OrchestraService {
         // loss. `shipped` verifies nothing else, so this is the integrity floor. A root ship (no parent
         // link) is exempt — its merge went to main via the standard flow. `--force` overrides (a genuine
         // empty/no-op squash).
-        if !force, let link, !link.base.isEmpty,
-           let parentTip = treeTip(repo: child.repo, resolvableRef(link, repo: child.repo), timeout: shipTimeout),
-           treeBehindStrict(repo: child.repo, base: link.base, tip: parentTip, timeout: shipTimeout) == 0 {
-            throw OrchestraError.invalidParams(
-                "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
-                + "nothing appears merged. Merge first, or re-run with force if the squash was genuinely empty.")
+        if !force, let link, !link.base.isEmpty {
+            // Batched hop: resolve the parent ref, look up its tip, then the strict behind-count —
+            // sequential, no intervening `await` in the original, so one hop covers all three git leaves.
+            let notAdvanced = (try? await offActor {
+                let rref = self.resolvableRef(link, repo: repo)
+                guard let parentTip = self.treeTip(repo: repo, rref, timeout: shipTimeout) else { return false }
+                return self.treeBehindStrict(repo: repo, base: link.base, tip: parentTip, timeout: shipTimeout) == 0
+            }) ?? false
+            if notAdvanced {
+                throw OrchestraError.invalidParams(
+                    "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
+                    + "nothing appears merged. Merge first, or re-run with force if the squash was genuinely empty.")
+            }
         }
 
         // (a) notify the parent's card, if one owns the parent branch (only when there WAS a parent link
@@ -248,7 +285,8 @@ extension OrchestraService {
             // S3-7: the grandparent may be remote (reached via `set-parent`, off the skill script). Resolve
             // its rebase target through the seam (a raw `pr#N`/`origin/x` is not a rev), make its private
             // ref resolvable, and preserve the PR/watch keys so the rewritten link keeps tracking the PR.
-            let gpRemote = RemoteParentRef.parse(grandparent, remotes: gitRemotes(repo: child.repo))
+            let gpRemotes = (try? await offActor { self.gitRemotes(repo: repo) }) ?? []
+            let gpRemote = RemoteParentRef.parse(grandparent, remotes: gpRemotes)
             if let gpRemote { _ = try? await remoteParents.fetch(repo: child.repo, gpRemote) }
             let gpResolvable = gpRemote?.privateRef ?? "refs/heads/\(grandparent)"
             let gpPr: Int? = { if case .pullRequest(let n) = gpRemote { return n }; return nil }()

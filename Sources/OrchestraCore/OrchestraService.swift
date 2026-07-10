@@ -491,30 +491,35 @@ public actor OrchestraService {
     ///      session hasn't registered yet must survive the race.
     public func sweepOrphanScratch(root: String = Config.scratchRoot,
                                    graceInterval: TimeInterval = 300) async {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return }
-
         // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
-        // "nothing is live" — bail rather than delete every scratch dir, live ones included.
+        // "nothing is live" — bail rather than delete every scratch dir, live ones included. Kept
+        // on-actor (a pure store read, no IO) so the off-actor hop below only runs once we know
+        // there is something to sweep against.
         let cards = await store.all()
         guard !cards.isEmpty else { return }
         let liveScratchDirs = Set(cards
             .filter { $0.origin == .scratch && !$0.archived }
             .map { $0.cwd })
 
-        // (a) Dir names are lowercase UUIDs; `UUID(uuidString:)` is case-insensitive, so `sessionName`
-        // matches the live tmux set even though the id's canonical form is uppercase.
-        let liveSessions = Set((try? sessions.list())?.filter(\.running).map(\.name) ?? [])
-        let now = Date()
+        let s = sessions
+        try? await offActor {
+            let fm = FileManager.default
+            guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return }
 
-        for name in entries {
-            let path = "\(root)/\(name)"
-            if liveScratchDirs.contains(path) { continue }
-            if let id = UUID(uuidString: name), liveSessions.contains(sessions.sessionName(id)) { continue }
-            // (b) Skip anything modified within the grace window (freshly created / actively touched).
-            if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
-               now.timeIntervalSince(mtime) < graceInterval { continue }
-            try? fm.removeItem(atPath: path)
+            // (a) Dir names are lowercase UUIDs; `UUID(uuidString:)` is case-insensitive, so `sessionName`
+            // matches the live tmux set even though the id's canonical form is uppercase.
+            let liveSessions = Set((try? s.list())?.filter(\.running).map(\.name) ?? [])
+            let now = Date()
+
+            for name in entries {
+                let path = "\(root)/\(name)"
+                if liveScratchDirs.contains(path) { continue }
+                if let id = UUID(uuidString: name), liveSessions.contains(s.sessionName(id)) { continue }
+                // (b) Skip anything modified within the grace window (freshly created / actively touched).
+                if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
+                   now.timeIntervalSince(mtime) < graceInterval { continue }
+                try? fm.removeItem(atPath: path)
+            }
         }
     }
 
@@ -678,7 +683,8 @@ public actor OrchestraService {
 
     public func status(_ id: UUID) async throws -> TaskStatus {
         let t = try await require(id)
-        let running = (try? sessions.isAlive(sessions.sessionName(id))) ?? false
+        let name = sessions.sessionName(id), s = sessions
+        let running = (try? await offActor { try s.isAlive(name) }) ?? false
         return TaskStatus(task: t, running: running)
     }
 
@@ -727,7 +733,7 @@ public actor OrchestraService {
         if try !sessions.isAlive(name) { _ = try sessions.ensure(t, argv: ["/bin/sh"]) }
         let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
             ?? sessions.newShellWindow(name, cwd: t.cwd)
-        emitShells(t)
+        await emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -739,9 +745,9 @@ public actor OrchestraService {
     /// SKIPPED rather than broadcast as empty — emitting `[]` on a hiccup would wholesale-wipe every
     /// client's shell panel/selection until the next reconnect. The caller's own mutation already
     /// succeeded, and the next successful open/close (or reconnect reconcile) re-broadcasts the truth.
-    private func emitShells(_ t: Task) {
-        let name = sessions.sessionName(t.id)
-        guard let targets = try? sessions.windows(name) else { return }
+    private func emitShells(_ t: Task) async {
+        let name = sessions.sessionName(t.id), s = sessions
+        guard let targets = try? await offActor({ try s.windows(name) }) else { return }
         let shells = targets.filter { $0.kind == .shell }
             .map { ShellTab(window: $0.window, label: $0.window, pwd: t.cwd) }
         emit(.shellsChanged(ShellWindowsState(cardId: t.id, shells: shells)), rev: lastRev)
@@ -770,14 +776,14 @@ public actor OrchestraService {
         // literal argv; sendKeys sends the line + Enter itself.
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
-        emitShells(t)
+        await emitShells(t)
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
     public func closeShell(_ id: UUID, window: String) async throws {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
-        emitShells(t)
+        await emitShells(t)
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
@@ -981,33 +987,37 @@ public actor OrchestraService {
     /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
     /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
     /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
-    public func spawnRepos() -> [String] {
+    public func spawnRepos() async -> [String] {
         let root = (config.reposRoot as NSString).expandingTildeInPath
-        let fm = FileManager.default
-        let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
-        // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
-        // (running a read-only/freeform agent inside a repo is the common case) — the client unions them
-        // with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
-        return entries
-            .filter { !$0.hasPrefix(".") }
-            .map { "\(root)/\($0)" }
-            .filter { fm.fileExists(atPath: "\($0)/.git") }
-            .sorted {
-                ($0 as NSString).lastPathComponent
-                    .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-            }
+        return (try? await offActor {
+            let fm = FileManager.default
+            let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+            // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
+            // (running a read-only/freeform agent inside a repo is the common case) — the client unions
+            // them with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
+            return entries
+                .filter { !$0.hasPrefix(".") }
+                .map { "\(root)/\($0)" }
+                .filter { fm.fileExists(atPath: "\($0)/.git") }
+                .sorted {
+                    ($0 as NSString).lastPathComponent
+                        .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
+                }
+        }) ?? []
     }
 
     /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).
     /// Empty on any failure (bad repo, git missing, not a worktree) so the picker degrades to free-text
     /// branch creation. Defense-in-depth: only runs git on an allowlisted repo path.
-    public func spawnBranches(repo: String) -> [String] {
+    public func spawnBranches(repo: String) async -> [String] {
         guard !repo.isEmpty, let real = try? resolver.resolveRepo(repo) else { return [] }
-        guard let res = try? Proc.run(
-            ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
-             "--sort=-committerdate", "refs/heads"],
-            timeout: .seconds(5)), res.ok else { return [] }
-        return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        return (try? await offActor {
+            guard let res = try? Proc.run(
+                ["git", "-C", real, "for-each-ref", "--format=%(refname:short)",
+                 "--sort=-committerdate", "refs/heads"],
+                timeout: .seconds(5)), res.ok else { return [] }
+            return res.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        }) ?? []
     }
 
     /// Convenient starting points for the phone's remote directory browser (`listDir`): the daemon's

@@ -9,6 +9,11 @@ public enum RemoteMergeOutcome: Equatable, Sendable {
     case warnedAncestry     // merge-commit ancestry positive but base unknown (no gh) — warning surfaced
 }
 
+/// Sendable pair for `remoteMergeStep`'s batched parse+lookup off-actor hop (PR5 actor-hygiene, Task
+/// 5.1.6): `RemoteParentRef.parse` (needs `gitRemotes`) and `privateRefOID` are sequential with no
+/// intervening `await` in the original, so they ride ONE `offActor` hop.
+private struct RemoteRefProbe: Sendable { let ref: RemoteParentRef; let oid: String? }
+
 extension OrchestraService {
     /// Test seam: swap the gh boundary (real `GhProbe` in production, `FakeGh` in tests).
     func setGh(_ client: any GhClient) { self.gh = client }
@@ -25,11 +30,19 @@ extension OrchestraService {
     @discardableResult
     func remoteMergeStep(cardId: UUID) async -> RemoteMergeOutcome {
         guard let t = await store.get(cardId), t.origin == .worktree, !t.archived,
-              let link = await lineage.read(repo: t.repo, branch: t.branch),
-              let ref = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: t.repo)) else { return .none }
+              let link = await lineage.read(repo: t.repo, branch: t.branch) else { return .none }
+        let repo = t.repo, ctl = Duration.seconds(config.controlTimeout)
+        // Batched hop: parse the parent ref (needs `gitRemotes`) then look up its current private-ref OID —
+        // sequential, no intervening `await` in the original, so one hop covers both.
+        let probed: RemoteRefProbe? = (try? await offActor {
+            guard let ref = RemoteParentRef.parse(link.parent, remotes: self.gitRemotes(repo: repo)) else { return nil }
+            return RemoteRefProbe(ref: ref, oid: self.privateRefOID(repo: repo, ref: ref, timeout: ctl))
+        }) ?? nil
+        guard let probed else { return .none }
+        let ref = probed.ref
 
         let tip = await remoteParents.lsRemoteTip(repo: t.repo, ref)
-        var fetchedTip: String? = privateRefOID(repo: t.repo, ref: ref)
+        var fetchedTip: String? = probed.oid
         var moved = false
         if case .oid(let observed) = tip, observed != fetchedTip {
             moved = true
@@ -89,12 +102,21 @@ extension OrchestraService {
         // warning for the human to confirm with `set-parent`. (This tier rarely fires for a PR parent on
         // real GitHub — `refs/pull/N/head` doesn't advance on merge — so gh/gone carry PR detection; it is
         // the degraded, gh-absent signal for a plain remote-branch parent that fast-forwarded.)
-        if moved, let parentTip = fetchedTip, let childTip = localBranchOID(repo: t.repo, branch: t.branch),
-           childTip != link.base, isAncestor(repo: t.repo, ancestor: childTip, of: parentTip) {
-            emitActivity(.warning, t, .daemon,
-                "parent \(link.parent) appears merged (ancestry) — confirm and pick a new base with "
-                + "`orchestra set-parent \(t.shortId) <newBranch>`")
-            return .warnedAncestry
+        if moved, let parentTip = fetchedTip {
+            let branchName = t.branch, linkBase = link.base
+            // Batched hop: `localBranchOID` then (only if it differs from the recorded base — same
+            // short-circuit as the original `,`-chained guard) `isAncestor`.
+            let ancestryHit = (try? await offActor {
+                guard let childTip = self.localBranchOID(repo: repo, branch: branchName, timeout: ctl),
+                      childTip != linkBase else { return false }
+                return self.isAncestor(repo: repo, ancestor: childTip, of: parentTip, timeout: ctl)
+            }) ?? false
+            if ancestryHit {
+                emitActivity(.warning, t, .daemon,
+                    "parent \(link.parent) appears merged (ancestry) — confirm and pick a new base with "
+                    + "`orchestra set-parent \(t.shortId) <newBranch>`")
+                return .warnedAncestry
+            }
         }
 
         return moved ? .fetched : .none
@@ -117,7 +139,9 @@ extension OrchestraService {
         let anchor = link.base
         // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
         // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
-        let keepWatching = (grandparent != defaultBranch(repo: t.repo, timeout: .seconds(config.controlTimeout)))
+        let repo = t.repo, ctl = Duration.seconds(config.controlTimeout)
+        let db = (try? await offActor { self.defaultBranch(repo: repo, timeout: ctl) }) ?? "main"
+        let keepWatching = (grandparent != db)
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
                 link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))
@@ -220,19 +244,21 @@ extension OrchestraService {
 
     // MARK: - small git helpers (local, non-hanging)
 
-    private func privateRefOID(repo: String, ref: RemoteParentRef) -> String? {
-        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref.privateRef]),
-              r.ok else { return nil }
+    /// `nonisolated` (PR5 actor-hygiene, Task 5.1.6) — touches no actor mutable state, so `remoteMergeStep`
+    /// can call it from an `offActor` hop. Now `timeout`-bounded like every other git leaf (was unbounded).
+    private nonisolated func privateRefOID(repo: String, ref: RemoteParentRef, timeout: Duration) -> String? {
+        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref.privateRef],
+                                    timeout: timeout), r.ok else { return nil }
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return oid.isEmpty ? nil : oid
     }
-    private func localBranchOID(repo: String, branch: String) -> String? {
-        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"]),
-              r.ok else { return nil }
+    private nonisolated func localBranchOID(repo: String, branch: String, timeout: Duration) -> String? {
+        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],
+                                    timeout: timeout), r.ok else { return nil }
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return oid.isEmpty ? nil : oid
     }
-    private func isAncestor(repo: String, ancestor: String, of tip: String) -> Bool {
-        (try? Proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, tip]))?.ok ?? false
+    private nonisolated func isAncestor(repo: String, ancestor: String, of tip: String, timeout: Duration) -> Bool {
+        (try? Proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, tip], timeout: timeout))?.ok ?? false
     }
 }
