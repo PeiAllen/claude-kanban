@@ -138,7 +138,10 @@ Per the "empirically test every feature" mandate. Versions: **Claude Code 2.1.20
   variable races underneath; this design layers on top and can land before or after it.
 - **Not** removing resume-seed — it stays as the **cold fallback** (session dead, not resumable, channel
   unavailable, park expired).
-- **Not** changing the durable inbox / Stop-drain payload semantics or caps.
+- **Not** changing the durable inbox / Stop-drain payload semantics or caps. *(Amended by
+  [[02-contract]]: payload format, header, and caps stay byte-identical, but `InboxMessage` gains
+  lease fields and removal moves from drain-time to receipt-confirm time — required by the "never
+  drop a send" goal, which this non-goal's stronger reading would contradict.)*
 - **Not** adopting the Claude Agent SDK streaming mode (drops the interactive TUI — empirically confirmed
   no in-session injection for interactive sessions).
 
