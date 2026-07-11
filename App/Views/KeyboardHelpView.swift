@@ -15,6 +15,7 @@ struct KeyboardHelpView: View {
         Section(title: "Navigate", rows: [
             Row(keys: "h j k l", desc: "Move card selection (within a pane)"),
             Row(keys: "g g / G", desc: "First / last card in column"),
+            Row(keys: "⌃o / ⌃i", desc: "Previous / next visited card"),
             Row(keys: "⌃h ⌃j ⌃k ⌃l", desc: "Move focus between panes (spatial)"),
             Row(keys: "Enter", desc: "Open inspector"),
             Row(keys: "i", desc: "Type to the agent (focus terminal)"),

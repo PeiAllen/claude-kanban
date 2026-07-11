@@ -217,6 +217,7 @@ The shipped bindings:
 |---|---|
 | `h` `j` `k` `l` | Move the **selection** within the focused pane (columns ↔, cards ↕) — which opens the inspector for that card and auto-scrolls the column to keep it centered (a `ScrollViewReader` in `BoardView`) |
 | `g g` / `G` | First / last card in the column |
+| `⌃o` / `⌃i` | Previous / next visited card (browser-style history); works from the board or a terminal and preserves that mode |
 | `Enter` | Move keyboard focus **into** the inspector (the selection already opened it) |
 | `i` | **Insert** — jump focus straight into the agent terminal to type |
 | `Esc` | Close / clear the frontmost thing |

@@ -56,6 +56,8 @@ shot initial                                   # first Plan card selected
 keys j;            shot j-down
 keys j;            shot j-down2
 keys l;            shot l-to-impl               # cross to Implementation column
+keys C-o;          shot history-back             # previous visited card, still on board
+keys C-i;          shot history-forward          # forward to Implementation again
 keys S-l;          shot L-carry-review          # carry the card right to Review
 keys g r;          shot goto-review             # g r → first Review card
 keys f h;          shot hint-h                  # f then label → jump to a card
