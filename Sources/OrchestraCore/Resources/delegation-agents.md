@@ -5,6 +5,16 @@ You are one agent on an Orchestra board. Besides doing the work yourself, you ca
 different agent (Claude or Codex). This file is about **when** to reach for that, and when NOT to. The
 delegation tools below are the **same MCP/CLI surface** every agent sees — the seam is agent-agnostic.
 
+## Sandboxed agents: use MCP first
+
+When your agent harness exposes Orchestra MCP tools, use them for Orchestra control calls such as `send`,
+`move`, `spawn`, `batch-spawn`, `handoff`, `wait`, `merge-request`, `shipped`, and `archive`. The local
+`orchestra` CLI talks to the daemon over a Unix socket, which a managed sandbox can deny even while the
+equivalent MCP call succeeds. The CLI remains valid for unrestricted/local terminal workflows and
+shell-native operations. If a CLI call is necessary but fails with `Operation not permitted` or cannot
+reach the daemon, do not retry it: send the same operation through MCP. A semantic rejection from either
+client is a real rejection, since both use the same Orchestra service.
+
 ## Your column is your phase — start on it, and keep it honest
 
 **This applies only to worktree cards** (spawned with a `repo` + `branch`). A standalone **Freeform** or
@@ -27,8 +37,9 @@ keeps reflecting reality (a *suggestion*, not a rule — but a stale column misl
 - **Implementation → Review** once the work is ready for someone to look at.
 - **→ Plan** if you fall back to figuring out what to do.
 
-Move with the `move` tool / `orchestra move <thisCard> --col plan|impl|review`. It's just a board update
-— no worktree, wake, or round-trip cost. Move when you cross a real phase boundary, not on every step.
+Move with the `move` MCP tool (or `orchestra move <thisCard> --col plan|impl|review` in a terminal-native
+workflow). It's just a board update — no worktree, wake, or round-trip cost. Move when you cross a real
+phase boundary, not on every step.
 
 ## The delegation surface (the tools)
 
@@ -42,9 +53,9 @@ Move with the `move` tool / `orchestra move <thisCard> --col plan|impl|review`. 
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox; it is delivered at the card's
   next turn.
 - **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
-  reminded/woken when it finishes. If your harness has native background tasks, run the CLI wait there so
-  your turn ends while the process stays subscribed. Otherwise use the MCP/immediate-return wait path;
-  Orchestra records the durable watch and resumes you when a child concludes.
+  reminded/woken when it finishes. In a managed/sandboxed harness, use the MCP/immediate-return wait
+  path; Orchestra records the durable watch and resumes you when a child concludes. In a terminal-native
+  harness with native background tasks, CLI wait may instead keep the process subscribed until it exits.
 
 ## Delegate, or just continue?
 

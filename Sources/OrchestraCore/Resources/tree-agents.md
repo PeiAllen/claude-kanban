@@ -2,6 +2,12 @@
 
 Your branch may have a **parent branch** (spawned on top of it, or linked via `set-parent`). Orchestra tracks that link and a recorded **base** — the parent tip at your last sync. Resolve your position with `orchestra tree` (or `orchestra tree <you>`) before acting: it reports your parent, its recorded base, whether a live card owns the parent, and your `treeStat`.
 
+When your agent harness exposes Orchestra MCP tools, use them for the Orchestra operations below; the
+`orchestra …` forms are terminal-workflow syntax. Keep the Git commands in a shell. A managed sandbox can
+deny the CLI's Unix-socket connection even though the equivalent MCP call works, so do not retry a CLI
+`Operation not permitted` or daemon-connection error—reissue that operation through MCP instead. A
+semantic rejection from either client is still a real rejection because both use the same service.
+
 ## Sync — pull the parent's new work down
 
 When `orchestra tree` shows you `stale` / behind N:
