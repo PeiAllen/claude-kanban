@@ -132,6 +132,8 @@ final class KeyboardController {
         case .closeOrClear:         model.closeFrontmost(); return true
         case .enterTerminal:        model.enterTerminalZone(); return true
         case .focusPane(let d):     return FocusBridge.movePane(d, model: model, from: ctx)
+        case .historyBack:          model.navigateCardHistoryBack(fromTerminal: ctx == .terminal); return true
+        case .historyForward:       model.navigateCardHistoryForward(fromTerminal: ctx == .terminal); return true
         case .carry(let d):         model.carrySelected(d); return true
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true
         case .archive:              model.requestArchiveSelected(); return true
