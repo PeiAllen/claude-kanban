@@ -1,0 +1,216 @@
+# Nudge leak + cooperative-pool starvation
+
+**Date:** 2026-07-11
+**Branch:** `fix/nudge-leak-cooperative-pool-starvation`
+**Status:** design approved, ready to plan
+
+## Summary
+
+Two defects compose into a hard process-wide deadlock: a timer loop that never releases
+`OrchestraService`, and actors that park Swift cooperative-pool threads on `git` subprocess forks.
+Together they consume every thread in the cooperative pool, after which **no async task in the
+process makes progress again**.
+
+The reproduction is `swift test --parallel`, which wedges deterministically at ~975/1180 tests
+(twice, same point, same stack) and never terminates. But the test hang is a *symptom*: `orchestrad`
+runs the identical code and wedges the same way. **The live-daemon wedge is the real bug.**
+
+This is the same failure class as the already-landed `fix(ui): stop live board updates silently
+wedging + cut report-funnel actor contention` (07-10), at sites that fix did not reach.
+
+## The bug
+
+### Defect 1 — the nudge task pins the service forever
+
+`Sources/OrchestraCore/OrchestraService+MergeRequest.swift:64-76`:
+
+```swift
+mergeRequestNudge[childId] = _Concurrency.Task { [weak self] in
+    guard let self else { return }          // ← hoisted ABOVE the loop
+    while !_Concurrency.Task.isCancelled {
+        let interval = await self.mergeRequestNudgeInterval
+        try? await _Concurrency.Task.sleep(for: interval)
+        if _Concurrency.Task.isCancelled { return }
+        if await self.reNudgeMergeRequest(childId) { break }
+    }
+    await self.clearMergeRequestNudge(childId)
+}
+```
+
+`guard let self` sits *outside* the `while`, so the closure holds a **strong** reference for the
+entire life of the loop. The `[weak self]` capture buys nothing. `OrchestraService` has no `deinit`
+and no shutdown path, and the only cancellations are the re-arm on line 65 and
+`stopMergeRequestNudge` for one specific child. Nothing cancels the `mergeRequestNudge` map when the
+service goes away — and it *cannot* go away while a nudge runs.
+
+Net effect: **any test that leaves a card in `.mergeRequested` leaks an immortal `OrchestraService`**
+(plus its store, lineage, and inbox), running a git-forking loop for the rest of the process's life.
+
+`startRemoteWatch` (`OrchestraService+Remote.swift:191-210`) has the **identical** hoisted
+`guard let self`. A remote-parent watch loop leaks a service the same way. Found during this design;
+not in the original report.
+
+The one-shot debounces (`diffStatDebounce`, `treeStatDebounce`, `childFanoutDebounce`, the wake and
+readiness timers) all use `self?.` and terminate on their own. They are clean.
+
+### Defect 2 — actors block the cooperative pool on subprocess I/O
+
+Swift's cooperative pool has roughly one thread per core and performs **no thread donation**. A
+synchronous `Proc.run` parks the calling thread on an unbounded `DispatchSemaphore`
+(`Proc.swift:83`, `exited.wait()`). An `actor` runs on that pool. Therefore every synchronous
+`Proc.run` inside an actor method **consumes a cooperative-pool thread for the duration of the
+fork**.
+
+Three actors do exactly this:
+
+| Actor | Forks | Timeout |
+|---|---|---|
+| `BranchLineage` | up to 4 sequential `git config` per `read()` | **none** |
+| `RemoteParents` | `git fetch`, `git ls-remote` | 20s (`rev-parse` untimed) |
+| `WorktreeRegistry` | `git worktree add` | **600s** |
+
+A single `git worktree add` can pin a cooperative thread for ten minutes.
+
+Each leaked `OrchestraService` owns its *own* `BranchLineage` instance, so leaked nudge loops block
+in genuine parallel. Enough of them and the pool is fully consumed — every async task in the process
+stops progressing, including swift-testing's own runner.
+
+Sampled stack, both runs:
+
+```
+OrchestraService.startMergeRequestNudge → reNudgeMergeRequest
+  → BranchLineage.read → BranchLineage.get → Proc.run → semaphore_wait_trap
+```
+
+## Design
+
+### The constraint that shapes the fix
+
+The obvious fix — make each actor `await` its forks off-actor via the existing PR5 `offActor` seam —
+**is wrong here**, because these actors' synchronous bodies are load-bearing.
+
+`WorktreeRegistry.ensure` says so explicitly:
+
+> Serialized by the actor mailbox. NO `await` between the marker check and the checkout, so two
+> concurrent same-branch calls run one-at-a-time and `git worktree add` fires once.
+
+`BranchLineage.set` has the same shape: a read-modify-write with a rollback path, correct only
+because nothing can interleave. Introducing an `await` inside either method introduces actor
+reentrancy and reopens a concurrent-spawn race and a torn-parent-link write.
+
+So: **do not move the blocking work off the actor — move the actor off the cooperative pool.**
+
+### Fix 1 — genuinely weak timer loops + real teardown
+
+Re-acquire `self` per call rather than once for the loop's lifetime, so nothing is retained across
+the sleep:
+
+```swift
+mergeRequestNudge[childId] = _Concurrency.Task { [weak self] in
+    while !_Concurrency.Task.isCancelled {
+        guard let interval = await self?.mergeRequestNudgeInterval else { return }
+        try? await _Concurrency.Task.sleep(for: interval)
+        if _Concurrency.Task.isCancelled { return }
+        guard let stop = await self?.reNudgeMergeRequest(childId) else { return }
+        if stop { break }
+    }
+    await self?.clearMergeRequestNudge(childId)
+}
+```
+
+Each `self?.` optional-chained call takes a temporary strong reference only for the duration of that
+call. The sleep — the overwhelming majority of the loop's wall-clock — holds nothing. Once the
+service deallocates, the next hop yields `nil` and the loop exits. Applied identically to
+`startRemoteWatch`.
+
+Add an explicit teardown:
+
+- `OrchestraService.shutdown()` — cancels every task registry (`mergeRequestNudge`, `remoteWatch`,
+  `diffStatDebounce`, `treeStatDebounce`, `childFanoutDebounce`).
+- `deinit` — cancels the same registries as a backstop. Note the weak-self fix is what makes `deinit`
+  *reachable at all*; today it could never run.
+- Wire `shutdown()` into `orchestrad`'s SIGTERM handler alongside `flushBeforeShutdown()`.
+
+### Fix 2 — custom serial executor on the fork-blocking actors
+
+Give `BranchLineage`, `RemoteParents`, and `WorktreeRegistry` a `DispatchSerialQueue`-backed
+executor (macOS 14+ / Swift 6; `DispatchSerialQueue` conforms to `SerialExecutor`):
+
+```swift
+public actor BranchLineage {
+    private let queue = DispatchSerialQueue(label: "orchestra.lineage")
+    public nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+}
+```
+
+The blocking `Proc.run` calls stay exactly where they are. They now park a **GCD** thread rather than
+a cooperative-pool thread. Consequences:
+
+- **Starvation becomes structurally impossible**: a fork can never touch the cooperative pool.
+- **Serialization semantics are unchanged**: the actor is still a serial executor, so the mailbox
+  still serializes calls one-at-a-time. Every documented invariant holds verbatim.
+- **Reentrancy is unchanged**: no new suspension points are introduced.
+- **Zero call-site churn**: `await lineage.read(…)` etc. are untouched.
+
+This is the same principle as PR5's `offActor` (keep blocking work off the pool), applied at the
+actor boundary instead of the call site — which is what these three actors need, since their
+exclusion is load-bearing and `offActor` would dissolve it.
+
+Cost: each of the three actors holds a GCD thread while forking. That is bounded (one per actor
+instance, serial) and is precisely what GCD threads are for.
+
+### Fix 3 — bound the git calls
+
+- `BranchLineage` gets an injectable timed `run` seam, mirroring the one `WorktreeManager` already
+  has:
+  ```swift
+  let run: @Sendable (_ argv: [String], _ timeout: Duration) throws -> ProcResult
+  ```
+  `timeout` is a **required** `Duration`, so an unbounded git call in this file is a compile error.
+  This bounds the forks *and* gives tests a blocking-git seam.
+- `RemoteParents.fetch`'s untimed `rev-parse` gets the same 20s bound its siblings already carry.
+- `Proc.run` gains a bounded **default** timeout (120s); `nil` becomes an explicit opt-out for the
+  rare site that genuinely needs to run unbounded. The ~30 call sites currently relying on the
+  unbounded default are audited; any that can legitimately exceed 120s (they already pass explicit
+  timeouts — e.g. `worktreeAddTimeout` = 600s) are confirmed unaffected.
+
+Defence in depth: the executor fix means a stuck fork cannot starve the pool, and the timeout means a
+stuck fork cannot hang *at all*. Either alone would fix the reproduction; both together close the
+class.
+
+## Testing
+
+Regression tests must **fail on the current code** and pass after.
+
+1. **Leak** — arm a card in `.mergeRequested`, drop the last strong reference to the service, assert a
+   `weak var` reference to it goes `nil` within a bounded wait. Fails today: the nudge Task pins it.
+2. **Teardown** — after `shutdown()`, no nudge or watch task survives (`mergeRequestNudgeActive` is
+   false for every card; the registries are empty).
+3. **Starvation** — more than `ProcessInfo.activeProcessorCount` `BranchLineage` instances, each
+   parked inside a blocking injected `run`, while an unrelated `Task` must still make progress within
+   a bounded time. Today this deadlocks the cooperative pool; with the executor fix it cannot.
+4. **Sibling leak** — the same leak assertion for `startRemoteWatch`.
+
+Acceptance (definition of done):
+
+- **The full `swift test` suite runs to completion and reports a result.** Today it does not, so
+  "tests pass" is not a meaningful claim until the suite terminates. Wall-clock time is measured and
+  reported.
+- Verified against **both agent backends** (claude + codex) per `CLAUDE.md`. The nudge path is
+  agent-agnostic; this confirms nothing regressed.
+
+## Explicitly out of scope
+
+Deliberately excluded to keep the diff reviewable and focused on the reproduced wedge:
+
+- **Test-suite git hermeticity.** `Tests/` has no `HOME` / `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_NOSYSTEM`
+  isolation, so all ~116 real-`git` forks read the developer's personal `~/.gitconfig` — invoking
+  `credential.helper = osxkeychain`, which the Claude Code sandbox denies. The suite's existing guard
+  `RemoteParents.remoteEnv()` (`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=/usr/bin/false`) is applied at
+  only 3 call sites and does **not** disable the credential helper — only `-c credential.helper=`
+  does. → **separate card.**
+- **Suite slowness** (12k-file slow-repo fixture, per-test tmux servers, per-test git repos, 73
+  hardcoded sleeps). Orthogonal to termination. → **separate card.**
+- **Blocking *file* I/O actors** (`TaskStore`, `Inbox`, `TrustLedger`, `RolloutTailer`). Same class,
+  but local file writes are milliseconds rather than multi-second forks and cannot realistically
+  starve the pool. → **follow-up audit.**
