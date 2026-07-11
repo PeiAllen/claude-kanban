@@ -38,9 +38,12 @@ extension OrchestraService {
             if aliveNames.contains(name) {
                 // Alive survivor → GRADUATE it: surviving a restart is strong evidence it passed startup.
                 // Clear the leaked `remain-on-exit` so it's monitored normally and a later exit vanishes →
-                // `.sessionVanished` (NOT misread as a startup abort). This can only fail if the session just
-                // died — in which case there is no armed pane to leak and the next reconcile marks it vanished,
-                // so the invariant holds either way.
+                // `.sessionVanished` (NOT misread as a startup abort). BEST-EFFORT (`try?`): we do NOT kill a
+                // live, healthy agent over a transient tmux `set-option` failure. If this one write fails, the
+                // flag stays ON and a later mid-run exit is cosmetically mislabeled `.spawnExitedImmediately`
+                // (still converges, no retry, no wedge). Accepted residual — see notes/designs/
+                // spawn-startup-abort-classification.md "Known limitations / accepted residuals" (a)/(b)/(c);
+                // the class-closing fix (persist the grace deadline on Task) is deferred there.
                 try? sessions.setRemainOnExit(name, window: "agent", on: false)
                 continue   // daemon-crash no-op / still-running
             }

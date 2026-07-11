@@ -82,17 +82,48 @@ is ON ⟺ the card is `spawnPending` (armed at spawn, cleared at graduation; a f
 pending). The one way a *non-pending* card can carry it ON is a daemon restart *during the grace while the
 pane is still alive* — the session survives armed but `spawnPending` is gone, so it would never graduate,
 and a later NORMAL mid-run exit would leave a dead pane the orphan branch would MISclassify as a startup
-abort. So `recoverSessions` clears remain-on-exit on every alive survivor's agent window: the card is then
-monitored normally and a later exit vanishes → `.sessionVanished` (correct), never a stuck-armed dead pane.
-Trade-off: a startup abort that straddles a restart may classify as `.sessionVanished` instead of
-`.spawnExitedImmediately` — acceptable (still converges correctly; no wedge, no wrong-terminal hang).
+abort. So `recoverSessions` clears remain-on-exit on every alive survivor's agent window: on success the
+card is monitored normally and a later exit vanishes → `.sessionVanished` (correct). Trade-off: a startup
+abort that straddles a restart may classify as `.sessionVanished` instead of `.spawnExitedImmediately` —
+acceptable (still converges correctly; no wedge, no wrong-terminal hang). NOTE: this boot clear (and the
+graduation toggle) is **best-effort** — see "Known limitations / accepted residuals" for the failure case.
 
-## Known limitations (accepted)
+## Known limitations / accepted residuals
 
-- **Residual `ensure`→arm race + `setRemainOnExit(on)` failure:** `remain-on-exit` is armed the statement
-  after `ensure`, and arming is best-effort (`try?`). An agent that exits in that sub-ms window (or a tmux
-  hiccup arming the option) tears the session down → `.gone` → falls back to the old `.sessionVanished`
-  (no evidence). Graceful degradation, not a regression; a true fix needs arming at session-creation time.
+All are **accepted** (owner 760000 + Allen): each still converges the card correctly — the residual is at
+worst a *cosmetic dead-reason mislabel* under a compound-rare condition, and every case is strictly better
+than the pre-fix behaviour (silent `.sessionVanished` / `deadDetail = nil` / no retry).
+
+- **(a) Best-effort tmux toggles.** Two `remain-on-exit` writes are best-effort: the boot clear for an
+  alive restart-survivor (`recoverSessions`, via `try?`) and, symmetrically, the arming right after
+  `ensure` at spawn. `SessionManager.setRemainOnExit` now throws on a tmux non-zero exit, but these two
+  call sites intentionally swallow it (the alternative — killing a *live, healthy* agent because one tmux
+  `set-option` blipped — is worse). So a **single tmux `set-option` failure** can leave the flag in the
+  wrong state.
+
+- **(b) Resulting cosmetic misclassification window.** Compound-rare path: daemon restarts *during* a
+  startup grace *while the pane is alive* → `spawnPending` is lost → the boot clear in (a) *fails once* →
+  the card runs on with `remain-on-exit` stuck ON and no pending record. A **later NORMAL mid-run exit**
+  then leaves a dead pane, which the continuous reconcile's orphan branch resolves as
+  `.spawnExitedImmediately` instead of the strictly-correct `.sessionVanished`. (The symmetric spawn-arm
+  failure in (a) degrades the *other* way — a genuine startup abort falls back to `.sessionVanished` with
+  no captured evidence.)
+
+- **(c) Why it's acceptable.** The card **always converges** — the orphan path does **no retry**, so there
+  is no wedge, hang, or bad-retry loop; only the `deadReason` label is off (`.spawnExitedImmediately` vs
+  `.sessionVanished`), and only when a tmux write fails *and* it coincides with a restart-mid-grace *and* a
+  later exit. Both are still `.dead` and user-recoverable. This is the deliberate cost of not force-killing
+  a live agent over a transient tmux error.
+
+  **FUTURE (explicitly deferred, not in this PR):** the true class-closing fix is to stop deriving
+  classification from ephemeral tmux state at all — persist the startup-grace deadline (and retry budget)
+  on the `Task` record so `spawnPending` survives a daemon restart and graduation/classification no longer
+  depend on a durable-vs-ephemeral coupling or a best-effort toggle. Deferred as a larger change; a natural
+  fit for the [[lifecycle-convergence-design]] persisted-phase reconciler.
+
+- **Residual `ensure`→arm race:** `remain-on-exit` is armed the statement *after* `ensure`. An agent that
+  exits in that sub-ms window tears the session down → `.gone` → falls back to `.sessionVanished` (no
+  evidence). Graceful degradation, not a regression; a true fix needs arming at session-creation time.
 
 ## Files
 
