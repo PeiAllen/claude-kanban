@@ -353,4 +353,15 @@ extension OrchestraService {
             DispatchQueue.global().async { cont.resume(with: Result { try work() }) }
         }
     }
+
+    /// Non-throwing twin of `offActor` for pure, read-only work that returns a value and never throws
+    /// (e.g. the git-only `TreeStat`/`DiffStat` recomputes fired from the hot report funnel). Offloading
+    /// the blocking `git` subprocess off the actor lets the actor keep servicing other cards' reports and
+    /// events instead of serializing behind one card's `git diff`/`rev-list` — the branch-tree contention.
+    /// Only the read-only compute moves off-actor; the caller keeps every state read/write/emit on-actor.
+    nonisolated func offActorValue<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global().async { cont.resume(returning: work()) }
+        }
+    }
 }
