@@ -44,8 +44,19 @@ import time
 
 WAIT_POLL = 0.25
 NOTIFY_EVERY = 15.0
-DEFAULT_TIMEOUT = 300.0          # build lock: bounded, then fail OPEN
-DEFAULT_STRICT_TIMEOUT = 3600.0  # ship lock: long, then fail CLOSED
+
+# The fail-open bound must EXCEED the queue it is meant to absorb, or it defeats the lock.
+# Measured the hard way: at 300s, three contending cards each waited out the timeout, gave up,
+# ran unlocked, and re-created the very concurrency the mutex exists to prevent (walls went
+# 450s/1025s/1025s instead of ~165/330/495). A clean queue of N cards makes the last one wait
+# (N-1) x 165s, so 300s is under water at N=3.
+#
+# 1200s covers a realistic queue (~7 deep) and only trips on a pathological/stuck holder. It
+# does NOT introduce a new failure mode: today three concurrent builds take 520s EACH, so a
+# card that queues is strictly better off than it is now — and a build long enough to hit a
+# caller's deadline was already hitting it before this change.
+DEFAULT_TIMEOUT = 1200.0         # build lock: bounded, then fail OPEN
+DEFAULT_STRICT_TIMEOUT = 3600.0  # ship lock: long, then fail CLOSED (never unlocked)
 
 
 def repo_root() -> str:
