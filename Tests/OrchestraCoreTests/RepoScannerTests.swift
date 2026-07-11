@@ -114,6 +114,16 @@ struct RepoScannerScanTests {
         let found = t.scan(root: "/r", maxDepth: 4)
         #expect(found == ["/r/apple", "/r/Beta", "/r/Zed"])
     }
+
+    @Test("orders repositories by newest local commit, then deterministic fallbacks")
+    func recentCommitOrder() {
+        let repos = ["/repos/Zed", "/repos/alpha", "/repos/Beta", "/repos/empty"]
+        let timestamps = ["/repos/Zed": 100, "/repos/alpha": 300, "/repos/Beta": 100]
+
+        let found = RepoScanner.orderByMostRecentCommit(repos) { timestamps[$0] }
+
+        #expect(found == ["/repos/alpha", "/repos/Beta", "/repos/Zed", "/repos/empty"])
+    }
 }
 
 @Suite("RepoScanner.discover — real filesystem")
