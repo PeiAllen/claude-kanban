@@ -52,6 +52,11 @@ static void orchestra_install_hermetic_git_env(void) {
         "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_INDEX_VERSION",
         "GIT_TEMPLATE_DIR",               // would seed hooks into every `git init` a test runs
         "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",  // an inherited fixed date would stamp every test commit
+        // GIT_EXTERNAL_DIFF replaces git's BUILTIN diff with a program of the parent's choosing —
+        // which would hijack the very code under test here (DiffService/DiffProvider are built on
+        // `git diff`). The rest are determinism leaks: diff flags, and the object/ref formats a
+        // `git init` picks.
+        "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_DEFAULT_HASH", "GIT_DEFAULT_REF_FORMAT",
     };
     for (size_t i = 0; i < sizeof(inherited) / sizeof(inherited[0]); i++) unsetenv(inherited[i]);
 

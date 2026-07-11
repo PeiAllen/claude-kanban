@@ -128,7 +128,8 @@ struct GitHermeticityTests {
         for key in ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE",
                     "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_TEMPLATE_DIR",
-                    "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"] {
+                    "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",
+                    "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_DEFAULT_HASH", "GIT_DEFAULT_REF_FORMAT"] {
             #expect(env[key] == nil, "inherited \(key)=\(env[key] ?? "") would defeat hermeticity")
         }
     }
