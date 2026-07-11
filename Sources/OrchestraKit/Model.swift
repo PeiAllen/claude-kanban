@@ -336,8 +336,17 @@ public func diffBaselineLabel(_ base: DiffBase, parentBranch: String? = nil) -> 
 /// `stale` = parent advanced (the `↓N` badge); `restackNeeded` = recorded base is no longer the
 /// parent tip's ancestor (parent rewrote/shipped); `mergeRequested` = the child sent a merge-request
 /// and is waiting on its (live) parent to squash-merge it (O2 — the "waiting" badge, sticky until
-/// `shipped`/`synced`/`set-parent` clears it). (Replaces the never-produced `parentMerged`, S4.)
-public enum TreeState: String, Codable, Sendable { case inSync, stale, restackNeeded, mergeRequested }
+/// `shipped`/`synced`/`set-parent` clears it); `mergeStalled` = that wait was GIVEN UP ON — the parent
+/// ignored every reminder, so the re-nudge loop stopped and the card face says so (O2 backoff). (Replaces
+/// the never-produced `parentMerged`, S4.)
+public enum TreeState: String, Codable, Sendable {
+    case inSync, stale, restackNeeded, mergeRequested, mergeStalled
+
+    /// A merge-request is outstanding on this card — still being nudged (`mergeRequested`) or given up on
+    /// (`mergeStalled`). Both badges are STICKY (the tree-stat funnel must not clobber them while the child
+    /// waits on its parent) and both are cleared by the same verbs: `shipped` / `synced` / `set-parent`.
+    public var isMergePending: Bool { self == .mergeRequested || self == .mergeStalled }
+}
 
 /// Per-child tree status for the card face (the `↓N` badge + restack signal). Small + persisted on
 /// `Task`, exactly like `DiffStat`.
@@ -345,8 +354,28 @@ public struct TreeStat: Codable, Sendable, Equatable {
     public var state: TreeState
     public var behind: Int            // commits the parent is ahead of the recorded base (the ↓N badge)
     public var parentIsRemote: Bool
-    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false) {
+    /// Re-nudge reminders sent so far for a pending merge-request — NOT counting the t=0 request itself.
+    /// Persisted (rather than held in the timer Task) precisely because `rebuildMergeRequestNudges()`
+    /// re-arms the loop on every daemon start: an in-memory counter would reset each restart, so the
+    /// give-up cap would never fire. The loop is stateless — it reads this, sleeps `nudgeDelay(base:attempt:)`,
+    /// then writes it back.
+    public var nudges: Int
+
+    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false, nudges: Int = 0) {
         self.state = state; self.behind = behind; self.parentIsRemote = parentIsRemote
+        self.nudges = nudges
+    }
+
+    // Hand-rolled decode for ONE reason: `nudges` is new, and `Task` decodes `treeStat` with
+    // `decodeIfPresent` (below), which RETHROWS a nested `keyNotFound` rather than swallowing it. With a
+    // synthesized decode, every card persisted before this field existed would fail to load. Same lenient-
+    // default discipline `Task.init(from:)` already uses.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.state = try c.decode(TreeState.self, forKey: .state)
+        self.behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+        self.parentIsRemote = try c.decodeIfPresent(Bool.self, forKey: .parentIsRemote) ?? false
+        self.nudges = try c.decodeIfPresent(Int.self, forKey: .nudges) ?? 0
     }
 }
 

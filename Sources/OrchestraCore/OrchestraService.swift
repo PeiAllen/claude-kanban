@@ -66,6 +66,10 @@ public actor OrchestraService {
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
+    /// Reminders to send before giving up and flipping the child to the terminal `mergeStalled` badge.
+    /// With the 300s base and `nudgeDelay`'s 12× ceiling that is 5m/10m/20m/40m/1h/1h/1h/1h — roughly 5¼
+    /// hours of prodding. A parent that ignored 8 reminders will not act on the 9th.
+    var mergeRequestNudgeCap: Int = 8
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a

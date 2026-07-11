@@ -228,6 +228,12 @@ struct CardView: View {
                 Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
                     .foregroundStyle(theme.amber.text)
                     .help("Merge requested — waiting for the parent card to squash-merge this branch")
+            case .mergeStalled:
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").font(F.ui(8.5))
+                    .foregroundStyle(theme.red.text)
+                    .help("Merge-request unanswered — \(ts.nudges) reminders sent and the parent card never "
+                          + "merged this branch. Merge it yourself, or re-send the merge-request to re-arm "
+                          + "the reminders.")
             case .inSync:
                 EmptyView()
             }

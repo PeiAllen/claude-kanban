@@ -110,6 +110,12 @@ struct BoardCardCell: View {
                     .font(.caption2)
                     .foregroundStyle(theme.amber.text)
                     .accessibilityLabel("Merge requested — waiting for the parent card")
+            case .mergeStalled:
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(theme.red.text)
+                    .accessibilityLabel("Merge-request unanswered after \(ts.nudges) reminders — "
+                                        + "the parent card never merged this branch")
             case .inSync:
                 EmptyView()
             }

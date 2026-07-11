@@ -121,7 +121,19 @@ extension OrchestraService {
         }
     }
 
+    // MARK: - backoff schedule
+
+    /// Delay before reminder `attempt` (0-based): doubles from the base, ceilinged at **12× the base**.
+    /// The ceiling is base-relative rather than absolute so tests injecting a 20ms base get a 240ms ceiling
+    /// and stay fast. The shift operand is clamped BEFORE shifting — an unclamped `1 << attempt` overflows
+    /// and traps on a large persisted count (a hand-edited or corrupted card), which is a crash, not a long
+    /// sleep.
+    static func nudgeDelay(base: Duration, attempt: Int) -> Duration {
+        base * min(1 << min(max(attempt, 0), 8), 12)
+    }
+
     // MARK: - test-support
     func setMergeRequestNudgeInterval(_ d: Duration) { mergeRequestNudgeInterval = d }
+    func setMergeRequestNudgeCap(_ n: Int) { mergeRequestNudgeCap = n }
     func mergeRequestNudgeActive(_ id: UUID) -> Bool { mergeRequestNudge[id] != nil }
 }
