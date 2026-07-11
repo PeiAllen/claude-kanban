@@ -59,7 +59,7 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | Provisional delivery | `test_provisionalBlankLaunchCarriesPrompt` (argv positional = payload; lands `.running`), `test_neverPromptedStrandKilled` (arm delivers without a human) |
 | Delivery arm | `test_armRedrivesIdleLagNoop` (level trigger), `test_armSkipsPermissionWaiting`, `test_armSkipsRunning`, `test_armRevivesDeadResumable`, `test_deadUnresumableGoesStuck`, `test_armBackoffCapped` |
 | Attempt accounting | `test_expiryChargedOncePerToken`, `test_confirmResetsAttempts`, `test_ackWithoutNotifyCannotSuppressStuck` |
-| Stuck lifecycle | `test_stuckFlipStableStopsClaims`, `test_sendClearsStuckAndResetsBudget`, `test_stuckGuardRevalidatedOnActor` (send-reset vs stale flip), `test_stuckSurvivesRestartViaAge` |
+| Stuck lifecycle | `test_stuckFlipStableStopsClaims`, `test_sendClearsStuckAndResetsBudget`, `test_stuckGuardRevalidatedOnActor` (send-reset vs stale flip), `test_stuckSurvivesRestartViaAge` (**remake**; persisted `createdAt` age + persisted `deliveryStuckSince` re-read from disk) |
 | wake chokepoint | `test_deliveriesInFlightSingleWinner`, `test_activeCliWaitDefers` (nativeReinvoke), `test_outstandingLeaseBlocksColdFallback` (channel ack gap + held relaunch), `test_pushFalseReleasesThenColdSameCall`, `test_archiveRaceReleasesNotConfirms`, `test_relaunchClaimedRemoved` (symbol gone; behavior via single-winner test) |
 | wakeIfPending | `test_liveEdgeGatesOnHasClaimable` (held lease → no re-wake) |
 | Attach grace | `test_unattachedChannelCardDefersColdWithinGrace`, `test_graceExpiryFallsCold` (bridge-less delivers), `test_attachClearsGraceStamp` |
@@ -67,10 +67,10 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | Source gating | `test_channelWaitRejectedFromMcp`, `test_bridgeSourceAccepted`, `test_relayAllowlistRejectsBuiltins` (CallTool filter) |
 | ChannelPump | `test_pumpLongTimeoutOutlivesHold` (stub transport, 55s hold vs 70s deadline), `test_pumpRepollsWithoutAckOnNotifyFailure`, `test_pumpReconnectsWithBackoff` |
 | SDK patch | `test_capabilitiesEncodeExperimental` (omitted-when-nil; round-trips `["claude/channel": …]`) |
-| Claude enablement | `test_channelsProbeCachesOnlySuccess`, `test_argvGainsFlagWhenOn`, `test_capabilityComputesNativeReinvokeWhenOff` (byte-identical argv/behavior), `test_consentConfigWritesNewKeys` |
+| Claude enablement | `test_channelsProbeCachesOnlySuccess`, `test_argvGainsFlagWhenOn`, `test_capabilityComputesNativeReinvokeWhenOff` (byte-identical argv/behavior), `test_consentConfigWritesNewKeys`, `test_registryInjectsChannelsEnabledFromConfig` (construction-time plumbing; restart-scoped) |
 | Consent choreography | `test_awaitPaneMatchThenChord` (scripted pane text; content-match, never blind Enter), `test_consentTimeoutNonFatal`, `test_noStepsZeroLatency` |
 | `send` verb | `test_sendKindConvergence` (VerbContractTests update), `test_sendRequiresId` + stamp-if-absent at CLI/bridge/BoardStore seams, `test_sendReturnsMessageIdAndCard`, `test_sendEmitsNoTaskEvent` (rev exception pinned) |
-| Surfacing | `test_needsYouShowsDeliveryStuck` (urgency slot), `test_pushTriggerDeliveryStuck` (prefs default + transition + payload body), `test_stuckClearsBadge` |
+| Surfacing | `test_needsYouShowsDeliveryStuck` (urgency slot), `test_pushTriggerDeliveryStuck` (prefs default + transition + payload body), `test_stuckClearsBadge`, **tracker one-shot battery**: `test_stuckNotifiesOnceOnFlip`, `test_stuckRepeatUpsertsSuppressed`, `test_unstickClearsTrackerState`, `test_reflipNotifiesAgain` (the `AttentionTracker` per-card stuck state) |
 | Teardown | `test_teardownReleasesAllLeasesAndDetaches`, `test_reopenDeliversRetainedMessages` |
 | E — safety pin | `test_backgroundTasksHoldIsTypeAgnostic` (subagent-type fixture keeps `.running`), `test_idleWakeRestartEmitsActivity` |
 | Config | `test_deliveryKnobDefaults`, `test_configForwardCompat` (old config decodes) |
@@ -80,8 +80,8 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | Scenario | Tests |
 |---|---|
 | Crash between resume intent and launch | `test_seedSurvivesCrashBeforeLaunch` (remake; lease re-owned; messages delivered) |
-| Crash between claim and push | `test_channelClaimCrashExpiresAndRedelivers` |
-| Crash after confirm, before ring persist visibility | `test_confirmIsSingleAtomicWrite` (confirm+ring one persist) |
+| Crash between claim and push | `test_channelClaimCrashExpiresAndRedelivers` (**remake**; lease read back from `inbox.json`, expiry drives re-delivery on the fresh service) |
+| Crash after confirm, before ring persist visibility | `test_confirmIsSingleAtomicWrite` (confirm+ring one persist; **remake** asserts the on-disk envelope carries both or neither) |
 | Relaunch mid-continuation | `test_epochBumpMidContinuationRedeliversNotLoses` (stale confirm no-ops; seed re-owns) |
 | Concurrent send + arm + Stop | `test_concurrentStartersSingleClaim` (one batch, no double-lease — mirrors `SpawnRaceTests` style) |
 | Archive during in-flight wake | `test_archiveMidWakeRetainsMessages` (release-not-confirm; reopen delivers) |

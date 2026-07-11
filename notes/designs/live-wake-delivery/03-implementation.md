@@ -33,16 +33,16 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]", "[[05-pr-tree]]"]
 | Tail watermark | `finishLaunch` (relaunch flavor): after the predecessor kill inside `sessions.ensure`, before agent launch — `tailer.eofOffset(path:)` → stored on the lease (`tailWatermark`+`tailPath`) via an Inbox update in the same claim record | `OrchestraService+Converge.swift` (`finishLaunch`), `RolloutTailer.swift:16-35` |
 | `TailedLine` provenance | `RolloutTailer.newLines` returns `[TailedLine {line, startOffset, path}]`; `pollTelemetry` threads provenance to `report()`'s fileTail path; `report()` calls `confirmHeldRelaunch` when `path == lease.tailPath && startOffset ≥ tailWatermark` (hook path: `observedEpoch == lease.epoch`) | `RolloutTailer.swift:16-35`, `OrchestraService.swift:339-369`, `+Report.swift:91-137` |
 | `send` flip + required id | Catalog `kind: .convergence` (gate unchanged); params gain required `id` (CLI `--id`/mint, bridge + BoardStore stamp-if-absent — the PR6a spawn pattern); handler: dedup (pending ∪ ring) early-return → clear stuck + reset attempts → enqueue → `wake` → return `{messageId, card}` | `CommandCatalog.swift:92-95`, `CommandRegistry.swift:105-110`, `OrchestraService.swift:609-621` |
-| Delivery-stuck surfacing | `Task.deliveryStuckSince: Date?` (5-point Codable template like `pendingSeed`); `AttentionReason.deliveryStuck` (📪, between `died` and `humanTurn`) + `reason(for:)` branch; `NotifyTrigger.deliveryStuck` + defaults + `AttentionTransition` + APNs body; iOS/mac render via NeedsYou row (no `DisplayState` change) | `Model.swift:406,501,547,605`; `NeedsYouQueue.swift:13-70`; `NotificationPrefs.swift:12-65`; `Push.swift:37-47,152-158` |
+| Delivery-stuck surfacing | **Field vs surfacing split (first-reference rule):** `Task.deliveryStuckSince: Date?` (5-point Codable template like `pendingSeed`) ships with B2's confirm helper, UI-less; B5b adds `AttentionReason.deliveryStuck` (📪, between `died` and `humanTurn`) + `reason(for:)` branch; `NotifyTrigger.deliveryStuck` + defaults + APNs body; **`AttentionTracker` gains per-card stuck state** (fire once on false→true, clear on unstick/archive, re-fire on re-flip — `lastPhase` alone can't one-shot this); iOS/mac render via NeedsYou row (no `DisplayState` change) | `Model.swift:406,501,547,605`; `NeedsYouQueue.swift:13-70`; `NotificationPrefs.swift:12-65`; `Push.swift:37-47,59-76,152-158` |
 | Teardown duties | TeardownStepper gains `inbox.releaseAll(cardId)` + `broker.detachAll(cardId)` before the flip to complete | `PhaseStepper.swift:211-243` |
 | Config knobs | `deliveryLeaseTimeout` 60 · `deliveryStuckAfter` 300 · `channelAttachGrace` 15 · `claudeChannels` true — additive-optional `Int`/Bool via the custom decoder (PR3a precedent) | `OrchestraKit/Config.swift` |
 | Vendored SDK + `experimental` | Move the pinned `swift-sdk` checkout in-tree (`Vendor/swift-sdk`), flip `Package.swift` to a path dependency, add `public var experimental: [String: Value]? = nil` to `Server.Capabilities` (+ init param; synthesized Codable) | `Package.swift:73-77`; SDK `Server.swift:109-132` |
-| `channel-wait` + `ChannelBroker` | ControlServer built-in beside `hook`: parse `{ref, epoch, ack?}`, confirm ack, park in a new `ChannelBroker` (in-memory actor: `(cardId, epoch, conn)`-keyed continuations, supersede, ~55s server timer, `revokeOlderEpochs` on funnel epoch bump via a service hook); universal per-connection close hook (set `onBroken` for every conn; `handleReaderEOF` → `broker.detach`) | `ControlServer.swift:14,63-76,105-126,279-318` |
-| `.bridge` source + allowlist | `ActivitySource` gains `bridge`; dispatch accepts `channel-wait` from `.bridge` only, rejects built-ins from `.mcp` (defense-in-depth — the real guard is the bridge relay allowlist `params.name ∈ mcpExposed`) | `RPC.swift:4-17`, `ControlServer.swift:80-82`, `orchestra-mcp/main.swift:38-105` |
-| `ChannelPump` | New task in orchestra-mcp `main.swift`: dedicated `ControlClient(callTimeout: 70, source: .bridge)`, loop `channel-wait(ref: ORCH_TASK_ID, epoch: ORCH_EPOCH, ack: lastToken)` → `server.notify(ClaudeChannelNotification(payload))` → set/clear `lastToken`; reconnect-with-backoff; runs only when env present | `orchestra-mcp/main.swift:9,21-25,108-110`; `ControlClient.swift:64` (constructor timeout) |
-| Claude channels enablement | `channelsSupported` `--help` probe (copy `probeBypassHookTrust` incl. definitive-only caching); argv flag in `start`/`resume`; `~/.claude.json` writes for `bypassPermissionsModeAccepted` + `enableAllProjectMcpServers` (extend `ClaudeTrust.grant`); `capabilities` computed: `.controlChannel` iff `config.claudeChannels && channelsSupported` | `ClaudeCodeAdapter.swift:209-232,314-332`; probe model `CodexAdapter.swift:208-222`; `AgentCapabilities.swift:135-146` |
+| `ChannelBroker` (type in B4, wired in D1) | **B4 introduces the actor + service property as a starved skeleton** — `isAttached`/`push`/`detach`/`detachAll`/`revokeOlderEpochs` fully declared, nothing ever parks, so the wake ladder / teardown duties / funnel hook compile and stay dark ("dark" = unreachable, never undeclared). **D1 wires it**: the `channel-wait` built-in beside `hook` (parse `{ref, epoch, ack?}`, confirm ack, park `(cardId, epoch, conn)`-keyed, supersede, ~55s timer) + the universal per-connection close hook (set `onBroken` for every conn; `handleReaderEOF` → `broker.detach`) | `ControlServer.swift:14,63-76,105-126,279-318` |
+| `.bridge` source + allowlist | `ActivitySource` gains `bridge` — **exhaustive-switch consumers updated**: `SurfaceGrantResolver` (bridge = non-human, denied for trust grants) + `ActivityPopover`'s color switch; dispatch accepts `channel-wait` from `.bridge` only, rejects built-ins from `.mcp` (defense-in-depth — the real guard is the bridge relay allowlist `params.name ∈ mcpExposed`) | `Model.swift:983-985` (the enum; `RPC.swift`'s `source` is a bare String), `TrustGrant.swift:22-25`, `ActivityPopover.swift:123-129`, `ControlServer.swift:80-82`, `orchestra-mcp/main.swift:38-105` |
+| `ChannelPump` | **New library target `OrchestraMCPBridge`** (deps: OrchestraKit + MCP) carrying the pump + `ClaudeChannelNotification`; `orchestra-mcp` becomes a thin main importing it — an executable target can't be imported by tests, the library can (new `OrchestraMCPBridgeTests`). Pump: dedicated `ControlClient(callTimeout: 70, source: .bridge)`, loop `channel-wait(ref: ORCH_TASK_ID, epoch: ORCH_EPOCH, ack: lastToken)` → `server.notify` → set/clear `lastToken`; reconnect-with-backoff; runs only when env present | `Package.swift:73-77`; `orchestra-mcp/main.swift:9,21-25,108-110`; `ControlClient.swift:64` |
+| Claude channels enablement | `channelsSupported` `--help` probe (copy `probeBypassHookTrust` incl. definitive-only caching); argv flag in `start`/`resume`; `~/.claude.json` writes for `bypassPermissionsModeAccepted` + `enableAllProjectMcpServers` (extend `ClaudeTrust.grant`); **config reaches the adapter by construction** — `ClaudeCodeAdapter(channelsEnabled:)` injected where the `AgentRegistry` is built from `Config` (capabilities are computed from the stored flag + probe; a config change takes effect at daemon restart, like all Config) | `ClaudeCodeAdapter.swift:209-232,314-332`; probe model `CodexAdapter.swift:208-222`; `AgentCapabilities.swift:135-146`; registry build in `orchestrad`/service init |
 | Consent choreography | `Adapter.consentChoreography(ctx) -> [ConsentStep]` (default `[]`); `SessionManager.awaitPaneMatch` = bounded `capture` poll (~500ms cadence) then `sendChord`; run inside `finishLaunch` between ensure and readiness-await; timeout logged non-fatal | `Adapter.swift:31-64`; `SessionManager.swift:222-269` |
-| E — clean-restart hardening | Claude bg-hold pin test (subagent-type fixture); cold idle-wake emits a dedicated activity line (`.info`, "idle wake → clean restart") in `wake`'s cold branch; docs notes for grace-park + app-server deferred seams | `ClaudeCodeAdapter.swift:79-87`; `ReportTests.swift:107-133`; docs |
+| E — clean-restart hardening | Claude bg-hold pin test (subagent-type fixture); cold idle-wake emits a dedicated activity line ("idle wake → clean restart") in `wake`'s cold branch via the **existing** activity kind the resume path uses (no `ActivityKind` enum change — ships with B4's ladder); docs notes for grace-park + app-server deferred seams | `ClaudeCodeAdapter.swift:79-87`; `ReportTests.swift:107-133`; docs |
 
 ## Key mechanics (the load-bearing "how")
 
@@ -51,6 +51,9 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]", "[[05-pr-tree]]"]
   `deliveryStuckSince` if set, resets `deliveryAttempts`, removes the token from the per-card
   outstanding set. Every chokepoint (Stop confirm, channel ack, stepper readiness, held-relaunch
   handler) funnels through it — the archive guard and attempt-reset can't be forgotten at one site.
+  **All the state it touches is declared with it in B2** (`deliveryStuckSince` field,
+  `deliveryAttempts`, `outstandingTokens`) — the first-reference rule; B4 adds the *arm* that
+  reads this state, B5b the surfacing.
 - **Claim epoch always comes from the card's current `sessionEpoch`** read on the service actor
   at dispatch (wake/payloadForStop/stepper) — the Inbox never guesses epochs.
 - **The arm charges expiry exactly once:** `outstandingTokens[cardId]` is populated at dispatch
@@ -93,30 +96,33 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]", "[[05-pr-tree]]"]
 
 ## Sequencing / build order
 
-Nine PRs, correctness-first — full split in [[05-pr-tree]]:
+Ten PRs, correctness-first — full split in [[05-pr-tree]]:
 
 1. **B1 inbox-claim-api** — types, envelope migration, claim/confirm/release/ring, compose. The
    API ships with its battery; no caller flips yet (old drain paths still compile + pass).
-2. **B2 stop-drain-lease** — sibling field end-to-end + `payloadForStop` + confirm chokepoint.
-   Flips the busy path to claim/confirm.
+2. **B2 stop-drain-lease** — **all delivery-tracking state declarations** (`deliveryStuckSince`
+   field, `deliveryAttempts`, `outstandingTokens`, `confirmDelivery` + `ConvergeContext`
+   callback) + sibling field end-to-end + `payloadForStop`. Flips the busy path.
 3. **B3 relaunch-seed-claims** — de-drain `resumeInCard`, stepper claims, watermark +
    `TailedLine`, held-relaunch confirm, `ReadinessResult.via`. Flips the cold path.
-4. **B4 delivery-arm-wake** — `wake` rewrite (retire `resumeSeedWake`/`relaunchClaimed`), the arm,
-   attempts/stuck state, knobs. The channel branch lands dark (no adapter declares the transport).
-5. **B5 send-flip-surfacing** — catalog flip + required id + handler reshape; stuck badge +
-   notification; editor force-release semantics.
-6. **D1 channel-broker-pump** — vendored SDK + `experimental`; `channel-wait`/`ChannelBroker` +
-   close hook + `.bridge` + relay allowlist; `ChannelPump` + notification. Transport complete,
-   still dark.
-7. **D2 claude-channels-on** — probe + argv + consent writes + choreography + computed
-   `wakeTransport` flip + attach grace. Channels go live behind `claudeChannels`.
-8. **E1 codex-clean-restart** — bg-hold pin test, idle-wake activity line, deferred-seam docs.
-9. **F e2e-docs** — isolated-stack delivery smoke (both agents) + docs/ sweep.
+4. **B4 delivery-arm-wake** — **`ChannelBroker` skeleton (type + property, starved)**, `wake`
+   rewrite (retire `resumeSeedWake`/`relaunchClaimed`), the arm, stuck flip, teardown duties,
+   knobs, idle-wake activity line. The channel branch compiles against the skeleton and is dark.
+5. **B5a send-id-flip** — catalog flip + required id + handler reshape + editor semantics.
+6. **B5b stuck-surfacing** — badge + tracker one-shot + notification trigger + APNs.
+7. **D1 channel-broker-pump** — vendored SDK + `experimental`; `OrchestraMCPBridge` library
+   target (pump + notification) + tests; `channel-wait` wiring the B4 broker + close hook +
+   `.bridge` (+ its switch consumers) + relay allowlist. Transport complete, still dark.
+8. **D2 claude-channels-on** — probe + injected `channelsEnabled` + argv + consent writes +
+   choreography + computed `wakeTransport` flip + attach grace. Channels live behind config.
+9. **E1 codex-clean-restart** — bg-hold pin test, deferred-seam docs.
+10. **F e2e-docs** — isolated-stack delivery smoke (both agents) + docs/ sweep.
 
-Rationale for the two non-obvious orderings: the **arm lands after both confirm paths exist**
-(B2/B3) so a level-triggered retry never re-drives a path that still pre-drains; the **channel
-branch ships dark in B4** and lights up only when D2 flips the capability — each PR is
-independently green and behavior-gated.
+Rationale for the three non-obvious orderings: the **arm lands after both confirm paths exist**
+(B2/B3) so a level-triggered retry never re-drives a path that still pre-drains; **every symbol
+is declared in the PR of its first reference** (delivery state in B2, broker type in B4 — both
+gate CRITICALs); the **channel branch ships dark in B4** and lights up only when D2 flips the
+capability — each PR is independently compilable, green, and behavior-gated.
 
 ## Diagrams
 
@@ -175,15 +181,16 @@ sequenceDiagram
 | L2 contract | Implemented by (PR) |
 |-------------|---------------------|
 | Inbox claim API + envelope + ring + compose | B1 |
-| Route: stopDrain (sibling field, fence, confirm) | B2 |
+| Route: stopDrain (sibling field, fence, confirm) + delivery state decls + confirm helper | B2 |
 | Route: relaunchSeed (de-drain, stepper claims, watermark, held confirm) | B3 |
-| Delivery arm + attempts + stuck + wake chokepoint + knobs | B4 |
-| `send` flip + required id + rev exception + surfacing + editor semantics | B5 |
-| ChannelBroker/`channel-wait`/close hook/`.bridge`/allowlist/pump/SDK patch | D1 |
-| Claude enablement (probe, argv, consent, computed transport, attach grace) | D2 |
-| E — safety-gate pin + observability + deferred seams | E1 |
+| Delivery arm + stuck flip + wake chokepoint + broker skeleton + knobs + activity line | B4 |
+| `send` flip + required id + rev exception + editor semantics | B5a |
+| Delivery-stuck surfacing (badge, tracker one-shot, notification) | B5b |
+| `channel-wait` wiring/close hook/`.bridge`+consumers/allowlist/pump target/SDK patch | D1 |
+| Claude enablement (probe, injected config, argv, consent, computed transport, attach grace) | D2 |
+| E — safety-gate pin + deferred seams | E1 (activity line: B4) |
 | Confirm helper (archive guard, resets) | B2 introduces, B3/B4/D1 reuse |
-| Lease lifecycle disposition (teardown, epoch revoke) | B4 (teardown duties, funnel hook) |
+| Lease lifecycle disposition (teardown, epoch revoke) | B4 (teardown duties, funnel hook — against the in-PR skeleton) |
 
 ## Decisions made
 
@@ -192,6 +199,10 @@ sequenceDiagram
 | One `confirmDelivery` helper funnels every confirm | The archive guard + attempt-reset + ring-record are per-site bugs waiting to happen otherwise | Per-chokepoint inline logic |
 | The arm lands after both confirm paths (B2/B3 before B4) | A level-triggered retry over a still-pre-draining path would multiply the very loss being fixed | Arm-first (would need throwaway compat shims) |
 | Channel branch ships dark in B4, lit by D2's capability flip | Route selection is B-machinery; keeping the flip config+probe-gated makes every PR independently green and revertable | Landing wake's channel branch inside D |
+| First-reference rule: state in B2, broker type in B4 | Both gate reviewers found first-use-before-declaration splits — "dark" must mean unreachable, never undeclared | Declaring state/types in the PR that "owns" their behavior |
+| Pump/notification in a library target (`OrchestraMCPBridge`) | Executable targets can't be imported by tests; the unit battery needs the module | Testing the pump only via E2E |
+| `AttentionTracker` gains per-card stuck state | `lastPhase` alone can't one-shot a non-phase transition (fire once, clear, re-fire) | Firing the trigger on every upsert of a stuck card |
+| Adapter config by construction (`channelsEnabled` injected at registry build) | `Adapter.capabilities` is parameterless; Config is boot-loaded, so restart-scoped injection is the honest semantic | A capabilities(config:) signature change across all adapters |
 | Vendor move = plain checkout copy + path dep (no submodule) | Deterministic, offline, patch-in-diff; the SDK is pinned anyway | git submodule (adds clone friction for zero benefit) |
 | `ConsentStep` strings live in one adapter const | The dev-channels dialog copy is research-preview volatile; one place to re-probe | Scattered literals |
 | Stuck badge renders from `Task.deliveryStuckSince` directly in NeedsYou | Avoids widening the `displayState(phase:connection:)` signature for one field | A `DisplayState.deliveryStuck` field (signature churn across 3 clients) |

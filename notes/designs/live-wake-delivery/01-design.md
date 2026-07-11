@@ -3,7 +3,7 @@ project: claude-kanban (Orchestra)
 feature: live-wake-delivery
 layer: 1
 title: Initial Design — No-restart live wake + reliable send delivery
-status: draft
+status: approved
 created: 2026-07-10
 updated: 2026-07-10
 links: ["[[index]]", "[[../codex-wake-delivery/01-design|codex-wake-delivery]]", "[[../agent-provider-interface|agent-provider-interface]]", "[[../first-class-hooks/01-design|first-class-hooks]]", "[[../lifecycle-convergence-design|lifecycle-convergence]]"]
@@ -349,10 +349,12 @@ flowchart LR
 - [x] **Codex clean path — RESOLVED (with a UX cost Claude doesn't have).** App-server `turn/start` is a real
   no-restart control channel (proven), but plain app-server is single-client and the multi-client broker is
   Noise-encrypted — so a `turn/start` wake **costs the attached codex TUI** (Option A: Orchestra renders from
-  the event stream) or a **Noise-handshake impl** (Option B). Recommendation: **parked Stop-hook near-term**
-  (keeps the SwiftTerm-on-tmux TUI, needs only Layer A), **app-server Option A as the long-horizon upgrade**
-  (unlocks steer/interrupt, when Orchestra is ready to render Codex from structured events). *Asymmetry to
-  accept:* Claude channels keep the TUI for free; Codex's control channel does not.
+  the event stream) or a **Noise-handshake impl** (Option B). ~~Recommendation: parked Stop-hook near-term~~
+  **FINAL DECISION (2026-07-10, supersedes the interim park recommendation): Codex idle-cold wake = a
+  clean restart** (Layer E — busy-path drain covers the common case; B's claim/confirm + the merged terminal
+  reconnect make the rare cold restart safe); the **parked Stop-hook is a deferred research seam only**
+  (revisit if idle-wake restarts prove frequent), **app-server Option A the long-horizon upgrade**. *Asymmetry
+  to accept:* Claude channels keep the TUI for free; Codex's control channel does not.
   **Web research (2026-07-10) reinforces A over B:** TUI+automation co-presence (Option B) is a *known,
   unmerged* upstream gap — RFC [openai/codex#21551] (multi-subscriber fanout patch, no maintainer reply),
   and multi-client only works over the "experimental/unsupported" WS transport (stdio/unix are single-client).

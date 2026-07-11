@@ -26,9 +26,9 @@ complaints; human review of the whole plan at the end — Allen's standing instr
 |-------|----------|--------|
 | 1 — Initial design | [[01-design]] | approved (research phase; re-baselined on post-merge `main`, 2026-07-10) |
 | 2 — Contract | [[02-contract]] | approved (agentic gate: Opus 4.8 + GPT-5.6 Terra clean after 6/8 rounds, 2026-07-10) |
-| 3 — Implementation | [[03-implementation]] | not started |
-| 3 — Tests | [[04-tests]] | not started |
-| 3 — PR tree (execution order) | [[05-pr-tree]] | not started |
+| 3 — Implementation | [[03-implementation]] | in-review (combined agentic gate, round 2) |
+| 3 — Tests | [[04-tests]] | in-review (same combined gate) |
+| 3 — PR tree (execution order) | [[05-pr-tree]] | in-review (same combined gate) |
 
 <!-- Status values: not started · draft · in-review · approved · skipped -->
 
