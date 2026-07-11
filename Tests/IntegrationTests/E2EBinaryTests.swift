@@ -144,12 +144,12 @@ final class E2EBinaryTests {
         let lines = out.split(whereSeparator: \.isNewline).compactMap { try? JSONValue.parse(Data($0.utf8)) }
 
         // tools/list (id 2) should equal the MCP-exposed command set — the `.appOnly` primitives
-        // (send-keys, capture) are withheld from agents, so it is the registry set minus those.
+        // (send-keys, capture, inspect) are withheld from agents, so it is the registry set minus those.
         let toolsResp = lines.first { $0["id"]?.intValue == 2 }
         let tools = toolsResp?["result"]?["tools"]?.arrayValue ?? []
         let names = Set(tools.compactMap { $0["name"]?.stringValue })
         #expect(names == Set(CommandCatalog.mcpExposed.map(\.name)))
-        #expect(!names.contains("send-keys") && !names.contains("capture"))
+        #expect(!names.contains("send-keys") && !names.contains("capture") && !names.contains("inspect"))
 
         // tools/call spawn (id 3) returns content; the card now exists in the daemon
         let callResp = lines.first { $0["id"]?.intValue == 3 }

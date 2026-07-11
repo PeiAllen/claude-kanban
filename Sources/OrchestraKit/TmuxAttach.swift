@@ -36,7 +36,9 @@ public enum TmuxAttach {
     /// 3. (takeover only) `detach-client -s <view>` — kick any prior client of this view session first,
     ///    so an exclusive owner (T4 takeover / a re-attaching phone) doesn't leave a second client
     ///    resize-fighting on the same window (design §"Attach mechanics").
-    /// 4. `exec tmux attach -t <view>` — replace the shell with the attached client.
+    /// 4. `exec tmux attach -t <view>:<window>` — replace the shell with the attached client, targeting the
+    ///    window explicitly so a skipped/failed `select-window` can't leave the client on the base session's
+    ///    current window (the `agent` window — a "shell" tab would otherwise show the live agent CLI).
     ///
     /// - Parameter takeover: insert the `detach-client` step (exclusive attach). Defaults to `false`
     ///   (additive attach — matches the desktop's non-exclusive behaviour).
@@ -52,7 +54,12 @@ public enum TmuxAttach {
         if takeover {
             lines.append("tmux -L \(sock) detach-client -s \(v) 2>/dev/null")
         }
-        lines.append("exec tmux -L \(sock) attach -t \(v)")
+        // Attach targeting the WINDOW (`view:window`), not the bare view session. A freshly grouped view
+        // session inherits the base session's current window — normally the `agent` window — so if the
+        // best-effort `select-window` above is ever skipped/fails, attaching to `\(v)` alone would surface
+        // the LIVE agent's Claude CLI inside a "shell" tab. Naming the window here pins it at attach time;
+        // if the window is gone, attach errors (blank pane) instead of falling through to the agent.
+        lines.append("exec tmux -L \(sock) attach -t \(win)")
         return lines.joined(separator: "\n")
     }
 

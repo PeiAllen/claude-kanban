@@ -359,7 +359,17 @@ extension OrchestraService {
         // window would otherwise get its treeStat rewritten + a durable nudge into a dead inbox).
         guard let t = await store.get(id), t.origin == .worktree, !t.archived else { return }
         let link = await lineage.read(repo: t.repo, branch: t.branch)
-        let new = link.map { computeTreeStat(repo: t.repo, link: $0) }
+        // Offload the (blocking) git computation off the actor so a slow rev-list/merge-base on one card
+        // doesn't stall every other card's reports/events on the shared actor. Only the read-only compute
+        // moves off; the change-gate + persist + emit + nudge below stay on-actor (their serialization is
+        // what the S2-9 race notes rely on). `repo`/`link` are Sendable.
+        let new: TreeStat?
+        if let link {
+            let repo = t.repo
+            new = await offActorValue { self.computeTreeStat(repo: repo, link: link) }
+        } else {
+            new = nil
+        }
         // Cheap no-op filter for the steady funnel (avoids a tasks.json write on every unchanged
         // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
         // stale under a concurrent recompute, but the store.update closure below is the authority.
@@ -456,7 +466,7 @@ extension OrchestraService {
     /// (branch deleted / bad ref) or an empty recorded base ⇒ `restackNeeded`. Otherwise `behind` =
     /// commits in `base..tip`; if the base is no longer the tip's ancestor (parent rewrote/rebased) ⇒
     /// `restackNeeded`, else `inSync` (behind 0) / `stale` (behind > 0).
-    private func computeTreeStat(repo: String, link: ParentLink) -> TreeStat {
+    nonisolated private func computeTreeStat(repo: String, link: ParentLink) -> TreeStat {
         // O1/S1-1: resolve the parent through `resolvableRef` (local → refs/heads/<b>, remote →
         // refs/orch/parents/…). Passing the raw canonical (`pr#N`) here was the S1-1 break: `rev-parse
         // pr#7` fails → false restackNeeded. `parentIsRemote` rides EVERY constructed stat so the badge
@@ -498,7 +508,7 @@ extension OrchestraService {
     }
 
     /// `git rev-parse --verify --quiet <ref>` — nil when the ref can't be resolved (parent deleted).
-    private func treeTip(repo: String, _ ref: String) -> String? {
+    nonisolated private func treeTip(repo: String, _ ref: String) -> String? {
         guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]),
               r.ok else { return nil }
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -506,14 +516,14 @@ extension OrchestraService {
     }
 
     /// Commit count in `base..tip` (how far the parent advanced past the recorded base). 0 on error.
-    private func treeBehind(repo: String, base: String, tip: String) -> Int {
+    nonisolated private func treeBehind(repo: String, base: String, tip: String) -> Int {
         treeBehindStrict(repo: repo, base: base, tip: tip) ?? 0
     }
 
     /// Like `treeBehind` but returns `nil` on a `rev-list` failure (e.g. a GC'd/unresolvable base) rather
     /// than conflating it with a genuine 0 — the S2-2 gate needs to distinguish "nothing merged" (real 0)
     /// from "couldn't verify" (nil ⇒ don't refuse a legit ship).
-    private func treeBehindStrict(repo: String, base: String, tip: String) -> Int? {
+    nonisolated private func treeBehindStrict(repo: String, base: String, tip: String) -> Int? {
         guard let r = try? Proc.run(["git", "-C", repo, "rev-list", "--count", "\(base)..\(tip)"]),
               r.ok, let n = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         return n
@@ -521,7 +531,7 @@ extension OrchestraService {
 
     /// True iff `base` is an ancestor of `tip` (exit 0). Exit 1 = not an ancestor; any other failure is
     /// treated as not-an-ancestor so a broken base surfaces as `restackNeeded` rather than silently inSync.
-    private func treeBaseIsAncestor(repo: String, base: String, tip: String) -> Bool {
+    nonisolated private func treeBaseIsAncestor(repo: String, base: String, tip: String) -> Bool {
         guard let r = try? Proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", base, tip]) else {
             return false
         }

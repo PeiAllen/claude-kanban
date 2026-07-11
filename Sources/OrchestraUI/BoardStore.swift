@@ -430,7 +430,28 @@ public class BoardStore: ObservableObject {
     }
     #endif
 
+    /// Test seam (daemon-free): point the store at a pre-built `ControlClient` backed by a fake
+    /// `Transport`, so `start()`'s event-consumer wiring can be exercised without a live daemon. Re-wires
+    /// the state/reconnect hooks onto the injected client. Internal-for-test only (like `apply`); never
+    /// called in production, where `activate()` builds the client.
+    func injectClientForTesting(_ c: ControlClient) {
+        client = c
+        wireState()
+    }
+
     public func start() async {
+        // A live event consumer already exists (`streamStarted` stays true for the client's whole life —
+        // it is only cleared when the client is `close()`d, which `activate()`/`disconnect()` do before a
+        // fresh `start()`). Re-entering `start()` here — e.g. the offline banner's "Start daemon" button
+        // (`ensureDaemonAndStart`) tapped while the link is merely mid-reconnect (the 6s offline grace can
+        // show "offline" while the client is still alive) — must NOT bump `connGeneration`: that would
+        // orphan the running consumer (it breaks on the gen mismatch) WITHOUT starting a replacement (the
+        // `if !streamStarted` guard below then skips re-subscribing), silently wedging live updates until
+        // an app restart. The client reconnects transparently on its own, so all we owe here is a reconcile.
+        if streamStarted {
+            await refresh()
+            return
+        }
         // Stamp this activation so a superseded connection's late stream teardown can't clobber us (#6).
         connGeneration &+= 1
         let gen = connGeneration
@@ -470,6 +491,18 @@ public class BoardStore: ObservableObject {
         guard gen == connGeneration else { return }
         connected = false
         streamStarted = false
+    }
+
+    /// Self-heal safety net: reconcile the whole board from the daemon when the app returns to the
+    /// foreground. Live updates are push-only (subscribe → events); there is no periodic poll (that would
+    /// re-introduce the very daemon-actor contention we want to avoid). So if a live event is ever missed —
+    /// for any reason, known or not — the board would otherwise stay stale until an app restart. Refreshing
+    /// on the foreground edge makes any such staleness heal the moment the user looks at the board, at zero
+    /// steady-state cost. A no-op while offline (nothing to reconcile against). Mirrors the iOS client's
+    /// reconnect-on-foreground. See `wireState`/`start` for the primary live-update path.
+    public func reconcileIfConnected() async {
+        guard connected else { return }
+        await refresh()
     }
 
     public func refresh() async {

@@ -8,6 +8,10 @@ struct OrchestraApp: App {
     @StateObject private var model = BoardModel(platform: MacPlatform.ui)
     /// The app-wide keyboard router — installed once when the window appears.
     @State private var keyboard: KeyboardController? = nil
+    /// Foreground-reconcile safety net: live board updates are push-only, so a missed event would strand
+    /// the board until a restart. `onChange` never fires for the initial `.active` (so no launch
+    /// double-refresh with `bootstrap`), only on a genuine background→foreground return.
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // The "Vim keyboard" setting defaults to on; register it so the plain-object
@@ -32,6 +36,9 @@ struct OrchestraApp: App {
                     }
                 }
                 .onOpenURL { url in model.select(ref: url.absoluteString) }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { _Concurrency.Task { await model.reconcileIfConnected() } }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
