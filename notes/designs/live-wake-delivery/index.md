@@ -29,8 +29,16 @@ terminal going black on a session recreate. Broadens the deferred `controlChanne
   never runs. Cheap to fix, independent of the wake rewrite.
 - Wake mechanisms latch only at turn-end; **channels inject from any idle state**.
 
-## Recommended sequencing
-1. **A** — Codex hook-trust + stale-file install fix (restores the busy-path drain).
-2. **B** — drain-after-confirm + provisional/lag delivery (stops dropped sends).
-3. **C** — macOS terminal reconnect + per-launch epoch (stops the UI break).
-4. **D/E** — no-restart wake transport: Claude channels (or `nativeReinvoke`), Codex app-server/parked-hook.
+## Status (2026-07-10 — re-baselined on `main`)
+Lifecycle-convergence merged (`f52e640`) + Layer A (`491109a`) + Codex hooks-parse fix (`70db66f`), so:
+- ✅ **A — Codex busy-path drain** (hook-trust build-probe + `_report --event` sentinel + `_comment` strip) — MERGED, **verified working end-to-end** (Stop hook drains a queued send at turn-end, no resume).
+- ✅ **C — macOS terminal reconnect** (edge-driven reattach on the →live edge) — MERGED via convergence.
+- ✅ **Foundation** — Phase + funnel + epoch + reconciler + verb contract (`VerbKind`) — live on `main`.
+
+## Remaining work (build on `main`, each its own PR card)
+1. **B** — reliable at-least-once delivery: `pendingSeed` already covers most drain-after-confirm; build the
+   **delivery reconciler** (level-triggered retry) + flip **`send` `.mutation`→`.convergence`**; close the
+   narrow drain→persist crash window. *The main open work.*
+2. **D** — Claude **channels** no-restart wake (`orchestra-mcp` advertises `claude/channel`) as a MutationVerb.
+3. **E** — Codex: **clean restart** (reuses the merged busy-drain + terminal reconnect + B's guarantee),
+   grace-park only if needed; app-server `turn/start` a documented long-horizon option (costs the TUI, not taken).

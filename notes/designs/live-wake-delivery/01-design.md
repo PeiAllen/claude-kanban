@@ -11,13 +11,17 @@ links: ["[[index]]", "[[../codex-wake-delivery/01-design|codex-wake-delivery]]",
 
 # Layer 1 — Initial Design: No-restart live wake + reliable send delivery
 
-> The **what**, not the how. Today, waking an idle card **kills and relaunches its agent session**
-> (`resumeSeedWake` → `resumeInCard` → `kill + claude --resume` / `codex resume`). That relaunch is
-> the jank the user reports: the UI blanks, sends get dropped, and Codex "often doesn't get woken."
-> This redesign replaces restart-based wake with **in-place delivery** — a per-session control channel
-> the daemon pushes into — and fixes the three independent defects hiding behind "janky send/wake."
-> Supersedes the deferred `controlChannel` seam named in [[../agent-provider-interface|agent-provider-interface]] §8
-> and the `codex-wake-delivery` relaunch cost.
+> **Status (2026-07-10): re-baselined on `main` — lifecycle-convergence (`f52e640`) + Layer A (`491109a`)
+> + Codex hooks-parse fix (`70db66f`) are merged.** Layers **A (Codex busy-drain, now verified working
+> end-to-end) and C (terminal reconnect) are DONE**; the Phase/epoch/reconciler/verb foundation is live.
+> **Remaining: B → D → E**, built on `main` (see Scope & status).
+>
+> The **what**, not the how. Waking an idle card historically **killed and relaunched its agent session**
+> (the old `resumeSeedWake` → `resumeInCard` → `kill + claude --resume` / `codex resume`). That relaunch is
+> the jank: the UI blanks, sends get dropped, and Codex "often doesn't get woken." This redesign replaces
+> restart-based wake with **in-place delivery** — a per-session control channel the daemon pushes into — and
+> makes delivery **reliable at-least-once**. Realizes the deferred `controlChannel` seam named in
+> [[../agent-provider-interface|agent-provider-interface]] §8 and retires the `codex-wake-delivery` relaunch cost.
 
 ## Purpose & problem
 
@@ -34,12 +38,16 @@ other two cases, which decompose into **three independent defects**:
 `OrchestraService+Recovery.swift:55-141`). This is the "restart a card" the user hates: seconds of
 relaunch, full replay, and the flakiness of resume (timeout, session-vanished, trust races).
 
-**Defect 2 — the wake path drops sends (data loss + silent no-ops).** Three distinct ways a `send` is lost:
-- **Drain-before-confirm data loss.** `resumeInCard` **drains the durable inbox** (`+Recovery.swift:138`)
-  and folds it into a resume seed *before* the resume is confirmed live. If the resume then fails (Claude
-  confirm timeout `+Recovery.swift:103`; Codex process dies right after `ensure`, whose success is treated
-  as confirmation via `.relaunchLiveness`), the drained messages are **gone** — folded into a turn that
-  never ran. This is a literal "send disappeared."
+**Defect 2 — the wake path drops sends (data loss + silent no-ops).** Ways a `send` is lost:
+- **Drain-before-confirm data loss — LARGELY CLOSED by convergence.** Historically `resumeInCard` drained
+  the durable inbox and folded it into an in-flight resume seed *before* the resume was confirmed; a failed
+  resume lost the messages. Post-merge, `resume` is **intent-only** (`+Recovery.swift:28-40`): it persists the
+  folded seed as **`pendingSeed`** atomically with the `→ .relaunching` transition, and the `RelaunchStepper`
+  clears `pendingSeed` **only on confirmed readiness** (`PhaseStepper.swift:194`), retaining it across
+  timeout/superseded/failed retries. So the drained inbox now survives a failed relaunch as durable state.
+  **Residual narrow window:** `inbox.drain` still removes from the durable inbox (`+Recovery.swift:53`)
+  *before* the transition persists `pendingSeed` (`:34-37`) — a daemon crash in that in-memory gap loses them.
+  Closing it = persist the delivery intent **before** draining (Layer B).
 - **Provisional / never-prompted strand.** A `send` to a freshly-spawned or just-restarted card that has
   never run a turn has no transcript → `isResumable` is false → `resumeSeedWake` returns at its
   `.waiting && isResumable` gate (`+Wake.swift:124`) → the message sits until a human types.
@@ -47,24 +55,31 @@ relaunch, full replay, and the flakiness of resume (timeout, session-vanished, t
   the lag window sees a still-`.running` card and `wake` no-ops; delivery depends on a later turn that may
   never come.
 
-**Defect 3 — the macOS terminal can't survive its session being killed.** `AgentTerminalView`'s
-`processTerminated` is a **no-op** (`AgentTerminalView.swift:173`), the SwiftUI view `.id` is keyed on the
-tmux session *name* (stable across a kill+recreate, `InspectorView.swift:372`), and there is no re-attach
-path. So when any lifecycle op recreates the session, the pane goes **black until the user reselects the
-card**. iOS auto-reconnects (`IOSTerminalView.swift:302-351`); macOS does not. Because *every* wake
-recreates the session (Defect 1), the live terminal dies on **every** send to an idle card — this is the
-"UI temporarily breaks."
+**Defect 3 — the macOS terminal couldn't survive its session being killed. ✅ FIXED (merged).** Historically
+`AgentTerminalView.processTerminated` was a no-op and the pane went **black until the user reselected the
+card** when any lifecycle op recreated the session. Convergence fixed this (`757d719`/`d7d1a68`): a pure
+phase-edge decision `TerminalReattachDecision.shouldReattachOnLiveEdge` drives a one-shot reattach on the
+false→true →live edge (`AgentTerminalView.swift:97-109`). So the "UI temporarily breaks" symptom is already
+resolved on `main`; the remaining work is only to stop *needing* the kill+recreate (the wake redesign).
 
-### Plus a Codex-specific reason the busy path is dead too
+### The Codex busy-path drain — was dead three ways, now ✅ FIXED (merged)
 
-Empirically (Codex `0.142.5`), the clean **busy-path Stop drain never even runs** on the live machine, for
-two independent reasons — so Codex has *neither* a working busy path nor a clean idle path:
-- **Hook-trust modal.** This Codex build trust-gates hooks; the interactive TUI blocks on a *"Hooks need
-  review"* modal that Orchestra never answers, so hooks run **disabled** (or the session stalls).
-- **Stale `hooks.json` never replaced.** `CodexHooks.installIfSafe` (`CodexHooks.swift:21`) only overwrites
-  a file containing the newer `session` sentinel; a pre-change file (with the retired `orient` hook) is
-  treated as a foreign user file and left in place, so the current 3-hook file (with `Stop`) is **never
-  installed**.
+Empirically (Codex `0.142.5`), the clean **busy-path Stop drain never even ran** — so an idle Codex card
+never picked up a queued `send`. It was dead **three** independent ways, all now fixed on `main`:
+- **Hook-trust modal** — the build trust-gates hooks; the TUI blocked on a *"Hooks need review"* modal
+  Orchestra never answered. **Fixed (`491109a`)**: build-probed `--dangerously-bypass-hook-trust`.
+- **Stale `hooks.json` never replaced** — `installIfSafe` only overwrote a file with the newer sentinel, so
+  a pre-change `orient` file was left in place and the `Stop` hook was never installed. **Fixed (`491109a`)**:
+  broadened the "ours" marker to `_report --event`.
+- **Codex rejected the whole file over `_comment`** — the rendered hooks JSON kept a `_comment` doc field
+  that Codex's strict schema rejects (`expected 'description' or 'hooks'`), so *no* hooks registered even
+  once installed. **Fixed (`70db66f`)**: `HooksRenderer.renderCodex` strips top-level `_comment` (mirrors
+  Claude's `SettingsComposer`). *Verified on a real isolated Codex stack: a queued message is drained by the
+  Stop hook at turn-end, Codex continues with no manual resume.*
+
+So the Codex **busy-path (F3) now works end-to-end** — most sends (agent busy / just-finishing) deliver
+in-place with **no restart**. Only a genuinely-idle-cold Codex send still needs the (Layer B / Layer E)
+handling.
 
 ### The reframe
 
@@ -127,32 +142,58 @@ Per the "empirically test every feature" mandate. Versions: **Claude Code 2.1.20
 - **Not** adopting the Claude Agent SDK streaming mode (drops the interactive TUI — empirically confirmed
   no in-session injection for interactive sessions).
 
-## Scope (layered so quick wins ship first)
+## Scope & status (post-merge — lifecycle-convergence + Layer A are on `main`)
 
-| Layer | Item | Status vs lifecycle-convergence |
-|-------|------|---------------------------------|
-| **A — Codex quick wins** | (1) Launch/resume Codex with `--dangerously-bypass-hook-trust` (Orchestra authors the hooks, so they're trusted by construction); (2) fix `CodexHooks.installIfSafe` to recognize + overwrite any retired-sentinel Orchestra file (incl. `orient`). Restores the clean busy-path Stop drain immediately. | ✅ **Independent — ship now.** `CodexHooks.swift` is unchanged on `orch/lifecycle-convergence`; only a minor textual overlap possible in `CodexAdapter` argv (~L232/262). *Synergy:* convergence uses the Codex `SessionStart` hook as its launch Ready-signal, which the same trust bug disables — so this likely **unblocks** the convergence Codex path. |
-| **C — macOS terminal reconnect** | Port the iOS reconnect to `AgentTerminalView` + per-launch **epoch** in the terminal `.id`. | ⛔ **SUBSUMED — do NOT build here.** Already in flight: PR6b (`lc/6b-ui-displaystate`) Task 6.5 created `Sources/OrchestraUI/DesktopTerminalPolicy.swift` (+ tests) and wires `processTerminated`; the per-launch epoch is core to the convergence phase model. Depend on convergence for the UI-break fix. |
-| **B — Reliable at-least-once delivery** | **(1) Drain-after-confirm:** remove from the inbox only once delivery is *confirmed* (not before resume — today's drain-before-resume loses messages on a failed relaunch). **(2) Delivery reconciler:** a periodic level-triggered sweep re-drives delivery for any idle card with a non-empty inbox + no delivery in flight, with **backoff** and a "delivery-stuck" surfaced state — so a raced/no-op'd wake (recovering-guard, provisional strand, Codex idle-lag, restart-didn't-fire) is retried, not stranded forever. `send` becomes a **ConvergenceVerb** (enqueue intent → reconcile to empty). | 🔁 **Stack on top of convergence** — this IS the convergence reconciler model (persisted intent + idempotent re-drive). `+Recovery.swift`/`+Wake.swift` rewritten there; build B on the new `Phase`/epoch/reconciler + verb contract. |
-| **D — Claude no-restart wake** | `orchestra-mcp` bridge advertises `claude/channel`; daemon→bridge push over the control socket emits `notifications/claude/channel`. New `wakeTransport` case; resume-seed becomes the cold fallback. `nativeReinvoke` (wait-inbox) as the non-preview alternative. | 🔁 **Stack on top of convergence.** Model it as a fast **MutationVerb** in the new verb contract (not a ConvergenceVerb relaunch); phase+epoch gate "is there a live session to push into?". |
-| **E — Codex no-restart wake** | **Near-term:** blocking **Stop-hook park** (TUI-preserving, reuses the SwiftTerm-on-tmux model, needs only Layer A's hook-trust fix) — no-restart for sends within the hook window, resume-seed cold fallback. **Long-horizon:** **App Server `turn/start`** control channel (Option A: Orchestra owns app-server + renders UX from the event stream; unlocks `steer`/`interrupt`) — the real Codex `controlChannel`, but it costs the attached codex TUI. (Option B — broker + Noise handshake to keep the TUI — deprioritized: fragile, auto-updating binary.) | 🔁 **Stack on top of convergence** (same as D). |
+> **As of 2026-07-10, everything below the wake-transport line is merged to `main`.** Layers **A and C are
+> DONE**; the **lifecycle-convergence foundation** (Phase + funnel + epoch + reconciler + verb contract) is
+> live, so Layers **B/D/E now build directly on `main`**, not on an unmerged branch. Anchors below are being
+> re-verified against post-merge `main`.
 
-### Relationship to lifecycle-convergence (card `345675`)
+| Layer | Item | Status (post-merge `main`) |
+|-------|------|----------------------------|
+| **A — Codex busy-path drain** | Restore the clean busy-path Stop drain: (1) build-probed `--dangerously-bypass-hook-trust`; (2) broaden `CodexHooks` marker to `_report --event`; (3) strip `_comment` from the rendered Codex hooks so Codex parses them. | ✅ **MERGED** (`491109a` + `70db66f`). `bypassHookTrustSupported` + `CodexHooks.sentinel="_report --event"` + `HooksRenderer.renderCodex` strips `_comment`. **Verified working end-to-end on real Codex** (Stop hook drains a queued send at turn-end, no resume). |
+| **C — macOS terminal reconnect** | Reattach the terminal when the card re-enters `live`. | ✅ **MERGED** via convergence (`757d719`/`d7d1a68`). Implemented as a **pure phase-edge decision** — `TerminalReattachDecision.shouldReattachOnLiveEdge(paneAlive:wasLive:isLive:)` + `AgentTerminalView` reattaching on the false→true →live edge (`AgentTerminalView.swift:97-109`). Edge-driven, *not* an epoch-in-`.id` remount. Black-pane-on-recreate bug fixed. |
+| **B — Reliable at-least-once delivery** | **(1) Drain-after-confirm:** mostly *done* via convergence's `pendingSeed` (survives a failed relaunch); remaining = close the narrow **drain→persist crash window** by persisting the delivery intent *before* `inbox.drain`. **(2) Delivery reconciler (the core new work):** a level-triggered per-tick arm that re-drives delivery for any idle (`.live(.waiting)`) card with a non-empty inbox + no delivery in flight — **backoff** + a "delivery-stuck" surfaced state — so a raced/no-op'd `wake` is retried, never stranded. Flip **`send` from `.mutation` → `.convergence`** so it persists a delivery intent the reconciler drives to empty. | 🔜 **OPEN — the main remaining work.** Convergence built the *seams* (reconciler, `PhaseStepper`+`ConvergeContext.inbox`, `VerbKind.convergence`, `phaseGate`) but **no inbox-delivery reconciliation exists yet** — `send`/`wake` are still the imperative event-driven kill+resume path. |
+| **D — Claude no-restart wake** | `orchestra-mcp` advertises `claude/channel`; daemon→bridge push over the control socket emits `notifications/claude/channel`. New `wakeTransport` case; resume-seed → cold fallback. | 🔜 **OPEN — build on merged `main`.** Model as a fast **MutationVerb**; phase+epoch gate "is there a live session to push into?". |
+| **E — Codex no-restart wake** | **Decided:** *kill the restart's jank, don't hold a hook.* Rely on the merged **busy-path drain** (common case, no restart) + a **clean restart** (via Layer B's drain-after-confirm + the merged terminal reconnect) for the rare genuinely-idle cold send. Optional short **grace-park** only if idle-wake restarts prove frequent. App Server `turn/start` remains a documented long-horizon option (costs the TUI — not taken). | 🔜 **OPEN — build on merged `main`.** Mostly *reuses* merged pieces; the new work is Layer B's correctness + the restart-only-when-safe gate. |
 
-The in-flight **card-lifecycle-convergence** redesign (`orch/`/`impl/lifecycle-convergence`, orchestrator card
-`345675`) is the structural foundation this work sits on:
-- It **already delivers Layer C** (mac terminal reconnect via `DesktopTerminalPolicy` + the per-launch epoch)
-  — so this design **drops Layer C**.
-- It **rewrites the wake/recovery core** (`+Wake`/`+Recovery`, deletes `recovering`, adds `Phase` + funnel +
-  epoch + reconciler + the QueryVerb/MutationVerb/ConvergenceVerb contract). Layers **B/D/E must be designed
-  against that merged model**, where the no-restart wake becomes a clean fast MutationVerb (in-place channel
-  push / `turn/start`) with resume-seed as a ConvergenceVerb cold fallback — rather than a rework of today's
-  `resumeSeedWake`.
-- **Layer A is independent** of all of the above and can ship as a small standalone fix immediately (and
-  helps convergence's Codex Ready-signal).
+### Foundation now on `main` (lifecycle-convergence — MERGED `f52e640`)
 
-**Revised sequencing:** ship **A** now → let **lifecycle-convergence land** (delivers C + the Phase/epoch/verb
-foundation) → then **B/D/E** as the next layer on top.
+The **card-lifecycle-convergence** redesign that this work sits on is **merged to `main`** (top merge
+`f52e640`, plus Layer A `491109a`). What that gives us, already live:
+- **Layer C is done** — the terminal reattaches on the →live edge (`757d719`/`d7d1a68`) with `DisplayState`;
+  the black-pane-on-session-recreate bug is fixed. Nothing to build here.
+- **The wake/recovery core is rewritten** — `recovering` is gone; the **`Phase` model + `transition()`
+  funnel + per-launch epoch + reconciler (`+Reconcile`/`+Converge`) + the verb contract** are live. So
+  Layers **B/D/E build directly on that model**: the no-restart wake is a fast **MutationVerb** (in-place
+  channel push) and reliable delivery is a **ConvergenceVerb** (enqueue intent → reconciler drives to
+  empty), rather than a rework of the deleted `resumeSeedWake`.
+- **Layer A is merged** (`491109a`) — Codex busy-path drain restored (hook-trust build-probe + broadened
+  `_report --event` sentinel).
+
+**Remaining work = B → D → E, all on `main`:** **B** (drain-after-confirm + delivery reconciler) is the
+correctness backbone and lands first (it also makes Codex's clean-restart path reliable); **D** (Claude
+channels) and **E** (Codex clean-restart + optional grace-park) build on it. Each should be its own tracked
+PR card off `main` (this card is freeform — spawn the implementation cards, don't build on `main` here).
+
+### Implementation anchors (post-merge `main` @ `f52e640`)
+
+The seams B/D/E plug into (re-verified against merged `main`):
+
+| Concern | Anchor |
+|---------|--------|
+| `Phase` enum + `RunState` + `Phase.Kind` | `OrchestraKit/Model.swift:75-143` (epoch `Task.sessionEpoch:402`) |
+| The single `transition()` funnel (only writer; epoch fence; wake-on-live) | `OrchestraService+Lifecycle.swift:37-95` |
+| Reconciler (per-tick driver; add the delivery arm here) | `OrchestraService+Reconcile.swift:47-168` |
+| `PhaseStepper` protocol + `ConvergeContext` (carries `inbox`) | `PhaseStepper.swift:7-15,35-71`; actor callbacks in `OrchestraService+Converge.swift` |
+| Verb contract: `VerbKind{query,mutation,convergence}` + `CommandSchema.phaseGate` | `OrchestraKit/CommandCatalog.swift:20,22-37`; enforced `CommandRegistry.swift:35-47` |
+| `send` (flip `.mutation`→`.convergence`) | schema `CommandCatalog.swift:92-95`; handler `OrchestraService.swift:609-621` |
+| `wake` (phase-gated; `.controlChannel` stub for D/E) | `OrchestraService+Wake.swift:162-170` (`break` at :168); `resumeSeedWake:187-200` |
+| `resume` intent-only + `pendingSeed`; `resumeInCard` drain | `+Recovery.swift:28-40` (persist), `:50-56` (drain at :53); `RelaunchStepper` clears on confirm `PhaseStepper.swift:194` |
+| Convergence-verb pattern to copy | `resume` = intent-only `transition(→.relaunching, mutate: pendingSeed=…)` + `RelaunchStepper` |
+| Background-work → keep `.running` (subagent-safe) | `ClaudeCodeAdapter.swift:79-87` |
+| Codex Layer A (merged) | `CodexAdapter.bypassHookTrustSupported:191-194`, `hookTrustFlags:181-183` on `start:231`/`resume:241`; `CodexHooks.sentinel:19`; `HooksRenderer.renderCodex` strips `_comment` (`70db66f`) |
+| Terminal reattach (Layer C, merged) | `OrchestraKit/TerminalReattachDecision.swift:12-23`; `AgentTerminalView.swift:97-109` |
 
 ## Expected behaviour
 
@@ -183,7 +224,7 @@ Empirically settled (Claude 2.1.206 decisive; Codex 0.142.5 tracking the same, f
 | **Visibility** | A parked card shows a busy spinner (*"running stop hook · 19m"*) — **indistinguishable from real work by pane text.** | Orchestra **must track park-state out-of-band** (it owns the hook) and render a parked card as **idle**, not infer from the spinner. |
 | **Loop guard** | `decision:block` re-fires Stop with `stop_hook_active:true` (both agents) — a flag, not a hard cap. | Keep the existing `maxConsecutiveInjects` discipline for *content* injects; the park hold itself is one block, not a re-inject loop. |
 
-## Restart kills in-flight background work — a further cost of resume-wake + a hard guard
+## Restart vs. in-flight background work — RESOLVED (both agents safe today)
 
 A kill+resume wake destroys the agent's **background work** — `run_in_background` Bash tasks (children of the
 pane) and Claude **background subagents** (in the `claude` process). None of it is in the transcript, so
@@ -198,15 +239,18 @@ test**, so it covers `"shell"` *and* `"subagent"`. A synchronous subagent also h
 no Claude subagent (background or sync) is ever killed by a resume-wake. *(Lock it in with a one-line test
 asserting the check stays type-agnostic — a future `type=="shell"` filter would silently regress it.)*
 
-**Codex — the residual gap.** Its rollout-tail telemetry has **no "background work in flight" signal** —
-`turn_complete` → `.waiting` regardless — so (a) a Codex card with background work is exposed to a resume-kill,
-and (b) we can't even *detect* the background work to apply the guard below. One more reason Codex should lean
-on **in-place delivery** (busy-drain / parked-hook), not the restart.
+**Codex — MOOT (empirically verified, codex 0.144.1).** Codex **never presents as idle with live background
+work**, so there's nothing for a resume-wake to disrupt: (a) backgrounded shells (`&`/disown) are **reaped the
+instant the exec tool returns** (no `run_in_background` primitive); (b) `multi_agent` **subagents are fully
+synchronous** — the parent does an internal blocking `wait` and its Stop fires only *after* `SubagentStop`, so
+the card stays `.running` until the subagent completes; (c) no async/detached primitive ships (`deferred_executor`
+/`enable_fanout` exist but are under-development + OFF). So at `.waiting`, live background work cannot exist.
 
-**Hard guard (design requirement):** the delivery reconciler / clean-restart fallback must **never restart a
-card that has live background work** — respect `hasBg`/`.running`; defer and deliver **in-place** (or wait for
-genuine idle). A restart is only safe once there's nothing background to lose. (Enforceable for Claude via
-`background_tasks`; for Codex, absent a signal, prefer in-place and treat restart as last-resort.)
+**No new guard needed.** resume-seed already only fires on `.waiting`, and **neither agent is `.waiting` with
+live background work** — Claude keeps such a card `.running` (`background_tasks`, incl. subagents); Codex
+can't reach that state at all. Follow-ups: (1) a **one-line Claude test** pinning the `background_tasks` check
+type-agnostic (a future `type=="shell"` filter would regress subagent protection); (2) **revisit only if**
+Codex ships `deferred_executor`/fanout (a detached-task primitive would reopen this for Codex).
 
 ## Delivery-stuck state — who gets told (and how)
 
