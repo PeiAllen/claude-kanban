@@ -104,13 +104,13 @@ struct CodexAdapterArgvTests {
 
     @Test("start(ctx) for a default card: model, trailing prompt, and NO read-only clamp")
     func startArgv() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex",
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5",
                                  prompt: "Add OAuth login\nwith Google")
         let argv = adapter.start(ctx)
         #expect(argv.first == "codex")
         #expect(!argv.contains("read-only"))                   // default = Codex's own permissioning
         #expect(!argv.contains("never"))
-        #expect(adjacent(argv, "-m", "gpt-5.3-codex"))
+        #expect(adjacent(argv, "-m", "gpt-5.5"))
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
     }
 
@@ -126,9 +126,9 @@ struct CodexAdapterArgvTests {
 
     @Test("start with no prompt has no trailing positional")
     func startNoPrompt() {
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex", prompt: nil)
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: nil)
         let argv = adapter.start(ctx)
-        #expect(argv.last == "gpt-5.3-codex")   // last token is the -m value, no prompt
+        #expect(argv.last == "gpt-5.5")   // last token is the -m value, no prompt
     }
 
     @Test("resume(ctx) is `resume <id>`, model, NO prompt; default card is unclamped")
@@ -420,7 +420,7 @@ struct CodexModelRoutingTests {
     @Test("adapter(forModel:) routes a model id to its owning adapter (catalog-driven)")
     func routesModelToOwningAdapter() {
         let reg = AgentRegistry()                                   // Claude + Codex, both enabled
-        #expect(reg.adapter(forModel: "gpt-5.3-codex")?.id == "codex")
+        #expect(reg.adapter(forModel: "gpt-5.5")?.id == "codex")
         let claudeModel = try! reg.get("claude-code").models().first!.id
         #expect(reg.adapter(forModel: claudeModel)?.id == "claude-code")
         #expect(reg.adapter(forModel: "no-such-model") == nil)     // unknown → nil (never fabricates)
@@ -430,7 +430,7 @@ struct CodexModelRoutingTests {
     func modelsUnionAllAdapters() async {
         let env = TestEnv.make(registry: AgentRegistry())          // real Claude + Codex
         let ids = await env.svc.models().map(\.id)
-        #expect(ids.contains("gpt-5.3-codex"))                        // Codex now surfaced in the picker
+        #expect(ids.contains("gpt-5.5"))                        // Codex now surfaced in the picker
         #expect(ids.contains { $0.contains("claude") })            // Claude still there
         // Default agent (claude-code) lists first, so the picker's default entry stays a Claude model.
         #expect(AgentRegistry().adapter(forModel: ids.first!)?.id == "claude-code")
@@ -454,7 +454,7 @@ struct CodexModelRoutingTests {
         let codex = try! #require(agents.first { $0.id == "codex" })
         #expect(codex.name == "Codex")
         #expect(!codex.icon.isEmpty)
-        #expect(codex.models.contains { $0.id == "gpt-5.3-codex" })  // carries its own catalog
+        #expect(codex.models.contains { $0.id == "gpt-5.5" })  // carries its own catalog
     }
 
     @Test("spawn with a Codex model (no agentId) lands on the Codex adapter")
@@ -463,7 +463,7 @@ struct CodexModelRoutingTests {
         let env = TestEnv.make(registry: isolatedRegistry(base))
         let repo = TestEnv.repo(env.base)
         // Model only — the way the app's flat picker sends it — no agentId.
-        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex"))
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.5"))
         #expect(t.agentId == "codex")                               // routed to Codex, not the default
         #expect(t.agentSessionId == nil)                            // Codex is .discovered → unseeded
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
@@ -489,7 +489,7 @@ struct CodexModelRoutingTests {
         let repo = TestEnv.repo(env.base)
         // A Codex model BUT an explicit claude-code agentId — the explicit agent must win.
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, 
-            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.3-codex", agentId: "claude-code"))
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", model: "gpt-5.5", agentId: "claude-code"))
         #expect(t.agentId == "claude-code")
         try? FileManager.default.removeItem(atPath: base)
     }
@@ -542,7 +542,7 @@ struct CodexDelegationTests {
     @Test("start argv + env are unchanged by the added materialization")
     func argvEnvUnchanged() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.3-codex", prompt: "go")
+        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go")
         let before = adapter.start(ctx)
         try adapter.prepareToLaunch(ctx)
         #expect(adapter.start(ctx) == before)                    // byte-identical argv

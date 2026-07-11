@@ -67,7 +67,7 @@ struct ReadinessSignalTests {
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
 
-        let created = try await svc.spawn(SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.3-codex",
+        let created = try await svc.spawn(SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
                                                      agentId: "codex", cwd: work))
         // Non-blocking spawn: drive the reconciler ONLY until the card is `.launching` (its readiness waiter
         // registers), then STOP reconciling so the N=3 fallback can't fire — the rollout's session_meta is the
