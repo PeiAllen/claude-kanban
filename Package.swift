@@ -76,21 +76,29 @@ let package = Package(
             // Config/JSONValue/RPCError/OrchestraJSON/OrchestraVersion) — all in OrchestraKit.
             dependencies: ["OrchestraKit", .product(name: "MCP", package: "swift-sdk")]
         ),
+        // Test-only. A load-time constructor that makes the test bundle hermetic w.r.t. git (no
+        // system/global config, no credential helper, no prompts, fixed identity), so the ~116 git
+        // forks a test run makes — from tests AND from the production code under test, all via
+        // Proc.run — can never read the developer's ~/.gitconfig. It lives under Tests/ and is
+        // depended on ONLY by the test targets, so it cannot reach orchestrad/orchestra/orchestra-mcp:
+        // production still reads the user's real gitconfig. See Tests/GitHermeticBootstrap/bootstrap.c
+        // and notes/designs/2026-07-11-test-suite-git-hermeticity.md.
+        .target(name: "GitHermeticBootstrap", path: "Tests/GitHermeticBootstrap"),
         .testTarget(
             name: "OrchestraCoreTests",
             // OrchestraKit is a direct dep so tests can `@testable import OrchestraKit` for the few
             // internal helpers (e.g. Config.dataDir(isLinux:home:env:)) that moved to Kit in F1 —
             // keeping those helpers internal instead of forcing them into Kit's public surface.
-            dependencies: ["OrchestraCore", "OrchestraKit"]
+            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"]
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["OrchestraCore", "OrchestraKit"],
+            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"],
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "OrchestraUITests",
-            dependencies: ["OrchestraUI", "OrchestraKit"]
+            dependencies: ["OrchestraUI", "OrchestraKit", "GitHermeticBootstrap"]
         ),
     ]
 )
