@@ -31,6 +31,30 @@ static void orchestra_install_hermetic_git_env(void) {
     const char *opt_out = getenv("ORCHESTRA_TEST_GIT_HERMETIC");
     if (opt_out != NULL && strcmp(opt_out, "0") == 0) return;
 
+    // FIRST, clear the git state we INHERITED. Setting the variables below is not enough on its own:
+    // git reads several more from the environment, and an inherited value silently defeats the whole
+    // scheme. Two that matter, both demonstrated live in review:
+    //
+    //   * GIT_CONFIG_PARAMETERS is parsed IN ADDITION to GIT_CONFIG_COUNT (it is the older form of the
+    //     same "-c" mechanism), so an inherited one injects config straight past our overrides — a
+    //     `credential.helper=!…` in it will still run.
+    //   * GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR / GIT_INDEX_FILE point git at a DIFFERENT repository.
+    //     Inherited, they redirect even an explicit `git -C <tmpdir>`, so a test's commits and config
+    //     writes would land in the developer's real repo.
+    //
+    // These get inherited for real whenever the suite is run from inside a git operation — from a git
+    // hook, an alias, a rebase's exec step. Unset them all before installing our own.
+    static const char *const inherited[] = {
+        "GIT_CONFIG_PARAMETERS",          // -c injection (incl. credential.helper) — bypasses GIT_CONFIG_COUNT
+        "GIT_CONFIG",                     // legacy: the file `git config` reads/writes
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",  // repo redirection
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",      // object-store redirection
+        "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_INDEX_VERSION",
+        "GIT_TEMPLATE_DIR",               // would seed hooks into every `git init` a test runs
+        "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",  // an inherited fixed date would stamp every test commit
+    };
+    for (size_t i = 0; i < sizeof(inherited) / sizeof(inherited[0]); i++) unsetenv(inherited[i]);
+
     // Cut every config scope outside the repo itself. GIT_CONFIG_GLOBAL replaces BOTH ~/.gitconfig
     // and the XDG config ($XDG_CONFIG_HOME/git/config), so pointing it at /dev/null makes git see an
     // empty global scope — which is why HOME does not need to be relocated (and is deliberately left

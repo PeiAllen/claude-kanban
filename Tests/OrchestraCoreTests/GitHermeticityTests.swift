@@ -111,6 +111,56 @@ struct GitHermeticityTests {
         #expect(author.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "test@orchestra.invalid")
     }
 
+    /// The state git inherits from its PARENT process, which config settings alone do not cover.
+    ///
+    /// `GIT_CONFIG_PARAMETERS` is the older form of `-c` and is parsed IN ADDITION to
+    /// `GIT_CONFIG_COUNT`, so an inherited one injects config straight past our overrides — a
+    /// `credential.helper=!…` in it still runs. `GIT_DIR`/`GIT_WORK_TREE`/… point git at a different
+    /// repository entirely, overriding even an explicit `git -C <tmpdir>`, so a test's commits and
+    /// config writes would land in the developer's real repo. Both get inherited for real when the
+    /// suite runs from inside a git operation (a hook, an alias, a rebase exec step).
+    ///
+    /// Like the `--global --list` check, this is vacuous on a clean machine — it is the *functional*
+    /// test below that proves no helper can run.
+    @Test("git state inherited from the parent process is cleared", .enabled(if: !hermeticityDisabled))
+    func inheritedGitStateCleared() {
+        let env = ProcessInfo.processInfo.environment
+        for key in ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE",
+                    "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_TEMPLATE_DIR",
+                    "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"] {
+            #expect(env[key] == nil, "inherited \(key)=\(env[key] ?? "") would defeat hermeticity")
+        }
+    }
+
+    /// The functional proof, and the only helper test that is NOT vacuous on a clean machine: plant a
+    /// hostile credential helper in the repo — at BOTH the plain and the URL-scoped key, since they are
+    /// collected into one list — and confirm git runs neither when asked for a credential.
+    ///
+    /// This is what the empty `credential.helper` is really for. Because we inject it via
+    /// GIT_CONFIG_KEY_* (the env form of `-c`, the highest-precedence scope) the empty value is applied
+    /// LAST, and an empty value resets the accumulated helper list — clearing helpers configured in
+    /// every lower scope, repo-local ones included.
+    @Test("no credential helper runs — not even a repo-local, URL-scoped one",
+          .enabled(if: !hermeticityDisabled))
+    func noCredentialHelperEverRuns() throws {
+        let dir = try repo()
+        try Proc.checked(["git", "config", "credential.helper",
+                          "!echo PLAIN_HELPER_RAN >&2; false"], cwd: dir)
+        try Proc.checked(["git", "config", "credential.https://example.com.helper",
+                          "!echo URL_SCOPED_HELPER_RAN >&2; false"], cwd: dir)
+
+        // `git credential fill` is what actually consults the helper list; it reads the request from
+        // stdin, hence the pipe. With no helper it falls through to a prompt, which
+        // GIT_TERMINAL_PROMPT/GIT_ASKPASS refuse — so a non-zero exit is the EXPECTED outcome here.
+        // What must never appear is a helper's marker on stderr.
+        let r = try Proc.run(
+            ["sh", "-c", "printf 'protocol=https\\nhost=example.com\\n\\n' | git credential fill"],
+            cwd: dir)
+        #expect(!r.stderr.contains("PLAIN_HELPER_RAN"), "a repo-local credential helper ran: \(r.stderr)")
+        #expect(!r.stderr.contains("URL_SCOPED_HELPER_RAN"), "a URL-scoped credential helper ran: \(r.stderr)")
+    }
+
     /// `init.defaultBranch` is inherited from the developer today; pin it so repos created without an
     /// explicit `-b` are deterministic across machines.
     @Test("the default branch is deterministic", .enabled(if: !hermeticityDisabled))

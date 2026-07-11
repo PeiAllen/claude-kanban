@@ -76,11 +76,34 @@ construction*, not by discipline. The daemon still reads the user's real gitconf
 | **C. A `Proc.envOverlay` test seam** | Adds a mutable global to production code purely for tests, and *still* needs a bootstrap to set it — it relocates the hard part rather than solving it. |
 | **D. Wrapper script (`scripts/test.sh` exports the env)** | Bare `swift test` — what developers, CI, and agents actually type — bypasses it entirely. |
 
-## What the bootstrap sets
+## What the bootstrap does
 
-Runs once, at bundle load. All writes use `overwrite = 1`. The whole body is skipped if
-`ORCHESTRA_TEST_GIT_HERMETIC=0`, an escape hatch for debugging a config-sensitive failure against the
-real gitconfig.
+Runs once, at bundle load. The whole body is skipped if `ORCHESTRA_TEST_GIT_HERMETIC=0`, an escape
+hatch for debugging a config-sensitive failure against the real gitconfig.
+
+### 1. It clears the git state it INHERITED
+
+Controlling git's *config* is not sufficient on its own — git reads more of its behavior from the
+environment, and an inherited value silently defeats the scheme. Two matter, both demonstrated live:
+
+- **`GIT_CONFIG_PARAMETERS`** is the older form of `-c`, and is parsed **in addition to**
+  `GIT_CONFIG_COUNT`. An inherited one injects config straight past our overrides: with the full set of
+  variables below in place, `GIT_CONFIG_PARAMETERS="'credential.helper=!…'"` still **ran the helper**.
+- **`GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` / `GIT_INDEX_FILE`** point git at a *different
+  repository*, overriding even an explicit `git -C <tmpdir>`. Demonstrated: with `GIT_DIR` inherited,
+  `git -C target config orchestra.probe HIJACKED` wrote into the **other repo**. A test's commits and
+  config writes could therefore land in the developer's real repository.
+
+These are inherited for real whenever the suite runs from inside a git operation — a hook, an alias, a
+rebase's `exec` step. So the bootstrap `unsetenv`s them first: the two above plus `GIT_CONFIG`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`,
+`GIT_CEILING_DIRECTORIES`, `GIT_INDEX_VERSION`, `GIT_TEMPLATE_DIR` (which would seed hooks into every
+`git init` a test runs), and `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` (an inherited fixed date would
+stamp every test commit).
+
+### 2. It sets the hermetic environment
+
+All writes use `overwrite = 1`.
 
 | Variable | Value | Purpose |
 |---|---|---|
@@ -125,6 +148,16 @@ production fork path), asserts:
 4. A commit in a fresh temp repo **with no local identity configured** succeeds, and
    `git log -1 --format=%ae` is `test@orchestra.invalid` — proving the hermetic identity is supplied
    and the suite no longer depends on the developer having one.
+5. The inherited-state variables above are absent from the process environment.
+6. **The functional one, and the only helper assertion that is not vacuous on a clean machine:** plant a
+   hostile credential helper in a temp repo at *both* the plain and the URL-scoped key, run
+   `git credential fill`, and assert neither ran. Without the empty-helper reset both fire; with it,
+   neither does. (A non-zero exit is expected there — with no helper, git falls through to a prompt,
+   which `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS` refuse. The assertion is on the helper markers, not the
+   exit code.)
+
+Assertions 1, 2, 3 and 5 are vacuous on a machine that has no global config, no helper and a clean
+environment — i.e. exactly a CI box. Assertions 4 and 6 are what carry the load there.
 
 Assertions 1–4 are skipped when `ORCHESTRA_TEST_GIT_HERMETIC=0` — but a fifth, **ungated** test always
 runs and *fails* when the escape hatch is engaged. Without it the off-switch would be silent: exporting
