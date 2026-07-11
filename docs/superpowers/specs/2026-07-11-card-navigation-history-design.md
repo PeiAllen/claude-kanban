@@ -1,7 +1,7 @@
 # Card Navigation History Design
 
-**Date:** 2026-07-11  
-**Status:** approved in brainstorm; awaiting written-spec review  
+**Date:** 2026-07-11
+**Status:** approved and implemented
 **Scope:** macOS Vim keyboard navigation
 
 ## Goal

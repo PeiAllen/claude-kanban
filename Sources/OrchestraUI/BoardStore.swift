@@ -44,8 +44,8 @@ public class BoardStore: ObservableObject {
     @Published public var activity: [ActivityItem] = []
     @Published public var selectedId: UUID? {
         didSet {
-            guard oldValue != selectedId else { return }
             if selectedId == nil { onSelectionCleared() }
+            guard oldValue != selectedId else { return }
             onSelectionChanged(from: oldValue, to: selectedId)
         }
     }

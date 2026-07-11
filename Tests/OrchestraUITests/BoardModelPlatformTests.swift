@@ -107,6 +107,18 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertEqual(model.focusZone, .board)
     }
 
+    func testIdempotentDeselectReassertsBoardZone() {
+        let (model, _, _, _) = makeModel()
+        XCTAssertNil(model.selectedId)
+        model.focusZone = .terminal
+
+        // Preserve the pre-history invariant seam: even a repeated nil assignment repairs stale
+        // focus state. Only history recording needs to be gated on a real selection transition.
+        model.selectedId = nil
+
+        XCTAssertEqual(model.focusZone, .board)
+    }
+
     func testArchivingSelectedCardResetsFocusZoneToBoard() {
         let (model, _, _, _) = makeModel()
         let t = planCard()
