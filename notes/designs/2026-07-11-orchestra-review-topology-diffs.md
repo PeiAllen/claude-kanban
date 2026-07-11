@@ -59,20 +59,18 @@ item 5 "ends in the Review column" are unchanged).
    4. Implementation review: the **same bounded contract as 3.2** — one simultaneous Claude + Codex
       pass, fix everything, one scoped fix-verification iff blockers/majors, hard stop.
    5. PR card **asks the orchestrator to merge**.
-4. **Periodic review card** — after each wave (or after **≥3 PRs** merged since the last one,
-   whichever first), and **always once before the orchestrator branch merges to main**, the
-   orchestrator runs a dedicated deep-review card over the cumulative diff plus the deferred
-   minors: Claude + Codex review pairs **until no more complaints, hard-capped at 3 pair-passes**,
-   fixes merged back via `merge-request`. Topology: the review card runs **at the wave barrier on
-   the quiesced tree**, and overlaps the **next wave's pre-code phase** — spawn the next wave's PR
-   cards at the same time as the review card; they plan (and plan-review) while it finds and fixes.
-   The orchestrator merges the review card's fixes **first**, before the wave's first PR merge;
-   in-flight cards restack via the normal nudges. Hold *merges*, not work; hold the next wave's
-   *spawn* only if the review reports blockers on code it builds on. (Narrow opt-in: a pinned
-   read-only find pass may start during the previous wave's tail only when the tail is long and
-   in-flight PRs don't touch the reviewed files — then re-validate every finding against the tip
-   before applying; drop obsoleted ones with a note, never apply a finding blind to a tree it
-   wasn't found on.)
+4. **Periodic review card** — a **streaming reviewer that rides each wave**: spawn it when the
+   wave starts, as a normal write-mode child card based on the orchestrator branch. Each PR merge
+   fires the daemon's stale nudge → it merges the parent + `synced` and reviews the new increment
+   on a real checkout, scoped to **integration seams** (how the just-merged PR composes with the
+   already-merged wave) plus the deferred per-PR minors — NOT a solo re-review of the PR, which
+   already had its bounded pass — fixing on its own branch as it goes. When the wave drains, it
+   runs a **Claude + Codex review pair over the accumulated wave diff, until no more complaints,
+   hard-capped at 3 pair-passes**, then `merge-request`s. The orchestrator merges it, **then**
+   launches the next wave — planning starts on a reviewed, fixed foundation. Escape hatch: if the
+   post-drain residual exceeds ~one planning cycle, launch the next wave anyway and let the fixes
+   merge-request in (in-flight cards restack via the normal nudges). Run one final review card
+   this way before the orchestrator branch merges to main.
 ```
 
 *(The "Model & effort defaults" block below the list is unchanged.)*
@@ -115,7 +113,7 @@ Insert the section below **after "## The four moves — when to use each"** (i.e
 
 To get a plan or implementation reviewed, spawn **one Claude + one Codex reviewer simultaneously**,
 both **read-only**, and bound the exchange. Do NOT loop "until no complaints" — deep looped review
-belongs to a periodic review card at a wave boundary, and even that is capped at 3 pair-passes.
+belongs to the periodic (streaming) review card, and even that is capped at 3 pair-passes.
 
 - **Reviewing committed work on a branch:** spawn each reviewer as a read-only **worktree** card
   with `base: <your-branch>` — its branch is cut at your tip commit at spawn time, so it reviews a
