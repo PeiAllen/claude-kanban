@@ -7,8 +7,10 @@ import Foundation
 /// Who a command is exposed to. `.all` = the daemon dispatches it AND the MCP bridge advertises it as a
 /// tool to agents. `.appOnly` = the daemon still dispatches it (the app uses it), but the MCP bridge does
 /// NOT advertise it — an agent's normal tool-use can't reach it. Used for the human-only primitives that
-/// must not be agent-drivable: `send-keys` (an agent could Enter-approve its own permission gate) and
-/// `capture` — the same boundary the app-only `listDir`/takeover methods keep by not being catalog commands.
+/// must not be agent-drivable: `send-keys` (an agent could Enter-approve its own permission gate),
+/// `capture`, and `inspect` (opens an interactive read-only claude on the card — a human affordance, not
+/// something an agent should trigger on a peer) — the same boundary the app-only `listDir`/takeover methods
+/// keep by not being catalog commands.
 public enum CommandExposure: Sendable, Equatable { case all, appOnly }
 
 public struct CommandSchema: Sendable, Equatable {
@@ -23,7 +25,8 @@ public struct CommandSchema: Sendable, Equatable {
 
 public enum CommandCatalog {
     /// The commands the MCP bridge advertises as tools to agents — the `.appOnly` primitives (`send-keys`,
-    /// `capture`) are withheld so an agent's tool-use can't drive the human-only gates. See `CommandExposure`.
+    /// `capture`, `inspect`) are withheld so an agent's tool-use can't drive the human-only gates. See
+    /// `CommandExposure`.
     public static var mcpExposed: [CommandSchema] { all.filter { $0.exposure == .all } }
 
     // The canonical set. name/summary/params are copied verbatim from the original Commands.swift;
@@ -190,8 +193,12 @@ public enum CommandCatalog {
                                       "window": strProp("Reuse/create this exact window (idempotent, e.g. a phone-owned `phone-<client>`); omit for a fresh shell-N")],
                                      required: ["ref"])),
 
+        // `.appOnly`: inspect launches an interactive read-only `claude` inside the card's tmux session
+        // (a visible shell tab). That's a HUMAN affordance (the inspector's eye button) — exposing it as
+        // an agent tool let agents open surprise claude sessions on *peer* cards. Daemon + CLI still use it.
         CommandSchema(name: "inspect", summary: "Open a read-only claude in the card's worktree shell.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      exposure: .appOnly),
 
         CommandSchema(name: "closeShell", summary: "Close a shell window opened via `shell`.",
                       params: schema(["ref": refProp(), "window": strProp("Shell window name, e.g. shell-1")],

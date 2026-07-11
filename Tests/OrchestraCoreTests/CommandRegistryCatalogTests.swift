@@ -21,6 +21,23 @@ final class CommandRegistryCatalogTests: XCTestCase {
         }
     }
 
+    // `inspect` launches an interactive read-only `claude` INSIDE the target card's tmux session (a
+    // visible shell tab on that card). That makes it a HUMAN affordance — the inspector's "eye" button —
+    // not an agent tool: an agent calling `mcp__orchestra__inspect` opens a surprise claude session on a
+    // *peer* card (empirically the cause of "random shells appear on orchestrator/impl cards"). So it must
+    // stay off the MCP surface, exactly like the `send-keys`/`capture` human-only primitives.
+    func testInspectIsAppOnlyNotAgentExposed() {
+        let mcpNames = Set(CommandCatalog.mcpExposed.map(\.name))
+        XCTAssertFalse(mcpNames.contains("inspect"), "inspect must NOT be an agent-facing MCP tool")
+        // The other human-only primitives stay withheld too (regression guard).
+        XCTAssertFalse(mcpNames.contains("send-keys"))
+        XCTAssertFalse(mcpNames.contains("capture"))
+        // But the plain worktree-shell opener (no claude) remains available to agents.
+        XCTAssertTrue(mcpNames.contains("shell"))
+        // And the daemon still dispatches inspect — the app's eye button + the CLI use it.
+        XCTAssertNotNil(CommandRegistry().command("inspect"))
+    }
+
     // The canonical set is complete (guards an accidental drop during the move).
     func testCatalogHasAllCommands() {
         XCTAssertEqual(Set(CommandCatalog.all.map(\.name)), [
