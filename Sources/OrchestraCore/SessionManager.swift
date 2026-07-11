@@ -246,6 +246,49 @@ public struct SessionManager: Sendable {
         return CaptureResult(window: window, text: text, truncated: truncated)
     }
 
+    /// Set `remain-on-exit` on a window so a process that exits leaves its dead pane (and its final
+    /// output) in place instead of tmux destroying the window/session. Armed on the `agent` window during
+    /// the spawn startup grace so an immediate abort's stderr survives for `capture`; cleared on graduation.
+    public func setRemainOnExit(_ name: String, window: String = "agent", on: Bool) throws {
+        guard window == "agent" || Self.isValidShellWindowName(window) else {
+            throw OrchestraError.invalidParams("invalid window name: \(window)")
+        }
+        // Surface a genuine tmux failure (non-zero exit) so a caller that MUST know the option took —
+        // graduation turning remain-on-exit back OFF — can stay pending and retry rather than silently
+        // leaving a dead pane undetectable on a later crash.
+        let r = try tmux(["set-option", "-w", "-t", "\(name):\(window)", "remain-on-exit", on ? "on" : "off"])
+        if !r.ok { throw OrchestraError.io(r.stderr.isEmpty ? "tmux set-option remain-on-exit failed" : r.stderr) }
+    }
+
+    /// Liveness of the `agent` pane. `.gone` when the session is absent; otherwise `.dead` iff the pane's
+    /// process has exited (`#{pane_dead}` == 1 — requires `remain-on-exit` to have kept it), else `.alive`.
+    /// Lets the startup-abort reconcile tell an immediate launch abort from a healthy just-spawned agent.
+    public func agentPaneState(_ name: String) throws -> PaneLiveness {
+        guard try isAlive(name) else { return .gone }
+        let r = try tmux(["list-panes", "-t", "\(name):agent", "-F", "#{pane_dead}"])
+        guard r.ok else { return .gone }
+        let dead = r.stdout.split(whereSeparator: \.isNewline)
+            .contains { $0.trimmingCharacters(in: .whitespaces) == "1" }
+        return dead ? .dead : .alive
+    }
+
+    /// All orchestra sessions whose `agent` pane's process has exited (`#{pane_dead}` == 1). ONE server-wide
+    /// `list-panes -a` so the continuous reconcile can converge an orphaned dead pane cheaply (no per-card
+    /// query). A dead agent pane only exists while `remain-on-exit` is ON — i.e. a startup-armed pane that
+    /// was orphaned (e.g. `spawnPending` lost on a daemon restart mid-grace).
+    public func agentPaneDeadSessions() throws -> Set<String> {
+        let r = try tmux(["list-panes", "-a", "-F", "#{session_name}\t#{window_name}\t#{pane_dead}"])
+        guard r.ok else { return [] }
+        var out: Set<String> = []
+        for line in r.stdout.split(whereSeparator: \.isNewline) {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 3, f[0].hasPrefix("orchestra-"), f[1] == "agent",
+                  f[2].trimmingCharacters(in: .whitespaces) == "1" else { continue }
+            out.insert(f[0])
+        }
+        return out
+    }
+
     public func kill(_ name: String) throws {
         // Kill every grouped view session first: they share (and so keep alive) the base session's
         // windows — including the agent pane — so killing only the base would leak the processes.

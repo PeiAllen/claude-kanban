@@ -30,6 +30,8 @@ public enum WaitReason: String, Codable, Sendable {
 public enum DeadReason: String, Codable, Sendable {
     case agentExited       // SessionEnd reason exit/logout — the agent quit (mid-life, usually resumable)
     case sessionVanished   // poll liveness reconcile: tmux session gone, no SessionEnd (crash / `tmux kill`)
+    case spawnExitedImmediately  // the agent exited during its startup grace — a launch abort, not a mid-run
+                                 // vanish; the dying pane's final output is captured into `deadDetail`.
     case rebootUnrevived   // reboot sweep couldn't auto-revive (no id / transcript gone / resume failed at boot)
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
 }

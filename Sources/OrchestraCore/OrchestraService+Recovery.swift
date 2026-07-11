@@ -16,11 +16,37 @@ extension OrchestraService {
         let grace = config.revivalGraceSeconds
         var jobs: [@Sendable () async -> Void] = []
 
-        // One `tmux list-sessions` instead of an `has-session` per card.
+        // One `tmux list-sessions` + one `list-panes -a` instead of a per-card query.
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+        let deadPaneNames = (try? sessions.agentPaneDeadSessions()) ?? []
 
+        // INVARIANT RESTORATION (closes the whole "armed pane leaked across a restart" class, not one case):
+        // `remain-on-exit` is a DURABLE tmux flag (survives the daemon), but `spawnPending` — the record
+        // that owns graduation — is EPHEMERAL (in-memory, lost on restart). While the daemon is up they are
+        // coupled (`remain-on-exit ON ⟺ spawnPending`); a restart is the ONE thing that breaks it. `spawnPending`
+        // is empty here, so we NORMALIZE every survivor's flag to match: no card may leave this loop alive
+        // with `remain-on-exit` ON while outside `spawnPending`. This kills BOTH the dead-pane leak and the
+        // alive-pane leak (and any future restart-timing variant) in one place.
         for t in tasks {
-            if aliveNames.contains(sessions.sessionName(t.id)) { continue }   // daemon-crash no-op / still-running
+            let name = sessions.sessionName(t.id)
+            // Dead armed pane → orphaned startup abort: converge (capture stderr → dead), same as the
+            // continuous reconcile, so boot + poll agree and the evidence survives. (kill clears the flag.)
+            if deadPaneNames.contains(name) {
+                await resolveOrphanedDeadPane(t)
+                continue
+            }
+            if aliveNames.contains(name) {
+                // Alive survivor → GRADUATE it: surviving a restart is strong evidence it passed startup.
+                // Clear the leaked `remain-on-exit` so it's monitored normally and a later exit vanishes →
+                // `.sessionVanished` (NOT misread as a startup abort). BEST-EFFORT (`try?`): we do NOT kill a
+                // live, healthy agent over a transient tmux `set-option` failure. If this one write fails, the
+                // flag stays ON and a later mid-run exit is cosmetically mislabeled `.spawnExitedImmediately`
+                // (still converges, no retry, no wedge). Accepted residual — see notes/designs/
+                // spawn-startup-abort-classification.md "Known limitations / accepted residuals" (a)/(b)/(c);
+                // the class-closing fix (persist the grace deadline on Task) is deferred there.
+                try? sessions.setRemainOnExit(name, window: "agent", on: false)
+                continue   // daemon-crash no-op / still-running
+            }
             let id = t.id
             if isResumable(t) {
                 jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
@@ -62,6 +88,7 @@ extension OrchestraService {
         // SessionEnd from the killed process (and the poll's liveness reconcile) is ignored mid-revival
         // — both gate on `!recovering.contains(id)`. Do not narrow this window.
         recovering.insert(id)
+        clearSpawnPending(id)   // a user-driven resume supersedes any in-flight spawn startup-watch
         var keepRecoveringAfterReturn = false
         defer { if !keepRecoveringAfterReturn { recovering.remove(id) } }
         // Start clean: drop any confirmation left over from a prior attempt so only THIS relaunch's
@@ -148,6 +175,7 @@ extension OrchestraService {
         let adapter = try registry.get(task.agentId)
 
         recovering.insert(id)
+        clearSpawnPending(id)   // a user-driven restart supersedes any in-flight spawn startup-watch
         // On the error path, release immediately; on success we hand off to a delayed release (below) so
         // the killed old process's stale SessionEnd is absorbed during a grace window.
         var launched = false
@@ -235,14 +263,170 @@ extension OrchestraService {
     /// guarded against cards mid-resume/restart.
     public func reconcileLiveness() async {
         let tasks = await store.all()
-        // One `tmux list-sessions` per poll tick, not one `has-session` per card.
+        // One `tmux list-sessions` + one `list-panes -a` per poll tick (server-wide, not per card).
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
+        let deadPaneNames = (try? sessions.agentPaneDeadSessions()) ?? []
         for t in tasks where !t.archived && t.status != .dead && t.status != .done {
             if recovering.contains(t.id) { continue }
-            if !aliveNames.contains(sessions.sessionName(t.id)) {
+            let name = sessions.sessionName(t.id)
+            // A freshly-spawned card is watched for an immediate exit BEFORE the generic vanish check: its
+            // session is still present (remain-on-exit kept the dead pane), so `aliveNames` can't see the
+            // abort — only the pane state can. This branch also graduates a card that survived its grace.
+            if let deadline = spawnPending[t.id] {
+                await confirmSpawnStartup(t, deadline: deadline)
+                continue
+            }
+            // CONVERGENCE: an ORPHANED dead agent pane (session present, agent process exited, no pending
+            // record) — e.g. a startup abort whose `spawnPending` was lost on a daemon restart mid-grace.
+            // `aliveNames` sees the session as present so the vanish check below never fires; resolve it
+            // here so the card ALWAYS converges instead of hanging "running" forever.
+            if deadPaneNames.contains(name) {
+                await resolveOrphanedDeadPane(t)
+                continue
+            }
+            if !aliveNames.contains(name) {
                 await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
             }
         }
+    }
+
+    /// Resolve a startup-pending card by inspecting its `agent` pane (remain-on-exit keeps a dead one
+    /// visible):
+    ///  • `.alive` past its deadline → GRADUATE: clear remain-on-exit + drop pending (normal monitoring
+    ///    resumes, so a later exit vanishes the session and reads as `.sessionVanished` as before).
+    ///  • `.alive` before its deadline → keep watching.
+    ///  • `.dead` (session present, pane process exited) → STARTUP ABORT → capture evidence + bounded retry
+    ///    / mark dead.
+    ///  • `.gone` (session absent — a deliberate kill or a lost remain-on-exit race) → hand to the normal
+    ///    `.sessionVanished` path (revivable), NOT a startup abort, and never re-spawned (don't fight a kill).
+    func confirmSpawnStartup(_ t: Task, deadline: Date) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        let state = (try? await offActor { [sessions] in try sessions.agentPaneState(name) }) ?? .gone
+        switch state {
+        case .alive:
+            guard Date() >= deadline else { return }   // still within grace — keep watching
+            // Graduate ONLY once remain-on-exit is confirmed OFF: otherwise a later mid-run crash would
+            // leave a dead pane in a still-present session and never be seen as `.sessionVanished`. If the
+            // toggle fails (tmux hiccup), stay pending and retry next tick — the card is alive, nothing lost.
+            let toggledOff = (try? await offActor { [sessions] () -> Bool in
+                try sessions.setRemainOnExit(name, window: "agent", on: false); return true
+            }) ?? false
+            if toggledOff { clearSpawnPending(id) }
+        case .dead:
+            await handleStartupAbort(t)
+        case .gone:
+            clearSpawnPending(id)
+            await markDead(id, reason: .sessionVanished, detail: nil, source: .daemon)
+        }
+    }
+
+    /// A startup abort: capture the dying pane's final output as evidence, then bounded-retry the launch
+    /// (an immediate exit is usually a transient launch hiccup) or give up with `.spawnExitedImmediately`.
+    /// The retry re-`ensure`s the SAME session + cwd (kill-then-ensure — no double-create, no worktree churn).
+    private func handleStartupAbort(_ t: Task) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        // Own this card's outcome across the capture/relaunch suspensions: hold `recovering` so a late
+        // SessionEnd for the just-exited agent (report's death path gates on `!recovering`) can't race our
+        // classification, and NEVER inherit it (drop it on every exit) so the next reconcile can re-examine.
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+
+        let evidence = (try? await offActor { [sessions] in
+            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+        }).flatMap { Self.startupEvidence(from: $0) }
+
+        // The card may have been archived / killed / restarted / concluded (done) during the capture await —
+        // stand down rather than resurrect it or fight an intentional teardown (requirement D). `.done`
+        // matters for a fast read-only/freeform child that reports task_complete mid-capture. A fresh
+        // restart/resume already cleared `spawnPending`, so a nil entry also means "superseded".
+        guard spawnPending[id] != nil,
+              let live = await store.get(id),
+              !live.archived, live.status != .dead, live.status != .done else {
+            clearSpawnPending(id)
+            return
+        }
+
+        let attempt = spawnAttempts[id] ?? 0
+        if attempt < maxStartupRetries,
+           let spec = spawnRelaunch[id],
+           let adapter = try? registry.get(spec.adapterId) {
+            spawnAttempts[id] = attempt + 1
+            try? adapter.prepareToLaunch(spec.ctx)
+            let env = adapter.env
+            let argv = adapter.start(spec.ctx)
+            let launchTask = t
+            do {
+                try await offActor { [sessions] in
+                    _ = try sessions.kill(name)                      // reap the dead-pane session first
+                    _ = try sessions.ensure(launchTask, argv: argv, env: env)
+                    try? sessions.setRemainOnExit(name, window: "agent", on: true)
+                }
+                spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
+                emitActivity(.recovered, t, .daemon,
+                             "restarted “\(t.title)” after a startup abort (retry \(attempt + 1))")
+                return
+            } catch {
+                clearSpawnPending(id)
+                await markDead(id, reason: .spawnExitedImmediately,
+                               detail: evidence ?? "\(error)", source: .daemon)
+                return
+            }
+        }
+        // Out of retries → give up. Reap the dead-pane session, then mark dead WITH the captured evidence.
+        clearSpawnPending(id)
+        try? await offActor { [sessions] in try? sessions.kill(name) }
+        await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
+    }
+
+    /// Converge an ORPHANED dead agent pane — a still-present session whose agent process exited but whose
+    /// `spawnPending` record is gone (the daemon restarted inside the startup grace and lost the in-memory
+    /// state, or an armed pane was orphaned some other way). Unlike `handleStartupAbort` there is NO retry
+    /// budget to consult (it was lost with the pending record), so per the convergence contract we simply
+    /// capture the surviving stderr, clear remain-on-exit, reap the session, and mark it dead — never loop.
+    /// This is the safety net that guarantees such a card ALWAYS resolves instead of hanging "running".
+    func resolveOrphanedDeadPane(_ t: Task) async {
+        let id = t.id
+        let name = sessions.sessionName(id)
+        // Hold `recovering` so a racing SessionEnd (report's death path gates on it) doesn't double-classify.
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+
+        let evidence = (try? await offActor { [sessions] in
+            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+        }).flatMap { Self.startupEvidence(from: $0) }
+
+        // Re-validate after the capture await — don't fight an intentional teardown / concurrent conclusion.
+        guard let live = await store.get(id),
+              !live.archived, live.status != .dead, live.status != .done else { return }
+
+        clearSpawnPending(id)   // belt-and-suspenders: no record is expected, but never leave one behind
+        try? await offActor { [sessions] in
+            try? sessions.setRemainOnExit(name, window: "agent", on: false)
+            try? sessions.kill(name)
+        }
+        await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
+    }
+
+    /// Drop a card's startup-pending bookkeeping (on graduation, give-up, or any death).
+    func clearSpawnPending(_ id: UUID) {
+        spawnPending[id] = nil; spawnAttempts[id] = nil; spawnRelaunch[id] = nil
+    }
+
+    /// Test hook: tighten the startup-confirmation grace + retry budget (production uses the defaults).
+    func setStartupConfirmation(graceSeconds: Int, maxRetries: Int) {
+        spawnGraceSeconds = graceSeconds; maxStartupRetries = maxRetries
+    }
+
+    /// Distil captured pane text to its meaningful tail (last few non-empty lines), trimmed + capped, so
+    /// `deadDetail` surfaces the real error ("usage limit", "unauthorized", a config parse error) not noise.
+    static func startupEvidence(from pane: String) -> String? {
+        let lines = pane.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+        return String(lines.suffix(6).joined(separator: " | ").prefix(500))
     }
 
     // MARK: - helpers
@@ -299,6 +483,7 @@ extension OrchestraService {
         guard let updated = try? await store.update(id, {
             $0.status = .dead; $0.deadReason = reason; $0.deadDetail = detail
         }) else { return }
+        clearSpawnPending(id)   // a dead card is never startup-pending (covers give-up + any other death)
         emit(.taskUpserted(updated))
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
     }

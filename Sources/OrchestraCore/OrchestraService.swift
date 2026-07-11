@@ -94,6 +94,21 @@ public actor OrchestraService {
     var pendingResumeConfirmations: Set<UUID> = []
     // Cards currently being revived/restarted — guarded against the liveness reconcile.
     var recovering: Set<UUID> = []
+    // Startup-abort confirmation (spawn only). A freshly-spawned card is tracked here with a grace
+    // DEADLINE until it proves it survived launch; the liveness reconcile inspects its agent pane and
+    // classifies an immediate exit as `.spawnExitedImmediately` (with captured stderr + bounded retry)
+    // rather than the generic `.sessionVanished`. Kept SEPARATE from `recovering` so an immediate `send`
+    // still wakes the card (holding `recovering` would no-op wake gate A). Cleared on graduation /
+    // give-up / markDead. `spawnRelaunch` carries the launch spec so a retry re-`ensure`s the SAME
+    // session + cwd (no double-create, no worktree churn).
+    var spawnPending: [UUID: Date] = [:]
+    var spawnAttempts: [UUID: Int] = [:]
+    var spawnRelaunch: [UUID: (adapterId: String, ctx: AdapterContext)] = [:]
+    /// Non-persisted tuning (short in tests, like `remoteWatchIntervals`). `spawnGraceSeconds` = how long a
+    /// spawned card is watched for an immediate exit before it graduates to normal monitoring;
+    /// `maxStartupRetries` = bounded auto-respawns of a transient startup abort before giving up.
+    var spawnGraceSeconds: Int = 4
+    var maxStartupRetries: Int = 1
     // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
     // activity burst off the normalized `report()` funnel — NOT a periodic poll.
     var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
@@ -421,6 +436,15 @@ public actor OrchestraService {
         try? adapter.prepareToLaunch(ctx)
         try sessions.ensure(created, argv: adapter.start(ctx), env: adapter.env)
 
+        // Startup-abort watch: keep the dying pane's output for capture, and mark the card startup-pending
+        // so the liveness reconcile classifies an immediate exit as `.spawnExitedImmediately` (captured +
+        // bounded-retried) instead of a silent `.sessionVanished`. `recovering` (still held via the defer
+        // above) guards the create→ensure window; `spawnPending` outlives it until graduation/give-up.
+        try? sessions.setRemainOnExit(sessions.sessionName(id), window: "agent", on: true)
+        spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
+        spawnAttempts[id] = 0
+        spawnRelaunch[id] = (adapter.id, ctx)
+
         emit(.taskUpserted(created))
         emitActivity(.spawned, created, source, "Spawned “\(title)”")
 
@@ -687,6 +711,7 @@ public actor OrchestraService {
             }
         }
         try? sessions.kill(sessions.sessionName(id))
+        clearSpawnPending(id)   // an archived card is never startup-pending — don't let a retry resurrect it
         if removeWorktree {                              // gates ALL run-dir reclaim
             switch t.origin {
             case .worktree:

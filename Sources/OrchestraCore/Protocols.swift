@@ -28,11 +28,27 @@ public extension WorktreeManaging {
     }
 }
 
+/// Liveness of a card's `agent` pane — finer-grained than session presence. `.dead` (the pane's process
+/// exited but the tmux session persists) is only observable when `remain-on-exit` is ON; it is the signal
+/// that distinguishes a startup abort (a launch that exited immediately, with its stderr still on the
+/// pane) from a genuine mid-run session vanish (`.gone`).
+public enum PaneLiveness: Sendable { case alive, dead, gone }
+
 public protocol SessionManaging: Sendable {
     func sessionName(_ id: UUID) -> String
     @discardableResult
     func ensure(_ task: Task, argv: [String], env: [String: String]) throws -> (name: String, created: Bool)
     func isAlive(_ name: String) throws -> Bool
+    /// Liveness of the card's `agent` pane (see `PaneLiveness`).
+    func agentPaneState(_ name: String) throws -> PaneLiveness
+    /// The set of orchestra session names whose `agent` pane has a DEAD process (remain-on-exit kept it) —
+    /// one server-wide `list-panes -a` so the continuous reconcile can converge an orphaned dead pane
+    /// (e.g. a startup abort whose in-memory `spawnPending` was lost on a daemon restart) without a
+    /// per-card query. Empty when nothing qualifies.
+    func agentPaneDeadSessions() throws -> Set<String>
+    /// Toggle a window's `remain-on-exit` so an exiting process leaves its dead pane (+ final output) in
+    /// place instead of tmux tearing the session down — armed on the `agent` window during the spawn grace.
+    func setRemainOnExit(_ name: String, window: String, on: Bool) throws
     @discardableResult
     func newShellWindow(_ name: String, cwd: String) throws -> String
     @discardableResult
@@ -48,6 +64,15 @@ public protocol SessionManaging: Sendable {
 }
 
 public extension SessionManaging {
+    /// Default: session-presence only (never reports `.dead`) — a conformer without pane introspection.
+    /// The real `SessionManager` overrides with a `#{pane_dead}` query; `StubSessions` models it in tests.
+    func agentPaneState(_ name: String) throws -> PaneLiveness {
+        (try? isAlive(name)) == true ? .alive : .gone
+    }
+    /// Default: no dead-pane detection — a conformer without pane introspection reports none.
+    func agentPaneDeadSessions() throws -> Set<String> { [] }
+    /// Default no-op so conformers/mocks needn't implement it; `SessionManager` overrides with tmux.
+    func setRemainOnExit(_ name: String, window: String, on: Bool) throws {}
     // Default so test stubs needn't implement it; the real `SessionManager` overrides.
     func closeShellWindow(_ name: String, window: String) throws {}
     /// Default so test stubs needn't implement it; the real `SessionManager` overrides with an
