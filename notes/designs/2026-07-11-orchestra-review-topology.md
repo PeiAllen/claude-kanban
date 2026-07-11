@@ -103,9 +103,10 @@ old stage-4 final review.
   the branch base for the first one), plus the deferred minor findings the bounded per-PR passes
   recorded.
 - **Depth**: Claude + Codex review pairs, iterating **until no more complaints, hard-capped at 3
-  pair-passes**. Pass 1 is the concurrent read-only finding phase (§5); fixes are applied at the
-  barrier by a writing fix card (or the orchestrator inline, for trivia); passes 2–3 run at the
-  barrier on the fixed tree, doubling as fix verification. Stop early when a pass comes back clean.
+  pair-passes**. Pass 1 is the read-only finding phase on the quiesced post-wave tree (§5); fixes
+  are applied by a writing fix card (or the orchestrator inline, for trivia); passes 2–3 run on the
+  fixed tree, doubling as fix verification. Stop early when a pass comes back clean. The whole card
+  overlaps the next wave's planning phase (§5) — it blocks merges, not work.
 - **Merge-back**: the fix card's work merges into the orchestrator branch via the normal
   `merge-request` → owning-agent squash-merge path, before the next wave spawns.
 
@@ -114,9 +115,12 @@ old stage-4 final review.
 **Question:** can the periodic review card run concurrently with in-flight PR cards, or must it be
 a barrier?
 
-**Answer: split it. The *finding* phase runs concurrently, pinned to a snapshot; the *fixing*
-phase is a barrier.** Neither a pure barrier nor a fully-concurrent fixing card survives contact
-with the mechanics. Grounding (verified against `docs/` + `notes/designs/parent-card-branch-linking/`):
+**Answer: the review card runs at the barrier, on the quiesced tree — and the wall-clock is
+recovered by overlapping it with the *next* wave's pre-code phase, not the previous wave's tail.**
+(Amended 2026-07-11 after design dialogue with Allen; the original recommendation — concurrent
+pinned find during the previous wave's tail — survives only as a narrow opt-in, below.) Neither a
+naive barrier nor a fully-concurrent fixing card survives contact with the mechanics. Grounding
+(verified against `docs/` + `notes/designs/parent-card-branch-linking/`):
 
 - **Pinning is real — but only via a worktree card.** `spawn` with `base: <orchestrator-branch>`
   cuts the card's own branch at the orchestrator's tip commit **at spawn time**; that branch does
@@ -142,22 +146,52 @@ with the mechanics. Grounding (verified against `docs/` + `notes/designs/parent-
 | Staleness of findings | None | Findings AND fixes go stale mid-flight | Findings may go stale; **explicit re-validation step**; `↓N` badge quantifies drift |
 | Failure mode | Slow | **Worst**: a fix silently reverts or collides with a just-merged PR; merge-request ping-pong | A stale finding gets dropped with a note (fail-safe: nothing lands unvalidated) |
 
-Fully-concurrent-fixing is **rejected**. Full-barrier is **acceptable but strictly dominated** by
-the split, because the two shapes converge: if no PRs are in flight when the trigger fires, the
-split *is* a barrier. So there is one rule, not a mode switch:
+*(The table analyzes the three original candidates. The adopted topology is a refinement of the
+barrier column: it keeps the barrier's correctness — find and fix on the quiesced tree — and
+removes its wall-clock cost by overlapping the review card with the next wave's pre-code phase
+instead of the previous wave's tail. The split column survives only as the narrow opt-in below.)*
 
-> **When the periodic trigger fires, immediately spawn the read-only reviewer pair pinned (via
-> `base`) to the orchestrator tip — don't wait for in-flight PRs to drain. Apply fixes only at the
-> wave barrier.**
+Fully-concurrent-fixing is **rejected** outright. Between the other two, the deciding facts:
 
-### Staleness discipline (the fix step's contract)
+- The **token cost of the find pass is identical** in both topologies (same diff, same reviewers);
+  concurrency only moves it earlier. What it adds is a **staleness waste channel** — findings on
+  regions an in-flight PR is rewriting are discarded spend — and that waste is proportional to the
+  hotspot overlap between the reviewed diff and the in-flight PRs, which the lifecycle evidence
+  shows is **high** in exactly the projects this workflow serves.
+- The pinned concurrent reviewer sees **less**, not more: PRs merging after its pin aren't covered
+  by this pass at all and wait a full cycle. The valuable cross-PR view (interactions across the
+  merged wave) is a property of the periodic card in *any* topology — concurrency adds nothing
+  to it.
+- The overlap that is actually free is the **next wave's pre-code phase** (the measured 1–2.5 h/PR
+  of planning + plan review), which conflicts with nothing on the tree.
 
-Every finding is recorded as `{pinned commit X, file, symbol, description, severity}`. At the
-barrier, for each finding, the fix card (or orchestrator, for trivial fixes): (1) re-locates the
-symbol at the current tip; (2) if any PR merged after X touched that region, re-verifies the
+So the rule:
+
+> **When the wave drains, spawn the review card on the quiesced tip AND spawn the next wave's PR
+> cards at the same time — they plan (and plan-review) while the review card finds and fixes. The
+> orchestrator merges the review card's fixes FIRST, before the wave's first PR merge; in-flight
+> cards restack over the fixes via the normal stale/restack nudges. Hold *merges*, not work; hold
+> the next wave's *spawn* only if the review reports blockers on code it builds on.**
+>
+> *Opt-in narrow case:* a concurrent pinned find during the previous wave's tail is allowed when
+> the tail is long AND the in-flight PRs don't touch the files under review — then the staleness
+> discipline below is mandatory.
+
+**Nobody polls.** Reviewers `send` findings, which wakes the orchestrator's inbox; the barrier is
+an event the orchestrator itself produces (all merges serialize through its own agent under the
+owning-agent rule), so "waiting for the barrier" is just holding findings until it processes the
+wave's last merge-request; next-wave cards get one daemon nudge per stale/restack edge. The loop
+is event-driven end to end.
+
+### Staleness discipline (mandatory whenever find-tree ≠ fix-tree)
+
+In the default topology the review card finds and fixes on the same quiesced tree, so this rarely
+triggers. It is mandatory for the opt-in concurrent case, and any time something merges between
+find and fix. Every finding is recorded as `{pinned commit X, file, symbol, description,
+severity}`. Before applying, the fix card (or orchestrator, for trivial fixes): (1) re-locates the
+symbol at the current tip; (2) if anything merged after X touched that region, re-verifies the
 finding still applies; (3) fixes it, or drops it with a one-line note ("obsoleted by PR-N").
-Findings are never applied blind to a tree they weren't found on. Passes 2–3 of the cap run at the
-barrier on the *fixed* tree (they double as fix verification).
+Findings are never applied blind to a tree they weren't found on.
 
 ## 6. Both backends, symmetric, degrading gracefully
 
@@ -209,8 +243,8 @@ more often; leaf/S-tier PRs mostly don't trigger it. **Flagged for Allen at appr
   irreducible barriers by nature. Lifecycle had exactly two: PR2 (the `status`-field removal sweep,
   every consumer at once) and PR4b (the ~30-file test migration); the PR tree itself called them
   "irreducible flag-days by design".
-- The periodic review card slots at wave boundaries (§4), its finding phase overlapping the tail
-  of the previous wave (§5).
+- The periodic review card slots at wave boundaries (§4), overlapping the next wave's planning
+  phase (§5).
 
 Lifecycle counterfactual: {PR3a ⇉ PR3b-prep}, {PR5 ⇉ PR6a ⇉ parts of PR7's fixture} and the
 already-parallel pair suggest a 10-PR chain compressing to ~6 sequential slots. Combined with

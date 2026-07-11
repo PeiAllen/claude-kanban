@@ -63,12 +63,16 @@ item 5 "ends in the Review column" are unchanged).
    whichever first), and **always once before the orchestrator branch merges to main**, the
    orchestrator runs a dedicated deep-review card over the cumulative diff plus the deferred
    minors: Claude + Codex review pairs **until no more complaints, hard-capped at 3 pair-passes**,
-   fixes merged back via `merge-request` before the next wave spawns. Topology: launch the
-   **read-only finding phase pinned to the current tip** (reviewers spawned with `--base`, so they
-   review a frozen snapshot) as soon as the trigger fires — it runs **concurrently** with in-flight
-   PR cards; apply fixes **only at the wave barrier**, re-validating each finding against the tip
-   first (drop obsoleted ones with a note — never apply a finding blind to a tree it wasn't found
-   on).
+   fixes merged back via `merge-request`. Topology: the review card runs **at the wave barrier on
+   the quiesced tree**, and overlaps the **next wave's pre-code phase** — spawn the next wave's PR
+   cards at the same time as the review card; they plan (and plan-review) while it finds and fixes.
+   The orchestrator merges the review card's fixes **first**, before the wave's first PR merge;
+   in-flight cards restack via the normal nudges. Hold *merges*, not work; hold the next wave's
+   *spawn* only if the review reports blockers on code it builds on. (Narrow opt-in: a pinned
+   read-only find pass may start during the previous wave's tail only when the tail is long and
+   in-flight PRs don't touch the reviewed files — then re-validate every finding against the tip
+   before applying; drop obsoleted ones with a note, never apply a finding blind to a tree it
+   wasn't found on.)
 ```
 
 *(The "Model & effort defaults" block below the list is unchanged.)*
