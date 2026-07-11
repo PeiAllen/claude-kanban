@@ -1,7 +1,8 @@
-# Review-topology redesign — prepared diffs (NOT applied)
+# Review-topology redesign — diffs (APPLIED 2026-07-11)
 
-Companion to [[2026-07-11-orchestra-review-topology]]. Apply only after Allen approves the design.
-Three targets. Diff 2 is optional (Allen's call, design §10.5).
+Companion to [[2026-07-11-orchestra-review-topology]]. Allen approved the design 2026-07-11;
+Diffs 1 and 3 are applied, Diff 2 was **skipped** by his decision (global CLAUDE.md + the injected
+skill already reach every card; a repo copy would drift).
 
 ---
 

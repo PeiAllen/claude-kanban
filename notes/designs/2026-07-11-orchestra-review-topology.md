@@ -1,7 +1,8 @@
 # Orchestra multi-card review workflow — bounded reviews + periodic review card
 
-**Status: DRAFT — awaiting Allen's approval.** No workflow file (`~/.claude/CLAUDE.md`, project
-`CLAUDE.md`, delegation skill) is modified until this design is approved. The exact prepared diffs
+**Status: APPROVED & APPLIED (2026-07-11).** Allen approved all open items (§10) and the streaming
+topology in design dialogue. Diffs 1 and 3 are applied (`~/.claude/CLAUDE.md` + the delegation
+skill's three copies); Diff 2 (repo-local pointer) was skipped by decision. The as-applied diffs
 live in [[2026-07-11-orchestra-review-topology-diffs]].
 
 ## 1. Problem — measured on card-lifecycle-convergence
