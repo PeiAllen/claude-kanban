@@ -3,7 +3,7 @@ project: claude-kanban (Orchestra)
 feature: live-wake-delivery
 layer: 2
 title: Contractual Design
-status: draft
+status: approved
 created: 2026-07-10
 updated: 2026-07-10
 links: ["[[index]]", "[[01-design]]"]
@@ -50,20 +50,20 @@ by the merged funnel-conclusion path when the card goes terminal.
 
 | Name | Responsibility | Collaborators |
 |------|----------------|---------------|
-| `DeliveryRoute` + `DeliveryLease` (OrchestraKit) | Route taxonomy `{stopDrain, channelPush, relaunchSeed}` + per-message lease `{token, route, epoch, leasedAt}` persisted on `InboxMessage` | `Inbox`, delivery arm, steppers |
+| `DeliveryRoute` + `DeliveryLease` (OrchestraKit) | Route taxonomy `{stopDrain, channelPush, relaunchSeed}` + per-message lease `{token, route, epoch, leasedAt, tailWatermark?}` persisted on `InboxMessage` | `Inbox`, delivery arm, steppers |
 | `Inbox` claim API (extends existing actor) | Atomic `claim` (select + whole-message fit + lease, one call), token-scoped `confirm`/`release`, `releaseAll`; editor verbs force-release | delivery arm, `payloadForStop`, steppers, ChannelBroker |
 | Delivery arm (extends `reconcile()`) | Per-tick, level-triggered: deliverable card + claimable messages + not in flight + past backoff → `wake`; counts expiry-without-confirm as failure; flips/clears `deliveryStuckSince` | `Inbox`, `wake`, `deliveryAttempts`/`deliveriesInFlight` |
 | `wake(_:)` (rewritten internals, same entry) | Single delivery chokepoint: acquires `deliveriesInFlight` synchronously, then route-selects: CLI-wait defer → channel push (attached) → relaunch-seed intent → blank-with-prompt (provisional) | ChannelBroker, `resume`, capability seam |
 | `payloadForStop` (replaces `drainForStop`) | Confirms the prior continuation's lease (token + `stopHookActive` proof), then claims + returns the next `decision:block` batch | `Inbox`, `handleHook` |
-| `ChannelBroker` (daemon, in-memory) | Parked `channel-wait` continuations keyed `(cardId, connection)`; `push` resolves; ack-in-next-poll confirms by token; detach on socket close | ControlServer built-ins, `Inbox` |
+| `ChannelBroker` (daemon, in-memory) | Parked `channel-wait` continuations keyed `(cardId, epoch, connection)` — current-epoch match only; `push` resolves; ack-in-next-poll confirms by token; detach on socket close, revoke on epoch bump | ControlServer built-ins, `Inbox` |
 | `channel-wait` / ControlServer built-in | Bounded long-poll RPC from the bridge `{ref, ack: token?}` → `{token, payload}?`; not a catalog verb (lives beside `hook`/`subscribe`) | ChannelBroker, orchestra-mcp |
 | `ChannelPump` (orchestra-mcp) | Dedicated persistent `ControlClient` (`callTimeout ≥ poll bound + slack`) loop: `channel-wait` → `server.notify(claude/channel)` → re-poll with ack; reconnect-with-backoff | vendored swift-sdk, ControlClient |
 | swift-sdk vendor patch | `Server.Capabilities.experimental: [String: Value]?` (synthesized Codable, ~3 lines) — SDK moves in-tree (`Vendor/swift-sdk`) | orchestra-mcp |
-| `LaunchFlavor.blank(prompt:)` + seed claim | Steppers claim the seed batch from the inbox at step time (`ctx.inbox`), re-owning their own prior claim; confirm on signal-based readiness | `RelaunchStepper`/`LaunchStepper`, `Inbox` |
+| `LaunchFlavor.blank(landing:prompt:)` (existing) + seed claim | Steppers claim the seed batch from the inbox at step time (`ctx.inbox`), re-owning their own prior claim; confirm on signal-based readiness | `RelaunchStepper`/`LaunchStepper`, `Inbox` |
 | Consent choreography (adapter seam + SessionManager) | `adapter.consentChoreography(ctx) -> [ConsentStep]`; content-match "await pane text → send chord" during bring-up | `finishLaunch`, ClaudeCodeAdapter |
 | Claude channels enablement (`ClaudeCodeAdapter`) | Build-probed `--dangerously-load-development-channels`, consent config writes, argv append; `wakeTransport` computed `.controlChannel` when on | AgentCapabilities, SettingsComposer/ClaudeTrust |
 | `Task.deliveryStuckSince: Date?` + surfacing | Persisted stuck marker (additive-optional Codable); NeedsYouQueue `AttentionReason` case + `NotifyTrigger` case | delivery arm, OrchestraUI, Push |
-| Config knobs (additive-optional) | `deliveryLeaseTimeout` 60s · `deliveryStuckAfter` 300s · `claudeChannels` true | Inbox, delivery arm, ClaudeCodeAdapter |
+| Config knobs (additive-optional) | `deliveryLeaseTimeout` 60s · `deliveryStuckAfter` 300s · `channelAttachGrace` 15s · `claudeChannels` true | Inbox, delivery arm, ClaudeCodeAdapter |
 
 ## Function / method contracts
 
@@ -96,6 +96,10 @@ func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool
   disclosed). `inbox-reorder` permutes the card's full message set, leased included (order is
   metadata for *future* renders; live claims are unaffected).
 - Existing `enqueue`/`peek` stay; `drain`/`drainFirst` disappear from all delivery paths.
+- **On-disk migration (required):** `inbox.json` moves from a bare `[InboxMessage]` array to an
+  envelope `{messages, confirmedIds}`. The loader decodes **tolerantly** (lc's `{rev,tasks}`
+  precedent): a legacy bare array becomes `messages` with an empty ring — never `.bak`, never an
+  empty board on upgrade. `InboxMessage.lease` is additive-optional (legacy rows decode leaseless).
 
 ### Route table — the delivery contract (one row per route)
 
@@ -113,6 +117,11 @@ func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool
   exactly when a receipt proof was lost after genuine receipt — accepted (at-least-once).
 - **A `.timedOut`/`.superseded` relaunch keeps its lease** — the retry's claim re-owns it
   (claimable-set rule), so a retried relaunch never comes up seedless.
+- **Handoff-only relaunch (empty inbox, `pendingSeed ≠ nil`):** a `relaunchSeed` claim returns a
+  batch **whenever its render yields a non-empty payload** — with zero consumed messages if need
+  be (ids may be empty; `confirm` on a 0-id batch is the usual idempotent no-op). `nil` means
+  genuinely nothing to seed (no handoff *and* no claimable message) — a handoff's context can
+  never be silently dropped by an empty inbox.
 - **`stopHookActive` must reach the daemon as a SIBLING hook-RPC field** (mirroring how `epoch`
   travels — *not* via `Adapter.parse`): `ReportHelper` extracts `stop_hook_active` from the raw
   Stop stdin JSON at the edge and sends it as a new field on the `hook` RPC →
@@ -136,8 +145,8 @@ func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool
   verb-legal). Dead and not resumable → stuck-eligible directly.
 - **Attempt accounting:** an attempt is *charged* on a failed dispatch (wake found no route /
   channel push refused / resume intent rejected) **and — exactly once per dispatched token — when
-  that token is observed expired-unconfirmed** (the service tracks the last dispatched token per
-  card; the charge clears the tracker, so an expired lease sitting across ticks is charged once,
+  that token is observed expired-unconfirmed** (the charge removes that token from the per-card
+  set of outstanding dispatched tokens, so an expired lease sitting across ticks is charged once,
   and a re-claim minting a fresh token re-arms it). Attempts reset **only on a confirmed
   delivery** (every confirm chokepoint calls back `deliveryConfirmed(cardId)` — also a new
   `ConvergeContext` callback so the steppers' confirms reach it), never on mere dispatch
@@ -175,7 +184,7 @@ if unexpiredLeaseOutstanding(id, currentEpoch) { return }     // a delivery is m
                                                               //  session that just took a delivery
 if capabilities.wakeTransport == .controlChannel,
    case .live(.waiting(.humanTurn)) = phase,                  // channel is live-idle-only; a dead
-   await channelBroker.isAttached(id) {                       //  card goes straight to cold
+   await channelBroker.isAttached(id, currentEpoch) {         //  card goes straight to cold
     reguard: card still deliverable + same epoch (post-await epilogue) else { return }
     if let batch = claim(.channelPush, epoch) {
         if await channelBroker.push(id, batch) { return }     // in-place, PID-stable
@@ -183,6 +192,14 @@ if capabilities.wakeTransport == .controlChannel,
     }                                                          //  fall through to cold path NOW
 }
 reguard: card still deliverable + !archived (post-await epilogue) else { return }
+if case .live = phase, capabilities.wakeTransport == .controlChannel,
+   withinAttachGrace(id) { charge attempt; return }           // ATTACH GRACE: a pump re-polls
+                                                              //  within seconds of a daemon/bridge
+                                                              //  restart — never mass-cold-restart
+                                                              //  healthy live sessions in that
+                                                              //  window; grace expiry falls cold
+                                                              //  (L1: not-attached ⇒ cold fallback,
+                                                              //  so bridge-less setups still deliver)
 if isResumable(t) || t.titleProvisional { resume intent (.relaunching) }   // cold / clean restart
 else { /* leave pending; arm retries; stuck after threshold */ }
 ```
@@ -195,7 +212,28 @@ else { /* leave pending; arm retries; stuck after threshold */ }
   funnel's `.relaunching` epoch bump (both merged mechanisms).
 - **The held-relaunch confirm is one atomic Inbox op:** `confirmHeldRelaunch(cardId, epoch)` —
   find-and-confirm the card's `relaunchSeed` lease at exactly that epoch (no-op otherwise);
-  `report()` calls it on the first same-epoch signal for a `.live` card, then `deliveryConfirmed`.
+  `report()` calls it for a `.live` card, then `deliveryConfirmed`. **A confirming signal must
+  have post-launch provenance** (a stale pre-kill signal must not confirm the new seed): a hook
+  push qualifies by `observedEpoch == lease.epoch`; a rollout fileTail line qualifies only past a
+  **persisted tail watermark** — the relaunch captures the rollout's EOF byte offset **after the
+  predecessor session is killed and before the new launch** (new duty inside `finishLaunch`) and
+  stores it on the lease **together with the rollout path it was captured from**
+  (`DeliveryLease.tailWatermark` + `.tailPath`, one persisted record — a line from a *different*
+  rollout can never satisfy the offset comparison); a fileTail
+  confirm requires the line's byte offset ≥ the watermark. **The plumbing (new interfaces):**
+  `RolloutTailer` returns `TailedLine { line: String, startOffset: Int64, path: String }` instead
+  of bare strings and gains `eofOffset(path:) -> Int64` (the capture API `finishLaunch` calls
+  between kill and launch); `pollTelemetry` threads each line's provenance alongside the parsed
+  report so the `confirmHeldRelaunch` call site requires `tailedLine.path == lease.tailPath`
+  **and** `startOffset ≥ lease.tailWatermark`. Post-kill capture means the old process cannot append past the
+  fence; lease persistence means a daemon restart cannot replay historical lines into a false
+  confirm — replayed pre-watermark lines are identifiable by offset and never confirm.
+- **Attach grace (live `.controlChannel` cards only):** when no poll is parked, the cold path is
+  deferred for `channelAttachGrace` (config knob, default 15s, measured from pump detach or the
+  first unattached wake) — a daemon/bridge restart must not cold-restart every healthy live
+  Claude session while its pump reconnects (attempts are charged; the arm keeps retrying). Grace
+  expiry falls through cold as L1's behaviour table requires, so a bridge-less setup still
+  delivers. `.dead` cards and `.relaunch`/`.nativeReinvoke` transports go cold immediately.
 - **Never fires on `.running`** (the background-work-safety gate): Claude holds
   `background_tasks`/`session_crons` cards `.running` (type-agnostic non-empty check, pinned by a
   new test); Codex never presents idle with live background work (empirical, L1).
@@ -228,12 +266,19 @@ else { /* leave pending; arm retries; stuck after threshold */ }
 
 **`channel-wait` (ControlServer built-in, not a catalog verb):**
 ```
-request:  { ref: <cardId>, ack: <token>? }        // ack = the token delivered by the PREVIOUS poll
+request:  { ref: <cardId>, epoch: <Int>, ack: <token>? }   // epoch = the bridge's inherited
+                                                           //  ORCH_EPOCH; ack = the token
+                                                           //  delivered by the PREVIOUS poll
 response: { token: UUID, payload: String }        // held up to ~55s; empty timeout → re-poll
 ```
-- On arrival: `ack` token → `inbox.confirm(token:)` + `deliveryConfirmed(cardId)`; then park the
-  continuation in `ChannelBroker` keyed `(cardId, connection)`. A newer poll for the same card
-  supersedes the older (which returns empty). Parked polls die with their connection:
+- **Attachments are epoch-bound:** the bridge reports its session's `ORCH_EPOCH` (inherited tmux
+  env, stamped per launch); the broker parks keyed `(cardId, epoch, connection)`; `isAttached`/
+  `push` match only a poll at the card's **current** `sessionEpoch`, and an epoch bump revokes
+  older-epoch polls (resolved empty; a stale pump's re-poll never matches again). A pre-relaunch
+  bridge can therefore never take — or ack — a new-epoch batch into a dead session.
+- On arrival: `ack` token → `inbox.confirm(token:)` + `deliveryConfirmed(cardId)` (subject to the
+  token's own epoch validity); then park. A newer poll for the same card supersedes the older
+  (which returns empty). Parked polls die with their connection:
   `ControlServer` gains a universal per-connection close hook (EOF and broken-write both call it —
   today only `subscribe` sets `onBroken`) that calls `broker.detach(connection)`.
 - `ChannelBroker.push(cardId, batch) -> Bool` resolves the parked poll; a failed/absent write
@@ -401,6 +446,8 @@ classDiagram
     +DeliveryRoute route
     +Int epoch
     +Date leasedAt
+    +Int64? tailWatermark
+    +String? tailPath
   }
   class DeliveryRoute {
     stopDrain
@@ -426,10 +473,11 @@ classDiagram
     +reconcileDelivery(card, now)
   }
   class ChannelBroker {
-    +park(cardId, conn, continuation)
+    +park(cardId, epoch, conn, continuation)
     +push(cardId, batch) Bool
-    +isAttached(cardId) Bool
+    +isAttached(cardId, epoch) Bool
     +detach(conn) / detachAll(cardId)
+    +revokeOlderEpochs(cardId, epoch)
   }
   class ChannelPump {
     dedicated ControlClient callTimeout≥70s
@@ -463,7 +511,7 @@ classDiagram
 | Close the drain→persist crash window | `resumeInCard` drops its `inbox.drain`; steppers claim from the inbox, confirm on signal-based readiness |
 | Delivery reconciler (level-triggered retry + backoff + stuck) | Delivery arm contract; attempt accounting; `deliveryStuckSince` + surfacing |
 | `send` `.mutation → .convergence` | Catalog flip + VerbKind amendment + idempotent message id + handler returns message id + card |
-| Provisional / never-prompted strand | `LaunchFlavor.blank(prompt:)` — arm delivers via first-prompt relaunch |
+| Provisional / never-prompted strand | `LaunchFlavor.blank(landing:prompt:)` — arm delivers via first-prompt relaunch |
 | Codex idle-lag no-op | Level-triggered arm (next tick observing `.waiting(.humanTurn)` + claimable re-drives) |
 | Delivery-stuck: human primary, watchers bonus, no broadcast | `AttentionReason`/`NotifyTrigger` cases; funnel conclusion already covers watchers; no board-wide send |
 | Claude channels via orchestra-mcp + control socket | ChannelBroker + `channel-wait` + ChannelPump + vendored-SDK `experimental` |
@@ -497,6 +545,10 @@ classDiagram
 | Nil-epoch Stop confirms/claims nothing | No delivery without session identity (lc's nil-epoch discipline); messages stay durable for the arm | Treating nil as "current epoch" (reopens stale-Stop leasing) |
 | Any unexpired same-epoch lease blocks `wake`; `wakeIfPending` gates on `hasClaimable` | A held relaunchSeed lease (tick-confirmed readiness) must not be superseded by a live-edge wake before its first-signal confirm | Blocking on channelPush leases only (round-3 finding) |
 | Confirmed-ids ring (persisted, bounded) backs send idempotency | `confirm` removes the row, so post-delivery retries need a tombstone; dedup runs before any state mutation | Pending-only dedup (a lost response re-delivers); an unbounded ledger |
+| Attach grace before the cold fallback (live `.controlChannel` cards, 15s) | A daemon/bridge restart clears every parked poll for seconds — going cold there would mass-restart healthy live sessions (round-4 finding); grace expiry still falls cold, honoring L1's "not attached ⇒ cold fallback" for bridge-less setups | Never-cold for channel cards (strands bridge-less setups, contradicts L1); immediate cold (the mass-restart regression) |
+| `inbox.json` migrates to a `{messages, confirmedIds}` envelope with a tolerant loader | The synthesized array decoder would `.bak` every existing inbox on upgrade — dropping pending sends (round-4 CRITICAL); lc's tolerant-envelope precedent applies | An envelope-only decoder (upgrade data loss); a sidecar ring file (two-file atomicity) |
+| Persisted per-lease tail watermark, captured post-kill pre-launch | fileTail lines carry no epoch; the fence must be ordered after predecessor termination (no post-fence appends) and survive daemon restarts (no historical replay) — round-4/5 CRITICALs | Trusting tail arrival order (2s-lag reordering); an in-memory EOF fast-forward (lost at daemon restart); pre-kill capture (old process appends past it); hook-only confirms (Codex resume may emit no early hook) |
+| Channel attachments epoch-bound via the bridge's inherited `ORCH_EPOCH` | A pre-relaunch bridge's parked poll must never take or ack a new-epoch batch into a dead session (round-5 P1); epoch bump revokes stale polls | Card-keyed-only parking (stale-bridge ack drops a send) |
 
 ## Open questions — need your call
 
@@ -512,5 +564,6 @@ classDiagram
 
 Sources: [[01-design]] (goals, empirical table, route decisions, delivery-stuck design, anchors);
 code survey 2026-07-10 on `main` @ `c4f80d7` (four Explore reports: send/wake/inbox, reconciler/verbs,
-MCP bridge/control socket, adapters/surfacing); adversarial reviews round 1 (Opus 4.8: 13, GPT-5.6
-Terra: 9), round 2 (Opus: 8, GPT: 6), round 3 (Opus: 7 minor-precision, GPT: 3) — all resolved above.
+MCP bridge/control socket, adapters/surfacing). **Agentic gate: Opus 4.8 + GPT-5.6 Terra, both
+clean** — Opus rounds 1–6 (13 → 8 → 7 → 3 → 1 → No complaints), GPT rounds 1–8 (9 → 6 → 3 → 2 →
+2 → 1 → 1 → No complaints); every finding resolved and logged in the Decisions tables.
