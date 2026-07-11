@@ -77,6 +77,16 @@ exists while remain-on-exit is ON (a startup-armed pane), so this never mis-fire
 Reconcile order: `recovering` → `spawnPending` (budgeted retry) → orphaned-dead-pane (converge) → generic
 vanish.
 
+**Boot restores the "non-pending ⇒ remain-on-exit OFF" invariant.** While the daemon is up, remain-on-exit
+is ON ⟺ the card is `spawnPending` (armed at spawn, cleared at graduation; a failed toggle-off keeps it
+pending). The one way a *non-pending* card can carry it ON is a daemon restart *during the grace while the
+pane is still alive* — the session survives armed but `spawnPending` is gone, so it would never graduate,
+and a later NORMAL mid-run exit would leave a dead pane the orphan branch would MISclassify as a startup
+abort. So `recoverSessions` clears remain-on-exit on every alive survivor's agent window: the card is then
+monitored normally and a later exit vanishes → `.sessionVanished` (correct), never a stuck-armed dead pane.
+Trade-off: a startup abort that straddles a restart may classify as `.sessionVanished` instead of
+`.spawnExitedImmediately` — acceptable (still converges correctly; no wedge, no wrong-terminal hang).
+
 ## Known limitations (accepted)
 
 - **Residual `ensure`→arm race + `setRemainOnExit(on)` failure:** `remain-on-exit` is armed the statement

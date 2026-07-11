@@ -172,6 +172,37 @@ struct StartupAbortTests {
         #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))   // orphan session reaped
     }
 
+    /// (GPT-Blocker round 2) Daemon restart during grace while the pane is STILL ALIVE: the session survives
+    /// with remain-on-exit ON but `spawnPending` is gone, so the card would never graduate and a later NORMAL
+    /// mid-run exit would leave a dead pane MISread as a startup abort. Boot must clear remain-on-exit for the
+    /// alive survivor so a later exit is correctly `.sessionVanished`, not `.spawnExitedImmediately`.
+    @Test("daemon restart while pane alive: boot clears remain-on-exit → later exit is sessionVanished")
+    func daemonRestartWhilePaneAliveNotMisclassified() async throws {
+        let env = TestEnv.make(grace: 1)
+        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // long grace: still armed at "restart"
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let name = env.sessions.sessionName(t.id)
+        #expect(env.sessions.remainOnExit[name] == true)   // spawn armed it
+
+        // Restart WHILE the pane is still alive: in-memory pending lost, session + remain-on-exit survive.
+        await env.svc.clearSpawnPending(t.id)
+        await env.svc.recoverSessions()
+
+        #expect(env.sessions.remainOnExit[name] == false)  // boot cleared the stuck arm → invariant restored
+        let mid = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(mid.status != .dead)                       // healthy survivor, not clobbered
+
+        // A later genuine mid-run exit now vanishes the session (remain-on-exit off), not a dead pane.
+        env.sessions.setAlive(t.id, false)
+        await env.svc.reconcileLiveness()
+
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.status == .dead)
+        #expect(after.deadReason == .sessionVanished)      // correctly classified, NOT spawnExitedImmediately
+        #expect(after.deadReason != .spawnExitedImmediately)
+    }
+
     /// (GPT-Important B) If graduation's remain-on-exit→off toggle FAILS, the card must stay startup-pending
     /// (not clear + wedge), so a later crash is still caught — otherwise a dead pane in a present session
     /// would never be seen as vanished.

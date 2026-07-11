@@ -30,7 +30,16 @@ extension OrchestraService {
                 await resolveOrphanedDeadPane(t)
                 continue
             }
-            if aliveNames.contains(name) { continue }   // genuinely alive → daemon-crash no-op / still-running
+            if aliveNames.contains(name) {
+                // Genuinely alive across the restart. CRITICAL: if this card was mid-startup-grace when the
+                // daemon restarted, its `agent` window still has remain-on-exit ON but the in-memory
+                // `spawnPending` (grace + graduation) is gone — so it would never graduate, and a later
+                // NORMAL mid-run exit would leave a dead pane that the orphan branch MISreads as a startup
+                // abort. Clear remain-on-exit now to restore the invariant "a non-pending card never has it
+                // ON": the survivor is monitored normally and a later exit vanishes → `.sessionVanished`.
+                try? sessions.setRemainOnExit(name, window: "agent", on: false)
+                continue   // daemon-crash no-op / still-running
+            }
             let id = t.id
             if isResumable(t) {
                 jobs.append { _ = try? await self.resume(id, graceSeconds: grace, source: .daemon) }
