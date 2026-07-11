@@ -199,16 +199,46 @@ Acceptance (definition of done):
 - Verified against **both agent backends** (claude + codex) per `CLAUDE.md`. The nudge path is
   agent-agnostic; this confirms nothing regressed.
 
+## Cost of the executor fix — read this before calling it free
+
+The serial-executor fix trades a **deadlock** for **bounded degradation**. The cooperative pool cannot
+grow, so blocking it wedges the process permanently. GCD overcommits, so blocking a serial queue just
+uses a thread — and if you use too many, you get thread explosion (memory per thread, scheduler
+thrash, a ceiling around 64 per QoS class). That is bad, but it recovers, and it does not take every
+unrelated task in the process down with it.
+
+It is cheap here **because the instance count is bounded**: production has exactly one
+`OrchestraService`, hence exactly one `BranchLineage`, one `RemoteParents`, one `WorktreeRegistry`.
+Three serial queues, for the life of the daemon. Custom executors are *not* free in general — spraying
+them across per-request actors would reinvent thread explosion.
+
+**This is why Fix 1 (the leak) is primary and Fix 2 (the executor) is defence-in-depth, not the
+reverse.** With the leak still present, hundreds of zombie `BranchLineage` actors would each bring
+their own serial queue, all blocking — trading a cooperative-pool deadlock for GCD thread explosion,
+arguably worse because there is no clean deadlock to catch it. The two fixes only work together.
+
+Minor costs accepted: hopping to a GCD queue is a slightly more expensive context switch than staying
+on the cooperative pool, and a custom executor loses automatic `Task` priority propagation (the
+queue's QoS applies instead). Both are noise next to a call that forks `git`. What *is* preserved
+bit-for-bit is serialization and reentrancy — the mailbox still runs one call at a time, so the
+no-`await`-between-check-and-checkout invariants hold.
+
 ## Explicitly out of scope
 
 Deliberately excluded to keep the diff reviewable and focused on the reproduced wedge:
 
+- **Backoff / give-up cap for the re-nudge loop.** The loop re-prods the parent every 300s forever,
+  with no limit. Worth fixing — a parent that ignored 50 reminders will not act on the 51st — but it
+  is a product/UX concern, **not** a fix for this bug. Backoff would merely *dilute* the starvation:
+  fewer concurrent forks, so the deterministic deadlock becomes a rare intermittent one. That is
+  strictly worse, because the reproducibility is what let us find it. → card
+  `feat/merge-request-nudge-backoff`, stacked on this branch.
 - **Test-suite git hermeticity.** `Tests/` has no `HOME` / `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_NOSYSTEM`
   isolation, so all ~116 real-`git` forks read the developer's personal `~/.gitconfig` — invoking
   `credential.helper = osxkeychain`, which the Claude Code sandbox denies. The suite's existing guard
   `RemoteParents.remoteEnv()` (`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=/usr/bin/false`) is applied at
   only 3 call sites and does **not** disable the credential helper — only `-c credential.helper=`
-  does. → **separate card.**
+  does. → card `test/git-hermeticity`.
 - **Suite slowness** (12k-file slow-repo fixture, per-test tmux servers, per-test git repos, 73
   hardcoded sleeps). Orthogonal to termination. → **separate card.**
 - **Blocking *file* I/O actors** (`TaskStore`, `Inbox`, `TrustLedger`, `RolloutTailer`). Same class,
