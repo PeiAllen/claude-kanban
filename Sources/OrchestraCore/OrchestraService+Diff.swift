@@ -15,8 +15,11 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.origin == .worktree else { return "" }
         try resolver.assertAllowed(t.cwd)
-        let text = (try? GitDiffProvider().render(worktree: t.cwd, base: base,
-                                                  parentBranch: resolvedParentRef(t))) ?? ""
+        // Render off the actor: a large `git diff` can take real time, and blocking the actor on it would
+        // stall every other card's reports/events. `cwd`/`base`/`pref` are Sendable.
+        let cwd = t.cwd, pref = resolvedParentRef(t)
+        let text = (try? await offActor { try GitDiffProvider().render(worktree: cwd, base: base,
+                                                                       parentBranch: pref) }) ?? ""
         if text.utf8.count > Self.diffTextCap {
             return String(text.prefix(Self.diffTextCap))
                 + "\n… (diff truncated — open in Zed for the full changes)\n"
@@ -39,7 +42,12 @@ extension OrchestraService {
         if t.origin == .worktree {
             do {
                 try resolver.assertAllowed(t.cwd)
-                newStat = try GitDiffProvider().stat(worktree: t.cwd, base: effective, parentBranch: ref)
+                // Offload the blocking `git diff --stat` off the actor (hot report-funnel path): a slow diff
+                // on one card must not serialize every other card behind it. `cwd`/`effective`/`ref` Sendable.
+                let cwd = t.cwd
+                newStat = try await offActor {
+                    try GitDiffProvider().stat(worktree: cwd, base: effective, parentBranch: ref)
+                }
             } catch {
                 newStat = nil
             }
