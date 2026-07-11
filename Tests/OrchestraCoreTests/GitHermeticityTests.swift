@@ -111,27 +111,37 @@ struct GitHermeticityTests {
         #expect(author.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "test@orchestra.invalid")
     }
 
-    /// The state git inherits from its PARENT process, which config settings alone do not cover.
+    /// The exact set of `GIT_*` variables the bootstrap installs. Anything else in the environment is,
+    /// by definition, inherited from the parent — and must not survive.
+    static let expectedGitEnv: Set<String> = [
+        "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
+        "GIT_TERMINAL_PROMPT", "GIT_ASKPASS",
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    ]
+
+    /// The environment is EXACTLY what we installed — no inherited `GIT_*` survives.
     ///
-    /// `GIT_CONFIG_PARAMETERS` is the older form of `-c` and is parsed IN ADDITION to
-    /// `GIT_CONFIG_COUNT`, so an inherited one injects config straight past our overrides — a
-    /// `credential.helper=!…` in it still runs. `GIT_DIR`/`GIT_WORK_TREE`/… point git at a different
-    /// repository entirely, overriding even an explicit `git -C <tmpdir>`, so a test's commits and
-    /// config writes would land in the developer's real repo. Both get inherited for real when the
-    /// suite runs from inside a git operation (a hook, an alias, a rebase exec step).
+    /// Controlling git's config is not sufficient on its own: git takes much of its behavior straight
+    /// from the environment. `GIT_CONFIG_PARAMETERS` injects config past our overrides (a
+    /// `credential.helper=!…` in it really does run); `GIT_DIR`/`GIT_WORK_TREE` point git at a different
+    /// repository, overriding even an explicit `git -C <tmpdir>`; `GIT_EXTERNAL_DIFF` replaces the
+    /// builtin diff the DiffService tests depend on. All are inherited for real when the suite runs
+    /// from inside a git operation — a hook, an alias, a rebase's `exec` step.
     ///
-    /// Like the `--global --list` check, this is vacuous on a clean machine — it is the *functional*
-    /// test below that proves no helper can run.
-    @Test("git state inherited from the parent process is cleared", .enabled(if: !hermeticityDisabled))
-    func inheritedGitStateCleared() {
-        let env = ProcessInfo.processInfo.environment
-        for key in ["GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE",
-                    "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_TEMPLATE_DIR",
-                    "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",
-                    "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_DEFAULT_HASH", "GIT_DEFAULT_REF_FORMAT"] {
-            #expect(env[key] == nil, "inherited \(key)=\(env[key] ?? "") would defeat hermeticity")
-        }
+    /// This asserts the WHOLE NAMESPACE, not a list of known-bad names, mirroring the wildcard sweep in
+    /// bootstrap.c. Two successive reviews each found one more variable to add to a denylist; an
+    /// allowlist cannot be incomplete that way. A `GIT_*` variable added to the bootstrap must be added
+    /// here too — that coupling is the point, not an annoyance.
+    @Test("no inherited GIT_* survives — the environment is exactly what we installed",
+          .enabled(if: !hermeticityDisabled))
+    func gitEnvIsExactlyWhatWeInstalled() {
+        let present = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("GIT_") })
+        let unexpected = present.subtracting(Self.expectedGitEnv)
+        #expect(unexpected.isEmpty, "inherited git env survived and would defeat hermeticity: \(unexpected.sorted())")
+        #expect(Self.expectedGitEnv.subtracting(present).isEmpty,
+                "the bootstrap did not install: \(Self.expectedGitEnv.subtracting(present).sorted())")
     }
 
     /// The functional proof, and the only helper test that is NOT vacuous on a clean machine: plant a

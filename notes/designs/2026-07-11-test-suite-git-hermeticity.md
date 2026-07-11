@@ -81,25 +81,40 @@ construction*, not by discipline. The daemon still reads the user's real gitconf
 Runs once, at bundle load. The whole body is skipped if `ORCHESTRA_TEST_GIT_HERMETIC=0`, an escape
 hatch for debugging a config-sensitive failure against the real gitconfig.
 
-### 1. It clears the git state it INHERITED
+### 1. It clears EVERY inherited `GIT_*` variable
 
-Controlling git's *config* is not sufficient on its own — git reads more of its behavior from the
-environment, and an inherited value silently defeats the scheme. Two matter, both demonstrated live:
+Controlling git's *config* is not sufficient on its own — git takes a great deal of its behavior
+straight from the environment, and one inherited variable silently defeats the whole scheme. Three
+found in review, each demonstrated live against the otherwise-complete hermetic env:
 
-- **`GIT_CONFIG_PARAMETERS`** is the older form of `-c`, and is parsed **in addition to**
-  `GIT_CONFIG_COUNT`. An inherited one injects config straight past our overrides: with the full set of
-  variables below in place, `GIT_CONFIG_PARAMETERS="'credential.helper=!…'"` still **ran the helper**.
-- **`GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` / `GIT_INDEX_FILE`** point git at a *different
-  repository*, overriding even an explicit `git -C <tmpdir>`. Demonstrated: with `GIT_DIR` inherited,
-  `git -C target config orchestra.probe HIJACKED` wrote into the **other repo**. A test's commits and
-  config writes could therefore land in the developer's real repository.
+- **`GIT_CONFIG_PARAMETERS`** is the older form of `-c`, parsed **in addition to** `GIT_CONFIG_COUNT`.
+  An inherited one injects config straight past our overrides:
+  `GIT_CONFIG_PARAMETERS="'credential.helper=!…'"` still **ran the helper** — the exact keychain
+  invocation this card exists to prevent, walking back in through a side door.
+- **`GIT_DIR` / `GIT_WORK_TREE`** point git at a *different repository*, overriding even an explicit
+  `git -C <tmpdir>`. Demonstrated: with `GIT_DIR` inherited, `git -C target config orchestra.probe
+  HIJACKED` wrote into the **other repo**. A test's commits and config writes could land in the
+  developer's real repository.
+- **`GIT_EXTERNAL_DIFF`** replaces git's builtin diff with a program of the parent's choosing — which
+  hijacks the very code under test, since `DiffService`/`DiffProvider`/`DiffTextParser` are all built
+  on `git diff`. Demonstrated: with it set, `git diff` emits no diff at all, just blob paths.
 
 These are inherited for real whenever the suite runs from inside a git operation — a hook, an alias, a
-rebase's `exec` step. So the bootstrap `unsetenv`s them first: the two above plus `GIT_CONFIG`,
-`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`,
-`GIT_CEILING_DIRECTORIES`, `GIT_INDEX_VERSION`, `GIT_TEMPLATE_DIR` (which would seed hooks into every
-`git init` a test runs), and `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` (an inherited fixed date would
-stamp every test commit).
+rebase's `exec` step.
+
+**The sweep is a wildcard over the whole `GIT_*` namespace, not a denylist — deliberately.** The first
+implementation used a denylist, and two successive reviews each found *one more variable* it had missed
+(`GIT_CONFIG_PARAMETERS`, then `GIT_EXTERNAL_DIFF`). A list you have to keep guessing at is an
+invitation to miss the next one — `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, or whatever a future git
+release adds. Clearing the entire namespace and then installing exactly the variables we want is the
+only version of this that is complete *by construction* rather than by vigilance. Nothing is lost:
+every git variable the suite wants is set explicitly below, and production passes its own via
+`Proc.run`'s per-call `env:` argument, which the test process's environment does not touch.
+
+Verified end-to-end by launching `swift test` with a hostile environment — `GIT_DIR`,
+`GIT_CONFIG_PARAMETERS` carrying a credential-helper injection, plus `GIT_SSH_COMMAND`,
+`GIT_PROXY_COMMAND`, `GIT_PAGER`, `GIT_FLUSH`, `GIT_NO_REPLACE_OBJECTS` (none of which were ever on any
+denylist) — and observing the canary stay green with none of them surviving.
 
 ### 2. It sets the hermetic environment
 
@@ -148,7 +163,8 @@ production fork path), asserts:
 4. A commit in a fresh temp repo **with no local identity configured** succeeds, and
    `git log -1 --format=%ae` is `test@orchestra.invalid` — proving the hermetic identity is supplied
    and the suite no longer depends on the developer having one.
-5. The inherited-state variables above are absent from the process environment.
+5. NO inherited `GIT_*` variable survives — the environment contains exactly the set the bootstrap
+   installs, asserted over the whole namespace rather than a list of known-bad names.
 6. **The functional one, and the only helper assertion that is not vacuous on a clean machine:** plant a
    hostile credential helper in a temp repo at *both* the plain and the URL-scoped key, run
    `git credential fill`, and assert neither ran. Without the empty-helper reset both fire; with it,

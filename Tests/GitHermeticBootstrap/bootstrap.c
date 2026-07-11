@@ -31,34 +31,48 @@ static void orchestra_install_hermetic_git_env(void) {
     const char *opt_out = getenv("ORCHESTRA_TEST_GIT_HERMETIC");
     if (opt_out != NULL && strcmp(opt_out, "0") == 0) return;
 
-    // FIRST, clear the git state we INHERITED. Setting the variables below is not enough on its own:
-    // git reads several more from the environment, and an inherited value silently defeats the whole
-    // scheme. Two that matter, both demonstrated live in review:
+    // FIRST, clear EVERY git variable we inherited — then install exactly the ones we want, below.
     //
-    //   * GIT_CONFIG_PARAMETERS is parsed IN ADDITION to GIT_CONFIG_COUNT (it is the older form of the
-    //     same "-c" mechanism), so an inherited one injects config straight past our overrides — a
-    //     `credential.helper=!…` in it will still run.
-    //   * GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR / GIT_INDEX_FILE point git at a DIFFERENT repository.
-    //     Inherited, they redirect even an explicit `git -C <tmpdir>`, so a test's commits and config
-    //     writes would land in the developer's real repo.
+    // Controlling git's *config* is not sufficient on its own: git takes a great deal of its behavior
+    // straight from the environment, and a single inherited variable silently defeats the whole scheme.
+    // Three found in review, each demonstrated live:
     //
-    // These get inherited for real whenever the suite is run from inside a git operation — from a git
-    // hook, an alias, a rebase's exec step. Unset them all before installing our own.
-    static const char *const inherited[] = {
-        "GIT_CONFIG_PARAMETERS",          // -c injection (incl. credential.helper) — bypasses GIT_CONFIG_COUNT
-        "GIT_CONFIG",                     // legacy: the file `git config` reads/writes
-        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",  // repo redirection
-        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",      // object-store redirection
-        "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_INDEX_VERSION",
-        "GIT_TEMPLATE_DIR",               // would seed hooks into every `git init` a test runs
-        "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE",  // an inherited fixed date would stamp every test commit
-        // GIT_EXTERNAL_DIFF replaces git's BUILTIN diff with a program of the parent's choosing —
-        // which would hijack the very code under test here (DiffService/DiffProvider are built on
-        // `git diff`). The rest are determinism leaks: diff flags, and the object/ref formats a
-        // `git init` picks.
-        "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_DEFAULT_HASH", "GIT_DEFAULT_REF_FORMAT",
-    };
-    for (size_t i = 0; i < sizeof(inherited) / sizeof(inherited[0]); i++) unsetenv(inherited[i]);
+    //   * GIT_CONFIG_PARAMETERS is the older form of `-c` and is parsed IN ADDITION to GIT_CONFIG_COUNT,
+    //     so an inherited one injects config straight past our overrides — a `credential.helper=!…` in
+    //     it still RAN, which is the exact keychain invocation this bootstrap exists to prevent.
+    //   * GIT_DIR / GIT_WORK_TREE point git at a DIFFERENT repository, overriding even an explicit
+    //     `git -C <tmpdir>` — so a test's commits and config writes could land in the developer's repo.
+    //   * GIT_EXTERNAL_DIFF replaces git's builtin diff with a program of the parent's choosing, which
+    //     would hijack the very code under test (DiffService/DiffProvider are built on `git diff`).
+    //
+    // These are inherited for real whenever the suite runs from inside a git operation — a hook, an
+    // alias, a rebase's `exec` step.
+    //
+    // This is a WILDCARD sweep, not a list of the three above, and deliberately so: two successive
+    // reviews each found "one more variable" (GIT_CONFIG_PARAMETERS, then GIT_EXTERNAL_DIFF). A denylist
+    // is a standing invitation to miss the next one — GIT_SSH_COMMAND, GIT_PROXY_COMMAND, GIT_PAGER,
+    // whatever git adds in a future release. Clearing the whole namespace is the only form of this that
+    // is complete by construction rather than by vigilance. Nothing is lost: every git variable the
+    // suite actually wants is set explicitly below, and production passes its own via Proc.run's
+    // per-call `env:` argument, which is unaffected by the test process's environment.
+    extern char **environ;
+    for (;;) {
+        const char *found = NULL;
+        for (char **e = environ; *e != NULL; e++) {
+            if (strncmp(*e, "GIT_", 4) != 0) continue;
+            static char name[256];
+            const char *eq = strchr(*e, '=');
+            size_t n = eq ? (size_t)(eq - *e) : strlen(*e);
+            if (n >= sizeof(name)) continue;
+            memcpy(name, *e, n);
+            name[n] = '\0';
+            found = name;
+            break;
+        }
+        if (found == NULL) break;   // no GIT_* left
+        // unsetenv() mutates `environ`, so re-scan from the top rather than continuing to walk it.
+        unsetenv(found);
+    }
 
     // Cut every config scope outside the repo itself. GIT_CONFIG_GLOBAL replaces BOTH ~/.gitconfig
     // and the XDG config ($XDG_CONFIG_HOME/git/config), so pointing it at /dev/null makes git see an
