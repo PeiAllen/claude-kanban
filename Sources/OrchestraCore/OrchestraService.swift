@@ -1060,25 +1060,11 @@ public actor OrchestraService {
     // MARK: - spawn targets (Spawn sheet enumeration; app-only, NOT an agent command)
 
     /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
-    /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
-    /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
+    /// remote client that can't browse the daemon's disk. Uses the desktop sheet's recursive scanner so
+    /// both clients see the same newest-local-commit order. Paths are absolute because the allowlist
+    /// rejects bare names.
     public func spawnRepos() async -> [String] {
-        let root = (config.reposRoot as NSString).expandingTildeInPath
-        return (try? await offActor {
-            let fm = FileManager.default
-            let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
-            // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
-            // (running a read-only/freeform agent inside a repo is the common case) — the client unions
-            // them with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
-            return entries
-                .filter { !$0.hasPrefix(".") }
-                .map { "\(root)/\($0)" }
-                .filter { fm.fileExists(atPath: "\($0)/.git") }
-                .sorted {
-                    ($0 as NSString).lastPathComponent
-                        .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-                }
-        }) ?? []
+        await RepoScanner.discoverAsync(root: config.reposRoot)
     }
 
     /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).
