@@ -196,6 +196,8 @@ Acceptance (definition of done):
 - **The full `swift test` suite runs to completion and reports a result.** Today it does not, so
   "tests pass" is not a meaningful claim until the suite terminates. Wall-clock time is measured and
   reported.
+- **Peak thread count during the parallel suite is measured and reported.** The falsification check
+  for the executor design (see "Cost of the executor fix", consequence 3).
 - Verified against **both agent backends** (claude + codex) per `CLAUDE.md`. The nudge path is
   agent-agnostic; this confirms nothing regressed.
 
@@ -222,6 +224,28 @@ on the cooperative pool, and a custom executor loses automatic `Task` priority p
 queue's QoS applies instead). Both are noise next to a call that forks `git`. What *is* preserved
 bit-for-bit is serialization and reentrancy — the mailbox still runs one call at a time, so the
 no-`await`-between-check-and-checkout invariants hold.
+
+### Consequences of the above (binding on the plan)
+
+1. **The two fixes ship together, leak first.** Fix 1 and Fix 2 are NOT independent, and the executor
+   fix must never be cherry-picked alone. This is an ordering constraint on the plan, not a
+   preference.
+2. **"Only three instances exist" is an invariant to defend.** A comment at each executor site states
+   that the custom executor is safe *because* the actor is per-daemon — and that attaching one to a
+   per-request actor would reinvent thread explosion. Without that note, "starvation impossible" is
+   the sentence that gets copy-pasted six months from now.
+3. **Thread count is measured, not assumed.** Under `swift test --parallel` many services are alive at
+   once, each now carrying three serial queues. The full-suite run therefore samples peak thread count
+   as well as wall-clock. **This is the observation that can still falsify the design** — if the
+   parallel suite drives GCD thread count somewhere ugly, the design is wrong and a number should say
+   so, not a hand-wave.
+
+**Open sub-decision, settled by measurement:** per-instance queue vs. one shared static queue per
+actor *type*. Production is identical either way (one instance of each). It only bites in the parallel
+test suite. **Decision: per-instance, then measure (consequence 3).** If measurement shows explosion,
+fall back to a shared queue for `BranchLineage` and `RemoteParents` — but *not* `WorktreeRegistry`, a
+shared queue there would serialize every test's `git worktree add` and make an already-slow suite far
+slower.
 
 ## Explicitly out of scope
 
