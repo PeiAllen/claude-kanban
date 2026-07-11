@@ -86,7 +86,7 @@ Per PR card, **plan** and **implementation** each get:
 |------|---------------|---------------|
 | **S** | ≤ ~150 LOC expected, no schema/wire/state-machine change, no shared-file hotspot | 10–30 line task list in the PR card seed; **plan review skipped entirely** — the impl review pass covers it |
 | **M** | default | ≤ ~150-line plan; full contract above |
-| **L** | flag-day PRs, on-disk/wire format changes, concurrency-bearing design | full task plan; full contract above |
+| **L** | flag-day PRs (defined in §8), on-disk/wire format changes, concurrency-bearing design | full task plan; full contract above |
 
 Worked example: in the lifecycle project this would have made PR3a and PR7 tier S, most PRs tier M,
 and PR2/PR4b tier L — eliminating ~2–4 review round-trips per PR and 300–800 lines of prose each.
@@ -203,8 +203,12 @@ more often; leaf/S-tier PRs mostly don't trigger it. **Flagged for Allen at appr
   (`spawn --base`), merged in a **declared order**. After each merge the owning-agent machinery
   already nudges siblings to restack (`stale`/`restackNeeded` → `synced`) — restack cost is paid
   by the *waiting* card off the critical path, not by the merged one.
-- Flag-day PRs (lifecycle had exactly two: PR2, PR4b) run **solo between waves** — they are
-  irreducible barriers by nature.
+- **Flag-day PRs** — PRs that make one breaking change atomically across the whole codebase, where
+  every call site must flip in the same commit and the change can't be staged incrementally — run
+  **solo between waves**: because they touch everything, they conflict with everything, so they are
+  irreducible barriers by nature. Lifecycle had exactly two: PR2 (the `status`-field removal sweep,
+  every consumer at once) and PR4b (the ~30-file test migration); the PR tree itself called them
+  "irreducible flag-days by design".
 - The periodic review card slots at wave boundaries (§4), its finding phase overlapping the tail
   of the previous wave (§5).
 

@@ -37,9 +37,11 @@ item 5 "ends in the Review column" are unchanged).
    available model (xhigh), using **`/layered-plan`** + superpowers. Output: the change **split into
    many PRs with a PR tree** that also (a) lists each PR's **touched files / hotspots**, (b) groups
    PRs into **waves** — PRs whose primary surfaces are disjoint run in parallel off the same base,
-   with a declared merge order; flag-day PRs run solo between waves — and (c) assigns each PR a
-   **plan tier**: **S** (≤ ~150 LOC expected, no schema/wire/state-machine change, no shared
-   hotspot), **M** (default), **L** (flag-day / on-disk or wire format / concurrency-bearing).
+   with a declared merge order; **flag-day PRs** (one breaking change that must flip every call
+   site atomically — a codebase-wide sweep that can't be staged, so it conflicts with everything)
+   run solo between waves — and (c) assigns each PR a **plan tier**: **S** (≤ ~150 LOC expected,
+   no schema/wire/state-machine change, no shared hotspot), **M** (default), **L** (flag-day /
+   on-disk or wire format / concurrency-bearing).
 3. **Orchestrate** — after I approve the plan, **replace the planning card with an orchestrator**
    card on a **cost-efficient model** (using superpowers) that fans out **PR cards** (cost-efficient
    models) **wave by wave** (`spawn --base` off the orchestrator branch; siblings restack via the
