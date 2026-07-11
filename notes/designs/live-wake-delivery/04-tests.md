@@ -3,7 +3,7 @@ project: claude-kanban (Orchestra)
 feature: live-wake-delivery
 layer: 3
 title: Test Design
-status: draft
+status: approved
 created: 2026-07-10
 updated: 2026-07-10
 links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
@@ -62,7 +62,7 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | Stuck lifecycle | `test_stuckFlipStableStopsClaims`, `test_sendClearsStuckAndResetsBudget`, `test_stuckGuardRevalidatedOnActor` (send-reset vs stale flip), `test_stuckSurvivesRestartViaAge` (**remake**; persisted `createdAt` age + persisted `deliveryStuckSince` re-read from disk) |
 | wake chokepoint | `test_deliveriesInFlightSingleWinner`, `test_activeCliWaitDefers` (nativeReinvoke), `test_outstandingLeaseBlocksColdFallback` (channel ack gap + held relaunch), `test_pushFalseReleasesThenColdSameCall`, `test_archiveRaceReleasesNotConfirms`, `test_relaunchClaimedRemoved` (symbol gone; behavior via single-winner test) |
 | wakeIfPending | `test_liveEdgeGatesOnHasClaimable` (held lease → no re-wake) |
-| Attach grace | `test_unattachedChannelCardDefersColdWithinGrace`, `test_graceExpiryFallsCold` (bridge-less delivers), `test_attachClearsGraceStamp` |
+| Attach grace | `test_unattachedChannelCardDefersColdWithinGrace`, `test_graceExpiryFallsCold` (bridge-less delivers) — B4-runnable against the constant-false skeleton; `test_attachClearsGraceStamp` **lands with D1** (needs `park`) |
 | ChannelBroker | `test_parkSupersedesOlderPoll`, `test_pushResolvesParked`, `test_ackConfirmsToken`, `test_socketCloseDetaches` (universal close hook), `test_epochBumpRevokesOlderPolls`, `test_oldEpochPollNeverMatchesPush`, `test_pollTimeoutRepolls` |
 | Source gating | `test_channelWaitRejectedFromMcp`, `test_bridgeSourceAccepted`, `test_relayAllowlistRejectsBuiltins` (CallTool filter) |
 | ChannelPump | `test_pumpLongTimeoutOutlivesHold` (stub transport, 55s hold vs 70s deadline), `test_pumpRepollsWithoutAckOnNotifyFailure`, `test_pumpReconnectsWithBackoff` |

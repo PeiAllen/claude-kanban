@@ -80,7 +80,8 @@ func releaseAll(_ cardId: UUID) throws             // lifecycle teardown
 func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool
 ```
 - **Claimable set** (what `claim` may select, FIFO): unleased messages ∪ leases older than
-  `deliveryLeaseTimeout` ∪ leases whose `epoch < ` the claiming epoch (their session is gone —
+  `deliveryLeaseTimeout` (**constructor-injected into the Inbox actor** at its build site — the
+  actor holds no `Config`) ∪ leases whose `epoch < ` the claiming epoch (their session is gone —
   the funnel's epoch bump is the invalidation boundary) ∪ — for a `relaunchSeed` claim — the
   card's own prior `relaunchSeed` lease at any epoch (a retried relaunch **re-owns its in-flight
   batch** instead of hiding it).
