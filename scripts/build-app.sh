@@ -9,6 +9,9 @@
 #   --run     launch the installed app when the build succeeds
 #   --debug   build the Debug configuration instead of the default (Release)
 set -euo pipefail
+# Resolve our own absolute path BEFORE the cd — `$0` is relative to the ORIGINAL cwd, so
+# re-exec'ing "$0" from the repo root would break `cd scripts && ./build-app.sh`.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 # ── SHIP MUTEX ───────────────────────────────────────────────────────────────────────────
@@ -16,13 +19,22 @@ cd "$(dirname "$0")/.."
 # the main checkout (xcodegen, below) and replaces /Applications/Orchestra.app. Two cards
 # shipping at once could interleave a project regeneration with the other's xcodebuild, or
 # leave a half-written app bundle. Unlike the build mutex (which only throttles), this one
-# guards real shared state, so it is a strict mutex with no fail-open.
+# guards real shared state — so it is --strict: it waits, and FAILS CLOSED rather than ever
+# proceeding unlocked. (Proceeding unlocked here would produce exactly the corruption the
+# lock exists to prevent.)
 #
-# Re-exec ourselves under the lock. The marker stops the re-exec looping, and means the lock
+# Re-exec ourselves under the lock. The sentinel stops the re-exec looping and means the lock
 # is acquired EXACTLY ONCE per process tree — flock is not recursive, so a second acquisition
-# on the same path would deadlock against our own ancestor.
-if [[ -z "${ORCH_SHIP_LOCK_HELD:-}" ]]; then
-  exec scripts/lib/with-lock.sh ship -- env ORCH_SHIP_LOCK_HELD=1 "$0" "$@"
+# would deadlock against our own ancestor.
+#
+# The sentinel is an ARGV flag, deliberately NOT an environment variable: macOS `open`
+# propagates the caller's environment into the launched app, so an env marker would leak into
+# Orchestra.app (and from there, potentially, into every agent it spawns) and silently
+# disable this lock board-wide. argv cannot leak that way.
+if [[ "${1:-}" == "--__ship-lock-held" ]]; then
+  shift
+else
+  exec scripts/lib/with-lock.sh --strict ship -- "$SELF" --__ship-lock-held "$@"
 fi
 
 DEST_DIR="/Applications"

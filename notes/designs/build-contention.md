@@ -158,10 +158,24 @@ What is actually implementable, and sufficient:
    `git merge --abort` immediately** — so the shared main checkout is *never left dirty
    between agent turns*. That dissolves the need to hold a lock across turns: resolve on your
    own branch, then retry the merge.
-2. **`build-and-launch-app.sh` takes the ship lock** for its whole (single-process) run,
-   covering `xcodegen generate` rewriting the shared `App/Orchestra.xcodeproj`, the
-   `xcodebuild`, and the `cp` into `/Applications/Orchestra.app` — today two overlapping
-   ships can interleave a project regeneration with a build and leave a half-written bundle.
+2. **`build-app.sh` takes the ship lock** (`--strict`) by re-exec'ing itself under it, covering
+   `xcodegen generate` rewriting the shared `App/Orchestra.xcodeproj`, the `xcodebuild`, and the
+   install into `/Applications/Orchestra.app` — today two overlapping ships can interleave a
+   project regeneration with a build and leave a half-written bundle. It sits in `build-app.sh`
+   rather than `build-and-launch-app.sh` so that a *direct* `build-app.sh` call is protected too;
+   `build-and-launch-app.sh` calls it, so the lock is still taken exactly once per tree (flock is
+   not recursive — a second acquisition would hang against our own ancestor).
+
+   The re-exec sentinel is an **argv flag, not an environment variable**: macOS `open`
+   propagates the caller's environment into the launched app, so an env marker would leak into
+   `Orchestra.app` and — if the daemon were ever spawned as its child — silently disable the lock
+   board-wide. That is the exact leak class this design forbids elsewhere; argv cannot leak that way.
+
+   **`--strict` never fails open.** The build mutex only throttles, so proceeding unlocked after a
+   timeout is safe (it degrades to today's behaviour). The ship mutex guards *real shared state*,
+   where proceeding unlocked would produce the half-written bundle we are trying to prevent — so it
+   waits long and then **fails closed** with an error. Two locks, two policies; conflating them
+   (one timeout for both) was a bug caught in review.
 
 Lock order is **ship ⊐ build** (a ship's inner `swift build`s take the build lock). Nothing
 under the build lock ever reaches for the ship lock, so there is no cycle. `orch-ux-e2e.sh`'s

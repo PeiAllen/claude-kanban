@@ -62,7 +62,7 @@ xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
 
 # Automatic signing + free-team provisioning update; the no-push entitlements are the key difference from
 # the Simulator lane. `-allowProvisioningUpdates` lets Xcode create/refresh the free development profile.
-"$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild \
+scripts/lib/with-lock.sh build -- xcodebuild \
   -project App-iOS/OrchestraiOS.xcodeproj \
   -scheme OrchestraiOS \
   -configuration "$CONFIG" \

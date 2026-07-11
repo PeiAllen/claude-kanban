@@ -21,9 +21,27 @@ POSIX shims — so a musl static cross-build works from the Mac (see [Deploying 
 Linux box](#deploying-orchestrad-to-a-remote-linux-box)). Only the `App/` bundle stays macOS-only.
 
 ```sh
-scripts/build.sh        # swift build
+scripts/build.sh        # swift build, under the build mutex
 scripts/test.sh         # swift test (adds swift-testing search paths — see below)
 ```
+
+> **Always build through `scripts/` — never a bare `swift build`.** Builds here are
+> **contention-bound, not CPU-bound**. Measured: one cold `swift build --build-tests` takes
+> **165s**, but **three concurrent ones take 520s *each*** — degradation is super-linear, so
+> concurrent building is pure loss (three serialized finish sooner than three in parallel) and it
+> drags the app and daemon down with it (daemon RPC p95: 6.5ms → 22ms). The reported "8m36s cold
+> build" *was* three cards building at once.
+>
+> So every heavy build takes a **machine-wide mutex** (`scripts/lib/with-lock.sh`). A bare
+> `swift build` bypasses it and re-creates the problem for every other card; to wrap a raw
+> invocation use `scripts/lib/with-lock.sh build -- swift build …`. When another card holds the
+> lock you'll see `[build-lock] waiting for slot…` on stderr — the wait is bounded
+> (`ORCH_BUILD_LOCK_TIMEOUT`, default 300s) and **fails open**, so it can never fail your build.
+> `scripts/test.sh` holds the lock for the **compile only** and runs the suite unlocked.
+> `scripts/build-app.sh` additionally takes a **`--strict` ship mutex** (it rewrites the shared
+> `App/Orchestra.xcodeproj` and replaces `/Applications/Orchestra.app`); that one never fails open —
+> it fails closed rather than risk a half-written bundle. Rationale and numbers:
+> `notes/designs/build-contention.md`.
 
 This repo builds the package against the **Command Line Tools** (CLT) SDK — no full Xcode required. CLT
 ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the

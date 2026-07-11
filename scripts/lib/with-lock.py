@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command under a named, machine-wide mutex — the build/ship throttle.
 
-    with-lock.py <name> -- <cmd> [args...]
+    with-lock.py [--strict] <name> -- <cmd> [args...]
 
 WHY THIS EXISTS
     Measured on an 18-core box: one cold `swift build --build-tests` takes 165s; THREE
@@ -10,79 +10,146 @@ WHY THIS EXISTS
     (daemon RPC p95: 22ms under 3 builds vs 6.5ms under 1). See
     notes/designs/build-contention.md.
 
-DESIGN NOTES (each one is load-bearing; see the design doc for the reviews that forced them)
+TWO LOCK POLICIES — they are not interchangeable
+  * default (the BUILD lock) — FAILS OPEN. It only throttles; it guards no shared state.
+    Callers impose deadlines that KILL: `orchestra exec` defaults to 120s and kills on
+    expiry, and Claude Code's Bash tool caps at 600s. A build that queued and was then
+    killed would be a build that FAILS because of this lock. So after a bounded wait we run
+    the command anyway, unlocked, and say so loudly. Worst case degrades to the old
+    behaviour (an extra concurrent build — slow), never to a broken build.
+  * --strict (the SHIP lock) — NEVER fails open. It guards real shared state (the main
+    checkout, App/Orchestra.xcodeproj, /Applications/Orchestra.app). Proceeding unlocked
+    there would produce a half-written app bundle — strictly worse than waiting. So it waits
+    (a long time), and if it truly cannot acquire, it FAILS CLOSED with an error rather than
+    corrupting anything.
 
-  * Wrap COMMANDS, never whole SCRIPTS. `flock` releases on last close of the *file
-    description*, so any descendant that inherits the fd keeps holding the lock. Scripts
-    like iso-stack.sh/orch-test.sh background a daemon that outlives them — wrapping those
-    would strand the machine-wide mutex for hours. We therefore spawn the child WITHOUT
-    the lock fd (close_fds=True) and hold the lock in THIS process only.
-
-  * Lock file lives in the git common dir: shared by every worktree of the repo (the
-    correct scope), already sandbox-writable, and never deleted. NOT ~/.orchestra/locks —
-    `reset-state.sh` does `rm -rf ~/.orchestra`, and since flock locks the INODE, not the
-    path, deleting it while held would let a second builder create a fresh inode and
-    acquire it, silently losing mutual exclusion.
-
-  * FAIL OPEN on timeout. Callers impose deadlines that KILL: Claude Code's Bash tool caps
-    at 600s, and `orchestra exec` defaults to a 120s timeout that kills on expiry. A build
-    that waited and then got killed would be a build that FAILS because of this lock. So
-    after ORCH_BUILD_LOCK_TIMEOUT (default 300s) we run the command anyway, unlocked, and
-    say so loudly. Worst case degrades to today's behaviour (an extra concurrent build —
-    slow), never to a broken build. A hung holder can never wedge the repo.
-
-  * The wait is VISIBLE: re-emitted every 15s, not printed once and left to go stale.
+OTHER LOAD-BEARING DETAILS (each one is a bug a review caught)
+  * The lock fd is never inherited by the child (`close_fds`, and PEP 446 makes os.open fds
+    non-inheritable). A daemonised grandchild — iso-stack.sh/orch-test.sh background a
+    daemon that outlives the script — must not be able to hold the machine-wide mutex.
+  * SIGTERM/SIGINT/SIGHUP are FORWARDED to the child and we wait for it. Otherwise a killed
+    wrapper would drop the flock while the compiler kept running unlocked, and another card
+    would immediately start a second concurrent build against it.
+  * The lock path is derived from THIS FILE's location, not the cwd. `orch-test.sh` never
+    cds to the repo root, and CLAUDE.md tells agents to call this from anywhere.
+  * Acquisition NEVER kills the build: any unexpected error while locking degrades to
+    running unlocked (except under --strict).
 """
 import fcntl
 import os
+import signal
 import subprocess
 import sys
 import time
 
 WAIT_POLL = 0.25
 NOTIFY_EVERY = 15.0
-DEFAULT_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = 300.0          # build lock: bounded, then fail OPEN
+DEFAULT_STRICT_TIMEOUT = 3600.0  # ship lock: long, then fail CLOSED
+
+
+def repo_root() -> str:
+    """Repo root from THIS FILE (scripts/lib/with-lock.py), never from the cwd."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def lock_path(name: str) -> str:
-    """Lock file in the git common dir — shared by all worktrees of the repo."""
-    try:
-        common = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        common = ".git"
+    """Lock file in the git common dir — one per repo, shared by every worktree.
+
+    NOT ~/.orchestra/locks: reset-state.sh does `rm -rf ~/.orchestra`, and flock locks the
+    INODE, not the path — deleting the file while held would let a second builder create a
+    fresh inode and acquire it, silently losing mutual exclusion.
+    """
+    root = repo_root()
+    common = subprocess.run(
+        ["git", "-C", root, "rev-parse", "--git-common-dir"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     if not os.path.isabs(common):
-        common = os.path.abspath(common)
-    return os.path.join(common, f"orchestra-{name}.lock")
+        common = os.path.join(root, common)
+    return os.path.join(os.path.abspath(common), f"orchestra-{name}.lock")
 
 
 def holder_of(path: str) -> str:
     """Best-effort holder pid. BSD flock cannot report it, so the holder writes it in."""
     try:
         with open(path) as fh:
-            pid = fh.read().strip()
-        return pid or "?"
+            return fh.read().strip() or "?"
     except OSError:
         return "?"
 
 
+def run_forwarding_signals(cmd) -> int:
+    """Run cmd, forwarding termination signals to it, and wait. Returns a shell-style code.
+
+    Critical: we must NOT die while the child keeps running — that would release the flock
+    and leave an unlocked compiler racing the next card's build.
+    """
+    proc = subprocess.Popen(cmd, close_fds=True)
+
+    def forward(signum, _frame):
+        try:
+            proc.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+    previous = {}
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            previous[sig] = signal.signal(sig, forward)
+        except (ValueError, OSError):
+            pass
+    try:
+        while True:
+            try:
+                rc = proc.wait()
+                break
+            except KeyboardInterrupt:
+                forward(signal.SIGINT, None)
+    finally:
+        for sig, handler in previous.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+    # subprocess returns -N when killed by signal N; shells report 128+N.
+    return 128 - rc if rc < 0 else rc
+
+
 def main() -> int:
-    if "--" not in sys.argv[1:]:
-        sys.exit("usage: with-lock.py <name> -- <cmd> [args...]")
-    name = sys.argv[1]
-    cmd = sys.argv[sys.argv.index("--") + 1:]
+    argv = sys.argv[1:]
+    strict = False
+    if argv and argv[0] == "--strict":
+        strict = True
+        argv = argv[1:]
+    if "--" not in argv or not argv:
+        sys.exit("usage: with-lock.py [--strict] <name> -- <cmd> [args...]")
+    name = argv[0]
+    cmd = argv[argv.index("--") + 1:]
     if not cmd:
-        sys.exit("usage: with-lock.py <name> -- <cmd> [args...]")
+        sys.exit("usage: with-lock.py [--strict] <name> -- <cmd> [args...]")
 
-    timeout = float(os.environ.get("ORCH_BUILD_LOCK_TIMEOUT", DEFAULT_TIMEOUT))
-    path = lock_path(name)
+    env_key = f"ORCH_{name.upper()}_LOCK_TIMEOUT"
+    default = DEFAULT_STRICT_TIMEOUT if strict else DEFAULT_TIMEOUT
+    try:
+        timeout = float(os.environ.get(env_key, os.environ.get("ORCH_BUILD_LOCK_TIMEOUT", default)))
+    except ValueError:
+        timeout = default  # a malformed setting must never stop a build
 
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        path = lock_path(name)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except Exception as exc:  # noqa: BLE001 — the lock must never be the thing that fails
+        if strict:
+            sys.exit(f"[{name}-lock] FATAL: cannot open lock file: {exc}")
+        print(f"[{name}-lock] WARNING: cannot open lock file ({exc}) — running UNLOCKED.",
+              file=sys.stderr, flush=True)
+        return run_forwarding_signals(cmd)
+
     try:
         start = time.monotonic()
         have_lock = False
+        first = True
         announced = 0.0
         while True:
             try:
@@ -90,18 +157,25 @@ def main() -> int:
                 have_lock = True
                 break
             except OSError:
-                pass  # held by someone else
+                pass  # held elsewhere
             waited = time.monotonic() - start
             if waited >= timeout:
+                if strict:
+                    sys.exit(
+                        f"[{name}-lock] FATAL: could not acquire after {waited:.0f}s. "
+                        f"Refusing to proceed unlocked — this lock guards shared state "
+                        f"(main checkout / xcodeproj / /Applications). Holder pid "
+                        f"{holder_of(path)}. Retry, or clear a stuck holder."
+                    )
                 print(
                     f"[{name}-lock] WARNING: waited {waited:.0f}s (limit {timeout:.0f}s) — "
-                    f"proceeding WITHOUT the lock so this build cannot be killed by a "
-                    f"caller timeout. Expect contention.",
+                    f"proceeding WITHOUT the lock so a caller timeout cannot kill this build. "
+                    f"Expect contention.",
                     file=sys.stderr, flush=True,
                 )
                 break
-            if waited - announced >= NOTIFY_EVERY or announced == 0.0:
-                announced = waited
+            if first or waited - announced >= NOTIFY_EVERY:
+                first, announced = False, waited
                 print(
                     f"[{name}-lock] waiting for slot (held by pid {holder_of(path)}) — "
                     f"{waited:.0f}s elapsed…",
@@ -118,17 +192,12 @@ def main() -> int:
                 os.write(fd, f"{os.getpid()}\n".encode())
                 os.fsync(fd)
             except OSError:
-                pass  # the pid is only ever used for a log line
+                pass  # the pid only ever feeds a log line
 
-        # close_fds=True (the default) keeps the lock fd OUT of the child, so a daemonised
-        # grandchild can never inherit and strand the mutex.
-        return subprocess.call(cmd, close_fds=True)
+        return run_forwarding_signals(cmd)
     finally:
-        os.close(fd)  # releases the flock if we held it
+        os.close(fd)  # releases the flock if held
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        sys.exit(130)
+    sys.exit(main())

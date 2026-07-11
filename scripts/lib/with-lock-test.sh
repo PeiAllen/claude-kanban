@@ -93,7 +93,47 @@ $WITH_LOCK testlock -- true
 MS=$(( ( $(date +%s%N) - START ) / 1000000 ))
 if [[ $MS -lt 1000 ]]; then ok "uncontended overhead ${MS}ms"; else bad "uncontended overhead ${MS}ms — too slow"; fi
 
-rm -f "$LOCK_FILE"
+echo "8. SIGTERM must NOT orphan the child and silently release the lock"
+# Regression: with `subprocess.call` and no signal handling, killing the wrapper left the
+# compiler running UNLOCKED while the next card grabbed the lock and built concurrently.
+# `orchestra exec` kills at 120s and Bash caps at 600s, so this is a routine event.
+$WITH_LOCK testlock -- bash -c 'echo $$ > '"$TMP"'/child.pid; sleep 30' &
+WRAPPER=$!
+sleep 1
+CHILD=$(cat "$TMP/child.pid")
+kill -TERM $WRAPPER 2>/dev/null
+sleep 1.5
+if kill -0 "$CHILD" 2>/dev/null; then
+  bad "child ORPHANED — it is still running unlocked after the holder was killed"
+  kill -9 "$CHILD" 2>/dev/null
+else
+  ok "SIGTERM forwarded — child died with the holder (no unlocked orphan)"
+fi
+wait 2>/dev/null
+
+echo "9. --strict must NEVER fail open (it guards shared state)"
+$WITH_LOCK --strict shiptest -- sleep 5 &
+HOG=$!
+sleep 0.5
+if ORCH_SHIPTEST_LOCK_TIMEOUT=1 $WITH_LOCK --strict shiptest -- echo "SHOULD-NOT-RUN" >"$TMP/strict.out" 2>"$TMP/strict.err"; then
+  bad "strict lock PROCEEDED without the lock — would corrupt /Applications"
+else
+  if grep -q "SHOULD-NOT-RUN" "$TMP/strict.out"; then bad "strict lock ran the command anyway"
+  else ok "strict lock failed CLOSED (did not run the command unlocked)"; fi
+fi
+kill -9 $HOG 2>/dev/null; wait 2>/dev/null
+
+echo "10. signal-killed child reports the shell-conventional code (128+N, not 247)"
+$WITH_LOCK testlock -- bash -c 'kill -9 $$'; RC=$?
+check "SIGKILLed child -> 137" "$RC" "137"
+
+echo "11. must work from a cwd that is NOT a git repo (agents call it from anywhere)"
+OUTSIDE="$(mktemp -d)"
+got=$( cd "$OUTSIDE" && "$OLDPWD/$WITH_LOCK" testlock -- echo "ran-outside-repo" 2>/dev/null )
+check "runs from a non-git cwd" "$got" "ran-outside-repo"
+rmdir "$OUTSIDE" 2>/dev/null
+
+rm -f "$LOCK_FILE" "$(git rev-parse --git-common-dir)/orchestra-shiptest.lock"
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ $FAIL -eq 0 ]]
