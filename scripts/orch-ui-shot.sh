@@ -38,7 +38,7 @@ trap cleanup EXIT
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ regenerating xcodeproj + building Debug…"
   xcodegen generate --spec App/project.yml --project App >/dev/null
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  "$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
 fi
 

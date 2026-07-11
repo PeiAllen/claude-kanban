@@ -11,6 +11,39 @@ shared code; if something genuinely needs agent-specific handling, isolate it be
 boundary. Before calling a change done, sanity-check it against **at least Claude and Codex** —
 a fix that only works for the agent you happened to test is a regression for the rest.
 
+## Always build via `scripts/` — never a bare `swift build`
+
+Builds on this machine are **contention-bound, not CPU-bound**. Measured: one cold
+`swift build --build-tests` takes **165s**, but **three concurrent ones take 520s *each*** —
+degradation is super-linear, so concurrent building is pure loss (3 serialized finish sooner
+than 3 in parallel) and it drags the Orchestra app and daemon down with it (daemon RPC p95:
+6.5ms → 22ms). The reported "8m36s cold build" *was* three cards building at once.
+
+So every heavy build goes through a **machine-wide build mutex**:
+
+```sh
+scripts/build.sh          # instead of `swift build`
+scripts/test.sh           # instead of `swift test`
+scripts/build-app.sh      # app bundle (also takes the SHIP mutex)
+```
+
+A bare `swift build` **bypasses the mutex** and re-creates the problem for every other card.
+If you need a raw invocation, wrap it: `scripts/lib/with-lock.sh build -- swift build …`.
+When another card holds the lock you'll see `[build-lock] waiting for slot…` on stderr; the
+wait is bounded and **fails open**, so it can never fail your build. Details + the numbers:
+`notes/designs/build-contention.md`.
+
+## Keep the test suite tiered — don't let it re-clump
+
+The mutex caps the damage from *concurrency*; it does nothing about the **165s baseline that
+concurrency multiplies**. `OrchestraCoreTests` is already the biggest target in the repo
+(123 files / 17k lines), `swift test` cannot skip the MCP/swift-nio dependency tree, and
+every target and test you add raises that baseline permanently — for every card, forever.
+
+When adding code, ask whether it grows the critical path, and **keep tests tiered** (a fast
+unit tier agents run constantly; a slow integration tier run deliberately) rather than one
+monolithic target everything must compile. Don't collapse the tiers back together.
+
 ## Scratch / experiments — keep them contained
 Do all throwaway work — probes, experiments, scratch scripts, dumped output, temporary
 files — inside **`./.scratch/`** (gitignored). Don't scatter temp files across the repo or

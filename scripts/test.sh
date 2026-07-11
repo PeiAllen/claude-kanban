@@ -6,4 +6,10 @@ cd "$(dirname "$0")/.."
 # provide on its search path. typecheck-app.sh pins CLT for the app typecheck; the two scripts
 # rebuild the .build OrchestraCore module under their own SDK, each self-consistent.
 source scripts/swift-testing-flags.sh
-exec swift test "${SWIFT_TESTING_FLAGS[@]}" "$@"
+
+# COMPILING is the contended resource; RUNNING the tests is not (much of the suite is
+# tmux/socket/sleep-bound). So we hold the machine-wide build mutex for the compile only, then
+# release it and run the suite unlocked — serializing test *execution* would cost throughput
+# with no evidence behind it. See notes/designs/build-contention.md.
+scripts/lib/with-lock.sh build -- swift build --build-tests "${SWIFT_TESTING_FLAGS[@]}"
+exec swift test --skip-build "${SWIFT_TESTING_FLAGS[@]}" "$@"

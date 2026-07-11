@@ -45,7 +45,7 @@ trap cleanup EXIT
 echo "=== build-for-testing (Debug, ad-hoc signed) ==="
 xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
 DERIVED="$ROOT/.scratch/ios-e2e-derived"
-xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+"$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$DERIVED" \
   CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
   build-for-testing > "$LOG/ios-e2e-build.log" 2>&1 \

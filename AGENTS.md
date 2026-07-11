@@ -30,7 +30,19 @@ dirty main checkout, merge hiccups) — don't stop to ask:
      than guessing (the `orchestra-tree` guidance covers publishing a stacked PR).
 3. **Merge to main** — merge this branch into `main`. `main` is checked out in a separate worktree (the
    primary checkout — the `main` entry in `git worktree list`); `cd` into it and merge the branch there
-   with a merge commit (matches the repo's `merge:` history). **After the merge lands**, if `orchestra
+   with a merge commit (matches the repo's `merge:` history).
+
+   **Take the ship lock, and never leave main dirty between turns.** Every card merges in that *same*
+   shared checkout, so two ships can interleave. Run the merge as ONE locked command:
+
+   ```sh
+   <repo>/scripts/lib/with-lock.sh ship -- git merge --no-ff --no-edit <this-branch>
+   ```
+
+   If it conflicts, **`git merge --abort` immediately** — do not resolve in the shared main checkout and
+   do not leave it half-merged across turns (the lock only lasts as long as that one command, so a dirty
+   main is visible to every other card). Instead merge `main` into *your* branch, resolve there, commit,
+   and retry the locked merge. **After the merge lands**, if `orchestra
    tree <this-card>` shows this card has **children**, run `orchestra shipped <this-card>` so the daemon
    retargets them onto `main` and nudges each to restack (otherwise a stacked child strands on this
    now-merged branch and shows `inSync` forever). A card with no children can skip `shipped`.

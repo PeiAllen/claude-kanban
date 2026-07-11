@@ -32,7 +32,7 @@ trap cleanup EXIT
 # gate (typecheck-ios) stays unsigned; this harness signs to exercise the real Keychain path.
 echo "=== build (Debug, ad-hoc signed) ==="
 xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
-xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+"$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
   -destination 'generic/platform=iOS Simulator' \
   CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
   build > "$SHOTS/ios-build.log" 2>&1 || { echo "BUILD FAILED"; tail -20 "$SHOTS/ios-build.log"; exit 1; }

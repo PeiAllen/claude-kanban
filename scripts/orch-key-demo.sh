@@ -33,7 +33,7 @@ trap cleanup EXIT
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ building Debug…"
   (cd App && xcodegen generate --spec project.yml >/dev/null 2>&1)
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  "$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -derivedDataPath "$DD" build >/tmp/orch-key-build.log 2>&1 \
     || { echo "BUILD FAILED"; tail -30 /tmp/orch-key-build.log; exit 1; }
 fi

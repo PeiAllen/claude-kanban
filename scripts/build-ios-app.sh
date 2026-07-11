@@ -31,7 +31,7 @@ fi
 
 xcodegen generate --spec App-iOS/project.yml --project App-iOS
 
-xcodebuild \
+"$(dirname "$0")/lib/with-lock.sh" build -- xcodebuild \
   -project App-iOS/OrchestraiOS.xcodeproj \
   -scheme OrchestraiOS \
   -configuration "$CONFIG" \

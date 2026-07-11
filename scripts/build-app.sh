@@ -11,6 +11,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# ── SHIP MUTEX ───────────────────────────────────────────────────────────────────────────
+# This script mutates state SHARED by every card: it regenerates App/Orchestra.xcodeproj in
+# the main checkout (xcodegen, below) and replaces /Applications/Orchestra.app. Two cards
+# shipping at once could interleave a project regeneration with the other's xcodebuild, or
+# leave a half-written app bundle. Unlike the build mutex (which only throttles), this one
+# guards real shared state, so it is a strict mutex with no fail-open.
+#
+# Re-exec ourselves under the lock. The marker stops the re-exec looping, and means the lock
+# is acquired EXACTLY ONCE per process tree — flock is not recursive, so a second acquisition
+# on the same path would deadlock against our own ancestor.
+if [[ -z "${ORCH_SHIP_LOCK_HELD:-}" ]]; then
+  exec scripts/lib/with-lock.sh ship -- env ORCH_SHIP_LOCK_HELD=1 "$0" "$@"
+fi
+
 DEST_DIR="/Applications"
 
 RUN=0
@@ -41,7 +55,9 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 xcodegen generate --spec App/project.yml --project App
 
-xcodebuild \
+# Under the BUILD mutex (lock order: ship ⊐ build — we already hold ship, and nothing under
+# the build lock ever reaches back for ship, so there is no cycle).
+scripts/lib/with-lock.sh build -- xcodebuild \
   -project App/Orchestra.xcodeproj \
   -scheme Orchestra \
   -configuration "$CONFIG" \
@@ -57,9 +73,9 @@ BUILT_APP="$(xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -conf
 # `orchestra` CLI would clobber the `Orchestra` app executable if they shared a directory. The app
 # resolves orchestrad from this dir; orchestrad in turn finds `orchestra` as its own sibling here.
 echo "Building daemon binaries (release)…"
-swift build -c release --product orchestrad
-swift build -c release --product orchestra
-swift build -c release --product orchestra-mcp
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestrad
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestra
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestra-mcp
 SWIFT_BIN=".build/release"
 
 BIN_DIR="$BUILT_APP/Contents/Resources/bin"
