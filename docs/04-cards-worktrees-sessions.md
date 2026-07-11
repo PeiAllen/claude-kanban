@@ -196,7 +196,7 @@ just-in-time from `capture-pane`).
 ### The Claude Code adapter
 
 `ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models — Opus 4.8,
-Sonnet 4.6, Haiku 4.5, Opus 4.7 — and assembles the `claude` command line:
+Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
 
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
   <uuid>] --settings <one file> [--name <title>] [<prompt>]`. The session id is
@@ -318,8 +318,9 @@ core handles the difference purely through the descriptor:
   `_report --event session` sentinel), is **orientation-only** (Codex's `parse` returns `nil` for the push —
   telemetry stays the rollout tail below), and is best-effort/argv-preserving
   (column-aware-orientation PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
-- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (`gpt-5.3-codex` /
-  `gpt-5.5` = 272 000-token window), `.copy`-bundled so the app stays fully offline. This
+- **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (the `gpt-5.6`
+  family — Sol / Terra / Luna — = 372 000-token window; `gpt-5.5` = 272 000), `.copy`-bundled
+  so the app stays fully offline. This
   table is the **`ctxPct` denominator** for the telemetry below — the context percentage is *derived*
   (tokens ÷ window), because the Codex TUI reports no percentage of its own.
 

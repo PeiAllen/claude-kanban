@@ -228,7 +228,7 @@ private struct DebugLaunchHook: ViewModifier {
             mk("Fix passthrough statusLine timeout", repo: DemoConfig.repoRoot,
                branch: "fix/statusline-timeout", agent: "claude-code", model: "claude-opus-4-8", ago: 1800),
             mk("Add done-popover session info", repo: DemoConfig.repoRoot,
-               branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-4-6", ago: 7200),
+               branch: "feat/done-information", agent: "claude-code", model: "claude-sonnet-5", ago: 7200),
         ]
     }
     /// The agent catalog for the headless Spawn-sheet screenshot (`ORCH_SHOW=spawn`) — the built-in

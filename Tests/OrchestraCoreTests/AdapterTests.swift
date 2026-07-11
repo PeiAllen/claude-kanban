@@ -28,13 +28,13 @@ struct AdapterTests {
 
     @Test("start(ctx) is [String] carrying model, plan flag, --session-id, --settings, --name, and the prompt")
     func startArgv() {
-        let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-4-6", startIn: .plan,
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-5", startIn: .plan,
                                  sessionId: "the-id", prompt: "Add OAuth login\nwith Google",
                                  name: nil)
         let argv = adapter.start(ctx)
         #expect(argv.first == "claude")
         #expect(argv.contains("--model"))
-        #expect(argv.contains("claude-sonnet-4-6"))
+        #expect(argv.contains("claude-sonnet-5"))
         #expect(adjacent(argv, "--permission-mode", "auto"))   // plan column → auto mode
         #expect(adjacent(argv, "--session-id", "the-id"))
         #expect(adjacent(argv, "--settings", Config.hooksPath))
@@ -156,7 +156,7 @@ struct ClaudeDelegationTests {
     func argvUnchanged() throws {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         let a = ClaudeCodeAdapter()
-        let ctx = AdapterContext(cwd: cwd, model: "claude-sonnet-4-6", startIn: .plan,
+        let ctx = AdapterContext(cwd: cwd, model: "claude-sonnet-5", startIn: .plan,
                                  sessionId: "sid", prompt: "do it", name: nil)
         let before = a.start(ctx)
         try a.prepareToLaunch(ctx)
