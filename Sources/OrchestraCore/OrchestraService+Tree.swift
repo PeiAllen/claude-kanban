@@ -188,10 +188,12 @@ extension OrchestraService {
         }
         let syncBase = probe.syncBase ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
-        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
-        // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
+        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky badge
+        // (`mergeRequested` waiting OR `mergeStalled` gave-up) so the recompute below reflects the true
+        // (inSync) state. The stalled case matters: its badge is sticky against the funnel, so without this
+        // clear a card whose merge finally landed would wear the red "unanswered" badge forever.
         stopMergeRequestNudge(t.id)
-        _ = try? await store.update(t.id) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
+        _ = try? await store.update(t.id) { if $0.treeStat?.state.isMergePending == true { $0.treeStat = nil } }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
         treeStatDebounce[t.id]?.cancel()
@@ -421,7 +423,7 @@ extension OrchestraService {
         // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
         // stale under a concurrent recompute, but the store.update closure below is the authority.
         let current0 = await store.get(id)?.treeStat
-        if current0?.state == .mergeRequested, new?.state != .restackNeeded { return }
+        if current0?.state.isMergePending == true, new?.state != .restackNeeded { return }
         guard new != current0 else { return }
         // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
         // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent
@@ -430,9 +432,10 @@ extension OrchestraService {
         var staleEdge = false, restackEdge = false, changed = false
         let res = try? await store.update(id) { task in
             let cur = task.treeStat
-            // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while
-            // the child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
-            if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
+            // O2: the merge-request badges — `mergeRequested` (waiting) and `mergeStalled` (gave up) — are
+            // sticky; the funnel must not clobber either while the child waits on its parent. Only a
+            // genuine `restackNeeded` (parent history changed) supersedes them.
+            if cur?.state.isMergePending == true, new?.state != .restackNeeded { return }
             guard new != cur else { return }                   // no delta → no state change, no emit/nudge
             staleEdge = (cur?.state == .inSync && new?.state == .stale)
             restackEdge = (cur?.state != .restackNeeded && new?.state == .restackNeeded)
