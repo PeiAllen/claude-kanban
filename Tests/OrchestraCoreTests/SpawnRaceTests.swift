@@ -18,18 +18,22 @@ struct SpawnRaceTests {
 
         var ids: [UUID] = []
         for i in 0..<40 {
-            // Start the spawn, then drive the liveness reconcile a few times while it is parked at
-            // `await resolveTrust` — the window between `store.create` and `sessions.ensure` the guard
-            // must cover. Bounded pokes (not a free-running spin loop) so sibling suites running in
-            // parallel aren't starved of the shared cooperative thread pool.
-            async let spawned = env.svc.spawn(SpawnInput(prompt: "c\(i)", repo: repo, branch: "b\(i)"))
-            for _ in 0..<4 { await env.svc.reconcileLiveness() }
-            let t = try await spawned
+            // Non-blocking spawn persists a `.creatingWorktree` card, then the STEPPING reconciler drives it
+            // through the funnel. Interleave `reconcile()` ticks while each card is being born — the
+            // being-born phases (creatingWorktree/launching) must never be false-killed by a concurrent tick.
+            let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c\(i)", repo: repo, branch: "b\(i)"))
+            for _ in 0..<4 { await env.svc.reconcile() }
             ids.append(t.id)
+        }
+        // Drive all the way to live; still nothing may have been marked dead in the process.
+        let expected = ids.count
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list().filter { $0.phase.kind == .live }.count == expected
         }
 
         let all = await env.svc.list(includeArchived: true)
-        let dead = ids.filter { id in all.first { $0.id == id }?.status == .dead }
+        let dead = ids.filter { id in all.first { $0.id == id }?.phaseDisplay == .dead }
         #expect(dead.isEmpty, "\(dead.count)/\(ids.count) freshly-spawned cards were falsely marked dead")
     }
 
@@ -42,14 +46,14 @@ struct SpawnRaceTests {
         let repo = TestEnv.repo(env.base)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        let first = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "parent"))
-        let second = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
+        let first = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "parent"))
+        let second = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
         _ = second
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         #expect(await collector.activities.contains { $0.kind == .warning && $0.text.contains("second live card") })
 
         // A child on `parent`: shipping it (root ship) / notify must resolve to the OLDEST parent card.
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         _ = child
         let active = await env.svc.list()
         #expect(await env.svc.derivedCard(repo: repo, branch: "parent", among: active)?.id == first.id)
@@ -59,17 +63,20 @@ struct SpawnRaceTests {
     func restartIgnoresStaleSessionEnd() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
 
-        // User clicks "start fresh": the old (still-running) process is killed and a new session ensured.
+        // User clicks "start fresh": intent-only restart records `.relaunching` (fresh id, epoch bumped); the
+        // reconciler's RelaunchStepper kills the old process and blank-launches a new session.
         let restarted = try await env.svc.restart(t.id, source: .app)
-        #expect(restarted.status == .waiting)
+        #expect(restarted.phase.kind == .relaunching)
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(live.waitReason != nil)
 
-        // The killed old process's SessionEnd hook arrives out-of-band right after restart returns.
+        // The killed old process's SessionEnd hook arrives out-of-band; the epoch bump + isAlive probe fence it.
         try await env.svc.report(t.id, StatusReport(endReason: "exit"))
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status != .dead, "stale SessionEnd re-killed the restarted card")
+        #expect(after.phaseDisplay != .dead, "stale SessionEnd re-killed the restarted card")
         #expect(after.deadReason == nil)
     }
 }

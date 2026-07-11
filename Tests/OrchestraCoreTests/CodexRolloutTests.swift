@@ -42,14 +42,14 @@ struct CodexRolloutParseTests {
     @Test("test_rollout_to_statusreport: task_started → running")
     func taskStartedRunning() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#))
-        #expect(r.snapshot?.status == .running)
+        #expect(r.snapshot?.run == .running)
     }
 
     @Test("turn_complete → waiting with humanTurn reason")
     func turnCompleteHumanTurn() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"turn_complete"}}"#))
-        #expect(r.snapshot?.status == .waiting)
-        #expect(r.snapshot?.waitReason == .humanTurn)
+        #expect(r.snapshot?.run != nil)
+        #expect(r.snapshot?.run == .waiting(.humanTurn))
         #expect(r.snapshot?.turnCompleted == true)
     }
 
@@ -84,20 +84,20 @@ struct CodexRolloutParseTests {
     func functionCallDesc() throws {
         let line = #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"#
         let r = try #require(tail(line))
-        #expect(r.snapshot?.status == .running)
+        #expect(r.snapshot?.run == .running)
         #expect(r.snapshot?.desc == "Running shell")
     }
 
     @Test("idle signal: TurnComplete → waiting")
     func idleSignal() throws {
         let r = try #require(tail(#"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#))
-        #expect(r.snapshot?.status == .waiting)
+        #expect(r.snapshot?.run != nil)
     }
 
     @Test("rename tolerance: old TaskComplete AND new TurnComplete both mean idle")
     func renameToleranceTurn() throws {
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#)?.snapshot?.status == .waiting)
-        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#)?.snapshot?.status == .waiting)
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"TaskComplete"}}"#)?.snapshot?.run != nil)
+        #expect(tail(#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#)?.snapshot?.run != nil)
     }
 
     @Test("rename tolerance: total_token_usage.total_tokens AND a flat total_tokens both parse")
@@ -223,12 +223,17 @@ struct CodexTelemetryE2ETests {
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),
-                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let card = try await svc.spawn(SpawnInput(prompt: "look", model: "gpt-5.3-codex",
-                                                  agentId: "codex",
-                                                  cwd: PathResolver.canonical(work)))
+        // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
+        // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
+        // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
+        async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.3-codex",
+                                                 agentId: "codex",
+                                                 cwd: PathResolver.canonical(work)))
+        try await TestEnv.reconcileUntilLive(svc, count: 1)
+        let card = try await spawned
         return (svc, card, rollout)
     }
 
@@ -263,13 +268,16 @@ struct CodexTelemetryE2ETests {
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),
-                                   worktrees: StubWorktrees(root: config.worktreesRoot),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        let cardA = try await svc.spawn(SpawnInput(prompt: "look a", model: "gpt-5.3-codex",
-                                                   agentId: "codex", cwd: workA))
-        let cardB = try await svc.spawn(SpawnInput(prompt: "look b", model: "gpt-5.3-codex",
-                                                   agentId: "codex", cwd: workB))
+        async let sa = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look a", model: "gpt-5.3-codex",
+                                            agentId: "codex", cwd: workA))
+        async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look b", model: "gpt-5.3-codex",
+                                            agentId: "codex", cwd: workB))
+        try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback (fixture rollouts predate launch)
+        let cardA = try await sa
+        let cardB = try await sb
         return (svc, cardA, rolloutA, cardB, rolloutB)
     }
 
@@ -287,7 +295,7 @@ struct CodexTelemetryE2ETests {
 
         let after = try #require(await svc.list().first { $0.id == card.id })
         #expect(after.ctxPct == 25.0)
-        #expect(after.status == .running)
+        #expect(after.phaseDisplay == .running)
     }
 
     @Test("pollTelemetry handles current Codex token_count without model id")
@@ -306,7 +314,7 @@ struct CodexTelemetryE2ETests {
         append(rollout, #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"TurnComplete"}}"#)
         await svc.pollTelemetry()
         let after = try #require(await svc.list().first { $0.id == card.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
     }
 
     @Test("seq-gate holds end-to-end: a stale (earlier-timestamp) ctx line can't overwrite a fresher one")
@@ -341,9 +349,9 @@ struct CodexTelemetryE2ETests {
     func claudeNotTailed() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.pollTelemetry()   // must be a no-op for hooksPush; no crash, no change
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == t.status)
+        #expect(after.phase == t.phase)
     }
 }

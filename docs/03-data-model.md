@@ -2,8 +2,8 @@
 
 This chapter is the reference for Orchestra's persisted state: the `Task` (card) schema, the enums that
 classify it, how it is stored and migrated, the configuration and on-disk paths, and the error and
-event types. The types live in `Sources/OrchestraCore/Model.swift`, `Config.swift`, `TaskStore.swift`,
-`Inbox.swift`, and `Errors.swift`.
+event types. The types live in `Sources/OrchestraKit/` (`Model.swift`, `Config.swift`, `Errors.swift`)
+and `Sources/OrchestraCore/` (`TaskStore.swift`, `Inbox.swift`).
 
 ## The `Task` (card)
 
@@ -26,9 +26,12 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `startIn` | `StartIn` | `plan` \| `impl` — where the agent began. |
 | `column` | `Column` | Current board column. |
 | `order` | `Int` | Sort position within the column. |
-| `status` | `AgentStatus` | `waiting` \| `running` \| `done` \| `dead`. |
-| `deadReason` | `DeadReason?` | Set together with `status = .dead`. |
-| `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`). |
+| `phase` | `Phase` | The **persisted lifecycle SSOT** (Stage 2 — replaces the retired `status`/`waitReason` pair). `creatingWorktree` \| `launching` \| `live(RunState)` \| `relaunching` \| `dead(DeadReason)` \| `archived(teardownComplete:)`. The `transition()` funnel is its sole writer. |
+| `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
+| `phaseChangedAt` | `Date` | When `phase` last changed — drives phase-relative timers and terminal-dwell checks. |
+| `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared by the `RelaunchStepper`/`LaunchStepper` on readiness (see [migration & persistence](#persistence-and-migration)). |
+| `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
+| `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer (axis 7). Nil for a non-git / zero-change / not-yet-computed card. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
@@ -40,18 +43,47 @@ A `Task` is the single persisted record behind every card. Its fields:
 ### Classifying enums
 
 - **`Column`** — `plan`, `impl`, `review` (display: Plan / Implementation / Review). There is no `done`
-  case; archiving sets `status = .done` + `archived = true`. A read-only freeform/scratch delegated card
-  can also reach `status = .done` without being archived when its agent reports task completion (for
-  example Codex `task_complete` / `turn_complete` or Claude `TaskCompleted`, not Claude `Stop`).
+  case; archiving now routes through the `transition()` funnel like every other `Convergence` verb: `archive`
+  persists the intent (`phase = .archived(teardownComplete: false)`, companion `archived = true` in the same
+  patch) and returns, and the reconciler's `TeardownStepper` drives `.archivedPending → .archivedComplete`
+  (kill the session, release a borrow/worktree, reclaim the run dir, cancel debounces/watches, nudge
+  children). The `archived` Bool mirror is retained alongside `phase` for display/filtering. A read-only
+  freeform/scratch delegated card
+  can also conclude to `.dead(.completed)` without being archived when its agent reports task completion
+  (for example Codex `task_complete` / `turn_complete` or Claude `TaskCompleted`, not Claude `Stop`).
   [`reopen`](05-command-reference.md#registry-commands)
-  reverses it — `archived` back to `false`, `status` to `.waiting`, `deadReason`/`deadDetail` cleared —
-  while keeping the card's stored `col`, so it returns to the column it was archived from.
-- **`AgentStatus`** — `waiting`, `running`, `done`, `dead`.
-- **`DeadReason`** — why a card died:
+  reverses it — `archived` back to `false`, phase walked back onto the board via the funnel,
+  `deadReason`/`deadDetail` cleared — while keeping the card's stored `col`, so it returns to the column
+  it was archived from.
+- **`Phase`** — the persisted lifecycle enum (Stage 2). Wire form is a `{ "name": <case>, "detail": <value> }`
+  object; `detail` present only for the payload-carrying cases (`live`, `dead`, `archived`):
+  - `creatingWorktree` — materializing the cwd (worktree / scratch / borrow); **every** spawn enters here,
+  - `launching` — cwd ready, bringing the agent session up,
+  - `live(RunState)` — the agent is up; sub-state in `RunState`,
+  - `relaunching` — a restart/resume in flight,
+  - `dead(DeadReason)` — terminal-ish: session gone, awaiting recovery,
+  - `archived(teardownComplete: Bool)` — off the board; the Bool distinguishes an archive whose
+    worktree/session teardown is still pending from one fully torn down.
+  A coarse `Phase.Kind` (`creatingWorktree`/`launching`/`live`/`relaunching`/`dead`/`archivedPending`/
+  `archivedComplete`) flattens the `archived` Bool for stepper dispatch and terminal/bump checks;
+  `isTerminal` is `dead(*)` or `archived(*)`.
+- **`RunState`** — the running sub-state of a `live` card (the mid-life detail that used to live in
+  `status`/`waitReason`): `running` (actively working) or `waiting(WaitReason)` (blocked, carrying *why*).
+  Custom `{name, detail?}` Codable, `detail` only on `.waiting`.
+- **`WaitReason`** — why a card is `.live(.waiting(_))`: `permission` (blocked on tool approval) or
+  `humanTurn` (finished its turn / idle, waiting on the human).
+- **`PhaseDisplayKey`** — a coarse **display-only, non-wire, non-Codable** label derived from `phase` on
+  demand (`Task.phaseDisplay`), never persisted, so the display vocabulary can evolve without touching the
+  durable model: `starting` / `launching` / `relaunching` / `running` / `idle` / `needsPermission` /
+  `dead` / `done`. The being-born phases surface honestly (a spawning card reads `.starting`/`.launching`,
+  not a fake `.running`). `Task.waitReason` derives the `WaitReason` (nil unless `.live(.waiting(_))`).
+- **`DeadReason`** — why a card died (set alongside `phase = .dead(_)`):
   - `agentExited` — a `SessionEnd` with reason exit/logout (usually mid-life and resumable),
   - `sessionVanished` — the tmux session is gone with no `SessionEnd` (crash or external kill),
   - `rebootUnrevived` — the startup sweep couldn't auto-revive it,
-  - `resumeFailed` — a resume attempt failed (see `deadDetail`).
+  - `resumeFailed` — a resume attempt failed (see `deadDetail`),
+  - `completed` — the agent finished its work and the card was retired to Done,
+  - `spawnFailed` — the initial spawn never came up (worktree/launch failure before first life).
 - **`CardOrigin`** — `worktree`, `scratch`, `borrowed`.
 - **`CardAccess`** — `readWrite`, `readOnly`.
 - **`StartIn`** — `plan` or `impl`.
@@ -73,30 +105,66 @@ matches more than one card.
 
 ## Persistence and migration
 
-`TaskStore` persists the whole board as a **pretty-printed JSON array** of `Task` at
-`~/Library/Application Support/Orchestra/tasks.json`.
+`TaskStore` persists the whole board as a **pretty-printed JSON envelope** `{ "rev": Int, "tasks": [Task] }`
+at `~/Library/Application Support/Orchestra/tasks.json`. The `rev` is the board-global monotonic version
+(PR1) stamped on every event and snapshot; a pre-upgrade **bare-array** `tasks.json` still loads (decoded
+as the tasks with `rev = 0` — the one on-disk compat kept).
 
 - **Atomic writes.** Every mutation writes a `.tmp` file and `replaceItemAt`s it into place, creating
-  the parent directory as needed.
-- **Corruption-safe load.** A malformed `tasks.json` is moved aside to `.bak` and the store starts from
-  `[]` rather than crashing.
+  the parent directory as needed. `persist()` is the single funnel that bumps `currentRev` and encodes the
+  `{rev, tasks}` envelope.
+- **Element-wise, corruption-tolerant load.** `load()` decodes the envelope's `tasks` **element-by-element**
+  through a `FailableTask` wrapper: a single throwing/corrupt record **drops itself** (logged) and the rest
+  of the board loads intact. The board is moved aside to `.bak` and started from `[]` **only when the
+  top-level JSON is itself unparseable** — never for a single bad record.
 - **Operations.** `all`, `get`, `create` (auto-assigns `order`), `nextOrder`, `move` (re-orders into a
-  column), `update` (applies a mutation and bumps `updatedAt`), `remove`.
+  column), `update` (applies a mutation, bumps `updatedAt`, and — since PR1 — skips the persist + rev-bump
+  on a no-op mutation), `remove`.
 
-### Schema migration
+### Schema migration — the one-time `status`/`waitReason` → `phase` mapping
 
-The model is **forward- and backward-compatible** through `Codable` defaults so old `tasks.json` files
-load cleanly:
+The Stage-2 flag-day retired the `status`/`waitReason`/`AgentStatus` triple in favor of `phase` +
+`RunState`. The one-time on-disk migration that carries a pre-Stage-2 `tasks.json` forward lives **inside
+`Task.init(from:)`** — the card's own tolerant custom decoder — **not** a separate `LegacyStoredBoard`
+structural pass (superseding the plan's approach, because Task 2.1 had already given `Task` a hand-written
+`init(from:)`). Every record — whether it arrived via the `{rev, tasks}` envelope or a bare array — routes
+through this single migrating init. Its contract:
 
-- The legacy `worktree: String` field is **decode-only**; it maps onto the newer `cwd`. On encode the
-  store always writes `cwd` + `origin`, never the bare `worktree` (the PR2 schema change — see
-  [Design decisions](09-design-decisions.md)).
-- Optional fields decode with sane defaults: `titleProvisional=false`, `desc=""`, `origin=.worktree`,
-  `access=.readWrite`, `agentId="claude-code"`, `status=.running`, `ctxPct=0`, `priorSessionIds=[]`,
-  `archived=false`, `diffStat=nil`, `parentBranch=nil`.
+- **`id` is the only required field.** An id-less record is genuinely unrecoverable and is the *sole* drop
+  case (it throws, and `FailableTask` drops just that record). Every other field is `decodeIfPresent` with a
+  safe default, so a partial/garbage record is **kept** as a safe card rather than stranding the whole board.
+- **Garbage enum fields default, never throw.** Tolerant enum/decodable fields (`origin`, `access`, `model`,
+  `startIn`, `column`, `deadReason`) are `try?`-guarded so a present-but-renamed/removed rawValue falls back
+  to the same safe default the memberwise init uses (`.worktree`, `.readWrite`, `unknown` model, `.impl`,
+  `.impl`, nil) — one garbage field can never drop an otherwise-recoverable record.
+- **Migrating seed.** When the `phase` key is **absent** (a pre-Stage-2 record), `phase` is seeded from the
+  legacy `status`/`waitReason`/`deadReason`/`archived` keys — read leniently as `String?` (the fields no
+  longer exist on the type) so a garbage status still decodes to a safe phase. A record that already carries
+  `phase` decodes it directly (no migration). The mapping (fail-safe, top-to-bottom precedence):
 
-This is why a board created before borrowed/scratch cards existed still opens: every new field has a
-default, and the only pre-existing cards are `.worktree`.
+  | legacy record | migrated `phase` |
+  |---|---|
+  | `archived == true` | `.archived(teardownComplete: true)` |
+  | `status == "running"` | `.live(.running)` |
+  | `status == "waiting"` | `.live(.waiting(waitReason ?? .humanTurn))` — a nil/unknown wait reason (common for idle cards) maps to `.humanTurn`, never a fake permission wait |
+  | `status == "done"` | `.dead(.completed)` |
+  | `status == "dead"` | `.dead(deadReason ?? .agentExited)` — the preserved terminal reason |
+  | nil / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe terminal, never a throw |
+
+- **Envelope `rev` preserved.** The `{rev, tasks}` envelope's `rev` loads as-is; a bare-array file loads at
+  `rev = 0`. Encode is custom (the decode-only legacy keys make Codable synthesis impossible) and writes
+  every stored property — deliberately **not** `status`/`waitReason`, which no longer exist on the wire.
+
+Other schema compat is unchanged: the legacy `worktree: String` field is decode-only (mapped onto `cwd`; the
+store always writes `cwd` + `origin`), and optional fields decode with sane defaults, so a board created
+before borrowed/scratch cards existed still opens.
+
+> **Note on `pendingSeed`.** Wired in PR4b: `resume(id, seed:)` (driving handoff's `resumeInCard` and
+> seeded-wake) persists the folded seed as `pendingSeed` in the **same** funnel patch as
+> `transition(.relaunching)`; `restart` clears it (a blank restart carries no seed). The `RelaunchStepper`
+> — and `LaunchStepper` for a reopened resumable card — consumes and clears `pendingSeed` on readiness-at-
+> current-epoch (the same `mutate` closure that lands `.live`); a `resumeFailed` leaves it in place so a
+> retried relaunch still carries the seed.
 
 ## The inbox store (F3)
 
@@ -161,6 +229,9 @@ default-on-malformed discipline.
 | `allowlist` | `[]` | Extra permitted directories beyond the two roots. |
 | `maxConcurrentRevivals` | `4` | Throttle on simultaneous session revivals at startup. |
 | `revivalGraceSeconds` | `15` | How long a resume waits for the `SessionStart(resume)` confirmation. |
+| `worktreeAddTimeout` | `600` | Wall-clock bound (s) on `git worktree add` — generous; worst known checkout ≈9s. |
+| `sessionLaunchTimeout` | `30` | Wall-clock bound (s) on a launch; a card `launching`/`relaunching` past it is classified dead. |
+| `controlTimeout` | `15` | Wall-clock bound (s) on tmux control verbs + fast git queries. |
 | `statusLineMode` | `passthroughGlobal` | How the agent's status line is rendered (see below). |
 | `customStatusLine` | (unset) | The command for `statusLineMode = .custom`. |
 
@@ -226,7 +297,10 @@ The agent's `_report` channel carries a `StatusReport`, a unified patch with two
 - the **event half** (`EventReport`) — causally-ordered fields: `sessionId`, `transcriptPath`,
   `sessionSource`, `endReason`, `promptText`;
 - the **snapshot half** (`SnapshotReport`) — a seq-stamped atomic snapshot: `ctxPct`, `modelId`,
-  `modelDisplay`, `status`, `desc`, `sessionName`.
+  `modelDisplay`, `run` (a `RunState?` — the agent's observed `.running`/`.waiting(reason)`, which
+  **replaces the retired `status`/`waitReason` pair** so `AgentStatus` is off the wire entirely), `desc`,
+  `turnCompleted`, `sessionName`. `report()` maps a present `run` onto a `.live(run)` phase write through
+  the `transition()` funnel (it no longer writes `phase` directly).
 
 How those halves are merged into the card (event half applied unconditionally and ordered; snapshot
 half seq-gated against a monotonic cursor) is detailed in

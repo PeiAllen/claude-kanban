@@ -4,9 +4,15 @@ import Testing
 
 /// Spawn startup-abort classification: an agent that exits within its first seconds is a DISTINCT,
 /// diagnosable, self-healing launch abort — `.spawnExitedImmediately` with captured stderr + bounded
-/// retry — not a silent permanent `.sessionVanished`. The seam is `ensure` + `reconcileLiveness`, and it
-/// is agent-agnostic (no `if agent==…`). An abort is modeled as a pane that DIED while the session
-/// persists (what tmux `remain-on-exit` leaves behind); a fully-gone session is a normal mid-run vanish.
+/// retry — not a silent permanent `.sessionVanished`. Agent-agnostic (no `if agent==…`). An abort is
+/// modeled as a pane that DIED while the session persists (what tmux `remain-on-exit` leaves behind); a
+/// fully-gone session is a normal mid-run vanish.
+///
+/// FOLDED into the lifecycle-convergence architecture: spawn is now NON-BLOCKING (the reconciler's
+/// steppers bring the session up), so these tests drive the card to `.live` via `spawnAndAwaitLive`
+/// (which also ARMS the startup-abort watch in `finishLaunch`) BEFORE injecting the pane state, then
+/// exercise the fold points (`reconcileLiveness` continuous pass + `reconcilePhasesAtBoot` boot pass).
+/// `status`/`recoverSessions` are gone — the phase machine + `reconcilePhasesAtBoot` supersede them.
 @Suite("OrchestraService — spawn startup-abort classification")
 struct StartupAbortTests {
 
@@ -14,16 +20,16 @@ struct StartupAbortTests {
     @Test("startup abort with no retries → dead(spawnExitedImmediately) + captured detail")
     func immediateExitClassified() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)   // no retry; deadline already past
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)   // no retry; deadline already past
         env.sessions.setPaneText(t.id, "Error: usage limit reached\nprocess exited")
         env.sessions.setPaneDead(t.id)                                          // aborted: pane dead, session present
 
         await env.svc.reconcileLiveness()
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .spawnExitedImmediately)
         #expect(after.deadReason != .sessionVanished)
         #expect(after.deadDetail?.isEmpty == false)
@@ -34,9 +40,9 @@ struct StartupAbortTests {
     @Test("startup abort then healthy retry → alive, one bounded re-spawn, no worktree churn")
     func retryRecovers() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let ensureAfterSpawn = env.sessions.ensureCount
         let worktreesAfterSpawn = env.worktrees.ensured.count
         env.sessions.setPaneDead(t.id)                     // first launch aborts
@@ -47,7 +53,7 @@ struct StartupAbortTests {
         await env.svc.reconcileLiveness()                  // retry is alive + past deadline → graduate
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status != .dead)
+        #expect(after.phase.kind != .dead)
         #expect(after.deadReason == nil)
         #expect(env.worktrees.ensured.count == worktreesAfterSpawn)   // retry reused the cwd — no new worktree
     }
@@ -56,16 +62,16 @@ struct StartupAbortTests {
     @Test("graduated card that later vanishes → sessionVanished, not a startup abort")
     func midRunVanishStillSessionVanished() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
 
         await env.svc.reconcileLiveness()                  // pane alive + deadline past → graduate (pending cleared)
         env.sessions.setAlive(t.id, false)                 // NOW it vanishes mid-run (session gone)
         await env.svc.reconcileLiveness()
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .sessionVanished)
     }
 
@@ -73,9 +79,9 @@ struct StartupAbortTests {
     @Test("startup abort that never recovers → dead after exactly maxStartupRetries respawns")
     func retryExhaustionEndsDead() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "unauthorized")
         env.sessions.setPaneDead(t.id)
 
@@ -85,7 +91,7 @@ struct StartupAbortTests {
         await env.svc.reconcileLiveness()                  // attempt 1 == max → give up
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .spawnExitedImmediately)
         #expect(after.deadDetail?.contains("unauthorized") == true)
     }
@@ -94,14 +100,14 @@ struct StartupAbortTests {
     @Test("archive during startup grace clears pending → no resurrecting re-spawn")
     func archiveDuringGraceNotResurrected() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneDead(t.id)
         let ensureAfterSpawn = env.sessions.ensureCount
 
-        try await env.svc.archive(t.id)                    // user archives the card (kills session, clears pending)
-        await env.svc.reconcileLiveness()                  // must NOT retry/re-ensure an archived card
+        try await env.svc.archive(t.id)                    // user archives the card (intent → archivedPending)
+        await env.svc.reconcileLiveness()                  // must NOT retry/re-ensure an archived (terminal) card
 
         #expect(env.sessions.ensureCount == ensureAfterSpawn)   // no resurrecting launch
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
@@ -112,52 +118,55 @@ struct StartupAbortTests {
     @Test("SessionEnd death during startup grace clears pending → stays dead(agentExited), no retry")
     func sessionEndDuringGraceStaysDead() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let ensureAfterSpawn = env.sessions.ensureCount
 
-        try await env.svc.report(t.id, StatusReport(endReason: "exit"))   // genuine SessionEnd → dead(agentExited)
+        // Genuine SessionEnd carrying the session's epoch → dead(agentExited) + clearSpawnPending (the
+        // epoch-stamped signal is applied without the stale-liveness probe, mirroring the real hook).
+        try await env.svc.report(t.id, StatusReport(endReason: "exit"), observedEpoch: t.sessionEpoch)
         await env.svc.reconcileLiveness()                                 // must NOT re-spawn the dead card
 
         #expect(env.sessions.ensureCount == ensureAfterSpawn)
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .agentExited)   // SessionEnd classification preserved, not overwritten
     }
 
     /// (GPT-Blocker, boot path) Daemon restart INSIDE the grace: `spawnPending` is in-memory and lost, but
-    /// the tmux session survives with a dead pane (remain-on-exit). `recoverSessions` must NOT read that as
-    /// alive — it converges the orphan (capture stderr → dead), never leaving it wedged-alive-but-dead.
+    /// the tmux session survives with a dead pane (remain-on-exit). The boot pass (`reconcilePhasesAtBoot`,
+    /// which folds the old `recoverSessions`) must NOT read that as alive — it converges the orphan (capture
+    /// stderr → dead), never leaving it wedged-alive-but-dead.
     @Test("daemon restart (boot recover): a surviving dead-pane session converges to dead, not wedged")
     func daemonRestartBootConverges() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "usage limit reached")
         env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
         await env.svc.clearSpawnPending(t.id)              // simulate the daemon restart losing in-memory pending
 
-        await env.svc.recoverSessions()                    // tmux session survived (still "alive" in the stub)
+        await env.svc.reconcilePhasesAtBoot()              // tmux session survived (still "alive" in the stub)
 
         #expect(env.sessions.killed.contains(env.sessions.sessionName(t.id)))   // stale dead-pane session reaped
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)                     // converged, NOT silently left running-but-dead
+        #expect(after.phase.kind == .dead)                 // converged, NOT silently left running-but-dead
         #expect(after.deadReason == .spawnExitedImmediately)
         #expect(after.deadDetail?.contains("usage limit") == true)   // evidence preserved
     }
 
     /// (GPT-Blocker, CONTINUOUS path — the core convergence requirement) Even if the boot sweep misses it,
-    /// the ongoing 2s reconcile MUST converge an orphaned dead pane (session present, agent pane dead, no
+    /// the ongoing reconcile MUST converge an orphaned dead pane (session present, agent pane dead, no
     /// `spawnPending`) — otherwise the card hangs "running" forever. Keys on the pane, not session-name
     /// absence (the session is still present), so the generic sessionVanished check would never fire.
     @Test("continuous reconcile converges an orphaned dead pane (lost pending) → dead, evidence preserved")
     func reconcileConvergesOrphanedDeadPane() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "unauthorized")
         env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
         await env.svc.clearSpawnPending(t.id)              // in-memory pending gone (restart), session persists
@@ -165,7 +174,7 @@ struct StartupAbortTests {
         await env.svc.reconcileLiveness()                  // the continuous poll must resolve it
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)                     // converged — not hanging "running"
+        #expect(after.phase.kind == .dead)                 // converged — not hanging "running"
         #expect(after.deadReason == .spawnExitedImmediately)
         #expect(after.deadReason != .sessionVanished)
         #expect(after.deadDetail?.contains("unauthorized") == true)
@@ -179,26 +188,26 @@ struct StartupAbortTests {
     @Test("daemon restart while pane alive: boot clears remain-on-exit → later exit is sessionVanished")
     func daemonRestartWhilePaneAliveNotMisclassified() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // long grace: still armed at "restart"
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // long grace: still armed at "restart"
         let name = env.sessions.sessionName(t.id)
-        #expect(env.sessions.remainOnExit[name] == true)   // spawn armed it
+        #expect(env.sessions.remainOnExit[name] == true)   // spawn (finishLaunch) armed it
 
         // Restart WHILE the pane is still alive: in-memory pending lost, session + remain-on-exit survive.
         await env.svc.clearSpawnPending(t.id)
-        await env.svc.recoverSessions()
+        await env.svc.reconcilePhasesAtBoot()
 
         #expect(env.sessions.remainOnExit[name] == false)  // boot cleared the stuck arm → invariant restored
         let mid = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(mid.status != .dead)                       // healthy survivor, not clobbered
+        #expect(mid.phase.kind != .dead)                   // healthy survivor, not clobbered
 
         // A later genuine mid-run exit now vanishes the session (remain-on-exit off), not a dead pane.
         env.sessions.setAlive(t.id, false)
         await env.svc.reconcileLiveness()
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .sessionVanished)      // correctly classified, NOT spawnExitedImmediately
         #expect(after.deadReason != .spawnExitedImmediately)
     }
@@ -209,57 +218,58 @@ struct StartupAbortTests {
     @Test("failed graduation toggle keeps the card pending so a later crash is still classified")
     func failedGraduationTogglePreservesPending() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         env.sessions.failRemainOnExitOff = true            // graduation's toggle-off will throw
 
         await env.svc.reconcileLiveness()                  // alive + past deadline → toggle fails → STAY pending
         let mid = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(mid.status != .dead)                       // still healthy, not clobbered
+        #expect(mid.phase.kind != .dead)                   // still healthy, not clobbered
 
         env.sessions.setPaneDead(t.id)                     // the card later aborts/crashes while still watched
         await env.svc.reconcileLiveness()
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
         // Proof pending survived the failed toggle: the crash is classified, not masked as a live session.
-        #expect(after.status == .dead)
+        #expect(after.phase.kind == .dead)
         #expect(after.deadReason == .spawnExitedImmediately)
     }
 
-    /// (GPT-Important C) A card concluded to `.done` DURING the capture await (a fast read-only/freeform
-    /// child reporting task_complete) must be left alone — not retried, not marked dead by the abort path.
-    @Test("card that turns .done during the capture await is not retried or marked dead")
+    /// (GPT-Important C) A card concluded to `.dead(.completed)` DURING the capture await (a fast read-only
+    /// freeform child reporting task_complete) must be left alone — not retried, not marked dead by the
+    /// abort path.
+    @Test("card that concludes (done) during the capture await is not retried or overwritten")
     func doneDuringCaptureLeftAlone() async throws {
         let env = TestEnv.make(grace: 1)
+        // A scratch read-only card is the durable form of a one-shot delegation: it concludes on
+        // `turnCompleted` (→ `.dead(.completed)`), which is what "turns done" means in the phase machine.
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", access: .readOnly, scratch: true))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
-        let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
         env.sessions.setPaneDead(t.id)
         env.sessions.captureSleepMs = 200                  // widen the capture window
         let ensureAfterSpawn = env.sessions.ensureCount
 
         async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, suspends in capture
         try await _Concurrency.Task.sleep(for: .milliseconds(50))  // land inside the capture await
-        try await env.svc.report(t.id, StatusReport(status: .done))// card concludes mid-capture
+        try await env.svc.report(t.id, StatusReport(turnCompleted: true))  // card concludes mid-capture
         await reconciled
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.status == .done)                     // preserved…
-        #expect(after.deadReason == nil)                   // …not marked dead
+        #expect(after.phase == .dead(.completed))          // preserved (done)…
+        #expect(after.deadReason != .spawnExitedImmediately)       // …not overwritten by the abort path
         #expect(env.sessions.ensureCount == ensureAfterSpawn)      // …and not re-spawned
     }
 
-    /// A `send` arriving during the startup grace is NOT swallowed (startup-pending is separate from
-    /// `recovering`, so wake gate A stays open) — it queues and is available for delivery.
+    /// A `send` arriving during the startup grace is NOT swallowed — it queues and is available for delivery.
     @Test("a send during the startup grace is not dropped")
     func sendDuringGraceNotDropped() async throws {
         let env = TestEnv.make(grace: 1)
-        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // stay pending across the send
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
+        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // stay pending across the send
         try await env.svc.send(t.id, "hello during grace")
-        // A running card queues the send for its Stop-drain (gate B) — the point is it is NOT lost at gate A.
+        // A running card queues the send for its Stop-drain — the point is it is NOT lost at the wake gate.
         #expect(try await env.svc.inboxPeek(t.id).map(\.text) == ["hello during grace"])
     }
 
@@ -269,9 +279,11 @@ struct StartupAbortTests {
           arguments: [AgentCapabilities.claudeCode, AgentCapabilities.codex])
     func agentAgnostic(_ caps: AgentCapabilities) async throws {
         let env = TestEnv.make(grace: 1, capabilities: caps)
-        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "b"))
+        // Awaiting caps (`.sessionStartHook`/`.rolloutMeta`): drive to live by hand-delivering the readiness
+        // signal (arm is already in place — finishLaunch armed regardless of cap).
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         env.sessions.setPaneText(t.id, "unauthorized")
         env.sessions.setPaneDead(t.id)
 

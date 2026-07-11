@@ -3,27 +3,80 @@
 This chapter covers the machinery that turns a `Task` into a running agent: git worktree management,
 the tmux session topology, the agent adapter protocol and the Claude Code adapter, the three-layer
 read-only barrier, process and path safety, and crash/reboot recovery. These live under
-`Sources/OrchestraCore/` (`WorktreeManager`, `SessionManager`, `Agents/`, `Proc`, `PathResolver`,
+`Sources/OrchestraCore/` (`WorktreeRegistry`, `SessionManager`, `Agents/`, `Proc`, `PathResolver`,
 `OrchestraService+Recovery`).
 
 ## Worktrees
 
 Each `.worktree` card owns **exactly one git worktree** — a 1:1 relationship (see
-[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). `WorktreeManager` computes the
-path as `~/.orchestra/worktrees/<repoName>/<branch>` and creates it idempotently:
+[Design decisions](09-design-decisions.md#11-worktree-card-ownership)). The **`WorktreeRegistry`** actor
+(`Sources/OrchestraCore/WorktreeRegistry.swift`) is the **sole owner** of worktree and borrow lifecycle:
+the concrete `WorktreeManager` — the struct that actually shells out to `git worktree add`/`remove` — is
+`fileprivate` inside the same file, a compile-time guarantee that nothing outside the registry can touch
+a git worktree op. Every teardown path (spawn rollback, archive, reopen, the borrow sweep) routes through
+the registry's `ensure` / `release` / `ensureBorrow` / `releaseBorrow` / `sweepOrphanBorrows`.
 
-1. resolve and **allowlist-check** the repo (`PathResolver`),
-2. if the worktree dir already exists, return it (idempotent),
-3. otherwise `git worktree add <wt> <branch>` if the branch exists, or `git worktree add -b <branch>
-   <wt>` for a new branch,
-4. if git reports the branch is *already checked out / already used by a worktree*, throw
-   `branchInUse` — because git forbids the same branch in two worktrees.
+**`ensure(repo:branch:cardId:base:)` is serialized by the actor mailbox alone** — there is no per-branch
+lock. `ensure` performs no `await` between checking for a materialized tree and cutting the checkout, so
+two concurrent `ensure` calls for the same branch simply run one at a time inside the mailbox: the first
+cuts the checkout, the second adopts the tree the first just made, and `git worktree add` fires exactly
+once.
 
-**Removal** (on archive) runs `git worktree remove`, but **guards a dirty tree**: it refuses unless
-forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work is never
-silently deleted. The **branch is kept** after removal so the work can be recovered — which is exactly
-what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that surviving
-branch and resumes the agent.
+**Adoption is gated by a materialized marker, not a bare `fileExists`.** The registry writes a sentinel
+file into its own metadata dir (`Config.worktreeMarkersDir`) — **outside** the worktree — only after a
+checkout completes (or an explicit one-time migration stamp, below). Keeping the marker outside the tree
+matters: an in-tree sentinel would show up as untracked in `git status --porcelain` (every tree would
+read "dirty," breaking the dirty-detection arms below) and would mutate a dirty pre-upgrade tree, which
+would violate the "survives byte-intact" guarantee. `created` — the flag `ensure` returns, and the guard
+`release` checks before it will ever remove a tree — is defined as exactly "the marker is present"; there
+is no separate stored bit.
+
+`ensure` branches on what it finds at the computed path:
+
+- **dir present + marker present** → adopt: hand back the existing path, `created == false`.
+- **dir present, no marker, clean** (a pre-upgrade or half-created tree with no uncommitted changes) →
+  prune it and cut a fresh checkout.
+- **dir present, no marker, dirty** → **never removed.** `ensure` throws `worktreeNeedsManualCleanup`
+  to its spawn/reopen caller, whose error message carries the manual-cleanup guidance — a prior checkout
+  may have been interrupted mid-write, so an unverified dirty dir is left byte-intact for a human to
+  inspect rather than silently pruned. (Mapping this into a card-level `dead(.spawnFailed)` + activity is
+  a later PR's reconciler concern — not wired here: at spawn, `ensure` runs before the card exists and
+  outside the rollback/launch catch; at reopen, `ensure` runs before the `dead(.spawnFailed)` catch.)
+- **dir absent** (fresh, just-pruned, or a marked tree whose dir vanished underneath it) → `git worktree
+  add`, then write the marker.
+
+**Removal routes through one policy — `release(cardId:cards:force:)`.** It removes the card's tree only
+when **all** of: no sibling still references it, the tree is clean (or `force`), a marker is present
+(`created`), and the path is under the registry's owned roots (`config.worktreesRoot`, which also covers
+`orch-borrow-*` dirs). A missing tree is an idempotent success, never an error, and `release` never
+throws in a way that could lose data — every ambiguous case resolves to "keep the tree."
+
+Sibling counts are **computed on demand** from the `[Task]` the caller passes in — there is no stored
+refcount map. The check is `cards.filter { $0.id != cardId && !$0.archived && $0.origin == .worktree &&
+$0.cwd == path }`: a `dead` card (not yet archived) still counts as a holder, because its tree must
+survive for `restart` to reattach to; only `archived` actually drops the reference. The registry also
+tracks an in-memory **in-flight holder set** — a race guard for the window between a concurrent same-branch
+`ensure` adopting a tree and that card's persistence to the store; without it, the first spawn's rollback
+could see no store-derived sibling and remove the tree out from under the second, still-being-born card.
+
+**Borrow registrations are persisted, not just in-memory.** `ensureBorrow`/`releaseBorrow` maintain a
+`[borrowerCardId: path]` map (atomic JSON beside the inbox, `Config.borrowsPath`), enforcing exactly one
+borrower per parent branch. This survives a daemon-only crash: a fresh registry instance re-reads the
+file and still knows who holds a given borrow path. `sweepOrphanBorrows(cards:)` is **liveness-guarded**:
+it reclaims a registered borrow only when its borrower card is *present* in `cards` **and** `archived` — a
+borrower that is merely absent from the passed list is ambiguous (a partial store load), not proof of
+death, so the borrow is kept. Unregistered stray `orch-borrow-*` dirs are still reclaimed by a separate
+pass over `git worktree list`.
+
+A **one-time migration** (`stampMarkers(forMigratedPaths:)`, gated by its own persisted sentinel so it
+runs at most once, at the first post-upgrade boot) stamps markers for every pre-existing worktree so it
+becomes adoptable without touching its contents — a dirty pre-upgrade tree survives byte-intact.
+
+**Removal** (on archive, via `release`) runs `git worktree remove` but **guards a dirty tree**: it
+refuses unless forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work
+is never silently deleted. The **branch is kept** after removal so the work can be recovered — which is
+exactly what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that
+surviving branch and resumes the agent.
 
 Borrowed and scratch cards have **no worktree**: a borrowed card's `cwd` is the directory you chose; a
 scratch card's `cwd` is a freshly `mkdir`'d `~/.orchestra/scratch/<id>`.
@@ -285,7 +338,7 @@ separated (the tailer never inspects JSON; the parse never touches files):
 - **Parse — `CodexAdapter.parse(.fileTail(line:))`**: converts one rollout line into a `StatusReport`,
   and is **rename-tolerant** because Codex's rollout schema drifts — it normalizes both the top-level and
   `payload.type` (lower-cased, `_`-stripped) and matches on substrings, so `TaskComplete` /
-  `turn_complete` / `TurnComplete` all mean a natural turn completion (`status: .waiting`,
+  `turn_complete` / `TurnComplete` all mean a natural turn completion (`run: .waiting(.humanTurn)`,
   `turnCompleted: true`), and token totals read from a
   nested `total_token_usage.total_tokens` **or** a flat `total_tokens`/`tokens`. A `token_count` line
   yields `ctxPct` (tokens ÷ the **offline** model window above, never the rollout's own reported window)
@@ -377,48 +430,165 @@ contract by A1, though core doesn't yet branch on it), of which this Claude barr
 
 ## Recovery, resume, and restart
 
-The daemon makes a card's run survive crashes and reboots (`OrchestraService+Recovery.swift`):
+The daemon makes a card's run survive crashes and reboots (`OrchestraService+Recovery.swift`). Since
+Stage 2 (the *lifecycle-convergence* work — see the
+[design vault](../notes/designs/lifecycle-convergence/index.md) and
+[design decisions](09-design-decisions.md#the-phase-funnel-one-writer-epochs-and-capability-gated-readiness))
+this all routes through **one persisted lifecycle variable** — `Task.phase` — and **one writer**.
 
-- **Startup sweep — `recoverSessions()`.** For every non-archived card whose tmux session is *not*
-  alive:
-  - if it has a tracked `agentSessionId` + an on-disk transcript → **resume** it (recreate the tmux
-    session and relaunch `claude --resume`), throttled to `maxConcurrentRevivals` (default 4) in flight;
-  - if it was never prompted / freshly restarted → relaunch a **blank** session via `restart()`;
-  - otherwise → mark it **`dead`** with reason `rebootUnrevived`.
-  It is idempotent: a card whose session is still alive (daemon-only crash) is left untouched.
-- **`resume(id, graceSeconds, seed:)`.** Revives an existing session and waits up to the grace window
-  (default 15 s) for the `SessionStart(resume)` callback. Success → `waiting`, `deadReason` cleared,
-  `recovered` activity. Failure → `dead` with reason `resumeFailed` and a `deadDetail`. Guarded against
-  stale `SessionEnd` events via a `recovering` set. The defaulted `seed:` (PR C3) is threaded onto
-  `ctx.seed` for the adapter to deliver as the opening turn; every recovery caller passes none, so the
-  crash-recovery argv is byte-identical.
-- **`resumeInCard(id, seed:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh
-  process with **clean context while keeping its `agentSessionId`** — a *resume, not a blank restart*, so
-  the transcript carries forward. It drains the inbox, folds it with the authored handoff/fork context
-  (`HandoffSeed.fold`), and calls `resume(seed:)` with the result. This — not `restart` — is the shipped
-  basis for context-clearing handoff (see [the resume argv & seed](#the-claude-code-adapter) above); it is
-  the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1, MCP tool + CLI verb)
-  drives; forks instead `spawn`/`batch-spawn` a fresh card carrying a `SpawnInput.seed`
-  ([chapter 9](09-design-decisions.md#shipped-feature-history)). (The D3 Handoff/Fork buttons that once
-  drove these from the inspector were later removed — the *agent-buttons simplification*.)
-- **`restart(id)`.** Launches a fresh blank session in the *same* worktree with a new `agentSessionId`,
-  rolling the old id into `priorSessionIds`. Sets `titleProvisional=true`, `status=.waiting`, clears
-  `desc`. Never touches worktree contents. This is the "Start new session" button in the Recovery
-  panel — a genuinely blank restart, distinct from the seeded, id-preserving `resumeInCard` above.
-- **`reopen(id)` — un-finish a Done card.** Archive is not terminal: `reopen` brings an archived card
-  back onto the board and revives its agent. First it **recreates the run dir the archive reclaimed** —
-  `worktrees.ensure(repo:branch:)` for a `.worktree` card (the archive kept its branch, so the work
-  returns), a `mkdir` for a `.scratch` card, nothing for `.borrowed` (never removed). Then it unarchives
-  the card **keeping its original column**, resetting `status=.waiting` and clearing any stale
-  `deadReason`/`deadDetail`, and emits a `.recovered` activity. Finally it revives the agent through the
-  **same primitives above** — `resume` when the card `isResumable` (transcript survived), else a blank
-  `restart` in the recreated tree. It is **idempotent** (a non-archived card is returned unchanged) and
-  fully **agent-agnostic** — every adapter already implements `resume`/`restart`, so `reopen` adds no
-  adapter code. It backs the [`reopen` Command](05-command-reference.md#registry-commands) and the app's
+### The `transition()` funnel — the sole writer of `phase`
+
+Every lifecycle mover (spawn, launch, liveness poll, restart/resume, archive, a status report) routes its
+phase change through **`transition(id, to:, observedEpoch:, mutate:)`** in `OrchestraService+Lifecycle.swift`.
+Nothing else writes `phase`. The funnel, in order:
+
+1. **Idempotency.** `to == from` is a `.noop` — *except* the `relaunching → relaunching` supersede
+   self-edge, which is **not** swallowed because it re-arms a fresh generation.
+2. **Stale-signal fence.** A non-nil `observedEpoch` marks the call a *signal* (a liveness poll / late
+   hook) carrying the epoch it observed; if that epoch ≠ the card's current `sessionEpoch` the signal is
+   from a session we've since torn down, so it is dropped (`.noop`). A verb-driven call passes no epoch.
+3. **Legal-edge check.** The edge is validated against the pure `isLegalEdge(from:to:viaSignal:)` machine
+   (below); anything outside the set is `.rejected` and the stored phase is untouched. Verbs map
+   `.rejected` → a typed RPC error and `.noop` → idempotent success; async signals ignore the result.
+4. **One field-delta patch.** `phase` + `phaseChangedAt` + the epoch bump + the caller's `mutate` closure
+   are applied inside a **single** `store.update` patch, so companion writes land atomically with the
+   phase change (restart clears `agentSessionId`, resume clears dead metadata, `markDead` writes the
+   reason/detail, spawn-fail writes `deadDetail`). This is the **same-patch hook**.
+5. **Conclusions.** The funnel is the **sole concluder**: only the entry into a terminal phase *from a
+   non-terminal one* fires `concludeCard`; `dead → archived` (terminal → terminal) is guarded out, so a
+   card never double-concludes. The wire `Conclusion` carries `{kind, deadReason?}` — `.done` (archived /
+   `.dead(.completed)`) carries no reason; any other dead reason concludes `.exited` and carries the
+   reason, so a suspended `wait` resolves on **every** terminal death (crash/reboot/resume-fail), not only
+   a clean exit (the bug-#2 fix). `isConcluded(_:)` is exactly "phase is terminal" (archived, or any
+   `.dead`; `.dead(.completed)`/archived → `.done`, else `.exited`), kept in step with `concludedReason`.
+6. **Wake-on-live.** Entering `.live` runs `wakeIfPending` — the single structural release point for a
+   message parked (via `send`/inbox) while the card was being born. It no-ops unless the card is now
+   `.live(.waiting)` with a non-empty inbox.
+
+### The phase machine (`isLegalEdge`)
+
+The legal edges (spec §P1) are a pure function of the two `Phase.Kind`s plus a `viaSignal` gate:
+
+- provisioning: `creatingWorktree → launching → live`;
+- live churn + restart entry: `live → live` (run-state changes), `live → relaunching`;
+- relaunch: the `relaunching → relaunching` supersede self-edge, and `relaunching → live`;
+- restart of a dead card `dead → relaunching`, and the **signal-only** revival `dead → live` (admitted
+  *only* when `viaSignal` — no verb may drive a revival);
+- archive teardown `archivedPending → archivedComplete`, and reopen `archived* → creatingWorktree`;
+- any non-archived phase may die (`… → dead`) or be archived (`… → archived*`).
+
+Everything not enumerated is illegal.
+
+### Epochs — deterministic staleness
+
+`sessionEpoch` is a **monotonic per-card session generation**. The funnel bumps it **once** on every
+(re)launch-bound *entry* — `creatingWorktree` (spawn/reopen) and every `relaunching` entry **including the
+supersede self-edge** — *before* any launch work. `launching` is deliberately **not** a bump point (the
+machine only reaches it from the already-bumped `creatingWorktree`). At launch the current epoch is stamped
+into the tmux environment as **`ORCH_EPOCH`** (`withEpoch`, agent-agnostic — it rides the `-e` env at every
+launch call site); the agent's hooks echo it back on `_report`, and it is readable back out-of-band via
+`SessionManager.stampedEpoch(name:)` (`tmux show-environment … ORCH_EPOCH`). A late hook or liveness signal
+carrying a superseded epoch is dropped by the funnel's fence, which is what makes a stale signal harmless.
+
+**Nil-epoch kill discipline.** A pre-upgrade signal with no epoch can't be epoch-fenced, so a kill-class
+signal (a genuine `SessionEnd` exit/logout) is **probed for real liveness before it may kill** — the check
+lives at the inbound-`SessionEnd` site in `report()` (`sessions.isAlive`), not in the funnel: a stale
+`SessionEnd` for a session that is actually still alive must not kill the card. An epoch-stamped signal
+skips the probe (the fence already covers it). Internal deliberate classifications (`markDead`) are **not**
+signals — they pass `observedEpoch: nil` and are never second-guessed.
+
+### Capability-gated readiness (being-born confirmation)
+
+A card being *born* — `launching` (blank spawn/reopen) or `relaunching` (resume/restart) — is confirmed
+alive by the adapter's `AgentCapabilities.readinessConfirmation`, never by agent identity (the **D1**
+resolution — one axis covers *both* being-born phases). `confirmReadiness` dispatches on it:
+
+- **`.sessionStartHook`** (Claude) — inline-await the agent's own SessionStart telemetry reaching
+  `report()`: `startup` confirms a fresh launch, `resume` confirms a relaunch. One hook capability covers
+  both being-born phases.
+- **`.rolloutMeta`** (Codex, `.discovered` id) — also await: a fresh launch writes a rollout `session_meta`
+  line that the daemon-side tail observer resolves the waiter on (binding a discovered id mid-`launching`
+  *is* the ready signal). A `codex resume` writes **no** rollout, so nothing arrives — the **universal N=3
+  liveness-tick fallback** (`tickLaunchReady`, ~6 s, well under the 30 s launch timeout) resolves the still-
+  pending waiter within the grace, keeping the relaunch **on** the readiness gate rather than landing live
+  immediately and bypassing it.
+- **`.relaunchLiveness`** — the successful tmux `ensure` *is* the confirmation (the agent emits no marker at
+  all), so it must **not** wait for a signal that never comes (which would time out and fail-dangerously
+  `markDead` a live card).
+
+The continuous `reconcileLiveness` (2 s) is the safety net for every variant. Readiness resolution is
+outcome-typed `{confirmed, timedOut, superseded}`: **`.superseded`** is distinct from `.timedOut` so a
+relaunch displaced by a newer relaunch for the same card exits quietly (the survivor owns the card) instead
+of being marked dead.
+
+> **Convergence (PR4b) shipped.** `spawn`/`resume`/`restart`/`reopen`/`handoff` are now **intent-only**:
+> each persists a target phase through `transition()` and returns immediately, without awaiting a worktree
+> checkout, an agent bring-up, or a teardown duty. The daemon's reconciler drives the walk off the request
+> path via four `PhaseStepper`s (`MaterializeStepper`/`LaunchStepper`/`RelaunchStepper`/`TeardownStepper`) —
+> see [the Convergence model](02-architecture.md#the-convergence-model) for the full picture; it isn't
+> duplicated here. The liveness rule below (a vanished `.launching` session → `.dead(.spawnFailed)`) is now
+> enforced by the reconciler's `phaseChangedAt`/`sessionLaunchTimeout` check rather than a synchronous verb
+> owning its own timeout.
+
+### The recovery primitives
+
+- **Startup reconciliation — `reconcilePhasesAtBoot()`.** For every `.live` card at boot, adopt its
+  surviving tmux session **only on epoch identity** (`sessionEpoch` matches the session's stamped
+  `ORCH_EPOCH` — a daemon-only crash); a stale/mismatched epoch means the session isn't ours, so the card
+  is driven `→ .relaunching` to reclaim identity. Transitional (`creatingWorktree`/`launching`/
+  `relaunching`/`archivedPending`) and dead cards are left for the reconcile **tick**, which re-drives
+  them through the phase-keyed steppers (Materialize / Launch / Relaunch / Teardown) — a launch derives
+  `resume`-vs-blank via `deriveLaunchFlavor`, and an unrevivable card lands `.dead(.rebootUnrevived)`.
+  Idempotent — a `.live` card whose session is still alive at the matching epoch is left untouched.
+- **`resume(id, graceSeconds, seed:)`.** Enters `.relaunching` through the funnel (which bumps the
+  generation — the atomic **generation claim** — and clears dead metadata in the same patch), kills +
+  re-`ensure`s the session **off-actor**, inline-confirms readiness, then finalizes `→ .live` **epoch-fenced**
+  (`observedEpoch: epoch`) so a superseded attempt's finalize is a no-op. Success → `recovered` activity;
+  failure → `.dead(.resumeFailed)` + a `deadDetail`. The defaulted `seed:` (PR C3) is threaded onto
+  `ctx.seed`; every recovery caller passes none, so the argv is byte-identical.
+- **`resumeInCard(id, seed:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh process
+  with **clean context while keeping its `agentSessionId`**. It drains the inbox, folds it with the authored
+  handoff/fork context (`HandoffSeed.fold`), and calls `resume(seed:)`. It is the seam the
+  [`handoff` Command](05-command-reference.md#registry-commands) (PR D1) drives and the idle-wake path for a
+  resume-seed agent; forks instead `spawn` a fresh card carrying a `SpawnInput.seed`.
+- **`restart(id)`.** Enters `.relaunching` with the real persist block applied atomically (fresh
+  `agentSessionId`, old id rolled onto `priorSessionIds`, `titleProvisional=true`, cleared dead/desc), then
+  launches a blank session in the *same* worktree and finalizes `→ .live` epoch-fenced. Never touches
+  worktree contents. The "Start new session" Recovery button — distinct from the seeded, id-preserving
+  `resumeInCard`.
+- **`reopen(id)` — un-finish a Done card.** Walks the legal path `archived → creatingWorktree → launching →
+  live`: it first normalizes the still-Bool-bridged archived phase (an archived card's `phase` is
+  `.dead(.completed)`) to `.archived(complete)`, then enters `.creatingWorktree` (bumping the generation)
+  clearing the archived Bool + dead metadata, **recreates the run dir the archive reclaimed** (`worktrees.ensure`
+  for `.worktree`, `mkdir` for `.scratch`, nothing for `.borrowed`), and brings the agent up via the shared
+  **`launchAndConfirm`** step (`.resume` flavor when `isResumable`, else `.blank`). It does **not** call
+  `resume()`/`restart()` (they enter via `.relaunching`, illegal from `.creatingWorktree`). Idempotent and
+  agent-agnostic. Backs the [`reopen` Command](05-command-reference.md#registry-commands) and the app's
   [Done-popover Reopen button](07-app-ui.md#onboarding-settings-recovery-and-popovers).
-- **`reconcileLiveness()`.** The 2-second poll loop's safety net: for every non-archived, non-terminal
-  card it checks whether the tmux session vanished and flips it to `dead` (`sessionVanished`) if so —
-  catching deaths that didn't fire a `SessionEnd` hook. Cards mid-resume/restart are skipped.
+- **`materialize(id)` + `finishLaunch(id, flavor:)`.** The retired synchronous `launchAndConfirm` step is
+  now split across the reconciler's steppers (`OrchestraService+Converge.swift`): `MaterializeStepper` calls
+  `materialize(id)` to cut/adopt the `.creatingWorktree` card's worktree (or mkdir a scratch dir) and land
+  `.launching`; `LaunchStepper` then calls `finishLaunch(id, flavor:)` to `ensure` the session, confirm
+  readiness, and land `.live`. Both are stateless, idempotent, and re-derive everything from the persisted
+  card, so a crash between steps is re-driven safely rather than raced. Not used by resume/restart (they
+  walk the `.relaunching` edge via `RelaunchStepper`).
+- **`reconcileLiveness()`.** The 2-second poll loop's phase-gated safety net (one `tmux list-sessions` per
+  tick). Being-born (`.creatingWorktree`) and `.relaunching` cards are **skipped** (their session is
+  legitimately absent mid-bring-up; a live relaunching card with a still-pending waiter ticks the N=3
+  fallback); a vanished `.launching` session → `.dead(.spawnFailed)`; a vanished `.live` session →
+  `.dead(.sessionVanished)`; terminal cards excluded. All deaths route through `markDead` → the funnel, so
+  they conclude.
+
+### The `relaunchClaimed` atomic claim
+
+The old `recovering` set is **deleted**; its two roles are split. Its *grace-window* role (fencing a stale
+signal against a relaunch in flight) is now covered by **epochs** — the funnel drops a superseded-epoch
+signal, and `reconcileLiveness` skips `.relaunching` by phase. Its *atomic-claim* role — ensuring a single
+winner when a wake/idle-resume fires — is now the narrow **`relaunchClaimed`** set: `resumeSeedWake` inserts
+the id synchronously *before* the detached resume hop, so a concurrent `wake` sees the claim and defers
+(otherwise two resumes race and the second drains an already-emptied inbox and kills the first's session).
+It is cleared when the relaunch settles (`clearRelaunchClaimed`), which then re-drives `wakeIfPending` for a
+message that a `send` queued *during* the claim window (nothing else would retry it).
 
 How a dead card is presented to you — the "why" line, the preserved-work actions, and the recover/
 restart/archive buttons — is covered in the [App UI chapter](07-app-ui.md#recovery-panel).

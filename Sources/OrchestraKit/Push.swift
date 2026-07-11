@@ -34,36 +34,45 @@ public enum AttentionTransition {
     /// task (`run_in_background` shell, subagent, `/loop`/cron) stays `.running` with no `waitReason`
     /// (the adapters emit no waiting report), so it never produces a `.waiting` transition and maps to
     /// `nil` here. Asserted directly by a test.
-    public static func trigger(prev: AgentStatus?, task: Task) -> NotifyTrigger? {
+    public static func trigger(prev: Phase?, task: Task) -> NotifyTrigger? {
         guard let prev else { return nil }
-        if prev != .waiting, task.status == .waiting {
-            return task.waitReason == .permission ? .permission : .needsYou
+        let now = task.phase
+        if !prev.isWaiting, case .live(.waiting(let reason)) = now {
+            return reason == .permission ? .permission : .needsYou
         }
-        if prev != .dead, task.status == .dead { return .died }
+        // `.dead(.completed)` is a read-only delegated child finishing its turn (report() sets it), NOT a
+        // death — exclude it so it fires no push, matching NeedsYouQueue.reason's identical guard.
+        if prev.kind != .dead, now.kind == .dead, now != .dead(.completed) { return .died }
         return nil
     }
+}
+
+private extension Phase {
+    /// True while the card is blocked waiting on the human (either wait reason) — the state whose
+    /// *entry* fires a Needs-You / permission notification.
+    var isWaiting: Bool { if case .live(.waiting) = self { return true } else { return false } }
 }
 
 /// Stateful attention observer for the daemon: remembers each card's last status and emits an intent on a
 /// genuine transition. Pure (no I/O) so the whole transition→intent path is unit-testable. Confined to a
 /// single event-consuming context (the daemon's `PushNotifier` actor owns it); not thread-safe by itself.
 public final class AttentionTracker {
-    private var lastStatus: [UUID: AgentStatus] = [:]
+    private var lastPhase: [UUID: Phase] = [:]
     public init() {}
 
     /// Feed the latest task snapshot; returns a `NotificationIntent` iff this snapshot is a genuine
     /// attention transition. An archived card is reaped (and never fires) so a later re-add starts fresh.
     public func observe(_ task: Task) -> NotificationIntent? {
-        if task.archived { lastStatus[task.id] = nil; return nil }
-        let prev = lastStatus[task.id]
-        lastStatus[task.id] = task.status
+        if task.archived { lastPhase[task.id] = nil; return nil }
+        let prev = lastPhase[task.id]
+        lastPhase[task.id] = task.phase
         guard let trigger = AttentionTransition.trigger(prev: prev, task: task) else { return nil }
         return NotificationIntent(trigger: trigger, cardId: task.id,
                                   cardTitle: task.title, cardRef: task.ref())
     }
 
     /// Forget a removed card so a re-created id starts fresh (no phantom `prev`).
-    public func forget(_ id: UUID) { lastStatus[id] = nil }
+    public func forget(_ id: UUID) { lastPhase[id] = nil }
 }
 
 // MARK: - Delivery gating (scope), mirrors AgentNotifier.shouldFire

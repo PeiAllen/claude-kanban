@@ -234,7 +234,7 @@ struct SendRoutingTests {
     func sendEnqueues() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
         try await env.svc.send(task.id, "hello there")
 
         let inbox = Inbox(path: env.base + "/inbox.json")
@@ -245,7 +245,7 @@ struct SendRoutingTests {
     func rejectsOverCap() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
         let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars + 1)
 
         await #expect(throws: OrchestraError.self) { try await env.svc.send(task.id, tooBig) }
@@ -257,7 +257,7 @@ struct SendRoutingTests {
     func acceptsAtCap() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(SpawnInput(prompt: "work", repo: repo, branch: "feat"))
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
         let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
 
         try await env.svc.send(task.id, atLimit)
@@ -275,17 +275,17 @@ struct NotifyPreservedTests {
         // 1. parse is byte-identical: the stop event → waiting (the old shared "notify" kind is now split
         //    into distinct notification/stop --event values; both still map to waiting).
         let report = ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:])))
-        #expect(report?.snapshot?.status == .waiting)
+        #expect(report?.snapshot?.run != nil)
 
         // 2. applied through the service, the card goes to .waiting — with a message still queued in the inbox
         //    (the drain is a separate step; the notify/waiting report is unaffected).
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(SpawnInput(prompt: "w", repo: repo, branch: "feat"))
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "w", repo: repo, branch: "feat"))
         try await env.svc.send(task.id, "queued")
         try await env.svc.report(task.id, report!)
         let st = try await env.svc.status(task.id)
-        #expect(st.task.status == .waiting)                                          // notify/waiting preserved
+        #expect(st.task.waitReason != nil)                                          // notify/waiting preserved
         #expect(await Inbox(path: env.base + "/inbox.json").peek(task.id).count == 1) // drain not triggered
     }
 }

@@ -28,7 +28,7 @@ struct ControlRoundTripTests {
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
 
         // spawn
-        let spawnRes = try await client.call("spawn", .object([
+        let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Build the thing"), "repo": .string(repo), "branch": .string("feat"),
         ]))
         let task = try spawnRes.decode(Task.self)
@@ -65,7 +65,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Snapshot me"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         let snap = try await client.boardSnapshot()
@@ -90,7 +90,7 @@ struct ControlRoundTripTests {
         // First client spawns (producing a .spawned activity into the ring).
         let c1 = ControlClient(socketPath: path, source: .cli)
         try c1.connect()
-        _ = try await c1.call("spawn", .object([
+        _ = try await c1.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Earlier card"), "repo": .string(repo), "branch": .string("b")]))
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         c1.close()
@@ -102,9 +102,14 @@ struct ControlRoundTripTests {
         let box = EventBox()
         let stream = c2.subscribe()
         _Concurrency.Task { for await e in stream { await box.add(e) } }
-        try await _Concurrency.Task.sleep(for: .milliseconds(150))
-        let acts = await box.events.compactMap { if case .activity(let a) = $0 { return a } else { return nil } }
-        #expect(acts.contains { $0.kind == .spawned && $0.text.contains("Earlier card") })
+        // Poll for the ring-replayed activity rather than a fixed sleep: the replay arrives asynchronously
+        // over the socket, and a heavily-parallel run can push its delivery past a fixed 150ms → false-fail.
+        try await pollUntil {
+            await box.events.contains {
+                if case .activity(let a) = $0 { return a.kind == .spawned && a.text.contains("Earlier card") }
+                return false
+            }
+        }
     }
 
     @Test("hook RPC: stop drains the inbox into the continuation; empty inbox → null")
@@ -117,7 +122,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         // empty inbox → no continuation
@@ -140,7 +145,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
         _ = try await env.svc.move(task.id, to: .review)
@@ -173,9 +178,14 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
+        // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return FileManager.default.fileExists(atPath: task.cwd)
+        }
         // Turn the card's cwd into a real git repo with an uncommitted change.
         let dir = task.cwd
         for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
@@ -207,9 +217,14 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .app)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object([
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
 
+        // Non-blocking spawn: drive the reconciler so the worktree cwd is materialized before we use it.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return FileManager.default.fileExists(atPath: task.cwd)
+        }
         // Card cwd → a git repo with a committed note, then an uncommitted modify + an untracked add.
         let dir = task.cwd
         #expect(try Proc.run(["mkdir", "-p", dir + "/notes"], cwd: dir).ok)
@@ -260,7 +275,7 @@ struct ControlRoundTripTests {
         let client = ControlClient(socketPath: path, source: .cli)
         try client.connect(); defer { client.close() }
 
-        let spawnRes = try await client.call("spawn", .object([
+        let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("x"), "repo": .string(repo), "branch": .string("feat"),
         ]))
         let task = try spawnRes.decode(Task.self)

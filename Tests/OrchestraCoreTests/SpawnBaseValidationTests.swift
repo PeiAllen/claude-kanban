@@ -9,7 +9,8 @@ import Testing
 @Suite("Spawn base validation + rollback + dangling cycle guard (S2-3)")
 struct SpawnBaseValidationTests {
 
-    /// A real repo (real WorktreeManager) on `main` with a `foo` branch. Returns (svc, repo path).
+    /// A real repo (real worktree manager, via the registry) on `main` with a `foo` branch. Returns
+    /// (svc, repo path).
     static func repo() throws -> (svc: OrchestraService, repo: String) {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
@@ -24,8 +25,15 @@ struct SpawnBaseValidationTests {
     @Test("S2-3(i): a refs/heads/-prefixed local base is normalized to the bare branch name")
     func normalizesRefsHeadsBase() async throws {
         let (svc, repo) = try Self.repo()
-        let card = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "refs/heads/foo"))
-        #expect(card.parentBranch == "foo")
+        // Normalization is a SYNCHRONOUS spawn-time step: the carrier is the bare name.
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "refs/heads/foo"))
+        #expect(card.spawnBase == "foo")
+        // The reconciler-driven materialize records the lineage from that carrier.
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list().first { $0.id == card.id }?.phase.kind == .live
+        }
+        #expect(await svc.list().first { $0.id == card.id }?.parentBranch == "foo")
         let link = try #require(await svc.lineage.read(repo: repo, branch: "child"))
         #expect(link.parent == "foo")
     }
@@ -34,7 +42,7 @@ struct SpawnBaseValidationTests {
     func rejectsNonBranchRefsBase() async throws {
         let (svc, repo) = try Self.repo()
         await #expect(throws: OrchestraError.self) {
-            _ = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "refs/tags/v1"))
+            _ = try await svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "refs/tags/v1"))
         }
         // No orphan worktree/branch left behind.
         #expect(try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/child"]).ok == false)
@@ -54,9 +62,14 @@ struct SpawnBaseValidationTests {
         // Delete feat-x — its config section goes, but feat-x-fix.orchestra-parent = feat-x now dangles.
         try g("branch", "-D", "feat-x")
 
-        // Reuse the name: spawn a NEW feat-x on top of feat-x-fix. Must NOT trip a false cycle.
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
-        #expect(card.parentBranch == "feat-x-fix")
+        // Reuse the name: spawn a NEW feat-x on top of feat-x-fix. Materialize's prune must clear the
+        // dangling link so no false cycle is tripped.
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-x", base: "feat-x-fix"))
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .live
+        }
+        #expect(await svc.list().first { $0.id == card.id }?.parentBranch == "feat-x-fix")
     }
 
     @Test("S2-3(iii): a lineage-record failure rolls back the just-created worktree + branch")
@@ -68,8 +81,12 @@ struct SpawnBaseValidationTests {
         FileManager.default.createFile(atPath: lock, contents: Data())
         defer { try? FileManager.default.removeItem(atPath: lock) }
 
-        await #expect(throws: OrchestraError.self) {
-            _ = try await svc.spawn(SpawnInput(prompt: "n", repo: repo, branch: "nb", base: "foo"))
+        // Non-blocking spawn: the lineage-record failure + rollback now fire inside the reconciler-driven
+        // MaterializeStepper (the card goes .dead(.spawnFailed)), not as a synchronous throw from spawn.
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "n", repo: repo, branch: "nb", base: "foo"))
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .dead
         }
         try? FileManager.default.removeItem(atPath: lock)   // release before asserting (rev-parse is a read)
         // Rolled back: the just-created nb branch is gone (no orphan for a retry to silently adopt).

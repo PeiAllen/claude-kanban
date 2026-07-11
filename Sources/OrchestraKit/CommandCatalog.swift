@@ -13,13 +13,26 @@ import Foundation
 /// keep by not being catalog commands.
 public enum CommandExposure: Sendable, Equatable { case all, appOnly }
 
+/// The three verb kinds (spec §6). Query: read-only, retry-free, never changes `phase`. Mutation:
+/// completes inline, idempotent, may hop off-actor, never changes `phase`. Convergence: the sync part
+/// persists intent (one `transition()`) + returns `(card, rev)`; the reconciler's phase-keyed stepper
+/// drives the rest.
+public enum VerbKind: String, Sendable, Equatable { case query, mutation, convergence }
+
 public struct CommandSchema: Sendable, Equatable {
     public let name: String
     public let summary: String
     public let params: JSONValue
     public let exposure: CommandExposure
-    public init(name: String, summary: String, params: JSONValue, exposure: CommandExposure = .all) {
+    public let kind: VerbKind
+    /// Deny-by-default ALLOW-set: a phase whose `Phase.Kind` is absent is denied. A future `Kind` is
+    /// therefore denied — the fail-safe direction. Enforced at the one dispatch chokepoint
+    /// (`CommandRegistry.dispatch`). `kind`/`phaseGate` are REQUIRED so every verb must classify itself.
+    public let phaseGate: Set<Phase.Kind>
+    public init(name: String, summary: String, params: JSONValue, exposure: CommandExposure = .all,
+                kind: VerbKind, phaseGate: Set<Phase.Kind>) {
         self.name = name; self.summary = summary; self.params = params; self.exposure = exposure
+        self.kind = kind; self.phaseGate = phaseGate
     }
 }
 
@@ -29,15 +42,27 @@ public enum CommandCatalog {
     /// `CommandExposure`.
     public static var mcpExposed: [CommandSchema] { all.filter { $0.exposure == .all } }
 
+    // Gate allow-sets over Phase.Kind (spec §6 default gate policy). Deny-by-default: a kind absent from
+    // the set is denied. Named once so the 32 classifications below read as the policy groups.
+    private static let gAll: Set<Phase.Kind> =
+        [.creatingWorktree, .launching, .live, .relaunching, .dead, .archivedPending, .archivedComplete]
+    private static let gNonArchived: Set<Phase.Kind> =
+        [.creatingWorktree, .launching, .live, .relaunching, .dead]
+    private static let gLiveDead: Set<Phase.Kind> = [.live, .dead]
+
     // The canonical set. name/summary/params are copied verbatim from the original Commands.swift;
     // the handler bodies live alongside in OrchestraCore/CommandRegistry.swift, paired by name.
     public static let all: [CommandSchema] = [
         CommandSchema(name: "list", summary: "List cards (optionally by column).",
-                      params: schema(["col": colProp()], required: [])),
+                      params: schema(["col": colProp()], required: []),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "spawn",
                       summary: "Spawn a new agent. Only `prompt` is free text — no title/desc.",
                       params: schema([
+                          "id": strProp("Client-minted UUID for idempotent retry — reuse the SAME id when "
+                              + "re-issuing after a timeout to avoid a duplicate card; omit to have one minted "
+                              + "(not retry-safe)."),
                           "prompt": strProp("Initial prompt — what the agent should start working on"),
                           "repo": strProp("Repository root (allowlisted). Omit for a freeform (cwd) card."),
                           "branch": strProp("Working branch. Omit for a freeform (cwd) card."),
@@ -57,29 +82,35 @@ public enum CommandCatalog {
                               + "'pr#<N>' (pull request). A remote base is fetched and watched for merges. The "
                               + "new branch starts at the base's tip and its parent link is recorded. Ignored "
                               + "when the branch already exists. Omit for today's HEAD behavior."),
-                      ], required: ["prompt"])),
+                      ], required: ["prompt"]),
+                      kind: .convergence, phaseGate: gAll),
 
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
-                      params: schema(["ref": refProp(), "col": colProp()], required: ["ref", "col"])),
+                      params: schema(["ref": refProp(), "col": colProp()], required: ["ref", "col"]),
+                      kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "send", summary: "Queue a message to the agent's inbox (drained at its next turn-end).",
                       params: schema(["ref": refProp(), "message": strProp("Text to send")],
-                                     required: ["ref", "message"])),
+                                     required: ["ref", "message"]),
+                      kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox",
                       summary: "List a card's pending inbox messages (id, text, createdAt) in FIFO order.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "inbox-edit", summary: "Edit the text of a queued inbox message.",
                       params: schema(["ref": refProp(),
                                       "id": strProp("Inbox message id (a UUID from `inbox`)"),
                                       "text": strProp("New message text")],
-                                     required: ["ref", "id", "text"])),
+                                     required: ["ref", "id", "text"]),
+                      kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox-remove", summary: "Remove a queued inbox message by id.",
                       params: schema(["ref": refProp(),
                                       "id": strProp("Inbox message id (a UUID from `inbox`)")],
-                                     required: ["ref", "id"])),
+                                     required: ["ref", "id"]),
+                      kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox-reorder",
                       summary: "Reorder a card's pending inbox messages (`ids` = the full new order).",
@@ -89,7 +120,8 @@ public enum CommandCatalog {
                                           "items": .object(["type": .string("string")]),
                                           "description": .string("The card's message ids in the desired new order"),
                                       ])],
-                                     required: ["ref", "ids"])),
+                                     required: ["ref", "ids"]),
+                      kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "wait",
                       summary: "Subscribe to watched card conclusions (Done or clean exit) and wake/remind "
@@ -102,7 +134,8 @@ public enum CommandCatalog {
                           ]),
                           "watcher": strProp("The watching card's ref; its inbox coalesces each conclusion "
                               + "and it is woken (F2/F3). Omit for a CLI-style wait-and-return."),
-                      ], required: ["refs"])),
+                      ], required: ["refs"]),
+                      kind: .mutation, phaseGate: gAll),
 
         CommandSchema(name: "handoff",
                       summary: "Clean-context handoff (F1): kill + resume THIS card in a fresh process, "
@@ -111,7 +144,8 @@ public enum CommandCatalog {
                           "ref": refProp(),
                           "context": strProp("Handoff context — the summary/instructions the resumed, "
                               + "clean-context session opens on (folded ahead of any queued inbox messages)."),
-                      ], required: ["ref", "context"])),
+                      ], required: ["ref", "context"]),
+                      kind: .convergence, phaseGate: gLiveDead),
 
         CommandSchema(name: "set-parent",
                       summary: "Set or clear a card branch's parent link. With `parent`: 'adopt' (default) "
@@ -128,7 +162,8 @@ public enum CommandCatalog {
                               + "remote parent (no local history to rebase yet)."),
                           "watch": boolProp("Remote parents only: poll the PR/branch and auto-redirect this "
                               + "card onto the parent's base when it merges. Default off."),
-                      ], required: ["ref"])),
+                      ], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "tree",
                       summary: "Lineage snapshot — parent/children per card. Scope by `ref` or `repo`; "
@@ -136,12 +171,14 @@ public enum CommandCatalog {
                       params: schema([
                           "ref": refProp(),
                           "repo": strProp("Limit to cards in this repo root."),
-                      ], required: [])),
+                      ], required: []),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "synced",
                       summary: "Report that this card merged/restacked its parent down: record the "
                           + "parent's current tip as the sync base and clear the stale/behind signal.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "shipped",
                       summary: "Post-merge bookkeeping after a child branch was merged into its parent: "
@@ -153,64 +190,80 @@ public enum CommandCatalog {
                           "ref": refProp(),
                           "force": boolProp("Skip the parent-tip-advanced sanity check (use for a genuinely "
                               + "empty/no-op squash). Default off."),
-                      ], required: ["ref"])),
+                      ], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "merge-request",
                       summary: "Ask this card's LIVE parent card to squash-merge it up the tree: the daemon "
                           + "composes the request, nudges the parent card, and marks this card 'merge "
                           + "requested' (a waiting badge) until the parent runs `shipped`. Dedups re-sends.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "borrow",
                       summary: "Cut a throwaway worktree checking out this card's BARE parent branch (no "
                           + "live card owns it) so you can squash-merge into it, then `shipped`. Returns the "
                           + "worktree path. Refuses a remote parent (publish a PR) or a live-card parent "
                           + "(send a merge-request).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "release",
                       summary: "Tear down this card's borrow worktree (the daemon also sweeps it on archive "
                           + "and at startup).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "status", summary: "Current state of a card (incl. derived running).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "archive", summary: "Archive a card (done + off the board).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      // gAll (NOT non-archived): the spec's idempotency guarantee wants a retried archive of an
+                      // archived card to be `.noop` success, not a phaseGated error. Deviation from §6's gate
+                      // table — the funnel/handler is the real entry-edge enforcer. See the plan's decisions.
+                      kind: .convergence, phaseGate: gAll),
 
         CommandSchema(name: "reopen", summary: "Reopen an archived card (recreate its worktree + resume the agent).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .convergence, phaseGate: [.archivedPending, .archivedComplete]),
 
         CommandSchema(name: "restart", summary: "Start a new blank session in the same worktree (no prompt re-handed).",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .convergence, phaseGate: [.live, .dead, .relaunching]),
 
         CommandSchema(name: "resume", summary: "Re-attempt claude --resume of the card's existing session.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .convergence, phaseGate: [.live, .dead, .relaunching]),
 
         CommandSchema(name: "shell", summary: "Open a shell window in the worktree; returns its tmux target.",
                       params: schema(["ref": refProp(),
                                       "window": strProp("Reuse/create this exact window (idempotent, e.g. a phone-owned `phone-<client>`); omit for a fresh shell-N")],
-                                     required: ["ref"])),
+                                     required: ["ref"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         // `.appOnly`: inspect launches an interactive read-only `claude` inside the card's tmux session
         // (a visible shell tab). That's a HUMAN affordance (the inspector's eye button) — exposing it as
         // an agent tool let agents open surprise claude sessions on *peer* cards. Daemon + CLI still use it.
         CommandSchema(name: "inspect", summary: "Open a read-only claude in the card's worktree shell.",
                       params: schema(["ref": refProp()], required: ["ref"]),
-                      exposure: .appOnly),
+                      exposure: .appOnly, kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "closeShell", summary: "Close a shell window opened via `shell`.",
                       params: schema(["ref": refProp(), "window": strProp("Shell window name, e.g. shell-1")],
-                                     required: ["ref", "window"])),
+                                     required: ["ref", "window"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "exec", summary: "Run a one-shot command in the worktree.",
                       params: schema(["ref": refProp(), "cmd": strProp("Command to run (/bin/sh -c)"),
                                       "timeout": intProp("Seconds")],
-                                     required: ["ref", "cmd"])),
+                                     required: ["ref", "cmd"]),
+                      kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "sessions", summary: "Debug handles for a card: tmux targets + agent session id.",
-                      params: schema(["ref": refProp()], required: ["ref"])),
+                      params: schema(["ref": refProp()], required: ["ref"]),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "capture",
                       summary: "Read-only snapshot of a card's tmux pane (agent or a shell window). "
@@ -219,7 +272,7 @@ public enum CommandCatalog {
                                       "window": strProp("Window to read: 'agent' (default) or a shell "
                                           + "window like 'shell-1'")],
                                      required: ["ref"]),
-                      exposure: .appOnly),
+                      exposure: .appOnly, kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "send-keys",
                       summary: "Send live keystrokes to a card's tmux window — an ordered chord of named "
@@ -235,26 +288,31 @@ public enum CommandCatalog {
                           ]),
                           "window": strProp("Target window (default 'agent')"),
                       ], required: ["ref", "keys"]),
-                      exposure: .appOnly),
+                      exposure: .appOnly, kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "trustState",
                       summary: "Is a directory already trusted? Read-only ledger query for the spawn "
                           + "sheet's trust indicator — never grants (granting is a human-only surface).",
                       params: schema(["path": strProp("Absolute directory path to check")],
-                                     required: ["path"])),
+                                     required: ["path"]),
+                      kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
                       params: schema(["tasks": .object([
                           "type": .string("array"),
-                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, base?}"),
-                      ])], required: ["tasks"])),
+                          "description": .string("Array of spawn params {prompt, repo, branch, model?, col?, "
+                              + "base?, id?}. Per-item `id` is a client-minted UUID for idempotent retry — reuse "
+                              + "the same per-item ids when re-issuing a batch; omit to have them minted."),
+                      ])], required: ["tasks"]),
+                      kind: .convergence, phaseGate: gAll),
 
         CommandSchema(name: "trust",
                       summary: "Grant a human's trust for a directory so agents may run there with write "
                           + "access. Requires a human to approve (MCP elicitation / interactive CLI); an "
                           + "agent can only trigger it, never self-grant.",
                       params: schema(["path": strProp("Directory to trust (the card's cwd / repo root)")],
-                                     required: ["path"])),
+                                     required: ["path"]),
+                      kind: .mutation, phaseGate: gNonArchived),
     ]
 
     // MARK: - schema builders (moved verbatim from Commands.swift; now public for Kit consumers)

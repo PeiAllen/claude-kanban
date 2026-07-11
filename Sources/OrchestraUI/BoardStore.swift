@@ -17,7 +17,7 @@ public struct Toast: Identifiable {
     public let title: String
     public let sub: String?
     public var color: ToastColor = .green
-    public enum ToastColor { case green, blue, red }
+    public enum ToastColor: Equatable { case green, blue, red }
 }
 
 /// A request to present the phone's live **takeover** surface for a card (see `BoardModel.phoneTakeoverRequest`).
@@ -56,6 +56,22 @@ public class BoardStore: ObservableObject {
     @Published public var connected = false
     @Published public var connecting = false
     @Published public var toasts: [Toast] = []
+
+    /// True while a `spawn` RPC is in flight — the double-spawn guard both `SpawnSheet`s bind to.
+    @Published public var isSpawning = false
+
+    /// Acquire the spawn in-flight lock; `false` if a spawn is already running (the second click is a no-op).
+    public func beginSpawn() -> Bool {
+        if isSpawning { return false }
+        isSpawning = true
+        return true
+    }
+    public func endSpawn() { isSpawning = false }
+
+    /// The client-minted spawn id for an attempt: reuse the pending (in-flight / just-failed) attempt's id
+    /// so a retry is idempotent (PR6a dedups on it → one card), else mint a fresh one. Pure + `static` so both
+    /// `SpawnSheet`s share the decision and it's unit-testable.
+    public static func spawnAttemptId(reusing pending: UUID?) -> UUID { pending ?? UUID() }
 
     // Spawn-sheet autofill: absolute paths to the repos the daemon can spawn into (enumerated from its
     // disk, which a remote client can't see). These double as the freeform dir candidates. Refreshed when
@@ -97,6 +113,16 @@ public class BoardStore: ObservableObject {
     /// redundant `Set` would only re-introduce the four insert/remove sites that raced the
     /// `shellsChanged` broadcast. Reads are unchanged (`.contains`); it just can't be mutated directly.
     public var shellOpen: Set<UUID> { Set(shellWindows.keys) }
+
+    /// Highest board `rev` applied per card — the per-card staleness gate. Board-global tracking is
+    /// UNSOUND: `rev` is sparse AND non-monotonic in wire order (spawn's deferred emit), so a legit
+    /// lower-rev event for card B can arrive after a higher-rev event for card A, and a global cursor
+    /// would drop B. (PR1 sparse-rev decision.) Cleared on every snapshot adoption.
+    private var appliedRev: [UUID: Int] = [:]
+    /// The rev of the last adopted `boardSnapshot` — the resync floor. Reconnect (the only loss channel,
+    /// given the subscribe barrier) adopts a fresh snapshot rev here so pre-outage in-flight events can't
+    /// clobber the post-outage board.
+    private var baselineRev: Int = 0
 
     /// Per-card monotonic counter bumped every time a live `shellsChanged` broadcast reconciles a card.
     /// The (re)connect `refreshShellPanels` snapshots this per card BEFORE its suspending `sessions()`
@@ -297,7 +323,7 @@ public class BoardStore: ObservableObject {
 
     /// distinct agents with running/waiting cards (for the MCP chip count).
     public var activeAgentCount: Int {
-        Set(tasks.filter { $0.status == .running || $0.status == .waiting }.map(\.agentId)).count
+        Set(tasks.filter { if case .live = $0.phase { return true } else { return false } }.map(\.agentId)).count
     }
 
     // MARK: lifecycle
@@ -472,14 +498,20 @@ public class BoardStore: ObservableObject {
         // re-subscribing. `streamStarted` guards against double-subscribing within one activation.
         if !streamStarted {
             streamStarted = true
-            let stream = client.subscribe()
+            let stream = client.subscribeWithRev()
             _Concurrency.Task { [weak self] in
-                for await event in stream {
+                for await env in stream {
                     guard let self, self.connGeneration == gen else { break }
-                    self.apply(event)
+                    self.apply(env)                                  // rev-gated
                 }
                 self?.handleStreamEnded(gen: gen)
             }
+            // Success-gated BARRIER: registration must be acked before the snapshot (the daemon dispatches
+            // requests concurrently, so `boardSnapshot` could otherwise be handled before we're registered,
+            // dropping a task event emitted in that window). On failure, do NOT snapshot unsubscribed —
+            // force a reconnect; the reconnect path re-runs the gated barrier + `refresh()` via onReconnect.
+            do { try await client.call("subscribe") }
+            catch { client.forceReconnect(); return }
         }
         await refresh()
     }
@@ -510,6 +542,7 @@ public class BoardStore: ObservableObject {
         // card's shell sessions + owner. Falls back to the individual RPCs if the daemon predates
         // `boardSnapshot` (version skew during an upgrade).
         if let snap = try? await client.boardSnapshot() {
+            adoptSnapshotRev(snap.rev)              // seed the per-card rev gate from this fresh baseline
             tasks = snap.tasks
             archived = snap.archived
             config = snap.config
@@ -615,6 +648,27 @@ public class BoardStore: ObservableObject {
         }
     }
 
+    /// The rev-gated ingestion entry the live envelope stream calls (Task 6.3). Task-state events apply
+    /// iff their envelope `rev` beats this card's applied rev AND the snapshot floor; activity/owner/
+    /// shells are NOT gated (they carry their own dedup/last-writer semantics). Internal for unit tests.
+    func apply(_ env: EventEnvelope) {
+        switch env.event {
+        case .taskUpserted(let t):
+            guard env.rev > max(baselineRev, appliedRev[t.id] ?? Int.min) else { return }
+            appliedRev[t.id] = env.rev; apply(env.event)
+        case .taskRemoved(let id):
+            guard env.rev > max(baselineRev, appliedRev[id] ?? Int.min) else { return }
+            appliedRev[id] = env.rev; apply(env.event)
+        case .activity, .agentTerminalOwner, .shellsChanged:
+            apply(env.event)
+        }
+    }
+
+    /// Resync floor adoption — `refresh()` calls this after a fresh `boardSnapshot`. Seeds the gate from
+    /// the snapshot's rev so pre-outage in-flight events (delivered ≤ this rev) can't clobber it, and
+    /// clears the per-card cursors (the snapshot is a fresh baseline for every card).
+    func adoptSnapshotRev(_ rev: Int) { baselineRev = rev; appliedRev.removeAll() }
+
     /// Apply one live event to the board. Internal (not private) so the dedup/reconcile branches can be
     /// unit-tested without a live daemon — same rationale as `ingestShellsChanged`.
     func apply(_ event: Event) {
@@ -633,7 +687,7 @@ public class BoardStore: ObservableObject {
                 // Prior status of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
                 // `tasks` wholesale, bypassing `apply`) never fire a notification.
-                let prev = tasks.first { $0.id == t.id }?.status
+                let prev = tasks.first { $0.id == t.id }?.phase
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }
@@ -700,11 +754,16 @@ public class BoardStore: ObservableObject {
     /// can act on the new card id, such as auto-owning its terminal), or `nil` on failure. Callers that
     /// don't need it can ignore the result.
     @discardableResult
-    public func spawn(prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
+    public func spawn(id: UUID = UUID(), prompt: String, repo: String, branch: String, model: String?, startIn: StartIn,
                agent: String? = nil,
                cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                base: String? = nil) async -> Task? {
+        guard beginSpawn() else { return nil }
+        defer { endSpawn() }
         var p: [String: JSONValue] = [
+            // Client-minted id (required wire field): the daemon dedups on it. App-side reuse-on-retry
+            // (retaining this id across a failed/in-flight spawn) is PR6b's SpawnSheet UX.
+            "id": .string(id.uuidString),
             "prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch),
             "col": .string(startIn.rawValue),
         ]
@@ -732,12 +791,17 @@ public class BoardStore: ObservableObject {
         guard tasks.first(where: { $0.id == id })?.origin == .worktree else {
             return
         }
-        _ = try? await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)]))
+        do { _ = try await client.call("move", .object(["ref": .string(id.uuidString), "col": .string(col.rawValue)])) }
+        catch { toast("Couldn't move card", sub: "\(error)", color: .red) }
     }
     public func archive(_ id: UUID) async {
-        _ = try? await client.call("archive", .object(["ref": .string(id.uuidString)]))
-        if selectedId == id { selectedId = nil }
-        toast("Archived", sub: nil)
+        do {
+            _ = try await client.call("archive", .object(["ref": .string(id.uuidString)]))
+            if selectedId == id { selectedId = nil }
+            toast("Archived", sub: nil)
+        } catch {
+            toast("Couldn't archive", sub: "\(error)", color: .red)
+        }
     }
     /// Reopen a Done card: the daemon recreates its worktree + resumes the agent; we bring the card back
     /// onto the board. Returns the reopened `Task` (nil on failure) so a caller can navigate to it.
@@ -760,7 +824,8 @@ public class BoardStore: ObservableObject {
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
     public func send(_ id: UUID, _ message: String) async {
-        _ = try? await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)]))
+        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)])) }
+        catch { toast("Couldn't send message", sub: "\(error)", color: .red) }
     }
 
     /// Register this device for push (N1): hand the APNs device token + the current notification-pref
@@ -892,7 +957,8 @@ public class BoardStore: ObservableObject {
     /// Open a read-only inspect shell for a card (read-only claude in its worktree). Broadcast-only —
     /// same single-writer rationale as `newShell`: the daemon's `shellsChanged` delivers the new tab.
     public func inspect(_ id: UUID) async {
-        _ = try? await client.call("inspect", .object(["ref": .string(id.uuidString)]))
+        do { _ = try await client.call("inspect", .object(["ref": .string(id.uuidString)])) }
+        catch { toast("Couldn't open inspector", sub: "\(error)", color: .red) }
     }
 
     /// Close one shell window. Broadcast-only — same single-writer rationale as `newShell`: the daemon

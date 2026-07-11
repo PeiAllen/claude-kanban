@@ -89,7 +89,7 @@ struct NeedsYouTab: View {
     /// Route a push deep-link to the right destination, then clear it so it doesn't re-fire.
     private func openDeepLink(_ id: UUID?) {
         guard let id else { return }
-        route = NeedsYouRoute.deepLink(cardId: id, status: card(id)?.status)
+        route = NeedsYouRoute.deepLink(cardId: id, display: card(id)?.phaseDisplay)
         push.consumeDeepLink()
     }
 
@@ -111,8 +111,8 @@ enum NeedsYouRoute: Hashable, Identifiable {
 
     /// The destination a push deep-link opens for a card: a died card goes to Recovery (matching the
     /// row's own action), everything else to the peek. Pure so the routing is unit-testable (N1 gate).
-    static func deepLink(cardId: UUID, status: AgentStatus?) -> NeedsYouRoute {
-        status == .dead ? .recover(cardId) : .peek(cardId)
+    static func deepLink(cardId: UUID, display: PhaseDisplayKey?) -> NeedsYouRoute {
+        display == .dead ? .recover(cardId) : .peek(cardId)
     }
 }
 
@@ -209,7 +209,7 @@ private struct AttentionRow: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(sem.tint, lineWidth: 1))
         .shadow(color: theme.shadowCard, radius: 3, x: 0, y: 1)
-        .opacity(task.status == .dead ? 0.85 : 1)
+        .opacity(task.phaseDisplay == .dead ? 0.85 : 1)
         // Whole-card tap opens the peek (design §6: tapping a queue row opens the card). The nested
         // action buttons, overflow menu, and reply field are `Button`/`TextField` controls, so SwiftUI
         // hands them the tap inside their own bounds first — this fires only on the empty row area.
@@ -233,7 +233,7 @@ private struct AttentionRow: View {
     }
     /// Honest age prefix per status — a context-full card is still *running*, not waiting.
     private var waitingLabel: String {
-        switch task.status {
+        switch task.phaseDisplay {
         case .dead:    return "Died "
         case .running: return "Running "
         default:       return "Waiting "

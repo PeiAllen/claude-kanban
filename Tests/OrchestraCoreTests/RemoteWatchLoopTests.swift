@@ -9,7 +9,7 @@ struct RemoteWatchLoopTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         return (svc, repo, card)
     }
 
@@ -34,7 +34,8 @@ struct RemoteWatchLoopTests {
     func archiveStops() async throws {
         let (svc, _, card) = try await Self.remoteChild()
         #expect(await svc.remoteWatchActive(card.id) == true)
-        try await svc.archive(card.id)
+        // Intent-only archive: the remote-watch teardown is a TeardownStepper actor-duty (PR4b Task 4).
+        try await TestEnv.archiveAndTeardown(svc, card.id)
         #expect(await svc.remoteWatchActive(card.id) == false)
     }
 

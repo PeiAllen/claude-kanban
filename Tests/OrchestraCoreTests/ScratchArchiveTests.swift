@@ -8,10 +8,10 @@ struct ScratchArchiveTests {
     func archivingScratchRemovesDir() async throws {
         try await withScratchLock {
             let env = TestEnv.make()
-            let t = try await env.svc.spawn(SpawnInput(prompt: "x", scratch: true))
+            let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", scratch: true))
             let marker = "\(t.cwd)/note.txt"
             try "keep?".write(toFile: marker, atomically: true, encoding: .utf8)
-            try await env.svc.archive(t.id, source: .app)
+            try await TestEnv.archiveAndTeardown(env.svc, t.id, source: .app)   // teardown rm -rf's the dir
             #expect(!FileManager.default.fileExists(atPath: t.cwd))   // unconditional, even non-empty
         }
     }

@@ -37,9 +37,16 @@ public actor Inbox {
         return messages.filter { $0.cardId == cardId }
     }
 
-    public func enqueue(_ cardId: UUID, _ text: String) throws {
+    /// Append a message for a card. With a `dedupKey`, a no-op-safe idempotency guard: if a message for
+    /// this card already carries the same `dedupKey`, the append is SKIPPED (the crash-then-redrive
+    /// discipline — Teardown's child nudge fires at most once per `(childId, parent-archived:<branch>)`).
+    public func enqueue(_ cardId: UUID, _ text: String, dedupKey: String? = nil) throws {
         ensureLoaded()
-        messages.append(InboxMessage(cardId: cardId, text: text))
+        if let dedupKey,
+           messages.contains(where: { $0.cardId == cardId && $0.dedupKey == dedupKey }) {
+            return   // already queued for this card under the same key — dedup
+        }
+        messages.append(InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey))
         try persist()
     }
 

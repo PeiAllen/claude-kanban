@@ -10,11 +10,12 @@ struct CardView: View {
     @Environment(\.theme) var theme: Theme
 
     private var isSelected: Bool { model.selectedId == task.id }
-    private var statusKey: String { task.status.rawValue }
-    private var sem: SemColor { theme.statusColor(statusKey) }
-    private var isRunning: Bool { task.status == .running }
-    private var isWaiting: Bool { task.status == .waiting }
-    private var isDead: Bool { task.status == .dead }
+    private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
+    private var display: PhaseDisplayKey { ds.statusKey }
+    private var sem: SemColor { theme.statusColor(ds.statusKey) }
+    private var isRunning: Bool { display == .running }
+    private var isWaiting: Bool { task.waitReason != nil }
+    private var isDead: Bool { display == .dead }
 
     private var borderColor: Color {
         if isSelected { return theme.accent }
@@ -47,7 +48,7 @@ struct CardView: View {
         .shadow(color: theme.shadowCard,
                 radius: isSelected ? 10 : 1,
                 x: 0, y: isSelected ? 8 : 1)
-        .opacity(dimmed ? 0.32 : (isDead ? 0.72 : 1))
+        .opacity(dimmed ? 0.32 : ((isDead || ds.isStale) ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         // Clicking a card selects it AND descends into its agent terminal, so the glow, the
@@ -85,10 +86,10 @@ struct CardView: View {
         if isRunning || isWaiting {
             // Live age: re-render the label once a second so "Running · 3s" actually ticks.
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                pill(theme.statusLabel(statusKey) + " · " + relativeAge(task.updatedAt, now: ctx.date))
+                pill(ds.label + " · " + relativeAge(task.updatedAt, now: ctx.date))
             }
         } else {
-            pill(theme.statusLabel(statusKey))
+            pill(ds.label)
         }
     }
 

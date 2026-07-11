@@ -18,7 +18,7 @@ struct ParseTests {
             wakeTransport: .relaunch, inboxDrain: .stopHook,
             readOnlyEnforcement: .sandboxed, authMode: .subscription)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: tailCaps)
-        #expect(stub.parse(.fileTail(line: "hello")) == StatusReport(desc: "tail:hello", status: .running))
+        #expect(stub.parse(.fileTail(line: "hello")) == StatusReport(desc: "tail:hello", run: .running))
     }
 
     // I12 / test_claude_report_unchanged — Claude push parse produces the SAME StatusReport the former
@@ -30,28 +30,28 @@ struct ParseTests {
 
         let tool = try JSONValue.parse(Data(#"{"tool_name":"Edit","tool_input":{"file_path":"/x/Foo.swift"}}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "pretool", payload: tool))
-                == StatusReport(desc: "Editing Foo.swift", status: .running))
+                == StatusReport(desc: "Editing Foo.swift", run: .running))
 
         let bash = try JSONValue.parse(Data(#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "posttool", payload: bash))
-                == StatusReport(desc: "Running: ls -la", status: .running))
+                == StatusReport(desc: "Running: ls -la", run: .running))
 
         // notification/stop now also classify the wait reason. A bare Notification (no permission_prompt)
         // → waiting/.humanTurn keeping its message; a bare Stop (no pending background work) →
         // waiting/.humanTurn (no message field on the Stop hook).
         let notify = try JSONValue.parse(Data(#"{"message":"done"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "notification", payload: notify))
-                == StatusReport(desc: "done", status: .waiting, waitReason: .humanTurn))
+                == StatusReport(desc: "done", run: .waiting(.humanTurn)))
         #expect(a.parse(.hooksPush(kind: "stop", payload: notify))
-                == StatusReport(status: .waiting, waitReason: .humanTurn))
+                == StatusReport(run: .waiting(.humanTurn)))
         #expect(a.parse(.hooksPush(kind: "notification", payload: notify))?.snapshot?.turnCompleted != true)
         #expect(a.parse(.hooksPush(kind: "stop", payload: notify))?.snapshot?.turnCompleted != true)
         #expect(a.parse(.hooksPush(kind: "taskcompleted", payload: notify))
-                == StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true))
+                == StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
 
         let prompt = try JSONValue.parse(Data(#"{"prompt":"hi there"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "prompt", payload: prompt))
-                == StatusReport(status: .running, promptText: "hi there"))
+                == StatusReport(run: .running, promptText: "hi there"))
 
         let session = try JSONValue.parse(Data(#"{"session_id":"sid","source":"resume"}"#.utf8))
         #expect(a.parse(.hooksPush(kind: "session", payload: session))
@@ -87,7 +87,7 @@ struct ParseTests {
     func test_parse_report_reaches_board() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
 
         let raw = RawTelemetry.hooksPush(
             kind: "posttool",
@@ -97,7 +97,7 @@ struct ParseTests {
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.desc == "Running: ls")
-        #expect(after.status == .running)
+        #expect(after.phaseDisplay == .running)
     }
 
     // C1 — Codex PermissionRequest → the SAME Needs-You surface Claude uses. The Codex adapter parses
@@ -108,14 +108,14 @@ struct ParseTests {
     func test_codex_permission_reaches_board() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
 
         let raw = RawTelemetry.hooksPush(kind: "permission", payload: .object([:]))
         let report = try #require(CodexAdapter().parse(raw))
         try await env.svc.report(t.id, report)
 
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .permission)
     }
 
@@ -125,6 +125,6 @@ struct ParseTests {
     func test_claude_permission_path_unchanged() throws {
         let payload = try JSONValue.parse(Data(#"{"notification_type":"permission_prompt","message":"Allow Bash?"}"#.utf8))
         let r = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "notification", payload: payload)))
-        #expect(r == StatusReport(desc: "Allow Bash?", status: .waiting, waitReason: .permission))
+        #expect(r == StatusReport(desc: "Allow Bash?", run: .waiting(.permission)))
     }
 }

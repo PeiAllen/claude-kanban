@@ -13,10 +13,10 @@ struct RemoteSpawnTests {
         let (_, _) = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let oid = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
-        let wm = WorktreeManager(config: config)
-        let out = try wm.ensure(repo: repo, branch: "childR", base: "refs/orch/parents/pr/7")
+        let wm = WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
+        let out = try await wm.ensure(repo: repo, branch: "childR", cardId: UUID(), base: "refs/orch/parents/pr/7")
         #expect(out.created)
-        let head = try Proc.run(["git", "-C", out.worktree, "rev-parse", "HEAD"]).stdout
+        let head = try Proc.run(["git", "-C", out.path, "rev-parse", "HEAD"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(head == oid)   // new branch starts exactly at the fetched PR tip
     }
@@ -28,9 +28,9 @@ struct RemoteSpawnTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
-        let wm = WorktreeManager(config: config)
-        #expect(throws: (any Error).self) {
-            try wm.ensure(repo: repo, branch: "childX", base: "refs/orch/parents/pr/999")
+        let wm = WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
+        await #expect(throws: (any Error).self) {
+            _ = try await wm.ensure(repo: repo, branch: "childX", cardId: UUID(), base: "refs/orch/parents/pr/999")
         }
         #expect(!FileManager.default.fileExists(atPath: wm.path(repo: repo, branch: "childX")))
     }
@@ -41,7 +41,7 @@ struct RemoteSpawnTests {
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
         let prTip = try await RemoteParents().fetch(repo: repo, .pullRequest(7))  // expected OID
-        let t = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         #expect(t.parentBranch == "pr#7")                    // canonical remote form stored
         let link = try #require(await svc.lineage.read(repo: repo, branch: "childP"))
         #expect(link.parent == "pr#7")
@@ -59,7 +59,7 @@ struct RemoteSpawnTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let t = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childB", base: "origin/feature-b"))
+        let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childB", base: "origin/feature-b"))
         #expect(t.parentBranch == "origin/feature-b")
         let link = try #require(await svc.lineage.read(repo: repo, branch: "childB"))
         #expect(link.prNumber == nil)

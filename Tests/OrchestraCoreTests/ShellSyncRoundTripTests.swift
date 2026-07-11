@@ -80,10 +80,15 @@ struct ShellSyncRoundTripTests {
 
         // Spawn the card BEFORE the phone subscribes, so the spawn's activity is in the ring and gets
         // replayed to the phone on subscribe — a deterministic registration anchor (see `waitForCard`).
-        let task = try await desktop.call("spawn", .object([
+        let task = try await desktop.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("shells"), "repo": .string(repo), "branch": .string("feat")]))
             .decode(Task.self)
         let ref = task.shortId
+        // Non-blocking spawn: drive the reconciler to bring the card's session up before opening shells.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list().first { $0.id == task.id }?.phase.kind == .live
+        }
 
         // The PHONE subscribes — it must learn about a shell the DESKTOP opens (the reported bug).
         let box = EventBox()

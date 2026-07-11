@@ -44,9 +44,12 @@ struct TransportReconnectTests {
         func write(_ data: Data) -> Bool {
             box.record(data)
             // Stand in for a live daemon: answer the `version` probe (ControlClient now gates `.live` on
-            // it, #10) so the fake reconnect flow reaches `.live` exactly as a real one does.
+            // it, #10) so the fake reconnect flow reaches `.live` exactly as a real one does. Also answer
+            // the `subscribe` RPC: since Task 6.3 SUCCESS-GATES the reconnect re-assert hook on the
+            // subscribe ack (onReconnect fires only once registration is acknowledged — closing the
+            // subscribe→snapshot window), a reconnect can only complete when the daemon acks subscribe.
             if box.answerVersion, let req = try? RPCCodec.decoder.decode(RPCRequest.self, from: data),
-               req.method == "version", let id = req.id {
+               (req.method == "version" || req.method == "subscribe"), let id = req.id {
                 let resp = (try? RPCCodec.line(RPCResponse(id: id, result: .object(["version": .string("fake")])))) ?? Data()
                 lock.withLock { lines.append(resp) }
                 sema.signal()
@@ -109,7 +112,13 @@ struct TransportReconnectTests {
         #expect(box.subscribeCount == 1)
 
         box.dropCurrent()                                          // drop mid-stream
-        try await _Concurrency.Task.sleep(for: .milliseconds(700)) // let backoff + reconnect run
+        // Poll for the reconnect to converge rather than a fixed 700ms sleep: the reconnect BACKOFF TIMER
+        // is real time, and a heavily-parallel run starves it past a fixed window (in-memory FakeTransport,
+        // so this is a fixed-sleep timing fragility — not a real-socket env flake). Generous cap, deterministic.
+        try await pollUntil {
+            guard box.opens >= 2, box.subscribeCount == 2 else { return false }
+            return await states.values.last == .live
+        }
         #expect(box.opens >= 2)                                    // reconnected with a fresh transport
         #expect(box.subscribeCount == 2)                           // re-subscribed on the new transport
         let seen = await states.values
@@ -139,7 +148,9 @@ struct TransportReconnectTests {
         _ = client.subscribe()                                       // subscribe #1
         try await _Concurrency.Task.sleep(for: .milliseconds(120))
         box.dropCurrent()                                            // force a reconnect
-        try await _Concurrency.Task.sleep(for: .milliseconds(700))   // backoff + reconnect + re-subscribe
+        // Poll for the reconnect + re-subscribe (real backoff timer) rather than a fixed 700ms — see the
+        // reconnectResubscribes note: fixed-sleep timing fragility under parallel load, deterministic poll.
+        try await pollUntil { box.subscribeClientIds.count >= 2 }
         let ids = box.subscribeClientIds
         #expect(ids.count >= 2)                                      // subscribed on both transports
         #expect(ids.allSatisfy { $0 == "phone-xyz" })               // SAME id after reconnect
@@ -181,7 +192,12 @@ struct TransportReconnectTests {
         try await _Concurrency.Task.sleep(for: .milliseconds(150))
         #expect(await hits.value == 0)                             // NOT on the first connect
         box.dropCurrent()                                          // force a reconnect
-        try await _Concurrency.Task.sleep(for: .milliseconds(700))
+        // Poll for the reconnect + onReconnect hook (real backoff timer) rather than a fixed 700ms — same
+        // fixed-sleep timing fragility under parallel load as the other reconnect tests; deterministic poll.
+        try await pollUntil {
+            guard box.opens >= 2 else { return false }
+            return await hits.value >= 1
+        }
         #expect(box.opens >= 2)
         #expect(await hits.value >= 1)                             // fired on the reconnect (re-assert hook)
         client.close()

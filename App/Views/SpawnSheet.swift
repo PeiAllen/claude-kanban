@@ -59,6 +59,11 @@ struct SpawnSheet: View {
     @State private var repoQuery = ""
     @FocusState private var repoSearchFocused: Bool
 
+    /// PR6a stable-id reuse-on-retry: the in-flight/just-failed spawn attempt's client-minted id, so a
+    /// retry after failure dedups onto the same card instead of spawning a duplicate. Cleared only on
+    /// success; a failure keeps it so the next click reuses it.
+    @State private var pendingSpawnId: UUID? = nil
+
     // Keyboard highlight index into the filtered combo lists (Ctrl-j/k move it; Enter picks it).
     @State private var repoHi = 0
     @State private var branchHi = 0
@@ -302,23 +307,26 @@ struct SpawnSheet: View {
                 Button {
                     let m = modelSel.isEmpty ? nil : modelSel
                     let a = agentSel.isEmpty ? nil : agentSel
+                    let sid = BoardStore.spawnAttemptId(reusing: pendingSpawnId)
+                    pendingSpawnId = sid
                     _Concurrency.Task {
                         let spawned: Task?
                         switch mode {
                         case .worktree:
-                            spawned = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m,
+                            spawned = await model.spawn(id: sid, prompt: prompt, repo: repo, branch: branch, model: m,
                                                         startIn: startIn, agent: a, base: effectiveBase)
                         case .freeform:
-                            spawned = await model.spawn(prompt: prompt, repo: "", branch: "", model: m,
+                            spawned = await model.spawn(id: sid, prompt: prompt, repo: "", branch: "", model: m,
                                                         startIn: startIn, agent: a, cwd: cwd,
                                                         access: readOnly ? .readOnly : .readWrite)
                         case .scratch:
-                            spawned = await model.spawn(prompt: prompt, repo: "", branch: "", model: m,
+                            spawned = await model.spawn(id: sid, prompt: prompt, repo: "", branch: "", model: m,
                                                         startIn: startIn, agent: a, scratch: true)
                         }
                         // S3-2: only dismiss on success — a typo'd base/remote must not cost the whole form
                         // (the error surfaces as a toast; the sheet stays so the user can fix + retry).
-                        if spawned != nil { model.showSpawn = false }
+                        // Clear the pending id only on success; a failure keeps it so a retry dedups (PR6a).
+                        if spawned != nil { pendingSpawnId = nil; model.showSpawn = false }
                     }
                 } label: {
                     Text("Spawn agent").font(F.ui(12, .semibold)).foregroundColor(.white)
@@ -327,7 +335,7 @@ struct SpawnSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .disabled(!canSpawn)
+                .disabled(!canSpawn || model.isSpawning)
             }
             .padding(.horizontal, 19).padding(.top, 6).padding(.bottom, 17)
         }

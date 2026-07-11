@@ -82,4 +82,35 @@ struct DaemonLifecycleTests {
         // valid JSON
         #expect(throws: Never.self) { _ = try JSONValue.parse(Data(s.utf8)) }
     }
+
+    // MARK: - Task 3.5: teardown routed through the registry
+
+    @Test func test_archiveWithSiblingKeepsTree() async throws {
+        let (svc, _, worktrees, _, _, base) = TestEnv.make()
+        _ = TestEnv.repo(base)
+        let a = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "", repo: "app", branch: "shared"))
+        // A second DISTINCT card on the same branch (spawn only warns, then proceeds — OrchestraService.swift:325).
+        // Its ensure adopts a's marked tree, so both cards share one cwd (a deliberate co-tenant).
+        let b = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "", repo: "app", branch: "shared"))
+        #expect(a.id != b.id && a.cwd == b.cwd)
+        try await svc.archive(a.id)
+        #expect(!worktrees.removed.contains(a.cwd))   // non-archived sibling b still references it ⇒ kept
+    }
+
+    @Test func test_spawnRollbackNeverForceRemovesSharedTree() async throws {
+        let (svc, _, worktrees, _, _, base) = TestEnv.make()
+        _ = TestEnv.repo(base)   // plain dir, NOT a git repo ⇒ recordSpawnBase throws post-ensure
+        let nbPath = worktrees.path(repo: "app", branch: "nb")   // the returned stub computes the same path the registry does
+        // Non-blocking spawn (PR4b Task 3): the rollback now fires inside the reconciler-driven
+        // MaterializeStepper (recordSpawnBase throws on a non-git repo AFTER `ensure`), so the card goes
+        // `.dead(.spawnFailed)` — spawn itself no longer throws.
+        let card = try await svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: "app", branch: "nb", base: "main"))
+        try await pollUntil {
+            await svc.reconcile()
+            return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .dead
+        }
+        // The fresh tree WAS reclaimed (clean, unshared) — but through release(force:FALSE), not remove(force:true).
+        #expect(worktrees.removedForce.contains { $0.path == nbPath && $0.force == false })
+        #expect(!worktrees.removedForce.contains { $0.path == nbPath && $0.force == true })
+    }
 }

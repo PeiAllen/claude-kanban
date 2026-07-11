@@ -15,11 +15,11 @@ extension OrchestraService {
         let t = try await require(id)
         guard t.origin == .worktree else { return "" }
         try resolver.assertAllowed(t.cwd)
-        // Render off the actor: a large `git diff` can take real time, and blocking the actor on it would
-        // stall every other card's reports/events. `cwd`/`base`/`pref` are Sendable.
-        let cwd = t.cwd, pref = resolvedParentRef(t)
-        let text = (try? await offActor { try GitDiffProvider().render(worktree: cwd, base: base,
-                                                                       parentBranch: pref) }) ?? ""
+        // PR5 actor-hygiene (Task 5.1.4 fold-back): `resolvedParentRef` is `nonisolated` (touches no
+        // actor state — just `gitRemotes`, itself off-actor-safe), so it moves INSIDE the hop alongside
+        // `provider.render` — full purity, no residual on-actor `.git/config` stat / `git remote`.
+        let provider = diffProvider, cwd = t.cwd
+        let text = (try? await offActor { try provider.render(worktree: cwd, base: base, parentBranch: self.resolvedParentRef(t)) }) ?? ""
         if text.utf8.count > Self.diffTextCap {
             return String(text.prefix(Self.diffTextCap))
                 + "\n… (diff truncated — open in Zed for the full changes)\n"
@@ -33,28 +33,26 @@ extension OrchestraService {
     @discardableResult
     public func recomputeDiffStat(_ id: UUID, base: DiffBase? = nil) async -> DiffStat? {
         guard let t = await store.get(id) else { return nil }
-        let ref = resolvedParentRef(t)
-        // The report-funnel path passes no base: a stacked card baselines against its parent (the card's
-        // own work), everyone else against the default branch — byte-identical to before for nil-parent.
-        // An explicit base (the on-selection endpoint) is honored verbatim.
-        let effective = base ?? (ref != nil ? .parent : .branch)
         var newStat: DiffStat? = nil
         if t.origin == .worktree {
             do {
                 try resolver.assertAllowed(t.cwd)
-                // Offload the blocking `git diff --stat` off the actor (hot report-funnel path): a slow diff
-                // on one card must not serialize every other card behind it. `cwd`/`effective`/`ref` Sendable.
-                let cwd = t.cwd
+                let provider = diffProvider, cwd = t.cwd
+                // PR5 actor-hygiene (Task 5.1.4 fold-back): `resolvedParentRef` + the base-defaulting logic
+                // that depends on it move INSIDE the hop with `resolvedParentRef` now `nonisolated` — full
+                // purity, no residual on-actor `.git/config` stat / `git remote`.
                 newStat = try await offActor {
-                    try GitDiffProvider().stat(worktree: cwd, base: effective, parentBranch: ref)
+                    let ref = self.resolvedParentRef(t)
+                    let effective = base ?? (ref != nil ? .parent : .branch)
+                    return try provider.stat(worktree: cwd, base: effective, parentBranch: ref)
                 }
             } catch {
                 newStat = nil
             }
         }
         guard newStat != t.diffStat else { return newStat }   // no delta → no persist, no emit
-        guard let saved = try? await store.update(id, { $0.diffStat = newStat }) else { return newStat }
-        emit(.taskUpserted(saved))
+        guard let (saved, rev) = try? await store.update(id, { $0.diffStat = newStat }) else { return newStat }
+        emit(.taskUpserted(saved), rev: rev)
         return newStat
     }
 

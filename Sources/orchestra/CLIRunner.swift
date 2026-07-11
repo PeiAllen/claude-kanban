@@ -26,7 +26,14 @@ enum CLIRunner {
                 // makes and deletes on archive (no repo/branch/cwd).
                 // Freeform: `--cwd <dir>` runs in an existing directory (no worktree, sandbox-trusted),
                 // optionally `--read-only`. Otherwise repo + branch are required (the worktree path).
-                var fields: [String: JSONValue] = ["prompt": .string(flags.require("prompt"))]
+                // Client-minted id (required wire field). Honour a caller-supplied `--id` so a script that
+                // retries `spawn` after a timeout reuses its id → the daemon dedups (idempotent retry);
+                // else mint a fresh one.
+                let spawnId = flags.value("id").flatMap(UUID.init(uuidString:)) ?? UUID()
+                var fields: [String: JSONValue] = [
+                    "id": .string(spawnId.uuidString),
+                    "prompt": .string(flags.require("prompt")),
+                ]
                 if flags.has("scratch") {
                     fields["scratch"] = .bool(true)
                     if let r = flags.value("repo") { fields["repo"] = .string(r) }       // optional context
@@ -254,8 +261,15 @@ enum CLIRunner {
     static func renderTasks(_ result: JSONValue) {
         guard let tasks = try? result.decode([Task].self) else { printJSON(result); return }
         if tasks.isEmpty { print("(no cards)"); return }
+        // Pad to the longest label so no pill is truncated, and the column stays aligned; self-maintaining
+        // as labels evolve. Unified onto the one label vocabulary `displayState` renders everywhere else
+        // (was the terser machine rawValue — `idle`/`needsPermission` — which no other surface shows).
+        let pillWidth = PhaseDisplayKey.allCases.map(\.label.count).max() ?? 7
         for t in tasks {
-            let pill = t.status.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
+            // CLI is a one-shot fetch — there's no persistent link to go stale mid-render, so `connection:
+            // .live` is the honest read (matches the `list` RPC returning a live daemon snapshot).
+            let pill = displayState(phase: t.phase, connection: .live).label
+                .padding(toLength: pillWidth, withPad: " ", startingAt: 0)
             print("\(t.shortId)  \(pill)  [\(t.column.rawValue)]  \(t.title)  ·  \((t.repo as NSString).lastPathComponent)/\(t.branch)")
         }
     }
@@ -301,6 +315,15 @@ enum CLIRunner {
                 if prompt.isEmpty { continue }
                 tasks.append(.object(["prompt": .string(prompt), "repo": .string(repo), "branch": .string(branch)]))
             }
+        }
+        // Stamp a client-minted id on every item that lacks one (required wire field); preserve a
+        // caller-supplied item `id` so a retried batch reuses its per-item ids → per-item dedup.
+        tasks = tasks.map { item in
+            if case .object(var f) = item, f["id"] == nil {
+                f["id"] = .string(UUID().uuidString)
+                return .object(f)
+            }
+            return item
         }
         let r = try await client.call("batch-spawn", .object(["tasks": .array(tasks)]))
         let result = try r.decode(BatchSpawnResult.self)

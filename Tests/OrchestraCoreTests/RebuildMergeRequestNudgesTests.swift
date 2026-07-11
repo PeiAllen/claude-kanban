@@ -16,8 +16,8 @@ struct RebuildMergeRequestNudgesTests {
     func rebuildReProdsAfterRestart() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        let parentCard = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
@@ -45,22 +45,22 @@ struct RebuildMergeRequestNudgesTests {
     func rebuildSkipsIneligible() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        _ = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
 
         // (a) live, pending — the positive control that MUST be re-armed.
-        let live = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        let live = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: live.ref())
         await env.svc.stopMergeRequestNudge(live.id)   // restart sim: clear the in-memory timer
 
         // (b) archived but still mergeRequested in the store — must be skipped.
-        let archived = try await env.svc.spawn(SpawnInput(prompt: "a", repo: repo, branch: "child-arch"))
+        let archived = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "child-arch"))
         _ = try await env.svc.store.update(archived.id) {
             $0.treeStat = TreeStat(state: .mergeRequested); $0.archived = true
         }
         // (c) live worktree card, but not mergeRequested — must be skipped.
-        let plain = try await env.svc.spawn(SpawnInput(prompt: "b", repo: repo, branch: "child-plain"))
+        let plain = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "child-plain"))
 
         await env.svc.rebuildMergeRequestNudges()
 
@@ -75,8 +75,8 @@ struct RebuildMergeRequestNudgesTests {
     func rebuiltTimerStopsOnShipped() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
-        _ = try await env.svc.spawn(SpawnInput(prompt: "p", repo: repo, branch: "parent"))
-        let child = try await env.svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child"))
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await BranchLineage().set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())

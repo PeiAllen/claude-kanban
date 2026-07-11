@@ -76,6 +76,23 @@ _ = await server.withMethodHandler(CallTool.self) { params in
         fields["watcher"] = .string(selfId)
         args = .object(fields)
     }
+    // Client-minted id (required wire field): inject one ONLY when the agent didn't supply it — an agent
+    // that supplies+reuses an `id` across a manual retry gets idempotent dedup; one that omits it still spawns.
+    if params.name == "spawn", case .object(var fields) = args, fields["id"] == nil {
+        fields["id"] = .string(UUID().uuidString)
+        args = .object(fields)
+    }
+    if params.name == "batch-spawn", case .object(var fields) = args,
+       case .array(let items)? = fields["tasks"] {
+        fields["tasks"] = .array(items.map { item in
+            if case .object(var f) = item, f["id"] == nil {
+                f["id"] = .string(UUID().uuidString)
+                return .object(f)
+            }
+            return item
+        })
+        args = .object(fields)
+    }
     do {
         let result = try await client.call(params.name, args)
         let text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)

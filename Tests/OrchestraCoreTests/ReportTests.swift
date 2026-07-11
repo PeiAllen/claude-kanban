@@ -8,7 +8,7 @@ struct ReportTests {
     private func spawned() async throws -> (env: ReturnType, task: Task) {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Initial task", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Initial task", repo: repo, branch: "b"))
         return (env, t)
     }
     typealias ReturnType = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
@@ -24,7 +24,7 @@ struct ReportTests {
     func waitReasonCodable() async throws {
         let (_, t) = try await spawned()
         var card = t
-        card.waitReason = .permission
+        card.phase = .live(.waiting(.permission))
         let data = try JSONEncoder().encode(card)
         let back = try JSONDecoder().decode(Task.self, from: data)
         #expect(back.waitReason == .permission)
@@ -34,27 +34,27 @@ struct ReportTests {
 
     @Test("StatusReport routes waitReason into the snapshot bucket")
     func waitReasonRoutes() {
-        let r = StatusReport(status: .waiting, waitReason: .permission)
-        #expect(r.snapshot?.waitReason == .permission)
-        #expect(r.snapshot?.status == .waiting)
+        let r = StatusReport(run: .waiting(.permission))
+        #expect(r.snapshot?.run == .waiting(.permission))
+        #expect(r.snapshot?.run != nil)
     }
 
     @Test("StatusReport routes provider-neutral turn completion into the snapshot bucket")
     func turnCompletedRoutes() {
-        let r = StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true)
-        #expect(r.snapshot?.status == .waiting)
-        #expect(r.snapshot?.waitReason == .humanTurn)
+        let r = StatusReport(run: .waiting(.humanTurn), turnCompleted: true)
+        #expect(r.snapshot?.run != nil)
+        #expect(r.snapshot?.run == .waiting(.humanTurn))
         #expect(r.snapshot?.turnCompleted == true)
     }
 
     @Test("report sets waitReason on a waiting snapshot and clears it when status leaves waiting")
     func waitReasonLifecycle() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(status: .waiting, waitReason: .permission))
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)))
         var after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .permission)
-        try await env.svc.report(t.id, StatusReport(status: .running))
+        try await env.svc.report(t.id, StatusReport(run: .running))
         after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.waitReason == nil)
     }
@@ -64,58 +64,59 @@ struct ReportTests {
         // A fileTail agent (Codex): telemetry == .fileTail, so the permission fence is active.
         let env = TestEnv.make(capabilities: .codex)
         let repo = TestEnv.repo(env.base)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "Task", repo: repo, branch: "b"))
+        // .codex is `.rolloutMeta` → the blank spawn awaits; drive its launch-ready signal (spawnAwaited).
+        let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "Task", repo: repo, branch: "b"))
 
         // The PermissionRequest hook arrives as a seq==0 push → the card blocks on permission.
-        try await env.svc.report(t.id, StatusReport(status: .waiting, waitReason: .permission))
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)))
         var after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .waiting)
+        #expect(after.waitReason != nil)
         #expect(after.waitReason == .permission)
 
         // The tool-call rollout line the agent wrote µs BEFORE it blocked (→ .running, seq = its
         // timestamp) is delivered a poll-tick LATER by the tailer. Its seq is far below "now", so the
         // fence (cursor advanced to now-µs by the hook) drops it — the permission wait survives. Pre-fix
         // this seq (> 0) sailed past the gate and flipped the card back to .running: no Needs-You, no push.
-        try await env.svc.report(t.id, StatusReport(seq: 1_000, status: .running))
+        try await env.svc.report(t.id, StatusReport(seq: 1_000, run: .running))
         after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .waiting, "a late pre-block .running line must not un-block the permission wait")
+        #expect(after.waitReason != nil, "a late pre-block .running line must not un-block the permission wait")
         #expect(after.waitReason == .permission)
 
         // A genuinely-later line (timestamp AFTER the fence, i.e. post-approval work) still applies.
         let future = UInt64(Date().timeIntervalSince1970 * 1_000_000) + 5_000_000
-        try await env.svc.report(t.id, StatusReport(seq: future, status: .running))
+        try await env.svc.report(t.id, StatusReport(seq: future, run: .running))
         after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .running, "a genuinely-later line still advances the card past permission")
+        #expect(after.phaseDisplay == .running, "a genuinely-later line still advances the card past permission")
     }
 
     @Test("Notification permission_prompt → waiting/.permission")
     func classifyPermission() {
         let r = parse("notification", #"{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#)
-        #expect(r?.snapshot?.status == .waiting)
-        #expect(r?.snapshot?.waitReason == .permission)
+        #expect(r?.snapshot?.run != nil)
+        #expect(r?.snapshot?.run == .waiting(.permission))
         #expect(r?.snapshot?.desc == "Claude needs your permission to use Bash")
     }
 
     @Test("Notification idle_prompt → waiting/.humanTurn")
     func classifyIdle() {
         let r = parse("notification", #"{"notification_type":"idle_prompt","message":"Claude is waiting for your input"}"#)
-        #expect(r?.snapshot?.status == .waiting)
-        #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.run != nil)
+        #expect(r?.snapshot?.run == .waiting(.humanTurn))
     }
 
     @Test("Stop with no background work → waiting/.humanTurn")
     func classifyStopIdle() {
         let r = parse("stop", #"{"background_tasks":[],"session_crons":[]}"#)
-        #expect(r?.snapshot?.status == .waiting)
-        #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.run != nil)
+        #expect(r?.snapshot?.run == .waiting(.humanTurn))
         #expect(r?.snapshot?.turnCompleted != true)
     }
 
     @Test("TaskCompleted → waiting/.humanTurn with turn-completion signal")
     func classifyTaskCompleted() {
         let r = parse("taskcompleted", #"{"task_id":"task-1","task_subject":"answer"}"#)
-        #expect(r?.snapshot?.status == .waiting)
-        #expect(r?.snapshot?.waitReason == .humanTurn)
+        #expect(r?.snapshot?.run != nil)
+        #expect(r?.snapshot?.run == .waiting(.humanTurn))
         #expect(r?.snapshot?.turnCompleted == true)
     }
 
@@ -134,12 +135,12 @@ struct ReportTests {
     @Test("merges only present fields; ctxPct/desc/model update in place")
     func mergeFields() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(ctxPct: 42, modelId: "m2", desc: "Editing Foo.swift", status: .running))
+        try await env.svc.report(t.id, StatusReport(ctxPct: 42, modelId: "m2", desc: "Editing Foo.swift", run: .running))
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.ctxPct == 42)
         #expect(after.desc == "Editing Foo.swift")
         #expect(after.model.id == "m2")   // a reported launch id updates the model (never a display label)
-        #expect(after.status == .running)
+        #expect(after.phaseDisplay == .running)
     }
 
     @Test("a reported display label updates modelDisplay only — never the launch id")
@@ -162,7 +163,7 @@ struct ReportTests {
         #expect(after.agentSessionId == "brand-new-id")
         #expect(after.priorSessionIds.contains(oldId))
         #expect(after.titleProvisional == true)   // clear sets provisional
-        #expect(after.status == .waiting)          // clear → idle
+        #expect(after.waitReason != nil)          // clear → idle
     }
 
     @Test("non-empty sessionName updates title + clears provisional; empty is ignored")
@@ -187,7 +188,7 @@ struct ReportTests {
         var after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Now do something else")
         #expect(after.titleProvisional == false)
-        #expect(after.status == .running)
+        #expect(after.phaseDisplay == .running)
         // a later prompt does NOT re-title
         try await env.svc.report(t.id, StatusReport(promptText: "And another thing"))
         after = try #require(await env.svc.list().first { $0.id == t.id })
@@ -241,7 +242,7 @@ struct ReportTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.ctxPct == 43)
         // a second card's low seq is independent
-        let t2 = try await env.svc.spawn(SpawnInput(prompt: "second", repo: TestEnv.repo(env.base), branch: "b2"))
+        let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "second", repo: TestEnv.repo(env.base), branch: "b2"))
         try await env.svc.report(t2.id, StatusReport(seq: 1, ctxPct: 9))
         let after2 = try #require(await env.svc.list().first { $0.id == t2.id })
         #expect(after2.ctxPct == 9)
@@ -262,9 +263,12 @@ struct ReportTests {
     @Test("SessionEnd genuine exit → .dead (agentExited); transition reasons never reach report")
     func sessionEndDead() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(endReason: "exit"))
+        // A post-upgrade SessionEnd carries the session's ORCH_EPOCH, so the funnel applies the kill via
+        // its generation fence (no liveness probe needed). A NIL-epoch SessionEnd would instead require a
+        // real `isAlive` probe first — that discipline is covered by PhaseTransitionTests.
+        try await env.svc.report(t.id, StatusReport(endReason: "exit"), observedEpoch: t.sessionEpoch)
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.status == .dead)
+        #expect(after.phaseDisplay == .dead)
         #expect(after.deadReason == .agentExited)
     }
 
@@ -274,10 +278,33 @@ struct ReportTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
         try await env.svc.report(t.id, StatusReport(ctxPct: 5))                      // no activity
-        try await env.svc.report(t.id, StatusReport(status: .waiting))              // transition
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))              // transition
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         let acts = await collector.activities
         #expect(acts.contains { $0.kind == .statusChanged })
         #expect(!acts.contains { $0.kind == .statusChanged && $0.text.contains("ctx") })
+    }
+}
+
+@Suite("report field-delta") struct ReportDeltaTests {
+    private func sample() -> Task {
+        Task(title: "c", repo: "/r", branch: "b", cwd: "/wt/b",
+             model: AgentModel(id: "claude-sonnet-4-5"), startIn: .plan, column: .plan, order: 0, initialPrompt: "c")
+    }
+    @Test("applyReportFields overlays only report-owned fields, preserving concurrently-mutated ones")
+    func test_reportDoesNotClobberConcurrentFields() throws {
+        // `current` = the store's live value, with an UNRELATED field (column) changed concurrently
+        // after report took its snapshot. `snapshot` = what report computed from its (older) read.
+        var current = sample()
+        current.column = .impl             // concurrent write to a field report does NOT own
+        current.ctxPct = 0
+        var snapshot = current
+        snapshot.column = .plan            // report's stale view of the unowned field
+        snapshot.ctxPct = 42               // report's owned field, freshly computed
+
+        current.applyReportFields(from: snapshot)
+
+        #expect(current.ctxPct == 42)      // owned field applied
+        #expect(current.column == .impl)   // unowned field PRESERVED — not clobbered
     }
 }

@@ -16,8 +16,25 @@ public final class ControlClient: @unchecked Sendable {
 
     private let stateLock = NSLock()
     private var nextId = 1
-    private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
+
+    /// One in-flight call: its continuation, its deadline timer, and a resolved-once flag. All mutated
+    /// under `stateLock`; resolution is funneled through `resolve(_:_:)` so every id resumes EXACTLY once.
+    private final class PendingCall {
+        let cont: CheckedContinuation<JSONValue, Error>
+        var timer: _Concurrency.Task<Void, Never>?
+        var resolved = false
+        init(_ c: CheckedContinuation<JSONValue, Error>) { cont = c }
+    }
+    private var pending: [Int: PendingCall] = [:]          // guarded by stateLock
+    private let callTimeout: Duration
+    private let pingInterval: Duration
+    private let probeTimeout: Duration                     // first-connect probe bound — DECOUPLED from callTimeout
+    private var pingTask: _Concurrency.Task<Void, Never>?
     private var eventContinuation: AsyncStream<Event>.Continuation?
+    /// The rev-carrying continuation for BoardStore's per-card gate (Stage 6.3). Separate from
+    /// `eventContinuation` so the ~18 test files consuming `subscribe()`'s bare `Event` stream are
+    /// untouched; `readUntilEOF` yields the same wire event to both.
+    private var envelopeContinuation: AsyncStream<EventEnvelope>.Continuation?
     private var subscribed = false
     private var stopping = false
     /// Idempotency guard (#4): true once a `connect()`/`connectAsync()` has a live read/reconnect loop
@@ -43,15 +60,37 @@ public final class ControlClient: @unchecked Sendable {
 
     /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
     public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app,
-                clientId: String? = nil) {
+                clientId: String? = nil,
+                callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
+                probeTimeout: Duration = .seconds(15)) {
         self.makeTransport = transport
         self.source = source
         self.clientId = clientId
+        self.callTimeout = callTimeout
+        self.pingInterval = pingInterval
+        self.probeTimeout = probeTimeout
     }
 
     private func setState(_ s: ConnectionState) {
         stateLock.withLock { state = s }
         onState?(s)
+    }
+
+    /// The SINGLE resolution point for a pending call. Takes the record iff still unresolved, flips
+    /// resolved, cancels its deadline timer, removes it from `pending` — all under `stateLock` — then
+    /// resumes the continuation OUTSIDE the lock (NSLock is non-recursive; resuming a continuation that
+    /// awaits under the lock could re-enter and deadlock). Idempotent: a second call for the same id
+    /// no-ops, so every id resumes EXACTLY once.
+    private func resolve(_ id: Int, _ result: Result<JSONValue, Error>) {
+        let p: PendingCall? = stateLock.withLock {
+            guard let p = pending[id], !p.resolved else { return nil }
+            p.resolved = true; p.timer?.cancel(); pending[id] = nil; return p
+        }
+        guard let p else { return }
+        switch result {
+        case .success(let v): p.cont.resume(returning: v)
+        case .failure(let e): p.cont.resume(throwing: e)
+        }
     }
 
     /// Connect + start the read/reconnect loop. The first connect is synchronous so callers still get an
@@ -92,7 +131,31 @@ public final class ControlClient: @unchecked Sendable {
     }
     /// Release the slot after a failed first `open()` so `start()`'s retry loop can re-attempt.
     private func endFailedConnect() { stateLock.withLock { started = false } }
-    private func launchRunLoop() { DispatchQueue.global().async { [weak self] in self?.runLoop() } }
+    private func launchRunLoop() {
+        DispatchQueue.global().async { [weak self] in self?.runLoop() }
+        stateLock.withLock {
+            pingTask?.cancel()
+            pingTask = _Concurrency.Task { [weak self] in await self?.pingLoop() }
+        }
+    }
+
+    /// Keepalive that detects a dead-BUT-OPEN tunnel the reader can't see (no EOF, no reply). Periodically
+    /// issues a `version` call (which carries the per-call deadline); on failure it flips `.retrying` and
+    /// `shutdown()`s the transport → reader EOF → runLoop reconnects. Idempotent across mutations; cancelled
+    /// on `close()`. Uses async `Task.sleep(for:)` so sub-second intervals aren't truncated.
+    private func pingLoop() async {
+        while !stateLock.withLock({ stopping }) {
+            try? await _Concurrency.Task.sleep(for: pingInterval)
+            if stateLock.withLock({ stopping }) { return }
+            guard stateLock.withLock({ state == .live }) else { continue }
+            do { _ = try await call("version") }                         // carries the per-call deadline
+            catch {
+                guard stateLock.withLock({ state == .live }) else { continue }
+                setState(.retrying)
+                writeLock.withLock { transport }?.shutdown()
+            }
+        }
+    }
 
     /// One connection attempt: mint a fresh transport, open it, verify a real daemon answers a `version`
     /// probe, THEN publish `.live`. Throws on transport failure OR a live transport with a dead daemon
@@ -118,6 +181,14 @@ public final class ControlClient: @unchecked Sendable {
         let id = stateLock.withLock { let i = nextId; nextId += 1; return i }
         let req = RPCRequest(id: id, method: "version", params: nil, source: source.rawValue, clientId: clientId)
         guard t.write(try RPCCodec.line(req)) else { throw OrchestraError.io("version probe write failed") }
+        // Watchdog: if no reply within probeTimeout, shutdown() the transport so readLine() returns nil →
+        // the loop falls through and throws. Bound by probeTimeout, NOT callTimeout — an aggressive
+        // product callTimeout (or the near-zero test) must not make first-connect flaky (Opus NEW-1).
+        let watchdog = _Concurrency.Task { [probeTimeout] in
+            try? await _Concurrency.Task.sleep(for: probeTimeout)
+            if !_Concurrency.Task.isCancelled { t.shutdown() }
+        }
+        defer { watchdog.cancel() }
         while let line = t.readLine() {
             guard !line.isEmpty,
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
@@ -131,18 +202,18 @@ public final class ControlClient: @unchecked Sendable {
     }
 
     public func close() {
-        stateLock.withLock { stopping = true; started = false }
+        stateLock.withLock { stopping = true; started = false; pingTask?.cancel() }
         // Wake the reader by SHUTTING DOWN the transport, NOT closing it: on Linux `close(2)` won't
         // unblock a thread parked in `read(2)` (→ leaked reader thread), and closing an fd the reader
         // still holds risks recycled-fd cross-wiring. The runLoop reader owns the actual `close()` (see
         // `closeTransport()`), so we leave `transport` set here — the reader must still find and close it.
         let t = writeLock.withLock { transport }
         t?.shutdown()
-        stateLock.withLock {
-            for (_, c) in pending { c.resume(throwing: OrchestraError.io("connection closed")) }
-            pending.removeAll()
-            eventContinuation?.finish()
-        }
+        // Snapshot the pending ids under the lock, then resolve each OUTSIDE the lock (resume must not
+        // happen under `stateLock` — NSLock is non-recursive). `resolve` cancels each call's timer.
+        let ids = stateLock.withLock { Array(pending.keys) }
+        for id in ids { resolve(id, .failure(OrchestraError.io("connection closed"))) }
+        stateLock.withLock { eventContinuation?.finish(); envelopeContinuation?.finish() }
         setState(.down)
     }
 
@@ -154,16 +225,23 @@ public final class ControlClient: @unchecked Sendable {
         let req = RPCRequest(id: id, method: method, params: params, source: source.rawValue, clientId: clientId)
         let line = try RPCCodec.line(req)
         return try await withCheckedThrowingContinuation { cont in
-            stateLock.withLock { pending[id] = cont }
-            let ok = writeLock.withLock { transport?.write(line) ?? false }
-            if !ok {
-                // Resume ONLY if we still own the pending entry. If `close()`/a drop raced in and already
-                // resumed+removed it, `removeValue` returns nil and we skip — never double-resume
-                // (which is a fatal continuation misuse).
-                if let c = stateLock.withLock({ pending.removeValue(forKey: id) }) {
-                    c.resume(throwing: OrchestraError.io("write failed"))
-                }
+            // Install the continuation FIRST so it always has a live resolver, THEN build the timer, THEN
+            // attach it under the lock only if the id is still pending. An early-firing timer that already
+            // resolved just cancels here; a continuation is never left without a resolver.
+            let p = PendingCall(cont)
+            stateLock.withLock { pending[id] = p }                        // continuation live FIRST
+            let timer = _Concurrency.Task { [weak self] in
+                try? await _Concurrency.Task.sleep(for: self?.callTimeout ?? .seconds(15))
+                if _Concurrency.Task.isCancelled { return }
+                self?.resolve(id, .failure(OrchestraError.io("call '\(method)' timed out")))
             }
+            let attached = stateLock.withLock { () -> Bool in
+                guard let p = pending[id], !p.resolved else { return false }
+                p.timer = timer; return true
+            }
+            if !attached { timer.cancel() }                              // already resolved (instant reply)
+            let ok = writeLock.withLock { transport?.write(line) ?? false }
+            if !ok { resolve(id, .failure(OrchestraError.io("write failed"))) }
         }
     }
 
@@ -279,6 +357,26 @@ public final class ControlClient: @unchecked Sendable {
         }
     }
 
+    /// Rev-carrying subscription for BoardStore's per-card gate. Unlike `subscribe()`, this does NOT
+    /// auto-issue the `subscribe` RPC — the caller awaits `call("subscribe")` as a registration BARRIER
+    /// BEFORE `boardSnapshot`, closing the subscribe→snapshot loss window (the daemon dispatches requests
+    /// concurrently, so registration must be acknowledged before snapshotting). Sets `subscribed` so the
+    /// runLoop re-subscribes on reconnect. The stream persists across reconnects — only `close()` ends it.
+    public func subscribeWithRev() -> AsyncStream<EventEnvelope> {
+        AsyncStream { cont in
+            stateLock.withLock {
+                self.envelopeContinuation?.finish()
+                self.envelopeContinuation = cont
+                self.subscribed = true                      // so runLoop re-subscribes on reconnect
+            }
+        }
+    }
+
+    /// Shut the current transport so the reader EOFs and the runLoop reconnects (with the success-gated
+    /// re-subscribe barrier). Used when the initial/reconnect subscribe barrier fails — we must NOT
+    /// snapshot while unsubscribed. `shutdown()` (not `close()`) so the reader thread owns the fd close.
+    public func forceReconnect() { (writeLock.withLock { transport })?.shutdown() }
+
     // MARK: - read / reconnect loop
 
     private func runLoop() {
@@ -301,12 +399,22 @@ public final class ControlClient: @unchecked Sendable {
                 do {
                     try openOnce()
                     attempt = 0
-                    // Re-subscribe FIRST (so the daemon re-registers us before we snapshot), then fire the
-                    // re-assert hook (#1) — the UI re-runs `refresh()` here, reconciling a board that would
-                    // otherwise stay silently stale after a daemon restart / link drop.
-                    if stateLock.withLock({ subscribed }) { _Concurrency.Task { try? await self.call("subscribe") } }
-                    onReconnect?()
-                    break
+                    // Success-gate the re-subscribe BARRIER, but do NOT block THIS (the sole reader) thread
+                    // on the ack (Opus NB-1): `readUntilEOF` — which delivers the subscribe reply — only runs
+                    // after `break`, so parking here waiting for the ack would deadlock (the call resolves
+                    // only via its `callTimeout` deadline → a healthy subscribe false-fails → infinite loop).
+                    // So: `break` first (reader starts), success-gate `onReconnect` INSIDE a detached Task —
+                    // it fires (→ UI `refresh → boardSnapshot`) only after the subscribe is acked; a failed
+                    // re-subscribe forces another reconnect instead of snapshotting unsubscribed.
+                    if stateLock.withLock({ subscribed }) {
+                        _Concurrency.Task { [weak self] in
+                            do { _ = try await self?.call("subscribe"); self?.onReconnect?() }  // registered → refresh
+                            catch { self?.forceReconnect() }                                    // NOT registered → drop → reconnect
+                        }
+                    } else {
+                        onReconnect?()
+                    }
+                    break                       // reader runs now, delivers the subscribe ack that resolves the call above
                 } catch { setState(.retrying); continue }
             }
         }
@@ -320,14 +428,16 @@ public final class ControlClient: @unchecked Sendable {
             guard !line.isEmpty,
                   let msg = try? RPCCodec.decoder.decode(WireMessage.self, from: line) else { continue }
             if msg.method == "event" {
-                if let event = try? msg.params?.decode(Event.self) {
-                    stateLock.withLock { eventContinuation }?.yield(event)
+                if let env = try? msg.params?.decode(EventEnvelope.self) {
+                    // Take both continuations under ONE lock scope, then yield after releasing (yielding
+                    // under the lock could re-enter). `subscribeWithRev()` carries `env.rev` to BoardStore's
+                    // per-card gate; `subscribe()` still yields the bare `Event` for existing consumers.
+                    let (envCont, evtCont) = stateLock.withLock { (envelopeContinuation, eventContinuation) }
+                    envCont?.yield(env)          // BoardStore (rev-gated)
+                    evtCont?.yield(env.event)    // existing consumers (bare Event)
                 }
             } else if let id = msg.id {
-                if let cont = stateLock.withLock({ pending.removeValue(forKey: id) }) {
-                    if let err = msg.error { cont.resume(throwing: err) }
-                    else { cont.resume(returning: msg.result ?? .null) }
-                }
+                resolve(id, msg.error.map { .failure($0) } ?? .success(msg.result ?? .null))
             }
         }
         // EOF: the reader owns the close. Drop the dead transport so the next openOnce() replaces it
@@ -344,12 +454,11 @@ public final class ControlClient: @unchecked Sendable {
         dead?.close()
     }
 
-    /// Fail every in-flight call so awaiters don't hang across a reconnect.
+    /// Fail every in-flight call so awaiters don't hang across a reconnect. Snapshot the ids under the
+    /// lock, then `resolve` each OUTSIDE the lock (single-resolution funnel; cancels each call's timer).
     private func failPending() {
-        let conts = stateLock.withLock { () -> [CheckedContinuation<JSONValue, Error>] in
-            let cs = Array(pending.values); pending.removeAll(); return cs
-        }
-        for c in conts { c.resume(throwing: OrchestraError.io("connection dropped")) }
+        let ids = stateLock.withLock { Array(pending.keys) }
+        for id in ids { resolve(id, .failure(OrchestraError.io("connection dropped"))) }
     }
 
     /// Exponential backoff (250ms → 5s cap) with attempt-derived jitter — no Date/random (unavailable in

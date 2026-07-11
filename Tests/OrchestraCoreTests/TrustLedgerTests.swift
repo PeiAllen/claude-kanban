@@ -108,7 +108,7 @@ struct SpawnTrustRoutingTests {
     func scratchSpawnRecordsLedger() async throws {
         try await withScratchLock {
             let env = TestEnv.make()
-            let t = try await env.svc.spawn(SpawnInput(prompt: "scratch work", scratch: true))
+            let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "scratch work", scratch: true))
             #expect(t.origin == .scratch)
             #expect(await env.trust.isTrusted(t.cwd) == true)   // resolveTrust recorded it during spawn
             try? FileManager.default.removeItem(atPath: t.cwd)
@@ -120,7 +120,7 @@ struct SpawnTrustRoutingTests {
         let env = TestEnv.make()
         let dir = env.base + "/borrowed-here"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let t = try await env.svc.spawn(SpawnInput(prompt: "peek", cwd: dir, access: .readWrite))
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "peek", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(await env.trust.isTrusted(dir) == false)   // no auto-trust for borrowed
     }

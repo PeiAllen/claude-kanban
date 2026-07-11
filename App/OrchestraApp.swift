@@ -221,7 +221,7 @@ private struct DebugLaunchHook: ViewModifier {
             Task(title: title, repo: repo, branch: branch,
                  cwd: "~/worktrees/\((repo as NSString).lastPathComponent)/\(branch.replacingOccurrences(of: "/", with: "-"))",
                  agentId: agent, model: AgentModel(id: model), startIn: .impl, column: .review, order: 0,
-                 status: .done, initialPrompt: title, archived: true,
+                 phase: .dead(.completed), initialPrompt: title, archived: true,
                  updatedAt: Date(timeIntervalSinceNow: -ago))
         }
         return [
@@ -259,7 +259,7 @@ private struct DebugLaunchHook: ViewModifier {
                         repo: DemoConfig.repoRoot, branch: "fix/shells",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .running, ctxPct: 62, initialPrompt: "demo")
+                        order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
         model.tasks = [mock]
         model.selectedId = mock.id
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
@@ -285,7 +285,7 @@ private struct DebugLaunchHook: ViewModifier {
                         repo: "/Users/allen/code/orchestra", branch: "mobile/d5-desktop-unmount",
                         cwd: "/Users/allen/code/orchestra/.worktrees/d5",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .running, ctxPct: 40, initialPrompt: "demo")
+                        order: 0, phase: .live(.running), ctxPct: 40, initialPrompt: "demo")
         model.tasks = [mock]
         model.selectedId = mock.id
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
@@ -306,23 +306,23 @@ private struct DebugLaunchHook: ViewModifier {
     /// `ORCH_SHOW=demo`. Cards span all three columns plus a freeform card, so hjkl / g-go-to / hints
     /// have something to move through. The terminals render empty (no tmux behind a mock card).
     static func showDemo(model: BoardModel) {
-        func mk(_ title: String, _ branch: String, _ col: Column, _ status: AgentStatus, _ order: Int,
+        func mk(_ title: String, _ branch: String, _ col: Column, _ phase: Phase, _ order: Int,
                 origin: CardOrigin = .worktree) -> Task {
             Task(title: title, repo: DemoConfig.repoRoot, branch: branch,
                  cwd: origin == .worktree ? "\(DemoConfig.repoRoot)/.worktrees/\(branch)" : "\(DemoConfig.notesRoot)/\(branch)",
                  origin: origin, model: AgentModel(id: "claude-opus-4-8"),
                  startIn: col == .plan ? .plan : .impl, column: col, order: order,
-                 status: status, initialPrompt: title)
+                 phase: phase, initialPrompt: title)
         }
         model.tasks = [
-            mk("Design the keyboard scheme", "feat/keys-design", .plan, .waiting, 0),
-            mk("Draft the spec document", "feat/spec", .plan, .running, 1),
-            mk("Wire the KeyboardController", "feat/controller", .impl, .running, 0),
-            mk("Add the command palette", "feat/palette", .impl, .running, 1),
-            mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .waiting, 2),
-            mk("Review the focus model", "feat/review", .review, .running, 0),
-            mk("Ship the context chip", "feat/chip", .review, .done, 1),
-            mk("Scratch: perf notes", "perf-notes", .plan, .running, 0, origin: .borrowed),
+            mk("Design the keyboard scheme", "feat/keys-design", .plan, .live(.waiting(.humanTurn)), 0),
+            mk("Draft the spec document", "feat/spec", .plan, .live(.running), 1),
+            mk("Wire the KeyboardController", "feat/controller", .impl, .live(.running), 0),
+            mk("Add the command palette", "feat/palette", .impl, .live(.running), 1),
+            mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .live(.waiting(.humanTurn)), 2),
+            mk("Review the focus model", "feat/review", .review, .live(.running), 0),
+            mk("Ship the context chip", "feat/chip", .review, .dead(.completed), 1),
+            mk("Scratch: perf notes", "perf-notes", .plan, .live(.running), 0, origin: .borrowed),
         ]
         model.selectedId = model.tasks.first?.id
         // No daemon in this hook → suppress the first-run onboarding cover so the board is visible.
@@ -372,7 +372,7 @@ private struct DebugLaunchHook: ViewModifier {
         let card = Task(title: "Inbox demo", repo: DemoConfig.repoRoot, branch: "demo",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/demo",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .running, initialPrompt: "demo")
+                        order: 0, phase: .live(.running), initialPrompt: "demo")
         let seed = ["charlie", "BRAVO (edited)", "review the auth refactor before merging"]
             .map { InboxMessage(cardId: card.id, text: $0) }
         let view = InboxEditorView(task: card, preview: seed)
@@ -393,7 +393,7 @@ private struct DebugLaunchHook: ViewModifier {
                         branch: "feat/controller",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/feat/controller",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .dead,
+                        order: 0, phase: .dead(.sessionVanished),
                         initialPrompt: "Wire the KeyboardController to the command palette and add hjkl navigation across columns.")
         card.deadReason = .sessionVanished
         card.agentSessionId = "mock-session"   // surfaces the "Try resume" button too
@@ -457,7 +457,7 @@ private struct DebugLaunchHook: ViewModifier {
                         repo: DemoConfig.repoRoot, branch: "feat/code-review-on-board",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/code-review-on-board",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                        order: 0, status: .running, initialPrompt: "demo")
+                        order: 0, phase: .live(.running), initialPrompt: "demo")
         card.diffStat = DiffStat(filesChanged: 6, insertions: 214, deletions: 37)
         let split = ProcessInfo.processInfo.environment["ORCH_SNAP_SPLIT"] == "1"
         let view = DiffInspectorView(task: card, preview: mockDiffANSI, split: split)
@@ -474,21 +474,21 @@ private struct DebugLaunchHook: ViewModifier {
     static func snapshotCards(to path: String, model: BoardModel) {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
-        func mk(_ title: String, branch: String, status: AgentStatus, stat: DiffStat?) -> Task {
+        func mk(_ title: String, branch: String, phase: Phase, stat: DiffStat?) -> Task {
             var t = Task(title: title, repo: DemoConfig.repoRoot, branch: branch,
                          cwd: "\(DemoConfig.repoRoot)/.worktrees/\(branch)",
                          model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
-                         order: 0, status: status, initialPrompt: title)
+                         order: 0, phase: phase, initialPrompt: title)
             t.diffStat = stat
             return t
         }
         let cards = [
             mk("Wire the footer diffstat into CardView.meta", branch: "feat/footer-stat",
-               status: .running, stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
+               phase: .live(.running), stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
             mk("Small tweak to the baseline toggle", branch: "fix/baseline",
-               status: .waiting, stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
+               phase: .live(.waiting(.humanTurn)), stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
             mk("Freeform notes card (no git diff)", branch: "scratch",
-               status: .running, stat: nil),
+               phase: .live(.running), stat: nil),
         ]
         let list = VStack(spacing: 10) {
             ForEach(cards, id: \.id) { CardView(task: $0) }

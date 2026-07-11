@@ -7,11 +7,12 @@ enum CLIHelp {
 
     COMMANDS
       list [--col plan|impl|review]              List cards
-      spawn --prompt <p> --repo <r> --branch <b> [--model <m>] [--col plan|impl] [--seed <ctx>] [--base <b>]
+      spawn --prompt <p> --repo <r> --branch <b> [--model <m>] [--col plan|impl] [--seed <ctx>] [--base <b>] [--id <uuid>]
             spawn --prompt <p> --cwd <dir> [--read-only]   (freeform: run in an existing dir)
             spawn --prompt <p> --scratch                   (throwaway ~/.orchestra/scratch dir)
                                                  Spawn a new agent (prints its ref). --seed = fork context.
                                                  --base = create the branch on top of an existing local branch.
+                                                 --id = reuse a client-minted UUID to make a retry idempotent.
       move <ref> --col <plan|impl|review>        Move a card
       set-parent <ref> [parent] [--mode adopt|move] [--watch]
                                                  Set/clear a card branch's parent link (omit parent to clear).

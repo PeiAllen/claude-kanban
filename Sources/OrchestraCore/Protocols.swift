@@ -1,7 +1,8 @@
 import Foundation
 
 /// Collaborator protocols so `OrchestraService` can be unit-tested with stubs (no real git/tmux).
-/// The concrete `WorktreeManager` / `SessionManager` conform below.
+/// The concrete worktree manager (`WorktreeRegistry.swift`, fileprivate) / `SessionManager` conform
+/// below.
 
 public protocol WorktreeManaging: Sendable {
     func path(repo: String, branch: String) -> String
@@ -16,7 +17,10 @@ public protocol WorktreeManaging: Sendable {
     // O3: bare-parent borrow lifecycle.
     func borrowPath(repo: String, branch: String) -> String
     func borrow(repo: String, branch: String) throws -> String
-    func pruneOrphanBorrows(repo: String)
+    /// True if the worktree has uncommitted changes. FAILS SAFE (unqueryable ⇒ dirty).
+    func isDirty(worktree: String) -> Bool
+    /// Canonical `orch-borrow-*` dir paths currently present under `repo` (LIST only, no removal).
+    func orphanBorrowPaths(repo: String) -> [String]
 }
 
 public extension WorktreeManaging {
@@ -26,6 +30,8 @@ public extension WorktreeManaging {
         -> (worktree: String, created: Bool, branchExisted: Bool) {
         try ensure(repo: repo, branch: branch, base: nil)
     }
+    func isDirty(worktree: String) -> Bool { true }          // conservative default
+    func orphanBorrowPaths(repo: String) -> [String] { [] }
 }
 
 /// Liveness of a card's `agent` pane — finer-grained than session presence. `.dead` (the pane's process
@@ -61,6 +67,11 @@ public protocol SessionManaging: Sendable {
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult
     func kill(_ name: String) throws
     func detachAgentViewClients(_ base: String) throws
+    /// The `ORCH_EPOCH` generation stamped into the session's env at launch (read back via tmux
+    /// `show-environment`); `nil` when absent/unset or the session is gone. The reconciler's identity
+    /// oracle (`verify`): a session is "the current one" iff its stamped epoch == `card.sessionEpoch`.
+    /// Defaulted `nil` so unrelated stubs need no change; `SessionManager` overrides with the real read.
+    func stampedEpoch(name: String) throws -> Int?
 }
 
 public extension SessionManaging {
@@ -82,6 +93,8 @@ public extension SessionManaging {
     // Default no-op so mocks/conformers needn't implement it; `SessionManager` overrides with a
     // best-effort tmux detach. Belt-and-suspenders behind the D5 desktop unmount.
     func detachAgentViewClients(_ base: String) throws {}
+    /// Default so test stubs needn't implement it; the real `SessionManager` overrides with the tmux read.
+    func stampedEpoch(name: String) throws -> Int? { nil }
     /// Convenience: launch with no extra environment (keep-alive shells + existing callers/tests).
     @discardableResult
     func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {
@@ -89,5 +102,4 @@ public extension SessionManaging {
     }
 }
 
-extension WorktreeManager: WorktreeManaging {}
 extension SessionManager: SessionManaging {}

@@ -18,7 +18,7 @@ struct RemoteRecomputeTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         await svc.recomputeTreeStat(card.id)                 // the funnel's ~750ms recompute, run directly
         let ts = try #require(await treeStat(svc, card.id))
         #expect(ts.state == .inSync)                          // was a false .restackNeeded before the fix
@@ -41,7 +41,7 @@ struct RemoteRecomputeTests {
         let base0 = try Proc.run(["git", "-C", repo, "rev-parse", "parent"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let card = try await svc.spawn(SpawnInput(prompt: "c", repo: repo, branch: "child", base: "parent"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "parent"))
 
         // Parent advances to base1 AFTER the child's claimed merge, BEFORE synced (the race).
         try g("checkout", "-q", "parent")
@@ -59,7 +59,7 @@ struct RemoteRecomputeTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         _ = try await svc.synced(ref: card.ref())            // must not throw for a remote parent
         #expect(await treeStat(svc, card.id)?.state == .inSync)
     }

@@ -12,8 +12,8 @@ struct TerminalOwnershipServiceTests {
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
-        let task = try await env.svc.spawn(
-            SpawnInput(prompt: "own me", repo: repo, branch: "feat"), source: .app)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
+            SpawnInput(id: UUID(), prompt: "own me", repo: repo, branch: "feat"), source: .app)
         let ref = task.shortId
 
         // available
@@ -45,8 +45,8 @@ struct TerminalOwnershipServiceTests {
     func failedTakeoverDoesNotStealLease() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
-            SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
         // The phone legitimately owns it first (epoch 1).
@@ -74,8 +74,8 @@ struct TerminalOwnershipServiceTests {
     func deniedHeartbeatReturnsSnapshot() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
-            SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
         // Phone takes over at epoch 1, then the desktop retakes at epoch 2.
@@ -97,8 +97,8 @@ struct TerminalOwnershipServiceTests {
         let repo = TestEnv.repo(env.base)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
-        let task = try await env.svc.spawn(
-            SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
 
         let p = try await env.svc.takeOverAgentTerminal(ref, clientId: "phone", kind: .phone)
@@ -120,8 +120,8 @@ struct TerminalOwnershipServiceTests {
     func staleReleaseRejected() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
-        let task = try await env.svc.spawn(
-            SpawnInput(prompt: "x", repo: repo, branch: "b"), source: .app)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, 
+            SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"), source: .app)
         let ref = task.shortId
         let a = try await env.svc.takeOverAgentTerminal(ref, clientId: "phoneA", kind: .phone)
         _ = try await env.svc.takeOverAgentTerminal(ref, clientId: "phoneB", kind: .phone)

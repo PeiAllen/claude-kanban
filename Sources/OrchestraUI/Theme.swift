@@ -130,9 +130,20 @@ extension Theme {
         default:        return "Idle"
         }
     }
-    /// Typed convenience over the string form — the one place status → display label lives, so the
+    /// The palette for a derived phase-display key — the one place `phaseDisplay → color` lives, so the
     /// board cell / detail header / takeover chrome no longer each carry their own copy of this switch.
-    public func statusLabel(_ status: AgentStatus) -> String { statusLabel(status.rawValue) }
+    public func statusColor(_ key: PhaseDisplayKey) -> SemColor {
+        switch key {
+        case .running:                        return green
+        case .idle, .needsPermission:         return amber
+        case .starting, .launching, .relaunching: return blue
+        case .done:                           return gray
+        case .dead:                           return red
+        }
+    }
+    /// Typed convenience over the string form — delegates to `PhaseDisplayKey.label`, the ONE place
+    /// `phaseDisplay → label` text lives (shared by the GUI, the CLI, and `DisplayState.label`).
+    public func statusLabel(_ key: PhaseDisplayKey) -> String { key.label }
 }
 
 // MARK: - Fonts

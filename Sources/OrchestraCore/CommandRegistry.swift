@@ -20,6 +20,48 @@ public struct CommandRegistry: Sendable {
 
     public func command(_ name: String) -> Command? { byName[name] }
 
+    // MARK: - the single gate-enforcement chokepoint
+
+    /// The single dispatch chokepoint. Resolves the verb's target card (if it names one) and enforces its
+    /// `phaseGate` against the card's current `Phase.Kind` BEFORE the handler runs — a gated-out call never
+    /// reaches its handler. Deny-by-default: a kind absent from the allow-set is denied. Query verbs and
+    /// verbs with no single pre-existing target card (spawn/batch-spawn/trust/wait) are not phase-gated here.
+    ///
+    /// Double-resolve + snapshot contract: gated verbs resolve `resolveRef` twice (gate + handler). This is
+    /// a snapshot-at-dispatch COARSE pre-filter, not a lock — a concurrent transition can land between the
+    /// two resolves. That is sufficient for PR4a (declare + enforce the policy under single-actor
+    /// serialization); the airtight session-claim guard (never claim mid-launch even under a race) is the
+    /// launch/relaunch steppers' `created`-check + the reconciler's orphan sweep (PR4b).
+    public func dispatch(_ cmd: Command, _ service: OrchestraService,
+                         _ params: JSONValue, _ source: ActivitySource) async throws -> JSONValue {
+        if cmd.schema.kind != .query,
+           let paramName = Self.targetCardParam(for: cmd.name),
+           let raw = params.optString(paramName) {
+            let card = try await service.resolveRef(raw)   // throws .unknownTask (fail fast, same as the handler)
+            let kind = Self.gatedKind(of: card)
+            guard cmd.schema.phaseGate.contains(kind) else {
+                throw OrchestraError.phaseGated(verb: cmd.name, phase: kind.rawValue)
+            }
+        }
+        return try await cmd.run(service, params, source)
+    }
+
+    /// Which param names the single existing card a verb's `phaseGate` applies to. `nil` ⇒ the verb has no
+    /// single pre-existing target: `spawn`/`batch-spawn` create, `trust`/`trustState` are path-scoped,
+    /// `wait` is multi-target + all-phase, `list` has no ref. Everything else targets `"ref"`.
+    static func targetCardParam(for verb: String) -> String? {
+        switch verb {
+        case "spawn", "batch-spawn", "trust", "trustState", "wait", "list": return nil
+        default: return "ref"
+        }
+    }
+
+    /// The card's EFFECTIVE lifecycle kind for gating. PR4b (Task 4): `phase == .archived(_)` is now the
+    /// SOLE archived representation — `archive` is intent-only (`→ archivedPending`) + the TeardownStepper
+    /// flips to `archivedComplete`, and the migration seeds legacy archived records as `.archived(_)`. So the
+    /// PR4a Bool-bridge is retired: the gate reads `phase.kind` directly (the gate SETS never changed).
+    static func gatedKind(of card: Task) -> Phase.Kind { card.phase.kind }
+
     // MARK: - the handler table
 
     private typealias Handler = @Sendable (OrchestraService, JSONValue, ActivitySource) async throws -> JSONValue
@@ -36,6 +78,7 @@ public struct CommandRegistry: Sendable {
 
             "spawn": { svc, p, src in
                 let input = SpawnInput(
+                    id: try p.uuid("id"),           // required wire field — clients mint/forward it
                     prompt: try p.string("prompt"),
                     repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
                     model: p.optString("model"),
@@ -286,6 +329,7 @@ public struct CommandRegistry: Sendable {
                 var inputs: [SpawnInput] = []
                 for item in arr {
                     inputs.append(SpawnInput(
+                        id: try item.uuid("id"),    // required per-item wire field (client stamps when absent)
                         prompt: try item.string("prompt"), repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),

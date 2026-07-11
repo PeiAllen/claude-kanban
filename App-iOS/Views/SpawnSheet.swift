@@ -74,6 +74,11 @@ struct SpawnSheet: View {
     /// branches + free-text creation).
     @State private var branchOptions: [String] = []
 
+    /// PR6a stable-id reuse-on-retry: the in-flight/just-failed spawn attempt's client-minted id, so a
+    /// retry after failure dedups onto the same card instead of spawning a duplicate. Cleared only on
+    /// success; a failure keeps it so the next tap reuses it.
+    @State private var pendingSpawnId: UUID?
+
     // MARK: agents / models (sourced from the daemon; falls back to Claude Code when it hasn't answered)
 
     /// The Claude Code fallback, built from OrchestraKit types only (iOS doesn't link OrchestraCore, so
@@ -199,7 +204,7 @@ struct SpawnSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(ctaLabel, action: spawn).disabled(!canSpawn).fontWeight(.semibold)
+                    Button(ctaLabel, action: spawn).disabled(!canSpawn || model.isSpawning).fontWeight(.semibold)
                 }
             }
             .onAppear(perform: seedDefaults)
@@ -474,27 +479,33 @@ struct SpawnSheet: View {
     private func spawn() {
         let m = modelSel.isEmpty ? nil : modelSel
         let a = agentSel.isEmpty ? nil : agentSel
+        let sid = BoardStore.spawnAttemptId(reusing: pendingSpawnId)
+        pendingSpawnId = sid
         _Concurrency.Task {
             let card: Task?
             switch mode {
             case .worktree:
-                card = await model.spawn(prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
+                card = await model.spawn(id: sid, prompt: prompt, repo: repo, branch: branch, model: m, startIn: startIn,
                                          agent: a, base: effectiveBase)
             case .freeform:
-                card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                card = await model.spawn(id: sid, prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                          agent: a, cwd: cwd, access: readOnly ? .readOnly : .readWrite)
             case .scratch:
-                card = await model.spawn(prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
+                card = await model.spawn(id: sid, prompt: prompt, repo: "", branch: "", model: m, startIn: startIn,
                                          agent: a, scratch: true)
             }
             // Auto-own on phone-spawn (Bug 3): the phone that spawned the card is its intended driver, so
             // acquire the D4 takeover lease and drop straight into the live agent surface — no separate
-            // "Take Over" tap. The daemon creates the `agent` tmux window synchronously inside `spawn`
-            // (SessionManager.ensure) before returning the card, so the lease target already resolves.
+            // "Take Over" tap. Non-blocking spawn (PR4b) returns the card at `.creatingWorktree` BEFORE any
+            // tmux `agent` window exists (the reconciler's LaunchStepper brings it up ~2s+ later), so the
+            // takeover can't lease a window yet — `TakeoverController` bounded-retries the acquire while the
+            // card is being born and re-arms on the `→ live` edge (F1), so this fires the request eagerly.
             // S3-2: dismiss only on SUCCESS — a typo'd base/remote used to cost the whole form because we
             // dismissed before the RPC returned; now the sheet stays (toast shows the error) so the user
             // can fix + retry. A failed spawn (`nil`) leaves the sheet up and routes nowhere.
+            // Clear the pending id only on success; a failure keeps it so a retry dedups (PR6a).
             if let card {
+                pendingSpawnId = nil
                 model.phoneTakeoverRequest = PhoneTakeoverRequest(cardId: card.id)
                 dismiss()
             }

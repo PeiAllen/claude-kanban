@@ -62,7 +62,7 @@ struct RemoteParentRefTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)   // gives the repo an `origin` remote
-        var t = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "c1"))
+        var t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "c1"))
         t.parentBranch = "pr#7"
         #expect(await svc.resolvedParentRef(t) == "refs/orch/parents/pr/7")
         t.parentBranch = "origin/feature-b"

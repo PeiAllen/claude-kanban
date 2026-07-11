@@ -22,6 +22,64 @@ authority on liveness, and **git** is the authority on the worktree. This is wha
 the daemon (or the whole machine) can restart and reconstruct reality from disk + `tmux ls` + git,
 rather than losing track of running agents.
 
+### The phase funnel: one writer, epochs, and capability-gated readiness
+
+A card's lifecycle is **one persisted variable** — `Task.phase` — with **one writer**, the
+`transition()` funnel. This is the *lifecycle-convergence* redesign (Stage 2 of an in-progress multi-stage
+build; the full spec is the [design vault](../notes/designs/lifecycle-convergence/index.md)), and it
+replaces the ad-hoc `status`/`waitReason`/`dead` triple that three code paths used to write independently.
+The decisions that shape it:
+
+- **One writer, one concluder.** Every mover routes its phase change through `transition()`
+  (`OrchestraService+Lifecycle.swift`), which validates the edge against a pure `isLegalEdge` machine
+  (spec §P1), stamps `phaseChangedAt`, bumps the epoch, and fires conclusions — all in one place, so the
+  legal-edge invariant, staleness fencing, and `wait`-resolution can't drift across call sites. A
+  companion `mutate:` closure lets a caller land companion field-writes (a fresh session id, cleared dead
+  metadata) **atomically in the same store patch** as the phase change. `report()`'s former direct
+  conclude is deleted — the funnel is the sole concluder, so a card never double-concludes; `Conclusion`
+  gained a **`deadReason`** so a suspended `wait` resolves on *every* terminal death (crash/reboot/
+  resume-fail → `.exited(reason)`), not only a clean exit (the bug-#2 fix), while `isConcluded` is exactly
+  "phase is terminal."
+- **Epochs make staleness deterministic.** `sessionEpoch` is a monotonic per-card generation the funnel
+  bumps once on every (re)launch-bound entry, stamped into the session env as `ORCH_EPOCH` (agent-agnostic)
+  and echoed back by the agent's hooks / readable via `tmux show-environment`. A signal (late hook, liveness
+  poll) carries the epoch it observed; a superseded epoch is dropped by the funnel's fence — a late signal
+  is *provably* harmless rather than heuristically ignored. A pre-upgrade **nil-epoch** kill signal can't be
+  fenced, so it must pass a fresh liveness probe before it may kill a card. Epochs also absorb the old
+  `recovering` set's grace-window role (its narrow atomic-claim role became the `relaunchClaimed` set).
+- **Being-born readiness is a capability, not an identity branch (the D1 resolution).** How a `launching`
+  **or** `relaunching` card is confirmed alive is one adapter axis — `AgentCapabilities.readinessConfirmation`
+  ∈ `{sessionStartHook, rolloutMeta, relaunchLiveness}` — covering *both* being-born phases (generalizing
+  the spec's launch-only `resumeConfirmation`). Claude confirms via its SessionStart hook (startup for a
+  launch, resume for a relaunch); Codex confirms a fresh launch via its rollout `session_meta` line
+  (time-scoped to the launch), and a `codex resume` — which writes no rollout — is caught by a **universal
+  N=3 liveness-tick fallback** that keeps the relaunch on the readiness gate rather than landing it live
+  immediately. `relaunchLiveness` treats a successful `ensure` as the confirmation for an agent that emits
+  no marker at all. No `if agentId ==` anywhere. This is recorded as a **spec amendment** in the vault's
+  [Decisions tables](../notes/designs/lifecycle-convergence/03-implementation.md).
+
+**Stage 2 kept spawn/resume/restart/reopen synchronous** (they walked the phases inline) so the phase
+enum + funnel + epochs landed correctly first; the reconciler, the four phase-steppers, and non-blocking
+spawn shipped in PR4b (Stage 4) — built once against the settled Stage-2 model rather than twice. Every
+`Convergence`-kind verb is intent-only now: see [the Convergence model](02-architecture.md#the-convergence-model).
+
+### The Stage-2 wire break: `status` → `phase`
+
+Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.
+`status`/`waitReason` are removed from `Task`, and **`AgentStatus` is deleted from the wire entirely**:
+`SnapshotReport` now carries `run: RunState?` (the agent's observed `.running`/`.waiting(reason)`) instead
+of a `status`/`waitReason` pair, and clients render from a new **non-wire, non-Codable `PhaseDisplayKey`**
+derived from `phase` on demand (so the display vocabulary can evolve without touching the durable model).
+The **only** backward-compat kept is the **one-time on-disk migration** that reads a pre-Stage-2
+`tasks.json`: it lives inside `Task.init(from:)` (the card's own tolerant decoder, superseding the plan's
+separate `LegacyStoredBoard`), maps the legacy triple to `phase` fail-safe (nil/unknown status →
+`.dead(.rebootUnrevived)`, an idle card's absent wait reason → `.humanTurn`, preserving `deadReason`), and
+never drops a card except a genuinely id-less one — with the store's element-wise `FailableTask` load so a
+single corrupt record self-drops rather than stranding the whole board to `.bak`. The full mapping table and
+fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-time-statuswaitreason--phase-mapping).
+This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
+never nuke on-disk state.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's
@@ -30,7 +88,7 @@ interactive and real-time.
 
 ### State is pushed through a two-way hook channel
 
-Live card fields (`ctxPct`, `desc`, `status`, session id, title) are **pushed by the agent** via a
+Live card fields (`ctxPct`, `desc`, run-state, session id, title) are **pushed by the agent** via a
 managed Claude Code `--settings` file (statusLine + hooks → `orchestra _report`), not scraped from the
 pane. The channel is bounded (a stalled daemon can't freeze the agent's status bar) and seq-guarded (a
 stale `ctxPct` can't overwrite a fresh one); pane capture is a fallback only. The same channel is the
@@ -42,7 +100,9 @@ hook protocol".)
 Cleanup is decided by `origin`:
 
 - **`worktree`** — Orchestra created it; archive removes the dir (kept if dirty, and only when no other
-  live worktree card shares it).
+  live worktree card shares it — see [the WorktreeRegistry](#the-worktreeregistry-materialized-markers-on-demand-siblings-persisted-borrows)
+  below for the exact removal policy, including that a `dead`-but-not-yet-`archived` sibling still counts
+  as "shares it").
 - **`scratch`** — Orchestra created it; archive **unconditionally** `rm -rf`s it (double-gated by the
   `origin == .scratch` check *and* a runtime prefix check under the scratch root).
 - **`borrowed`** — *you* created it; archive never touches it.
@@ -120,6 +180,61 @@ same branch in two worktrees, so every N:1 case is two writers on one branch (a 
 use). Stacked branches want *distinct* trees (still 1:1). This retires the old refcount guard + shared-
 worktree badge machinery; the safe co-location patterns (read-only inspect, freeform cards) don't need
 worktree sharing. (`notes/designs/stacked-branches-and-guardian-handoff.md`.)
+
+### The WorktreeRegistry: materialized markers, on-demand siblings, persisted borrows
+
+The `WorktreeRegistry` actor (PR3b, `notes/designs/lifecycle-convergence/index.md`) is the sole owner of
+worktree + borrow lifecycle — the concrete `WorktreeManager` git-shell struct is `fileprivate` inside the
+same file, a compile-time guarantee that nothing else can call a git worktree op (see
+[Worktrees](04-cards-worktrees-sessions.md#worktrees) for the mechanics). Its decisions:
+
+- **The marker lives OUTSIDE the worktree.** A sentinel file in a registry-owned metadata dir
+  (`Config.worktreeMarkersDir`), one per canonical worktree path, is the sole adoption signal. An in-tree
+  marker would (a) show as untracked in `git status --porcelain` — every tree would read "dirty," breaking
+  the dirty-detection arms — and (b) mutate a dirty pre-upgrade tree the first time it was touched,
+  violating the "survives byte-intact" guarantee.
+- **`created` ≡ marker present.** The registry writes a marker only after a *complete* checkout (or an
+  explicit migration stamp), so "did the registry create/verify-adopt this tree" is exactly "does its
+  marker exist" — no separate stored bit, and `release`'s ownership guard reads the same signal `ensure`
+  writes.
+- **Serialization is the actor mailbox alone — no per-branch lock.** `ensure` performs no `await` between
+  the marker check and the checkout, so the mailbox alone makes two concurrent same-branch calls run
+  one-at-a-time and `git worktree add` fire once. This globally serializes worktree git ops — a
+  conservative superset of "per branch" — acceptable for a single-user tool.
+- **Owned roots = under `config.worktreesRoot`.** This single prefix covers ordinary card worktrees and
+  `orch-borrow-*` dirs alike. Both `release` and `sweepOrphanBorrows` gate every removal on
+  `isUnderOwnedRoots`, a stricter check than `PathResolver.assertAllowed` (which also admits
+  `reposRoot`) — so neither path can ever remove outside `worktreesRoot`, even though `manager.remove`'s
+  own `assertAllowed` call alone would permit it. Borrow paths are additionally borrow-derived by
+  construction (`borrowPath` always returns a `worktreesRoot`-rooted path), so the guard is normally a
+  no-op for them; it exists to keep the pledge true by construction, not by convention.
+- **Persisted borrows survive a daemon-only crash.** `[borrowerCardId: path]` is written as atomic JSON
+  beside the inbox (`Config.borrowsPath`); a fresh registry instance re-reads it on restart, so a live
+  borrower's dir can't be mistaken for a stray `orch-borrow-*` dir by the orphan sweep.
+- **Marker stamping is one-time, sentinel-gated.** Stamping on every boot (rather than once) would, under
+  a future non-blocking spawn, risk marking a half-created (mid-materialization) dir adoptable; the
+  persisted sentinel makes the migration run exactly once, at the first post-upgrade boot when every
+  persisted tree is at-rest and complete.
+- **Conservative mode is wired (PR4b).** `setConservativeMode(_:)` gates `release` to a hard no-op when
+  set, and `TeardownStepper` gates the scratch-origin `rm -rf` reclaim on the same flag. Boot's
+  `reconcilePhasesAtBoot()` sets it the moment a corrupt `tasks.json` forces `TaskStore` to side-line the
+  file and boot an empty board (`WorktreeRegistry.swift:407`; `OrchestraService+Reconcile.swift`) — ownership
+  can't be positively re-established against an empty board, so nothing is removed. Nothing in-process
+  clears it: conservative mode holds for that corrupt-boot daemon's entire run, and only a fresh daemon
+  start against a clean store comes up un-conservative.
+- **An in-flight holder set closes the concurrent-spawn rollback race.** Between `ensure` returning and
+  the card's persistence to the store, a second same-branch spawn can interleave at the service actor's
+  `await` and adopt the first spawn's tree while still unpersisted. A store-only sibling scan in `release`
+  would then see no sibling and let the first spawn's rollback remove the tree the second, not-yet-stored
+  card just adopted. The registry's in-memory `inflight: [path: Set<cardId>]` — populated by every
+  `ensure` call and drained by `release`'s `defer` — is the reference a store snapshot can't see. (A
+  `store.create` failure between `ensure` succeeding and persistence strands an in-flight entry until
+  restart — fail-safe, never data loss, and restart-healed since the set is in-memory only.)
+
+Fail-safe arms: a marker-less **clean** dir is pruned and re-created; a marker-less **dirty** dir is never
+auto-removed (`ensure` throws `worktreeNeedsManualCleanup`); `release` never removes a dirty tree without
+`force`, never removes a tree any non-archived sibling (or in-flight holder) still references, and treats
+a missing tree as an idempotent success rather than an error.
 
 ### One seed, four topologies
 
@@ -674,15 +789,17 @@ actions on a Done row were copy-the-chat-link / copy-the-branch. This change mak
 **Reopen** action recreates the run dir the archive reclaimed and brings the agent back live. Its
 decisions keep it small and provider-neutral:
 
-- **Recreate the run dir, then reuse the existing recovery primitives — no new revival path.**
-  `OrchestraService.reopen(_:source:)` first gives the card its cwd back per `origin` (the archive
-  removed it): `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
+- **Record the reopen intent, then let the reconciler recreate the run dir + revive — no new revival path.**
+  `OrchestraService.reopen(_:source:)` transitions the card `→ .creatingWorktree` through the funnel
+  (`archived=false`, `deadReason`/`deadDetail` cleared, **keeping its stored column**; the non-resumable
+  path additionally rolls prior session ids so the relaunch is blank) and returns. The reconciler's
+  steppers then give the card its cwd back per `origin` (the archive removed it):
+  `worktrees.ensure(repo:branch:)` for a `.worktree` card — trivially possible because
   [archive keeps the branch](#ownership-orchestra-deletes-only-what-it-made) — a `mkdir` for `.scratch`,
-  and nothing for `.borrowed` (never removed). It then unarchives the card (`archived=false`,
-  `status=.waiting`, `deadReason`/`deadDetail` cleared) **keeping its stored column**, and revives the
-  agent by delegating straight to the shipped [`resume`/`restart`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)
-  seam — `resume` when `isResumable` (the transcript survived), else a blank `restart`. So reopen adds
-  *zero* revival mechanism; it is a thin composition over the crash-recovery code the daemon already runs.
+  and nothing for `.borrowed` (never removed) — then relaunch, walking `creatingWorktree → launching → live`,
+  with `deriveLaunchFlavor` choosing a resume when `isResumable` (the transcript survived) else a blank
+  launch. So reopen adds *zero* revival mechanism; it is a thin composition over the phase steppers +
+  crash-recovery code the daemon already runs.
 - **Agent-agnostic and idempotent.** Because it rides `resume`/`restart` — which every adapter already
   implements — there is **no** Claude/Codex branch in `reopen`; a Codex card reopens through the same
   call. A non-archived card is returned unchanged, so a double-fire is a no-op.

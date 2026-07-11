@@ -23,6 +23,15 @@ public struct Config: Codable, Sendable, Equatable {
     public var statusLineMode: StatusLineMode
     public var customStatusLine: String?
 
+    /// Wall-clock bound (seconds) for a `git worktree add` checkout — generous because a cold
+    /// large-repo checkout can take several seconds (worst known ≈9s). Enforced via `Proc.run(timeout:)`.
+    public var worktreeAddTimeout: Int
+    /// Wall-clock bound (seconds) for launching an agent session. Consumed by the Stage-4 session layer.
+    public var sessionLaunchTimeout: Int
+    /// Wall-clock bound (seconds) for fast control ops — tmux control verbs + fast git queries
+    /// (`worktree list/remove/prune`, `rev-parse`, `status --porcelain`).
+    public var controlTimeout: Int
+
     public init(
         reposRoot: String = Config.defaultReposRoot,
         worktreesRoot: String = Config.defaultWorktreesRoot,
@@ -32,7 +41,10 @@ public struct Config: Codable, Sendable, Equatable {
         maxConcurrentRevivals: Int = 4,
         revivalGraceSeconds: Int = 15,
         statusLineMode: StatusLineMode = .passthroughGlobal,
-        customStatusLine: String? = nil
+        customStatusLine: String? = nil,
+        worktreeAddTimeout: Int = 600,
+        sessionLaunchTimeout: Int = 30,
+        controlTimeout: Int = 15
     ) {
         self.reposRoot = reposRoot
         self.worktreesRoot = worktreesRoot
@@ -43,6 +55,34 @@ public struct Config: Codable, Sendable, Equatable {
         self.revivalGraceSeconds = revivalGraceSeconds
         self.statusLineMode = statusLineMode
         self.customStatusLine = customStatusLine
+        self.worktreeAddTimeout = worktreeAddTimeout
+        self.sessionLaunchTimeout = sessionLaunchTimeout
+        self.controlTimeout = controlTimeout
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reposRoot, worktreesRoot, defaultModel, defaultAgentId, allowlist,
+             maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
+             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout
+    }
+
+    /// Custom decode so a pre-upgrade `config.json` lacking the new timeout keys still decodes,
+    /// falling back to the defaults (the three knobs are additive-optional). `encode(to:)` stays
+    /// synthesized. Existing keys keep their current required-decode semantics.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        reposRoot = try c.decode(String.self, forKey: .reposRoot)
+        worktreesRoot = try c.decode(String.self, forKey: .worktreesRoot)
+        defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
+        defaultAgentId = try c.decode(String.self, forKey: .defaultAgentId)
+        allowlist = try c.decode([String].self, forKey: .allowlist)
+        maxConcurrentRevivals = try c.decode(Int.self, forKey: .maxConcurrentRevivals)
+        revivalGraceSeconds = try c.decode(Int.self, forKey: .revivalGraceSeconds)
+        statusLineMode = try c.decode(StatusLineMode.self, forKey: .statusLineMode)
+        customStatusLine = try c.decodeIfPresent(String.self, forKey: .customStatusLine)
+        worktreeAddTimeout = try c.decodeIfPresent(Int.self, forKey: .worktreeAddTimeout) ?? 600
+        sessionLaunchTimeout = try c.decodeIfPresent(Int.self, forKey: .sessionLaunchTimeout) ?? 30
+        controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
     }
 
     // MARK: Defaults
@@ -91,6 +131,14 @@ public struct Config: Codable, Sendable, Equatable {
     public static var trustLedgerPath: String { "\(dataDir)/trust-ledger.json" }
     /// Durable per-card message inbox (F3), sibling to `tasksPath`.
     public static var inboxPath: String { "\(dataDir)/inbox.json" }
+    /// Persisted borrow registrations (`[borrowerCardId: path]`), sibling to `inboxPath`.
+    public static var borrowsPath: String { "\(dataDir)/borrows.json" }
+    /// Durable watch registry (`[watcherCardId: [childCardId]]`), sibling to `inboxPath`. Survives a
+    /// daemon restart so an MCP `wait` watcher is re-notified of a child that concluded while the daemon
+    /// was down (F2/F3 fan-out durability, PR4b carry #4).
+    public static var watchRegistryPath: String { "\(dataDir)/watch-registry.json" }
+    /// Registry-owned worktree "materialized" markers (one sentinel file per worktree path), sibling to `inboxPath`.
+    public static var worktreeMarkersDir: String { "\(dataDir)/worktree-markers" }
     /// Registered APNs device tokens (N1), sibling to `tasksPath`. The daemon persists each client's
     /// push token + notification-pref snapshot so it can deliver attention pushes while the phone is
     /// backgrounded.

@@ -64,18 +64,18 @@ public struct ClaudeCodeAdapter: Adapter {
                 transcriptPath: p["transcript_path"]?.stringValue,
                 sessionSource: p["source"]?.stringValue)
         case "prompt":
-            return StatusReport(status: .running, promptText: p["prompt"]?.stringValue)
+            return StatusReport(run: .running, promptText: p["prompt"]?.stringValue)
         case "pretool", "posttool":
             let tool = p["tool_name"]?.stringValue ?? "tool"
-            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), status: .running)
+            return StatusReport(desc: toolDesc(tool: tool, input: p["tool_input"]), run: .running)
         case "notification":
             // The Notification hook: permission_prompt is the only "you're blocking me" case; everything
             // else (idle_prompt, …) is a genuine human-turn wait.
             let reason: WaitReason = p["notification_type"]?.stringValue == "permission_prompt"
                 ? .permission : .humanTurn
-            return StatusReport(desc: p["message"]?.stringValue, status: .waiting, waitReason: reason)
+            return StatusReport(desc: p["message"]?.stringValue, run: .waiting(reason))
         case "taskcompleted":
-            return StatusReport(status: .waiting, waitReason: .humanTurn, turnCompleted: true)
+            return StatusReport(run: .waiting(.humanTurn), turnCompleted: true)
         case "stop":
             // A turn that yielded to await background work (a run_in_background shell, a background
             // subagent, a /loop or scheduled wake) will AUTO-RESUME — the human isn't needed. Leave the
@@ -84,7 +84,7 @@ public struct ClaudeCodeAdapter: Adapter {
             let hasBg = (p["background_tasks"]?.arrayValue?.isEmpty == false)
                 || (p["session_crons"]?.arrayValue?.isEmpty == false)
             if hasBg { return nil }
-            return StatusReport(status: .waiting, waitReason: .humanTurn)
+            return StatusReport(run: .waiting(.humanTurn))
         case "sessionend":
             let reason = p["reason"]?.stringValue ?? "other"
             // Transition reasons are ignored (the matching SessionStart handles them).

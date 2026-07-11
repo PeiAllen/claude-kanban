@@ -32,7 +32,7 @@ struct LadderTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         // A remote-base spawn auto-starts the watch loop; stop it so these tests can drive
         // `remoteMergeStep` DIRECTLY and deterministically (the background loop would otherwise race the
         // explicit call and consume a `moved` transition). The loop itself is covered by RemoteWatchLoopTests.
@@ -47,7 +47,7 @@ struct LadderTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let card = try await svc.spawn(SpawnInput(prompt: "x", repo: repo, branch: "childB",
+        let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childB",
                                                   base: "origin/feature-b"))
         let fake = FakeGh(available: true,
             state: PrState(state: "MERGED", mergedAt: "t", mergeCommit: nil, baseRefName: "main"))

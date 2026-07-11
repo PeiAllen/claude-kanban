@@ -39,9 +39,14 @@ final class EventStreamConsumerTests: XCTestCase {
             let resp: RPCResponse
             if req.method == "version" {
                 resp = RPCResponse(id: id, result: .object(["version": .string("fake")]))
+            } else if req.method == "subscribe" {
+                // The lifecycle-convergence `start()` makes the subscribe RPC a SUCCESS-GATED BARRIER: an
+                // error → `forceReconnect()` (not swallowed), which would tear the just-born consumer down
+                // and wedge the very live updates this test asserts. A real daemon acks it, so answer it OK.
+                resp = RPCResponse(id: id, result: .null)
             } else {
-                // Resolve all other calls (subscribe RPC, boardSnapshot, list, …) so no client
-                // continuation hangs; an error is fine — `refresh()` swallows it via `try?`.
+                // Resolve every OTHER call (boardSnapshot, list, …) so no client continuation hangs; an
+                // error is fine — `refresh()` swallows it via `try?` and leaves `tasks` untouched.
                 resp = RPCResponse(id: id, result: nil, error: RPCError(code: -32000, message: "fake"))
             }
             enqueue((try? RPCCodec.line(resp)) ?? Data())
@@ -66,8 +71,14 @@ final class EventStreamConsumerTests: XCTestCase {
         private func enqueue(_ d: Data) { lock.withLock { lines.append(d) }; sema.signal() }
 
         /// Push a server→client `event` notification (the wire shape `ControlServer.handleEvent` emits).
+        /// The lifecycle-convergence event wire is rev-tagged: `params` is an `EventEnvelope{rev,event}`
+        /// (consumed by `ControlClient.subscribeWithRev()` → BoardStore's per-card rev gate), not a bare
+        /// `Event`. A fresh card id applies regardless of rev, so a monotonic rev keeps it un-stale.
+        private var pushRev = 0
         func pushEvent(_ event: Event) {
-            let note = RPCNotification(method: "event", params: try? JSONValue(encodable: event))
+            pushRev += 1
+            let note = RPCNotification(method: "event",
+                                       params: try? JSONValue(encodable: EventEnvelope(rev: pushRev, event: event)))
             enqueue((try? RPCCodec.line(note)) ?? Data())
         }
     }

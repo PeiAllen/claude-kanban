@@ -14,13 +14,16 @@ public struct AdapterContext: Sendable {
     public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
+    public let since: Date?         // time-scope for post-launch session DISCOVERY (2.6): bind only a
+                                    // rollout newer than this (the card's `phaseChangedAt`), so a launching
+                                    // card never adopts a live sibling's or its own stale pre-reboot rollout.
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
-                trustCwd: Bool = false, seed: String? = nil) {
+                trustCwd: Bool = false, seed: String? = nil, since: Date? = nil) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
-        self.access = access; self.trustCwd = trustCwd; self.seed = seed
+        self.access = access; self.trustCwd = trustCwd; self.seed = seed; self.since = since
     }
 }
 
