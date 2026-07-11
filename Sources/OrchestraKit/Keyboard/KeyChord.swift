@@ -41,6 +41,8 @@ public enum KeyIntent: Equatable, Sendable {
     case closeOrClear               // Esc — peel the frontmost thing
     case enterTerminal              // i — focus the agent terminal to type
     case focusPane(Direction)       // Ctrl-hjkl — spatial pane focus
+    case historyBack                // Ctrl-O — previous visited card
+    case historyForward             // Ctrl-I — next visited card
     case carry(Direction)           // H/L — carry the selected card across columns
     case spawn                      // c — open the spawn sheet
     case newCard                    // Cmd-N — open the spawn sheet

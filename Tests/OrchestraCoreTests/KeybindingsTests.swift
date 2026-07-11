@@ -50,6 +50,22 @@ final class KeybindingsTests: XCTestCase {
         XCTAssertEqual(map(KeyChord("h", .control), .board), .focusPane(.left))
     }
 
+    func test_ctrl_o_i_traverse_history_on_board_and_terminal() {
+        for ctx in [KeyContext.board, .terminal] {
+            XCTAssertEqual(map(KeyChord("o", .control), ctx), .historyBack)
+            XCTAssertEqual(map(KeyChord("i", .control), ctx), .historyForward)
+        }
+    }
+
+    func test_ctrl_o_i_pass_through_fields_overlays_and_command_mode() {
+        for ctx in [KeyContext.field, .overlay] {
+            XCTAssertNil(map(KeyChord("o", .control), ctx))
+            XCTAssertNil(map(KeyChord("i", .control), ctx))
+        }
+        XCTAssertNil(base(KeyChord("o", .control), .board))
+        XCTAssertNil(base(KeyChord("i", .control), .terminal))
+    }
+
     func test_enter_and_esc() {
         XCTAssertEqual(map(KeyChord("\r"), .board), .openInspector)
         XCTAssertEqual(map(KeyChord("\u{1B}"), .board), .closeOrClear)

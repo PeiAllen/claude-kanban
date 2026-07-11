@@ -49,6 +49,16 @@ public struct VimKeybindings: Keybindings {
         // (e.g. ⌘D must not read as the bare `d` toggle-diff).
         if chord.mods.contains(.command) { return nil }
 
+        // Vim's jump-list chords traverse card visit history from either app-owned mode. Fields and
+        // overlays keep their native Ctrl-I/Ctrl-O behavior, and extra modifiers do not alias these.
+        if chord.mods == .control, ctx == .board || ctx == .terminal {
+            switch chord.key.lowercased() {
+            case "o": return .historyBack
+            case "i": return .historyForward
+            default: break
+            }
+        }
+
         // Ctrl-Shift-hjkl: resize the focused pane's edge (board / terminal only).
         if chord.mods.contains(.control), chord.mods.contains(.shift), let dir = Self.direction(chord.key) {
             return (ctx == .board || ctx == .terminal) ? .resize(dir) : nil
