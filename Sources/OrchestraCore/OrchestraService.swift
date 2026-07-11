@@ -614,7 +614,7 @@ public actor OrchestraService {
     /// dragged card reflects its CURRENT lane, not the launch-time `startIn`. `nil` if the card is gone.
     public func sessionBrief(_ cardId: UUID) async -> String? {
         guard let task = await store.get(cardId) else { return nil }
-        return SessionBrief.sentence(column: task.column, access: task.access, shortId: task.shortId)
+        return SessionBrief.sentence(column: task.column, access: task.access, shortId: task.shortId, origin: task.origin)
     }
 
     /// The core-owned hook-channel dispatch — the single place both directions of the hook channel meet,

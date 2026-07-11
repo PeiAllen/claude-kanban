@@ -9,9 +9,9 @@ struct SessionBriefTests {
 
     @Test("each column names its phase and the card id")
     func perColumn() {
-        let plan = SessionBrief.sentence(column: .plan, access: .readWrite, shortId: "abc123")
-        let impl = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123")
-        let review = SessionBrief.sentence(column: .review, access: .readWrite, shortId: "abc123")
+        let plan = SessionBrief.sentence(column: .plan, access: .readWrite, shortId: "abc123", origin: .worktree)
+        let impl = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123", origin: .worktree)
+        let review = SessionBrief.sentence(column: .review, access: .readWrite, shortId: "abc123", origin: .worktree)
         #expect(plan.contains("Plan") && plan.contains("abc123"))
         #expect(impl.contains("Implementation") && impl.contains("abc123"))
         #expect(review.contains("Review") && review.contains("abc123"))
@@ -21,10 +21,55 @@ struct SessionBriefTests {
 
     @Test("read-only adds the no-mutation clause; read/write does not")
     func readOnlyClause() {
-        let ro = SessionBrief.sentence(column: .impl, access: .readOnly, shortId: "d00d")
-        let rw = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "d00d")
+        let ro = SessionBrief.sentence(column: .impl, access: .readOnly, shortId: "d00d", origin: .worktree)
+        let rw = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "d00d", origin: .worktree)
         #expect(ro.lowercased().contains("read-only"))
         #expect(!rw.lowercased().contains("read-only"))
+    }
+
+    // MARK: freeform (non-worktree) cards — no lifecycle column, no self-move hint
+
+    @Test("freeform cards get no column framing and no move hint")
+    func freeformNoColumnFraming() {
+        // A freeform/scratch card carries a `column` value (ignored by the board, which files it into
+        // the freeform dock by ORIGIN) — orientation must NOT hand it the worktree lifecycle text.
+        for origin in [CardOrigin.borrowed, .scratch] {
+            let s = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123", origin: origin)
+            #expect(s.contains("abc123"))
+            #expect(!s.contains("move abc123 --col"))
+            #expect(!s.contains("--col"))
+            // No lifecycle lane naming — it has no column to be "in".
+            #expect(!s.contains("Plan column"))
+            #expect(!s.contains("Implementation column"))
+            #expect(!s.contains("Review column"))
+        }
+    }
+
+    @Test("freeform origin nouns: Scratch vs Freeform")
+    func freeformNouns() {
+        let scratch = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "s1", origin: .scratch)
+        let freeform = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "f1", origin: .borrowed)
+        #expect(scratch.contains("Scratch"))
+        #expect(freeform.contains("Freeform"))
+    }
+
+    @Test("read-only clause still applies to freeform cards")
+    func freeformReadOnlyClause() {
+        let ro = SessionBrief.sentence(column: .impl, access: .readOnly, shortId: "d00d", origin: .borrowed)
+        let rw = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "d00d", origin: .borrowed)
+        #expect(ro.lowercased().contains("read-only"))
+        #expect(!rw.lowercased().contains("read-only"))
+    }
+
+    @Test("borrowed (project) cards get the spawn-a-card delegation guidance; scratch does not")
+    func borrowedDelegationGuidance() {
+        let borrowed = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "b1", origin: .borrowed)
+        let scratch = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "s1", origin: .scratch)
+        // Freeform-on-a-project: don't fix on main / hand-roll a branch — spawn a worktree card.
+        #expect(borrowed.contains("spawn"))
+        #expect(borrowed.contains("main"))
+        // Scratch is a throwaway dir, not a project — no delegation clause.
+        #expect(!scratch.contains("spawn"))
     }
 
     // (SessionStart envelope encoding is covered by HookChannelTests — HookEnvelope.additionalContext.)

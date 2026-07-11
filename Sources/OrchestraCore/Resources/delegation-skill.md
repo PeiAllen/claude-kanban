@@ -11,7 +11,12 @@ different agent. This skill is about **when** to reach for that, and when NOT to
 
 ## Your column is your phase — start on it, and keep it honest
 
-Your card lives in one of three columns, which are the lifecycle stages of the work:
+**This applies only if you're a worktree card** (spawned with a `repo` + `branch`). A standalone
+**Freeform** or **Scratch** card runs on its own — it is NOT on the board, has no lifecycle column, and
+*cannot* `move` between columns (the daemon rejects it); your SessionStart orientation says so. Skip this
+whole section if that's you.
+
+A worktree card lives in one of three columns, which are the lifecycle stages of the work:
 
 - **Plan** — you're scoping / figuring out what to do.
 - **Implementation** — you're actively building.
