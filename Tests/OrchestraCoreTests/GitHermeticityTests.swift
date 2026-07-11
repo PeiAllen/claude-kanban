@@ -24,6 +24,32 @@ struct GitHermeticityTests {
         ProcessInfo.processInfo.environment["ORCHESTRA_TEST_GIT_HERMETIC"] == "0"
     }
 
+    /// The one UNGATED test — it runs even when the escape hatch is engaged.
+    ///
+    /// Every other test here is gated on `ORCHESTRA_TEST_GIT_HERMETIC=0`, which is right (opting out of
+    /// the bootstrap must opt out of its assertions) but leaves a hole: if that variable ever got
+    /// exported — a shell profile, a CI env block, an Orchestra card's environment — the suite would
+    /// lose hermeticity AND its only guard, skip all five tests, and still exit 0. A safety property
+    /// whose guard has a *silent* off-switch is not a safety property.
+    ///
+    /// So the opt-out stays available, but it can never be quiet: engaging it fails this test, by name.
+    @Test("git hermeticity is installed — and the opt-out can never be silent")
+    func installedOrLoudlyDisabled() {
+        if Self.hermeticityDisabled {
+            Issue.record("""
+                git hermeticity is DISABLED (ORCHESTRA_TEST_GIT_HERMETIC=0). This run forks git against \
+                the developer's real ~/.gitconfig — it may invoke a credential helper and its results \
+                are not reproducible. That is fine when you set the variable deliberately to debug a \
+                config-sensitive failure; this failure is the alarm, not a bug. Unset the variable to \
+                restore hermeticity.
+                """)
+            return
+        }
+        let env = ProcessInfo.processInfo.environment
+        #expect(env["GIT_CONFIG_NOSYSTEM"] == "1")
+        #expect(env["GIT_CONFIG_GLOBAL"] == "/dev/null")
+    }
+
     private func repo() throws -> String {
         let dir = NSTemporaryDirectory() + "orch-hermetic-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -37,8 +63,10 @@ struct GitHermeticityTests {
         #expect(env["GIT_CONFIG_NOSYSTEM"] == "1")
         #expect(env["GIT_CONFIG_GLOBAL"] == "/dev/null")
 
-        // The decisive check: git itself reports an EMPTY global config. If the developer's
-        // ~/.gitconfig were still in scope this would list their settings.
+        // git itself reports an EMPTY global config: if the developer's ~/.gitconfig (or the XDG
+        // config, which GIT_CONFIG_GLOBAL also displaces) were still in scope, this would list their
+        // settings. Note this check is vacuous on a machine that HAS no global config — a clean CI box
+        // passes it for free. The env assertions above are what carry the load there.
         let r = try Proc.run(["git", "config", "--global", "--list"], cwd: try repo())
         #expect(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                 "global git config leaked into the test bundle: \(r.stdout)")

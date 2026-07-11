@@ -34,8 +34,18 @@ credential helper — only clearing `credential.helper` does that.
 - There is **no shared repo-creating test helper**. Roughly 20 test files each define their own local
   `git(...)` closure. Any scheme requiring test authors to opt in would leak.
 - **A C target's `__attribute__((constructor))` runs at test-bundle load, before the first test**, in
-  *both* the XCTest and swift-testing runs. Verified empirically: it fires under `-c debug` and
-  `-c release`, with the target living outside `Sources/`, with no import and no call site in Swift.
+  *both* the XCTest and swift-testing runs — with the target living outside `Sources/`, with no import
+  and no call site in Swift. Verified empirically in this suite (debug) and in a standalone probe
+  package (debug + release; this package's `swift test -c release` does not build, for a pre-existing
+  reason unrelated to this change — a `#if DEBUG`-gated test hook).
+
+  It survives dead-stripping *structurally*, not by luck, which is the stronger guarantee: **SwiftPM
+  emits no static archive** for a target here — it links each binary from a flat object list
+  (`<product>.product/Objects.LinkFileList`), and `bootstrap.c.o` is named directly on the test
+  bundle's link line. An object named on the link line is loaded unconditionally; the classic
+  "archive member never pulled in because nothing references a symbol" failure *requires an archive*.
+  Independently, a constructor emits a pointer into `__DATA,__mod_init_func` (ELF: `.init_array`),
+  and ld64/LLD treat initializer sections as GC roots, so `-dead_strip` and LTO preserve it too.
 - Several tests (and `Tests/IntegrationTests/Fixtures/gen-slow-repo.sh`) commit using the developer's
   **global** git identity. Cutting global config without supplying an identity would break them.
 - **No test asserts a commit author.**
@@ -116,7 +126,11 @@ production fork path), asserts:
    `git log -1 --format=%ae` is `test@orchestra.invalid` — proving the hermetic identity is supplied
    and the suite no longer depends on the developer having one.
 
-The canary is skipped when `ORCHESTRA_TEST_GIT_HERMETIC=0`.
+Assertions 1–4 are skipped when `ORCHESTRA_TEST_GIT_HERMETIC=0` — but a fifth, **ungated** test always
+runs and *fails* when the escape hatch is engaged. Without it the off-switch would be silent: exporting
+the variable (a shell profile, a CI env block, a card's environment) would strip the suite of both its
+hermeticity and its only guard, skip every canary test, and still exit 0. The opt-out stays available;
+it just can never be quiet.
 
 This is the TDD entry point: it fails on `main` today. It is also the permanent guard on the design's
 single fragile assumption — if SwiftPM ever stops linking the constructor, the suite goes **red**
