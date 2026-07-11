@@ -26,13 +26,31 @@ public enum HooksRenderer {
         } else {
             template = codexFallbackTemplate
         }
-        let rendered = template
+        let substituted = template
             .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
             .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
+        // Codex's hooks schema accepts only `description`/`hooks` at the top level: a stray `_comment`
+        // (a JSON-comment convention we keep in the template for developers) makes Codex REJECT the whole
+        // file, so none of the hooks — including the Stop turn-end inbox drain — register. Strip it here,
+        // mirroring the Claude path's `SettingsComposer` (which drops `_comment` for the same reason).
+        let rendered = strippingComment(substituted)
         let dir = (dest as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try rendered.write(toFile: dest, atomically: true, encoding: .utf8)
         return dest
+    }
+
+    /// Remove the top-level `_comment` key from a rendered hooks JSON string. Defensive: if the string
+    /// doesn't parse as a JSON object, it's returned unchanged so a malformed template still installs its
+    /// hooks rather than collapsing to empty.
+    static func strippingComment(_ json: String) -> String {
+        guard var obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              obj["_comment"] != nil else { return json }
+        obj.removeValue(forKey: "_comment")
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .prettyPrinted]) else {
+            return json
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static let codexFallbackTemplate = """

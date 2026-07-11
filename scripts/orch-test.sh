@@ -152,11 +152,19 @@ PY
       || echo "codex-smoke: note — no ~/.codex/auth.json to copy; codex may prompt for login and stall" >&2
     marker="ORCH-SMOKE-$$-${RANDOM}"
     echo "codex-smoke: spawning a read-only codex card…"
-    ref=$(rpc spawn '{"prompt":"Reply with the single word READY and then stop.","agent":"codex","access":"readOnly","scratch":true}' \
+    # `id` is a required wire field (client-minted UUID, idempotency key for retried spawns); the raw RPC
+    # must supply it — only the CLI/MCP layer auto-stamps one. Mint it here so the response carries it back.
+    cid=$(python3 -c 'import uuid; print(str(uuid.uuid4()).upper())')
+    ref=$(rpc spawn "{\"id\":\"$cid\",\"prompt\":\"Reply with the single word READY and then stop.\",\"agent\":\"codex\",\"access\":\"readOnly\",\"scratch\":true}" \
           | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
     echo "codex-smoke: card $ref — waiting for it to go idle (.waiting)…"
     for _ in $(seq 1 60); do
-      st=$(rpc status "{\"ref\":\"$ref\"}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task",{}).get("status",""))' 2>/dev/null || true)
+      # Idle detection reads the `phase` tree (the retired flat `status`/`waitReason` pair): an idle card is
+      # `phase == {name:"live", detail:{name:"waiting", …}}` (RunState.waiting → PhaseDisplayKey.idle).
+      st=$(rpc status "{\"ref\":\"$ref\"}" 2>/dev/null | python3 -c 'import json,sys
+p=(json.load(sys.stdin).get("task",{}) or {}).get("phase",{}) or {}
+d=p.get("detail",{}); dn=d.get("name") if isinstance(d,dict) else d
+print("waiting" if p.get("name")=="live" and dn=="waiting" else (p.get("name","") or ""))' 2>/dev/null || true)
       [ "$st" = "waiting" ] && break
       sleep 2
     done
@@ -187,11 +195,18 @@ PY
     cp "$HOME/.claude/.credentials.json" "$HOME_DIR/.claude/.credentials.json" 2>/dev/null || true
     marker="ORCH-CLAUDE-$$-${RANDOM}"
     echo "claude-smoke: spawning a claude card…"
-    ref=$(rpc spawn '{"prompt":"Reply with the single word READY and then stop.","agent":"claude-code","scratch":true}' \
+    # `id` is a required wire field (client-minted UUID, idempotency key for retried spawns) — see codex-smoke.
+    cid=$(python3 -c 'import uuid; print(str(uuid.uuid4()).upper())')
+    ref=$(rpc spawn "{\"id\":\"$cid\",\"prompt\":\"Reply with the single word READY and then stop.\",\"agent\":\"claude-code\",\"scratch\":true}" \
           | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
     echo "claude-smoke: card $ref — waiting for it to go idle (.waiting)…"
     for _ in $(seq 1 60); do
-      st=$(rpc status "{\"ref\":\"$ref\"}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task",{}).get("status",""))' 2>/dev/null || true)
+      # Idle detection reads the `phase` tree (the retired flat `status`/`waitReason` pair): an idle card is
+      # `phase == {name:"live", detail:{name:"waiting", …}}` (RunState.waiting → PhaseDisplayKey.idle).
+      st=$(rpc status "{\"ref\":\"$ref\"}" 2>/dev/null | python3 -c 'import json,sys
+p=(json.load(sys.stdin).get("task",{}) or {}).get("phase",{}) or {}
+d=p.get("detail",{}); dn=d.get("name") if isinstance(d,dict) else d
+print("waiting" if p.get("name")=="live" and dn=="waiting" else (p.get("name","") or ""))' 2>/dev/null || true)
       [ "$st" = "waiting" ] && break
       sleep 2
     done

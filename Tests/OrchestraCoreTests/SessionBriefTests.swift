@@ -161,9 +161,67 @@ struct CodexHooksTests {
         let dest = tmp() + "/codex-hooks.json"
         _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: dest)
         let got = try String(contentsOfFile: dest, encoding: .utf8)
-        #expect(got.contains("/abs/orchestra _report --event session --agent codex"))
         #expect(!got.contains("__ORCHESTRA_BIN__"))
         #expect(!got.contains("__AGENT_ID__"))
         #expect(!got.contains(#""matcher""#))
+        // Assert on the parsed command value — the render emits canonical JSON, so a raw-substring match
+        // on the path is format-coupled (JSON escapes `/` as `\/`); decode it instead.
+        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let hooks = try #require(obj["hooks"] as? [String: Any])
+        let sessionStart = try #require(hooks["SessionStart"] as? [[String: Any]])
+        let inner = try #require(sessionStart.first?["hooks"] as? [[String: Any]])
+        #expect(inner.first?["command"] as? String == "/abs/orchestra _report --event session --agent codex")
+    }
+
+    // The idle-Codex-never-wakes bug: Codex's hooks schema accepts only `description`/`hooks` at the top
+    // level, so a stray `_comment` makes it REJECT the whole file (`_comment, expected 'description' or
+    // 'hooks'`) — the Stop hook never registers and no turn-end inbox drain fires. Claude is immune only
+    // because SettingsComposer strips `_comment`; the Codex render path must strip it too. Pin: the
+    // rendered file parses as JSON, carries NO `_comment`, and keeps BOTH SessionStart and Stop.
+    @Test("rendered Codex hooks parse cleanly (no _comment) and keep both SessionStart + Stop")
+    func renderCodexIsCodexValid() throws {
+        let dest = tmp() + "/codex-hooks.json"
+        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: dest)
+        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(obj["_comment"] == nil)   // Codex rejects any top-level key other than description/hooks
+        let hooks = try #require(obj["hooks"] as? [String: Any])
+        #expect(hooks["SessionStart"] != nil)
+        #expect(hooks["Stop"] != nil)      // the turn-end inbox drain — its absence is the wake bug
+        #expect(hooks["PermissionRequest"] != nil)   // the whole hook set must survive the strip
+    }
+
+    // Pin the strip helper's contract directly (independent of Bundle template resolution): it drops a
+    // top-level `_comment`, keeps `hooks`, and — the defensive branch — returns non-object/unparseable
+    // input UNCHANGED so a malformed template still installs its hooks rather than collapsing to empty.
+    @Test("strippingComment drops _comment, preserves hooks, and passes through non-JSON unchanged")
+    func strippingCommentContract() throws {
+        let stripped = HooksRenderer.strippingComment(#"{"_comment":"doc","hooks":{"Stop":[]}}"#)
+        let obj = try #require(try JSONSerialization.jsonObject(with: Data(stripped.utf8)) as? [String: Any])
+        #expect(obj["_comment"] == nil)
+        #expect(obj["hooks"] != nil)
+        // No `_comment` present → returned verbatim (no needless re-serialization).
+        #expect(HooksRenderer.strippingComment(#"{"hooks":{}}"#) == #"{"hooks":{}}"#)
+        // Not a JSON object → returned unchanged (fail-safe: never drop the hooks).
+        #expect(HooksRenderer.strippingComment("not json at all") == "not json at all")
+        #expect(HooksRenderer.strippingComment("[1,2,3]") == "[1,2,3]")
+    }
+
+    // End-to-end: what actually lands in $CODEX_HOME/hooks.json (render → install) must be Codex-valid.
+    @Test("installed Codex hooks.json (render→install) carries no _comment and both hooks")
+    func installedFileIsCodexValid() throws {
+        let home = tmp()
+        let renderedPath = home + "/codex-hooks.json"
+        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: renderedPath)
+        let dest = home + "/.codex/hooks.json"
+        #expect(CodexHooks.install(fromRendered: renderedPath, to: dest) == true)
+        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(obj["_comment"] == nil)
+        let hooks = try #require(obj["hooks"] as? [String: Any])
+        #expect(hooks["SessionStart"] != nil)
+        #expect(hooks["Stop"] != nil)
+        #expect(hooks["PermissionRequest"] != nil)
     }
 }
