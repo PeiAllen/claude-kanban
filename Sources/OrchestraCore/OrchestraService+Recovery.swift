@@ -20,23 +20,27 @@ extension OrchestraService {
         let aliveNames = Set((try? sessions.list())?.map(\.name) ?? [])
         let deadPaneNames = (try? sessions.agentPaneDeadSessions()) ?? []
 
+        // INVARIANT RESTORATION (closes the whole "armed pane leaked across a restart" class, not one case):
+        // `remain-on-exit` is a DURABLE tmux flag (survives the daemon), but `spawnPending` — the record
+        // that owns graduation — is EPHEMERAL (in-memory, lost on restart). While the daemon is up they are
+        // coupled (`remain-on-exit ON ⟺ spawnPending`); a restart is the ONE thing that breaks it. `spawnPending`
+        // is empty here, so we NORMALIZE every survivor's flag to match: no card may leave this loop alive
+        // with `remain-on-exit` ON while outside `spawnPending`. This kills BOTH the dead-pane leak and the
+        // alive-pane leak (and any future restart-timing variant) in one place.
         for t in tasks {
             let name = sessions.sessionName(t.id)
-            // A present session with a DEAD agent pane is an orphaned startup-armed pane (remain-on-exit
-            // left over from a daemon restart INSIDE a spawn grace — `spawnPending` is in-memory and gone).
-            // It would otherwise masquerade as "still running" forever. Converge it (capture stderr → dead)
-            // — same resolution the continuous reconcile uses, so boot + poll agree and the evidence survives.
+            // Dead armed pane → orphaned startup abort: converge (capture stderr → dead), same as the
+            // continuous reconcile, so boot + poll agree and the evidence survives. (kill clears the flag.)
             if deadPaneNames.contains(name) {
                 await resolveOrphanedDeadPane(t)
                 continue
             }
             if aliveNames.contains(name) {
-                // Genuinely alive across the restart. CRITICAL: if this card was mid-startup-grace when the
-                // daemon restarted, its `agent` window still has remain-on-exit ON but the in-memory
-                // `spawnPending` (grace + graduation) is gone — so it would never graduate, and a later
-                // NORMAL mid-run exit would leave a dead pane that the orphan branch MISreads as a startup
-                // abort. Clear remain-on-exit now to restore the invariant "a non-pending card never has it
-                // ON": the survivor is monitored normally and a later exit vanishes → `.sessionVanished`.
+                // Alive survivor → GRADUATE it: surviving a restart is strong evidence it passed startup.
+                // Clear the leaked `remain-on-exit` so it's monitored normally and a later exit vanishes →
+                // `.sessionVanished` (NOT misread as a startup abort). This can only fail if the session just
+                // died — in which case there is no armed pane to leak and the next reconcile marks it vanished,
+                // so the invariant holds either way.
                 try? sessions.setRemainOnExit(name, window: "agent", on: false)
                 continue   // daemon-crash no-op / still-running
             }
