@@ -43,10 +43,13 @@ import Foundation
         #expect(failed.validActions.isSuperset(of: [.restart, .archive, .resume, .shell]))
         #expect(!failed.validActions.contains(.openNotes))
 
-        // Disconnected: EVERY daemon verb drops out; only the local extra remains; label stays honest.
+        // Disconnected: EVERY action drops out — including `.openNotes`, which is a daemon RPC
+        // (`BoardStore.openNotes` → `client.call`), not a local file op. The contract is "validActions
+        // empty when the link is down"; the label stays honest (staleness is a separate signal).
         let offline = displayState(phase: .live(.running), connection: .retrying)
         #expect(offline.isStale == true)
-        #expect(offline.validActions == [.openNotes])   // no catalog/daemon verb dispatchable offline
+        #expect(offline.validActions.isEmpty)           // no verb — daemon OR openNotes — dispatchable offline
+        #expect(!offline.validActions.contains(.openNotes))
         #expect(!offline.validActions.contains(.shell))
         #expect(offline.statusKey == .running)          // staleness is a separate signal from the phase label
     }

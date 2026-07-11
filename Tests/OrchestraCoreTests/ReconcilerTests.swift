@@ -201,6 +201,29 @@ struct ReconcilerTests {
         #expect(env.sessions.killed.contains(env.sessions.sessionName(o.id)))   // old session was killed
     }
 
+    @Test("adopt clears pendingSeed (mirrors the stepper's companion cleanup) so it can't be replayed")
+    func adoptClearsPendingSeed() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+
+        // Seed a `.launching` card at the MATCHING epoch (→ adopt), carrying a leftover `pendingSeed` the
+        // stepper would normally clear on its own `→ live` transition — but a crash BEFORE the stepper ran
+        // (session consumed the seed + came up, then daemon died) leaves it set. Adopt must clear it too.
+        let c = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
+        await env.svc.seedPhase(c.id, .launching, sessionEpoch: 1)
+        env.sessions.setStampedEpoch(c.id, 1)
+        _ = try await env.svc.store.update(c.id) { $0.pendingSeed = "replay-me" }
+
+        try await Self.reconcileUntil(env.svc) {
+            (await env.svc.list().first { $0.id == c.id }?.phase.kind) == .live
+        }
+
+        // Adopted to `.live` AND the stale seed is gone — a later `resume(seed: nil)` can't replay it.
+        let now = try #require(await env.svc.store.get(c.id))
+        #expect(now.phase.kind == .live)
+        #expect(now.pendingSeed == nil)
+    }
+
     /// BLOCKER regression: the adoption shortcut probes the session epoch OFF-actor (suspending the
     /// service), then adopts to `.live`. If a concurrent restart/resume bumps the card to a NEWER
     /// `.relaunching` epoch during that suspension, the STALE adoption must NOT force-live the card on the

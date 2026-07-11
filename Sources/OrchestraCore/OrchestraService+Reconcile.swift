@@ -95,7 +95,19 @@ extension OrchestraService {
                     let probedEpoch = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                     if let probed = probedEpoch ?? nil, probed == t.sessionEpoch {
                         launchReadyTicks[t.id] = nil
-                        _ = await transition(t.id, to: .live(.waiting(.humanTurn)), observedEpoch: probed)
+                        // Land in the flavor the LaunchStepper WOULD have used (mirror its rule) rather than a
+                        // hardcoded `.humanTurn`: a prompted first launch lands `.running`, a provisional/resumed
+                        // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
+                        // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
+                        // the adapter is momentarily unavailable (never worse than the old hardcode).
+                        let land = (try? registry.get(t.agentId)).map { landing(of: deriveLaunchFlavor(t, $0)) }
+                            ?? .waiting(.humanTurn)
+                        // Mirror the Launch/RelaunchStepper's COMPANION cleanup, not just its landing: both
+                        // clear `pendingSeed` on the successful `→ live` transition. Adopt jumps straight to
+                        // live WITHOUT the stepper, so a crash between "session consumed the seed + came up"
+                        // and the stepper's transition would otherwise leave `pendingSeed` set — and a later
+                        // `resume(seed: nil)` preserves it, so `deriveLaunchFlavor` would REPLAY the seed.
+                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) { $0.pendingSeed = nil }
                         continue
                     }
                 }

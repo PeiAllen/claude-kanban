@@ -66,6 +66,8 @@ struct AgentTerminalView: NSViewRepresentable {
         context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
         context.coordinator.reattach = { [weak term] in if let term { self.attach(term) } }
         attach(term)
+        context.coordinator.paneAlive = true                               // a process is now (attempting to be) up
+        context.coordinator.wasLive = attachWhileLiveGate?() ?? false      // seed the edge detector (usually false at birth)
         // The view has no window yet at make time, so we can't grab focus now. Flag it and let the view
         // claim first responder the instant it's actually mounted (see ScrollableTerminalView).
         if autofocus { term.claimFocusOnMount = true }
@@ -84,13 +86,29 @@ struct AgentTerminalView: NSViewRepresentable {
         (nsView as? ScrollableTerminalView)?.termWindow = window
         (nsView as? ScrollableTerminalView)?.onBecameFirstResponder = onFocused
         (nsView as? ScrollableTerminalView)?.terminalImagePaste = terminalImagePaste
+        let isLive = context.coordinator.attachWhileLive()
         if context.coordinator.attached != target {
             context.coordinator.attached = target
             context.coordinator.resetForNewTarget()   // a genuinely new terminal ⇒ fresh reconnect budget
+            context.coordinator.paneAlive = true
             attach(nsView)
             // By updateNSView the view is already in a window, so focus it directly.
             if autofocus { (nsView as? ScrollableTerminalView)?.claimFocusNow() }
+        } else if TerminalReattachDecision.shouldReattachOnLiveEdge(
+                    paneAlive: context.coordinator.paneAlive,
+                    wasLive: context.coordinator.wasLive, isLive: isLive) {
+            // F1: non-blocking spawn (PR4b) returns a `.creatingWorktree` card before the tmux `agent`
+            // session exists, so the birth-time attach died (session absent) and `processTerminated` never
+            // scheduled a reconnect (the live gate was false at death). The card has now reached a
+            // renderable-live state → re-attach the blank pane ONCE and re-arm the reconnect budget (reused
+            // from `resetForNewTarget`) so a later independent drop still gets the full backoff. Idempotent:
+            // a live pane (`paneAlive == true`) never takes this branch, so a healthy pane is left untouched.
+            context.coordinator.resetForNewTarget()
+            context.coordinator.paneAlive = true
+            attach(nsView)
         }
+        // Record the gate value so the NEXT update can detect the false→true edge (and not re-fire on it).
+        context.coordinator.wasLive = isLive
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -200,6 +218,12 @@ struct AgentTerminalView: NSViewRepresentable {
         var attachWhileLive: () -> Bool = { false }
         /// Re-attach closure the representable installs (calls `attach(term)` on the tracked view).
         var reattach: () -> Void = {}
+        /// Is the attached terminal process currently up? Set true at each attach, false in
+        /// `processTerminated`. Read by the F1 reattach-on-live gate so a HEALTHY pane is never re-attached.
+        var paneAlive = false
+        /// The live gate's value on the PREVIOUS `updateNSView`, so the next update can detect the false→true
+        /// `→ live` edge (F1) — and act on the edge only, never re-firing every subsequent update.
+        var wasLive = false
 
         func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
@@ -209,6 +233,7 @@ struct AgentTerminalView: NSViewRepresentable {
             // The pane died: if a stabilize window was pending, this reattach did NOT survive it → keep the
             // (already-incremented) budget so the flap stays bounded. Never reset here.
             stabilizeWork?.cancel(); stabilizeWork = nil
+            paneAlive = false   // F1: a dead pane is a candidate for the reattach-on-live edge
             guard !reconnectPending, attachWhileLive() else { return }
             guard let delaySecs = reconnectPolicy.delay(forAttempt: reconnects + 1) else { return }  // budget spent → stop
             reconnectPending = true
@@ -220,6 +245,7 @@ struct AgentTerminalView: NSViewRepresentable {
                 }
                 self.reconnectPending = false
                 self.reattach()
+                self.paneAlive = true       // a fresh process is up again (the stabilize window judges if it sticks)
                 self.scheduleStabilize()   // if THIS reattach survives the window, restore the full budget
             }
         }

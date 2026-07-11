@@ -320,7 +320,7 @@ public actor OrchestraService {
     /// appended to its rollout file since last tick and merge each through the adapter's own `parse`
     /// (agent-dependent, D3) via `report` (seq-gated). Push agents (Claude `hooksPush`) are skipped —
     /// their telemetry arrives out-of-band via the `_report` endpoint, so this stays Claude-inert.
-    /// Driven by the daemon's 2s poll loop, alongside `reconcileLiveness`.
+    /// Driven by the daemon's 2s poll loop, alongside the `reconcile()` tick (which folds liveness).
     public func pollTelemetry() async {
         let tasks = await store.all()
         for t in tasks where !t.archived && t.phase.kind != .dead {

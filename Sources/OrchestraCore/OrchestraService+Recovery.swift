@@ -156,7 +156,11 @@ extension OrchestraService {
         }
     }
 
-    /// Background poll's continuous liveness reconcile (safety net when no SessionEnd fires). Phase-gated:
+    /// The continuous liveness reconcile (safety net when no SessionEnd fires). **Test-only in production:**
+    /// the daemon's 2s poll drives `reconcile()`, which FOLDS this liveness pass in (see `+Reconcile`'s
+    /// `.live` case); `reconcileLiveness` has no production caller and is retained only so focused unit tests
+    /// can exercise the liveness step in isolation. Do not re-wire it into the poll loop (double-ticking).
+    /// Phase-gated:
     /// the being-born phases (`.creatingWorktree`, `.relaunching`, `.launching`) are NEVER killed here — their
     /// session is legitimately absent mid-bring-up and each is owned by a SYNCHRONOUS launch/relaunch that
     /// handles its own readiness + spawnFailed timeout; killing them would race the owner's own

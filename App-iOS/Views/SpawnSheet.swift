@@ -496,8 +496,10 @@ struct SpawnSheet: View {
             }
             // Auto-own on phone-spawn (Bug 3): the phone that spawned the card is its intended driver, so
             // acquire the D4 takeover lease and drop straight into the live agent surface — no separate
-            // "Take Over" tap. The daemon creates the `agent` tmux window synchronously inside `spawn`
-            // (SessionManager.ensure) before returning the card, so the lease target already resolves.
+            // "Take Over" tap. Non-blocking spawn (PR4b) returns the card at `.creatingWorktree` BEFORE any
+            // tmux `agent` window exists (the reconciler's LaunchStepper brings it up ~2s+ later), so the
+            // takeover can't lease a window yet — `TakeoverController` bounded-retries the acquire while the
+            // card is being born and re-arms on the `→ live` edge (F1), so this fires the request eagerly.
             // S3-2: dismiss only on SUCCESS — a typo'd base/remote used to cost the whole form because we
             // dismissed before the RPC returned; now the sheet stays (toast shows the error) so the user
             // can fix + retry. A failed spawn (`nil`) leaves the sheet up and routes nowhere.

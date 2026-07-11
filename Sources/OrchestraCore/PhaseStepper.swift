@@ -83,8 +83,10 @@ private func transcriptExists(_ card: Task, _ adapter: any Adapter) -> Bool {
     return FileManager.default.fileExists(atPath: tp)
 }
 
-/// The `.blank` landing (or `.waiting` for a resume). Extracted so Launch/Relaunch share the read.
-private func landing(of flavor: LaunchFlavor) -> RunState {
+/// The `.blank` landing (or `.waiting` for a resume). Extracted so Launch/Relaunch share the read — and
+/// the reconciler's epoch-identity adopt (`+Reconcile`), which jumps `.launching→.live` WITHOUT the
+/// LaunchStepper, so it must derive the same landing itself.
+func landing(of flavor: LaunchFlavor) -> RunState {
     if case .blank(let l, _) = flavor { return l }
     return .waiting(.humanTurn)
 }
