@@ -196,17 +196,30 @@ extension OrchestraService {
         // restart race that would otherwise orphan the live loop (uncancellable, wrong `remoteWatchActive`).
         let gen = (remoteWatchGen[cardId] ?? 0) + 1
         remoteWatchGen[cardId] = gen
+        // `self` is re-acquired PER HOP, never hoisted above the loop — see the note on
+        // `startMergeRequestNudge`. A hoisted `guard let self` pinned the service for the loop's whole
+        // life, so `[weak self]` bought nothing. The generation token above is unchanged.
         remoteWatch[cardId] = _Concurrency.Task { [weak self] in
-            guard let self else { return }
             while !_Concurrency.Task.isCancelled {
-                if await self.shouldStopRemoteWatch(cardId) { break }
-                let outcome = await self.remoteMergeStep(cardId: cardId)
-                let (active, idle) = await self.remoteWatchIntervals
-                let delay = (outcome == .fetched) ? active : idle    // movement ⇒ poll faster; steady ⇒ idle
+                guard let stop = await self?.shouldStopRemoteWatch(cardId) else { return }
+                if stop { break }
+                guard let outcome = await self?.remoteMergeStep(cardId: cardId) else { return }
+                guard let delay = await self?.remoteWatchDelay(after: outcome) else { return }
                 try? await _Concurrency.Task.sleep(for: delay)
             }
-            await self.clearRemoteWatch(cardId, gen: gen)
+            await self?.clearRemoteWatch(cardId, gen: gen)
         }
+    }
+
+    /// The next poll delay: `active` right after the tip moved (poll faster while the parent churns),
+    /// `idle` otherwise. This is also the loop's "about to sleep" point — the one moment it holds no
+    /// strong reference to the service — so the leak test latches on it (see `remoteWatchSleepProbe`).
+    func remoteWatchDelay(after outcome: RemoteMergeOutcome) -> Duration {
+        let (active, idle) = remoteWatchIntervals
+        #if DEBUG
+        remoteWatchSleepProbe?()
+        #endif
+        return (outcome == .fetched) ? active : idle   // movement ⇒ poll faster; steady ⇒ idle
     }
 
     private func shouldStopRemoteWatch(_ id: UUID) async -> Bool {

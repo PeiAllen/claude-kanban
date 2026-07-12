@@ -13,12 +13,19 @@ public struct ProcResult: Sendable {
 /// `exec`, where the command is the intended payload.
 public enum Proc {
     /// Run `argv` (argv[0] resolved on PATH via /usr/bin/env), capturing stdout/stderr.
+    ///
+    /// `timeout` defaults to a generous ceiling rather than to nothing. The wait below is a blocking
+    /// `exited.wait()` on the CALLING thread: with no timeout a wedged fork parks that thread forever,
+    /// and if the caller is an actor that thread is a Swift cooperative-pool thread — a resource of
+    /// which there are ~one per core, which never grows. Callers reached for the unbounded default
+    /// without meaning to. Ops that legitimately run long pass their own (e.g.
+    /// `Config.worktreeAddTimeout` = 600s); pass `nil` explicitly for one that must be truly unbounded.
     @discardableResult
     public static func run(
         _ argv: [String],
         cwd: String? = nil,
         env extraEnv: [String: String] = [:],
-        timeout: Duration? = nil
+        timeout: Duration? = .seconds(120)
     ) throws -> ProcResult {
         guard let first = argv.first else { throw OrchestraError.invalidParams("empty argv") }
 
@@ -119,9 +126,14 @@ public enum Proc {
     /// Run `argv`, streaming stdout straight to `outputURL` (binary-safe — no String round-trip, so
     /// non-UTF-8 blobs like images survive). stderr is discarded. Returns the exit code, or throws if
     /// the process can't be launched. Used to materialize a file's content at a git ref via
-    /// `git show <ref>:<path>` for Zed's diff view.
+    /// `git show <ref>:<path>` for Zed's diff view (`Launcher.branchDiffDirs`, once per changed file).
+    ///
+    /// Bounded like `run`: this used to `waitUntilExit()` with no timeout at all, so a single wedged
+    /// `git show` parked the calling thread forever — and this is reachable from the `OrchestraService`
+    /// actor, i.e. from a cooperative-pool thread.
     @discardableResult
-    public static func runStdoutToFile(_ argv: [String], cwd: String? = nil, outputURL: URL) throws -> Int32 {
+    public static func runStdoutToFile(_ argv: [String], cwd: String? = nil, outputURL: URL,
+                                       timeout: Duration? = .seconds(120)) throws -> Int32 {
         guard !argv.isEmpty else { throw OrchestraError.invalidParams("empty argv") }
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         guard let handle = try? FileHandle(forWritingTo: outputURL) else {
@@ -138,8 +150,23 @@ public enum Proc {
         p.environment = env
         p.standardOutput = handle
         p.standardError = FileHandle.nullDevice
+        // Exit is detected via `terminationHandler` and waited on the CALLING thread — never a
+        // `waitUntilExit()` with no bound, and never an extra worker thread (see the note on `run`).
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
         do { try p.run() } catch { throw OrchestraError.toolMissing(argv[0]) }
-        p.waitUntilExit()
+
+        if let timeout {
+            if exited.wait(timeout: .now() + .milliseconds(timeout.milliseconds)) == .timedOut {
+                p.terminate()
+                if exited.wait(timeout: .now() + .seconds(2)) == .timedOut {
+                    kill(p.processIdentifier, SIGKILL)
+                    exited.wait()
+                }
+            }
+        } else {
+            exited.wait()
+        }
         return p.terminationStatus
     }
 

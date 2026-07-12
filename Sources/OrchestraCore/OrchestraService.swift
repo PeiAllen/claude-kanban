@@ -268,6 +268,13 @@ public actor OrchestraService {
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
     func _setDiffProviderForTest(_ provider: any DiffProvider) { diffProvider = provider }
     func _setTreeProbeForTest(_ probe: (@Sendable () -> Void)?) { treeProbeHolder.set(probe) }
+    /// Fired by the remote-watch loop immediately before it sleeps (see `remoteWatchDelay`). The loop
+    /// is `shouldStop → remoteMergeStep → sleep`, so it spends its first moments inside a real
+    /// `git fetch`/`ls-remote` holding a strong `self` — a leak test that dropped its last reference
+    /// during that window would race the fork and flake. This lets it wait until the loop is genuinely
+    /// parked, holding nothing. nil in production.
+    var remoteWatchSleepProbe: (@Sendable () -> Void)?
+    func _setRemoteWatchSleepProbeForTest(_ probe: (@Sendable () -> Void)?) { remoteWatchSleepProbe = probe }
     #endif
 
     // MARK: - trust
