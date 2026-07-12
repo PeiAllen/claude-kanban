@@ -19,7 +19,7 @@ struct ConvergeContextTests {
         _ = try await env.svc.store.update(card.id) { $0.phase = .creatingWorktree }
         let ctx = await env.svc.convergeContext()
         // The mutate form lands the phase AND the companion field-write in ONE store patch.
-        _ = await ctx.transition(card.id, .launching, nil) { $0.parentBranch = "main"; $0.spawnBase = nil }
+        _ = await ctx.transition(card.id, .launching, nil, .creatingWorktree) { $0.parentBranch = "main"; $0.spawnBase = nil }
         let after = try #require(await env.svc.store.get(card.id))
         #expect(after.phase.kind == .launching)         // both assertions on a single read ⇒ atomic
         #expect(after.parentBranch == "main")
