@@ -4,16 +4,54 @@ Orchestra is a **single coordinator with thin clients**. One background daemon o
 the CLI, and the MCP bridge are interchangeable front-ends that talk to it over a local socket. This
 chapter walks the pieces and traces a command end to end.
 
+```mermaid
+flowchart TB
+  subgraph clients["Three clients — each a ControlClient"]
+    APP["Orchestra.app<br/>source: app"]
+    CLI["orchestra CLI<br/>source: cli"]
+    MCP["orchestra-mcp<br/>source: mcp"]
+  end
+
+  UDS["unix-domain socket · $ORCHESTRA_SOCK<br/>newline-delimited JSON-RPC 2.0"]
+
+  APP --> UDS
+  CLI --> UDS
+  MCP --> UDS
+  UDS --> CS
+  CS -->|"event stream (subscribe)"| clients
+
+  subgraph daemon["orchestrad — owns all state"]
+    CS["ControlServer"] --> REG["CommandRegistry"]
+    REG --> SVC["OrchestraService (actor)<br/>transition() funnel · reconcile() every 2s"]
+    SVC --> TS["TaskStore"]
+    SVC --> WR["WorktreeRegistry"]
+    SVC --> SM["SessionManager"]
+    SVC --> AR["AgentRegistry"]
+    AR --> CCA["ClaudeCodeAdapter"]
+    AR --> CXA["CodexAdapter"]
+  end
+
+  TS --> JSONF[("tasks.json")]
+  WR --> GIT[("git worktrees")]
+  SM --> TMUX[("tmux · orchestra-uuid")]
+
+  TMUX --- CLAUDE["Claude Code agent"]
+  TMUX --- CODEX["Codex agent"]
+
+  CLAUDE ==>|"PUSH — statusLine + hooks<br/>orchestra _report → hook RPC"| UDS
+  CODEX -->|"writes"| ROLL[("Codex rollout .jsonl")]
+  SVC -.->|"TAIL — pollTelemetry + RolloutTailer"| ROLL
 ```
-app  ─ ControlClient ─┐
-CLI  ─ ControlClient ─┼─ UDS / JSON-RPC ─→ ControlServer → CommandRegistry → OrchestraService
-MCP  ─ ControlClient ─┘                    (orchestrad daemon)                ├─ TaskStore        (tasks.json)
-                                                                              ├─ WorktreeManager  (git)
-                                                                              ├─ SessionManager   (tmux)
-                                                                              └─ AgentRegistry    (adapters)
-                                              ▲
-            Claude Code agent ── orchestra _report ──┘   (statusLine + hooks push live card state)
-```
+
+Two details in that picture are load-bearing. First, the three clients are *interchangeable* because
+they are the same `ControlClient` against the same `CommandRegistry` — the CLI's verbs and the MCP
+tool list are generated from one vocabulary, so they cannot drift apart. Second, the two agents
+report back by **different mechanisms**, captured by `AgentCapabilities.telemetry`: Claude Code is
+`hooksPush` (thick arrow — its statusLine and hooks shell out to `orchestra _report`, which sends one
+typed `hook` RPC back over the same socket), while Codex is `fileTail` (dotted arrow — it pushes
+nothing, and the daemon's 2-second `pollTelemetry` tick tails its rollout JSONL via `RolloutTailer`).
+Both normalize into the same card telemetry, so no code downstream of the adapter branches on which
+agent is running. Terminal bytes never cross this plane — SwiftTerm attaches to tmux directly.
 
 ## The daemon (`orchestrad`)
 
@@ -229,8 +267,45 @@ subscription**, so a transient blip doesn't sever the event stream. It exposes a
 This seam is also what lets a client target a daemon that isn't on this Mac. The app can run its board
 against a **remote Linux `orchestrad`** over an app-managed SSH tunnel: the wire protocol is unchanged
 (the daemon grows *no* network listener), reachability is pure SSH forwarding, and the forwarded local
-socket is just another path the `UDSTransport` opens. See
-[Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the app chapter and the
+socket is just another path the `UDSTransport` opens.
+
+```mermaid
+flowchart LR
+  subgraph mac["Mac — renders only"]
+    APP["Orchestra.app"]
+    CC["ControlClient<br/>UDSTransport"]
+    TERM["SwiftTerm terminals"]
+    SSHM["SSHMaster<br/>ssh -M -N -S ctl -L local.sock:remote.sock"]
+    APP --> CC
+    APP --> TERM
+    CC --> SSHM
+    TERM --> SSHM
+  end
+
+  SSHM ==>|"one multiplexed SSH connection — auth once,<br/>JSON-RPC and terminals both ride it"| box
+
+  subgraph box["Linux box — where the work actually happens"]
+    RSOCK[("~/.local/share/orchestra/orchestrad.sock")]
+    DAEMON["orchestrad<br/>systemd user unit · Restart=always"]
+    SVC2["OrchestraService"]
+    WT2[("git worktrees")]
+    TX2[("tmux sessions")]
+    AG2["Claude / Codex agents"]
+    RSOCK --> DAEMON --> SVC2
+    SVC2 --> WT2
+    SVC2 --> TX2
+    TX2 --- AG2
+  end
+```
+
+The work box does the work — worktrees, tmux, agents all live there — and the Mac is just a renderer.
+The app owns a single multiplexed master `ssh` (`SSHMaster` / `RemoteCommands.sshMasterArgs`) that
+forwards the remote daemon's unix socket to a local path, and the terminals ride that *same*
+connection (`ssh -tt … tmux attach`), so no PTY bytes cross the JSON-RPC plane and you authenticate
+once. Because reachability is pure forwarding, the daemon's attack surface stays what it always was:
+a `0600` unix socket. See [Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the
+app chapter, [deploying to a Linux box](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+for the static-musl cross-build, and the
 [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md).
 
 Two more resilience details round out the transport seam:

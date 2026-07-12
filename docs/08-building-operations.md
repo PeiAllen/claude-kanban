@@ -87,6 +87,9 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | `scripts/keydrive.swift` | Helper for the above — `windowid <pid>` prints a pid's CoreGraphics window id (to `screencapture -l`); `keys <pid> …` posts a sequence of chords (`j`, `S-l`, `g r`, `S-';'`, `esc`, …) to that pid without activating it. |
 | `scripts/orch-ux-e2e.sh` | Full **app + daemon** UX e2e on a disposable, isolated instance — combines the two half-harnesses above (the demo app is launched against a *real* isolated daemon, so board actions and workflows drive through the actual UI). Isolates via `$HOME` alone; spawns `orchestrad` directly (never `launchctl` — the fixed `com.orchestra.daemon` label would collide with live) + an isolated `ORCHESTRA_TMUX_SOCKET`. **Concurrency-safe** so many PR cards can run it at once overnight (see below): flags `--run-id ID` (namespace all per-run state; also `RUN_ID` env, default this PID), `--build-only` (prebuild the shared bundle then exit), `--rebuild` (force), `--no-build` (reuse). |
 | `scripts/orch-ux-e2e-concurrency-test.sh` | Proof harness: launches N (default 3) `orch-ux-e2e.sh` runs concurrently and asserts they stay isolated (distinct `$HOME`/socket/tmux/screenshot), all complete (none reaped by a sibling's teardown), and the live daemon is untouched. |
+| `scripts/docs-shots.sh` | Regenerate **every image in `docs/images/`** — the README hero GIF (an orchestrator agent fanning work out over MCP), the keyboard-nav GIF, the board/inspector/diff/spawn stills, and the iPhone shot — from a real isolated stack running **real agents** on throwaway repos (`scripts/fixtures/demo-board.json`). Isolated by the same `$HOME`-is-the-lever contract as `iso-stack.sh`, with the demo orchestrator's `orchestra` MCP server pinned by `ORCHESTRA_SOCK` to the *isolated* daemon, so its `spawn` calls physically cannot reach your live board. Captures by window id; never foregrounds your screen. **These agents run for real and they bill.** Run it after a UI change: `scripts/docs-shots.sh` (add `--keep` to leave the stack up, then `scripts/docs-shots.sh down`). |
+| `scripts/gifify.swift` | Assemble PNG frames into an animated GIF with macOS **ImageIO** (`CGImageDestination`) — so the doc images need no `ffmpeg`/ImageMagick/`gifski`. Used by `docs-shots.sh`. |
+| `scripts/agent-auth.sh` | `status` — can an agent in an **isolated `$HOME`** actually authenticate? Every isolated harness overrides `$HOME`, which on macOS hides the login **Keychain** where Claude Code keeps its credentials (see [Real agents in isolated harnesses](#real-agents-in-isolated-harnesses)). `scripts/lib/agent-auth.sh` fixes that for all of them; this verifies it. |
 | `scripts/orch-rpc.py` | Speak raw JSON-RPC to a socket (debugging the control plane). |
 | `scripts/swift-testing-flags.sh` | The shared `-F`/`-rpath` flags used by `test.sh`. |
 | `scripts/toolchain.sh` | Sourced by `typecheck-app.sh` to pin `DEVELOPER_DIR` to CLT (when present) so the rebuilt `OrchestraCore` module matches the CLT SDK the typecheck targets. Not sourced by `test.sh` — tests need XCTest, which only the Xcode toolchain provides. |
@@ -170,6 +173,41 @@ All daemon/app state is keyed off `$HOME`, not the bundle location, so it follow
 use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →
 `~/.local/share/orchestra`; `reposRoot`/`worktreesRoot`/`scratchRoot` stay `$HOME`-relative on both
 platforms.)
+
+## Real agents in isolated harnesses
+
+Every isolated harness (`docs-shots.sh`, `iso-stack.sh`, `orch-test.sh`, the e2e scripts) steers by an
+isolated `$HOME` — that *is* the isolation contract, since the daemon's socket, its data dir, and the
+app's client path all derive from it. But two things break when you move `$HOME`, and **both fail
+silently in a way that looks like success**:
+
+- **Claude can't find its credentials.** On macOS, Claude Code stores OAuth credentials in the login
+  **Keychain**, which macOS resolves through `$HOME/Library/Keychains`
+  ([docs](https://code.claude.com/docs/en/authentication.md)). Under an isolated `$HOME` it is simply
+  "Not logged in" — so the agent sits at a login prompt forever *while the board reports the card
+  `running`*. Every `USE_REAL_CLAUDE=1` run was affected by this before it was fixed.
+  (`~/.claude/.credentials.json` is a red herring: that's the Linux/Windows store. Copying it does not
+  work — the OAuth refresh token rotates, so a copy authenticates once and then 401s for *everyone*,
+  including the original home.)
+- **macOS pops a modal dialog.** With no keychain at that path, the OS shows
+  *"Keychain Not Found — a keychain cannot be found to store &lt;user&gt;"* — once **per agent launch**.
+
+`scripts/lib/agent-auth.sh` fixes both by symlinking the real `~/Library/Keychains` into the run's
+throwaway home, so isolated agents authenticate with your **ordinary login** — nothing is minted,
+nothing expires, and the Keychain dialogs stop. Codex authenticates from `~/.codex/auth.json`, which is
+copied in the same way. Harnesses call `agent_auth_require` (a hard gate — better to refuse than to
+produce a silent, empty run) and `agent_auth_seed "$ISO_HOME"`. Check it with `scripts/agent-auth.sh status`.
+
+Two more traps worth knowing when you run real agents in a harness:
+
+- **A missing permission parks a card forever.** An agent that reaches for an ungranted tool (e.g.
+  `git rev-parse` when only `git diff` was allowed) sits on an approval prompt, and the board shows only
+  "waiting" — indistinguishable from a slow agent. Scope grants by *tool*, not by guessing verbs.
+- **PTY exhaustion kills every session.** macOS caps PTYs (`kern.tty.ptmx_max`, 511 by default). Leaked
+  tmux servers from earlier runs eat them, and once the cap is hit **every** new card dies instantly
+  (`fork failed: Device not configured`) — including on your live board. Check with
+  `tmux -L probe new-session -d 'true'`; reclaim by killing stale test servers (never the live
+  `orchestra` one).
 
 ## macOS permissions (TCC) for agents
 

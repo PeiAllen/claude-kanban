@@ -35,6 +35,10 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
+# Real-agent auth for isolated runs: the DURABLE dev agent home (one-time `scripts/agent-auth.sh
+# login`), seeded into each throwaway $HOME. See scripts/lib/agent-auth.sh.
+source "$REPO_ROOT/scripts/lib/agent-auth.sh"
+
 # --- fixed, single-instance isolated roots (short path: UDS socket must stay < 104 chars) ---
 # CANONICAL (symlink-resolved) root — macOS /tmp→/private/tmp. Claude/Codex canonicalize their cwd
 # before the trust + transcript/resume lookup, and the daemon keys trust (and the transcript slug) on
@@ -67,11 +71,11 @@ kv() { grep -m1 "^$1=" "$STATE" 2>/dev/null | cut -d= -f2-; }
 # stack becomes authenticated. Isolated from your live login; wiped on `down`. USE_REAL_CLAUDE mode
 # only — the fake-agent needs no login.
 cmd_login() {
-  [[ -d "$ISO_HOME" ]] || fail "no isolated \$HOME at $ISO_HOME — bring the stack up first (USE_REAL_CLAUDE=1 scripts/iso-stack.sh up)"
-  command -v claude >/dev/null || fail "'claude' not on PATH in this shell"
-  echo "▶ launching claude under the isolated \$HOME — run /login, finish the browser OAuth, then exit."
-  echo "  (HOME=$ISO_HOME) creds land in the throwaway home; your live login is untouched."
-  exec env HOME="$ISO_HOME" ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET" claude
+  # No separate login exists any more. An isolated $HOME can't see the macOS login keychain (that is
+  # where Claude Code keeps its credentials), so agent_auth_seed symlinks the real Keychains dir into
+  # each run's home — isolated agents then authenticate with your ORDINARY login. Nothing to mint,
+  # nothing to redo after teardown.
+  agent_auth_status
 }
 
 cmd_down() {
@@ -151,22 +155,12 @@ cmd_up() {
     # launch goes straight to work. Claude OAuth rides the login Keychain (not $HOME-scoped), so it
     # authenticates fine under the isolated HOME. Codex authenticates from $CODEX_HOME/auth.json
     # ($HOME/.codex here) — bridge the live one in, else codex prompts for login and stalls.
-    echo "  • USE_REAL_CLAUDE=1 → seeding onboarding + bridging codex auth (real agents WILL bill)"
-    python3 - "$ISO_HOME/.claude.json" <<'PY'
-import json, sys, os
-p = sys.argv[1]
-root = {}
-if os.path.exists(p):
-    try: root = json.load(open(p))
-    except Exception: root = {}
-root.setdefault("hasCompletedOnboarding", True)
-root.setdefault("theme", "dark")
-json.dump(root, open(p, "w"), indent=2)
-PY
-    mkdir -p "$ISO_HOME/.codex"
-    cp "$HOME/.codex/auth.json" "$ISO_HOME/.codex/auth.json" 2>/dev/null \
-      && echo "  • bridged ~/.codex/auth.json → isolated CODEX_HOME" \
-      || echo "  • note: no ~/.codex/auth.json to bridge — codex cards would prompt for login (claude unaffected)"
+    echo "  • USE_REAL_CLAUDE=1 → seeding agent auth (real agents WILL bill)"
+    # On macOS `claude` keeps its credentials in the login KEYCHAIN, which macOS resolves via
+    # $HOME/Library/Keychains — so an isolated $HOME is "Not logged in" (and pops a modal "Keychain
+    # Not Found" dialog per agent). agent_auth_seed symlinks the real Keychains dir in, so agents
+    # authenticate with the ordinary login. See scripts/lib/agent-auth.sh.
+    agent_auth_seed "$ISO_HOME" || echo "  • WARNING: claude cards may sit at a login prompt"
   fi
   ( cd "$ROOT/repo" && git init -q && git config user.email t@t.t && git config user.name t \
       && git commit -q --allow-empty -m init && git worktree add -q ../wt -b verify )

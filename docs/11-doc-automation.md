@@ -77,10 +77,29 @@ scripts/install-doc-hooks.sh --uninstall
 This removes the hooks (restoring any backed-up foreign hook). You can still run
 `scripts/update-docs.sh` manually whenever you like.
 
+## What is *not* auto-generated: the images
+
+The prose regenerates itself; **the screenshots and GIFs in `docs/images/` do not.** They are captured
+from a real, isolated Orchestra stack running real agents, which needs a GUI session, Screen Recording
+permission, and live agent billing — none of which a headless git hook has any business doing. So the
+sync prompt is explicitly told to **never delete an image embed or a mermaid block**, and to flag a
+stale image rather than quietly dropping it.
+
+That leaves one manual duty: **after a change that visibly alters the app, re-run**
+
+```sh
+scripts/docs-shots.sh          # regenerates every image in docs/images/
+```
+
+and commit the refreshed images. The [mermaid diagrams](02-architecture.md) *are* plain text in the
+chapters, so the hook can and does maintain those in place.
+
 ## Caveats
 
 - The hook needs the `claude` CLI on the `PATH` that git hooks inherit. If it isn't found, the script
   logs a note and skips — your commit is unaffected.
+- The hook never re-shoots the screenshots (above). A UI change can therefore leave a *correct* chapter
+  next to a *stale* image until someone runs `scripts/docs-shots.sh`.
 - Because the run commits to `main` on its own, review the `docs:` commits periodically — Claude is
   good but not infallible, and a regenerated chapter is still a generated artifact. If the prose and the
   code ever disagree, the code wins; fix the source-of-truth and the next sync will follow.
