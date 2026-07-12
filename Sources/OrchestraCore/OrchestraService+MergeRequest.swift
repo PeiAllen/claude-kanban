@@ -48,7 +48,12 @@ extension OrchestraService {
         let alreadyPending = (child.treeStat?.state == .mergeRequested)
         if let (saved, rev) = try? await store.update(child.id, {
             let resuming = ($0.treeStat?.state == .mergeRequested)
-            $0.treeStat = TreeStat(state: .mergeRequested, nudges: resuming ? ($0.treeStat?.nudges ?? 0) : 0)
+            // A re-send always clears `mergeStalled` — that IS the escape hatch out of the give-up (it
+            // re-arms the reminders). It resets the budget too, EXCEPT when merely re-sending an
+            // already-pending request, where the running budget is preserved (see above).
+            $0.treeStat = TreeStat(state: .mergeRequested,
+                                   nudges: resuming ? ($0.treeStat?.nudges ?? 0) : 0,
+                                   mergeStalled: false)
         }) {
             emit(.taskUpserted(saved), rev: rev)
         }
@@ -131,34 +136,85 @@ extension OrchestraService {
             await recomputeTreeStat(childId)
             return true
         }
-        let sent = (child.treeStat?.nudges ?? 0) + 1
+        let prior = child.treeStat?.nudges ?? 0
         let cap = mergeRequestNudgeCap
+        // Budget already exhausted before we sent anything (a cap lowered under us, or `cap <= 0`): give up
+        // WITHOUT a reminder. Sending "reminder 1/0" would be absurd.
+        guard prior < cap else { return await giveUp(childId, sent: prior, link: link, child: child) }
+
+        let sent = prior + 1
         try? await inbox.enqueue(parentCard.id,
             "reminder \(sent)/\(cap) — merge-request still pending: squash-merge \(child.branch) "
             + "(\(child.shortId)) into \(link.parent), then `orchestra shipped \(child.shortId)`")
         await wake(parentCard.id)
 
-        // Persist the count — and, at the cap, the give-up — in ONE update, gated on the state the closure
-        // itself observes. TaskStore serializes its updates, so a concurrent shipped/synced that already
-        // cleared the badge across our suspensions cannot be resurrected by a stale write from this tick.
-        var gaveUp = false
+        // Persist the count — and, at the cap, the give-up — in ONE update, as a COMPARE-AND-SWAP against
+        // the exact count we based `sent` on. State alone is not enough (review: MAJOR): we suspended across
+        // `inbox.enqueue` AND `wake` (real session I/O — a milliseconds-wide window), in which the card can
+        // be shipped/synced/archived and a FRESH merge-request armed. That new request is also
+        // `.mergeRequested`, so a state-only guard would happily accept our stale write and could flip a
+        // brand-new request straight to stalled — terminal on arrival, with a warning about reminders it
+        // never received. Requiring `nudges == sent - 1` (plus a re-checked `archived`) makes the write
+        // valid only against the generation of the request we actually nudged.
+        var gaveUp = false, changed = false
         if let (saved, rev) = try? await store.update(childId, { t in
-            guard t.treeStat?.state == .mergeRequested else { return }   // cleared under us — leave it alone
+            guard !t.archived, t.treeStat?.state == .mergeRequested,
+                  (t.treeStat?.nudges ?? 0) == prior else { return }   // superseded under us — drop the write
             t.treeStat?.nudges = sent
-            if sent >= cap { t.treeStat?.state = .mergeStalled; gaveUp = true }
-        }) {
+            changed = true
+            if sent >= cap {
+                // Raise the flag AND release the waiting state: `.mergeRequested` is what freezes the
+                // recompute funnel and what `rebuildMergeRequestNudges()` re-arms on daemon start. Leaving
+                // it set would keep the card blind to its parent AND resurrect the loop on the next restart.
+                // `.inSync` is a placeholder — the `recomputeTreeStat` in `giveUp` immediately computes the
+                // card's true state (and carries the flag + count across).
+                t.treeStat?.mergeStalled = true
+                t.treeStat?.state = .inSync
+                gaveUp = true
+            }
+        }), changed {                                                   // no-op closure ⇒ no rev bump ⇒ no emit
             emit(.taskUpserted(saved), rev: rev)
         }
-        if gaveUp {
-            // A sibling of the parent-vanished path above: the loop never stops SILENTLY. The badge is the
-            // durable signal (it survives restart, and the rebuild skips `mergeStalled`); this is the
-            // human-legible one.
-            emitActivity(.warning, child, .daemon,
-                "merge-request stalled — \(sent) reminders unanswered; \(link.parent) never merged "
-                + "\(child.branch). Merge it yourself, or re-send with "
-                + "`orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+        guard gaveUp else { return false }
+        return await giveUp(childId, sent: sent, link: link, child: child, alreadyFlagged: true)
+    }
+
+    /// The give-up: the loop never stops SILENTLY. A sibling of the parent-vanished path above.
+    ///
+    /// The `mergeStalled` FLAG is the durable signal (it survives restart, and the rebuild only re-arms
+    /// `.mergeRequested`, so a restart cannot resurrect the spam). On top of that we tell the two parties who
+    /// can actually act: the human, via a `.warning` in the activity feed; and the CHILD — the card that is
+    /// blocked — via its own durable inbox, so its agent learns the request died even if no human was
+    /// watching the feed at that instant. It can then `borrow` the parent and merge itself.
+    ///
+    /// Then we recompute: giving up RELEASES the sticky waiting badge, so the card resumes tracking its
+    /// parent (↓N, stale, restack + their nudges) instead of going blind while it waits for a human.
+    @discardableResult
+    private func giveUp(_ childId: UUID, sent: Int, link: ParentLink, child: Task,
+                        alreadyFlagged: Bool = false) async -> Bool {
+        if !alreadyFlagged {
+            var changed = false
+            if let (saved, rev) = try? await store.update(childId, { t in
+                guard !t.archived, t.treeStat?.state == .mergeRequested else { return }
+                t.treeStat?.mergeStalled = true
+                t.treeStat?.state = .inSync      // release the waiting state (see the CAS closure above)
+                changed = true
+            }), changed {
+                emit(.taskUpserted(saved), rev: rev)
+            }
         }
-        return gaveUp
+        emitActivity(.warning, child, .daemon,
+            "merge-request stalled — \(sent) reminder\(sent == 1 ? "" : "s") unanswered; \(link.parent) "
+            + "never merged \(child.branch). Merge it yourself, or re-send with "
+            + "`orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+        try? await inbox.enqueue(childId,
+            "merge-request stalled — \(link.parent) ignored \(sent) reminder\(sent == 1 ? "" : "s") and never "
+            + "merged \(child.branch); the daemon has stopped re-asking. Either borrow the parent and merge "
+            + "yourself (`orchestra borrow \(child.shortId)` → merge → `orchestra shipped \(child.shortId)`), "
+            + "or re-send `orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+        await wake(childId)
+        await recomputeTreeStat(childId)   // release the frozen badge — resume tracking the parent
+        return true
     }
 
     func stopMergeRequestNudge(_ id: UUID) {

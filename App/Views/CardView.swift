@@ -212,30 +212,34 @@ struct CardView: View {
     /// pill; hidden when in-sync or untracked (`treeStat == nil`). Reads `Task` directly — no store plumbing.
     @ViewBuilder private var treeBadge: some View {
         if let ts = task.treeStat {
-            switch ts.state {
-            case .stale:
-                HStack(spacing: 2) {
-                    Image(systemName: "arrow.down").font(F.ui(8.5))
-                    Text("\(ts.behind)").font(F.mono(10, .medium))
-                }
-                .foregroundStyle(theme.amber.text)
-                .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
-            case .restackNeeded:
-                Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+            // The give-up flag outranks the tracking state: a stalled card keeps computing stale/↓N/restack
+            // underneath (that's the point of it being a flag, not a state), but what the human needs to see
+            // first is that nobody answered the merge-request.
+            if ts.mergeStalled {
+                Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
                     .foregroundStyle(theme.red.text)
-                    .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
-            case .mergeRequested:
-                Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                    .help("Merge-request unanswered — \(ts.nudges) reminders sent and \(task.parentBranch ?? "the parent") "
+                          + "never merged this branch. Merge it yourself, or re-send the merge-request.")
+            } else {
+                switch ts.state {
+                case .stale:
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.down").font(F.ui(8.5))
+                        Text("\(ts.behind)").font(F.mono(10, .medium))
+                    }
                     .foregroundStyle(theme.amber.text)
-                    .help("Merge requested — waiting for the parent card to squash-merge this branch")
-            case .mergeStalled:
-                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath").font(F.ui(8.5))
-                    .foregroundStyle(theme.red.text)
-                    .help("Merge-request unanswered — \(ts.nudges) reminders sent and the parent card never "
-                          + "merged this branch. Merge it yourself, or re-send the merge-request to re-arm "
-                          + "the reminders.")
-            case .inSync:
-                EmptyView()
+                    .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
+                case .restackNeeded:
+                    Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+                        .foregroundStyle(theme.red.text)
+                        .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
+                case .mergeRequested:
+                    Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                        .foregroundStyle(theme.amber.text)
+                        .help("Merge requested — waiting for the parent card to squash-merge this branch")
+                case .inSync:
+                    EmptyView()
+                }
             }
         }
     }
