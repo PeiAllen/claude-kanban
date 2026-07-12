@@ -43,11 +43,18 @@ extension OrchestraService {
         // which doesn't even enqueue a message — would silently re-arm the full eight-reminder budget, and a
         // card re-sending periodically could never reach `mergeStalled`. The cap would be unreachable in
         // exactly the case it exists for. It resets ONLY when this is a genuinely new request: a fresh one,
-        // or the escape hatch out of `mergeStalled`. Gated on the state the closure observes, not the value
-        // we read before the awaits above.
-        let alreadyPending = (child.treeStat?.state == .mergeRequested)
+        // or the escape hatch out of `mergeStalled`.
+        //
+        // ONE truth gates BOTH the budget and the enqueue: `resuming`, observed inside the closure (review:
+        // minor). The snapshot we read before the awaits above is stale — `lineage.read`, `gitRemotes` (an
+        // off-actor `git` fork, so a genuinely wide window) and `store.all()` all suspend, and the loop can
+        // give up inside it. Gating the enqueue on the stale read while the budget used the fresh one let the
+        // two disagree: the escape-hatch re-send would clear the flag and re-arm the badge (looking like it
+        // worked) while never re-prodding the parent at t=0 — the parent would first hear about it 5 minutes
+        // later, as "reminder 1/8". Self-healing, but it silently degrades the one path the flag exists for.
+        var resuming = false
         if let (saved, rev) = try? await store.update(child.id, {
-            let resuming = ($0.treeStat?.state == .mergeRequested)
+            resuming = ($0.treeStat?.state == .mergeRequested)
             // A re-send always clears `mergeStalled` — that IS the escape hatch out of the give-up (it
             // re-arms the reminders). It resets the budget too, EXCEPT when merely re-sending an
             // already-pending request, where the running budget is preserved (see above).
@@ -57,7 +64,7 @@ extension OrchestraService {
         }) {
             emit(.taskUpserted(saved), rev: rev)
         }
-        if !alreadyPending {
+        if !resuming {
             try? await inbox.enqueue(parentCard.id,
                 "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
                 + "worktree, then `orchestra shipped \(child.shortId)`")
@@ -139,9 +146,10 @@ extension OrchestraService {
         // Re-check the fence BEFORE any side effect. The entry check is not enough: we have since suspended
         // across `store.get`, `lineage.read` and `store.all`, and a re-arm inside that window makes us a
         // ghost — which would otherwise still enqueue a reminder and wake the parent (review: MAJOR).
-        // This runs on the actor with no `await` before the send below, so the window it leaves is the
-        // enqueue itself: a supersession landing exactly there costs one duplicate reminder, which the CAS
-        // then counts honestly. It cannot corrupt the budget or the give-up decision.
+        //
+        // A supersession landing inside the enqueue/wake below still costs ONE duplicate reminder — that
+        // send cannot be un-made. What it cannot do is corrupt state: the post-wake re-check (below) rejects
+        // the ghost's write, so the count and the give-up decision stay the superseding request's alone.
         guard mergeRequestNudgeGen[childId] == gen else { return true }
 
         let prior = child.treeStat?.nudges ?? 0
@@ -158,16 +166,34 @@ extension OrchestraService {
             + "(\(child.shortId)) into \(link.parent), then `orchestra shipped \(child.shortId)`")
         await wake(parentCard.id)
 
+        // Re-check the fence AFTER the send. `nudges == prior` alone is an ABA-prone discriminator (review:
+        // minor): a fresh request also has `nudges == 0`, so a ghost tick sending reminder 1 (`prior == 0`)
+        // against a request that was synced + re-requested inside its own enqueue/wake window would pass the
+        // CAS and write `nudges = 1` onto the BRAND-NEW request — stealing a reminder from its budget (and,
+        // with a cap of 1, flipping it straight to stalled). The generation, not the count, is the authority:
+        // it is unique per arming, so it cannot ABA. This runs on the actor with no `await` before the write
+        // below, so from here the CAS is a pure backstop rather than the sole defense.
+        guard mergeRequestNudgeGen[childId] == gen else { return true }
+
         // That was the last one — give up (which persists the count, the flag and the true tree state in a
         // single CAS; see `giveUp`).
         if sent >= cap {
             return await giveUp(childId, sent: sent, prior: prior, link: link, child: child)
         }
 
-        // An ordinary tick: persist the count as a COMPARE-AND-SWAP against the exact count `sent` was based
-        // on. State alone is not enough — we suspended across `inbox.enqueue` AND `wake` (real session I/O),
-        // and a card can be shipped/synced/archived and a FRESH merge-request armed inside that window. The
-        // new request is ALSO `.mergeRequested`, so a state-only guard would accept our stale write.
+        _ = await casNudgeCount(childId, prior: prior, sent: sent)
+        return false
+    }
+
+    /// Persist an ordinary tick's count as a COMPARE-AND-SWAP against the exact count `sent` was based on.
+    /// Returns whether the write landed.
+    ///
+    /// State alone is not enough: the tick suspends across `inbox.enqueue` AND `wake` (real session I/O), and
+    /// in that window the card can be shipped/synced/archived and a FRESH merge-request armed. The new request
+    /// is ALSO `.mergeRequested`, so a state-only guard would accept the stale write. (The generation fence is
+    /// the primary defense — see the re-check above; this is the backstop behind it.)
+    @discardableResult
+    func casNudgeCount(_ childId: UUID, prior: Int, sent: Int) async -> Bool {
         var changed = false
         if let (saved, rev) = try? await store.update(childId, { t in
             guard !t.archived, t.treeStat?.state == .mergeRequested,
@@ -177,7 +203,7 @@ extension OrchestraService {
         }), changed {                                                  // no-op closure ⇒ no rev bump ⇒ no emit
             emit(.taskUpserted(saved), rev: rev)
         }
-        return false
+        return changed
     }
 
     /// The give-up: the loop never stops SILENTLY. A sibling of the parent-vanished path above.
@@ -237,7 +263,18 @@ extension OrchestraService {
             + "merged \(child.branch); the daemon has stopped re-asking. Either borrow the parent and merge "
             + "yourself (`orchestra borrow \(child.shortId)` → merge → `orchestra shipped \(child.shortId)`), "
             + "or re-send `orchestra merge-request \(child.shortId)` to re-arm the reminders.")
-        await wake(childId)
+
+        // The merge-down nudge the funnel could not send (review: minor). While the request was pending, the
+        // sticky `.mergeRequested` guard FROZE the recompute funnel — so if the parent moved during those
+        // hours (over a 5h15m nudge run, the likely ordering) the child was never told. And because we write
+        // the true `.stale` state directly here, no `inSync → stale` edge is crossed, so the funnel will not
+        // tell it later either: the nudge would be lost entirely. Fire it here, on the funnel's own seam.
+        if fresh?.state == .stale {
+            try? await inbox.enqueue(childId, "parent \(link.parent) moved ahead — run "
+                + "`git merge \(resolvableRef(link, repo: child.repo))` in your worktree, then "
+                + "`orchestra synced \(child.shortId)`")
+        }
+        await wake(childId)   // one wake covers both messages
         return true
     }
 

@@ -64,16 +64,17 @@ public actor OrchestraService {
     /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
     /// parent card on a timer until the child leaves the `mergeRequested` state.
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
     /// Per-child generation token for the re-nudge loop, exactly like `remoteWatchGen`: a re-arm bumps it,
     /// so a loop cancelled mid-tick can neither nudge nor evict the loop that replaced it. Without this a
     /// superseded loop's terminal cleanup nulls the LIVE task's slot, orphaning it (uncancellable, invisible
     /// to `mergeRequestNudgeActive`) and letting two loops double-nudge the same parent.
     var mergeRequestNudgeGen: [UUID: Int] = [:]
+    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep. The BASE of the geometric
+    /// backoff (`nudgeDelay`), not a fixed interval.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
-    /// Reminders to send before giving up and flipping the child to the terminal `mergeStalled` badge.
-    /// With the 300s base and `nudgeDelay`'s 12× ceiling that is 5m/10m/20m/40m/1h/1h/1h/1h — roughly 5¼
-    /// hours of prodding. A parent that ignored 8 reminders will not act on the 9th.
+    /// Reminders to send before giving up: the child is flagged `mergeStalled` and the loop stops. With the
+    /// 300s base and `nudgeDelay`'s 12× ceiling that is 5m/10m/20m/40m/1h/1h/1h/1h — roughly 5¼ hours of
+    /// prodding. A parent that ignored 8 reminders will not act on the 9th.
     var mergeRequestNudgeCap: Int = 8
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through

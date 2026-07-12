@@ -283,8 +283,16 @@ struct MergeRequestCapIntegrityTests {
     /// `.mergeRequested`, so a state-only guard accepts the stale write: nudges 7→8 ≥ cap flips a
     /// brand-new request straight to stalled — terminal on arrival, with a warning about 8 reminders it
     /// never received. The CAS (`nudges == sent - 1`) makes the write valid only for the request it nudged.
-    @Test("a stale tick cannot flip a freshly re-armed merge-request to stalled")
-    func staleTickCannotKillAFreshRequest() async throws {
+    /// The CAS is the backstop BEHIND the generation fence, so it must be tested with the fence deliberately
+    /// CURRENT — otherwise the tick stops at the entry guard and the CAS is never reached, and the test is
+    /// evidence of nothing (review: minor — the first version of this test had exactly that bug).
+    ///
+    /// So: arm the loop, let the tick's own `prior` snapshot go stale by resolving + re-sending the request
+    /// underneath it, and drive the tick on the CURRENT generation. Only the CAS (`nudges == prior`) can
+    /// reject it, and it must — otherwise the write lands on a brand-new request that never received those
+    /// reminders.
+    @Test("the CAS alone rejects a stale write onto a freshly re-armed request (fence held current)")
+    func casRejectsStaleWriteEvenWithCurrentGeneration() async throws {
         let env = TestEnv.make()
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
@@ -293,22 +301,50 @@ struct MergeRequestCapIntegrityTests {
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)
         _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 7 }   // one reminder from the cap
-        let genOld = await env.svc.mergeRequestNudgeGeneration(child.id)
 
-        // The world moves under the in-flight tick: the request is resolved, then a NEW one is sent.
+        // The world moves: the request is resolved, then a NEW one is sent (fresh budget, nudges == 0).
         _ = try await env.svc.synced(ref: child.ref())
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)
-        #expect(await treeStat(env.svc, child.id)?.nudges == 0)     // fresh budget
+        #expect(await treeStat(env.svc, child.id)?.nudges == 0)
 
-        // The old tick lands late. Even if its generation were somehow current, the CAS must reject it:
-        // it was computed against nudges=7, and the card now says 0.
-        _ = await env.svc.reNudgeMergeRequest(child.id, gen: genOld)
+        // Drive the tick on the CURRENT generation, so the fence passes and the CAS is genuinely exercised.
+        // Its `prior` is read fresh (0), so this tick is legitimate and DOES nudge — the point is what it may
+        // write: it must advance the fresh request's budget by exactly one, never resurrect the old count of
+        // 7 and never flip the new request to stalled.
+        let genNow = await env.svc.mergeRequestNudgeGeneration(child.id)
+        _ = await env.svc.reNudgeMergeRequest(child.id, gen: genNow)
 
         let ts = await treeStat(env.svc, child.id)
-        #expect(ts?.mergeStalled == false)         // the fresh request is NOT dead on arrival
-        #expect(ts?.state == .mergeRequested)      // it is still waiting, as it should be
-        #expect(ts?.nudges == 0)                   // and its budget was not stolen by the ghost
+        #expect(ts?.mergeStalled == false)         // NOT dead on arrival: 8 was the OLD request's count
+        #expect(ts?.state == .mergeRequested)
+        #expect(ts?.nudges == 1)                   // its own first reminder — the stale 7 did not carry over
+    }
+
+    /// The other end of the same guarantee: a tick whose `prior` is stale must have its write REJECTED. We
+    /// can't suspend the real tick mid-flight from a test, so drive the CAS directly — the same closure the
+    /// tick uses — with a `prior` that no longer matches the card.
+    @Test("a write computed against a stale count is dropped, not applied")
+    func staleCountWriteIsDropped() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        await env.svc.stopMergeRequestNudge(child.id)
+        _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 3 }
+
+        // A ghost tick that based `sent` on nudges == 7 (a count this card no longer has) must not land.
+        // This calls the PRODUCTION CAS the tick itself uses — not a copy of it.
+        let applied = await env.svc.casNudgeCount(child.id, prior: 7, sent: 8)
+        #expect(applied == false)
+        #expect(await treeStat(env.svc, child.id)?.nudges == 3)          // untouched
+        #expect(await treeStat(env.svc, child.id)?.mergeStalled == false)
+
+        // ...and the matching write DOES land, so the guard isn't simply rejecting everything.
+        let ok = await env.svc.casNudgeCount(child.id, prior: 3, sent: 4)
+        #expect(ok)
+        #expect(await treeStat(env.svc, child.id)?.nudges == 4)
     }
 
     /// MAJOR (fix-verification round): the give-up write is reachable from the ALREADY-EXHAUSTED path (a cap
@@ -339,6 +375,39 @@ struct MergeRequestCapIntegrityTests {
         #expect(ts?.mergeStalled == false)         // the fresh request is NOT dead on arrival
         #expect(ts?.state == .mergeRequested)
         #expect(ts?.nudges == 0)
+    }
+
+    /// The M1 guarantee on the ordering that actually happens (review: minor). The sticky `.mergeRequested`
+    /// guard FREEZES the recompute funnel while the request is pending, so a parent that moves during the
+    /// 5h15m nudge run produces NO stale badge and NO merge-down nudge at the time. The give-up then writes
+    /// the true `.stale` state directly — crossing no `inSync → stale` edge — so the funnel would never send
+    /// that nudge either, and the child would end up stalled AND behind, never having been told to merge down.
+    ///
+    /// The sibling test in `MergeStalledStickinessTests` advances the parent AFTER the stall, so it rides the
+    /// `inSync → stale` edge and passes without proving this. This one advances it BEFORE — the likely order.
+    @Test("a parent that moved BEFORE the give-up still produces a merge-down nudge to the child")
+    func giveUpNudgesMergeDownWhenTheParentMovedFirst() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        await env.svc.setMergeRequestNudgeInterval(.milliseconds(20))
+        await env.svc.setMergeRequestNudgeCap(1)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        // The parent lands commits WHILE the request is pending — the funnel is frozen, so nothing is said.
+        try TreeStatTests.advanceParent(repo, 2)
+
+        #expect(try await eventually { await treeStat(env.svc, child.id)?.mergeStalled == true })
+
+        let ts = await treeStat(env.svc, child.id)
+        #expect(ts?.state == .stale)                     // the give-up wrote the true state...
+        #expect((ts?.behind ?? 0) >= 1)                  // ...with a real ↓N
+
+        // ...and the child was actually TOLD to merge down — the nudge the frozen funnel could not send.
+        let msgs = try await env.svc.inboxPeek(child.id).map(\.text)
+        #expect(msgs.contains { $0.contains("merge-request stalled") })
+        #expect(msgs.contains { $0.contains("moved ahead") })
     }
 
     /// MAJOR (fix-verification round): the give-up used to persist `state = .inSync` as a PLACEHOLDER and
