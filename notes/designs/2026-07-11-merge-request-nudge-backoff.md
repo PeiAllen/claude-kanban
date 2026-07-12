@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-11
 **Branch:** `feat/merge-request-nudge-backoff` (stacked on `fix/nudge-leak-cooperative-pool-starvation`)
-**Status:** design approved, ready to plan
+**Status:** implemented + reviewed (Claude + Codex); design revised mid-review — see "What review changed"
 
 ## Summary
 
@@ -92,22 +92,28 @@ double-posts to a card that has not yet checked its inbox.
 Both knobs stay injectable (`setMergeRequestNudgeInterval` already exists; add
 `setMergeRequestNudgeCap`) so the existing tests keep avoiding real 5-minute sleeps.
 
-### Give-up: a visible terminal state, not a silent stop
+### Give-up: a visible flag, not a silent stop — and NOT a tree state
 
-Add a fourth case to the existing tree state:
+Giving up sets a **flag on `TreeStat`**, alongside the state:
 
 ```swift
-public enum TreeState: String, Codable, Sendable {
-    case inSync, stale, restackNeeded, mergeRequested, mergeStalled
+public struct TreeStat: Codable, Sendable, Equatable {
+    public var state: TreeState      // keeps tracking the parent: inSync / stale / restackNeeded / mergeRequested
+    public var nudges: Int           // reminders sent
+    public var mergeStalled: Bool    // the request was given up on
+    ...
 }
 ```
+
+**This started as a fifth `TreeState` case and review killed it — for two independent reasons, either
+of which is fatal on its own.** (See "What review changed".)
 
 On the capped tick, `reNudgeMergeRequest` flips the child to `.mergeStalled`, emits a `.warning`
 activity entry naming the child, the parent, and the count, and stops the loop. This is a deliberate
 **sibling of the existing "parent card vanished" path** (`OrchestraService+MergeRequest.swift:84-90`),
 which likewise clears the sticky badge and recomputes rather than stopping silently.
 
-`mergeStalled` is **sticky and terminal**:
+`mergeStalled` is **durable, and orthogonal to tracking**:
 
 - persisted, so it survives a daemon restart;
 - `rebuildMergeRequestNudges()` re-arms only `.mergeRequested`, so a restart cannot resurrect the spam;
@@ -187,3 +193,73 @@ injectable cap.
 **Out:** any new `NotifyTrigger` / `AttentionReason` / `AttentionTracker` change (→ converge on B5b);
 unifying with `startRemoteWatch` (→ rejected above); anything touching the starvation fix (→ parent
 branch).
+
+## What review changed
+
+A bounded Claude + Codex review pair over the implementation raised 1 BLOCKER and 5 MAJORs between
+them. Two findings converged on the same root cause and rewrote a design decision; the rest were
+straightforward defects. Recording them here because the *reasons* outlive the diff.
+
+### `mergeStalled` was a `TreeState` case. It is now a flag on `TreeStat`.
+
+Two independent failures, either fatal on its own:
+
+**1. Silent card loss on downgrade (BLOCKER).** `Model.swift`'s own convention says enum-bearing
+fields must be `try?`-guarded, "else one garbage field would drop an otherwise-recoverable record" —
+and `treeStat` was the single field that ignored it. `Task` decodes it with `decodeIfPresent`, which
+*rethrows* a nested failure, and `TaskStore.FailableTask` turns a throwing record into a **dropped
+card**. This branch would have been the first producer of a `TreeState` rawValue older binaries don't
+know, so any revert, `/ship` relaunch off main, or phone build lagging the Mac daemon would silently
+lose the whole card — worktree orphaned, session untracked, and no `.corrupt` backup, because the
+top-level JSON parsed fine.
+
+Confirmed empirically against the installed pre-branch `orchestrad`, same store, only the shape differing:
+
+| on-disk | old binary's board |
+|---|---|
+| `{"state":"mergeStalled",…}` | **card gone** |
+| `{"state":"stale","nudges":8,"mergeStalled":true}` | card intact, tracking preserved |
+
+An unknown **key** is ignored by an older decoder. An unknown **rawValue** is fatal. A flag cannot fail
+that way. (`treeStat` is `try?`-guarded now regardless — belt and braces.)
+
+**2. A stalled card went blind (MAJOR).** The waiting badge is deliberately sticky, so the recompute
+funnel skips a card that carries it. That freeze is *bounded* for `mergeRequested` — someone ships
+within hours. As a state, `mergeStalled` inherited the freeze with **no bound**: a given-up child
+stopped getting `behind` updates and, worse, stopped getting the "parent moved ahead — merge it down"
+inbox nudge. It would sit for days against a parent it was never told had advanced, and meet the drift
+as conflicts at merge time. The two facts — *"nobody answered my request"* and *"my parent has moved
+N commits ahead"* — are orthogonal, and one must not suppress the other. As a flag, `state` keeps
+tracking underneath; the flag merely outranks it on the card face.
+
+### The give-up write needed to be a compare-and-swap (MAJOR)
+
+It was gated on `state`, which is not enough. The tick suspends across `inbox.enqueue` **and** `wake`
+(real session I/O — a milliseconds-wide window). If the card is `synced` and a **fresh** merge-request
+armed inside that window, the new request is *also* `.mergeRequested` — so a state-only guard accepts
+the stale write and flips a brand-new request straight to stalled: terminal on arrival, carrying a
+warning about reminders it never received. The write now compare-and-swaps on `nudges == sent - 1`
+(plus a re-checked `archived`), so it is valid only for the request it actually nudged.
+
+### The loop needed a generation fence (MAJOR)
+
+`cancel()` is cooperative and the tick has no cancellation checks, so a cancelled loop runs its tick to
+completion — and its terminal cleanup then nulled the map slot holding the **newer** task a re-arm had
+installed, orphaning a live loop (uncancellable, invisible to `mergeRequestNudgeActive`) and letting two
+loops double-nudge with racing counts. `startRemoteWatch` has fenced exactly this race with
+`remoteWatchGen` all along; the nudge loop simply never got the same treatment. It has one now.
+
+### The cap was defeatable (MAJOR)
+
+`mergeRequest()` overwrote the whole `TreeStat`, zeroing `nudges` — including on the dedup path, where
+a re-send doesn't even enqueue a message. Any child re-sending periodically would re-arm the full budget
+forever and never reach the cap, in exactly the case the cap exists for. The budget now resets only on a
+genuinely new request (a fresh one, or the escape hatch out of `mergeStalled`).
+
+### The give-up now reaches the child, not just the feed
+
+The `.warning` activity item is ephemeral: unless a human is watching the feed at that instant, all
+that survives is a glyph to hover. The **child** card — the one that is blocked, and that can `borrow`
+the parent and merge itself — was told nothing. It now gets a durable inbox message + wake, on the same
+seam `shipped` already uses. That is not the deferred notification pipeline; it is the difference
+between "surfaced" and "surfaced if you happened to be looking".
