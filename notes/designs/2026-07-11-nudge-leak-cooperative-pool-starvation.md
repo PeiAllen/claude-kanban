@@ -2,7 +2,55 @@
 
 **Date:** 2026-07-11
 **Branch:** `fix/nudge-leak-cooperative-pool-starvation`
-**Status:** design approved, ready to plan
+**Status:** SHIPPED (scope narrowed — see "What actually happened", which corrects several claims below)
+
+---
+
+## What actually happened (read this first — it corrects the design)
+
+The design below was written before implementation and **three of its claims turned out to be wrong**.
+They are left in place rather than quietly edited, because the corrections are the interesting part.
+
+**1. "The live-daemon wedge is the real bug; the test hang is a symptom." — FALSE.**
+`orchestrad/main.swift:11` holds `service` in a top-level `let` (and `ControlServer`/`PushNotifier`
+hold it too). It is created once and never released, so **the leak never multiplies in production** —
+there is exactly one `OrchestraService`, forever. The leak is a **test-suite amplifier**: only under
+`swift test --parallel`, where every test builds its own service, do the zombies pile up. `main` also
+already carries a merged actor-hygiene body of work that applied `offActor` in 62 places, draining
+production blocking down to a handful of sites. The demonstrated bug is the test wedge.
+
+**2. The `DispatchSerialQueue` executor (Fix 2 below) does not compile on Linux.**
+`SerialExecutor` conformance is Darwin-only; swift-corelibs-libdispatch has no `DispatchSerialQueue`.
+`scripts/build-linux-daemon.sh:65` cross-builds `orchestrad` against the musl SDK, so Fix 2 as written
+would have broken the Linux daemon at the next deploy — not in CI. A `#if canImport(Darwin)` gate is
+the wrong answer: it leaves Linux carrying the bug. **The executor work is deferred to its own card**
+with a hand-rolled portable `SerialExecutor`. It is hardening, not the fix.
+
+**3. "Fixing this makes the suite terminate." — FALSE, and it was never achievable here.**
+There are **two independent bugs**, and the starvation was masking the second. A/B against `main`
+(c3eb421) confirms this fix works:
+
+| wedged process | `main` | this branch |
+|---|---|---|
+| threads | 10 | **1** |
+| cooperative-pool threads | 3 | **0** |
+| `semaphore_wait_trap` | yes | **no** |
+| `BranchLineage` / nudge frames | yes | **no** |
+
+The starvation stack is gone. But the suite **still** wedges — idle, 0% CPU, no blocked threads —
+on a set of lifecycle/convergence tests (`test_machineRebootPath`, `test_archiveDuringLaunching`,
+`test_everyStepperConvergesFromAnyBoundary`, the readiness/wait suites). `main` hangs on 17 of them;
+this branch on 15 — the same set. So bug #2 is **pre-existing and unrelated**. It is not starvation
+(nothing is blocking); the remaining test tasks are suspended on something that never resumes. They
+pass in isolation (32 tests, 8s, exit 0) and only hang under full `--parallel`. **The executor card
+would not fix it either.** → its own card.
+
+### What this card actually delivered
+- The nudge + remote-watch leaks (both had the identical hoisted `guard let self`), with regression tests.
+- The cooperative-pool starvation, gone — proven by A/B stack comparison, not asserted.
+- Every unbounded `Proc` fork bounded, including `Proc.runStdoutToFile`, which had **no** bound at all.
+
+---
 
 ## Summary
 
