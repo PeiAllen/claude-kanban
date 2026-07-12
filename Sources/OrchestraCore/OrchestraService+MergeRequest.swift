@@ -37,9 +37,18 @@ extension OrchestraService {
 
         // Dedup: the mergeRequested badge is the pending marker. A re-send while already pending does not
         // re-enqueue (the re-nudge timer handles reminders); it only refreshes the badge.
+        //
+        // The reminder budget is PRESERVED across such a re-send (review: MAJOR). Overwriting the TreeStat
+        // wholesale would zero `nudges`, so a child that re-sends while already pending — the dedup path,
+        // which doesn't even enqueue a message — would silently re-arm the full eight-reminder budget, and a
+        // card re-sending periodically could never reach `mergeStalled`. The cap would be unreachable in
+        // exactly the case it exists for. It resets ONLY when this is a genuinely new request: a fresh one,
+        // or the escape hatch out of `mergeStalled`. Gated on the state the closure observes, not the value
+        // we read before the awaits above.
         let alreadyPending = (child.treeStat?.state == .mergeRequested)
         if let (saved, rev) = try? await store.update(child.id, {
-            $0.treeStat = TreeStat(state: .mergeRequested)
+            let resuming = ($0.treeStat?.state == .mergeRequested)
+            $0.treeStat = TreeStat(state: .mergeRequested, nudges: resuming ? ($0.treeStat?.nudges ?? 0) : 0)
         }) {
             emit(.taskUpserted(saved), rev: rev)
         }
@@ -71,6 +80,15 @@ extension OrchestraService {
     /// is gone, or the cap is reached.
     func startMergeRequestNudge(childId: UUID) {
         mergeRequestNudge[childId]?.cancel()
+        // Generation token — the same fence `startRemoteWatch` carries (`remoteWatchGen`), for the same
+        // race. `cancel()` does NOT abort a tick already suspended inside `reNudgeMergeRequest`: that tick
+        // runs to completion, the loop then exits, and its terminal cleanup hops back onto the actor — where,
+        // unfenced, it would null out the slot now holding the NEWER task this re-arm just installed. That
+        // orphans the live loop (uncancellable, invisible to `mergeRequestNudgeActive`), so a later re-arm
+        // starts a third loop alongside it and they double-nudge the parent with stale counts. This
+        // cancel+bump+install runs to completion on the actor with no `await`, so it is atomic.
+        let gen = (mergeRequestNudgeGen[childId] ?? 0) + 1
+        mergeRequestNudgeGen[childId] = gen
         // `self` is re-acquired PER HOP, never hoisted above the loop. A hoisted `guard let self` holds
         // a STRONG reference for the loop's entire life — including the sleep, which is ~all of it — so
         // `[weak self]` buys nothing and the service can never deallocate. Optional-chaining each hop
@@ -83,10 +101,10 @@ extension OrchestraService {
                       let base = await self?.mergeRequestNudgeInterval else { return }
                 try? await _Concurrency.Task.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
                 if _Concurrency.Task.isCancelled { return }
-                guard let stop = await self?.reNudgeMergeRequest(childId) else { return }
-                if stop { break }                     // no longer pending / parent gone / gave up
+                guard let stop = await self?.reNudgeMergeRequest(childId, gen: gen) else { return }
+                if stop { break }                     // no longer pending / parent gone / superseded / gave up
             }
-            await self?.clearMergeRequestNudge(childId)
+            await self?.clearMergeRequestNudge(childId, gen: gen)
         }
     }
 
@@ -94,9 +112,14 @@ extension OrchestraService {
     /// keeps no counter of its own, so the backoff survives a daemon restart instead of starting over).
     private func nudgesSent(_ id: UUID) async -> Int { (await store.get(id))?.treeStat?.nudges ?? 0 }
 
-    /// One re-nudge tick. Returns `true` when the loop should STOP (child no longer waiting / parent gone /
-    /// cap reached).
-    private func reNudgeMergeRequest(_ childId: UUID) async -> Bool {
+    /// One re-nudge tick. Returns `true` when the loop should STOP (superseded by a re-arm / child no longer
+    /// waiting / parent gone / cap reached).
+    func reNudgeMergeRequest(_ childId: UUID, gen: Int) async -> Bool {
+        // A cancelled-but-still-running loop must not act. This runs on the actor at entry, before any
+        // suspension, so it observes the current generation: if a re-arm superseded us, we are a ghost —
+        // stop WITHOUT enqueueing a reminder or bumping the count (else two loops nudge the same parent and
+        // race each other's count).
+        guard mergeRequestNudgeGen[childId] == gen else { return true }
         guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
               child.treeStat?.state == .mergeRequested,
               let link = await lineage.read(repo: child.repo, branch: child.branch) else { return true }
@@ -141,8 +164,16 @@ extension OrchestraService {
     func stopMergeRequestNudge(_ id: UUID) {
         mergeRequestNudge[id]?.cancel()
         mergeRequestNudge[id] = nil
+        // Bump: invalidates any in-flight tick/cleanup from the loop we just cancelled, so it can't nudge
+        // after a `shipped`/`synced`/archive, nor null a task a later re-arm installs.
+        mergeRequestNudgeGen[id] = (mergeRequestNudgeGen[id] ?? 0) + 1
     }
-    private func clearMergeRequestNudge(_ id: UUID) { mergeRequestNudge[id] = nil }
+
+    /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
+    /// in `startMergeRequestNudge`).
+    func clearMergeRequestNudge(_ id: UUID, gen: Int) {
+        if mergeRequestNudgeGen[id] == gen { mergeRequestNudge[id] = nil }
+    }
 
     // MARK: - startup rebuild (mirrors rebuildRemoteWatches — the in-memory timer dies on restart)
 
@@ -172,5 +203,6 @@ extension OrchestraService {
     // MARK: - test-support
     func setMergeRequestNudgeInterval(_ d: Duration) { mergeRequestNudgeInterval = d }
     func setMergeRequestNudgeCap(_ n: Int) { mergeRequestNudgeCap = n }
+    func mergeRequestNudgeGeneration(_ id: UUID) -> Int { mergeRequestNudgeGen[id] ?? 0 }
     func mergeRequestNudgeActive(_ id: UUID) -> Bool { mergeRequestNudge[id] != nil }
 }

@@ -208,6 +208,7 @@ extension OrchestraService {
         stopRemoteWatch(id)          // BT6: tear down any remote merge-watch
         remoteWatchGen[id] = nil     // S4: drop its generation entry (bounds the map)
         stopMergeRequestNudge(id)    // O2: tear down any pending merge-request re-nudge loop
+        mergeRequestNudgeGen[id] = nil   // drop its generation entry (bounds the map, as remoteWatchGen does)
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil     // S3-5
         childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor

@@ -179,6 +179,94 @@ struct MergeRequestCapTests {
     }
 }
 
+/// Review findings (Codex, 2026-07-11). Two ways the cap could be defeated in practice.
+@Suite("merge-request re-nudge — the cap cannot be defeated")
+struct MergeRequestCapIntegrityTests {
+
+    private func treeStat(_ svc: OrchestraService, _ id: UUID) async -> TreeStat? {
+        await svc.list().first { $0.id == id }?.treeStat
+    }
+
+    private func armedChild(_ env: (svc: OrchestraService, base: String),
+                            _ repo: String, _ parentTip: String) async throws -> (Task, Task) {
+        let parentCard = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage().set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
+        return (parentCard, child)
+    }
+
+    /// MAJOR: `mergeRequest` overwrote the whole TreeStat, zeroing `nudges`. A child that re-sends while
+    /// ALREADY pending (the dedup path — it doesn't even re-enqueue) would silently re-arm the full budget,
+    /// so a card that re-sends periodically could never reach `mergeStalled`. The give-up cap would be
+    /// unreachable in exactly the case it exists for.
+    @Test("a re-send while already pending preserves the reminder budget (it does not re-arm it)")
+    func reSendWhilePendingPreservesBudget() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (parentCard, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        await env.svc.stopMergeRequestNudge(child.id)                     // freeze the loop; drive by hand
+        _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 7 }   // 7 reminders burned
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())              // re-send while still pending
+        await env.svc.stopMergeRequestNudge(child.id)
+
+        #expect(await treeStat(env.svc, child.id)?.nudges == 7)           // budget preserved, not reset
+        #expect(await treeStat(env.svc, child.id)?.state == .mergeRequested)
+        // The dedup path holds: no second t=0 request was enqueued.
+        let requests = try await env.svc.inboxPeek(parentCard.id).filter { $0.text.hasPrefix("merge-request:") }
+        #expect(requests.count == 1)
+    }
+
+    /// MAJOR: no generation fence. A re-arm cancels loop A and installs B — but cancelling A does not abort
+    /// its in-flight tick, so A finishes, exits, and its terminal cleanup unconditionally nils the slot,
+    /// UNTRACKING the live B. B then survives `stop`/archive and double-nudges alongside a later C.
+    /// `startRemoteWatch` already fences exactly this with `remoteWatchGen`; the nudge loop never did.
+    @Test("a superseded loop's terminal cleanup cannot untrack the loop that replaced it")
+    func staleCleanupCannotUntrackTheLiveLoop() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        await env.svc.startMergeRequestNudge(childId: child.id)          // loop A
+        let genA = await env.svc.mergeRequestNudgeGeneration(child.id)
+        await env.svc.startMergeRequestNudge(childId: child.id)          // re-arm: A cancelled, B installed
+        #expect(await env.svc.mergeRequestNudgeGeneration(child.id) != genA)
+
+        // A's terminal cleanup lands LATE, after B is installed. It must no-op, not evict B.
+        await env.svc.clearMergeRequestNudge(child.id, gen: genA)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)  // B is still tracked → still cancellable
+
+        await env.svc.stopMergeRequestNudge(child.id)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+    }
+
+    /// The other half of the same race: a ghost tick from the cancelled loop must not enqueue a reminder
+    /// (nor bump the count) after a re-arm has superseded it — otherwise two loops double-nudge the parent.
+    @Test("a superseded loop's in-flight tick sends no reminder")
+    func staleTickSendsNoReminder() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (parentCard, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        let genA = await env.svc.mergeRequestNudgeGeneration(child.id)
+        await env.svc.startMergeRequestNudge(childId: child.id)          // supersede A
+        await env.svc.stopMergeRequestNudge(child.id)                    // quiet the live loop
+        let before = try await env.svc.inboxPeek(parentCard.id).count
+
+        // A's tick, arriving after it was superseded: it owns a stale generation, so it must stop, not nudge.
+        let stop = await env.svc.reNudgeMergeRequest(child.id, gen: genA)
+        #expect(stop)
+        #expect(try await env.svc.inboxPeek(parentCard.id).count == before)   // no ghost reminder
+        #expect(await treeStat(env.svc, child.id)?.nudges == 0)               // no ghost count bump
+    }
+}
+
 /// The give-up badge is only useful if it STAYS. The tree-stat funnel recomputes `treeStat` on every
 /// parent movement, so `mergeStalled` must be sticky against it exactly as `mergeRequested` is — and must
 /// be cleared by the same verbs, or the card would wear a red badge forever after the merge finally lands.
@@ -226,6 +314,33 @@ struct MergeStalledStickinessTests {
         let child = try await stalledChild(env.svc, repo, parentTip)
 
         _ = try await env.svc.synced(ref: child.ref())
+        #expect(await treeState(env.svc, child.id) != .mergeStalled)
+    }
+
+    /// The badge is sticky against the recompute funnel, so every terminal verb must clear it EXPLICITLY —
+    /// otherwise a card whose merge finally landed wears the red "unanswered" badge forever.
+    @Test("shipped clears the stalled badge")
+    func shippedClearsStalled() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        _ = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await stalledChild(env.svc, repo, parentTip)
+
+        try TreeStatTests.advanceParent(repo, 1)          // simulate the merge (the S2-2 gate)
+        _ = try await env.svc.shipped(ref: child.ref())
+        #expect(await treeState(env.svc, child.id) != .mergeStalled)
+    }
+
+    @Test("set-parent clears the stalled badge (the child was re-pointed elsewhere)")
+    func setParentClearsStalled() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        _ = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await stalledChild(env.svc, repo, parentTip)
+
+        _ = try await env.svc.setParent(ref: child.ref(), parent: "main", mode: "move")
         #expect(await treeState(env.svc, child.id) != .mergeStalled)
     }
 }
