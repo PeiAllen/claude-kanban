@@ -52,10 +52,14 @@ public actor MergeWatch {
     /// Suspend on an armed subscription until one of its cards concludes; returns that `Conclusion`, or nil
     /// if the task is cancelled (e.g. the `orchestra wait` process is killed) or the token was dropped. A
     /// conclusion that already landed on the slot returns IMMEDIATELY — the lost wakeup that hung `wait`.
+    /// One park per token: a token is `armed` exactly once and consumed by the first `awaitConclusion`.
+    /// Parking a second caller on the same token would strand one of the two continuations, so it is a
+    /// programmer error — it returns nil rather than displacing the parked waiter. (No in-tree caller does
+    /// this: `wait` either `unsubscribe`s its token or parks on it exactly once.)
     public func awaitConclusion(token: UUID) async -> Conclusion? {
         guard let slot = slots[token] else { return nil }
         if case .delivered(let c) = slot { slots[token] = nil; return c }
-        guard case .armed(let ids) = slot else { return nil }
+        guard case .armed(let ids) = slot else { return nil }   // already parked ⇒ don't displace it
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<Conclusion?, Never>) in
                 if _Concurrency.Task.isCancelled { slots[token] = nil; cont.resume(returning: nil); return }
@@ -94,5 +98,8 @@ public actor MergeWatch {
         slots[token] = nil
     }
 
+    /// Live subscriptions — `armed` (registered, not yet parked), `parked`, and `delivered`-but-unconsumed.
+    /// NB this is no longer "parked waiters": a `wait` that has subscribed and is still reading card state
+    /// counts here too. Tests poll it to know a waiter is registered, which is exactly what it now means.
     public func subscriptionCount() -> Int { slots.count }
 }

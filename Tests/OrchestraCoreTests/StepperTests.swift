@@ -556,6 +556,38 @@ struct StaleBringUpFenceTests {
         #expect(after.phase == .dead(.spawnFailed))           // the conclusion stands
     }
 
+    /// **The invariant the post-hop reap leans on** (Codex fix-verification, MAJOR — refuted, then pinned).
+    /// The reap probes `stampedEpoch` and then `kill`s: two separate tmux calls, so not atomic. That is safe
+    /// ONLY because a card can have at most ONE bring-up in flight — `stepIfEligible` takes the
+    /// `inFlightSteps` claim synchronously before dispatching, and releases it only after the step returns —
+    /// so a newer generation's bring-up cannot `kill`+`ensure` between our probe and our kill. Pin it: if a
+    /// future change lets a second step be dispatched under an in-flight one, the reap becomes racy and this
+    /// test goes red first.
+    @Test("reconcile never dispatches a second bring-up while one is in flight", arguments: batteryAgents)
+    func test_noSecondBringUpWhileInFlight(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "m")
+        try await pollUntil { await e.svc.hasStepInFlight(card.id) == false }
+
+        // A being-born card whose bring-up WOULD be re-driven (a resumable transcript ⇒ the RelaunchStepper
+        // kills + ensures), but which already has a claim held across its off-actor hop.
+        e.adapter.writeTranscript(for: card.agentSessionId!)
+        e.sessions.setAlive(card.id, false)   // no live session ⇒ the reconciler would STEP it, not adopt it
+        await e.svc.seedPhase(card.id, .relaunching)
+        await e.svc.setStepInFlight(card.id, true)
+        let ensuresBefore = e.sessions.ensureCount
+        let killsBefore = e.sessions.killed.count
+
+        for _ in 0..<5 { await e.svc.reconcile() }        // ticks that WOULD re-step an unclaimed card
+        // Steps are dispatched as unstructured tasks, so a dispatched one would land its kill+ensure just
+        // after the tick returns — give it room to, then assert it never happened.
+        try await _Concurrency.Task.sleep(for: .milliseconds(250))
+
+        #expect(e.sessions.ensureCount == ensuresBefore)  // no second bring-up: no kill, no ensure
+        #expect(e.sessions.killed.count == killsBefore)
+        await e.svc.setStepInFlight(card.id, false)
+    }
+
     /// **MAJOR 2 (review).** The LANDING needs the same fence as the bring-up. `markDead` does not bump
     /// `sessionEpoch` and `dead → live` is a legal revival edge, so a step whose readiness confirmed only
     /// AFTER the launch timeout concluded the card would flip it back to `.live` — re-animating a card whose

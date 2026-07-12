@@ -203,11 +203,32 @@ extension OrchestraService {
         // no-op — so a real tmux session + agent process would leak under a dead card, across daemon
         // restarts. Reap it ourselves. Only ever kill a session stamped with OUR generation: a newer relaunch
         // that already `ensure`d owns the same session NAME, and killing that one would be this very bug.
+        //
+        // The probe and the kill are two separate tmux calls, so they are not atomic — which is safe ONLY
+        // because of the single-bring-up-per-card invariant: `stepIfEligible` takes the `inFlightSteps` claim
+        // SYNCHRONOUSLY before dispatching, and `runStep` releases it only after the step (this function
+        // included) has returned, so a newer generation's bring-up cannot `kill`+`ensure` between our probe
+        // and our kill — it has not been dispatched yet. The other `ensure` sites can't race us either: the
+        // startup-abort retry is gated on a `.live` card (ours is still being born), and `openShell`/`exec`
+        // create an UNSTAMPED session, which the epoch check below declines to kill. If that invariant is ever
+        // relaxed, this reap needs a real per-card session lock. (Pinned by `test_noSecondBringUpWhileInFlight`.)
         guard await stillOwns(id, expecting: expecting, epoch: expectedEpoch) else {
-            try? await offActor { [sessions] in
+            // Fail-safe by direction: we only ever kill a session we can PROVE is ours, so a probe that
+            // fails (a tmux hiccup, or a `SessionManaging` conformer that doesn't override `stampedEpoch` —
+            // the protocol default returns nil) declines to kill rather than killing someone else's session.
+            // But a decline means the leak this reap exists to prevent has silently recurred, so say so:
+            // an unreapable session is an operator-visible warning, not a silent orphan.
+            let probe: (alive: Bool, stamped: Int?) = (try? await offActor { [sessions] in
                 let name = sessions.sessionName(id)
+                let alive = (try? sessions.isAlive(name)) ?? false
                 let stamped = (try? sessions.stampedEpoch(name: name)) ?? nil
-                if stamped == expectedEpoch { _ = try? sessions.kill(name) }
+                if stamped == expectedEpoch { _ = try? sessions.kill(name) }   // ours ⇒ reap it
+                return (alive, stamped)
+            }) ?? (false, nil)
+            if probe.alive, probe.stamped == nil, let now = await store.get(id) {
+                emitActivity(.warning, now, .daemon,
+                             "superseded bring-up could not verify its session's generation — "
+                             + "\(sessions.sessionName(id)) may be left behind")
             }
             return .superseded
         }
