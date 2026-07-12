@@ -316,3 +316,115 @@ Deliberately excluded to keep the diff reviewable and focused on the reproduced 
 - **Blocking *file* I/O actors** (`TaskStore`, `Inbox`, `TrustLedger`, `RolloutTailer`). Same class,
   but local file writes are milliseconds rather than multi-second forks and cannot realistically
   starve the pool. → **follow-up audit.**
+
+---
+
+# Postscript (2026-07-12): Fix 2 (the serial executor) was MEASURED AND DECLINED
+
+Card `harden/serial-executor-forking-actors` was cut to implement Fix 2 above — give `BranchLineage`,
+`RemoteParents` and `WorktreeRegistry` a hand-rolled portable `SerialExecutor` so their `git` forks
+park a GCD thread instead of a cooperative-pool thread. **It was not built. The measurement says the
+hazard cannot get large.** This section records why, so nobody re-derives it.
+
+## The ceiling nobody computed
+
+Fix 2's premise is "enough concurrent forks park enough pool threads to exhaust the pool." Count the
+forks that can actually be in flight at once:
+
+**These three types are `actor`s, so each is SERIAL.** One `BranchLineage` can have at most **one**
+`git config` running. One `RemoteParents`, one `git fetch`. One `WorktreeRegistry`, one
+`git worktree add`. And production holds exactly one of each, because it holds exactly one
+`OrchestraService` (`orchestrad/main.swift:11`, a top-level `let` that never releases).
+
+> **Production can therefore park at most THREE cooperative-pool threads. Ever. By construction.**
+
+Starvation needs ≈ `activeProcessorCount`. On the dev Mac that is 18. On the remote Linux box
+(`scripts/build-linux-daemon.sh` — the deployment that *would* be the strongest case for the executor,
+since a small pool is easier to exhaust) the owner confirms the box is generously provisioned. A
+ceiling of 3 is not close to 18 on any machine this project targets. **The wedge requires a ≤3-core
+host, which is not a deployment this project has.**
+
+## The one place the ceiling does NOT hold — and the measurement there
+
+The "one instance of each" invariant is a *production* invariant. **The test suite violates it**:
+every test constructs its own `OrchestraService`, so hundreds of these actors coexist, and
+`swift test --parallel` runs swift-testing's cases as Tasks *on the same cooperative pool they would
+starve*. If the hazard is real anywhere, it is real there. So it was measured there, not argued.
+
+Method (`scripts/pool-probe.sh`): run the in-process swift-testing phase under full `--parallel` load
+and sample the helper process throughout, classifying every thread as *cooperative* (its `sample`
+thread header names `com.apple.root.<qos>.cooperative`) and *blocked* (`semaphore_wait_trap` —
+`Proc.run`'s `exited.wait()`). A thread that is **both** is the bug.
+
+| | |
+|---|---|
+| pool width (`hw.activecpu`) | **18** |
+| tests executed under load | 1060 |
+| samples across the load window | 73 |
+| peak cooperative threads in use | 20 |
+| peak *total* threads | 67 |
+| **peak PARKED cooperative threads** | **1** |
+| samples with ≥ 1 parked | **1 of 73** (mean 0.01) |
+
+**Peak 1 of 18.** Not 18, not 9 — one, once. Starvation is two orders of magnitude away, and the gap
+is *structural*, not lucky: a serial actor cannot fork in parallel with itself, and `git config` calls
+finish faster than the next one arrives.
+
+## The mechanism is real — it just cannot scale
+
+This is not a "couldn't reproduce it" result. The single parked sample captured **exactly** the stack
+the design predicted:
+
+```
+BranchLineage.read   (BranchLineage.swift:57)
+  → BranchLineage.get (BranchLineage.swift:33)
+    → Proc.run        (Proc.swift:82)          ← semaphore_wait_trap
+```
+
+The design was right about the *mechanism* and wrong about the *magnitude* — because it reasoned about
+a world with leaked zombie services, each bringing its own `BranchLineage` and all forking in genuine
+parallel. **Fix 1 deleted that world.** Once the leak is gone, the serial-actor ceiling binds, and the
+executor defends a number that cannot grow.
+
+## What the executor would have cost
+
+Not free, and worth naming since "it's only 40 lines" was the pitch:
+
+- A hand-rolled `SerialExecutor` — `DispatchSerialQueue`'s `SerialExecutor` conformance is a **Darwin
+  overlay**; swift-corelibs-libdispatch has none. The obvious implementation compiles on macOS and
+  **breaks `orchestrad` on Linux at deploy time, not in CI.**
+- Trading a *deadlock* for *unbounded GCD thread growth*. Cheap only while the instance count is
+  bounded — the exact invariant that also makes the executor unnecessary. **Both arguments live and
+  die together.**
+- A permanent "do not copy-paste this onto a per-request actor" comment at three sites, forever.
+
+## What would flip this decision
+
+Re-open the card if **either** becomes true:
+
+1. **A small deployment target appears** — a ≤3-core Linux VM, or a cpuset-pinned container. Then the
+   pool is narrower than the fork ceiling and the wedge is live.
+2. **The instance count stops being bounded** — anything that creates `OrchestraService`, or these
+   three actors, per-request/per-connection (a multi-tenant daemon). Note this cuts *both* ways: it
+   would make the executor necessary **and** make a per-instance queue dangerous (thread explosion).
+   That variant needs a shared static queue per actor *type*, not per instance.
+
+A third, weaker trigger: if a fork under one of these actors starts routinely blocking for *minutes*
+(a `git worktree add` on a huge repo genuinely hitting its 600s bound), the ceiling of 3 stops being
+harmless even at width 18 — 3 threads gone for ten minutes is a real capacity dent, though still not a
+wedge.
+
+## Reusable artifact
+
+`scripts/pool-probe.sh` measures peak cooperative-pool starvation in any `swift test --parallel` run.
+Three traps it already encodes, all of which cost real time to learn:
+
+- **A cooperative thread is identified by its `sample` THREAD HEADER** (`…-qos.cooperative`), *not* by
+  a `swift_job_run` frame. Keying on frame names reports a clean `parked=0` **on a process that is
+  provably 100% starved.** The script ships with a positive control (`scripts/pool-probe-control`) that parks
+  every pool thread; a classifier that does not light up there is lying.
+- **`swift-test` and `swiftpm-testing-helper` each `setpgrp` into their own process group**, so
+  `kill -PGID` misses them. A survivor holds the SwiftPM **`.build` lock** and the next run blocks on
+  it forever. The script reaps its runner's descendant tree by PID and verifies.
+- **Never pattern-kill** (`pkill -f swift-test`): other agents run the suite concurrently on this
+  machine, and a name match kills *their* run.
