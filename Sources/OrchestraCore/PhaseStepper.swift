@@ -49,7 +49,11 @@ public struct ConvergeContext: Sendable {
     public let materialize: @Sendable (_ id: UUID) async -> MaterializeOutcome
     /// Actor-bound bring-up + capability-gated readiness (wraps `launchAndConfirm`'s readiness machinery),
     /// so `readinessWaiters`/`pendingReadiness`/`launchReadyTicks` + `ORCH_EPOCH` stamping stay actor-owned.
-    public let finishLaunch: @Sendable (_ id: UUID, _ flavor: LaunchFlavor) async -> ReadinessOutcome
+    /// `expecting`/`epoch` are the phase + generation the step was DISPATCHED for: the bring-up (`kill` +
+    /// `ensure`) stands down `.superseded` if the card has left them, so a stale step can never tear down and
+    /// re-create a live agent's session.
+    public let finishLaunch: @Sendable (_ id: UUID, _ flavor: LaunchFlavor,
+                                        _ expecting: Phase.Kind, _ epoch: Int) async -> ReadinessOutcome
     /// Actor-bound teardown duties Teardown can't reach from the struct: cancel treeStat/child-fanout
     /// debounces + remote watch + re-nudge timer AND the child find+nudge+wake (`lineage`/`derivedCard`/`wake`).
     public let teardownActorDuties: @Sendable (_ id: UUID) async -> Void
@@ -60,7 +64,7 @@ public struct ConvergeContext: Sendable {
                 adapters: AgentRegistry, inbox: Inbox,
                 transition: @escaping @Sendable (UUID, Phase, Int?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
-                finishLaunch: @escaping @Sendable (UUID, LaunchFlavor) async -> ReadinessOutcome,
+                finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
                 emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
@@ -137,13 +141,13 @@ public struct LaunchStepper: PhaseStepper {
         let flavor = deriveLaunchFlavor(card, adapter)
         let land = landing(of: flavor)
         let epoch = card.sessionEpoch
-        switch await ctx.finishLaunch(card.id, flavor) {
+        switch await ctx.finishLaunch(card.id, flavor, .launching, epoch) {
         case .confirmed:
             _ = await ctx.transition(card.id, .live(land), epoch) { t in t.pendingSeed = nil }
         case .timedOut:
             break   // leave `.launching` for the reconciler's phaseChangedAt timeout (Task 2) — no hot-loop
         case .superseded:
-            break   // a newer bring-up owns the card
+            break   // a newer bring-up / landing owns the card (it left `.launching` or bumped its epoch)
         }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
@@ -189,7 +193,7 @@ public struct RelaunchStepper: PhaseStepper {
         }
         let land = landing(of: flavor)
         let epoch = card.sessionEpoch
-        switch await ctx.finishLaunch(card.id, flavor) {
+        switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
         case .confirmed:
             _ = await ctx.transition(card.id, .live(land), epoch) { t in t.pendingSeed = nil }
         case .timedOut:

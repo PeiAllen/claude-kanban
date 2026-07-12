@@ -3,7 +3,7 @@ import Foundation
 /// The outcome of awaiting a relaunch's inline readiness confirmation. `.superseded` is distinct from
 /// `.timedOut` so a relaunch displaced by a newer relaunch for the same card exits quietly (the survivor
 /// owns the card) instead of being treated as a failure and marked dead.
-public enum ReadinessOutcome: Sendable { case confirmed, timedOut, superseded }
+public enum ReadinessOutcome: Sendable, Equatable { case confirmed, timedOut, superseded }
 
 /// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
 /// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;

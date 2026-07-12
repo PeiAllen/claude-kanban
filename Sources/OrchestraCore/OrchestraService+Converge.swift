@@ -129,9 +129,21 @@ extension OrchestraService {
     /// returned `ReadinessOutcome`. Always kills the predecessor session before `ensure` (idempotent for a
     /// fresh launch), so the relaunch kill→ensure ordering holds. A `.resume` whose transcript vanished or
     /// an `ensure` throw yields `.timedOut` (the stepper's own pre-checks classify the real failure paths).
-    func finishLaunch(_ id: UUID, flavor: LaunchFlavor) async -> ReadinessOutcome {
+    ///
+    /// FENCED on the phase + generation the step was DISPATCHED for (`expecting`/`epoch`). A step is
+    /// dispatched off a snapshot and runs asynchronously, so the card can leave that phase before the step
+    /// arrives here — the reconciler's adopt path lands a `.launching` card whose session came up, and
+    /// `report()`'s SessionStart(clear/resume) writes `.live` directly. Since the bring-up is a `kill` +
+    /// `ensure`, an unfenced stale step would tear a LIVE agent's session down and replace it with a fresh
+    /// one. It stands down `.superseded` instead — the same single-winner discipline the funnel applies to
+    /// phase writes, extended to the side effects.
+    func finishLaunch(_ id: UUID, flavor: LaunchFlavor,
+                      expecting: Phase.Kind, epoch expectedEpoch: Int) async -> ReadinessOutcome {
         guard let task = await store.get(id), let adapter = try? registry.get(task.agentId) else {
             return .timedOut
+        }
+        guard task.phase.kind == expecting, task.sessionEpoch == expectedEpoch else {
+            return .superseded   // a newer landing/generation owns the card — never bring up under it
         }
         let epoch = task.sessionEpoch
         let grace = config.revivalGraceSeconds

@@ -101,10 +101,17 @@ extension OrchestraService {
                 }
 
             case .launching, .relaunching:
-                // A pending readiness waiter means a bring-up is ACTIVELY in progress (a synchronous verb, or
-                // our own in-flight step) that will resolve it — so neither adopt nor re-step; only tick the
-                // N=3 fallback (below), which is the mechanism that resolves that very waiter.
-                let bringingUp = readinessWaiters[t.id] != nil
+                // A bring-up is ACTIVELY in progress (a synchronous verb, or our own in-flight step) that will
+                // land the card — so neither adopt nor re-step; only tick the N=3 fallback (below), which is
+                // the mechanism that resolves that bring-up's waiter.
+                //
+                // `inFlightSteps` is part of the test, not just `readinessWaiters`: a step registers its
+                // waiter only AFTER its off-actor `kill`+`ensure` returns, so between those two points a
+                // waiter-only check reads "nobody is bringing this up" while the session is already up — and
+                // the adopt below would land the card `.live` out from under its own in-flight step. The step
+                // then stands down (`finishLaunch` is fenced on the dispatched phase), but the adopt is still
+                // a double-drive of a card that was already being brought up. Take the step's own claim.
+                let bringingUp = readinessWaiters[t.id] != nil || inFlightSteps.contains(t.id)
                 // (adopt) a stranded being-born card whose session is ALREADY up at the SAME epoch → adopt to
                 // live rather than re-launching it (the session came up before a crash cut the phase write).
                 // An OLDER-epoch session is NEVER adopted — the stepper completes the relaunch (kill+launch).

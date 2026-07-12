@@ -405,3 +405,60 @@ struct StepperTests {
         #expect(after2.phaseChangedAt == after1.phaseChangedAt)
     }
 }
+
+// MARK: - Test F · the stale bring-up fence (bug #2 — the `--parallel` suite hang)
+
+/// A `LaunchStepper`/`RelaunchStepper` step is dispatched off a phase SNAPSHOT and runs asynchronously
+/// (`stepIfEligible` → unstructured `Task` → `runStep`). By the time it reaches `finishLaunch` the card can
+/// ALREADY be `.live`: the reconciler's adopt path lands a `.launching` card whose session came up, and
+/// `report()`'s SessionStart(clear/resume) writes `.live` directly. The stale step must then STAND DOWN.
+///
+/// It did not. `finishLaunch`'s bring-up is `kill` + `ensure`, so it tore the live agent's session down and
+/// replaced it with a fresh one — a duplicate bring-up on a card nobody asked to relaunch. Under
+/// `swift test --parallel` that resurrected a session a test had just killed, so the card never died, never
+/// concluded, and the `wait` suspended on it (the only unbounded park in the product) hung forever — wedging
+/// the whole run. Agent-agnostic: the fence is a phase/epoch check, not an adapter branch.
+@Suite("PR4b Task 5 · Test F — a stale bring-up never resurrects a live session")
+struct StaleBringUpFenceTests {
+
+    @Test("a bring-up whose card already left `.launching` stands down (no kill+ensure on a live session)",
+          arguments: batteryAgents)
+    func test_staleBringUpDoesNotResurrectLiveSession(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "f")
+        let epoch = card.sessionEpoch
+
+        e.sessions.setAlive(card.id, false)               // the agent's session vanishes (crash / tmux kill)
+        #expect(!e.sessions.isAliveTest(card.id))
+
+        // The step dispatched back when the card was `.launching` finally runs — the card is `.live` now.
+        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+                                               expecting: .launching, epoch: epoch)
+
+        #expect(outcome == .superseded)                   // stood down — a newer landing owns the card
+        #expect(!e.sessions.isAliveTest(card.id))         // and did NOT resurrect the vanished session
+
+        // …so the liveness pass can still see the death and conclude the card. (The hang: it couldn't —
+        // the resurrected session read `alive`, so the card sat `.live` forever with a `wait` parked on it.)
+        await e.svc.reconcileLiveness()
+        let after = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(after.phase == .dead(.sessionVanished))
+    }
+
+    /// The fence is on the CARD's generation too: a restart bumps `sessionEpoch` and re-enters
+    /// `.relaunching`, so a step from the previous generation must not bring up the old session under it.
+    @Test("a bring-up from a superseded generation stands down", arguments: batteryAgents)
+    func test_staleGenerationBringUpStandsDown(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "g")
+        let staleEpoch = card.sessionEpoch
+
+        await e.svc.seedPhase(card.id, .launching, sessionEpoch: staleEpoch + 1)   // a newer generation owns it
+        e.sessions.setAlive(card.id, false)
+
+        let outcome = await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+                                               expecting: .launching, epoch: staleEpoch)
+        #expect(outcome == .superseded)
+        #expect(!e.sessions.isAliveTest(card.id))
+    }
+}
