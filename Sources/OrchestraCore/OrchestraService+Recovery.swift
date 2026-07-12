@@ -294,7 +294,13 @@ extension OrchestraService {
            let adapter = try? registry.get(spec.adapterId) {
             spawnAttempts[id] = attempt + 1
             try? adapter.prepareToLaunch(spec.ctx)
-            let env = adapter.env
+            // Stamp the card's generation, exactly as `finishLaunch` does. An UNSTAMPED retry session is a
+            // session the epoch machinery cannot see: `stampedEpoch` reads nil for it, so adopt and
+            // `reconcilePhasesAtBoot` can never epoch-match it (the next daemon boot tears a perfectly
+            // healthy retried session down and relaunches it, losing the agent's context), and its hooks
+            // report with `observedEpoch == nil`, which skips the funnel's generation fence entirely — a
+            // stale report from it can then land `.live` on a card a newer relaunch already owns.
+            let env = withEpoch(adapter.env, live.sessionEpoch)
             let argv = adapter.start(spec.ctx)
             let launchTask = t
             do {
@@ -355,6 +361,18 @@ extension OrchestraService {
     /// Test hook: tighten the startup-confirmation grace + retry budget (production uses the defaults).
     /// Also RE-STAMPS any already-armed `spawnPending` deadline to the new grace, so a test that drives a
     /// card to `.live` (armed with the default grace) can then tighten the window without re-spawning.
+    /// Test hook: hold/release the reconciler's bring-up claim for `id` (`inFlightSteps`), so a test can
+    /// drive the interleavings that ONLY occur while a step owns the card — a report racing the bring-up,
+    /// the adopt path racing its own in-flight step. Production sets this in `stepIfEligible`.
+    func setStepInFlight(_ id: UUID, _ inFlight: Bool) {
+        if inFlight { inFlightSteps.insert(id) } else { inFlightSteps.remove(id) }
+    }
+
+    /// Test hook: is a bring-up step still in flight for `id`? A step lands `.live` and only THEN returns, so
+    /// a test that drives a card to `.live` and immediately manipulates its session can otherwise race the
+    /// tail of that step (its `ensure` clears the dead-pane mark) — under parallel-suite load, minutes later.
+    func hasStepInFlight(_ id: UUID) -> Bool { inFlightSteps.contains(id) }
+
     func setStartupConfirmation(graceSeconds: Int, maxRetries: Int) {
         spawnGraceSeconds = graceSeconds; maxStartupRetries = maxRetries
         let newDeadline = Date().addingTimeInterval(Double(graceSeconds))

@@ -71,7 +71,19 @@ data-loss bug.
 
 ## The fix
 
-Two changes, both in the convergence machinery, agent-agnostic (no adapter branches):
+Three changes, all in the convergence machinery, agent-agnostic (no adapter branches).
+
+**The invariant:** *while a bring-up step owns a card, nothing else may land that card `.live`.*
+`inFlightSteps` is the ownership token — it is taken synchronously in `stepIfEligible`, before the step is
+dispatched, and held across the step's off-actor `kill`+`ensure`.
+
+An entry-only fence is **not** enough, and the first cut of this fix had exactly that hole (caught in
+review): `finishLaunch` suspends at `resolveTrust` and `prepareToLaunch` between the fence and the
+destructive hop, so a same-epoch `.live` landing — `report()`'s SessionStart(clear/resume), a re-title
+prompt, or a rollout snapshot — could slip in *after* the fence passed. The step would then still believe it
+owned a being-born card and kill the live session anyway. Hence (3): the claim gates the *other* writers,
+which is what makes the entry fence sufficient.
+
 
 1. **Fence the bring-up on its dispatched phase + generation.**
    `finishLaunch(_:flavor:expecting:epoch:)` re-reads the card and returns `.superseded` — *before any
@@ -84,8 +96,15 @@ Two changes, both in the convergence machinery, agent-agnostic (no adapter branc
    `readinessWaiters`. A step registers its readiness waiter only *after* its off-actor `kill`+`ensure`
    returns; in that gap a waiter-only check reads "nobody is bringing this card up" while its session is
    already up, so adopt would land it `.live` out from under its own in-flight step. Taking the step's
-   own claim removes the double-drive at the source. (1) alone fixes the hang; (2) stops the race from
-   being run in the first place.
+   own claim removes the double-drive at the source.
+
+3. **A report may not land a card `.live` under an in-flight bring-up.** `report()` has four direct `.live`
+   writes (SessionStart clear/resume, the re-title prompt, the snapshot run-state); each is now gated on the
+   claim. Only the *phase* write is suppressed — every other field (session id, title, desc, model, ctx)
+   still applies, and the readiness signals (`resolveReadiness`) still fire, so the in-flight step confirms
+   and lands `.live` itself through the funnel with the landing its flavor derives. Terminal writes
+   (SessionEnd death, turn completion) are deliberately **not** gated: a card that genuinely died must still
+   die, and the step's own `kill` is then harmless. This closes the window (1) alone leaves open.
 
 ## Regression tests
 
@@ -93,17 +112,65 @@ Two changes, both in the convergence machinery, agent-agnostic (no adapter branc
 
 - a bring-up whose card already left `.launching` stands down: `.superseded`, the vanished session is
   **not** resurrected, and the liveness pass therefore concludes the card `.dead(.sessionVanished)`;
-- a bring-up from a superseded **generation** stands down.
+- a bring-up from a superseded **generation** stands down;
+- a **report cannot steal the landing** from an in-flight bring-up (the window the entry fence leaves open);
+- **adopt does not race an in-flight step**.
 
-Verified RED against the unfenced code — without the fence the session comes back alive and the card
-sits `.live(.running)`, which is precisely the wedge.
+Each verified RED against the un-fixed code — without the fence the session comes back alive and the card
+sits `.live(.running)`, which is precisely the wedge; without the report gate the card lands `.live` under
+the step.
 
-## Leftover, deliberately not bundled
+## What the review pass changed (Claude + Codex, bounded pair)
 
-`OrchestraService.wait` reads card state and *then* subscribes to `MergeWatch`, with two actor hops in
-between, while `watch` registers first. A conclusion landing in that gap reaches zero subscribers and is
-dropped (`MergeWatch` keeps no memory of it, unlike readiness's `pendingReadiness`), and the waiter would
-park forever. This was **not** the cause of this hang — the traced runs show no such drop — but it is a
-real latent lost-wakeup on an unbounded park, and `wait` having no timeout means it is unrecoverable when
-it does fire. Worth its own card: subscribe-before-read makes it airtight, because `transition` writes the
-terminal phase to the store *before* it calls `concludeCard`.
+Both reviewers converged on the same structural criticism, and it was right: **the fence was a check, not a
+lease.** It is checked once on entry, but `finishLaunch` cannot hold the actor across its off-actor
+`kill`+`ensure`, so the card can be taken away in between. Four concrete holes, all now closed and each with
+a regression test verified RED against the un-fixed code:
+
+1. **A report could steal the landing** (Codex, BLOCKER). `report()` has four direct `.live` writes; any of
+   them landing at the same epoch after the entry fence passed would leave the step believing it still owned
+   a being-born card, and it would kill the live session anyway. → the claim now gates them (change 3 above).
+2. **The `kill`+`ensure` could land under a card that went terminal** (Claude, MAJOR). The launch-timeout
+   `markDead` runs *outside* the `bringingUp` gate — deliberately, since it is what keeps a wedged bring-up
+   converging — so a card can die while its session is coming up. Nothing would ever reap that session (the
+   orphan sweep only touches archived/absent cards; reconcile's `.dead` case is a no-op), leaking a real tmux
+   session + agent process under a dead card, across daemon restarts. → ownership is now re-verified
+   immediately before the hop *and* after it, and a bring-up that lost the card **reaps the session it just
+   created** — killing only a session stamped with its OWN generation, since a newer relaunch owns the same
+   session *name*.
+3. **The landing was epoch-fenced but not phase-fenced** (Claude, MAJOR). `markDead` does not bump
+   `sessionEpoch` and `dead → live` is a legal revival edge, so a step whose readiness confirmed *after* the
+   timeout concluded the card would flip it back to `.live` — re-animating a card whose death a watching
+   parent's `wait` had already been told about. → the funnel's `transition` takes an `expecting` phase, and
+   the steppers pass the phase they were dispatched for, so the landing carries the same single-winner fence
+   as the bring-up.
+4. **The startup-abort retry launched an UNSTAMPED session** (Claude, MAJOR) — `adapter.env` with no
+   `withEpoch`. An unstamped session is invisible to the epoch machinery: `stampedEpoch` reads nil, so adopt
+   and `reconcilePhasesAtBoot` can never epoch-match it (the next daemon boot tears a healthy retried session
+   down and relaunches it, losing the agent's context), and its hooks report with `observedEpoch == nil`,
+   skipping the funnel's generation fence entirely. The new fence *amplified* this into a silently-skipped
+   restart. → the retry stamps its generation like every other launch.
+
+Claude's review also independently *proved* the property I was least sure of — that the fence cannot wrongly
+reject a legitimate bring-up: only the two steppers reach `finishLaunch`; `sessionEpoch` is bumped in exactly
+one place (entry to `.creatingWorktree`/`.relaunching`); `.launching` has no re-entry edge, so its epoch is
+frozen for the whole phase. A phase/epoch mismatch at the guard is therefore *always* a genuine supersede.
+
+## The `wait` lost-wakeup — folded in after all
+
+`OrchestraService.wait` read card state and *then* subscribed to `MergeWatch`, with two actor hops in
+between, while `watch` registered first. A conclusion landing in that gap reached zero subscribers and was
+dropped (`MergeWatch` kept no memory of it), and the waiter parked forever — on the one unbounded park in
+the product.
+
+This was **not** the cause of the wedge (the traced runs show no such drop), and the first cut of this
+branch left it as a follow-up. The review pass correctly refused that: the regression test I wrote for it
+(`waitSurvivesConclusionRacingSubscribe`) is racy *by construction*, so shipping it into the very suite this
+branch is making green would have planted a flake that reads as "the fence broke `wait`". Land the fix or
+drop the test — so the fix is landed.
+
+`MergeWatch` is now two-phase (`subscribe` → `awaitConclusion(token:)`), with a `delivered` slot state that
+RETAINS a conclusion arriving between the two, and `wait` subscribes **before** it reads. That is airtight
+because `transition` writes the terminal phase to the store *before* it calls `concludeCard`: a conclusion
+landing after the subscribe resolves the subscription, and one that landed before it is already visible in
+the store to `firstConcluded`.

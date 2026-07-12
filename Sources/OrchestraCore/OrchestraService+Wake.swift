@@ -67,16 +67,27 @@ extension OrchestraService {
             registerWatch(watcher, children)
             activeWaitProcesses[watcher, default: 0] += 1
         }
+        // SUBSCRIBE BEFORE READING CARD STATE. `transition` writes the terminal phase to the store BEFORE it
+        // calls `concludeCard` → `mergeWatch.conclude`, so with the subscription already armed every
+        // conclusion is caught by exactly one of the two below: one that lands from here on resolves the
+        // subscription; one that landed earlier is already visible in the store to `firstConcluded`.
+        //
+        // The old order (read, then subscribe) left a gap between them — both are actor hops, so `wait`
+        // suspends across them — and a conclusion arriving in that gap reached ZERO subscribers and was
+        // dropped. `wait` then parked forever on a continuation nobody would ever resume, with no timeout to
+        // save it: an unrecoverable lost wakeup. (`watch`, below, already had this order right.)
+        let token = await mergeWatch.subscribe(children)
         let result: Conclusion?
         // Short-circuit on a child that is ALREADY settled-terminal (handles the re-issue race where a
         // child concluded between two `wait` calls). This IS the real-card-state read.
         if let concluded = await firstConcluded(in: children) {
+            await mergeWatch.unsubscribe(token)
             // Unregister the settled child (mirror `concludeCard`'s remove) so a later revival→re-death
             // of the same child cannot re-notify this watcher through a stale registry entry.
             if let watcher { unregisterWatch(watcher, concluded.cardId) }
             result = concluded
         } else {
-            result = await mergeWatch.awaitConclusion(children)
+            result = await mergeWatch.awaitConclusion(token: token)
         }
         if let watcher { releaseActiveWaitProcess(watcher) }
         return result

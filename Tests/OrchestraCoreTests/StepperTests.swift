@@ -365,7 +365,7 @@ struct StepperTests {
     private struct DoubleStepper: PhaseStepper {
         static var drives: Phase.Kind { .creatingWorktree }
         func step(_ card: Task, _ ctx: ConvergeContext) async throws {
-            _ = await ctx.transition(card.id, .launching, nil, { _ in })
+            _ = await ctx.transition(card.id, .launching, nil, .creatingWorktree, { _ in })
         }
         func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
             (await ctx.store.get(card.id))?.phase.kind == .launching
@@ -461,4 +461,157 @@ struct StaleBringUpFenceTests {
         #expect(outcome == .superseded)
         #expect(!e.sessions.isAliveTest(card.id))
     }
+
+    /// **The surviving race (Codex review, BLOCKER).** The entry fence alone is NOT enough: `finishLaunch`
+    /// suspends (trust resolve, `prepareToLaunch`) between the fence and its destructive `kill`+`ensure`, so
+    /// a report landing the card `.live` at the SAME epoch in that window would leave the step believing it
+    /// still owns a being-born card — and it would kill the live session and re-`ensure` a fresh one. The
+    /// claim (`inFlightSteps`) is therefore the ownership token: while a bring-up owns the card, a report may
+    /// NOT land it `.live`. Both readiness capabilities are covered — Claude's SessionStart(resume/clear)
+    /// hook and Codex's rollout-driven report both route through `report()`.
+    @Test("a report cannot land a card `.live` under an in-flight bring-up (the fence's surviving window)",
+          arguments: batteryAgents)
+    func test_reportCannotStealTheLandingFromAnInFlightBringUp(
+        agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "h")
+
+        // The card is being relaunched: a step is dispatched and is mid-bring-up (it holds the claim, and is
+        // suspended in `prepareToLaunch` — it has NOT killed/ensured yet).
+        await e.svc.seedPhase(card.id, .relaunching)
+        await e.svc.setStepInFlight(card.id, true)
+
+        // The still-live prior agent reports SessionStart(resume) — the exact interleaving Codex flagged.
+        try? await e.svc.report(card.id, StatusReport(sessionSource: "resume"))
+
+        // It must NOT have landed `.live`: the bring-up owns the landing. (Before this fix it did, and the
+        // step — fenced only on entry — would then have killed the live session and re-ensured a blank one.)
+        let mid = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(mid.phase.kind == .relaunching)
+
+        // The report's readiness signal still lands, so the step confirms and lands `.live` itself.
+        #expect(await e.svc.hasReadinessWaiter(card.id) == false || mid.phase.kind == .relaunching)
+        await e.svc.setStepInFlight(card.id, false)
+    }
+
+    /// The adopt path must not land a card `.live` out from under its own in-flight step (`bringingUp` takes
+    /// the step's claim, not just a registered readiness waiter — a step registers its waiter only AFTER its
+    /// off-actor `kill`+`ensure` returns, so a waiter-only check reads "nobody is bringing this up").
+    @Test("reconcile does not adopt a card whose bring-up step is still in flight", arguments: batteryAgents)
+    func test_adoptDoesNotRaceAnInFlightStep(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "i")
+        let epoch = card.sessionEpoch
+
+        // A `.launching` card whose session is ALREADY up at the matching epoch — the adopt precondition —
+        // but whose own step is still in flight (it ensured, and has not yet registered its waiter).
+        await e.svc.seedPhase(card.id, .launching, sessionEpoch: epoch)
+        e.sessions.setStampedEpoch(card.id, epoch)
+        await e.svc.setStepInFlight(card.id, true)
+
+        await e.svc.reconcile()
+
+        let after = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(after.phase.kind == .launching)   // NOT adopted — its own step owns the landing
+        await e.svc.setStepInFlight(card.id, false)
+    }
+
+    /// **MAJOR 1 (review).** The fence is a CHECK, not a lease: `finishLaunch` cannot hold the actor across
+    /// its off-actor `kill`+`ensure`, and the launch-timeout `markDead` runs OUTSIDE the `bringingUp` gate
+    /// (deliberately — it is what keeps a wedged bring-up converging). So a card CAN go terminal while the
+    /// session is coming up. Nothing else would ever reap that session (the orphan sweep only touches
+    /// archived/absent cards; reconcile's `.dead` case is a no-op), so a real tmux session + agent process
+    /// would leak under a dead card, across daemon restarts. The bring-up must reap what it created.
+    @Test("a bring-up superseded WHILE its session comes up reaps that session (no leak under a dead card)",
+          arguments: batteryAgents)
+    func test_bringUpReapsItsSessionWhenSupersededMidHop(
+        agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "j")
+        let epoch = card.sessionEpoch
+        await e.svc.seedPhase(card.id, .launching, sessionEpoch: epoch)
+        e.sessions.setAlive(card.id, false)
+
+        // The supersede lands INSIDE the ensure — the window the entry fence cannot see.
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        e.sessions.onEnsure = { entered.signal(); release.wait() }
+
+        let bringUp = _Concurrency.Task {
+            await e.svc.finishLaunch(card.id, flavor: .blank(landing: .running, prompt: nil),
+                                     expecting: .launching, epoch: epoch)
+        }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { entered.wait(); c.resume() }
+        }
+        // The launch timeout concludes the card while its session is mid-bring-up.
+        await e.svc.markDead(card.id, reason: .spawnFailed, detail: "launch timed out", source: .daemon)
+        release.signal()
+
+        let outcome = await bringUp.value
+        e.sessions.onEnsure = nil
+
+        #expect(outcome == .superseded)                       // it lost the card
+        #expect(!e.sessions.isAliveTest(card.id))             // …and reaped the session it had just created
+        let after = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(after.phase == .dead(.spawnFailed))           // the conclusion stands
+    }
+
+    /// **MAJOR 2 (review).** The LANDING needs the same fence as the bring-up. `markDead` does not bump
+    /// `sessionEpoch` and `dead → live` is a legal revival edge, so a step whose readiness confirmed only
+    /// AFTER the launch timeout concluded the card would flip it back to `.live` — re-animating a card whose
+    /// death a watching parent's `wait` has already been told about.
+    @Test("a step's landing cannot revive a card the launch timeout already concluded", arguments: batteryAgents)
+    func test_landingCannotReviveAConcludedCard(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        let card = try await batterySpawnLive(e, branch: "k")
+        let epoch = card.sessionEpoch
+        await e.svc.seedPhase(card.id, .launching, sessionEpoch: epoch)
+
+        // The timeout concludes it (no epoch bump — that is what defeats the epoch fence alone).
+        await e.svc.markDead(card.id, reason: .spawnFailed, detail: "launch timed out", source: .daemon)
+
+        // The in-flight step's readiness confirms afterwards and tries to land `.live` at the SAME epoch.
+        let landed = await e.svc.transition(card.id, to: .live(.running),
+                                            observedEpoch: epoch, expecting: .launching)
+
+        #expect(landed == .noop)                              // fenced on the dispatched phase
+        let after = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(after.phase == .dead(.spawnFailed))           // still dead, still concluded
+    }
 }
+
+// MARK: - the startup-abort retry stamps its generation (review MAJOR 3)
+
+@Suite("PR4b Task 5 · Test G — the startup-abort retry is epoch-stamped")
+struct StartupAbortRetryEpochTests {
+
+    /// An UNSTAMPED session is invisible to the epoch machinery: `stampedEpoch` reads nil, so adopt and
+    /// `reconcilePhasesAtBoot` can never epoch-match it (the next daemon boot tears a healthy retried session
+    /// down and relaunches it, losing the agent's context), and its hooks report with `observedEpoch == nil`,
+    /// which skips the funnel's generation fence — letting a stale report land `.live` on a card a newer
+    /// relaunch already owns. Every other launch stamps `ORCH_EPOCH`; the retry must too.
+    @Test("the retry launch carries ORCH_EPOCH, so the session stays epoch-matchable", arguments: batteryAgents)
+    func test_startupAbortRetryStampsEpoch(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let e = batteryEnv(agent.caps, id: agent.id)
+        // Widen the startup grace BEFORE the spawn arms it: the default is 4s wall-clock, and under a loaded
+        // `--parallel` run the spawn itself can outlast it, graduating the card (clearing `spawnPending`) so
+        // the abort would never be classified as one. This keeps the test about the epoch stamp, not the clock.
+        await e.svc.setStartupConfirmation(graceSeconds: 600, maxRetries: 1)
+        let card = try await batterySpawnLive(e, branch: "l")
+
+        // Let the launch step fully drain first: it lands `.live` and only THEN returns, and its `ensure`
+        // clears the dead-pane mark — so marking the pane dead under a still-running step is a race.
+        try await pollUntil { await e.svc.hasStepInFlight(card.id) == false }
+
+        e.sessions.setPaneDead(card.id)          // the launch aborts → bounded retry
+        await e.svc.reconcileLiveness()
+
+        // The retried session is stamped with the card's generation — so the epoch machinery can see it.
+        let after = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(after.phase.kind != .dead, "gave up instead of retrying (deadReason=\(String(describing: after.deadReason)))")
+        #expect(e.sessions.isAliveTest(card.id), "no session after the retry (ensures=\(e.sessions.ensureCount))")
+        let stamped = try e.sessions.stampedEpoch(name: e.sessions.sessionName(card.id))
+        #expect(stamped == card.sessionEpoch)
+    }
+}
+

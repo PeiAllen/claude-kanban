@@ -1166,8 +1166,8 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
-            transition: { [self] id, to, epoch, mutate in
-                await transition(id, to: to, observedEpoch: epoch, mutate: mutate)
+            transition: { [self] id, to, epoch, expecting, mutate in
+                await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },
             materialize: { [self] id in await materialize(id) },
             finishLaunch: { [self] id, flavor, expecting, epoch in

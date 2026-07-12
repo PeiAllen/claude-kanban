@@ -17,40 +17,82 @@ public struct Conclusion: Sendable, Equatable, Codable {
 /// Conclusion-watch for the reactive fan-out (F2). A **subscriber, not a detector**: it owns NO
 /// detection — no git poll, no file stat, no per-card watcher. `OrchestraService` (the single
 /// authority for terminal state) feeds it via `conclude`; MergeWatch just records a continuation keyed
-/// on the watch set and resolves it when one of those cards concludes. This mirrors the existing
-/// `readinessWaiters` / `awaitReadiness` / `resolveReadiness` pattern in `OrchestraService+Recovery.swift`.
+/// on the watch set and resolves it when one of those cards concludes.
+///
+/// Subscribing is TWO-PHASE (`subscribe` → `awaitConclusion(token:)`) because `wait` must read card state
+/// between the two: it registers first, then reads. A one-shot subscribe-and-park forced the opposite order
+/// (read, then subscribe), and a conclusion landing in that gap reached ZERO subscribers and was dropped —
+/// `wait` then parked forever on a continuation nobody would ever resume. `wait` has no timeout, so that
+/// lost wakeup is unrecoverable. The `delivered` slot state is what makes the two phases safe: a conclusion
+/// that arrives while the caller is still on its way to `awaitConclusion` is RETAINED, not dropped.
 public actor MergeWatch {
-    private var subscriptions: [UUID: (watch: Set<UUID>, cont: CheckedContinuation<Conclusion?, Never>)] = [:]
+    private enum Slot {
+        case armed(Set<UUID>)                                        // subscribed; caller not parked yet
+        case delivered(Conclusion)                                   // concluded before the caller parked
+        case parked(Set<UUID>, CheckedContinuation<Conclusion?, Never>)
+    }
+    private var slots: [UUID: Slot] = [:]
 
     public init() {}
 
-    /// Suspend until ONE of `cardIds` concludes; returns that `Conclusion`, or nil if the task is
-    /// cancelled (e.g. the `orchestra wait` process is killed). The caller re-issues on the remaining
-    /// children — resolution is per-child, never a barrier on all N.
-    public func awaitConclusion(_ cardIds: Set<UUID>) async -> Conclusion? {
+    /// Arm a subscription and return its token. A caller that must read card state (`wait`) subscribes
+    /// through this BEFORE the read, so no conclusion can slip through the gap between the two.
+    public func subscribe(_ cardIds: Set<UUID>) -> UUID {
         let token = UUID()
+        slots[token] = .armed(cardIds)
+        return token
+    }
+
+    /// Drop an armed subscription the caller no longer needs (it resolved from card state instead).
+    public func unsubscribe(_ token: UUID) {
+        if case .parked(_, let cont)? = slots[token] { cont.resume(returning: nil) }
+        slots[token] = nil
+    }
+
+    /// Suspend on an armed subscription until one of its cards concludes; returns that `Conclusion`, or nil
+    /// if the task is cancelled (e.g. the `orchestra wait` process is killed) or the token was dropped. A
+    /// conclusion that already landed on the slot returns IMMEDIATELY — the lost wakeup that hung `wait`.
+    public func awaitConclusion(token: UUID) async -> Conclusion? {
+        guard let slot = slots[token] else { return nil }
+        if case .delivered(let c) = slot { slots[token] = nil; return c }
+        guard case .armed(let ids) = slot else { return nil }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<Conclusion?, Never>) in
-                if _Concurrency.Task.isCancelled { cont.resume(returning: nil); return }
-                subscriptions[token] = (cardIds, cont)
+                if _Concurrency.Task.isCancelled { slots[token] = nil; cont.resume(returning: nil); return }
+                if case .delivered(let c)? = slots[token] { slots[token] = nil; cont.resume(returning: c); return }
+                slots[token] = .parked(ids, cont)
             }
         } onCancel: {
             _Concurrency.Task { await self.cancel(token) }
         }
     }
 
-    /// The authority informs the watcher a card settled terminal. Resolves EVERY subscription whose
-    /// watch set contains it (each with its own copy) and drops them.
+    /// Subscribe + suspend in one step, for a caller with no card-state read to interleave.
+    public func awaitConclusion(_ cardIds: Set<UUID>) async -> Conclusion? {
+        await awaitConclusion(token: subscribe(cardIds))
+    }
+
+    /// The authority informs the watcher a card settled terminal. Resolves EVERY subscription whose watch
+    /// set contains it (each with its own copy); a subscription that is armed-but-not-yet-parked RETAINS the
+    /// conclusion so its caller picks it up the moment it parks.
     public func conclude(_ c: Conclusion) {
-        for (token, w) in subscriptions where w.watch.contains(c.cardId) {
-            subscriptions.removeValue(forKey: token)
-            w.cont.resume(returning: c)
+        for (token, slot) in slots {
+            switch slot {
+            case .armed(let ids) where ids.contains(c.cardId):
+                slots[token] = .delivered(c)
+            case .parked(let ids, let cont) where ids.contains(c.cardId):
+                slots[token] = nil
+                cont.resume(returning: c)
+            default:
+                break
+            }
         }
     }
 
     private func cancel(_ token: UUID) {
-        if let w = subscriptions.removeValue(forKey: token) { w.cont.resume(returning: nil) }
+        if case .parked(_, let cont)? = slots[token] { cont.resume(returning: nil) }
+        slots[token] = nil
     }
 
-    public func subscriptionCount() -> Int { subscriptions.count }
+    public func subscriptionCount() -> Int { slots.count }
 }
