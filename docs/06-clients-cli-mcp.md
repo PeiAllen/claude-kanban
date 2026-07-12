@@ -83,6 +83,18 @@ The app does the same thing from its onboarding screen ("Install & Start") and t
 exists so that another agent — typically a Claude Code session — can orchestrate the Orchestra board as
 a set of tools.
 
+![An orchestrator agent spawning three children, then waiting on them](images/orchestrate.gif)
+
+<sub>A real run, sped up ~4×.</sub>
+
+This is what that buys, and it is the whole argument for the bridge: the card above was told, in plain
+English, to *"split the rate-limiting work into three PRs and fan them out."* It calls `spawn` three
+times and then `wait`s — and the board fills itself in. Whether it reaches those commands as MCP tools
+or through the `orchestra` CLI is an implementation detail of the agent's toolset: both doors open onto
+the one `CommandRegistry`, which is exactly why an agent driving Orchestra is indistinguishable from you
+driving it. The delivery machinery underneath is
+[the orchestration seam](04-cards-worktrees-sessions.md#the-orchestration-seam-handoff--fork--fan-out--send--wait).
+
 - **Tool generation.** On `ListTools`, it maps every `CommandRegistry` command to an MCP `Tool` whose
   name is the command name, description is the command summary, and input schema is the command's own
   JSON-Schema params. There is no hand-maintained tool list — add a command to the registry and the MCP
