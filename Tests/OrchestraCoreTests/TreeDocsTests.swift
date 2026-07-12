@@ -46,6 +46,16 @@ struct TreeDocsTests {
         }
     }
 
+    @Test("both variants make sandboxed Orchestra control calls MCP-first")
+    func sandboxedControlCallsPreferMCP() throws {
+        for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
+            #expect(doc.contains("MCP tools"))
+            #expect(doc.contains("Operation not permitted"))
+            #expect(doc.contains("do not retry"))
+            #expect(doc.contains("same service"))
+        }
+    }
+
     @Test("both variants document the remote publish + restack path (BT6)")
     func remoteGuidancePresent() throws {
         for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {

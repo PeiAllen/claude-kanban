@@ -85,15 +85,16 @@ struct DelegationDocsTests {
         #expect(skill.contains("Task"))
     }
 
-    @Test("the Claude skill routes wait through Claude Code background execution")
-    func claudeWaitUsesNativeBackgroundExecution() throws {
+    @Test("the Claude skill prefers MCP wait in sandboxes and keeps CLI background wait terminal-native")
+    func claudeWaitUsesMCPInSandboxes() throws {
         let skill = try #require(DelegationDocs.load(.claudeSkill))
         #expect(skill.contains("orchestra wait <refs>"))
         #expect(skill.contains("run_in_background: true"))
         #expect(skill.contains("Monitor"))
         #expect(skill.contains("MCP `wait`"))
-        #expect(skill.contains("not the native Claude"))
-        #expect(skill.contains("background-task wake path"))
+        #expect(skill.contains("managed/sandboxed"))
+        #expect(skill.contains("terminal-native Claude"))
+        #expect(skill.contains("do not retry"))
     }
 
     @Test("the Codex AGENTS variant does not claim a send-keys wait wake")
@@ -102,6 +103,17 @@ struct DelegationDocsTests {
         #expect(!agents.lowercased().contains("send-keys"))
         #expect(agents.contains("Orchestra records the durable watch"))
         #expect(agents.contains("resumes you when a"))
+    }
+
+    @Test("both variants make sandboxed Orchestra control calls MCP-first")
+    func sandboxedControlCallsPreferMCP() throws {
+        for doc in [try #require(DelegationDocs.load(.claudeSkill)),
+                    try #require(DelegationDocs.load(.codexAgents))] {
+            #expect(doc.contains("MCP tools"))
+            #expect(doc.contains("Operation not permitted"))
+            #expect(doc.contains("do not retry"))
+            #expect(doc.contains("same Orchestra service"))
+        }
     }
 
     @Test("delegation docs tell agents to choose one child completion return channel")
