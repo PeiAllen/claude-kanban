@@ -59,8 +59,16 @@ extension OrchestraService {
     // MARK: - re-nudge timer (O2: re-ask if the parent agent ignores the request)
 
     /// (Re)start the per-child re-nudge loop: while the child stays `mergeRequested`, re-enqueue the
-    /// request to the parent card every `mergeRequestNudgeInterval`. Stops as soon as the child leaves
-    /// the waiting state (shipped/synced/set-parent cleared it) or the parent card is gone.
+    /// request to the parent card on a **geometric backoff** (`nudgeDelay`) — and after
+    /// `mergeRequestNudgeCap` unanswered reminders **give up**: flip the child to the terminal
+    /// `mergeStalled` badge so a human can see the stuck merge-request, and stop. Prodding a parent that
+    /// ignored 8 reminders a 9th time does not merge the branch; it just buries the signal.
+    ///
+    /// The loop is **stateless**: the count lives on the card (`TreeStat.nudges`), read fresh each tick.
+    /// That is what makes the cap real — `rebuildMergeRequestNudges()` re-arms every pending card at daemon
+    /// start, so an in-memory counter would reset on each restart and the loop would still nudge forever.
+    /// Stops when the child leaves the waiting state (shipped/synced/set-parent cleared it), the parent card
+    /// is gone, or the cap is reached.
     func startMergeRequestNudge(childId: UUID) {
         mergeRequestNudge[childId]?.cancel()
         // `self` is re-acquired PER HOP, never hoisted above the loop. A hoisted `guard let self` holds
@@ -71,17 +79,23 @@ extension OrchestraService {
         // `swift test --parallel` the zombies piled up until the cooperative pool was starved.)
         mergeRequestNudge[childId] = _Concurrency.Task { [weak self] in
             while !_Concurrency.Task.isCancelled {
-                guard let interval = await self?.mergeRequestNudgeInterval else { return }
-                try? await _Concurrency.Task.sleep(for: interval)
+                guard let sent = await self?.nudgesSent(childId),
+                      let base = await self?.mergeRequestNudgeInterval else { return }
+                try? await _Concurrency.Task.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
                 if _Concurrency.Task.isCancelled { return }
                 guard let stop = await self?.reNudgeMergeRequest(childId) else { return }
-                if stop { break }                                      // no longer pending, stop
+                if stop { break }                     // no longer pending / parent gone / gave up
             }
             await self?.clearMergeRequestNudge(childId)
         }
     }
 
-    /// One re-nudge tick. Returns `true` when the loop should STOP (child no longer waiting / parent gone).
+    /// Reminders already sent for this child, read from the store (see `startMergeRequestNudge`: the loop
+    /// keeps no counter of its own, so the backoff survives a daemon restart instead of starting over).
+    private func nudgesSent(_ id: UUID) async -> Int { (await store.get(id))?.treeStat?.nudges ?? 0 }
+
+    /// One re-nudge tick. Returns `true` when the loop should STOP (child no longer waiting / parent gone /
+    /// cap reached).
     private func reNudgeMergeRequest(_ childId: UUID) async -> Bool {
         guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
               child.treeStat?.state == .mergeRequested,
@@ -94,11 +108,34 @@ extension OrchestraService {
             await recomputeTreeStat(childId)
             return true
         }
+        let sent = (child.treeStat?.nudges ?? 0) + 1
+        let cap = mergeRequestNudgeCap
         try? await inbox.enqueue(parentCard.id,
-            "reminder — merge-request still pending: squash-merge \(child.branch) (\(child.shortId)) into "
-            + "\(link.parent), then `orchestra shipped \(child.shortId)`")
+            "reminder \(sent)/\(cap) — merge-request still pending: squash-merge \(child.branch) "
+            + "(\(child.shortId)) into \(link.parent), then `orchestra shipped \(child.shortId)`")
         await wake(parentCard.id)
-        return false
+
+        // Persist the count — and, at the cap, the give-up — in ONE update, gated on the state the closure
+        // itself observes. TaskStore serializes its updates, so a concurrent shipped/synced that already
+        // cleared the badge across our suspensions cannot be resurrected by a stale write from this tick.
+        var gaveUp = false
+        if let (saved, rev) = try? await store.update(childId, { t in
+            guard t.treeStat?.state == .mergeRequested else { return }   // cleared under us — leave it alone
+            t.treeStat?.nudges = sent
+            if sent >= cap { t.treeStat?.state = .mergeStalled; gaveUp = true }
+        }) {
+            emit(.taskUpserted(saved), rev: rev)
+        }
+        if gaveUp {
+            // A sibling of the parent-vanished path above: the loop never stops SILENTLY. The badge is the
+            // durable signal (it survives restart, and the rebuild skips `mergeStalled`); this is the
+            // human-legible one.
+            emitActivity(.warning, child, .daemon,
+                "merge-request stalled — \(sent) reminders unanswered; \(link.parent) never merged "
+                + "\(child.branch). Merge it yourself, or re-send with "
+                + "`orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+        }
+        return gaveUp
     }
 
     func stopMergeRequestNudge(_ id: UUID) {
