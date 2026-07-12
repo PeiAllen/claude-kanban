@@ -136,11 +136,21 @@ extension OrchestraService {
             await recomputeTreeStat(childId)
             return true
         }
+        // Re-check the fence BEFORE any side effect. The entry check is not enough: we have since suspended
+        // across `store.get`, `lineage.read` and `store.all`, and a re-arm inside that window makes us a
+        // ghost — which would otherwise still enqueue a reminder and wake the parent (review: MAJOR).
+        // This runs on the actor with no `await` before the send below, so the window it leaves is the
+        // enqueue itself: a supersession landing exactly there costs one duplicate reminder, which the CAS
+        // then counts honestly. It cannot corrupt the budget or the give-up decision.
+        guard mergeRequestNudgeGen[childId] == gen else { return true }
+
         let prior = child.treeStat?.nudges ?? 0
         let cap = mergeRequestNudgeCap
         // Budget already exhausted before we sent anything (a cap lowered under us, or `cap <= 0`): give up
         // WITHOUT a reminder. Sending "reminder 1/0" would be absurd.
-        guard prior < cap else { return await giveUp(childId, sent: prior, link: link, child: child) }
+        guard prior < cap else {
+            return await giveUp(childId, sent: prior, prior: prior, link: link, child: child)
+        }
 
         let sent = prior + 1
         try? await inbox.enqueue(parentCard.id,
@@ -148,61 +158,76 @@ extension OrchestraService {
             + "(\(child.shortId)) into \(link.parent), then `orchestra shipped \(child.shortId)`")
         await wake(parentCard.id)
 
-        // Persist the count — and, at the cap, the give-up — in ONE update, as a COMPARE-AND-SWAP against
-        // the exact count we based `sent` on. State alone is not enough (review: MAJOR): we suspended across
-        // `inbox.enqueue` AND `wake` (real session I/O — a milliseconds-wide window), in which the card can
-        // be shipped/synced/archived and a FRESH merge-request armed. That new request is also
-        // `.mergeRequested`, so a state-only guard would happily accept our stale write and could flip a
-        // brand-new request straight to stalled — terminal on arrival, with a warning about reminders it
-        // never received. Requiring `nudges == sent - 1` (plus a re-checked `archived`) makes the write
-        // valid only against the generation of the request we actually nudged.
-        var gaveUp = false, changed = false
+        // That was the last one — give up (which persists the count, the flag and the true tree state in a
+        // single CAS; see `giveUp`).
+        if sent >= cap {
+            return await giveUp(childId, sent: sent, prior: prior, link: link, child: child)
+        }
+
+        // An ordinary tick: persist the count as a COMPARE-AND-SWAP against the exact count `sent` was based
+        // on. State alone is not enough — we suspended across `inbox.enqueue` AND `wake` (real session I/O),
+        // and a card can be shipped/synced/archived and a FRESH merge-request armed inside that window. The
+        // new request is ALSO `.mergeRequested`, so a state-only guard would accept our stale write.
+        var changed = false
         if let (saved, rev) = try? await store.update(childId, { t in
             guard !t.archived, t.treeStat?.state == .mergeRequested,
                   (t.treeStat?.nudges ?? 0) == prior else { return }   // superseded under us — drop the write
             t.treeStat?.nudges = sent
             changed = true
-            if sent >= cap {
-                // Raise the flag AND release the waiting state: `.mergeRequested` is what freezes the
-                // recompute funnel and what `rebuildMergeRequestNudges()` re-arms on daemon start. Leaving
-                // it set would keep the card blind to its parent AND resurrect the loop on the next restart.
-                // `.inSync` is a placeholder — the `recomputeTreeStat` in `giveUp` immediately computes the
-                // card's true state (and carries the flag + count across).
-                t.treeStat?.mergeStalled = true
-                t.treeStat?.state = .inSync
-                gaveUp = true
-            }
-        }), changed {                                                   // no-op closure ⇒ no rev bump ⇒ no emit
+        }), changed {                                                  // no-op closure ⇒ no rev bump ⇒ no emit
             emit(.taskUpserted(saved), rev: rev)
         }
-        guard gaveUp else { return false }
-        return await giveUp(childId, sent: sent, link: link, child: child, alreadyFlagged: true)
+        return false
     }
 
     /// The give-up: the loop never stops SILENTLY. A sibling of the parent-vanished path above.
     ///
-    /// The `mergeStalled` FLAG is the durable signal (it survives restart, and the rebuild only re-arms
-    /// `.mergeRequested`, so a restart cannot resurrect the spam). On top of that we tell the two parties who
-    /// can actually act: the human, via a `.warning` in the activity feed; and the CHILD — the card that is
-    /// blocked — via its own durable inbox, so its agent learns the request died even if no human was
-    /// watching the feed at that instant. It can then `borrow` the parent and merge itself.
+    /// **The write is atomic: count + flag + the card's TRUE tree state, in one CAS.** An earlier shape wrote
+    /// `.inSync` as a placeholder and recomputed *after* the notification awaits — so a crash in that window
+    /// left the card falsely in-sync on disk, and boot rebuilds only the nudge timers (it does not eagerly
+    /// recompute tree stats), so the lie could outlive the crash indefinitely (review: MAJOR). We therefore
+    /// compute the real state FIRST and never persist a state we know to be wrong.
     ///
-    /// Then we recompute: giving up RELEASES the sticky waiting badge, so the card resumes tracking its
-    /// parent (↓N, stale, restack + their nudges) instead of going blind while it waits for a human.
+    /// The CAS (`nudges == prior`, plus state and `archived`) is what makes this safe to call from the
+    /// already-exhausted path too: a stale tick that read an exhausted budget must not stamp a request that
+    /// has since been resolved and FRESHLY re-armed — it would be terminal on arrival, carrying a warning
+    /// about reminders it never received (review: MAJOR).
+    ///
+    /// Releasing `.mergeRequested` is deliberate: it is what freezes the recompute funnel and what
+    /// `rebuildMergeRequestNudges()` re-arms on daemon start. Leaving it would keep the card blind to its
+    /// parent AND resurrect the loop on the next restart.
+    ///
+    /// The flag is the durable signal. On top of it we tell the two parties who can act: the human, via a
+    /// `.warning` in the activity feed; and the CHILD — the card that is blocked — via its own durable inbox,
+    /// so its agent learns the request died even if nobody was watching the feed. It can then borrow the
+    /// parent and merge itself.
     @discardableResult
-    private func giveUp(_ childId: UUID, sent: Int, link: ParentLink, child: Task,
-                        alreadyFlagged: Bool = false) async -> Bool {
-        if !alreadyFlagged {
-            var changed = false
-            if let (saved, rev) = try? await store.update(childId, { t in
-                guard !t.archived, t.treeStat?.state == .mergeRequested else { return }
-                t.treeStat?.mergeStalled = true
-                t.treeStat?.state = .inSync      // release the waiting state (see the CAS closure above)
-                changed = true
-            }), changed {
-                emit(.taskUpserted(saved), rev: rev)
-            }
+    private func giveUp(_ childId: UUID, sent: Int, prior: Int, link: ParentLink, child: Task) async -> Bool {
+        // The card's REAL tree state, computed BEFORE the write (same off-actor hop `recomputeTreeStat` uses).
+        let to = Duration.seconds(config.controlTimeout)
+        let probe = treeProbeHolder.get()
+        let repo = child.repo
+        let fresh: TreeStat? = (try? await offActor {
+            self.computeTreeStat(repo: repo, link: link, timeout: to, probe: probe)
+        }) ?? nil
+
+        var flagged = false
+        if let (saved, rev) = try? await store.update(childId, { t in
+            guard !t.archived, t.treeStat?.state == .mergeRequested,
+                  (t.treeStat?.nudges ?? 0) == prior else { return }   // superseded under us — drop the write
+            t.treeStat = TreeStat(state: fresh?.state ?? .inSync,
+                                  behind: fresh?.behind ?? 0,
+                                  parentIsRemote: fresh?.parentIsRemote ?? false,
+                                  nudges: sent,
+                                  mergeStalled: true)
+            flagged = true
+        }), flagged {
+            emit(.taskUpserted(saved), rev: rev)
         }
+        // Superseded: this request is no longer the one on the card. Stop the loop, but announce NOTHING —
+        // a give-up notice for a request that was resolved (or replaced) would be a lie.
+        guard flagged else { return true }
+
         emitActivity(.warning, child, .daemon,
             "merge-request stalled — \(sent) reminder\(sent == 1 ? "" : "s") unanswered; \(link.parent) "
             + "never merged \(child.branch). Merge it yourself, or re-send with "
@@ -213,7 +238,6 @@ extension OrchestraService {
             + "yourself (`orchestra borrow \(child.shortId)` → merge → `orchestra shipped \(child.shortId)`), "
             + "or re-send `orchestra merge-request \(child.shortId)` to re-arm the reminders.")
         await wake(childId)
-        await recomputeTreeStat(childId)   // release the frozen badge — resume tracking the parent
         return true
     }
 
@@ -240,7 +264,10 @@ extension OrchestraService {
     /// condition (shipped / re-parent / archive / state change) keeps working identically.
     public func rebuildMergeRequestNudges() async {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
-        for t in active where t.treeStat?.state == .mergeRequested {
+        // `mergeStalled` is checked as well as the state: giving up releases `.mergeRequested`, so the state
+        // test alone already excludes a stalled card — but this is the "a restart cannot resurrect the spam"
+        // guarantee, and it should not depend on two fields agreeing.
+        for t in active where t.treeStat?.state == .mergeRequested && t.treeStat?.mergeStalled != true {
             startMergeRequestNudge(childId: t.id)
         }
     }

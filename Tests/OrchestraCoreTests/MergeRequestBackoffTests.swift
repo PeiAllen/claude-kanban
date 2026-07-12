@@ -210,6 +210,15 @@ struct MergeRequestCapIntegrityTests {
         await svc.list().first { $0.id == id }?.treeStat
     }
 
+    /// Poll until `check` holds — the loop ticks on its own schedule, so there is nothing to await on.
+    private func eventually(_ check: () async -> Bool) async throws -> Bool {
+        for _ in 0..<200 {
+            if await check() { return true }
+            try await _Concurrency.Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
     private func armedChild(_ env: (svc: OrchestraService, base: String),
                             _ repo: String, _ parentTip: String) async throws -> (Task, Task) {
         let parentCard = try await TestEnv.spawnAndAwaitLive(
@@ -300,6 +309,64 @@ struct MergeRequestCapIntegrityTests {
         #expect(ts?.mergeStalled == false)         // the fresh request is NOT dead on arrival
         #expect(ts?.state == .mergeRequested)      // it is still waiting, as it should be
         #expect(ts?.nudges == 0)                   // and its budget was not stolen by the ghost
+    }
+
+    /// MAJOR (fix-verification round): the give-up write is reachable from the ALREADY-EXHAUSTED path (a cap
+    /// lowered under us, or `cap <= 0`), which skips the reminder entirely. That path was guarded on state
+    /// only — no CAS — so a stale tick that read an exhausted budget could stamp a request that had since
+    /// been resolved and freshly re-armed. Terminal on arrival.
+    @Test("a stale tick on an exhausted budget cannot stamp a freshly re-armed request")
+    func exhaustedPathStaleTickCannotStampAFreshRequest() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        await env.svc.setMergeRequestNudgeCap(2)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        await env.svc.stopMergeRequestNudge(child.id)
+        _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 5 }   // budget already blown
+        let genOld = await env.svc.mergeRequestNudgeGeneration(child.id)
+
+        // The world moves: the request is resolved, then a NEW one is sent (fresh budget, nudges = 0).
+        _ = try await env.svc.synced(ref: child.ref())
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        await env.svc.stopMergeRequestNudge(child.id)
+
+        // The exhausted-budget tick lands late. Its CAS was computed against nudges=5; the card says 0.
+        _ = await env.svc.reNudgeMergeRequest(child.id, gen: genOld)
+
+        let ts = await treeStat(env.svc, child.id)
+        #expect(ts?.mergeStalled == false)         // the fresh request is NOT dead on arrival
+        #expect(ts?.state == .mergeRequested)
+        #expect(ts?.nudges == 0)
+    }
+
+    /// MAJOR (fix-verification round): the give-up used to persist `state = .inSync` as a PLACEHOLDER and
+    /// recompute only after the notification awaits. A crash in that window left the card falsely in-sync on
+    /// disk — and boot rebuilds only the nudge timers, it does not eagerly recompute tree stats, so the lie
+    /// could outlive the crash indefinitely (no ↓N, no stale badge, no merge-down nudge). The give-up now
+    /// computes the TRUE state first and writes count + flag + state in ONE update: no placeholder is ever
+    /// persisted, so there is no window in which a crash can freeze a lie.
+    @Test("the give-up persists the card's TRUE tree state atomically — never a placeholder")
+    func giveUpWritesTheTrueStateAtomically() async throws {
+        let env = TestEnv.make()
+        let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+        let (_, child) = try await armedChild((env.svc, env.base), repo, parentTip)
+
+        await env.svc.setMergeRequestNudgeInterval(.milliseconds(20))
+        await env.svc.setMergeRequestNudgeCap(1)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        // The parent moves ahead WHILE the request is pending — so the card's true state at give-up is
+        // `.stale`, not `.inSync`. A placeholder write would record the wrong one.
+        try TreeStatTests.advanceParent(repo, 2)
+
+        #expect(try await eventually { await treeStat(env.svc, child.id)?.mergeStalled == true })
+
+        let ts = await treeStat(env.svc, child.id)
+        #expect(ts?.state == .stale)     // the TRUE state, written with the flag — not an .inSync placeholder
+        #expect((ts?.behind ?? 0) >= 1)  // ...with a real ↓N. (Not pinned to 2: the loop may give up after
+                                         // the first of the parent's commits — the point is it is not frozen.)
+        #expect(ts?.nudges == 1)
     }
 
     /// The other half of the same race: a ghost tick from the cancelled loop must not enqueue a reminder
