@@ -228,14 +228,21 @@ struct SpawnSheet: View {
                 }
 
                 field("Model") {
-                    HStack(spacing: 2) {
+                    // A WRAPPING grid, not a single row: an agent's catalog grows (Codex ships 8 models),
+                    // and a fixed HStack silently truncates every label past ~6 — which made the three
+                    // GPT-5.6 variants render as an identical "GPT-5.6…". Flowing onto a second row keeps
+                    // every model legible at any catalog size.
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
                         ForEach(modelOptions, id: \.id) { m in
                             let active = m.id == modelSel
                             Button { modelSel = m.id } label: {
                                 Text(m.displayName)
                                     .font(F.mono(11.5, .semibold))
                                     .foregroundColor(active ? brandColor(m) : theme.text2)
-                                    .padding(.horizontal, 12).frame(height: 28)
+                                    .lineLimit(2).minimumScaleFactor(0.85)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 8)
+                                    .frame(maxWidth: .infinity).frame(height: 32)
                                     .background(active ? theme.card : Color.clear)
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
                                     .contentShape(Rectangle())

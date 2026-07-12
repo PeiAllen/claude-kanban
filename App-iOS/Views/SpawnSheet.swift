@@ -88,7 +88,8 @@ struct SpawnSheet: View {
         id: "claude-code", name: "Claude Code", icon: "sparkle",
         models: [
             AgentModel(id: "claude-opus-4-8", displayName: "Opus 4.8", family: "claude"),
-            AgentModel(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6", family: "claude"),
+            AgentModel(id: "claude-fable-5", displayName: "Fable 5", family: "claude"),
+            AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
             AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
         ],
         capabilities: .claudeCode)
@@ -107,11 +108,11 @@ struct SpawnSheet: View {
 
     // MARK: suggestions — daemon-enumerated disk UNIONed with board-card-derived hints
 
-    /// Repos for the picker: the daemon's on-disk repos (any repo under reposRoot, carded or not),
-    /// sorted by repo name. A worktree card's repo is under reposRoot too, so it's already in this list —
-    /// no separate card-derived repo hint is needed.
+    /// Repos for the picker: the daemon's on-disk repos (any repo under reposRoot, carded or not), in
+    /// newest-local-commit order. A worktree card's repo is under reposRoot too, so it's already in this
+    /// list — no separate card-derived repo hint is needed.
     private var repoSuggestions: [String] {
-        sortedByName(dedup(model.spawnRepoCandidates))
+        dedup(model.spawnRepoCandidates)
     }
     /// Branches for the picker: the daemon's live git branches for the chosen repo (recency order). A
     /// card's branch is a real local branch in that repo, so it's already in this list — no card-derived
@@ -132,14 +133,6 @@ struct SpawnSheet: View {
         for x in xs where !x.isEmpty && seen.insert(x).inserted { out.append(x) }
         return out
     }
-    /// Sort paths by their last component (repo name), case-insensitively.
-    private func sortedByName(_ xs: [String]) -> [String] {
-        xs.sorted {
-            ($0 as NSString).lastPathComponent
-                .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-        }
-    }
-
     // MARK: card-derived hint — only the one the daemon can't supply
 
     /// Distinct directories seen on freeform (borrowed) cards. The daemon's spawn answers cover repos and

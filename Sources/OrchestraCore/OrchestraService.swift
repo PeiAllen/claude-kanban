@@ -268,6 +268,13 @@ public actor OrchestraService {
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
     func _setDiffProviderForTest(_ provider: any DiffProvider) { diffProvider = provider }
     func _setTreeProbeForTest(_ probe: (@Sendable () -> Void)?) { treeProbeHolder.set(probe) }
+    /// Fired by the remote-watch loop immediately before it sleeps (see `remoteWatchDelay`). The loop
+    /// is `shouldStop → remoteMergeStep → sleep`, so it spends its first moments inside a real
+    /// `git fetch`/`ls-remote` holding a strong `self` — a leak test that dropped its last reference
+    /// during that window would race the fork and flake. This lets it wait until the loop is genuinely
+    /// parked, holding nothing. nil in production.
+    var remoteWatchSleepProbe: (@Sendable () -> Void)?
+    func _setRemoteWatchSleepProbeForTest(_ probe: (@Sendable () -> Void)?) { remoteWatchSleepProbe = probe }
     #endif
 
     // MARK: - trust
@@ -1060,25 +1067,11 @@ public actor OrchestraService {
     // MARK: - spawn targets (Spawn sheet enumeration; app-only, NOT an agent command)
 
     /// Git repos under `config.reposRoot` + freeform dir candidates, for the phone's Spawn sheet — a
-    /// remote client that can't browse the daemon's disk. Ports the desktop sheet's local
-    /// `repoCandidates`. Absolute paths (the allowlist rejects bare names).
+    /// remote client that can't browse the daemon's disk. Uses the desktop sheet's recursive scanner so
+    /// both clients see the same newest-local-commit order. Paths are absolute because the allowlist
+    /// rejects bare names.
     public func spawnRepos() async -> [String] {
-        let root = (config.reposRoot as NSString).expandingTildeInPath
-        return (try? await offActor {
-            let fm = FileManager.default
-            let entries = (try? fm.contentsOfDirectory(atPath: root)) ?? []
-            // Absolute paths to the git repos under reposRoot. These double as the freeform dir candidates
-            // (running a read-only/freeform agent inside a repo is the common case) — the client unions
-            // them with dirs derived from existing borrowed cards, so no separate `dirs` list is needed.
-            return entries
-                .filter { !$0.hasPrefix(".") }
-                .map { "\(root)/\($0)" }
-                .filter { fm.fileExists(atPath: "\($0)/.git") }
-                .sorted {
-                    ($0 as NSString).lastPathComponent
-                        .localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending
-                }
-        }) ?? []
+        await RepoScanner.discoverAsync(root: config.reposRoot)
     }
 
     /// Local branch names for `repo`, most-recent-commit first (ports the desktop sheet's `gitBranches`).

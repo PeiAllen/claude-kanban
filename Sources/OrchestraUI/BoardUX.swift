@@ -48,6 +48,10 @@ public final class BoardUX: BoardStore {
     /// `f` link-hint mode: labels overlaid on cards; typing a label jumps to it.
     @Published public var hintActive = false
     @Published public var hintLabels: [UUID: String] = [:]
+    /// Browser-style card visit history. Traversal suppresses the selection callback so moving the
+    /// cursor does not record a fresh visit and accidentally truncate its own forward branch.
+    private var cardNavigationHistory = CardNavigationHistory()
+    private var replayingCardNavigationHistory = false
 
     // MARK: keyboard-navigation intents
     // Thin executors the KeyboardController calls; selection movement delegates to the pure
@@ -58,6 +62,34 @@ public final class BoardUX: BoardStore {
     }
     public func selectEnd(first: Bool) {
         selectedId = BoardNavigator.end(tasks, selected: selectedId, first: first)
+    }
+
+    /// Vim Ctrl-O / Ctrl-I traversal. The keyboard controller supplies the real responder-derived
+    /// context so a board traversal stays on the board while a terminal traversal descends into the
+    /// destination card's agent terminal through the existing honest-focus path.
+    public func navigateCardHistoryBack(fromTerminal: Bool) {
+        navigateCardHistory(backward: true, fromTerminal: fromTerminal)
+    }
+
+    public func navigateCardHistoryForward(fromTerminal: Bool) {
+        navigateCardHistory(backward: false, fromTerminal: fromTerminal)
+    }
+
+    private func navigateCardHistory(backward: Bool, fromTerminal: Bool) {
+        let validIds = Set((tasks + archived).map(\.id))
+        let destination = backward
+            ? cardNavigationHistory.back(validIds: validIds)
+            : cardNavigationHistory.forward(validIds: validIds)
+        guard let destination else { return }
+
+        replayingCardNavigationHistory = true
+        defer { replayingCardNavigationHistory = false }
+        if fromTerminal {
+            selectAndEnterTerminal(destination)
+        } else {
+            focusZone = .board
+            selectedId = destination
+        }
     }
 
     /// Carry the selected card one column left/right (Plan↔Impl↔Review).
@@ -75,6 +107,11 @@ public final class BoardUX: BoardStore {
     /// `selectedId`, which routes here, so the terminal/shell zone can never strand on a closed inspector.
     /// The keyboard eject path resets `focusZone` itself too; this makes the reset unconditional.
     override func onSelectionCleared() { focusZone = .board }
+
+    override func onSelectionChanged(from oldValue: UUID?, to newValue: UUID?) {
+        guard !replayingCardNavigationHistory, let newValue else { return }
+        cardNavigationHistory.record(newValue)
+    }
 
     /// Descend the keyboard into the selected card's agent terminal (Enter / i). No-op with no
     /// selection so the focus ring never lights on an empty inspector.

@@ -34,7 +34,7 @@ resume, and clean up that work:
 - a **title** (derived from the first prompt) and a live **description** (pushed by the agent),
 - the **directory** the agent runs in (`cwd`) and how that directory came to be (`origin`),
 - the **agent** and **model** running it,
-- its **column** and **status**,
+- its **column** (board intent) and its **phase** (machine state — see below),
 - and its session identity (`agentSessionId`, plus superseded ids) for resume and transcript search.
 
 Each card maps to exactly one **tmux session** named `orchestra-<uuid>`, and (for worktree cards) to
@@ -52,27 +52,83 @@ The board has **three columns**, which are the lifecycle stages of a card:
 | `impl` | Implementation | Active work — the agent is building. |
 | `review` | Review | The work is ready to be reviewed (by you, or later by an automated review phase). |
 
-There is deliberately **no `done` column.** Finishing a card archives it: its status becomes `done` and
-it leaves the board into the **Done popover** (an archive list). This keeps the board to the three
+There is deliberately **no `done` column.** Finishing a card archives it: its phase becomes `archived`
+and it leaves the board into the **Done popover** (an archive list). This keeps the board to the three
 *active* stages and avoids a perpetually-growing fourth column. Archiving is **not terminal**, though —
 a Done card can be **reopened** from the popover: the daemon recreates its worktree and resumes the
 agent, bringing the card back onto the board in its original column
 ([`reopen`](04-cards-worktrees-sessions.md#recovery-resume-and-restart)).
 
-A card also carries an independent **status** that reflects the agent's runtime state, distinct from
-which column it's in:
+### Two axes: the column is intent, the phase is machine state
 
-| Status | Meaning |
-|--------|---------|
-| `waiting` | Idle, awaiting a prompt (e.g. a freshly-spawned provisional card, or one just restarted/cleared). |
-| `running` | The agent is actively executing. |
-| `done` | Finished and archived. |
-| `dead` | The session crashed or exited and needs recovery — distinct from a clean `done`. |
+A card has **two independent state axes**, and conflating them is precisely the mistake the
+[lifecycle-convergence redesign](02-architecture.md#the-convergence-model) exists to prevent.
 
-You move a card between columns by dragging it on the board or with `orchestra move <ref> --col …`.
-Status, by contrast, is driven by the agent itself through the report channel (a prompt submission
-flips it to `running`; a `Stop`/`Notification` hook flips it to `waiting`; a `SessionEnd` can flip it
-to `dead`). See [Architecture](02-architecture.md#the-report-channel) for how those signals arrive.
+The **column** is *intent* — which lane a human (or the agent itself) has put the work in. You move a
+card by dragging it or with `orchestra move <ref> --col …`:
+
+```mermaid
+flowchart LR
+  subgraph board["On the board — column = intent, set by you or by the agent"]
+    P["Plan<br/>col = plan"] --> I["Implementation<br/>col = impl"] --> R["Review<br/>col = review"]
+  end
+  R --> DONE["Done popover<br/>archive → phase = archived"]
+  DONE -.->|"reopen → phase = creatingWorktree,<br/>card returns to its original column"| board
+```
+
+The **phase** (`Task.phase`) is *machine* state — where the card's session actually is. It is one
+persisted variable with exactly one writer, `OrchestraService.transition()`, which validates every
+edge against the machine below, bumps a `sessionEpoch` on each (re)launch so stale signals from a
+superseded session are harmless, and fires the terminal `Conclusion` exactly once:
+
+```mermaid
+stateDiagram-v2
+    [*] --> creatingWorktree : spawn / batch-spawn (intent-only)
+
+    creatingWorktree --> launching : MaterializeStepper — cwd ready
+    launching --> live : LaunchStepper — readiness confirmed
+
+    state live {
+        running : live(.running)
+        idle : live(.waiting(.humanTurn))
+        perm : live(.waiting(.permission))
+        running --> idle : Stop / turn_complete
+        running --> perm : permission prompt
+        idle --> running : prompt / inbox drain
+        perm --> running : approved
+    }
+
+    live --> relaunching : restart · resume · handoff
+    relaunching --> relaunching : supersede (re-arm)
+    relaunching --> live : RelaunchStepper confirms
+
+    live --> dead : SessionEnd / session vanished
+    creatingWorktree --> dead : dead(.spawnFailed)
+    launching --> dead : timeout · dead(.spawnExitedImmediately)
+    relaunching --> dead : dead(.resumeFailed)
+
+    dead --> relaunching : resume / restart (revival)
+    dead --> live : live session observed (signal-gated only)
+
+    live --> archivedPending : archive
+    dead --> archivedPending : archive
+    archivedPending --> archivedComplete : TeardownStepper — session killed, dir reclaimed
+    archivedComplete --> creatingWorktree : reopen a Done card
+    archivedComplete --> [*]
+```
+
+Neither axis constrains the other: a `live(.running)` card can sit in Plan, and a `dead` card can sit
+in Review. Verbs only persist *intent* and return — a 2-second `reconcile()` tick then drives each
+transitional card one edge onward, so a daemon crash and a clean boot converge through the same code
+path. Note that `dead → live` is the one **signal-gated** edge (no verb may drive it; only observing
+a live session can), and that archiving is not terminal — `reopen` sends an archived card back to
+`creatingWorktree`.
+
+The signals that drive the phase come from the agent itself over the report channel: a prompt
+submission moves it to `running`, a `Stop`/`Notification` hook to `waiting`, a `SessionEnd` can take
+it to `dead`. See [Architecture](02-architecture.md#the-report-channel) for how those arrive, and
+[Recovery, resume and restart](04-cards-worktrees-sessions.md#recovery-resume-and-restart) for what
+happens when one goes wrong.
 
 An agent also **learns its own column at session start.** A SessionStart hook hands each Orchestra-spawned
 agent a one-line orientation naming its column (Plan/Implementation/Review), its access mode (read-write vs

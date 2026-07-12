@@ -11,7 +11,8 @@ import Foundation
 ///   • bounds the walk with a max depth.
 ///
 /// The core walk (`scan`) is pure — filesystem access is injected — so the pruning/depth/stop-at-repo
-/// logic is unit-testable without touching a real disk. `discover` wires it to `FileManager` for the app.
+/// logic is unit-testable without touching a real disk. `discover` wires it to `FileManager` and ranks
+/// the resulting repositories by their most recent local commit for the app.
 public enum RepoScanner {
     /// How many directory levels below the root to search. The root's direct children are depth 1.
     /// Deep enough for common layouts (`~/Documents/Projects/<group>/<repo>` is depth 4) while keeping
@@ -60,15 +61,56 @@ public enum RepoScanner {
         }
     }
 
+    /// Orders repositories by their newest local-branch commit. Repositories without a readable commit
+    /// timestamp remain selectable after committed repositories, with a stable name/path fallback.
+    static func orderByMostRecentCommit(
+        _ repos: [String],
+        commitTimestamp: (String) -> Int?
+    ) -> [String] {
+        repos.map { (path: $0, timestamp: commitTimestamp($0)) }
+            .sorted { lhs, rhs in
+                switch (lhs.timestamp, rhs.timestamp) {
+                case let (l?, r?) where l != r:
+                    return l > r
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    let ln = (lhs.path as NSString).lastPathComponent
+                    let rn = (rhs.path as NSString).lastPathComponent
+                    switch ln.localizedCaseInsensitiveCompare(rn) {
+                    case .orderedAscending: return true
+                    case .orderedDescending: return false
+                    case .orderedSame: return lhs.path < rhs.path
+                    }
+                }
+            }
+            .map(\.path)
+    }
+
+    /// Timestamp of the newest commit among a repository's local branches. A missing/empty repository,
+    /// malformed Git metadata, or a bounded Git failure is deliberately a nil timestamp rather than a
+    /// discovery failure: the New Agent picker must still offer every repo it found.
+    private static func newestLocalCommitTimestamp(in repo: String) -> Int? {
+        guard let result = try? Proc.run(
+            ["git", "-C", repo, "for-each-ref", "--format=%(committerdate:unix)",
+             "--sort=-committerdate", "--count=1", "refs/heads"],
+            timeout: .seconds(2)
+        ), result.ok else { return nil }
+        return Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     /// Discover repos under `root` on the real filesystem via `FileManager`. Symlinks are not followed
-    /// (avoids cycles and escaping the root into unrelated trees).
+    /// (avoids cycles and escaping the root into unrelated trees). Results are ordered by newest local
+    /// branch commit, then case-insensitive repository name and full path for deterministic fallbacks.
     public static func discover(
         root: String,
         maxDepth: Int = defaultMaxDepth,
         fileManager fm: FileManager = .default
     ) -> [String] {
         let expandedRoot = (root as NSString).expandingTildeInPath
-        return scan(
+        let repos = scan(
             root: expandedRoot,
             maxDepth: maxDepth,
             isRepo: { fm.fileExists(atPath: "\($0)/.git") },
@@ -86,10 +128,11 @@ public enum RepoScanner {
                 }
             }
         )
+        return orderByMostRecentCommit(repos, commitTimestamp: newestLocalCommitTimestamp)
     }
 
     /// `discover` off the main thread — the recursive walk of a `$HOME`-rooted tree must never run on
-    /// the UI thread. Returns the sorted repo paths; callers publish them back on the main actor.
+    /// the UI thread. Returns commit-recency-ordered paths; callers publish them back on the main actor.
     public static func discoverAsync(root: String, maxDepth: Int = defaultMaxDepth) async -> [String] {
         await _Concurrency.Task.detached(priority: .userInitiated) {
             discover(root: root, maxDepth: maxDepth)

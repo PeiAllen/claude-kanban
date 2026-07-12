@@ -32,9 +32,9 @@ public struct ClaudeCodeAdapter: Adapter {
 
     private static let fallbackModels: [AgentModel] = [
         AgentModel(id: "claude-opus-4-8", displayName: "Opus 4.8", family: "claude"),
-        AgentModel(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6", family: "claude"),
+        AgentModel(id: "claude-fable-5", displayName: "Fable 5", family: "claude"),
+        AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
         AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
-        AgentModel(id: "claude-opus-4-7", displayName: "Opus 4.7", family: "claude"),
     ]
 
     public func newSessionId() -> String? { UUID().uuidString.lowercased() }

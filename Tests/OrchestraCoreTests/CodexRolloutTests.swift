@@ -8,9 +8,9 @@ struct CodexModelTableTests {
 
     @Test("known Codex model resolves to its offline context window")
     func knownModelHasWindow() {
-        let m = adapter.model(for: "gpt-5.3-codex")
+        let m = adapter.model(for: "gpt-5.5")
         #expect(m.contextWindow == 272_000)
-        #expect(m.displayName == "GPT-5.3 Codex")
+        #expect(m.displayName == "GPT-5.5")
     }
 
     @Test("unknown Codex model id falls back (no fabricated window)")
@@ -56,10 +56,10 @@ struct CodexRolloutParseTests {
     @Test("token_count → ctxPct (tokens ÷ table window) + modelId")
     func tokenCountCtx() throws {
         // 68000 / 272000 = 25%
-        let line = #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_token_usage":{"total_tokens":68000}}}}"#
+        let line = #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":68000}}}}"#
         let r = try #require(tail(line))
         #expect(r.snapshot?.ctxPct == 25.0)
-        #expect(r.snapshot?.modelId == "gpt-5.3-codex")
+        #expect(r.snapshot?.modelId == "gpt-5.5")
     }
 
     @Test("token_count without model uses last_token_usage over inline context window")
@@ -75,7 +75,7 @@ struct CodexRolloutParseTests {
     @Test("test_ctxpct_from_model_table: ctxPct denominator is the OFFLINE model window, not the rollout's")
     func ctxPctFromModelTable() throws {
         // Rollout carries a bogus in-line window; parse must ignore it and use codex-models.json (272000).
-        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","model_context_window":999,"total_token_usage":{"total_tokens":136000}}}}"#
+        let line = #"{"timestamp":"2026-07-01T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","model_context_window":999,"total_token_usage":{"total_tokens":136000}}}}"#
         let r = try #require(tail(line))
         #expect(r.snapshot?.ctxPct == 50.0)   // 136000 / 272000, NOT 136000/999
     }
@@ -102,8 +102,8 @@ struct CodexRolloutParseTests {
 
     @Test("rename tolerance: total_token_usage.total_tokens AND a flat total_tokens both parse")
     func renameToleranceTokens() throws {
-        let nested = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_token_usage":{"total_tokens":68000}}}}"#
-        let flat   = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_tokens":68000}}}"#
+        let nested = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":68000}}}}"#
+        let flat   = #"{"type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_tokens":68000}}}"#
         #expect(tail(nested)?.snapshot?.ctxPct == 25.0)
         #expect(tail(flat)?.snapshot?.ctxPct == 25.0)
     }
@@ -229,7 +229,7 @@ struct CodexTelemetryE2ETests {
         // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
         // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
         // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
-        async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.3-codex",
+        async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
                                                  agentId: "codex",
                                                  cwd: PathResolver.canonical(work)))
         try await TestEnv.reconcileUntilLive(svc, count: 1)
@@ -271,9 +271,9 @@ struct CodexTelemetryE2ETests {
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"))
-        async let sa = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look a", model: "gpt-5.3-codex",
+        async let sa = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look a", model: "gpt-5.5",
                                             agentId: "codex", cwd: workA))
-        async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look b", model: "gpt-5.3-codex",
+        async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look b", model: "gpt-5.5",
                                             agentId: "codex", cwd: workB))
         try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback (fixture rollouts predate launch)
         let cardA = try await sa
@@ -290,7 +290,7 @@ struct CodexTelemetryE2ETests {
     func tailUpdatesBoard() async throws {
         let (svc, card, rollout) = try await makeEnv()
         append(rollout, #"{"timestamp":"2026-07-01T10:00:02.000Z","type":"event_msg","payload":{"type":"task_started"}}"#)
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_token_usage":{"total_tokens":68000}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":68000}}}}"#)
         await svc.pollTelemetry()
 
         let after = try #require(await svc.list().first { $0.id == card.id })
@@ -321,9 +321,9 @@ struct CodexTelemetryE2ETests {
     func seqGateHoldsE2E() async throws {
         let (svc, card, rollout) = try await makeEnv()
         // Fresh ctx first (later ts, 50%), then a STALE ctx (earlier ts, 10%) appended after.
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_token_usage":{"total_tokens":136000}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":136000}}}}"#)
         await svc.pollTelemetry()
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.3-codex","total_token_usage":{"total_tokens":27200}}}}"#)
+        append(rollout, #"{"timestamp":"2026-07-01T10:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-5.5","total_token_usage":{"total_tokens":27200}}}}"#)
         await svc.pollTelemetry()
 
         let after = try #require(await svc.list().first { $0.id == card.id })

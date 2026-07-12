@@ -63,15 +63,21 @@ extension OrchestraService {
     /// the waiting state (shipped/synced/set-parent cleared it) or the parent card is gone.
     func startMergeRequestNudge(childId: UUID) {
         mergeRequestNudge[childId]?.cancel()
+        // `self` is re-acquired PER HOP, never hoisted above the loop. A hoisted `guard let self` holds
+        // a STRONG reference for the loop's entire life — including the sleep, which is ~all of it — so
+        // `[weak self]` buys nothing and the service can never deallocate. Optional-chaining each hop
+        // takes a temporary strong ref only for that call's duration; once the service is gone the next
+        // hop yields nil and the loop unwinds. (The pinned service kept forking `git` forever; under
+        // `swift test --parallel` the zombies piled up until the cooperative pool was starved.)
         mergeRequestNudge[childId] = _Concurrency.Task { [weak self] in
-            guard let self else { return }
             while !_Concurrency.Task.isCancelled {
-                let interval = await self.mergeRequestNudgeInterval
+                guard let interval = await self?.mergeRequestNudgeInterval else { return }
                 try? await _Concurrency.Task.sleep(for: interval)
                 if _Concurrency.Task.isCancelled { return }
-                if await self.reNudgeMergeRequest(childId) { break }   // true ⇒ no longer pending, stop
+                guard let stop = await self?.reNudgeMergeRequest(childId) else { return }
+                if stop { break }                                      // no longer pending, stop
             }
-            await self.clearMergeRequestNudge(childId)
+            await self?.clearMergeRequestNudge(childId)
         }
     }
 
