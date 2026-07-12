@@ -34,11 +34,22 @@ extension OrchestraService {
     ///   - mutate: companion field-writes applied INSIDE the same `store.update` patch as the phase write,
     ///     so they land atomically with it (restart clears `agentSessionId`, handoff sets `pendingSeed`,
     ///     spawn-fail sets `deadDetail`, …). Consumed by 2.4/2.5.
+    ///   - expecting: non-nil ⇒ apply ONLY if the card is still in this phase kind. The epoch fence below
+    ///     cannot cover a supersede that leaves the generation alone — `markDead` (e.g. the launch timeout)
+    ///     does not bump `sessionEpoch`, and `dead → live` is a legal revival edge, so a bring-up that was
+    ///     dispatched at `.launching`, timed out of the board, and only THEN had its readiness confirmed
+    ///     would otherwise flip the card back to `.live` — re-animating a card whose conclusion a parent's
+    ///     `wait` has already been told. The steppers pass the phase they were dispatched for, so the
+    ///     landing carries the same single-winner fence as the bring-up.
     @discardableResult
-    func transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil,
+    func transition(_ id: UUID, to: Phase, observedEpoch: Int? = nil, expecting: Phase.Kind? = nil,
                     mutate: @Sendable (inout Task) -> Void = { _ in }) async -> TransitionResult {
         guard let card = await store.get(id) else { return .noop }
         let from = card.phase
+
+        // 0 · The dispatched-phase fence (see `expecting`): the card left the phase this write was computed
+        //     for, so a newer owner has it — drop the write rather than resurrect a stale landing.
+        if let expecting, from.kind != expecting { return .noop }
 
         // 1 · Idempotency — but the `relaunching → relaunching` supersede self-edge must NOT be swallowed
         //     (it re-arms a fresh generation), so it falls through to apply.

@@ -153,9 +153,15 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
 
     func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
+    /// Called INSIDE `ensure`, i.e. while the bring-up is off-actor mid-hop. Lets a test land a supersede
+    /// (a launch-timeout death, an archive) in the exact window `finishLaunch` cannot hold the actor across,
+    /// and then assert the bring-up reaps the session it created instead of leaking it under a dead card.
+    var onEnsure: (@Sendable () -> Void)?
+
     func ensure(_ task: Task, argv: [String], env: [String: String] = [:]) throws -> (name: String, created: Bool) {
         let name = sessionName(task.id)
         lock.lock(); curConcurrentEnsure += 1; peakConcurrentEnsure = max(peakConcurrentEnsure, curConcurrentEnsure); ensureCount += 1; lock.unlock()
+        onEnsure?()
         if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
         // A fresh launch re-mints a LIVE pane — clear any prior dead-pane mark (models a healthy retry).
         lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); deadPanes.remove(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()

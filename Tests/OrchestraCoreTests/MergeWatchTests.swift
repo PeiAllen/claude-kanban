@@ -41,6 +41,32 @@ struct MergeWatchTests {
         _ = await waiting.value
     }
 
+    /// The lost wakeup that hung `wait` forever. A conclusion that lands while a subscriber is ARMED but has
+    /// not yet parked must be RETAINED, not dropped — that gap is exactly where `wait` sits while it reads
+    /// card state (it subscribes first, then reads, so that no conclusion can fall between the two).
+    @Test("a conclusion landing between subscribe and park is retained, not dropped")
+    func retainedBetweenSubscribeAndPark() async throws {
+        let mw = MergeWatch()
+        let a = UUID()
+        let token = await mw.subscribe([a])                     // armed; nobody parked yet
+        await mw.conclude(Conclusion(cardId: a, ref: "r", kind: .exited, deadReason: .sessionVanished))
+        let got = await mw.awaitConclusion(token: token)        // must return immediately, not hang
+        #expect(got?.cardId == a)
+        #expect(got?.deadReason == .sessionVanished)
+        #expect(await mw.subscriptionCount() == 0)
+    }
+
+    /// An armed subscription the caller resolved from card state instead is dropped cleanly.
+    @Test("unsubscribe drops an armed subscription")
+    func unsubscribeDropsArmed() async throws {
+        let mw = MergeWatch()
+        let token = await mw.subscribe([UUID()])
+        #expect(await mw.subscriptionCount() == 1)
+        await mw.unsubscribe(token)
+        #expect(await mw.subscriptionCount() == 0)
+        #expect(await mw.awaitConclusion(token: token) == nil)   // a dropped token never parks
+    }
+
     @Test("cancellation resolves awaitConclusion with nil and drops the subscription")
     func cancel() async throws {
         let mw = MergeWatch()
