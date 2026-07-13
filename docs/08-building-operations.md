@@ -36,7 +36,9 @@ scripts/test.sh         # swift test (adds swift-testing search paths — see be
 > `swift build` bypasses it and re-creates the problem for every other card; to wrap a raw
 > invocation use `scripts/lib/with-lock.sh build -- swift build …`. When another card holds the
 > lock you'll see `[build-lock] waiting for slot…` on stderr — the wait is bounded
-> (`ORCH_BUILD_LOCK_TIMEOUT`, default 300s) and **fails open**, so it can never fail your build.
+> (`ORCH_BUILD_LOCK_TIMEOUT`, default 1200s) and **fails open**, so it can never fail your build.
+> (The bound must exceed the queue it absorbs: at 300s, three contending cards each timed out, ran
+> unlocked, and re-created the very concurrency the mutex prevents.)
 > `scripts/test.sh` holds the lock for the **compile only** and runs the suite unlocked.
 > `scripts/build-app.sh` additionally takes a **`--strict` ship mutex** (it rewrites the shared
 > `App/Orchestra.xcodeproj` and replaces `/Applications/Orchestra.app`); that one never fails open —
