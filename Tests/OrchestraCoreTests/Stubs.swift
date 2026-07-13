@@ -333,26 +333,47 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     let enabled = true
     let capabilities: AgentCapabilities
     let transcriptDir: String
+    /// The stub's model catalog. Per-instance so a test can stand up two adapters with DISJOINT catalogs
+    /// and prove a cross-adapter `--model` (a Codex id on a claude-code card) is rejected.
+    let modelIds: [String]
     init(transcriptDir: String, capabilities: AgentCapabilities = .stub,
-         id: String = "claude-code", name: String = "Stub") {
+         id: String = "claude-code", name: String = "Stub", modelIds: [String] = ["m1", "m2", "m3"]) {
         self.transcriptDir = transcriptDir
         self.capabilities = capabilities
         self.id = id
         self.name = name
+        self.modelIds = modelIds
     }
 
-    func models() -> [AgentModel] { [AgentModel(id: "m1"), AgentModel(id: "m2")] }
+    func models() -> [AgentModel] { modelIds.map { AgentModel(id: $0) } }
     func newSessionId() -> String? { UUID().uuidString.lowercased() }
+    /// Both argv builders emit the model flag from `ctx.model`, like the real adapters
+    /// (ClaudeCodeAdapter `--model`, Codex `-m`) — so a test can assert which model a launch actually
+    /// went up on. Emitted BEFORE the trailing prompt/seed positional, again like the real ones.
+    private func modelFlag(_ model: String?) -> [String] {
+        guard let m = model, !m.isEmpty else { return [] }
+        return ["--model", m]
+    }
+    /// The read-only posture, emitted on BOTH launch paths like the real adapters (Claude's locked-down
+    /// tool list, Codex's `-s read-only -a never`) — so a test can prove a read-only card stays read-only
+    /// across a resume, not only on the spawn that created it.
+    private func accessFlags(_ access: CardAccess) -> [String] {
+        access == .readOnly ? ["--read-only"] : []
+    }
     func start(_ ctx: AdapterContext) -> [String] {
         var a = [bin]
         if let s = ctx.sessionId { a += ["--session-id", s] }
         if let n = ctx.name { a += ["--name", n] }
+        a += accessFlags(ctx.access)
+        a += modelFlag(ctx.model)
         if let p = ctx.prompt { a.append(p) }
         return a
     }
     func resume(_ ctx: AdapterContext) -> [String]? {
         guard let s = ctx.sessionId else { return nil }
         var a = [bin, "--resume", s, "--name", ctx.name ?? ""]
+        a += accessFlags(ctx.access)
+        a += modelFlag(ctx.model)
         if let seed = ctx.seed, !seed.isEmpty { a.append(seed) }   // F1: deliver the seed like real adapters
         return a
     }
@@ -441,9 +462,14 @@ final class StubGrantResolver: TrustGrantResolver, @unchecked Sendable {
 
 enum TestEnv {
     /// A service wired with stubs + a controllable adapter, all under a temp dir allowlist.
+    /// `extraAgents` registers ADDITIONAL stub adapters beside the default `claude-code` one, each with its
+    /// own model catalog — so a test can prove a model id that is valid for ANOTHER agent is still rejected
+    /// on this card (a card's `agentId` never changes, so its catalog is the only one that may authorize a
+    /// re-seat). They share the default adapter's transcript dir, so `writeTranscript` works for all of them.
     static func make(maxRevivals: Int = 4, grace: Int = 1, capabilities: AgentCapabilities = .stub,
                      grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
-                     registry: AgentRegistry? = nil)
+                     registry: AgentRegistry? = nil,
+                     extraAgents: [(id: String, models: [String])] = [])
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
@@ -459,8 +485,12 @@ enum TestEnv {
         let store = TaskStore(path: base + "/tasks.json")
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
+        let extras = extraAgents.map {
+            StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities,
+                        id: $0.id, name: $0.id, modelIds: $0.models)
+        }
         let svc = OrchestraService(config: config, store: store,
-                                   registry: registry ?? AgentRegistry(adapters: [adapter]),
+                                   registry: registry ?? AgentRegistry(adapters: [adapter] + extras),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))

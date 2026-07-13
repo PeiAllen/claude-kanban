@@ -129,14 +129,21 @@ extension OrchestraService {
                         // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
                         // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
                         // the adapter is momentarily unavailable (never worse than the old hardcode).
-                        let land = (try? registry.get(t.agentId)).map { landing(of: deriveLaunchFlavor(t, $0)) }
+                        let adopted = try? registry.get(t.agentId)
+                        let land = adopted.map { landing(of: deriveLaunchFlavor(t, $0)) }
                             ?? .waiting(.humanTurn)
                         // Mirror the Launch/RelaunchStepper's COMPANION cleanup, not just its landing: both
                         // clear `pendingSeed` on the successful `→ live` transition. Adopt jumps straight to
                         // live WITHOUT the stepper, so a crash between "session consumed the seed + came up"
                         // and the stepper's transition would otherwise leave `pendingSeed` set — and a later
                         // `resume(seed: nil)` preserves it, so `deriveLaunchFlavor` would REPLAY the seed.
-                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) { $0.pendingSeed = nil }
+                        // `pendingModel` is consumed here for the same reason as `pendingSeed`: adopt lands
+                        // `.live` without the stepper, so leaving it set would replay the re-seat onto a
+                        // later launch (and leave `model` showing whatever a stale report last wrote).
+                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) {
+                            $0.pendingSeed = nil
+                            consumeModelReseat(&$0, adopted)   // consumed even if the adapter didn't resolve
+                        }
                         continue
                     }
                 }

@@ -166,6 +166,26 @@ public actor OrchestraService {
     var spawnPending: [UUID: Date] = [:]
     var spawnAttempts: [UUID: Int] = [:]
     var spawnRelaunch: [UUID: (adapterId: String, ctx: AdapterContext)] = [:]
+    /// Armed by a `--model` re-seat (restart/handoff/resume), consumed by the first model-bearing report
+    /// AFTER the relaunch lands, to answer one question: did the vendor actually honor `--model`? (It does
+    /// — both CLIs were probed — so this is a tripwire for a vendor that changes its mind, not the
+    /// mechanism; `pendingModel` is the mechanism.) Deliberately NOT persisted: a daemon restart just drops
+    /// a best-effort check, which is strictly better than carrying a second field through Task's Codable.
+    ///
+    /// `left` is the model the card was ON before the re-seat, and it is what makes the tripwire precise: we
+    /// accuse the vendor ONLY when the agent reports the model we were leaving. An agent that switches to
+    /// some THIRD model has made a deliberate in-session `/model` change, which is none of this check's
+    /// business — and used to be reported as a vendor fault.
+    ///
+    /// Scope, honestly: this is exact for RESUME (an ignored `--model` leaves the session on its transcript's
+    /// model, which IS `left`) and weaker for a blank RESTART, where an ignored flag would start on the
+    /// vendor's CONFIGURED DEFAULT — which need not be `left`, and would then read as a deliberate switch and
+    /// go unreported. We accept that: the alternative is accusing the vendor whenever an agent legitimately
+    /// changes its own model, and a false accusation is worse than a missed one. Resume is also the case that
+    /// matters, since it is the one carrying context across (the escalation path).
+    /// `strikes` exists because the file-tailer can surface one last pre-kill rollout line after the
+    /// landing; a vendor that truly ignored the flag misreports on every tick and so strikes out at once.
+    var modelOverrideWatch: [UUID: (requested: String, left: String, strikes: Int)] = [:]
     /// Non-persisted tuning (short in tests). `spawnGraceSeconds` = how long a spawned card is watched for
     /// an immediate exit before it graduates to normal monitoring; `maxStartupRetries` = bounded
     /// auto-respawns of a transient startup abort before giving up.

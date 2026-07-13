@@ -131,6 +131,11 @@ extension OrchestraService {
     /// native-reinvoke wake: `orchestra wait` returns → its process exits → the harness re-invokes).
     func concludeCard(_ id: UUID, _ kind: Conclusion.Kind, deadReason: DeadReason? = nil) async {
         guard let t = await store.get(id) else { return }
+        // A concluded card can never confirm a `--model` re-seat, so drop its tripwire here — the single
+        // terminal chokepoint. Doing it in `markDead` alone would miss the most likely post-re-seat death of
+        // all: a re-seat whose launch fails concludes via the steppers' `concludeFailedLaunch`, which goes
+        // through the funnel, not through `markDead`.
+        modelOverrideWatch[id] = nil
         ensureWatchRegistryLoaded()   // a card concluding in the boot window must see the persisted watchers
         let conc = Conclusion(cardId: id, ref: t.ref(), kind: kind, deadReason: deadReason)
         // F3 inbox routing + F2 wake for every registered watcher of this child. If the watcher has a

@@ -27,13 +27,14 @@ enum CLIHelp {
       send-keys <ref> <key|text...> [--text <literal>] [--window <w>]
                                                  Send live keystrokes (Esc, Up, C-c, Enter, text …)
       wait <ref...>                              Block until a watched card concludes (fan-out)
-      handoff <ref> <context...>                 Clean-context handoff: resume the card seeded with context
+      handoff <ref> <context...> [--model <id>]  Clean-context handoff: resume the card seeded with context
+                                                 (--model also RE-SEATS it onto that model — escalate in place)
       trust <path>                               Grant a human's write-trust for a dir (interactive only)
       trustState <path>                          Is a directory trusted? (read-only ledger query)
       status <ref>                               Show a card's state (JSON)
       archive <ref>                              Archive a card
-      restart <ref>                              New blank session, same worktree
-      resume <ref>                               Re-attempt claude --resume
+      restart <ref> [--model <id>]               New blank session, same worktree (--model re-seats it)
+      resume <ref> [--model <id>]                Re-attempt resuming the card's session (--model re-seats it)
       shell <ref>                                Attach the card's tmux session
       inspect <ref>                              Open a read-only claude in the card's worktree shell
       open-notes [ref]                           Open the card's worktree as an Obsidian vault, on its changed notes

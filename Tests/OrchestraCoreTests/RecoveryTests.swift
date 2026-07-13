@@ -173,7 +173,8 @@ struct RecoveryTests {
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
         #expect(argv[nameIdx + 1] == updated.title)
-        #expect(argv.count == nameIdx + 2)   // nothing after the name value → the prompt is NOT re-handed
+        // Only the model flag trails the name — no positional → the prompt is NOT re-handed.
+        #expect(Array(argv[(nameIdx + 2)...]) == ["--model", "m1"])
     }
 
     @Test("test_restartSingleWinner")

@@ -155,9 +155,16 @@ extension OrchestraService {
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a
         // fresh spawn's blank launch so a bounded retry can re-`ensure` the SAME session + cwd.
         var armCtx: AdapterContext? = nil
+        // A staged `--model` re-seat (restart/handoff/resume) WINS over `model` for the launch. It has to:
+        // restart/resume are intent-only, so the outgoing session stays alive and reporting for a reconcile
+        // tick after the verb writes the card, and its statusline's model — applied through report()'s
+        // field-delta half, which is NOT epoch-fenced — would otherwise revert `model` back to the old one
+        // right here, and the re-seat would relaunch on the model it was trying to leave. `pendingModel` is
+        // never touched by report() (it is absent from `applyReportFields`), so it survives that window.
+        let launchModel = task.pendingModel ?? task.model.id
         switch flavor {
         case .blank(_, let prompt):
-            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id, startIn: task.startIn,
+            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, prompt: prompt, name: task.title,
                                      orchestraBin: orchestraBin, access: task.access,
                                      trustCwd: trustDecision == .trusted)
@@ -166,8 +173,17 @@ extension OrchestraService {
             argv = adapter.start(ctx)
             armCtx = ctx
         case .resume(let seed):
-            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: task.model.id,
+            // Every card-derived launch flag the `.blank` ctx carries must be carried HERE too. Both were
+            // being dropped on resume, because this context is built field-by-field and simply omitted them:
+            //  • `access` — `AdapterContext` defaults it to `.readWrite`, and both adapters emit their
+            //    lockdown flags from `ctx.access` on resume as well as on start, so a READ-ONLY card came
+            //    back writable.
+            //  • `startIn` — not merely a board column: `.plan` becomes `--permission-mode auto`
+            //    (ClaudeCodeAdapter.swift:204-206), so a resumed plan card silently lost it and began
+            //    prompting for permissions mid-task.
+            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
+                                     access: task.access,
                                      trustCwd: trustDecision == .trusted, seed: seed)
             guard let sid = task.agentSessionId else { return .timedOut }
             let a = adapter, c = ctx, priorIds = task.priorSessionIds

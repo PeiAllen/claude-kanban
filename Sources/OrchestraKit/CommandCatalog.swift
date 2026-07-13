@@ -144,6 +144,9 @@ public enum CommandCatalog {
                           "ref": refProp(),
                           "context": strProp("Handoff context — the summary/instructions the resumed, "
                               + "clean-context session opens on (folded ahead of any queued inbox messages)."),
+                          "model": strProp("RE-SEAT the card onto this model (from its OWN agent's list) as "
+                              + "it resumes — how an agent escalates itself to a higher tier mid-task, "
+                              + "carrying its context. Omit to keep the current model."),
                       ], required: ["ref", "context"]),
                       kind: .convergence, phaseGate: gLiveDead),
 
@@ -230,11 +233,17 @@ public enum CommandCatalog {
                       kind: .convergence, phaseGate: [.archivedPending, .archivedComplete]),
 
         CommandSchema(name: "restart", summary: "Start a new blank session in the same worktree (no prompt re-handed).",
-                      params: schema(["ref": refProp()], required: ["ref"]),
+                      params: schema(["ref": refProp(),
+                                      "model": strProp("RE-SEAT the card onto this model (from its OWN "
+                                          + "agent's list) for the new session. Omit to keep the current one.")],
+                                     required: ["ref"]),
                       kind: .convergence, phaseGate: [.live, .dead, .relaunching]),
 
-        CommandSchema(name: "resume", summary: "Re-attempt claude --resume of the card's existing session.",
-                      params: schema(["ref": refProp()], required: ["ref"]),
+        CommandSchema(name: "resume", summary: "Re-attempt resuming the card's existing agent session.",
+                      params: schema(["ref": refProp(),
+                                      "model": strProp("RE-SEAT the card onto this model (from its OWN "
+                                          + "agent's list) as it resumes. Omit to keep the current one.")],
+                                     required: ["ref"]),
                       kind: .convergence, phaseGate: [.live, .dead, .relaunching]),
 
         CommandSchema(name: "shell", summary: "Open a shell window in the worktree; returns its tmux target.",
