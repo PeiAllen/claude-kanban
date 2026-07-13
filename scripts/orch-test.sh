@@ -123,7 +123,7 @@ PY
     echo "seeded: $AGENT card $CARD_ID (shortId aaaaaa), worktree $ROOT/wt"
     ;;
   up)                                            # build + start the isolated daemon in the background
-    swift build --package-path "$REPO_ROOT" >&2
+    "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" >&2
     mkdir -p "$DATA"
     seed_home                                    # onboarding + per-dir trust so real agents start clean (no prompts)
     # ORCH_TEST_EXTRA_PATH prepends a dir to the daemon's PATH — lets a test inject a stand-in agent

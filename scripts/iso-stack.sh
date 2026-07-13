@@ -125,15 +125,15 @@ cmd_up() {
   # --- 1. build daemon + Mac app (+ iOS app) off THIS branch ---
   if [[ "$build" == 1 ]]; then
     echo "▶ building daemon (debug)…"
-    swift build --package-path "$REPO_ROOT" --product orchestrad
+    "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad
     echo "▶ building Mac app (Debug)…"
     xcodegen generate --spec App/project.yml --project App >/dev/null
-    xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+    scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
       -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
     if [[ "$do_ios" == 1 ]]; then
       echo "▶ building iPhone app (Debug)…"
       xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
-      xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+      scripts/lib/with-lock.sh build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
         -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build >/dev/null
     fi
   fi

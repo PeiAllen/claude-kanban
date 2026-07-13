@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/toolchain.sh
-swift build --target OrchestraCore >/dev/null
+scripts/lib/with-lock.sh build -- swift build --target OrchestraCore >/dev/null
 MOD=".build/$(uname -m)-apple-macosx/debug/Modules"
 exec swiftc -typecheck \
   -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \

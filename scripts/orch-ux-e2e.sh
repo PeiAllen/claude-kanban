@@ -172,9 +172,9 @@ artifacts_present() {
 
 do_build() {
   echo "▶ building daemon (debug) + app (Debug)…"
-  swift build --package-path "$REPO_ROOT" --product orchestrad >&2
+  "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad >&2
   xcodegen generate --spec App/project.yml --project App >/dev/null
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
 }
 
