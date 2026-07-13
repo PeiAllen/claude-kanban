@@ -129,9 +129,21 @@ extension OrchestraService {
     /// returned `ReadinessOutcome`. Always kills the predecessor session before `ensure` (idempotent for a
     /// fresh launch), so the relaunch kill→ensure ordering holds. A `.resume` whose transcript vanished or
     /// an `ensure` throw yields `.timedOut` (the stepper's own pre-checks classify the real failure paths).
-    func finishLaunch(_ id: UUID, flavor: LaunchFlavor) async -> ReadinessOutcome {
+    ///
+    /// FENCED on the phase + generation the step was DISPATCHED for (`expecting`/`epoch`). A step is
+    /// dispatched off a snapshot and runs asynchronously, so the card can leave that phase before the step
+    /// arrives here — the reconciler's adopt path lands a `.launching` card whose session came up, and
+    /// `report()`'s SessionStart(clear/resume) writes `.live` directly. Since the bring-up is a `kill` +
+    /// `ensure`, an unfenced stale step would tear a LIVE agent's session down and replace it with a fresh
+    /// one. It stands down `.superseded` instead — the same single-winner discipline the funnel applies to
+    /// phase writes, extended to the side effects.
+    func finishLaunch(_ id: UUID, flavor: LaunchFlavor,
+                      expecting: Phase.Kind, epoch expectedEpoch: Int) async -> ReadinessOutcome {
         guard let task = await store.get(id), let adapter = try? registry.get(task.agentId) else {
             return .timedOut
+        }
+        guard task.phase.kind == expecting, task.sessionEpoch == expectedEpoch else {
+            return .superseded   // a newer landing/generation owns the card — never bring up under it
         }
         let epoch = task.sessionEpoch
         let grace = config.revivalGraceSeconds
@@ -172,6 +184,11 @@ extension OrchestraService {
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = resumeArgv
         }
+        // RE-VERIFY OWNERSHIP IMMEDIATELY BEFORE THE DESTRUCTIVE HOP. The entry fence is a check, not a
+        // lease: everything above suspends the actor (trust resolve, `prepareToLaunch`, the resume transcript
+        // stat), and the launch-timeout `markDead` runs OUTSIDE the `bringingUp` gate — deliberately, since
+        // it is what keeps a wedged bring-up converging. So the card really can go terminal under us here.
+        guard await stillOwns(id, expecting: expecting, epoch: expectedEpoch) else { return .superseded }
         do {
             try await offActor { [sessions] in
                 _ = try? sessions.kill(sessions.sessionName(id))   // idempotent for a fresh launch
@@ -180,13 +197,48 @@ extension OrchestraService {
         } catch {
             return .timedOut   // tmux ensure failed
         }
+        // …AND AGAIN AFTER IT. The hop is a window the actor cannot be held across, so the card may have gone
+        // terminal (or been superseded) while the session was coming up. Nothing else would ever reap that
+        // session — the orphan sweep only touches archived/absent cards, and reconcile's `.dead` case is a
+        // no-op — so a real tmux session + agent process would leak under a dead card, across daemon
+        // restarts. Reap it ourselves. Only ever kill a session stamped with OUR generation: a newer relaunch
+        // that already `ensure`d owns the same session NAME, and killing that one would be this very bug.
+        //
+        // The probe and the kill are two separate tmux calls, so they are not atomic — which is safe ONLY
+        // because of the single-bring-up-per-card invariant: `stepIfEligible` takes the `inFlightSteps` claim
+        // SYNCHRONOUSLY before dispatching, and `runStep` releases it only after the step (this function
+        // included) has returned, so a newer generation's bring-up cannot `kill`+`ensure` between our probe
+        // and our kill — it has not been dispatched yet. The other `ensure` sites can't race us either: the
+        // startup-abort retry is gated on a `.live` card (ours is still being born), and `openShell`/`exec`
+        // create an UNSTAMPED session, which the epoch check below declines to kill. If that invariant is ever
+        // relaxed, this reap needs a real per-card session lock. (Pinned by `test_noSecondBringUpWhileInFlight`.)
+        guard await stillOwns(id, expecting: expecting, epoch: expectedEpoch) else {
+            // Fail-safe by direction: we only ever kill a session we can PROVE is ours, so a probe that
+            // fails (a tmux hiccup, or a `SessionManaging` conformer that doesn't override `stampedEpoch` —
+            // the protocol default returns nil) declines to kill rather than killing someone else's session.
+            // But a decline means the leak this reap exists to prevent has silently recurred, so say so:
+            // an unreapable session is an operator-visible warning, not a silent orphan.
+            let probe: (alive: Bool, stamped: Int?) = (try? await offActor { [sessions] in
+                let name = sessions.sessionName(id)
+                let alive = (try? sessions.isAlive(name)) ?? false
+                let stamped = (try? sessions.stampedEpoch(name: name)) ?? nil
+                if stamped == expectedEpoch { _ = try? sessions.kill(name) }   // ours ⇒ reap it
+                return (alive, stamped)
+            }) ?? (false, nil)
+            if probe.alive, probe.stamped == nil, let now = await store.get(id) {
+                emitActivity(.warning, now, .daemon,
+                             "superseded bring-up could not verify its session's generation — "
+                             + "\(sessions.sessionName(id)) may be left behind")
+            }
+            return .superseded
+        }
         // STARTUP-ABORT ARM (folded from spawn-startup-abort-classification): for a FRESH spawn (phase
         // `.launching` — the LaunchStepper, not a `.relaunching` restart/resume), keep the dying pane's
         // output for capture (remain-on-exit) and mark the card startup-pending so the reconcile/liveness
         // pass classifies an immediate exit as `.spawnExitedImmediately` (captured + bounded-retried)
         // instead of the generic `.sessionVanished`. Agent-agnostic — capability profiles differ, the arm
         // does not.
-        if task.phase.kind == .launching, let ctx = armCtx {
+        if expecting == .launching, let ctx = armCtx {   // still-owned `.launching` (re-verified above)
             let name = sessions.sessionName(id)
             try? await offActor { [sessions] in try sessions.setRemainOnExit(name, window: "agent", on: true) }
             spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
@@ -194,6 +246,14 @@ extension OrchestraService {
             spawnRelaunch[id] = (adapter.id, ctx)
         }
         return await confirmReadiness(id, adapter: adapter, graceSeconds: grace)
+    }
+
+    /// Does this bring-up still own the card — is it still in the phase + generation its step was dispatched
+    /// for? The single ownership predicate behind the fence (checked on entry, before the destructive hop,
+    /// and again after it).
+    private func stillOwns(_ id: UUID, expecting: Phase.Kind, epoch: Int) async -> Bool {
+        guard let now = await store.get(id) else { return false }
+        return now.phase.kind == expecting && now.sessionEpoch == epoch
     }
 
     // MARK: - teardownActorDuties (extracted archive() actor-bound duties; TeardownStepper delegates here)

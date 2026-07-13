@@ -1166,11 +1166,13 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
-            transition: { [self] id, to, epoch, mutate in
-                await transition(id, to: to, observedEpoch: epoch, mutate: mutate)
+            transition: { [self] id, to, epoch, expecting, mutate in
+                await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },
             materialize: { [self] id in await materialize(id) },
-            finishLaunch: { [self] id, flavor in await finishLaunch(id, flavor: flavor) },
+            finishLaunch: { [self] id, flavor, expecting, epoch in
+                await finishLaunch(id, flavor: flavor, expecting: expecting, epoch: epoch)
+            },
             teardownActorDuties: { [self] id in await teardownActorDuties(id) },
             emitActivity: { [self] id, kind, text in
                 let task = await store.get(id)

@@ -5,6 +5,53 @@ import Testing
 @Suite("C2 · wake + merge-watch (real card state; subscriber; settled-terminal)")
 struct WakeMergeWatchTests {
 
+    /// Run `body` with a deadline. Returns nil if it did not finish in time — so a LOST conclusion
+    /// fails the test instead of suspending it forever (the suite-wide `--parallel` hang this guards).
+    static func withDeadline<T: Sendable>(_ seconds: Double,
+                                          _ body: @escaping @Sendable () async -> T) async -> T? {
+        await withTaskGroup(of: T?.self) { g in
+            g.addTask { await body() }
+            g.addTask { try? await _Concurrency.Task.sleep(for: .seconds(seconds)); return nil }
+            let first = await g.next() ?? nil
+            g.cancelAll()
+            return first
+        }
+    }
+
+    /// **Bug #2 — the `--parallel` suite hang.** A child that concludes WHILE a `wait` is still between
+    /// its card-state read and its MergeWatch subscribe must still resolve that wait. `wait` used to read
+    /// state first and subscribe last, with two actor hops in between; a conclusion landing in that window
+    /// reached ZERO subscribers, was dropped (MergeWatch keeps no memory of it), and the waiter then parked
+    /// on a continuation nobody would ever resume — forever, since `wait` has no timeout. Under a loaded
+    /// `swift test --parallel` the window is wide enough to hit, wedging the whole run.
+    ///
+    /// No `pollUntil` on the subscription here — waiting for the subscribe is what HIDES the race. The
+    /// child is killed immediately, so the conclusion races the subscribe. Agent-agnostic: both backends.
+    @Test("wait does not lose a conclusion that races its subscribe (bug-#2 suite hang)",
+          arguments: [("claude-code", AgentCapabilities.claudeCode),
+                      ("codex", ReadinessSignalTests.codexStubCaps)])
+    func waitSurvivesConclusionRacingSubscribe(agent: (id: String, caps: AgentCapabilities)) async throws {
+        let env = TestEnv.make(capabilities: agent.caps)
+        let repo = TestEnv.repo(env.base)
+        let child = try await TestEnv.spawnAwaited(
+            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
+
+        let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
+        env.sessions.setAlive(child.id, false)          // crash: session vanished, no SessionEnd
+        await env.svc.reconcileLiveness()               // → .dead(sessionVanished) → concludeCard
+
+        // The card really did settle terminal — so a dropped conclusion is the ONLY way `wait` can hang.
+        let settled = try #require(await env.svc.store.get(child.id))
+        #expect(settled.phase == .dead(.sessionVanished))
+
+        let concl = await Self.withDeadline(5) { await waiting.value }
+        waiting.cancel()
+        #expect(concl != nil, "wait never resolved — the conclusion was dropped in the subscribe window")
+        #expect(concl??.cardId == child.id)
+        #expect(concl??.kind == .exited)
+        #expect(concl??.deadReason == .sessionVanished)
+    }
+
     // 1 · conclusion from real card state (archive → Done), driven off the lifecycle event.
     @Test("archive (move to Done) concludes a watched child")
     func concludesOnArchive() async throws {
