@@ -210,6 +210,11 @@ sequenceDiagram
 
 ## Concerns / decisions for review
 
+- **Anchor drift since gating (noted 2026-07-12):** main's stale-bring-up fix (`e632e79`) threaded
+  `(Phase.Kind, epoch)` ownership params through `ConvergeContext.finishLaunch` and the stepper
+  `transition` callback (a `stillOwns` guard). No contract conflict — B3's watermark capture,
+  `ReadinessResult.via`, and seed claims compose with the extra params — but B3/B4 cards must
+  re-verify these signatures at execution (the standing symbols-are-fallback rule).
 - **Biggest churn:** B4 (wake rewrite + arm) touches the wake tests
   (`SendWakeTests`/`CodexWakeTests`) that assume `resumeSeedWake` semantics — they migrate to the
   route ladder in the same PR. Second: B1's inbox envelope (every inbox fixture).
