@@ -10,6 +10,7 @@
 # Usage: scripts/orch-key-demo.sh [--no-build] [outdir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lib/wm-float.sh"
 
 BUILD=1
 [[ "${1:-}" == "--no-build" ]] && { BUILD=0; shift; }
@@ -47,6 +48,7 @@ sleep 4   # let the window come up
 WID="$(swift scripts/keydrive.swift windowid "$APP_PID" || true)"
 if [[ -z "$WID" ]]; then echo "no window id for pid $APP_PID — abort"; exit 1; fi
 echo "▶ window id: $WID   pid: $APP_PID"
+float_window_for_pid "$APP_PID"   # off the user's tiling WM — else every shot is a squished sliver
 
 step=0
 shot() { printf -v n "%02d" "$step"; screencapture -x -o -l"$WID" "$OUT/$n-$1.png"; echo "  · $n-$1"; step=$((step+1)); }
