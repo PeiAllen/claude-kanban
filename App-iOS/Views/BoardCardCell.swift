@@ -91,27 +91,36 @@ struct BoardCardCell: View {
         if let ts = task.treeStat {
             // S3-3: the phone has no hover tooltip — carry the meaning in an accessibility label so the
             // otherwise-cryptic glyphs (↓N / restack / waiting) are legible to VoiceOver + long-press.
-            switch ts.state {
-            case .stale:
-                HStack(spacing: 2) {
-                    Image(systemName: "arrow.down")
-                    Text("\(ts.behind)")
-                }
-                .font(.system(.caption2, design: .monospaced).weight(.medium))
-                .foregroundStyle(theme.amber.text)
-                .accessibilityLabel("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead")
-            case .restackNeeded:
-                Image(systemName: "arrow.triangle.2.circlepath")
+            // The give-up flag outranks the tracking state (see CardView).
+            if ts.mergeStalled {
+                Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(theme.red.text)
-                    .accessibilityLabel("Parent history changed — restack needed")
-            case .mergeRequested:
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.caption2)
+                    .accessibilityLabel("Merge-request unanswered after \(ts.nudges) reminders — "
+                                        + "the parent branch never merged this")
+            } else {
+                switch ts.state {
+                case .stale:
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.down")
+                        Text("\(ts.behind)")
+                    }
+                    .font(.system(.caption2, design: .monospaced).weight(.medium))
                     .foregroundStyle(theme.amber.text)
-                    .accessibilityLabel("Merge requested — waiting for the parent card")
-            case .inSync:
-                EmptyView()
+                    .accessibilityLabel("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead")
+                case .restackNeeded:
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(theme.red.text)
+                        .accessibilityLabel("Parent history changed — restack needed")
+                case .mergeRequested:
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(theme.amber.text)
+                        .accessibilityLabel("Merge requested — waiting for the parent card")
+                case .inSync:
+                    EmptyView()
+                }
             }
         }
     }

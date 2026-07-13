@@ -9,6 +9,16 @@ You are one agent on an Orchestra board. Besides doing the work yourself, you ca
 **cards** — each a durable, board-visible unit of work in its own git worktree, possibly running a
 different agent. This skill is about **when** to reach for that, and when NOT to.
 
+## Sandboxed agents: use MCP first
+
+When your agent harness exposes Orchestra MCP tools, use them for Orchestra control calls such as `send`,
+`move`, `spawn`, `batch-spawn`, `handoff`, `wait`, `merge-request`, `shipped`, and `archive`. The local
+`orchestra` CLI talks to the daemon over a Unix socket, which a managed sandbox can deny even while the
+equivalent MCP call succeeds. The CLI remains valid for unrestricted/local terminal workflows and
+shell-native operations. If a CLI call is necessary but fails with `Operation not permitted` or cannot
+reach the daemon, do not retry it: send the same operation through MCP. A semantic rejection from either
+client is a real rejection, since both use the same Orchestra service.
+
 ## Your column is your phase — start on it, and keep it honest
 
 **This applies only if you're a worktree card** (spawned with a `repo` + `branch`). A standalone
@@ -50,11 +60,10 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox (F3); it drains at the card's
   next turn-end, waking it if idle.
 - **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
-  reminded/woken when it finishes. For Claude, run the CLI wait as a native Claude Code background task
-  (Bash with `run_in_background: true`, or Monitor if available), so your turn ends and you stay chattable;
-  Claude is re-invoked when that background process prints/exits. If you invoke MCP `wait` instead, it
-  records the durable watch and returns immediately as a fallback, but it is not the native Claude
-  background-task wake path.
+  reminded/woken when it finishes. In a managed/sandboxed harness, use MCP `wait`; it records the durable
+  watch and returns immediately. In a terminal-native Claude environment, CLI wait may instead run as a
+  native Claude Code background task (Bash with `run_in_background: true`, or Monitor if available), so
+  Claude is re-invoked when that background process prints/exits.
 
 ## Delegate, or just continue?
 
@@ -80,16 +89,43 @@ tightly-coupled work.
 - **Fan-out** — *N independent pieces of work to run in parallel*, each in its own worktree. `batch-spawn`
   them. There's no come-back wiring unless you also `wait`. Good for a stacked-PR forest or N independent
   tasks.
-- **Wait** — *after spawning children, react when they finish.* Start `orchestra wait <refs>` through
-  Claude Code's background execution (`run_in_background: true`) or Monitor. The wait process exits when
-  any child concludes, and Claude can then inspect the process output plus the durable inbox, react, and
-  spawn the next PR in the stack. Several children concluding at once coalesce in the inbox and drain
-  together — none is lost.
+- **Wait** — *after spawning children, react when they finish.* In a managed/sandboxed harness, start
+  MCP `wait`; Orchestra records the durable watch and resumes you when a child concludes. In a
+  terminal-native Claude environment, start `orchestra wait <refs>` through Claude Code's background
+  execution (`run_in_background: true`) or Monitor. The wait process exits when any child concludes, and
+  Claude can then inspect the process output plus the durable inbox, react, and spawn the next PR in the
+  stack. Several children concluding at once coalesce in the inbox and drain together — none is lost.
 
   Choose one completion return channel for each child. If you subscribe with `wait`, treat the wait wake
   as that child's completion signal; do not also ask those same children to `send` a completion/result to
   your inbox, or you can receive two notices in either order. If you need a child-authored result message
   in your inbox, ask the child to `send` that message when done and do not also `wait` on that child.
+
+## Review pairs — requesting a bounded dual review
+
+To get a plan or implementation reviewed, spawn **one Claude + one Codex reviewer simultaneously**,
+both **read-only**, and bound the exchange. Do NOT loop "until no complaints" — deep looped review
+belongs to the periodic (streaming) review card, and even that is capped at 3 pair-passes.
+
+- **Reviewing committed work on a branch:** spawn each reviewer as a read-only **worktree** card
+  with `base: <your-branch>` — its branch is cut at your tip commit at spawn time, so it reviews a
+  **pinned snapshot** even while your branch advances underneath it. Never point a reviewer at a
+  working directory that is still being mutated (a freeform `cwd` reviewer sees a moving tree —
+  it will silently review the wrong code).
+- **Reviewing a plan/doc only:** a read-only freeform card (`cwd` = your worktree) is fine if you
+  will not touch the tree while it runs; otherwise pin via `base` as above.
+- **Seed** each reviewer with: exactly what to review (diff range / files / doc), the pinned
+  commit, and the output contract — *"send your findings to <me> via `send`, severity-tagged
+  BLOCKER / MAJOR / minor, then conclude."* Findings return via `send`; do **not** also `wait` on
+  the reviewers (one completion channel per child).
+- **The bound:** one pass. Fix every confirmed finding; record a one-line rebuttal for anything
+  you reject (verify feedback — don't comply performatively). **Iff** any BLOCKER/MAJOR was
+  raised, `send` the fix diff back to the same reviewers for **one** confirm/deny turn. Then stop;
+  record leftover minors for the next periodic review card.
+- **Degrade, don't hang:** if one backend fails to spawn, proceed **single-reviewer** and say so
+  in your plan/merge-request. If one reviewer's findings arrive and the other's don't: `status`
+  the straggler — dead → proceed single-reviewer; alive → nudge once via `send`, and if still
+  silent by your next wake, archive it and proceed. **Zero** completed reviews = do not advance.
 
 ## Cards vs. native subagents — keep both
 
@@ -109,7 +145,7 @@ synthesize the answer now → **subagent**. Reach for a card *in addition to*, n
 
 ## The reactive orchestration loop
 
-The headline pattern: spawn the stack head → start `orchestra wait <child>` as a Claude Code background
-task → your turn ends (you stay chattable) → the child concludes → the wait process exits and Claude is
-woken → drain your inbox → spawn the next-in-stack off the merged branch. Repeat. That is how one card
-orchestrates a whole PR forest without polling.
+The headline pattern: spawn the stack head → subscribe with MCP `wait` in a managed/sandboxed harness
+(or start `orchestra wait <child>` as a Claude Code background task in a terminal-native environment) →
+your turn ends → the child concludes → the agent wakes → drain your inbox → spawn the next-in-stack off
+the merged branch. Repeat. That is how one card orchestrates a whole PR forest without polling.

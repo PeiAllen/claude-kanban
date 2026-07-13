@@ -15,6 +15,7 @@ struct KeyboardHelpView: View {
         Section(title: "Navigate", rows: [
             Row(keys: "h j k l", desc: "Move card selection (within a pane)"),
             Row(keys: "g g / G", desc: "First / last card in column"),
+            Row(keys: "⌃o / ⌃i", desc: "Previous / next visited card"),
             Row(keys: "⌃h ⌃j ⌃k ⌃l", desc: "Move focus between panes (spatial)"),
             Row(keys: "Enter", desc: "Open inspector"),
             Row(keys: "i", desc: "Type to the agent (focus terminal)"),
@@ -37,7 +38,7 @@ struct KeyboardHelpView: View {
             Row(keys: "O", desc: "View changes in Zed"),
             Row(keys: "d", desc: "Toggle Agent / Diff view"),
             Row(keys: "I", desc: "Open the inbox editor"),
-            Row(keys: "y c / y t / y p", desc: "Copy chat link / tmux target / path"),
+            Row(keys: "y c / y t / y p / y i", desc: "Copy chat link / tmux target / path / card id"),
             Row(keys: "t", desc: "New shell tab"),
         ]),
         Section(title: "Panes & layout", rows: [

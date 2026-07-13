@@ -4,6 +4,19 @@ Instructions for Codex (and other AGENTS.md-reading agents) working in this repo
 this file from the working directory up to the repo root, so it applies in the main checkout and in
 every worktree. Broader project conventions live in `CLAUDE.md`.
 
+## Orchestra control calls from agents
+
+When a managed or sandboxed agent has Orchestra MCP tools, use MCP for board control calls such as
+`send`, `move`, `spawn`, `batch-spawn`, `handoff`, `wait`, `merge-request`, `shipped`, and `archive`.
+The local `orchestra` CLI reaches the daemon over a Unix socket, which the agent sandbox can deny even
+though the equivalent MCP call is allowed.
+
+The CLI remains appropriate for unrestricted/local terminal workflows and shell-native operations. In the
+shipping recipe below, keep its Git and worktree commands in the shell, but use MCP for the named board
+operations when it is available. If a necessary CLI call fails with `Operation not permitted` or cannot
+reach the daemon, do not retry it: issue the same operation through MCP. Treat semantic rejections from
+either client as real errors—both clients reach the same Orchestra service.
+
 ## Shipping a card (`/ship`)
 
 When asked to **ship this card** — or when the user types **`/ship`** (optionally `/ship no-relaunch`) —

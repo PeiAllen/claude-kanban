@@ -1,9 +1,26 @@
 import Foundation
 
+/// A bring-up that failed OUTRIGHT — the session could not be created, so there is nothing to wait for.
+/// Distinct from `.timedOut` (a session that came up but never confirmed): here we hold the real reason in
+/// hand, and waiting out the launch grace would only replace it with a misleading "launch timed out".
+public struct LaunchFailure: Sendable, Equatable {
+    /// Raw evidence — the tmux stderr / captured pane tail. Kept verbatim for debugging.
+    public var detail: String
+    /// Set when the failure was the HOST running out of a launch resource, not the card doing anything
+    /// wrong. Carries the resource + its live numbers through to `deadResource` and the Recovery panel.
+    public var resource: HostResourceReport?
+    public init(detail: String, resource: HostResourceReport? = nil) {
+        self.detail = detail; self.resource = resource
+    }
+}
+
 /// The outcome of awaiting a relaunch's inline readiness confirmation. `.superseded` is distinct from
 /// `.timedOut` so a relaunch displaced by a newer relaunch for the same card exits quietly (the survivor
 /// owns the card) instead of being treated as a failure and marked dead.
-public enum ReadinessOutcome: Sendable { case confirmed, timedOut, superseded }
+public enum ReadinessOutcome: Sendable, Equatable {
+    case confirmed, timedOut, superseded
+    case launchFailed(LaunchFailure)
+}
 
 /// How spawn / reopen bring the agent session up once the card is being walked to `.live`. `.blank`
 /// starts a fresh session (readiness is the successful `ensure` — the 2.5 sync-spawn readiness stub;
@@ -32,7 +49,7 @@ extension OrchestraService {
         // The `relaunching → relaunching` supersede self-edge is legal, so a newer relaunch bumps the epoch
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
-            t.deadReason = nil; t.deadDetail = nil
+            t.deadReason = nil; t.deadDetail = nil; t.deadResource = nil
             if let seed { t.pendingSeed = seed }   // folded handoff/wake seed rides the relaunch (carried #1)
         })
         guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
@@ -87,6 +104,7 @@ extension OrchestraService {
             $0.titleProvisional = true
             $0.deadReason = nil
             $0.deadDetail = nil
+            $0.deadResource = nil
             $0.desc = ""
             $0.pendingSeed = nil   // a blank restart carries no seed
         })
@@ -118,7 +136,7 @@ extension OrchestraService {
         // prior ids / resets provisional+desc (restart semantics), so `deriveLaunchFlavor` derives a blank launch.
         if resumable {
             _ = await transition(id, to: .creatingWorktree, mutate: {
-                $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil
+                $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil
             })
         } else {
             let freshId: String?
@@ -137,6 +155,7 @@ extension OrchestraService {
                 $0.desc = ""
                 $0.deadReason = nil
                 $0.deadDetail = nil
+                $0.deadResource = nil
             })
         }
         guard let reopening = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
@@ -271,9 +290,14 @@ extension OrchestraService {
         let id = t.id
         let name = sessions.sessionName(id)
 
-        let evidence = (try? await offActor { [sessions] in
-            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
-        }).flatMap { Self.startupEvidence(from: $0) }
+        // Capture the dying pane AND take the host's pulse in ONE hop, so this function keeps exactly the
+        // single suspension point the race guard below was written against.
+        let probe: (evidence: String?, resource: HostResourceReport?) = await offActorValue { [sessions] in
+            let pane = (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+            let evidence = pane.flatMap { Self.startupEvidence(from: $0) }
+            return (evidence, sessions.hostResourceFault(evidence: evidence))
+        }
+        let evidence = probe.evidence
 
         // The card may have been archived / killed / restarted / concluded (done → `.dead(.completed)`)
         // during the capture await — stand down rather than resurrect it or fight an intentional teardown
@@ -288,13 +312,32 @@ extension OrchestraService {
             return
         }
 
+        // Is the HOST what failed? Checked BEFORE the retry budget, because retrying is not just useless
+        // when the machine has no pseudo-terminals left — it is actively harmful: three more launches, each
+        // waiting out its grace, all doomed, and the card finally lands on `.spawnExitedImmediately` with
+        // whatever unrelated noise the starved agent happened to print (the incident's `ENOENT: Bun could
+        // not find a file`). Fail fast, name the real cause, stay resumable.
+        if let resource = probe.resource {
+            clearSpawnPending(id)
+            try? await offActor { [sessions] in try? sessions.kill(name) }
+            await markDead(id, reason: .resourceExhausted, detail: evidence,
+                           resource: resource, source: .daemon)
+            return
+        }
+
         let attempt = spawnAttempts[id] ?? 0
         if attempt < maxStartupRetries,
            let spec = spawnRelaunch[id],
            let adapter = try? registry.get(spec.adapterId) {
             spawnAttempts[id] = attempt + 1
             try? adapter.prepareToLaunch(spec.ctx)
-            let env = adapter.env
+            // Stamp the card's generation, exactly as `finishLaunch` does. An UNSTAMPED retry session is a
+            // session the epoch machinery cannot see: `stampedEpoch` reads nil for it, so adopt and
+            // `reconcilePhasesAtBoot` can never epoch-match it (the next daemon boot tears a perfectly
+            // healthy retried session down and relaunches it, losing the agent's context), and its hooks
+            // report with `observedEpoch == nil`, which skips the funnel's generation fence entirely — a
+            // stale report from it can then land `.live` on a card a newer relaunch already owns.
+            let env = withEpoch(adapter.env, live.sessionEpoch)
             let argv = adapter.start(spec.ctx)
             let launchTask = t
             do {
@@ -330,9 +373,13 @@ extension OrchestraService {
         let id = t.id
         let name = sessions.sessionName(id)
 
-        let evidence = (try? await offActor { [sessions] in
-            (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
-        }).flatMap { Self.startupEvidence(from: $0) }
+        // Capture + host pulse in one hop (see `handleStartupAbort`): an orphaned dead pane on an exhausted
+        // host is the same machine-wide fault, and deserves the same honest reason.
+        let probe: (evidence: String?, resource: HostResourceReport?) = await offActorValue { [sessions] in
+            let pane = (try? sessions.capture(name, window: "agent", maxChars: 4096))?.text
+            let evidence = pane.flatMap { Self.startupEvidence(from: $0) }
+            return (evidence, sessions.hostResourceFault(evidence: evidence))
+        }
 
         // Re-validate after the capture await — don't fight an intentional teardown / concurrent conclusion
         // (a terminal phase = SessionEnd death or task_complete). This re-check is the race guard.
@@ -344,7 +391,8 @@ extension OrchestraService {
             try? sessions.setRemainOnExit(name, window: "agent", on: false)
             try? sessions.kill(name)
         }
-        await markDead(id, reason: .spawnExitedImmediately, detail: evidence, source: .daemon)
+        await markDead(id, reason: probe.resource != nil ? .resourceExhausted : .spawnExitedImmediately,
+                       detail: probe.evidence, resource: probe.resource, source: .daemon)
     }
 
     /// Drop a card's startup-pending bookkeeping (on graduation, give-up, or any death).
@@ -355,6 +403,18 @@ extension OrchestraService {
     /// Test hook: tighten the startup-confirmation grace + retry budget (production uses the defaults).
     /// Also RE-STAMPS any already-armed `spawnPending` deadline to the new grace, so a test that drives a
     /// card to `.live` (armed with the default grace) can then tighten the window without re-spawning.
+    /// Test hook: hold/release the reconciler's bring-up claim for `id` (`inFlightSteps`), so a test can
+    /// drive the interleavings that ONLY occur while a step owns the card — a report racing the bring-up,
+    /// the adopt path racing its own in-flight step. Production sets this in `stepIfEligible`.
+    func setStepInFlight(_ id: UUID, _ inFlight: Bool) {
+        if inFlight { inFlightSteps.insert(id) } else { inFlightSteps.remove(id) }
+    }
+
+    /// Test hook: is a bring-up step still in flight for `id`? A step lands `.live` and only THEN returns, so
+    /// a test that drives a card to `.live` and immediately manipulates its session can otherwise race the
+    /// tail of that step (its `ensure` clears the dead-pane mark) — under parallel-suite load, minutes later.
+    func hasStepInFlight(_ id: UUID) -> Bool { inFlightSteps.contains(id) }
+
     func setStartupConfirmation(graceSeconds: Int, maxRetries: Int) {
         spawnGraceSeconds = graceSeconds; maxStartupRetries = maxRetries
         let newDeadline = Date().addingTimeInterval(Double(graceSeconds))
@@ -424,13 +484,31 @@ extension OrchestraService {
     /// not just a clean exit). Callers pass a DELIBERATE classification (aliveNames miss / a fresh liveness
     /// probe / a definitive resume failure), so this transitions with `observedEpoch: nil` — exempt from
     /// the nil-epoch kill-probe gate (which lives at the inbound-SessionEnd signal site).
-    func markDead(_ id: UUID, reason: DeadReason, detail: String?, source: ActivitySource) async {
+    func markDead(_ id: UUID, reason: DeadReason, detail: String?,
+                  resource: HostResourceReport? = nil, source: ActivitySource) async {
         let result = await transition(id, to: .dead(reason), mutate: {
-            $0.deadReason = reason; $0.deadDetail = detail
+            $0.deadReason = reason; $0.deadDetail = detail; $0.deadResource = resource
         })
         guard result == .applied, let updated = await store.get(id) else { return }
         clearSpawnPending(id)   // a dead card is never startup-pending (covers give-up + any other death)
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
+        // An exhausted host is a MACHINE-wide fault — every card's spawn/resume is failing, not just this
+        // one — so it also gets a board-level warning naming the resource and what to do about it.
+        if let resource {
+            emitActivity(.warning, updated, source, "\(resource.headline) \(resource.resource.remedy)")
+        }
+    }
+
+    /// Was this death actually the HOST giving out? Asked of the SESSION BACKEND (the thing that consumes
+    /// the resource), evidence first and then a live probe — hopped off-actor, since it is a syscall plus a
+    /// `/dev` census.
+    ///
+    /// The probe is what makes this real rather than string-matching theatre: a PTY-starved agent usually
+    /// dies saying something entirely unrelated (the incident's spawn died with `ENOENT: Bun could not find
+    /// a file`), so the only way to learn the truth is to ask whether a terminal can still be had.
+    /// Returns nil when the host is healthy ⇒ the caller keeps its own classification.
+    func diagnoseHost(evidence: String?) async -> HostResourceReport? {
+        await offActorValue { [sessions] in sessions.hostResourceFault(evidence: evidence) }
     }
 
     private func awaitReadiness(_ id: UUID, graceSeconds: Int) async -> ReadinessOutcome {

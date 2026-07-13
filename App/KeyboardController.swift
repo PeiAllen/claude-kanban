@@ -16,7 +16,7 @@ final class KeyboardController {
     private static let command: Keybindings = CommandKeybindings()
     /// A `g` go-to sequence is in flight (waiting for the second key).
     private var pendingG = false
-    /// A `y` yank sequence is in flight (waiting for c/t/p).
+    /// A `y` yank sequence is in flight (waiting for c/t/p/i).
     private var pendingY = false
     /// Accumulated keystrokes while `f` hint mode is active (for 2-char labels).
     private var hintBuffer = ""
@@ -100,7 +100,7 @@ final class KeyboardController {
         // live so a Settings toggle takes effect on the very next keystroke.
         let bindings: Keybindings = UserDefaults.standard.bool(forKey: "orch_vim_keys") ? Self.vim : Self.command
 
-        // `y`-prefix yank state machine (board only) — resolving the c/t/p second key stays here
+        // `y`-prefix yank state machine (board only) — resolving the c/t/p/i second key stays here
         // rather than in the pure layer, to avoid a second prefix arg. It's self-gating: `pendingY`
         // is only ever set by the `.beginYank` intent, which only VimKeybindings emits.
         if ctx == .board, pendingY {
@@ -109,6 +109,7 @@ final class KeyboardController {
             case "c": model.copySelected(.chatLink); return true
             case "t": model.copySelected(.tmux);     return true
             case "p": model.copySelected(.path);     return true
+            case "i": model.copySelected(.id);       return true
             default:  return true                       // abort the yank, swallow the stray key
             }
         }
@@ -132,6 +133,8 @@ final class KeyboardController {
         case .closeOrClear:         model.closeFrontmost(); return true
         case .enterTerminal:        model.enterTerminalZone(); return true
         case .focusPane(let d):     return FocusBridge.movePane(d, model: model, from: ctx)
+        case .historyBack:          model.navigateCardHistoryBack(fromTerminal: ctx == .terminal); return true
+        case .historyForward:       model.navigateCardHistoryForward(fromTerminal: ctx == .terminal); return true
         case .carry(let d):         model.carrySelected(d); return true
         case .spawn, .newCard:      model.spawnDefaultColumn = .plan; model.showSpawn = true; return true
         case .archive:              model.requestArchiveSelected(); return true

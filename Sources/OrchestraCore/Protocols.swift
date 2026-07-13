@@ -72,6 +72,17 @@ public protocol SessionManaging: Sendable {
     /// oracle (`verify`): a session is "the current one" iff its stamped epoch == `card.sessionEpoch`.
     /// Defaulted `nil` so unrelated stubs need no change; `SessionManager` overrides with the real read.
     func stampedEpoch(name: String) throws -> Int?
+    /// Is the HOST unable to give this backend a terminal right now — and if so, what ran out?
+    ///
+    /// Lives on the session backend because that is what actually CONSUMES the resource: a real tmux
+    /// manager is bounded by the machine's pty pool, while a test stub creates no terminals at all and is
+    /// therefore never starved. Keeping the question here (rather than probing the host from the service)
+    /// is what makes the check honest in both worlds — and keeps the suite hermetic, since a stubbed test
+    /// must not fail merely because some *other* process on the developer's machine drained the pool.
+    ///
+    /// `evidence` is the captured stderr / dying-pane tail when we have one; nil for a pre-launch preflight.
+    /// Returns nil for "no fault / no opinion" — the caller then keeps its own classification.
+    func hostResourceFault(evidence: String?) -> HostResourceReport?
 }
 
 public extension SessionManaging {
@@ -95,6 +106,12 @@ public extension SessionManaging {
     func detachAgentViewClients(_ base: String) throws {}
     /// Default so test stubs needn't implement it; the real `SessionManager` overrides with the tmux read.
     func stampedEpoch(name: String) throws -> Int? { nil }
+    /// Default: a conformer that creates NO terminals is never starved of them, so it reports only what the
+    /// evidence itself says. `SessionManager` (the one backed by tmux + real ptys) overrides this to also
+    /// ask the live host.
+    func hostResourceFault(evidence: String?) -> HostResourceReport? {
+        HostResource.classify(evidence).map(HostResources.report)
+    }
     /// Convenience: launch with no extra environment (keep-alive shells + existing callers/tests).
     @discardableResult
     func ensure(_ task: Task, argv: [String]) throws -> (name: String, created: Bool) {

@@ -5,6 +5,8 @@ one Kanban board.** You spawn an agent onto a card, it runs autonomously in its 
 tmux session, reports its live state back to the board, and you move it Plan → Implementation → Review
 → Done as the work progresses.
 
+![The Orchestra board](docs/images/board.png)
+
 The real work lives in a background daemon — **`orchestrad`**, a launchd LaunchAgent — that owns the
 tasks, git worktrees, and tmux agent sessions and keeps running whether or not the app window is open.
 Three thin clients drive it over one local unix-socket / JSON-RPC control plane: the **SwiftUI app**,
@@ -14,6 +16,34 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
 > every feature, the architecture, the full command surface, the design decisions, and the roadmap.
 
 ---
+
+## Talk to the board in plain English
+
+An agent can drive Orchestra with exactly the commands you have — through the MCP bridge or the CLI,
+which are the same `CommandRegistry` behind different doors. So you don't have to fan work out
+yourself: you can **ask an agent to do it**, in plain English, and watch the board fill itself in.
+
+![An orchestrator agent fanning work out across three new cards](docs/images/orchestrate.gif)
+
+<sub>A real run, sped up ~4×. Captured from a live board by <code>scripts/docs-shots.sh</code> — the cards, worktrees, context-%, and diffstats are genuine agent telemetry, not a mock-up.</sub>
+
+Above: one orchestrator card is told *"split the rate-limiting work into three PRs and fan them out."*
+It calls the ordinary `spawn` command three times — three children appear on the board, each cut into
+its own git worktree, each reporting its own live context-% and diffstat — then `wait`s on them and
+wakes as each one concludes. Nothing about that card is special: it is a normal agent session holding
+the same commands you have. The machinery underneath is
+[one delivery seam](docs/04-cards-worktrees-sessions.md#the-orchestration-seam-handoff--fork--fan-out--send--wait),
+which `handoff`, `fork`, `fan-out`, `send`, and `wait` all compose from.
+
+## …or never touch the mouse
+
+The board is completely keyboard-driven, built around a *focus-is-the-mode* model so it never
+intercepts keys meant for the live agent terminal:
+
+![Keyboard navigation: hjkl selection, link hints, search, and the command palette](docs/images/keyboard.gif)
+
+`hjkl` moves the selection and `⌃hjkl` moves focus between panes; `f` throws link-hints over every card;
+`/` searches, `:` opens a command palette that can run any action, and `?` shows the keymap.
 
 ## What it does
 
@@ -57,18 +87,61 @@ the **`orchestra` CLI**, and an **MCP bridge** (so other agents can orchestrate 
   command palette runs any action, `?` shows help, and `⌘N`/`⌘T`/`⌘W` are the standard accelerators — built
   around a *focus-is-the-mode* model so it never intercepts keys meant for the live agent terminal.
 
+![The inspector: a card's live agent terminal, its telemetry, and its diff](docs/images/inspector.png)
+
+Selecting a card opens the inspector: the agent's live terminal (a real tmux attach, not a scrape), its
+telemetry, and a read-only **Diff** view of everything it has changed — so you can review an agent's
+work without leaving the board.
+
 ## Architecture at a glance
 
+```mermaid
+flowchart TB
+  subgraph clients["Three clients — each a ControlClient"]
+    APP["Orchestra.app"]
+    CLI["orchestra CLI"]
+    MCP["orchestra-mcp"]
+  end
+
+  UDS["unix-domain socket · $ORCHESTRA_SOCK<br/>newline-delimited JSON-RPC 2.0"]
+
+  APP --> UDS
+  CLI --> UDS
+  MCP --> UDS
+  UDS --> CS
+  CS -->|"event stream (subscribe)"| clients
+
+  subgraph daemon["orchestrad — owns all state"]
+    CS["ControlServer"] --> REG["CommandRegistry"]
+    REG --> SVC["OrchestraService (actor)<br/>transition() funnel · reconcile() every 2s"]
+    SVC --> TS["TaskStore"]
+    SVC --> WR["WorktreeRegistry"]
+    SVC --> SM["SessionManager"]
+    SVC --> AR["AgentRegistry"]
+    AR --> CCA["ClaudeCodeAdapter"]
+    AR --> CXA["CodexAdapter"]
+  end
+
+  TS --> JSONF[("tasks.json")]
+  WR --> GIT[("git worktrees")]
+  SM --> TMUX[("tmux · orchestra-uuid")]
+
+  TMUX --- CLAUDE["Claude Code agent"]
+  TMUX --- CODEX["Codex agent"]
+
+  CLAUDE ==>|"PUSH — statusLine + hooks<br/>orchestra _report → hook RPC"| UDS
+  CODEX -->|"writes"| ROLL[("Codex rollout .jsonl")]
+  SVC -.->|"TAIL — pollTelemetry + RolloutTailer"| ROLL
 ```
-app  ─ ControlClient ─┐
-CLI  ─ ControlClient ─┼─ UDS / JSON-RPC ─→ ControlServer → CommandRegistry → OrchestraService
-MCP  ─ ControlClient ─┘                    (orchestrad daemon)                ├─ TaskStore        (tasks.json)
-                                                                              ├─ WorktreeManager  (git)
-                                                                              ├─ SessionManager   (tmux)
-                                                                              └─ AgentRegistry    (adapters)
-                                              ▲
-            Claude Code agent ── orchestra _report ──┘   (statusLine + hooks push live card state)
-```
+
+The app, the CLI, and the MCP bridge are all `ControlClient`s speaking the same JSON-RPC over the
+same user-only socket, so what the three can do can never drift — the CLI's verbs and the MCP tool
+list are generated from one `CommandRegistry`. The agents report back by *different* mechanisms, and
+that asymmetry is deliberate: Claude Code **pushes** (its statusLine and hooks shell out to
+`orchestra _report`, which sends one typed `hook` RPC back over the same socket), while Codex is
+**tailed** (it pushes nothing; the daemon polls its rollout JSONL). Both land as the same normalized
+telemetry, so nothing downstream branches on the agent. Terminals never cross this plane — SwiftTerm
+attaches to tmux directly.
 
 - **`OrchestraCore`** — the shared library: all business logic (`OrchestraService`, `TaskStore`,
   `WorktreeManager`, `SessionManager`, `AgentRegistry`/`ClaudeCodeAdapter` + `CodexAdapter`, `PathResolver`,

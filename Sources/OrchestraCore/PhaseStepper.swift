@@ -43,13 +43,21 @@ public struct ConvergeContext: Sendable {
     /// `mutate` is the companion field-write applied INSIDE the same `store.update` patch as the phase, so
     /// e.g. clearing `pendingSeed` (carried #1) or setting `archived`/`deadDetail`/`parentBranch`/`spawnBase`
     /// (carried #5) lands atomically with the phase. Callers pass `{ _ in }` when there is no companion.
-    public let transition: @Sendable (_ id: UUID, _ to: Phase, _ observedEpoch: Int?,
+    /// `expecting` is the phase the caller was DISPATCHED for: the write applies only if the card is still
+    /// in it. The epoch fence alone cannot catch a supersede that leaves the generation alone (the launch
+    /// timeout's `markDead` does not bump `sessionEpoch`, and `dead → live` is a legal revival edge), so a
+    /// step whose readiness confirms AFTER the timeout concluded the card would otherwise re-animate it.
+    public let transition: @Sendable (_ id: UUID, _ to: Phase, _ observedEpoch: Int?, _ expecting: Phase.Kind?,
                                       _ mutate: @escaping @Sendable (inout Task) -> Void) async -> TransitionResult
     /// Actor-bound materialization (fetch + `worktrees.ensure` + lineage recording + rollback + epilogue).
     public let materialize: @Sendable (_ id: UUID) async -> MaterializeOutcome
     /// Actor-bound bring-up + capability-gated readiness (wraps `launchAndConfirm`'s readiness machinery),
     /// so `readinessWaiters`/`pendingReadiness`/`launchReadyTicks` + `ORCH_EPOCH` stamping stay actor-owned.
-    public let finishLaunch: @Sendable (_ id: UUID, _ flavor: LaunchFlavor) async -> ReadinessOutcome
+    /// `expecting`/`epoch` are the phase + generation the step was DISPATCHED for: the bring-up (`kill` +
+    /// `ensure`) stands down `.superseded` if the card has left them, so a stale step can never tear down and
+    /// re-create a live agent's session.
+    public let finishLaunch: @Sendable (_ id: UUID, _ flavor: LaunchFlavor,
+                                        _ expecting: Phase.Kind, _ epoch: Int) async -> ReadinessOutcome
     /// Actor-bound teardown duties Teardown can't reach from the struct: cancel treeStat/child-fanout
     /// debounces + remote watch + re-nudge timer AND the child find+nudge+wake (`lineage`/`derivedCard`/`wake`).
     public let teardownActorDuties: @Sendable (_ id: UUID) async -> Void
@@ -58,9 +66,9 @@ public struct ConvergeContext: Sendable {
 
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
                 adapters: AgentRegistry, inbox: Inbox,
-                transition: @escaping @Sendable (UUID, Phase, Int?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
+                transition: @escaping @Sendable (UUID, Phase, Int?, Phase.Kind?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
-                finishLaunch: @escaping @Sendable (UUID, LaunchFlavor) async -> ReadinessOutcome,
+                finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
                 emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
@@ -102,6 +110,30 @@ func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     return .blank(landing: land, prompt: prompt)
 }
 
+/// Conclude a bring-up that could not create a session at all, with the reason we actually hold.
+///
+/// A HOST-resource failure is the machine's fault, not the card's, so it gets its own `DeadReason` and
+/// carries the resource + its numbers to the UI. Anything we do NOT positively recognise keeps the caller's
+/// existing classification (`.spawnFailed` / `.resumeFailed`), so this never relabels a death it doesn't
+/// understand — it only stops the detail from being thrown away.
+///
+/// `pendingSeed` is deliberately LEFT SET: the launch never happened, so a handoff/wake seed staged for it
+/// must still ride the next resume rather than being silently dropped by a machine-wide hiccup.
+private func concludeFailedLaunch(_ id: UUID, _ failure: LaunchFailure, fallback: DeadReason,
+                                  expecting: Phase.Kind, ctx: ConvergeContext) async {
+    let reason: DeadReason = failure.resource != nil ? .resourceExhausted : fallback
+    let result = await ctx.transition(id, .dead(reason), nil, expecting) { t in
+        t.deadReason = reason
+        t.deadDetail = failure.detail
+        t.deadResource = failure.resource
+    }
+    // An exhausted host takes down EVERY card's ability to start a terminal, so say it once at board level
+    // too — the Recovery panel is only seen by someone who already clicked the card they think is broken.
+    if result == .applied, let report = failure.resource {
+        await ctx.emitActivity(id, .warning, "\(report.headline) \(report.resource.remedy)")
+    }
+}
+
 /// Drives `.creatingWorktree` → `.launching` (or `.dead(.spawnFailed)`). Owns ALL of spawn's
 /// materialization via `ctx.materialize` (so Task 3's spawn flip is a clean delete of the inline walk).
 public struct MaterializeStepper: PhaseStepper {
@@ -110,12 +142,12 @@ public struct MaterializeStepper: PhaseStepper {
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
         switch await ctx.materialize(card.id) {
         case .launching(let parentBranch):
-            _ = await ctx.transition(card.id, .launching, nil) { t in
+            _ = await ctx.transition(card.id, .launching, nil, .creatingWorktree) { t in
                 t.parentBranch = parentBranch
                 t.spawnBase = nil   // consumed — the base is now recorded as lineage
             }
         case .failed(let detail):
-            _ = await ctx.transition(card.id, .dead(.spawnFailed), nil) { t in
+            _ = await ctx.transition(card.id, .dead(.spawnFailed), nil, .creatingWorktree) { t in
                 t.deadReason = .spawnFailed; t.deadDetail = detail
             }
         case .terminalNoop:
@@ -137,13 +169,20 @@ public struct LaunchStepper: PhaseStepper {
         let flavor = deriveLaunchFlavor(card, adapter)
         let land = landing(of: flavor)
         let epoch = card.sessionEpoch
-        switch await ctx.finishLaunch(card.id, flavor) {
+        switch await ctx.finishLaunch(card.id, flavor, .launching, epoch) {
         case .confirmed:
-            _ = await ctx.transition(card.id, .live(land), epoch) { t in t.pendingSeed = nil }
+            // `expecting: .launching` — the landing carries the same fence as the bring-up: if the launch
+            // timeout concluded the card while we were confirming readiness, do NOT revive it.
+            _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in t.pendingSeed = nil }
+        case .launchFailed(let failure):
+            // The session could not be created and we KNOW why — conclude now with the real reason rather
+            // than idling in `.launching` until the timeout overwrites it with "launch timed out after 30s".
+            await concludeFailedLaunch(card.id, failure, fallback: .spawnFailed,
+                                       expecting: .launching, ctx: ctx)
         case .timedOut:
             break   // leave `.launching` for the reconciler's phaseChangedAt timeout (Task 2) — no hot-loop
         case .superseded:
-            break   // a newer bring-up owns the card
+            break   // a newer bring-up / landing owns the card (it left `.launching` or bumped its epoch)
         }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
@@ -168,7 +207,7 @@ public struct RelaunchStepper: PhaseStepper {
                     await ctx.emitActivity(card.id, .recovered, "re-materialized worktree for “\(card.title)”")
                 }
             } catch {
-                _ = await ctx.transition(card.id, .dead(.resumeFailed), nil) { t in
+                _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in
                     t.deadReason = .resumeFailed; t.deadDetail = "worktree/branch gone: \(error)"
                 }
                 return
@@ -182,16 +221,19 @@ public struct RelaunchStepper: PhaseStepper {
         } else if card.titleProvisional {
             flavor = .blank(landing: .waiting(.humanTurn), prompt: nil)
         } else {
-            _ = await ctx.transition(card.id, .dead(.resumeFailed), nil) { t in
+            _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in
                 t.deadReason = .resumeFailed; t.deadDetail = "transcript gone"
             }
             return
         }
         let land = landing(of: flavor)
         let epoch = card.sessionEpoch
-        switch await ctx.finishLaunch(card.id, flavor) {
+        switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
         case .confirmed:
-            _ = await ctx.transition(card.id, .live(land), epoch) { t in t.pendingSeed = nil }
+            _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in t.pendingSeed = nil }
+        case .launchFailed(let failure):
+            await concludeFailedLaunch(card.id, failure, fallback: .resumeFailed,
+                                       expecting: .relaunching, ctx: ctx)
         case .timedOut:
             break   // leave `.relaunching` for the reconciler's timeout (Task 2) — keeps `pendingSeed`
         case .superseded:
@@ -211,11 +253,27 @@ public struct RelaunchStepper: PhaseStepper {
 public struct TeardownStepper: PhaseStepper {
     public init() {}
     public static var drives: Phase.Kind { .archivedPending }
+
+    /// Does the card STILL carry the archive intent this step was dispatched for? Teardown is the one
+    /// stepper whose duties are irreversible (a killed session, an `rm -rf`'d scratch dir, a released
+    /// worktree), and `archivedPending` is NOT a resting phase: `reopen` is a legal edge straight out of it
+    /// (`archivedPending → creatingWorktree`), so the card can be brought back up WHILE this step is in
+    /// flight — every duty below suspends. An unfenced stale step would then tear down a card that a reopen
+    /// already owns: the agent execs in a directory that no longer exists and its pane dies on the spot.
+    /// So re-verify ownership before each duty and stand down the moment the card leaves the intent — the
+    /// same single-winner discipline `finishLaunch` applies to ITS destructive `kill`+`ensure` hop.
+    private func stillArchiving(_ id: UUID, _ ctx: ConvergeContext) async -> Bool {
+        (await ctx.store.get(id))?.phase.kind == .archivedPending
+    }
+
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
+        guard await stillArchiving(card.id, ctx) else { return }
         // 1 · kill the agent session (idempotent — a gone session is a no-op).
         try? ctx.sessions.kill(ctx.sessions.sessionName(card.id))
+        guard await stillArchiving(card.id, ctx) else { return }
         // 2 · release any bare-parent borrow the card left open (idempotent).
         try? await ctx.worktrees.releaseBorrow(borrowerCardId: card.id)
+        guard await stillArchiving(card.id, ctx) else { return }
         // 3 · origin-aware run-dir reclaim, matching today's `archive()` switch.
         switch card.origin {
         case .worktree:
@@ -226,16 +284,20 @@ public struct TeardownStepper: PhaseStepper {
             // Conservative mode (post-corrupt boot, carry #3) removes NOTHING — the scratch dir's ownership
             // is as unprovable as a worktree's from an empty board, so the reclaim is gated on it too.
             assert(card.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
-            if !(await ctx.worktrees.conservativeMode), card.cwd.hasPrefix(Config.scratchRoot + "/") {
-                try? FileManager.default.removeItem(atPath: card.cwd)
-            }
+            let conservative = await ctx.worktrees.conservativeMode
+            // Re-fence AFTER that actor hop: the `rm -rf` is the point of no return, so it takes the
+            // LAST possible ownership check (a reopen landing during the hop must not lose its cwd).
+            guard await stillArchiving(card.id, ctx), !conservative,
+                  card.cwd.hasPrefix(Config.scratchRoot + "/") else { break }
+            try? FileManager.default.removeItem(atPath: card.cwd)
         case .borrowed:
             break   // Orchestra never deletes a borrowed dir.
         }
+        guard await stillArchiving(card.id, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
         await ctx.teardownActorDuties(card.id)
         // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase.
-        _ = await ctx.transition(card.id, .archived(teardownComplete: true), nil) { t in t.archived = true }
+        _ = await ctx.transition(card.id, .archived(teardownComplete: true), nil, .archivedPending) { t in t.archived = true }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
         (await ctx.store.get(card.id))?.phase.kind == .archivedComplete

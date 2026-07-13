@@ -11,6 +11,26 @@ extension OrchestraService {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
 
+        // A bring-up STEP owns this card's landing while it is in flight (`inFlightSteps` is the claim, held
+        // across its off-actor `kill`+`ensure`). A report must NOT land the card `.live` under it: the step's
+        // fence is checked on entry, but the bring-up itself suspends (trust resolve, prepareToLaunch) before
+        // the destructive hop, so a same-epoch `.live` landing slipped in HERE would leave the step believing
+        // it still owns a being-born card — it would then kill the live session and re-`ensure` a fresh one.
+        // That is the production session-loss bug (and the `--parallel` suite hang) in its narrow form.
+        //
+        // Suppressing only the PHASE write costs nothing: the readiness signals below (`resolveReadiness`)
+        // still fire, so the in-flight step confirms and lands `.live` itself through the funnel, with the
+        // landing its flavor derives. Every other field (session id, title, desc, model, ctx) still applies,
+        // and terminal writes (SessionEnd death, turn-completion) are deliberately NOT gated — a card that
+        // genuinely died must still die, and the step's own `kill` is then harmless.
+        // Scoped to a card that is still BEING BORN. The claim outlives the landing — a step writes `.live`
+        // and only then returns, so `inFlightSteps` still holds the card for a moment afterwards — and a
+        // claim-only test would swallow the first real report of a card that is already live (its
+        // `waitReason`, its run-state). Once the card IS `.live` the bring-up's destructive work is behind it
+        // (and the fences stand a stale one down anyway), so a report must be free to move it again.
+        let beingBorn = task.phase.kind == .launching || task.phase.kind == .relaunching
+        let bringUpOwnsLanding = beingBorn && inFlightSteps.contains(id)
+
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
             let staleSessionEnd = ev.endReason != nil
@@ -53,11 +73,11 @@ extension OrchestraService {
             if let src = ev.sessionSource {
                 switch src {
                 case "clear":
-                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
                     task.titleProvisional = true
                 case "resume":
-                    if task.phase.kind != .dead { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
                     resolveReadiness(id, true)   // confirm a pending RELAUNCH's inline readiness wait
                 case "startup":
@@ -78,7 +98,7 @@ extension OrchestraService {
                     task.title = titleSeed(from: prompt)
                     task.titleProvisional = false
                 }
-                if task.phase.kind != .dead { task.phase = .live(.running) }
+                if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.running) }
             }
             // (`ev.transcriptPath` is carried for completeness but not persisted — the path is
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
@@ -125,7 +145,7 @@ extension OrchestraService {
                     task.titleProvisional = false
                 }
                 // The agent's observed run-state maps onto a `.live(_)` phase.
-                if let run = snap.run, task.phase.kind != .dead {
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding {
                     task.phase = .live(run)
                 }
                 // A worktree card stays long-lived on a completed turn (`.live(.waiting(.humanTurn))`, set

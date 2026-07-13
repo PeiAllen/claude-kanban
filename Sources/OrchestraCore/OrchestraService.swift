@@ -64,8 +64,18 @@ public actor OrchestraService {
     /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
     /// parent card on a timer until the child leaves the `mergeRequested` state.
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
+    /// Per-child generation token for the re-nudge loop, exactly like `remoteWatchGen`: a re-arm bumps it,
+    /// so a loop cancelled mid-tick can neither nudge nor evict the loop that replaced it. Without this a
+    /// superseded loop's terminal cleanup nulls the LIVE task's slot, orphaning it (uncancellable, invisible
+    /// to `mergeRequestNudgeActive`) and letting two loops double-nudge the same parent.
+    var mergeRequestNudgeGen: [UUID: Int] = [:]
+    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep. The BASE of the geometric
+    /// backoff (`nudgeDelay`), not a fixed interval.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
+    /// Reminders to send before giving up: the child is flagged `mergeStalled` and the loop stops. With the
+    /// 300s base and `nudgeDelay`'s 12× ceiling that is 5m/10m/20m/40m/1h/1h/1h/1h — roughly 5¼ hours of
+    /// prodding. A parent that ignored 8 reminders will not act on the 9th.
+    var mergeRequestNudgeCap: Int = 8
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
@@ -268,6 +278,13 @@ public actor OrchestraService {
     func emitActivityForTest() { emitActivity(.command, nil, .daemon, "test") }
     func _setDiffProviderForTest(_ provider: any DiffProvider) { diffProvider = provider }
     func _setTreeProbeForTest(_ probe: (@Sendable () -> Void)?) { treeProbeHolder.set(probe) }
+    /// Fired by the remote-watch loop immediately before it sleeps (see `remoteWatchDelay`). The loop
+    /// is `shouldStop → remoteMergeStep → sleep`, so it spends its first moments inside a real
+    /// `git fetch`/`ls-remote` holding a strong `self` — a leak test that dropped its last reference
+    /// during that window would race the fork and flake. This lets it wait until the loop is genuinely
+    /// parked, holding nothing. nil in production.
+    var remoteWatchSleepProbe: (@Sendable () -> Void)?
+    func _setRemoteWatchSleepProbeForTest(_ probe: (@Sendable () -> Void)?) { remoteWatchSleepProbe = probe }
     #endif
 
     // MARK: - trust
@@ -1159,11 +1176,13 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
-            transition: { [self] id, to, epoch, mutate in
-                await transition(id, to: to, observedEpoch: epoch, mutate: mutate)
+            transition: { [self] id, to, epoch, expecting, mutate in
+                await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },
             materialize: { [self] id in await materialize(id) },
-            finishLaunch: { [self] id, flavor in await finishLaunch(id, flavor: flavor) },
+            finishLaunch: { [self] id, flavor, expecting, epoch in
+                await finishLaunch(id, flavor: flavor, expecting: expecting, epoch: epoch)
+            },
             teardownActorDuties: { [self] id in await teardownActorDuties(id) },
             emitActivity: { [self] id, kind, text in
                 let task = await store.get(id)

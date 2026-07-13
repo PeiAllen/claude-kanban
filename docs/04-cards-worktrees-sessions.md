@@ -375,6 +375,57 @@ place to tune when the TUI drifts. It is reached only through `CodexAdapter.canN
 a Codex type; keyed on the `.sendKeys` transport, never `agentId`; see
 [chapter 9](09-design-decisions.md#shipped-feature-history).
 
+## The orchestration seam (handoff · fork · fan-out · send · wait)
+
+Agents orchestrating agents is not a fifth feature bolted on beside the other four — **all of it
+composes from one live-delivery seam** with three functions: **F1 seed** (authored context folded into
+a session's opening turn), **F2 wake** (getting a live-but-idle agent to take a turn), and **F3 inbox**
+(a durable per-card queue drained at the agent's natural turn-end).
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator card
+    participant D as orchestrad · OrchestraService
+    participant X as Inbox — durable, per card
+    participant C as Child cards
+
+    O->>D: batch-spawn  (fan-out) / spawn --seed  (fork)
+    D->>C: one Task per prompt, phase = creatingWorktree<br/>SpawnInput.seed rides the opening turn  [F1]
+    O->>D: wait refs...  (watcher = $ORCHESTRA_TASK_ID)
+    D->>D: MergeWatch.register — the call parks, no polling, no git
+
+    Note over C: a child works, then concludes —<br/>archived (Done) or a clean agent exit
+
+    C->>D: transition() into a terminal phase
+    D->>D: concludeCard → Conclusion(cardId, ref, kind = done / exited)
+    D->>X: coalesce the conclusion into the watcher's inbox  [F3]
+    D-->>O: wait returns that Conclusion and the process exits
+    D->>O: wake  [F2] — Claude: nativeReinvoke on wait-exit;<br/>Codex: relaunch / send-keys
+    O->>D: drains its inbox, re-issues wait on the cards that remain
+
+    Note over O,X: send ref "..." is the same seam —<br/>enqueue to the Inbox [F3], then wake [F2]
+    Note over O,D: handoff thisCard "..." is F1 alone — resumeInCard:<br/>drain the inbox, HandoffSeed.fold(handoff:inbox:), resume with the seed
+```
+
+Read the verbs against that seam and each one collapses into a composition of the three:
+
+- **`spawn --seed`** is a *fork*: a new card whose `SpawnInput.seed` (the parent's slice of context)
+  rides its opening turn — F1.
+- **`batch-spawn`** is *fan-out*: the same thing, one card per prompt.
+- **`handoff`** is F1 applied to the card *itself* — `resumeInCard` drains the inbox, folds it with the
+  authored context via `HandoffSeed.fold(handoff:inbox:)`, and resumes with clean context but the same
+  session identity.
+- **`send`** is F3 + F2: enqueue durably, then wake.
+- **`wait`** is the reactive half. It parks on `MergeWatch` and resolves off **real card state — never
+  `git merge-base`** — because [`transition()`](#the-transition-funnel--the-sole-writer-of-phase) is the
+  sole concluder, so a `Conclusion` fires exactly once per child on *any* terminal phase, a crash as
+  surely as a clean Done. Fan-out **coalesces rather than barriers**: watching N children yields one
+  conclusion per child, as each concludes.
+
+The two agents differ only *behind* the `AgentCapabilities` seam (`wakeTransport`, `inboxDrain`) — core
+never branches on the agent id. This is the machinery the README's fan-out demo is exercising: the
+orchestrator there is an ordinary Claude card calling the ordinary `spawn` and `wait` MCP tools.
+
 ## The read-only barrier
 
 A read-only card (`access = .readOnly`) is enforced by **three independent layers**, because no single

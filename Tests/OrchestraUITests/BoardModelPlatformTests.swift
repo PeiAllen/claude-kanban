@@ -20,6 +20,12 @@ final class BoardModelPlatformTests: XCTestCase {
              startIn: .plan, column: .plan, order: 0, initialPrompt: "Design the seam")
     }
 
+    private func makeCard(_ title: String) -> Task {
+        Task(title: title, repo: "/repo", branch: "feat/\(title.lowercased())",
+             cwd: "/repo/.worktrees/\(title.lowercased())", model: AgentModel(id: "claude-opus-4-8"),
+             startIn: .plan, column: .plan, order: 0, initialPrompt: title)
+    }
+
     func testCopySelectedRoutesEachTargetToClipboard() {
         let (model, clip, _, _) = makeModel()
         let t = planCard()
@@ -34,7 +40,21 @@ final class BoardModelPlatformTests: XCTestCase {
         model.copySelected(.tmux)
         XCTAssertEqual(clip.copied.last, "\(t.tmuxSession):agent")
 
-        XCTAssertEqual(clip.copied.count, 3)
+        model.copySelected(.id)
+        XCTAssertEqual(clip.copied.last, t.shortId)
+
+        XCTAssertEqual(clip.copied.count, 4)
+    }
+
+    /// The card-id badge copies the card it sits on, which need not be the selected one.
+    func testCopyIdOfUnselectedCard() {
+        let (model, clip, _, _) = makeModel()
+        let a = makeCard("Alpha"), b = makeCard("Beta")
+        model.tasks = [a, b]; model.selectedId = a.id
+
+        model.copy(.id, of: b)
+        XCTAssertEqual(clip.copied.last, b.shortId)
+        XCTAssertNotEqual(b.shortId, a.shortId)
     }
 
     func testCopySelectedNoSelectionDoesNothing() {
@@ -101,6 +121,18 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertEqual(model.focusZone, .board)
     }
 
+    func testIdempotentDeselectReassertsBoardZone() {
+        let (model, _, _, _) = makeModel()
+        XCTAssertNil(model.selectedId)
+        model.focusZone = .terminal
+
+        // Preserve the pre-history invariant seam: even a repeated nil assignment repairs stale
+        // focus state. Only history recording needs to be gated on a real selection transition.
+        model.selectedId = nil
+
+        XCTAssertEqual(model.focusZone, .board)
+    }
+
     func testArchivingSelectedCardResetsFocusZoneToBoard() {
         let (model, _, _, _) = makeModel()
         let t = planCard()
@@ -139,6 +171,69 @@ final class BoardModelPlatformTests: XCTestCase {
 
         XCTAssertEqual(win.enterCount, 1)
         XCTAssertEqual(model.focusZone, .terminal)
+    }
+
+    // MARK: card navigation history
+
+    func testCardHistoryRecordsEverySelectedIdTransitionAndDoesNotSelfRecord() {
+        let (model, _, _, _) = makeModel()
+        let a = makeCard("A"), b = makeCard("B"), c = makeCard("C")
+        model.tasks = [a, b, c]
+        model.selectedId = a.id
+        model.selectedId = b.id
+        model.selectedId = c.id
+
+        model.navigateCardHistoryBack(fromTerminal: false)
+        XCTAssertEqual(model.selectedId, b.id)
+        model.navigateCardHistoryBack(fromTerminal: false)
+        XCTAssertEqual(model.selectedId, a.id)
+        model.navigateCardHistoryForward(fromTerminal: false)
+        XCTAssertEqual(model.selectedId, b.id)
+    }
+
+    func testNewSelectionAfterHistoryBackDropsForwardHistory() {
+        let (model, _, _, _) = makeModel()
+        let a = makeCard("A"), b = makeCard("B"), c = makeCard("C"), d = makeCard("D")
+        model.tasks = [a, b, c, d]
+        model.selectedId = a.id
+        model.selectedId = b.id
+        model.selectedId = c.id
+        model.navigateCardHistoryBack(fromTerminal: false)
+
+        model.selectedId = d.id
+        model.navigateCardHistoryForward(fromTerminal: false)
+
+        XCTAssertEqual(model.selectedId, d.id)
+    }
+
+    func testHistoryBackFromBoardKeepsBoardFocus() {
+        let (model, _, _, win) = makeModel()
+        let a = makeCard("A"), b = makeCard("B")
+        model.tasks = [a, b]
+        model.selectedId = a.id
+        model.selectedId = b.id
+
+        model.navigateCardHistoryBack(fromTerminal: false)
+
+        XCTAssertEqual(model.selectedId, a.id)
+        XCTAssertEqual(model.focusZone, .board)
+        XCTAssertEqual(win.enterCount, 0)
+    }
+
+    func testHistoryBackFromTerminalKeepsTerminalFocus() async throws {
+        let (model, _, _, win) = makeModel()
+        let a = makeCard("A"), b = makeCard("B")
+        model.tasks = [a, b]
+        model.selectedId = a.id
+        model.selectedId = b.id
+        model.focusZone = .terminal
+
+        model.navigateCardHistoryBack(fromTerminal: true)
+
+        XCTAssertEqual(model.selectedId, a.id)
+        XCTAssertEqual(model.focusZone, .terminal)
+        try await _Concurrency.Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(win.enterCount, 1)
     }
 
     // MARK: shell-sync (shellsChanged reconciliation)

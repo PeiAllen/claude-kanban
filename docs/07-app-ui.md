@@ -8,7 +8,14 @@ Design (light/linear: radial wallpaper, hairline borders, mono accents).
 > The app is built separately from the package (it needs full Xcode + SwiftTerm); see
 > [Building & operations](08-building-operations.md). The backend builds and tests without it.
 
+> **About the screenshots in this chapter.** They are captured from a real, isolated Orchestra stack
+> running real agents on throwaway repos (`scripts/docs-shots.sh`) — the context-%, activity lines, and
+> diffstats you see are genuine telemetry, not mock-ups. Re-run that script to regenerate them after a
+> UI change; see [Doc automation](11-doc-automation.md).
+
 ## The board
+
+![The board: three columns of live agent cards](images/board.png)
 
 `BoardView` lays out **three equal-width columns** — Plan · Implementation · Review — each scrolling its
 own cards (the board itself doesn't scroll), with a minimum column width of ~210 pt. Each column header
@@ -55,6 +62,8 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
 
 ## The spawn sheet
 
+![The spawn sheet: agent backend, model, repo, branch, and card mode](images/spawn.png)
+
 `SpawnSheet` is the modal that creates a card. It has **three modes** (a chip toggle): **Worktree**,
 **Freeform**, **Scratch**.
 
@@ -85,6 +94,8 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
 Spawning shows a toast on success or failure and closes the sheet on success.
 
 ## The inspector
+
+![The inspector: a live agent terminal, telemetry, and card actions](images/inspector.png)
 
 Selecting a card opens the **inspector**, a resizable right-hand sidebar (default 392 pt, width
 persisted; drag the left edge to resize). A **live** card shows the agent chrome; a **dead** card shows
@@ -119,6 +130,8 @@ simplification* — see [chapter 9](09-design-decisions.md#shipped-feature-histo
 [design note](../notes/designs/2026-07-01-agent-buttons-simplification-design.md).
 
 ### The in-app diff view
+
+![The inspector's read-only diff view](images/diff.png)
 
 With the header's **Diff** mode selected, the body switches from the agent terminal to `DiffInspectorView`
 (axis 7 — code review on the board): a **read-only**, colored, monospaced render of the card's changes, so
@@ -171,6 +184,8 @@ foreign shell (the other surface's) as a listed, owner-tagged tab it can see and
 
 ## Keyboard navigation
 
+![Keyboard navigation: selection movement, link-hints, search, and the command palette](images/keyboard.gif)
+
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
 selection, spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f` link-hints, a `:`
 command palette, and standard `⌘` accelerators — designed so it never fights the live agent terminals the
@@ -217,6 +232,7 @@ The shipped bindings:
 |---|---|
 | `h` `j` `k` `l` | Move the **selection** within the focused pane (columns ↔, cards ↕) — which opens the inspector for that card and auto-scrolls the column to keep it centered (a `ScrollViewReader` in `BoardView`) |
 | `g g` / `G` | First / last card in the column |
+| `⌃o` / `⌃i` | Previous / next visited card (browser-style history); works from the board or a terminal and preserves that mode |
 | `Enter` | Move keyboard focus **into** the inspector (the selection already opened it) |
 | `i` | **Insert** — jump focus straight into the agent terminal to type |
 | `Esc` | Close / clear the frontmost thing |
@@ -286,6 +302,16 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   which recreates the card's worktree and resumes its agent; the card then jumps back onto the board, is
   selected (opening the live inspector), and the popover closes. (There is no "Zed" action on an archived
   row — archiving removed the worktree, so there are no changes to open until it is reopened.)
+
+## The iPhone companion
+
+![The board on iPhone](images/ios-board.png)
+
+`App-iOS/` is a second, smaller client onto the *same* daemon — the board in your pocket. It is not a
+separate system: it speaks the identical JSON-RPC control plane (reaching a remote daemon over SSH, or,
+in development, the Mac's socket directly), so the cards, columns, and telemetry are the same state the
+desktop shows. The screenshot above is the iPhone app driven against the very same isolated daemon that
+produced the other images in this chapter.
 
 ## Theme
 
