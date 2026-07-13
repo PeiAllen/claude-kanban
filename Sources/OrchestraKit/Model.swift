@@ -337,6 +337,9 @@ public func diffBaselineLabel(_ base: DiffBase, parentBranch: String? = nil) -> 
 /// parent tip's ancestor (parent rewrote/shipped); `mergeRequested` = the child sent a merge-request
 /// and is waiting on its (live) parent to squash-merge it (O2 — the "waiting" badge, sticky until
 /// `shipped`/`synced`/`set-parent` clears it). (Replaces the never-produced `parentMerged`, S4.)
+///
+/// Giving up on a merge-request is deliberately NOT a case here — it rides on `TreeStat.mergeStalled`.
+/// See that field for why.
 public enum TreeState: String, Codable, Sendable { case inSync, stale, restackNeeded, mergeRequested }
 
 /// Per-child tree status for the card face (the `↓N` badge + restack signal). Small + persisted on
@@ -345,8 +348,38 @@ public struct TreeStat: Codable, Sendable, Equatable {
     public var state: TreeState
     public var behind: Int            // commits the parent is ahead of the recorded base (the ↓N badge)
     public var parentIsRemote: Bool
-    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false) {
+    /// Reminders sent for a pending merge-request (not counting the t=0 request). Persisted, not held in the
+    /// timer Task: `rebuildMergeRequestNudges()` re-arms every pending card at boot, so an in-memory counter
+    /// would reset each restart and the give-up cap would never fire.
+    public var nudges: Int
+    /// The merge-request was given up on — the parent ignored every reminder and the loop stopped. Cleared by
+    /// `shipped` / `synced` / `set-parent`, or by re-sending the merge-request.
+    ///
+    /// A FLAG, not a `TreeState` case, for two reasons — either fatal alone:
+    /// 1. It is orthogonal to `state`. As a state it froze the recompute funnel (which skips a card wearing a
+    ///    sticky merge badge), so a stalled child stopped tracking its parent entirely — no ↓N, and no
+    ///    "parent moved ahead" nudge. As a flag, `state` keeps tracking underneath.
+    /// 2. It cannot be an unknown rawValue on disk. `Task` decodes `treeStat` with `decodeIfPresent` (which
+    ///    rethrows) and `TaskStore.FailableTask` DROPS a throwing record — so a new `TreeState` rawValue would
+    ///    make any older binary silently lose the whole card. An unknown *key* is ignored; a rawValue is fatal.
+    public var mergeStalled: Bool
+
+    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false,
+                nudges: Int = 0, mergeStalled: Bool = false) {
         self.state = state; self.behind = behind; self.parentIsRemote = parentIsRemote
+        self.nudges = nudges; self.mergeStalled = mergeStalled
+    }
+
+    // Hand-rolled: a synthesized decode would throw `keyNotFound` on the new fields for every card persisted
+    // before them — and `Task`'s `decodeIfPresent` rethrows, so FailableTask would DROP those cards. `state`
+    // is `try?`-guarded per the convention in `Task.init(from:)`: a garbage rawValue defaults, never throws.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.state = (try? c.decode(TreeState.self, forKey: .state)) ?? .inSync
+        self.behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+        self.parentIsRemote = try c.decodeIfPresent(Bool.self, forKey: .parentIsRemote) ?? false
+        self.nudges = try c.decodeIfPresent(Int.self, forKey: .nudges) ?? 0
+        self.mergeStalled = try c.decodeIfPresent(Bool.self, forKey: .mergeStalled) ?? false
     }
 }
 
@@ -533,7 +566,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
-        self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
+        // `try?`-guarded like the enum fields above (it contains one): a garbage `TreeState` rawValue must
+        // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
+        self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""

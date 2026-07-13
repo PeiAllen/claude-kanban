@@ -188,10 +188,12 @@ extension OrchestraService {
         }
         let syncBase = probe.syncBase ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
-        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
-        // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
+        // O2: syncing resolves the merge-request — stop the loop and drop the badge, whether still waiting or
+        // given up on (else a card whose merge finally landed keeps the red "unanswered" badge).
         stopMergeRequestNudge(t.id)
-        _ = try? await store.update(t.id) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
+        _ = try? await store.update(t.id) {
+            if $0.treeStat?.state == .mergeRequested || $0.treeStat?.mergeStalled == true { $0.treeStat = nil }
+        }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
         treeStatDebounce[t.id]?.cancel()
@@ -422,7 +424,7 @@ extension OrchestraService {
         // stale under a concurrent recompute, but the store.update closure below is the authority.
         let current0 = await store.get(id)?.treeStat
         if current0?.state == .mergeRequested, new?.state != .restackNeeded { return }
-        guard new != current0 else { return }
+        guard carryMergeRequestFields(new, from: current0) != current0 else { return }
         // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
         // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent
         // synced / fan-out recompute that already transitioned this card cannot make us fire a duplicate
@@ -430,13 +432,15 @@ extension OrchestraService {
         var staleEdge = false, restackEdge = false, changed = false
         let res = try? await store.update(id) { task in
             let cur = task.treeStat
-            // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while
-            // the child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
+            // O2: the `mergeRequested` waiting badge is sticky — only `restackNeeded` supersedes it. A
+            // GIVEN-UP request is deliberately NOT sticky (it's a flag, not a state), so a stalled card keeps
+            // tracking its parent instead of going blind to it.
             if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
-            guard new != cur else { return }                   // no delta → no state change, no emit/nudge
+            let merged = carryMergeRequestFields(new, from: cur)
+            guard merged != cur else { return }               // no delta → no state change, no emit/nudge
             staleEdge = (cur?.state == .inSync && new?.state == .stale)
             restackEdge = (cur?.state != .restackNeeded && new?.state == .restackNeeded)
-            task.treeStat = new
+            task.treeStat = merged
             changed = true
         }
         guard changed, let (saved, rev) = res else { return }
@@ -603,4 +607,15 @@ extension OrchestraService {
         }
         return oid
     }
+}
+
+/// `nudges`/`mergeStalled` belong to the re-nudge loop, not the tree funnel — `computeTreeStat` derives its
+/// `TreeStat` from git alone. Carry them across every recompute, or the next parent movement erases the flag
+/// and the budget (resurrecting "nudge forever": the loop reads `nudges` back from the store each tick).
+/// Free function because it runs inside a Sendable `store.update` closure, which can't capture `self`.
+func carryMergeRequestFields(_ new: TreeStat?, from cur: TreeStat?) -> TreeStat? {
+    guard var n = new else { return nil }   // no parent link ⇒ no treeStat ⇒ nothing pending to carry
+    n.nudges = cur?.nudges ?? 0
+    n.mergeStalled = cur?.mergeStalled ?? false
+    return n
 }
