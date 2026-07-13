@@ -251,6 +251,30 @@ struct ModelReseatTests {
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
     }
 
+    // MARK: - a read-only card must STAY read-only across a relaunch
+
+    @Test("a read-only card keeps its read-only launch flags when RESUMED (not just when spawned)")
+    func readOnlyCardStaysReadOnlyOnResume() async throws {
+        // `AdapterContext.access` defaults to `.readWrite`, and Converge's `.resume` context used to omit
+        // `access:` while its `.blank` context passed it — so a read-only reviewer card came back WRITABLE
+        // the moment it was resumed or handed off. Both adapters DO emit the flags from `ctx.access` on
+        // resume (ClaudeCodeAdapter `--allowedTools`/settings, Codex `-s read-only -a never`), so the
+        // omission silently dropped them.
+        let env = TestEnv.make(grace: 2)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "review", repo: TestEnv.repo(env.base), branch: "ro",
+                                access: .readOnly))
+        #expect(t.access == .readOnly)
+        env.adapter.writeTranscript(for: t.agentSessionId!)
+
+        _ = try await env.svc.resumeInCard(t.id, seed: "keep reviewing")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        let a = argv(env, t.id)
+        #expect(a.contains("--resume"))
+        #expect(a.contains("--read-only"))   // the launch is still locked down
+    }
+
     // MARK: - persistence
 
     @Test("pendingModel round-trips, and a record without the key decodes as no re-seat")

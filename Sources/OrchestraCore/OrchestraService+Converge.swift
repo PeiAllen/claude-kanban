@@ -173,8 +173,14 @@ extension OrchestraService {
             argv = adapter.start(ctx)
             armCtx = ctx
         case .resume(let seed):
+            // `access:` is NOT optional here, whatever the defaulted initializer suggests: `AdapterContext`
+            // defaults it to `.readWrite`, and both adapters emit their lockdown flags from `ctx.access` on
+            // resume as well as on start — so omitting it silently relaunched a READ-ONLY card as writable.
+            // (`startIn` is deliberately not passed: it only picks the launch column for a NEW session, and
+            // a resumed card already has one.)
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
+                                     access: task.access,
                                      trustCwd: trustDecision == .trusted, seed: seed)
             guard let sid = task.agentSessionId else { return .timedOut }
             let a = adapter, c = ctx, priorIds = task.priorSessionIds

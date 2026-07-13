@@ -354,10 +354,17 @@ final class StubAdapter: Adapter, @unchecked Sendable {
         guard let m = model, !m.isEmpty else { return [] }
         return ["--model", m]
     }
+    /// The read-only posture, emitted on BOTH launch paths like the real adapters (Claude's locked-down
+    /// tool list, Codex's `-s read-only -a never`) — so a test can prove a read-only card stays read-only
+    /// across a resume, not only on the spawn that created it.
+    private func accessFlags(_ access: CardAccess) -> [String] {
+        access == .readOnly ? ["--read-only"] : []
+    }
     func start(_ ctx: AdapterContext) -> [String] {
         var a = [bin]
         if let s = ctx.sessionId { a += ["--session-id", s] }
         if let n = ctx.name { a += ["--name", n] }
+        a += accessFlags(ctx.access)
         a += modelFlag(ctx.model)
         if let p = ctx.prompt { a.append(p) }
         return a
@@ -365,6 +372,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     func resume(_ ctx: AdapterContext) -> [String]? {
         guard let s = ctx.sessionId else { return nil }
         var a = [bin, "--resume", s, "--name", ctx.name ?? ""]
+        a += accessFlags(ctx.access)
         a += modelFlag(ctx.model)
         if let seed = ctx.seed, !seed.isEmpty { a.append(seed) }   // F1: deliver the seed like real adapters
         return a
