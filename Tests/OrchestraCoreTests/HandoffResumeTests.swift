@@ -212,9 +212,9 @@ struct ResumeInCardTests {
 
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         #expect(argv.contains("--resume"))
-        // StubAdapter.resume tail is `--name <title>`; with no seed nothing follows the name value.
+        // StubAdapter.resume tail is `--name <title> --model <id>`; with no seed no positional follows it.
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
-        #expect(argv.count == nameIdx + 2)
+        #expect(Array(argv[(nameIdx + 2)...]) == ["--model", "m1"])
     }
 }
 

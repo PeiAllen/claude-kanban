@@ -445,6 +445,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var phaseChangedAt: Date
     /// Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. nil ⇒ none.
     public var pendingSeed: String?
+    /// A `--model` re-seat staged for the NEXT (re)launch (restart/handoff/resume), delivered once then
+    /// cleared on the `.live` landing — the launch INTENT, exactly like `pendingSeed`. It is what
+    /// `finishLaunch` builds the argv from, and it is deliberately ABSENT from `applyReportFields`: the
+    /// report path owns `model` and is not epoch-fenced, so the dying session's last statusline can (and
+    /// does) revert `model` in the window between the intent-only verb and the stepper's relaunch. Holding
+    /// the request here is what stops that report from silently erasing the override. nil ⇒ no override.
+    public var pendingModel: String?
     /// The RAW normalized base string exactly as `spawn` received it (`input.base` after the refs/heads
     /// strip). Carried on the card so a reconciler-driven `materialize` can re-derive the base
     /// classification (`RemoteParentRef.parse`) after a restart — a remote base (`origin/<b>` / `pr#<N>`)
@@ -483,6 +490,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
         pendingSeed: String? = nil,
+        pendingModel: String? = nil,
         spawnBase: String? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
@@ -516,6 +524,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
         self.pendingSeed = pendingSeed
+        self.pendingModel = pendingModel
         self.spawnBase = spawnBase
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
@@ -541,7 +550,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
-        case phase, sessionEpoch, phaseChangedAt, pendingSeed, spawnBase
+        case phase, sessionEpoch, phaseChangedAt, pendingSeed, pendingModel, spawnBase
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
@@ -591,6 +600,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
             ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
+        self.pendingModel = try c.decodeIfPresent(String.self, forKey: .pendingModel)
         self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
         // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
@@ -650,6 +660,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(sessionEpoch, forKey: .sessionEpoch)
         try c.encode(phaseChangedAt, forKey: .phaseChangedAt)
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
+        try c.encodeIfPresent(pendingModel, forKey: .pendingModel)
         try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)

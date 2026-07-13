@@ -129,7 +129,8 @@ struct OrchestraServiceTests {
         // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(blank.id)])
         let nameIdx = try #require(argv.firstIndex(of: "--name"))
-        #expect(argv.count == nameIdx + 2)      // --name <value> is last; nothing trails it
+        // Only the model flag trails --name <value>; no positional → no junk prompt was submitted.
+        #expect(Array(argv[(nameIdx + 2)...]) == ["--model", "m1"])
 
         // A real prompt still spawns running + non-provisional.
         let real = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Do the thing", repo: repo, branch: "feat-y"))

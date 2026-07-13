@@ -89,7 +89,8 @@ enum CLIRunner {
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let context = flags.value("context") ?? flags.positionalsFrom(1).joined(separator: " ")
                 guard !context.isEmpty else { die("handoff needs context text: orchestra handoff <ref> <context...>") }
-                let task = try await client.call("handoff", .object(["ref": .string(ref), "context": .string(context)]))
+                let task = try await client.call("handoff", .object(["ref": .string(ref), "context": .string(context)]
+                    .merging(optional("model", flags.value("model"))) { a, _ in a }))
                 printRef(task)
 
             case "trust":
@@ -168,7 +169,8 @@ enum CLIRunner {
 
             case "restart", "resume":
                 let ref = flags.positional(0) ?? flags.require("ref")
-                let task = try await client.call(verb, .object(["ref": .string(ref)]))
+                let task = try await client.call(verb, .object(["ref": .string(ref)]
+                    .merging(optional("model", flags.value("model"))) { a, _ in a }))
                 printRef(task)
 
             case "exec":

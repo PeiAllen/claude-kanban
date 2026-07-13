@@ -166,6 +166,14 @@ public actor OrchestraService {
     var spawnPending: [UUID: Date] = [:]
     var spawnAttempts: [UUID: Int] = [:]
     var spawnRelaunch: [UUID: (adapterId: String, ctx: AdapterContext)] = [:]
+    /// Armed by a `--model` re-seat (restart/handoff/resume), consumed by the first model-bearing report
+    /// AFTER the relaunch lands, to answer one question: did the vendor actually honor `--model`? (It does
+    /// — both CLIs were probed — so this is a tripwire for a vendor that changes its mind, not the
+    /// mechanism; `pendingModel` is the mechanism.) Deliberately NOT persisted: a daemon restart just drops
+    /// a best-effort check, which is strictly better than carrying a second field through Task's Codable.
+    /// `strikes` exists because the file-tailer can surface one last pre-kill rollout line after the
+    /// landing; a vendor that truly ignored the flag misreports on every tick and so strikes out at once.
+    var modelOverrideWatch: [UUID: (requested: String, strikes: Int)] = [:]
     /// Non-persisted tuning (short in tests). `spawnGraceSeconds` = how long a spawned card is watched for
     /// an immediate exit before it graduates to normal monitoring; `maxStartupRetries` = bounded
     /// auto-respawns of a transient startup abort before giving up.

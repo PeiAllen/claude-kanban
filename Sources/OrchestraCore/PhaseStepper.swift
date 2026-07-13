@@ -160,6 +160,19 @@ public struct MaterializeStepper: PhaseStepper {
     }
 }
 
+/// Consume a staged `--model` re-seat on the `.live` landing — the exact companion cleanup `pendingSeed`
+/// gets, and for the same reason: the intent has now been delivered (the session is up, launched with this
+/// model), so it must not be replayed onto a later launch. It also RE-ASSERTS `model` from the request,
+/// because the outgoing session's final statusline can revert `model` while the card is `.relaunching`
+/// (report()'s model write is not epoch-fenced), and the card must end up displaying the model it actually
+/// came up on. A launch that FAILED never reaches here, so `pendingModel` survives for the retry — again
+/// mirroring `pendingSeed`.
+func consumeModelReseat(_ t: inout Task, _ adapter: any Adapter) {
+    guard let want = t.pendingModel else { return }
+    t.model = adapter.model(for: want)
+    t.pendingModel = nil
+}
+
 /// Drives `.launching` → `.live` (carries requirement #1: clear `pendingSeed` on readiness-at-epoch).
 public struct LaunchStepper: PhaseStepper {
     public init() {}
@@ -173,7 +186,10 @@ public struct LaunchStepper: PhaseStepper {
         case .confirmed:
             // `expecting: .launching` — the landing carries the same fence as the bring-up: if the launch
             // timeout concluded the card while we were confirming readiness, do NOT revive it.
-            _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in t.pendingSeed = nil }
+            _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in
+                t.pendingSeed = nil
+                consumeModelReseat(&t, adapter)
+            }
         case .launchFailed(let failure):
             // The session could not be created and we KNOW why — conclude now with the real reason rather
             // than idling in `.launching` until the timeout overwrites it with "launch timed out after 30s".
@@ -230,7 +246,10 @@ public struct RelaunchStepper: PhaseStepper {
         let epoch = card.sessionEpoch
         switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
         case .confirmed:
-            _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in t.pendingSeed = nil }
+            _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in
+                t.pendingSeed = nil
+                consumeModelReseat(&t, adapter)
+            }
         case .launchFailed(let failure):
             await concludeFailedLaunch(card.id, failure, fallback: .resumeFailed,
                                        expecting: .relaunching, ctx: ctx)

@@ -10,6 +10,9 @@ extension OrchestraService {
     public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
+        // Set when a re-seat is judged to have been IGNORED by the vendor; emitted after the write below, so
+        // the warning rides a card whose `model` already shows what is really running.
+        var modelReseatIgnored: (requested: String, actual: String)? = nil
 
         // A bring-up STEP owns this card's landing while it is in flight (`inFlightSteps` is the claim, held
         // across its off-actor `kill`+`ensure`). A report must NOT land the card `.live` under it: the step's
@@ -137,6 +140,24 @@ extension OrchestraService {
                 } else if let label = snap.modelDisplay, !label.isEmpty, label != task.model.displayName {
                     task.model.displayName = label
                 }
+                // Did a `--model` re-seat (restart/handoff/resume) actually take? Fenced on
+                // `pendingModel == nil`, i.e. the relaunch has LANDED and the old process is dead: reports
+                // arriving before that are the DYING session's, and judging them would accuse the vendor of
+                // ignoring a flag it was never passed. That fence needs no epoch, which matters — Codex's
+                // file-tail reports carry none (OrchestraService.swift:382). Compared through the catalog,
+                // never raw `==`: the vendor answers `claude-haiku-4-5-20251001` where the table says
+                // `claude-haiku-4-5`. One warning, then the watch is dropped — never a per-tick drumbeat.
+                if let mid = snap.modelId, !mid.isEmpty,
+                   task.pendingModel == nil, let watch = modelOverrideWatch[id] {
+                    if modelHonored(reported: mid, requested: watch.requested, agentId: task.agentId) {
+                        modelOverrideWatch[id] = nil          // re-seat confirmed by the agent itself
+                    } else if watch.strikes >= 1 {
+                        modelOverrideWatch[id] = nil
+                        modelReseatIgnored = (watch.requested, mid)   // emitted below, once the write lands
+                    } else {
+                        modelOverrideWatch[id] = (watch.requested, watch.strikes + 1)
+                    }
+                }
                 // session_name (a /rename mirror): apply only a *genuine* change, so a statusline
                 // echoing the `--name` we launched with never prematurely clears `titleProvisional`
                 // (which restart/clear set precisely so the next user prompt re-titles the card).
@@ -176,6 +197,18 @@ extension OrchestraService {
             let (saved, rev) = try await store.update(id, debounceFlush: true) { $0.applyReportFields(from: task) }
             emit(.taskUpserted(saved), rev: rev)
             didChange = true
+        }
+
+        // The re-seat did not take: the card is running a model the user did not ask for, and now that
+        // `pendingModel` owns the launch argv the only way that happens is the vendor CLI ignoring `--model`
+        // on resume. Say it out loud rather than let the board quietly show the old model as if nothing had
+        // been asked for. Emitted OUTSIDE the field-delta write above — deliberately: the report that strikes
+        // the vendor out is the SECOND one naming the wrong model, which by definition changes no field
+        // (`model` already holds that wrong value), so a warning gated on `task != before` would never fire.
+        if let ignored = modelReseatIgnored {
+            emitActivity(.warning, task, .daemon,
+                         "re-seat did not take: asked for \(ignored.requested), "
+                         + "but the agent is running \(ignored.actual)")
         }
 
         // Phase change → the funnel. `observedEpoch` fences a superseded generation (a stale liveness
