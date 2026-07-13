@@ -129,6 +129,21 @@ struct DelegationDocsTests {
         }
     }
 
+    @Test("delegation docs tell the parent to archive children that send-and-stop, reviewers included")
+    func docsArchiveParkedChildren() throws {
+        for doc in [try #require(DelegationDocs.load(.claudeSkill)),
+                    try #require(DelegationDocs.load(.codexAgents))] {
+            // A send-and-stop child (fork / probe / reviewer) parks in `waiting` — the parent reclaims it.
+            #expect(doc.contains("ends its turn is left `waiting`, not"))
+            #expect(doc.contains("`archive` the card"))
+            #expect(doc.contains("research forks, fan-out probes, reviewers alike"))
+            // …and the review pair's teardown happens only once the bound pass CLOSES.
+            #expect(doc.contains("Then archive both reviewers — the parent's job"))
+            #expect(doc.contains("confirm/deny turn needs their context"))
+            #expect(doc.contains("A reviewer left `waiting` is a leak"))
+        }
+    }
+
     // MARK: install() — load + materialize to a destination path (the seed-injection launch step)
 
     @Test("install writes the agent's variant to the destination, creating parent dirs")

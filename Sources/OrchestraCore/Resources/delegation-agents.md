@@ -90,6 +90,11 @@ tightly-coupled work.
   your inbox, or you can receive two notices in either order. If you need a child-authored result message
   in your inbox, ask the child to `send` that message when done and do not also `wait` on that child.
 
+  **And then archive it.** A child that `send`s its result and ends its turn is left `waiting`, not
+  concluded — nothing reclaims it but you. Once you've taken its result and have no follow-up turn to
+  ask of it, `archive` the card: research forks, fan-out probes, reviewers alike. Children that
+  conclude on their own (merged, exited) need nothing.
+
 ## Review pairs — requesting a bounded dual review
 
 To get a plan or implementation reviewed, spawn **one Claude + one Codex reviewer simultaneously**,
@@ -111,6 +116,10 @@ belongs to the periodic (streaming) review card, and even that is capped at 3 pa
   you reject (verify feedback — don't comply performatively). **Iff** any BLOCKER/MAJOR was
   raised, `send` the fix diff back to the same reviewers for **one** confirm/deny turn. Then stop;
   record leftover minors for the next periodic review card.
+- **Then archive both reviewers — the parent's job.** Keep them alive until the pass *closes* (the
+  confirm/deny turn needs their context), then `archive` every reviewer card, including a failed or
+  wholly-rebutted one. They're throwaway. A reviewer left `waiting` is a leak — agent process,
+  worktree, tmux session, dead `review/*` branch — and nothing else reclaims it.
 - **Degrade, don't hang:** if one backend fails to spawn, proceed **single-reviewer** and say so
   in your plan/merge-request. If one reviewer's findings arrive and the other's don't: `status`
   the straggler — dead → proceed single-reviewer; alive → nudge once via `send`, and if still

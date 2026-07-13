@@ -120,6 +120,11 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what
   the reactive fan-out / stacked-PR DAG composes from. (`notes/plans/2026-07-01-c2-wake-mergewatch.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
+- **An idle card is not a concluded one — nothing reclaims it for you.** Those three branches are the
+  *whole* of conclusion authority, so a worktree child told to `send` a result back and stop (a review-pair
+  reviewer, a research fork) ends its turn `waiting`, not concluded: it keeps its agent process, worktree,
+  tmux session, and branch until someone acts. The daemon never garbage-collects a live-but-idle card, so
+  the parent that spawned it must `archive` it once it has taken the result.
 - **`handoff` is the F1 seam's first surface.** As of D1, `handoff` is a thin `Command` that resolves the
   ref and delegates to `OrchestraService.resumeInCard(seed:)` (shipped by C3) — it does **not** start a
   new card. The named card is killed and resumed in a fresh, clean-context process that keeps its session
