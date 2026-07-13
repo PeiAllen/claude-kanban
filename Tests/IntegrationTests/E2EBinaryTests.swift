@@ -34,7 +34,7 @@ final class E2EBinaryTests {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)])
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
         let sessions = SessionManager(socket: tmuxSock, confPath: SessionManager.bundledConf, sockEnvPath: ctlSock)
         let adapter = ClaudeCodeAdapter(binOverride: IntegrationSupport.fakeAgentPath)
         service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),

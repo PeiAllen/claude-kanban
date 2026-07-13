@@ -346,7 +346,7 @@ struct CodexSpawnWiringTests {
         try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)])
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
         let svc = OrchestraService(config: config,

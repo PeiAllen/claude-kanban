@@ -78,8 +78,12 @@ struct ReconcilerTests {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
         let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        // Back-date `phaseChangedAt` well past the timeout and persist at `.launching`.
-        await env.svc.seedPhase(t.id, .launching, phaseChangedAt: Date().addingTimeInterval(-120))
+        // Back-date `phaseChangedAt` well past the timeout and persist at `.launching`. Derived FROM the
+        // config, not a hardcoded -120s: the test env deliberately runs a launch timeout it cannot outlive
+        // (see `TestEnv.make`), so a fixed back-date would silently stop clearing the deadline and this test
+        // would assert a timeout that never armed.
+        let timeout = await env.svc.config.sessionLaunchTimeout
+        await env.svc.seedPhase(t.id, .launching, phaseChangedAt: Date().addingTimeInterval(-Double(timeout) - 60))
 
         // Fresh process (persisted timestamp survives; its tmux session is gone → no adoption).
         let env2 = TestEnv.remake(base: env.base)

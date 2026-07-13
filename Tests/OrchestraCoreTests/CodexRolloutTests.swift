@@ -218,7 +218,7 @@ struct CodexTelemetryE2ETests {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)])
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),
@@ -263,7 +263,7 @@ struct CodexTelemetryE2ETests {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)])
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
         let svc = OrchestraService(config: config,
                                    store: TaskStore(path: base + "/tasks.json"),

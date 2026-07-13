@@ -458,7 +458,20 @@ enum TestEnv {
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
                             allowlist: [PathResolver.canonical(base)],
-                            maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace)
+                            maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace,
+                            // A launch timeout the test cannot outlive. The product default is 30s, which is
+                            // right for a real daemon — but a test's bring-up is driven by ITS OWN
+                            // `reconcile()` polling, and under `--parallel` load a single reconcile can cost
+                            // ~20s. The card then blows the 30s launch deadline and the reconciler correctly
+                            // concludes `dead(spawnFailed)` — so the test's premise ("the card reaches
+                            // `.live`") evaporates and it fails asserting a behavior that never got to run.
+                            // Same trap as the startup grace (see `spawnStartupPending`): a wall-clock
+                            // deadline the machine, not the product, decides.
+                            //
+                            // Tests that genuinely EXERCISE the timeout are unaffected: they back-date
+                            // `phaseChangedAt` by `-(config.sessionLaunchTimeout + n)`, reading the value
+                            // from config, so the arm still fires deterministically at any setting.
+                            sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -485,7 +498,7 @@ enum TestEnv {
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base])
+                            allowlist: [base], sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -678,7 +691,7 @@ enum TestEnv {
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base])
+                            allowlist: [base], sessionLaunchTimeout: 3600)
         let resolver = PathResolver(config: config)
         let sessions = StubSessions()
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)

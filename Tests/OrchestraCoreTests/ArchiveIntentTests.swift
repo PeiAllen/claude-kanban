@@ -23,7 +23,7 @@ struct ArchiveIntentTests {
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, base: String) {
         let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-arch-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtReg = WorktreeRegistry(config: config, manager: worktrees,
