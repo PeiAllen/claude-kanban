@@ -593,6 +593,7 @@ private struct BreadcrumbStrip: View {
 
     @State private var copied = false
     @State private var hovering = false
+    @State private var linkCopied = false
 
     private var pathParts: [String] {
         task.cwd.split(separator: "/").map(String.init)
@@ -600,18 +601,26 @@ private struct BreadcrumbStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            // The card's id IS its chat link — `orchestra://task/<shortId>-<slug>` — so one control
+            // carries both: the id is the label, the link is what lands on the clipboard.
             Button {
                 copy(task.ref())
+                linkCopied = true
+                _Concurrency.Task {
+                    try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
+                    linkCopied = false
+                }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "link").font(F.ui(9))
-                    Text("Copy chat link").font(F.mono(10))
+                    Image(systemName: linkCopied ? "checkmark" : "link").font(F.ui(9))
+                    Text("#\(task.shortId)").font(F.mono(10, .medium))
                 }
-                .foregroundColor(theme.text2)
+                .foregroundColor(linkCopied ? theme.green.dot : theme.text2)
                 .padding(.horizontal, 10)
                 .frame(maxHeight: .infinity)
             }
             .buttonStyle(.plain)
+            .help(linkCopied ? "Copied!" : "Copy chat link — \(task.ref())")
 
             Rectangle().fill(theme.hair).frame(width: 0.5, height: 14)
 
@@ -669,6 +678,8 @@ private struct BreadcrumbStrip: View {
         NSPasteboard.general.setString(s, forType: .string)
     }
 }
+
+// (The card id lives on the chat-link button in `BreadcrumbStrip` — the link *is* the id.)
 
 private struct BottomStrip: View {
     @EnvironmentObject var model: BoardModel

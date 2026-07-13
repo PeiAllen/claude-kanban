@@ -40,7 +40,21 @@ final class BoardModelPlatformTests: XCTestCase {
         model.copySelected(.tmux)
         XCTAssertEqual(clip.copied.last, "\(t.tmuxSession):agent")
 
-        XCTAssertEqual(clip.copied.count, 3)
+        model.copySelected(.id)
+        XCTAssertEqual(clip.copied.last, t.shortId)
+
+        XCTAssertEqual(clip.copied.count, 4)
+    }
+
+    /// The card-id badge copies the card it sits on, which need not be the selected one.
+    func testCopyIdOfUnselectedCard() {
+        let (model, clip, _, _) = makeModel()
+        let a = makeCard("Alpha"), b = makeCard("Beta")
+        model.tasks = [a, b]; model.selectedId = a.id
+
+        model.copy(.id, of: b)
+        XCTAssertEqual(clip.copied.last, b.shortId)
+        XCTAssertNotEqual(b.shortId, a.shortId)
     }
 
     func testCopySelectedNoSelectionDoesNothing() {
