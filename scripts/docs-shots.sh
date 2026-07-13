@@ -48,6 +48,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 # Real-agent auth for isolated runs (the durable dev home + seeding). See scripts/lib/agent-auth.sh.
 source "$REPO_ROOT/scripts/lib/agent-auth.sh"
+source "$REPO_ROOT/scripts/lib/wm-float.sh"
 
 # Canonical (symlink-resolved) root: /tmp → /private/tmp. Claude/Codex canonicalize their cwd before
 # the trust + resume lookup and the daemon keys trust on the STORED cwd, so a "/tmp/…" root would
@@ -314,6 +315,7 @@ echo "▶ launching Mac app against the isolated daemon…"
 HOME="$ISO_HOME" ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET" "$BIN" -orch_dark YES -orch_onboarded YES >/dev/null 2>&1 &
 APP_PID=$!; disown "$APP_PID" 2>/dev/null || true
 { echo "DAEMON_PID=$DAEMON_PID"; echo "APP_PID=$APP_PID"; echo "IOS_UDID="; } > "$STATE"
+float_window_for_pid "$APP_PID"   # off the user's tiling WM — else every doc shot is a squished sliver
 
 # Window id by PID (never by owner name — the user's live app would match).
 WID=""

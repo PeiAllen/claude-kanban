@@ -9,7 +9,33 @@
 #   --run     launch the installed app when the build succeeds
 #   --debug   build the Debug configuration instead of the default (Release)
 set -euo pipefail
+# Resolve our own absolute path BEFORE the cd — `$0` is relative to the ORIGINAL cwd, so
+# re-exec'ing "$0" from the repo root would break `cd scripts && ./build-app.sh`.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
+
+# ── SHIP MUTEX ───────────────────────────────────────────────────────────────────────────
+# This script mutates state SHARED by every card: it regenerates App/Orchestra.xcodeproj in
+# the main checkout (xcodegen, below) and replaces /Applications/Orchestra.app. Two cards
+# shipping at once could interleave a project regeneration with the other's xcodebuild, or
+# leave a half-written app bundle. Unlike the build mutex (which only throttles), this one
+# guards real shared state — so it is --strict: it waits, and FAILS CLOSED rather than ever
+# proceeding unlocked. (Proceeding unlocked here would produce exactly the corruption the
+# lock exists to prevent.)
+#
+# Re-exec ourselves under the lock. The sentinel stops the re-exec looping and means the lock
+# is acquired EXACTLY ONCE per process tree — flock is not recursive, so a second acquisition
+# would deadlock against our own ancestor.
+#
+# The sentinel is an ARGV flag, deliberately NOT an environment variable: macOS `open`
+# propagates the caller's environment into the launched app, so an env marker would leak into
+# Orchestra.app (and from there, potentially, into every agent it spawns) and silently
+# disable this lock board-wide. argv cannot leak that way.
+if [[ "${1:-}" == "--__ship-lock-held" ]]; then
+  shift
+else
+  exec scripts/lib/with-lock.sh --strict ship -- "$SELF" --__ship-lock-held "$@"
+fi
 
 DEST_DIR="/Applications"
 
@@ -41,7 +67,9 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 xcodegen generate --spec App/project.yml --project App
 
-xcodebuild \
+# Under the BUILD mutex (lock order: ship ⊐ build — we already hold ship, and nothing under
+# the build lock ever reaches back for ship, so there is no cycle).
+scripts/lib/with-lock.sh build -- xcodebuild \
   -project App/Orchestra.xcodeproj \
   -scheme Orchestra \
   -configuration "$CONFIG" \
@@ -57,9 +85,9 @@ BUILT_APP="$(xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -conf
 # `orchestra` CLI would clobber the `Orchestra` app executable if they shared a directory. The app
 # resolves orchestrad from this dir; orchestrad in turn finds `orchestra` as its own sibling here.
 echo "Building daemon binaries (release)…"
-swift build -c release --product orchestrad
-swift build -c release --product orchestra
-swift build -c release --product orchestra-mcp
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestrad
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestra
+scripts/lib/with-lock.sh build -- swift build -c release --product orchestra-mcp
 SWIFT_BIN=".build/release"
 
 BIN_DIR="$BUILT_APP/Contents/Resources/bin"

@@ -13,7 +13,7 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
 fi
 command -v xcodegen >/dev/null 2>&1 || { echo "error: xcodegen not found (brew install xcodegen)"; exit 1; }
 xcodegen generate --spec App-iOS/project.yml --project App-iOS
-exec xcodebuild \
+exec scripts/lib/with-lock.sh build -- xcodebuild \
   -project App-iOS/OrchestraiOS.xcodeproj \
   -scheme OrchestraiOS \
   -configuration Debug \

@@ -10,6 +10,7 @@
 # Usage: scripts/orch-key-demo.sh [--no-build] [outdir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lib/wm-float.sh"
 
 BUILD=1
 [[ "${1:-}" == "--no-build" ]] && { BUILD=0; shift; }
@@ -33,7 +34,7 @@ trap cleanup EXIT
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ building Debug…"
   (cd App && xcodegen generate --spec project.yml >/dev/null 2>&1)
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -derivedDataPath "$DD" build >/tmp/orch-key-build.log 2>&1 \
     || { echo "BUILD FAILED"; tail -30 /tmp/orch-key-build.log; exit 1; }
 fi
@@ -47,6 +48,7 @@ sleep 4   # let the window come up
 WID="$(swift scripts/keydrive.swift windowid "$APP_PID" || true)"
 if [[ -z "$WID" ]]; then echo "no window id for pid $APP_PID — abort"; exit 1; fi
 echo "▶ window id: $WID   pid: $APP_PID"
+float_window_for_pid "$APP_PID"   # off the user's tiling WM — else every shot is a squished sliver
 
 step=0
 shot() { printf -v n "%02d" "$step"; screencapture -x -o -l"$WID" "$OUT/$n-$1.png"; echo "  · $n-$1"; step=$((step+1)); }

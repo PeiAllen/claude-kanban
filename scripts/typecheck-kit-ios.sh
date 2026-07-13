@@ -15,7 +15,7 @@ echo "ok: no Process/AppKit/UIKit references"
 
 echo "== (2) iOS-SDK typecheck of the OrchestraKit target in isolation =="
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-swift build --target OrchestraKit \
+scripts/lib/with-lock.sh build -- swift build --target OrchestraKit \
   -Xswiftc -sdk -Xswiftc "$SDK" \
   -Xswiftc -target -Xswiftc arm64-apple-ios17.0
 echo "ok: OrchestraKit typechecks for arm64-apple-ios17.0"

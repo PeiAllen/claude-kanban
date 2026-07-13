@@ -111,6 +111,33 @@ struct AgentTerminalView: NSViewRepresentable {
         context.coordinator.wasLive = isLive
     }
 
+    /// Kill the pane's child when SwiftUI discards the view — otherwise every teardown orphans the
+    /// process `startProcess` forked and leaks its pty.
+    ///
+    /// This is not optional bookkeeping: `ShellTabsView`/`InspectorView` put an `.id(…)` on this view,
+    /// so SwiftUI destroys and recreates the NSView on every shell-tab / card / connection switch, and
+    /// each recreation is a fresh forkpty. `deinit` cannot save us — SwiftTerm's `LocalProcess.deinit`
+    /// neither kills the child nor closes the pty master, and its `DispatchIO` read handler retains the
+    /// process anyway while the child is alive, so it never even runs. Teardown has to be explicit.
+    /// `terminate()` closes the `DispatchIO` (whose cleanup handler closes the master fd — the kernel
+    /// only frees a pty slot once BOTH ends are closed) and SIGTERMs the child. That child is the tmux
+    /// *client* (the attach script `exec`s it) or the `ssh` for a remote host, so this detaches the pane
+    /// without touching the tmux server, session, or the agent running inside it.
+    ///
+    /// Guarded on `running`: once a child exits, SwiftTerm has `waitpid`-reaped it, so its `shellPid`
+    /// may since have been recycled by the OS and `terminate()` would SIGTERM an unrelated process.
+    /// A pane that's already dead needs no help — with the read handler released, the `LocalProcess`
+    /// deallocs and `DispatchIO` closes the master fd on its way out (measured: dead panes hold flat).
+    static func dismantleNSView(_ nsView: LocalProcessTerminalView, coordinator: Coordinator) {
+        MainActor.assumeIsolated {   // SwiftUI tears views down on the main thread
+            // Retire the coordinator FIRST: a backoff reconnect queued by `processTerminated` must not
+            // fire against a view SwiftUI has already discarded — that would fork a fresh pty into a
+            // dead view with nothing left to ever terminate it (the leak, re-armed).
+            coordinator.tearDown()
+            if nsView.process?.running == true { nsView.terminate() }
+        }
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// A real monospace font (SwiftTerm's default lacks many glyphs). Prefers an installed Nerd Font so
@@ -224,6 +251,10 @@ struct AgentTerminalView: NSViewRepresentable {
         /// The live gate's value on the PREVIOUS `updateNSView`, so the next update can detect the false→true
         /// `→ live` edge (F1) — and act on the edge only, never re-firing every subsequent update.
         var wasLive = false
+        /// Set once SwiftUI has torn the view down (see `dismantleNSView`). A dismantled coordinator is
+        /// inert: it never reconnects again, so a late `processTerminated` — or a backoff block that was
+        /// already in flight — can't resurrect a pane whose view is gone (and leak its pty).
+        private var dismantled = false
 
         func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
@@ -234,6 +265,7 @@ struct AgentTerminalView: NSViewRepresentable {
             // (already-incremented) budget so the flap stays bounded. Never reset here.
             stabilizeWork?.cancel(); stabilizeWork = nil
             paneAlive = false   // F1: a dead pane is a candidate for the reattach-on-live edge
+            guard !dismantled else { return }   // the view is gone — never re-fork into it
             guard !reconnectPending, attachWhileLive() else { return }
             guard let delaySecs = reconnectPolicy.delay(forAttempt: reconnects + 1) else { return }  // budget spent → stop
             reconnectPending = true
@@ -267,6 +299,20 @@ struct AgentTerminalView: NSViewRepresentable {
             attachGeneration &+= 1
             stabilizeWork?.cancel(); stabilizeWork = nil
             reconnects = 0; reconnectPending = false
+        }
+
+        /// SwiftUI discarded the view: retire the coordinator for good. Bumping `attachGeneration`
+        /// invalidates any backoff block already queued against the old view, and the closures are
+        /// dropped so even a block that somehow slips through the generation check is a no-op rather
+        /// than a fresh forkpty nobody owns.
+        func tearDown() {
+            dismantled = true
+            attachGeneration &+= 1
+            stabilizeWork?.cancel(); stabilizeWork = nil
+            reconnectPending = false
+            paneAlive = false
+            reattach = {}
+            attachWhileLive = { false }
         }
     }
     #else

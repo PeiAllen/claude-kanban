@@ -20,6 +20,7 @@
 #   default outdir: ./.scratch/ui-shots
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lib/wm-float.sh"
 
 BUILD=1
 [[ "${1:-}" == "--no-build" ]] && { BUILD=0; shift; }
@@ -38,7 +39,7 @@ trap cleanup EXIT
 if [[ "$BUILD" == 1 ]]; then
   echo "▶ regenerating xcodeproj + building Debug…"
   xcodegen generate --spec App/project.yml --project App >/dev/null
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
 fi
 
@@ -84,6 +85,8 @@ shoot() { # name  env...
     [[ -n "$wid" ]] && break
   done
   if [[ -z "$wid" ]]; then echo "  ✗ $name: no window found"; kill "$pid" 2>/dev/null || true; return 1; fi
+  # Float it off the user's tiling WM, or the capture is a squished sliver (see lib/wm-float.sh).
+  float_window_for_pid "$pid"
   sleep 1.0   # settle terminal/chrome layout
   screencapture -x -o -l"$wid" "$OUT/$name.png"
   echo "  ✓ $OUT/$name.png  (window $wid)"
