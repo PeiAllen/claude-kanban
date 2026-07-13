@@ -189,13 +189,33 @@ extension OrchestraService {
         // stat), and the launch-timeout `markDead` runs OUTSIDE the `bringingUp` gate — deliberately, since
         // it is what keeps a wedged bring-up converging. So the card really can go terminal under us here.
         guard await stillOwns(id, expecting: expecting, epoch: expectedEpoch) else { return .superseded }
+        // HOST PREFLIGHT — before the DESTRUCTIVE hop, not after it. The bring-up is `kill` THEN `ensure`,
+        // so on a host with no pseudo-terminals left a resume would reap the card's perfectly good session
+        // and then be unable to recreate it: a live, working agent is destroyed and written down as dead by
+        // a machine-wide condition it had nothing to do with. Asking the host for one pty first (a syscall,
+        // ~microseconds, released immediately) turns that into a clean, honest, retryable refusal that
+        // leaves the existing session ALONE. Fails open: an inconclusive probe launches as before.
+        if let report = await diagnoseHost(evidence: nil) {
+            return .launchFailed(LaunchFailure(
+                detail: "preflight: the host could not provide a \(report.resource.rawValue) "
+                      + "(session not started, existing session left intact)", resource: report))
+        }
         do {
             try await offActor { [sessions] in
                 _ = try? sessions.kill(sessions.sessionName(id))   // idempotent for a fresh launch
                 _ = try sessions.ensure(task, argv: argv, env: env)
             }
         } catch {
-            return .timedOut   // tmux ensure failed
+            // The tmux stderr IS the diagnosis ("create window failed: fork failed: Device not configured")
+            // — surface it instead of discarding it and letting the launch grace expire into a bogus
+            // "launch timed out after 30s". That discard is precisely why an out-of-PTYs host looked like a
+            // broken Orchestra. Unrecognised errors still land on the caller's existing reason, so nothing
+            // is reclassified that we don't positively recognise. `.io`'s payload is unwrapped so the detail
+            // reads as the raw tmux stderr rather than "io error: …".
+            let detail: String
+            if case .io(let stderr)? = error as? OrchestraError { detail = stderr } else { detail = "\(error)" }
+            return .launchFailed(LaunchFailure(detail: detail,
+                                               resource: await diagnoseHost(evidence: detail)))
         }
         // …AND AGAIN AFTER IT. The hop is a window the actor cannot be held across, so the card may have gone
         // terminal (or been superseded) while the session was coming up. Nothing else would ever reap that

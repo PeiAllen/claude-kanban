@@ -150,10 +150,17 @@ extension OrchestraService {
                 //     a same-phase `transition(.launching)` is a funnel noop (no `phaseChangedAt` re-stamp),
                 //     so the bound stays fixed to the ORIGINAL entry across re-steps.
                 if now.timeIntervalSince(t.phaseChangedAt) > TimeInterval(config.sessionLaunchTimeout) {
-                    let reason: DeadReason = (t.phase.kind == .launching) ? .spawnFailed : .resumeFailed
-                    await markDead(t.id, reason: reason,
-                                   detail: "launch timed out after \(config.sessionLaunchTimeout)s",
-                                   source: .daemon)
+                    // Before writing down the timeout, ask WHY it timed out. A launch can clear `ensure`
+                    // (tmux got the last free pty) and still never come up, because the agent underneath it
+                    // cannot get one — the card then times out and, historically, was buried under a
+                    // "launch timed out after 30s" that named nothing. If the host is out of a launch
+                    // resource, say THAT; a healthy host keeps the existing timeout classification.
+                    let timeout = "launch timed out after \(config.sessionLaunchTimeout)s"
+                    let resource = await diagnoseHost(evidence: nil)
+                    let reason: DeadReason = resource != nil ? .resourceExhausted
+                        : (t.phase.kind == .launching ? .spawnFailed : .resumeFailed)
+                    await markDead(t.id, reason: reason, detail: timeout,
+                                   resource: resource, source: .daemon)
                     continue
                 }
                 // (4) step it — unless a bring-up is already in progress (don't double-drive).
@@ -306,7 +313,7 @@ extension OrchestraService {
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,
-                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil })
+                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil })
                 continue
             }
             // Session gone (reboot). Route the recoverable ones to `.relaunching` — the ONE legal restart
@@ -318,7 +325,7 @@ extension OrchestraService {
             // and the RelaunchStepper already blank-restarts a provisional card — same outcome, legal edge.
             if await isResumable(t) || t.titleProvisional {
                 _ = await transition(t.id, to: .relaunching,
-                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil })
+                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil })
             } else {
                 await markDead(t.id, reason: .rebootUnrevived, detail: nil, source: .daemon)
             }
