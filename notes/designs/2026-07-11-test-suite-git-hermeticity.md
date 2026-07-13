@@ -1,8 +1,8 @@
-# Git hermeticity for the test suite
+# Environment isolation for the test suite — git config, and `HOME`
 
-**Date:** 2026-07-11
-**Status:** approved (design)
-**Card:** `test/git-hermeticity`
+**Date:** 2026-07-11 (git hermeticity) · 2026-07-12 (HOME isolation)
+**Status:** approved (design), both parts implemented
+**Cards:** `test/git-hermeticity`, `fix/test-suite-home-isolation`
 
 ## Problem
 
@@ -132,17 +132,15 @@ All writes use `overwrite = 1`.
 | `GIT_AUTHOR_NAME`, `GIT_COMMITTER_NAME` | `Orchestra Test` | identity that cutting global config takes away |
 | `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_EMAIL` | `test@orchestra.invalid` | ditto |
 
-### HOME is deliberately left alone
+### 3. It relocates `HOME` to a per-run temp dir (added 2026-07-12)
 
-The original brief asked for a temp `HOME`. It is **redundant**: once `GIT_CONFIG_GLOBAL` and
-`GIT_CONFIG_NOSYSTEM` are set, git never consults `HOME` for configuration at all. The only other
-`HOME`-derived git input is `~/.git-credentials`, which is read solely by `credential.helper = store`
-— and no helper survives the settings above.
-
-Meanwhile, overriding `HOME` process-wide *would* change what every **non-git** test sees: the trust
-ledger (`~/.claude.json`), `Config.dataDir`, and Claude transcript discovery all read the real home
-directory. Pinning a temp `HOME` would therefore buy nothing for git while forcing an audit-and-fix
-sweep across unrelated tests. Decision: leave `HOME` untouched; keep the blast radius to git.
+The 2026-07-11 version of this design left `HOME` alone, and said so explicitly: for *git*, a temp home
+is redundant (`GIT_CONFIG_GLOBAL` already displaces `~/.gitconfig` **and** the XDG config), and moving
+it would change what every non-git test sees. That reasoning was sound about git and wrong about
+everything else — it treated "what the suite reads" as the only hazard and never asked what the suite
+**writes**. See "The `HOME` hole" below. `HOME` is now relocated, and `GIT_CONFIG_GLOBAL` stays: it is
+what keeps git hermetic even under the home escape hatch, and it is the only thing that cuts the XDG
+config path.
 
 ### Identity precedence — the one accepted trade-off
 
@@ -152,7 +150,114 @@ commit author) and the resulting commit identity is *more* deterministic, not le
 for every other key — notably `BranchLineage`'s `branch.<x>.orchestra-*` lineage SSOT — is untouched,
 since we set no such keys.
 
-## The canary test
+## The `HOME` hole (2026-07-12)
+
+### What broke
+
+Every live Claude card on the board started failing *every* hook at once:
+
+```
+PreToolUse:Read hook error — /bin/sh: …/XcodeDefault.xctoolchain/usr/libexec/swift/pm/orchestra:
+No such file or directory
+```
+
+The chain: `ClaudeCodeAdapter.prepareToLaunch` renders the managed `--settings` file to
+`Config.hooksPath` — one **HOME-derived, shared** path, `~/Library/Application
+Support/Orchestra/claude-hooks.json` — substituting `__ORCHESTRA_BIN__` with `siblingBinary("orchestra")`,
+i.e. a path derived from the *running executable*. Tests call `prepareToLaunch` directly
+(`AdapterTests`, and the `CodexAdapter` equivalents). Under `swift test` the running executable is
+Xcode's `swiftpm-testing-helper`, so the suite resolved a nonexistent
+`…/libexec/swift/pm/orchestra` and wrote **that** into the real settings file — the same file every
+running Claude session was launched with (verified: all 17 live `claude` processes shared it). Claude
+re-reads it mid-session, so the whole board broke the moment a test ran. The Codex equivalent
+(`codex-hooks.json`) was found still holding the bogus path; it only self-heals when a Codex card next
+launches.
+
+The hooks file is the instance; the class is that **`swift test` could write the developer's live
+state at all**. A full run under an instrumented home wrote all of this into it:
+
+```
+.orchestra/scratch/<uuids>/                          production scratch root
+.claude/projects/<slug>/<uuid>.jsonl                 fake-agent transcripts
+.claude.json                                         Claude Code's own state file
+Library/Application Support/Orchestra/claude-hooks.json
+Library/Application Support/Orchestra/card-settings-*.json
+.codex/tmp/arg0, .local/state/gh/device-id, .zsh_history
+```
+
+### The fix
+
+The same load-time constructor `mkdtemp`s a per-run home and `setenv("HOME", …, 1)` before the first
+test of either runner. `Config.home` reads `$HOME` from the process environment on every access, so
+every derived path (`dataDir`, `hooksPath`, `codexHooksPath`, `scratchRoot`, `worktreesRoot`,
+`defaultReposRoot`) follows it, as does every child process — `Proc.run` rebuilds the child environment
+from the test process's, so even the out-of-process `orchestrad`/`orchestra` binaries that
+`E2EBinaryTests` spawns inherit the temp home.
+
+Three details that are load-bearing:
+
+- **It must be outside the checkout.** `Config.defaultReposRoot` *is* `$HOME` and `RepoScanner` scans
+  recursively under it, so a home inside the working copy would make the suite scan itself — and
+  `RepoScannerTests` asserts the root does not contain `/Documents/Projects`. `mkdtemp` under `$TMPDIR`
+  (falling back to `/tmp`) is outside any checkout by construction.
+- **It fails closed.** If `mkdtemp` fails, the bootstrap prints why and `abort()`s rather than letting
+  the suite fall back to the real home — the fallback is the exact failure being prevented, and it
+  corrupts live state rather than merely failing a test.
+- **`XDG_DATA_HOME` is unset.** On Linux `Config.dataDir` prefers it over `$HOME`, so an inherited one
+  would walk straight back out of the temp home.
+
+Escape hatch: `ORCHESTRA_TEST_HOME_ISOLATION=0`, mirroring `ORCHESTRA_TEST_GIT_HERMETIC=0` — and, like
+it, it cannot be silent (see the canary below).
+
+### Lifecycle of the temp home: left for the OS to reap
+
+Decided explicitly, not by omission. The temp home is **not** removed at exit:
+
+- An `atexit` sweep does not run when the suite crashes or is killed, so it could never be the thing we
+  rely on anyway — it would be a cleanup that works exactly when cleanup matters least.
+- `E2EBinaryTests` spawns real `orchestrad`/`orchestra` processes that inherit this `HOME` and can
+  outlive the test process, so deleting the tree at exit is racy.
+- It lives under `$TMPDIR` (per-user `/var/folders/…` on macOS), which the OS reaps; and keeping it
+  means a failed run's artifacts — the rendered hooks files, transcripts, scratch dirs — are still
+  there to inspect.
+
+### How it was verified
+
+The canary asserts the property; the *proof* is where a full run's writes actually landed. After a
+complete `swift test` with the developer's real `HOME` inherited, the per-run temp home contained the
+entire list from the diagnosis above — including a `claude-hooks.json` holding the bogus
+`…/XcodeDefault.xctoolchain/usr/libexec/swift/pm/orchestra` path, i.e. the exact string that broke the
+board, now harmlessly inside the temp dir:
+
+```
+/var/folders/…/T/orchestra-test-home-XXXXXX/
+  Library/Application Support/Orchestra/{claude-hooks,codex-hooks,card-settings-*,trust-ledger}.json
+  .claude/projects/-private-var-folders-…-orch-it-e2e-…/<uuid>.jsonl     fake-agent transcript
+  .orchestra/scratch/<uuid>/ , .claude.json, .zsh_history, .local/state/gh/device-id
+```
+
+The transcript is worth calling out: agents are launched with `tmux new-session -e …`, which forwards
+only the variables it names, so a pane's `HOME` comes from the **tmux server**. It lands in the temp
+home because the suite starts its own server (which inherits the isolated environment) — had it joined a
+pre-existing one, `setenv` in the test process could not have reached it. Child agents are covered *only*
+for as long as that stays true.
+
+One trap when checking this on a live machine: the developer's real `~/Library/Application
+Support/Orchestra/claude-hooks.json` may still be rewritten with the bogus path **during** a verification
+run — by *other* cards running the suite from worktrees that don't have this fix. Attribute a live-home
+write before blaming it on the run under test; the temp-home contents are the reliable evidence.
+
+### Rejected alternatives (2026-07-12)
+
+| Option | Why not |
+|---|---|
+| Make production `Config` detect a test bundle | A test-awareness branch in production code is the wrong structure, and invasive. The isolation belongs in the test bundle. |
+| Fail-closed guard in `HooksRenderer.render` (refuse a non-executable bin path) | With the suite off the live data dir there is no realistic writer left holding a bogus path. It guards the instance, not the class. |
+| Per-card settings files instead of the shared `Config.hooksPath` | The rendered content is byte-identical for every read-write Claude card, and `cardSettingsPath` keys on cwd rather than card id — so freeform cards sharing a repo root would share a file regardless. Litter without isolation. |
+
+## The canary tests
+
+### `GitHermeticityTests`
 
 `Tests/OrchestraCoreTests/GitHermeticityTests.swift`, exercised through `Proc.run` (the real
 production fork path), asserts:
@@ -185,6 +290,21 @@ This is the TDD entry point: it fails on `main` today. It is also the permanent 
 single fragile assumption — if SwiftPM ever stops linking the constructor, the suite goes **red**
 instead of silently reverting to reading the developer's gitconfig.
 
+### `HomeIsolationTests`
+
+`Tests/OrchestraCoreTests/HomeIsolationTests.swift`, the same shape (one ungated test that fails when
+`ORCHESTRA_TEST_HOME_ISOLATION=0`, so the off-switch can never be quiet, plus gated ones), asserts:
+
+1. `$HOME` is set, is **not** the real home (read from the passwd db via `getpwuid`, which `setenv`
+   cannot move), and `Config.home` resolves it from the environment.
+2. The temp home is an existing, writable directory outside both the real home and the repo checkout.
+3. Every HOME-derived `Config` path — `dataDir`, `hooksPath`, `codexHooksPath`, `scratchRoot`,
+   `defaultWorktreesRoot`, `defaultReposRoot` — lands inside it.
+4. **The functional one:** it replays the write that broke the board. `ClaudeCodeAdapter.prepareToLaunch`
+   is called for real; the rendered hooks file must appear under the temp home, and the live
+   `~/Library/Application Support/Orchestra/claude-hooks.json` must be **byte-for-byte untouched** —
+   asserted on its mtime, not just on the path.
+
 ## Explicitly out of scope
 
 - **Suite slowness** (12k-file slow-repo fixture, per-test tmux servers, per-test git repos, 73
@@ -199,4 +319,6 @@ instead of silently reverting to reading the developer's gitconfig.
 |---|---|
 | SwiftPM dead-strips the constructor object, silently un-hermeticizing the suite | The canary test fails loudly. Verified today that it links in debug and release. |
 | A future test genuinely needs the developer's git config | `ORCHESTRA_TEST_GIT_HERMETIC=0` escape hatch. |
+| A future test genuinely needs the developer's real home (e.g. probing a real Claude transcript) | `ORCHESTRA_TEST_HOME_ISOLATION=0` escape hatch — which fails `HomeIsolationTests` by name, so it can only ever be used deliberately. |
+| `mkdtemp` fails and the suite silently runs against the real home | It can't: the bootstrap `abort()`s with an explanatory message instead of falling back. |
 | `GIT_CONFIG_COUNT` collides with a test that sets its own | No test does; `RemoteParents.remoteEnv()` sets neither. |
