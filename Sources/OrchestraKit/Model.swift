@@ -348,29 +348,20 @@ public struct TreeStat: Codable, Sendable, Equatable {
     public var state: TreeState
     public var behind: Int            // commits the parent is ahead of the recorded base (the ↓N badge)
     public var parentIsRemote: Bool
-    /// Re-nudge reminders sent so far for a pending merge-request — NOT counting the t=0 request itself.
-    /// Persisted (rather than held in the timer Task) precisely because `rebuildMergeRequestNudges()`
-    /// re-arms the loop on every daemon start: an in-memory counter would reset each restart, so the
-    /// give-up cap would never fire. The loop is stateless — it reads this, sleeps `nudgeDelay(base:attempt:)`,
-    /// then writes it back.
+    /// Reminders sent for a pending merge-request (not counting the t=0 request). Persisted, not held in the
+    /// timer Task: `rebuildMergeRequestNudges()` re-arms every pending card at boot, so an in-memory counter
+    /// would reset each restart and the give-up cap would never fire.
     public var nudges: Int
-    /// The merge-request was GIVEN UP ON: the parent ignored every reminder, so the re-nudge loop stopped
-    /// (O2 backoff). Cleared by `shipped` / `synced` / `set-parent`, or by re-sending the merge-request.
+    /// The merge-request was given up on — the parent ignored every reminder and the loop stopped. Cleared by
+    /// `shipped` / `synced` / `set-parent`, or by re-sending the merge-request.
     ///
-    /// A FLAG, not a `TreeState` case, for two independent reasons:
-    ///
-    /// 1. **It is orthogonal to `state`.** "Nobody merged my request" and "my parent has moved N commits
-    ///    ahead" are different facts. As a state it suppressed the other one: the recompute funnel skips a
-    ///    card whose merge-request badge is sticky, so a stalled child would stop getting `behind` updates
-    ///    AND stop getting the "parent moved ahead — merge it down" inbox nudge. It would rot for days
-    ///    against a parent it was never told had advanced, and discover the conflicts only at merge time.
-    ///    As a flag, `state` keeps tracking the parent underneath it.
-    /// 2. **It cannot be written as an unknown enum rawValue.** `Task` decodes `treeStat` with
-    ///    `decodeIfPresent`, which rethrows a nested decode error, and `TaskStore.FailableTask` turns a
-    ///    throwing record into a DROPPED card. So a new `TreeState` rawValue on disk would make any older
-    ///    binary (a revert, a relaunch off main, a phone build lagging the Mac daemon) silently lose the
-    ///    whole card — worktree orphaned, session untracked, no `.corrupt` backup. An unknown *key* is
-    ///    simply ignored by an older decoder; an unknown *rawValue* is fatal. The flag cannot fail that way.
+    /// A FLAG, not a `TreeState` case, for two reasons — either fatal alone:
+    /// 1. It is orthogonal to `state`. As a state it froze the recompute funnel (which skips a card wearing a
+    ///    sticky merge badge), so a stalled child stopped tracking its parent entirely — no ↓N, and no
+    ///    "parent moved ahead" nudge. As a flag, `state` keeps tracking underneath.
+    /// 2. It cannot be an unknown rawValue on disk. `Task` decodes `treeStat` with `decodeIfPresent` (which
+    ///    rethrows) and `TaskStore.FailableTask` DROPS a throwing record — so a new `TreeState` rawValue would
+    ///    make any older binary silently lose the whole card. An unknown *key* is ignored; a rawValue is fatal.
     public var mergeStalled: Bool
 
     public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false,
@@ -379,11 +370,9 @@ public struct TreeStat: Codable, Sendable, Equatable {
         self.nudges = nudges; self.mergeStalled = mergeStalled
     }
 
-    // Hand-rolled decode: `nudges`/`mergeStalled` are new, and `Task` decodes `treeStat` with
-    // `decodeIfPresent` (below), which RETHROWS a nested `keyNotFound` rather than swallowing it. With a
-    // synthesized decode, every card persisted before these fields existed would fail to load — and be
-    // DROPPED by FailableTask. `state` is `try?`-guarded for the same reason the file's other enum fields
-    // are (see the convention note in `Task.init(from:)`): a garbage rawValue must default, never throw.
+    // Hand-rolled: a synthesized decode would throw `keyNotFound` on the new fields for every card persisted
+    // before them — and `Task`'s `decodeIfPresent` rethrows, so FailableTask would DROP those cards. `state`
+    // is `try?`-guarded per the convention in `Task.init(from:)`: a garbage rawValue defaults, never throws.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.state = (try? c.decode(TreeState.self, forKey: .state)) ?? .inSync
@@ -577,9 +566,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
-        // `try?`-guarded like the enum fields above (it CONTAINS one): `decodeIfPresent` rethrows a nested
-        // failure, and FailableTask turns that into a dropped card. A future/garbage `TreeState` rawValue
-        // must cost the badge, never the whole record.
+        // `try?`-guarded like the enum fields above (it contains one): a garbage `TreeState` rawValue must
+        // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
         self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []

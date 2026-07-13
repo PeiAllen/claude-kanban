@@ -212,9 +212,8 @@ struct CardView: View {
     /// pill; hidden when in-sync or untracked (`treeStat == nil`). Reads `Task` directly — no store plumbing.
     @ViewBuilder private var treeBadge: some View {
         if let ts = task.treeStat {
-            // The give-up flag outranks the tracking state: a stalled card keeps computing stale/↓N/restack
-            // underneath (that's the point of it being a flag, not a state), but what the human needs to see
-            // first is that nobody answered the merge-request.
+            // The give-up flag outranks the tracking state: a stalled card still computes stale/↓N underneath,
+            // but "nobody answered the merge-request" is what the human needs to see first.
             if ts.mergeStalled {
                 Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
                     .foregroundStyle(theme.red.text)

@@ -188,10 +188,8 @@ extension OrchestraService {
         }
         let syncBase = probe.syncBase ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
-        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the badge, whether
-        // still waiting (`mergeRequested`) or already given up on (`mergeStalled`), so the recompute below
-        // reflects the true (inSync) state. Without the stalled arm, a card whose merge finally landed would
-        // keep wearing the red "unanswered" badge.
+        // O2: syncing resolves the merge-request — stop the loop and drop the badge, whether still waiting or
+        // given up on (else a card whose merge finally landed keeps the red "unanswered" badge).
         stopMergeRequestNudge(t.id)
         _ = try? await store.update(t.id) {
             if $0.treeStat?.state == .mergeRequested || $0.treeStat?.mergeStalled == true { $0.treeStat = nil }
@@ -434,14 +432,9 @@ extension OrchestraService {
         var staleEdge = false, restackEdge = false, changed = false
         let res = try? await store.update(id) { task in
             let cur = task.treeStat
-            // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while the
-            // child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
-            //
-            // A GIVEN-UP request (`mergeStalled`) is deliberately NOT sticky: it is a flag riding alongside
-            // `state`, not a state, so the card keeps tracking its parent (↓N / stale / restack + their
-            // nudges) while it waits for a human. Freezing it here — as an overloaded state did — left a
-            // stalled child blind to a parent that had moved on, and it would discover the drift only as
-            // conflicts at merge time.
+            // O2: the `mergeRequested` waiting badge is sticky — only `restackNeeded` supersedes it. A
+            // GIVEN-UP request is deliberately NOT sticky (it's a flag, not a state), so a stalled card keeps
+            // tracking its parent instead of going blind to it.
             if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
             let merged = carryMergeRequestFields(new, from: cur)
             guard merged != cur else { return }               // no delta → no state change, no emit/nudge
@@ -616,13 +609,10 @@ extension OrchestraService {
     }
 }
 
-/// `nudges` + `mergeStalled` belong to the merge-request re-nudge loop, not to the tree funnel:
-/// `computeTreeStat` derives its `TreeStat` from git alone and knows nothing about them. Carry them across
-/// every recompute, or the next parent movement would silently erase the give-up flag and the reminder
-/// budget — resurrecting "nudge forever", since the loop reads `nudges` back from the store each tick.
-///
-/// Free function, not a method: it is called inside a `store.update` closure, which must be `Sendable` —
-/// an actor-isolated method there would capture `self`.
+/// `nudges`/`mergeStalled` belong to the re-nudge loop, not the tree funnel — `computeTreeStat` derives its
+/// `TreeStat` from git alone. Carry them across every recompute, or the next parent movement erases the flag
+/// and the budget (resurrecting "nudge forever": the loop reads `nudges` back from the store each tick).
+/// Free function because it runs inside a Sendable `store.update` closure, which can't capture `self`.
 func carryMergeRequestFields(_ new: TreeStat?, from cur: TreeStat?) -> TreeStat? {
     guard var n = new else { return nil }   // no parent link ⇒ no treeStat ⇒ nothing pending to carry
     n.nudges = cur?.nudges ?? 0

@@ -91,9 +91,7 @@ struct BoardCardCell: View {
         if let ts = task.treeStat {
             // S3-3: the phone has no hover tooltip — carry the meaning in an accessibility label so the
             // otherwise-cryptic glyphs (↓N / restack / waiting) are legible to VoiceOver + long-press.
-            //
-            // The give-up flag outranks the tracking state (see CardView): a stalled card still computes
-            // stale/↓N underneath, but "nobody answered the merge-request" is what the human must see first.
+            // The give-up flag outranks the tracking state (see CardView).
             if ts.mergeStalled {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption2)
