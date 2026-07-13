@@ -30,6 +30,9 @@ public enum DeadReason: String, Codable, Sendable {
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
     case completed         // the agent finished its work and the card was retired to Done
     case spawnFailed       // the initial spawn never came up (worktree/launch failure before first life)
+    case resourceExhausted // the HOST ran out of a launch resource (PTYs / processes / fds) — nothing could
+                           // start a terminal, so this is about the machine, not the card. TRANSIENT: the
+                           // card is resumable the moment the resource is reclaimed. See `deadResource`.
 }
 
 /// The running sub-state of a `live` card — the mid-life detail that used to live in `status`/`waitReason`.
@@ -394,6 +397,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var order: Int          // sort within a column
     public var deadReason: DeadReason?  // set with `phase = .dead(_)`; carries the terminal reason
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
+    /// WHICH host resource ran out, sampled on the affected host when `deadReason == .resourceExhausted`.
+    /// Structured (not parsed back out of `deadDetail`) so every client — Mac, iOS, CLI — can name the
+    /// resource and its numbers, while `deadDetail` keeps the raw tmux/pane evidence for debugging.
+    /// Additive-optional Codable (mirrors `pendingSeed`). nil for every other death.
+    public var deadResource: HostResourceReport?
     /// Persisted lifecycle phase — the convergence SSOT (Stage 2). The sole source of running/waiting/
     /// dead/archived truth: `status`/`waitReason` were retired into `phase` + `RunState` (Stage 2 flag-day).
     public var phase: Phase
@@ -437,6 +445,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         order: Int,
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
+        deadResource: HostResourceReport? = nil,
         phase: Phase = .live(.running),
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
@@ -469,6 +478,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.order = order
         self.deadReason = deadReason
         self.deadDetail = deadDetail
+        self.deadResource = deadResource
         self.phase = phase
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
@@ -497,7 +507,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
-        case agentId, model, startIn, column, order, deadReason, deadDetail
+        case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, pendingSeed, spawnBase
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
@@ -531,6 +541,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.order = try c.decodeIfPresent(Int.self, forKey: .order) ?? 0
         self.deadReason = (try? c.decodeIfPresent(DeadReason.self, forKey: .deadReason)) ?? nil
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
+        self.deadResource = (try? c.decodeIfPresent(HostResourceReport.self, forKey: .deadResource)) ?? nil
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
         self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
@@ -599,6 +610,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(order, forKey: .order)
         try c.encodeIfPresent(deadReason, forKey: .deadReason)
         try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
+        try c.encodeIfPresent(deadResource, forKey: .deadResource)
         try c.encode(phase, forKey: .phase)
         try c.encode(sessionEpoch, forKey: .sessionEpoch)
         try c.encode(phaseChangedAt, forKey: .phaseChangedAt)

@@ -110,6 +110,30 @@ func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     return .blank(landing: land, prompt: prompt)
 }
 
+/// Conclude a bring-up that could not create a session at all, with the reason we actually hold.
+///
+/// A HOST-resource failure is the machine's fault, not the card's, so it gets its own `DeadReason` and
+/// carries the resource + its numbers to the UI. Anything we do NOT positively recognise keeps the caller's
+/// existing classification (`.spawnFailed` / `.resumeFailed`), so this never relabels a death it doesn't
+/// understand — it only stops the detail from being thrown away.
+///
+/// `pendingSeed` is deliberately LEFT SET: the launch never happened, so a handoff/wake seed staged for it
+/// must still ride the next resume rather than being silently dropped by a machine-wide hiccup.
+private func concludeFailedLaunch(_ id: UUID, _ failure: LaunchFailure, fallback: DeadReason,
+                                  expecting: Phase.Kind, ctx: ConvergeContext) async {
+    let reason: DeadReason = failure.resource != nil ? .resourceExhausted : fallback
+    let result = await ctx.transition(id, .dead(reason), nil, expecting) { t in
+        t.deadReason = reason
+        t.deadDetail = failure.detail
+        t.deadResource = failure.resource
+    }
+    // An exhausted host takes down EVERY card's ability to start a terminal, so say it once at board level
+    // too — the Recovery panel is only seen by someone who already clicked the card they think is broken.
+    if result == .applied, let report = failure.resource {
+        await ctx.emitActivity(id, .warning, "\(report.headline) \(report.resource.remedy)")
+    }
+}
+
 /// Drives `.creatingWorktree` → `.launching` (or `.dead(.spawnFailed)`). Owns ALL of spawn's
 /// materialization via `ctx.materialize` (so Task 3's spawn flip is a clean delete of the inline walk).
 public struct MaterializeStepper: PhaseStepper {
@@ -150,6 +174,11 @@ public struct LaunchStepper: PhaseStepper {
             // `expecting: .launching` — the landing carries the same fence as the bring-up: if the launch
             // timeout concluded the card while we were confirming readiness, do NOT revive it.
             _ = await ctx.transition(card.id, .live(land), epoch, .launching) { t in t.pendingSeed = nil }
+        case .launchFailed(let failure):
+            // The session could not be created and we KNOW why — conclude now with the real reason rather
+            // than idling in `.launching` until the timeout overwrites it with "launch timed out after 30s".
+            await concludeFailedLaunch(card.id, failure, fallback: .spawnFailed,
+                                       expecting: .launching, ctx: ctx)
         case .timedOut:
             break   // leave `.launching` for the reconciler's phaseChangedAt timeout (Task 2) — no hot-loop
         case .superseded:
@@ -202,6 +231,9 @@ public struct RelaunchStepper: PhaseStepper {
         switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
         case .confirmed:
             _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in t.pendingSeed = nil }
+        case .launchFailed(let failure):
+            await concludeFailedLaunch(card.id, failure, fallback: .resumeFailed,
+                                       expecting: .relaunching, ctx: ctx)
         case .timedOut:
             break   // leave `.relaunching` for the reconciler's timeout (Task 2) — keeps `pendingSeed`
         case .superseded:
