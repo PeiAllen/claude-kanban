@@ -397,4 +397,50 @@ struct ReconcilerTests {
         await env3.svc.reconcilePhasesAtBoot()
         #expect(!(await env3.svc.worktreeConservativeMode()))
     }
+
+    /// BUG (mirror of bug #2): a STALE LIVENESS SNAPSHOT must never kill a FRESHLY-LIVE session.
+    ///
+    /// `reconcile()` sampled the live-session set (`sessions.list()`, off-actor) BEFORE it read the card
+    /// phases (`store.all()`), with two actor suspensions in between. A card that was `.relaunching` (session
+    /// not yet created) when the session snapshot was taken, but whose bring-up step completed during those
+    /// suspensions, is then read as `.live` and judged against a session set that PREDATES its session. The
+    /// `.live` case sees `!alive` and concludes `.sessionVanished` — killing a healthy agent that had just
+    /// come up. Bug #2 was "a stale bring-up resurrects a live session"; this is the same stale-snapshot
+    /// hazard pointing the other way.
+    ///
+    /// In production this is the 2s reconcile loop: restart or resume a card, the agent launches fine, and
+    /// the card immediately flips to `dead(sessionVanished)`. The window is the whole `agentPaneDeadSessions`
+    /// tmux subprocess, so a loaded machine widens it — which is why it surfaced as a "flaky test" under
+    /// `--parallel` rather than as the product bug it is.
+    ///
+    /// The orphan sweep already learned this lesson ("never off a stale snapshot; bug #7") and re-probes
+    /// before killing. The `.live` kill path never did.
+    @Test("a card that lands .live during the tick's own probes is NOT killed by that tick's stale session snapshot")
+    func freshlyLiveCardNotKilledByStaleSnapshot() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        await env.svc.markDead(t.id, reason: .agentExited, detail: nil, source: .daemon)
+        _ = try await env.svc.restart(t.id, source: .app)     // `.relaunching`, no session yet
+
+        let svc = env.svc, sessions = env.sessions, id = t.id
+        // Land the card `.live` WITH its session inside the tick's second off-actor probe — i.e. AFTER the
+        // session snapshot was taken and BEFORE the phases are read. This is exactly where a real
+        // RelaunchStepper lands; the actor is released across that hop, so the step legitimately runs there.
+        sessions.onAgentPaneDeadProbe = { @Sendable in
+            let sem = DispatchSemaphore(value: 0)
+            _Concurrency.Task {
+                sessions.setAlive(id, true)                   // the relaunch's `ensure` brought the session up…
+                await svc.seedPhase(id, .live(.running))      // …and the step landed the card `.live`
+                sem.signal()
+            }
+            sem.wait()
+        }
+
+        await svc.reconcile()
+
+        let after = try #require(await svc.list(includeArchived: true).first { $0.id == id })
+        #expect(after.deadReason != .sessionVanished)   // its session EXISTS — the snapshot was just older than it
+        #expect(after.phase.kind == .live)              // a healthy, freshly-launched card stays up
+    }
 }

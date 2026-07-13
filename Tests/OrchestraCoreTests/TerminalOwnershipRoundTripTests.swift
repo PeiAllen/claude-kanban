@@ -19,9 +19,9 @@ struct TerminalOwnershipRoundTripTests {
         try server.start(); defer { server.stop() }
 
         // Two clients: "desktop" and "phone".
-        let desktop = ControlClient(socketPath: path, source: .app)
+        let desktop = TestEnv.controlClient(path, source: .app)
         try desktop.connect(); defer { desktop.close() }
-        let phone = ControlClient(socketPath: path, source: .app)
+        let phone = TestEnv.controlClient(path, source: .app)
         try phone.connect(); defer { phone.close() }
 
         // Subscribe on the desktop to observe owner events.
@@ -80,7 +80,7 @@ struct TerminalOwnershipRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let phone = ControlClient(socketPath: path, source: .app)
+        let phone = TestEnv.controlClient(path, source: .app)
         try phone.connect(); defer { phone.close() }
 
         let task = try await phone.call("spawn", .object(["id": .string(UUID().uuidString), 

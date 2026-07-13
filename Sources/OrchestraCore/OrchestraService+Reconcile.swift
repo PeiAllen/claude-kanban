@@ -45,11 +45,27 @@ extension OrchestraService {
     /// readiness ticking, epoch-identity adoption, stepping the transitional set, and launch timeouts;
     /// finally the orphan-session sweep. Never freezes the actor — every slow probe hops off it.
     public func reconcile() async {
+        // ORDER IS LOAD-BEARING: read the CARD PHASES **first**, then sample the sessions.
+        //
+        // These two reads are a snapshot pair, and the session data must never be OLDER than the phase data.
+        // It used to be: `list()` was sampled first, then `agentPaneDeadSessions()` — two off-actor tmux hops,
+        // each of which RELEASES the actor — and only then were the phases read. A card that was
+        // `.relaunching` (session not yet created) at the session snapshot, but whose bring-up step landed
+        // during those suspensions, was then read as `.live` and tested against a session set that predated
+        // its session: the `.live` case saw `!alive` and killed a healthy, freshly-launched agent with
+        // `.sessionVanished`. Bug #2 was a stale bring-up RESURRECTING a live session; this is the same
+        // stale-snapshot hazard pointing the other way — a stale snapshot KILLING a live one.
+        //
+        // Reading phases first makes the pair fail-safe by direction: a card observed `.live` at T0 must have
+        // `ensure`d its session before T0, so the session sample at T1 > T0 necessarily sees it. A card that
+        // goes live after T0 is still read as being-born and is simply skipped this tick — the next tick,
+        // whose snapshot pair is consistent, lands it. We can be late to notice a death; we must never
+        // invent one. (Pinned by `freshlyLiveCardNotKilledByStaleSnapshot`.)
+        let tasks = await store.all()
         let aliveNames = Set((try? await offActor { [sessions] in try? sessions.list() })??.map(\.name) ?? [])
         // Sessions whose `agent` pane process DIED but whose session persists (remain-on-exit) — the
         // observable startup-abort / orphaned-dead-pane signal (folded from spawn-startup-abort).
         let deadPaneNames = ((try? await offActor { [sessions] in try? sessions.agentPaneDeadSessions() }) ?? nil) ?? []
-        let tasks = await store.all()
         let now = Date()
 
         // Populate the `boardSnapshot` observed-session cache (PR5 actor-hygiene, Task 5.2) — non-archived
@@ -97,7 +113,15 @@ extension OrchestraService {
             case .live:
                 launchReadyTicks[t.id] = nil            // reached live — reset the being-born counter
                 if !alive {
-                    await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+                    // NEVER kill off a stale snapshot (the fail-safe `sweepOrphanSessions` already applies —
+                    // bug #7). The ordering above closes the race that produced a stale `aliveNames`; this
+                    // re-probe is the belt to that braces, and also covers a transient `list()` hiccup. The
+                    // loop suspends on every `await`, so by the time we reach this card the snapshot can be
+                    // arbitrarily old — confirm the session is REALLY gone before concluding the agent died.
+                    let reallyGone = !((try? await offActor { [sessions] in try sessions.isAlive(name) }) ?? false)
+                    if reallyGone {
+                        await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+                    }
                 }
 
             case .launching, .relaunching:

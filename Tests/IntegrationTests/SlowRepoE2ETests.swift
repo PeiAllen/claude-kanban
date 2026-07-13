@@ -22,12 +22,29 @@ enum SlowRepoFixture {
     static func generate(base: String, count: Int = 12_000) throws -> String {
         let repo = base + "/repos/app"
         try FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
-        let r = try Proc.run(["/bin/bash", scriptPath, repo, String(count)])
+        // EXPLICIT, generous timeout. `Proc.run`'s default is 120s — a sensible bound for an agent command,
+        // but this is FIXTURE SETUP that writes 12k files and `git add`s them: ~15-20s idle, but far longer
+        // when the whole `--parallel` suite is competing for the disk and CPU. Inheriting the 120s default
+        // meant the generator got SIGKILLed mid-run under load, and since a killed process has no stderr the
+        // failure surfaced as the uninformative `gen-slow-repo failed:` with an empty message. The generation
+        // is not what this test measures; give it room and report a timeout as a timeout.
+        let r = try Proc.run(["/bin/bash", scriptPath, repo, String(count)], timeout: .seconds(900))
         guard r.exitCode == 0 else {
-            throw OrchestraError.io("gen-slow-repo failed: \(r.stderr)")   // `.io`, not `.internalError` (no such case)
+            throw OrchestraError.io(
+                "gen-slow-repo failed (exit \(r.exitCode)): \(r.stderr.isEmpty ? "<no stderr — killed, most likely the timeout>" : r.stderr)")
         }
         return PathResolver.canonical(repo)
     }
+}
+
+/// Every phase a card was EVER seen in, collected from the service's event stream (`.taskUpserted` fires on
+/// every phase write). Unlike sampling the board, this cannot miss a short-lived phase no matter how badly
+/// the observer is scheduled — which is the whole point under `--parallel` load.
+final class PhaseWalk: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [UUID: Set<Phase.Kind>] = [:]
+    func record(_ id: UUID, _ kind: Phase.Kind) { lock.withLock { seen[id, default: []].insert(kind) } }
+    func phases(_ id: UUID) -> Set<Phase.Kind> { lock.withLock { seen[id] ?? [] } }
 }
 
 @Suite("Slow-repo fixture sanity", .enabled(if: IntegrationSupport.gitAvailable), .serialized)
@@ -101,6 +118,24 @@ final class SlowRepoE2ETests {
         service = makeService(repo: repo)
         let branch = "slow-\(agentId)"
 
+        // Record the phase WALK from the EVENT STREAM, not by sampling the board.
+        //
+        // Every phase write emits a `.taskUpserted`, so a subscriber sees each transition exactly once and
+        // CANNOT miss one. The old code sampled `list()` on a 200ms loop and argued that a ~600ms
+        // `.launching` window "cannot be skipped between two polls" — which is true only if the sampler
+        // itself is scheduled on time. Under full `--parallel` load the loop's own `Task.sleep(200ms)` slips
+        // by seconds, the `.launching` window is missed, and `observed[id].contains(.launching)` fails: the
+        // card walked the phases perfectly and the SAMPLER blinked. Observing a transient state by polling is
+        // a race; subscribing to the transitions is not.
+        let phaseEvents = await service.subscribe()
+        let walk = PhaseWalk()
+        let collector = _Concurrency.Task {
+            for await envelope in phaseEvents {
+                if case .taskUpserted(let t) = envelope.event { walk.record(t.id, t.phase.kind) }
+            }
+        }
+        defer { collector.cancel() }
+
         // Two SAME-branch spawns, concurrently — both return immediately at `.creatingWorktree`.
         let a = try await service.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch, agentId: agentId))
         let b = try await service.spawn(SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: branch, agentId: agentId))
@@ -123,26 +158,23 @@ final class SlowRepoE2ETests {
         try FileManager.default.createDirectory(atPath: cDir, withIntermediateDirectories: true)
         let c = try await service.spawn(SpawnInput(id: UUID(), prompt: "z", agentId: agentId, cwd: cDir))
 
-        // Record each slow card's OBSERVED phases across the walk. `.creatingWorktree` is already asserted
-        // at spawn (lines above) and `.live` is asserted below; the missing link is `.launching`, so we
-        // assert each slow card is actually SEEN in `.launching` — otherwise "phase walk" would be vacuous
-        // (it would pass having only ever observed the two endpoints). `.launching` lasts ≥ the N=3
-        // readiness fallback (~600ms = 3 reconcile ticks before `→ live`), so a 200ms poll reliably samples
-        // it — it cannot be skipped between two polls.
-        var observed: [UUID: Set<Phase.Kind>] = [a.id: [], b.id: []]
+        // `overtook` still needs a board read (it is a statement about a COMBINATION of three cards' phases
+        // at one instant, not about one card's transitions). That is safe to sample: the window is the whole
+        // multi-second checkout of A and B, not a ~600ms blip — a slipped sample cannot miss it the way it
+        // misses `.launching`.
         var overtook = false                                     // c reached .live while BOTH A and B still creating
-        for _ in 0..<100 {                                       // 100 × 200ms = 20s cap
+        for _ in 0..<300 {                                       // 300 × 200ms = 60s cap (load headroom)
             let cards = await service.list(includeArchived: true)
             func phase(_ id: UUID) -> Phase.Kind? { cards.first { $0.id == id }?.phase.kind }
-            for id in [a.id, b.id] { if let k = phase(id) { observed[id, default: []].insert(k) } }
             if phase(c.id) == .live && phase(a.id) == .creatingWorktree && phase(b.id) == .creatingWorktree {
                 overtook = true                                 // fast card advanced during the slow checkout
             }
             if [a.id, b.id].filter({ phase($0) == .live }).count == 2 { break }
             try await _Concurrency.Task.sleep(for: .milliseconds(200))
         }
-        // Stage 2: the full `creatingWorktree → launching → live` walk — each slow card observed IN `.launching`.
-        for id in [a.id, b.id] { #expect(observed[id]?.contains(.launching) == true) }
+        // Stage 2: the full `creatingWorktree → launching → live` walk — each slow card observed IN
+        // `.launching`. From the event stream, so a loaded machine cannot make this vacuous or flaky.
+        for id in [a.id, b.id] { #expect(walk.phases(id).contains(.launching) == true) }
         #expect(overtook)                                        // Stages 4-5: service actor stayed responsive during the checkout
 
         let final = await service.list(includeArchived: true).filter { $0.id == a.id || $0.id == b.id }

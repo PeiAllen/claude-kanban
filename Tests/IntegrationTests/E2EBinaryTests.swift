@@ -72,8 +72,15 @@ final class E2EBinaryTests {
         return "\(pkgRoot)/.build/debug/\(name)"
     }
 
+    /// The daemon under test is IN-PROCESS with the whole `--parallel` suite, so its RPC replies are
+    /// scheduled on a machine oversubscribed by ~900 concurrent tests and thousands of git/tmux forks.
+    /// Measured delays there reach 15-20s, which exceeds the CLI's default 15s RPC deadline — so `spawn`
+    /// exited 1 with "daemon not reachable … did not answer version probe", a scheduling artifact that
+    /// looked like a broken daemon. The deadline is client policy (see `CLIRunner.rpcTimeout`); raise it so
+    /// this test asserts what the daemon DOES, not how fast the host happened to schedule it.
     private func cli(_ args: [String]) throws -> ProcResult {
-        try Proc.run([binary("orchestra")] + args, env: ["ORCHESTRA_SOCK": ctlSock])
+        try Proc.run([binary("orchestra")] + args,
+                     env: ["ORCHESTRA_SOCK": ctlSock, "ORCHESTRA_RPC_TIMEOUT_MS": "120000"])
     }
 
     @Test("CLI: spawn → list → exec → sessions drive real daemon state")
@@ -82,7 +89,9 @@ final class E2EBinaryTests {
 
         // spawn (title seeded from the prompt, no title/desc flags)
         let spawn = try cli(["spawn", "--prompt", "Add the feature", "--repo", repo, "--branch", "feat"])
-        #expect(spawn.exitCode == 0)
+        // The CLI reports every failure as `orchestra: <msg>` on STDERR and exits 1. Asserting only on the
+        // exit code threw that message away and left "spawn exits 1" unexplainable; surface it.
+        #expect(spawn.exitCode == 0, "spawn failed (rc=\(spawn.exitCode)) stderr=\(spawn.stderr) stdout=\(spawn.stdout)")
         #expect(spawn.stdout.contains("orchestra://task/"))
 
         // list shows it

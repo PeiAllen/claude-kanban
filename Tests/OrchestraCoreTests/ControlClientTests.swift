@@ -63,14 +63,27 @@ final class _Locked<T>: @unchecked Sendable {
 }
 
 @Suite struct ControlClientTests {
-    // A call against a dead-but-open transport (no EOF, no reply) throws within the deadline.
+    // A call against a dead-but-open transport (no EOF, no reply) is BOUNDED: it fails via the call-timeout
+    // path rather than parking forever.
+    //
+    // This asserts the BEHAVIOR (which failure fired), not its wall-clock duration. It used to assert
+    // `elapsed < 2s` around a 200ms deadline, which is a latency claim the product never made: under
+    // `--parallel` the timer fires on time but its continuation is not scheduled until the machine has a
+    // thread free, so the measurement is of suite load, not of ControlClient. Measured: 0.26s alone,
+    // 21.2s under full-suite load — while the timeout itself fired correctly in both.
+    //
+    // Matching the error is also STRICTLY STRONGER than the old bound: `throws: (any Error).self` + "fast"
+    // would have passed on a write failure or an EOF, i.e. on the timeout NOT firing. The message pins the
+    // call-timeout path specifically.
     @Test func test_callTimesOut() async throws {
         let stub = StubTransport()
         let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .milliseconds(200), pingInterval: .seconds(3600))
         try c.connect()
-        let start = ContinuousClock.now
-        await #expect(throws: (any Error).self) { _ = try await c.call("list", .object([:])) }
-        #expect(ContinuousClock.now - start < .seconds(2)); c.close()
+        let err = await #expect(throws: OrchestraError.self) { _ = try await c.call("list", .object([:])) }
+        guard case .io(let msg)? = err else { Issue.record("expected .io, got \(String(describing: err))"); return }
+        #expect(msg.contains("timed out"))          // the call-timeout path fired — not a write/EOF failure
+        #expect(msg.contains("list"))               // and it is THIS call that was bounded
+        c.close()
     }
 
     // The timer-arm-before-insert race (Codex B3): a near-zero timeout must still resolve exactly once
@@ -96,14 +109,19 @@ final class _Locked<T>: @unchecked Sendable {
     }
 
     // A dead-but-open tunnel on FIRST connect must not hang connect() forever (bounded probeVersion).
+    // As in `test_callTimesOut`: assert WHICH failure fired, not how long it took. The old `< 2s` bound
+    // measured suite load rather than the probe watchdog, and would have passed on an unrelated fast
+    // failure (e.g. the probe's own write failing) — the message pins the watchdog path that this test
+    // exists to prove.
     @Test func test_firstConnectProbeTimesOut() async throws {
         let stub = StubTransport(); stub.answerVersion = false          // never answers the probe
         // probeTimeout short so the test doesn't wait the 15s default.
         let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .seconds(5),
                               pingInterval: .seconds(3600), probeTimeout: .milliseconds(200))
-        let start = ContinuousClock.now
-        #expect(throws: (any Error).self) { try c.connect() }           // throws, doesn't hang
-        #expect(ContinuousClock.now - start < .seconds(2)); c.close()
+        let err = #expect(throws: OrchestraError.self) { try c.connect() }   // throws, doesn't hang
+        guard case .io(let msg)? = err else { Issue.record("expected .io, got \(String(describing: err))"); return }
+        #expect(msg.contains("version probe"))      // the probe watchdog shut the transport → connect threw
+        c.close()
     }
 
     // subscribeWithRev does not auto-issue; the awaited subscribe completes (ack fed) BEFORE any snapshot.
