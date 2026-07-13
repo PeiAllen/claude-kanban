@@ -221,11 +221,27 @@ public struct RelaunchStepper: PhaseStepper {
 public struct TeardownStepper: PhaseStepper {
     public init() {}
     public static var drives: Phase.Kind { .archivedPending }
+
+    /// Does the card STILL carry the archive intent this step was dispatched for? Teardown is the one
+    /// stepper whose duties are irreversible (a killed session, an `rm -rf`'d scratch dir, a released
+    /// worktree), and `archivedPending` is NOT a resting phase: `reopen` is a legal edge straight out of it
+    /// (`archivedPending → creatingWorktree`), so the card can be brought back up WHILE this step is in
+    /// flight — every duty below suspends. An unfenced stale step would then tear down a card that a reopen
+    /// already owns: the agent execs in a directory that no longer exists and its pane dies on the spot.
+    /// So re-verify ownership before each duty and stand down the moment the card leaves the intent — the
+    /// same single-winner discipline `finishLaunch` applies to ITS destructive `kill`+`ensure` hop.
+    private func stillArchiving(_ id: UUID, _ ctx: ConvergeContext) async -> Bool {
+        (await ctx.store.get(id))?.phase.kind == .archivedPending
+    }
+
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
+        guard await stillArchiving(card.id, ctx) else { return }
         // 1 · kill the agent session (idempotent — a gone session is a no-op).
         try? ctx.sessions.kill(ctx.sessions.sessionName(card.id))
+        guard await stillArchiving(card.id, ctx) else { return }
         // 2 · release any bare-parent borrow the card left open (idempotent).
         try? await ctx.worktrees.releaseBorrow(borrowerCardId: card.id)
+        guard await stillArchiving(card.id, ctx) else { return }
         // 3 · origin-aware run-dir reclaim, matching today's `archive()` switch.
         switch card.origin {
         case .worktree:
@@ -236,12 +252,16 @@ public struct TeardownStepper: PhaseStepper {
             // Conservative mode (post-corrupt boot, carry #3) removes NOTHING — the scratch dir's ownership
             // is as unprovable as a worktree's from an empty board, so the reclaim is gated on it too.
             assert(card.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
-            if !(await ctx.worktrees.conservativeMode), card.cwd.hasPrefix(Config.scratchRoot + "/") {
-                try? FileManager.default.removeItem(atPath: card.cwd)
-            }
+            let conservative = await ctx.worktrees.conservativeMode
+            // Re-fence AFTER that actor hop: the `rm -rf` is the point of no return, so it takes the
+            // LAST possible ownership check (a reopen landing during the hop must not lose its cwd).
+            guard await stillArchiving(card.id, ctx), !conservative,
+                  card.cwd.hasPrefix(Config.scratchRoot + "/") else { break }
+            try? FileManager.default.removeItem(atPath: card.cwd)
         case .borrowed:
             break   // Orchestra never deletes a borrowed dir.
         }
+        guard await stillArchiving(card.id, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
         await ctx.teardownActorDuties(card.id)
         // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase.
