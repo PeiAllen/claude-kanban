@@ -167,9 +167,14 @@ public struct MaterializeStepper: PhaseStepper {
 /// (report()'s model write is not epoch-fenced), and the card must end up displaying the model it actually
 /// came up on. A launch that FAILED never reaches here, so `pendingModel` survives for the retry — again
 /// mirroring `pendingSeed`.
-func consumeModelReseat(_ t: inout Task, _ adapter: any Adapter) {
+/// The adapter is OPTIONAL because the intent must be consumed either way. The adopt path resolves its
+/// adapter with `try?`, and if that ever fails, clearing `pendingSeed` while leaving `pendingModel` set
+/// would strand the re-seat on a successfully-landed card — replaying it onto some later launch. Without
+/// an adapter we can't resolve the id to a full `AgentModel` for display, so `model` is left as-is; but
+/// the INTENT is always consumed, because the launch it described has happened.
+func consumeModelReseat(_ t: inout Task, _ adapter: (any Adapter)?) {
     guard let want = t.pendingModel else { return }
-    t.model = adapter.model(for: want)
+    if let adapter { t.model = adapter.model(for: want) }
     t.pendingModel = nil
 }
 

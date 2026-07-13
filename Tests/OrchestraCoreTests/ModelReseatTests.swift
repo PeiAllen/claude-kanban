@@ -331,19 +331,86 @@ struct ModelReseatTests {
         // The tripwire only accuses the vendor when the agent reports the model we were LEAVING — that is
         // what "the CLI ignored --model and kept the session's model" actually looks like. An agent that
         // moves to some other model has made its own choice.
-        let env = TestEnv.make(grace: 2, extraAgents: [(id: "codex", models: ["g1", "g2"])])
+        //
+        // `m3` must be a KNOWN catalog entry or this test passes for the WRONG reason: an unknown reported id
+        // takes `modelHonored`'s "cannot judge, do not accuse" branch and clears the watch as honored, never
+        // reaching the `left` comparison at all. With m3 in the catalog, the `left` branch is genuinely hit.
+        let env = TestEnv.make(grace: 2)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
         let t = try await liveCard(env)   // on m1
+        #expect(env.adapter.models().contains { $0.id == "m3" })   // guard the premise above
 
         _ = try await env.svc.restart(t.id, model: "m2")
         _ = try await TestEnv.reconcileToLive(env.svc, t.id)
 
-        // Reports a third model (not m2 = requested, not m1 = left) → a genuine /model switch.
+        // Reports a third KNOWN model (not m2 = requested, not m1 = left) → a genuine /model switch.
         try await env.svc.report(t.id, StatusReport(modelId: "m3"))
         try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m3"))
         try await _Concurrency.Task.sleep(for: .milliseconds(50))
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
+    }
+
+    @Test("an UNSTAMPED report cannot force a card that still owes a launch out of `.relaunching`")
+    func unstampedReportCannotStrandTheIntent() async throws {
+        // The CODEX shape: file-tail reports carry no epoch. `.relaunching → .live` is a legal edge, and
+        // report()'s phase write is only epoch-fenced when the report is STAMPED — so the dying old session's
+        // rollout lines could land the card `.live` before any stepper claimed it. The relaunch would then
+        // never happen (no stepper visits a live card): the card would silently keep running its OLD session,
+        // with the handoff seed and the re-seat stranded on it. Today the daemon avoids this only because
+        // `reconcile()` runs before `pollTelemetry()` in the same tick — an ordering coincidence. This is the
+        // invariant that makes it safe regardless.
+        let env = TestEnv.make(grace: 2)
+        let t = try await liveCard(env)
+        try await pollUntil { await !env.svc.hasStepInFlight(t.id) }
+        env.adapter.writeTranscript(for: t.agentSessionId!)
+
+        _ = try await env.svc.resumeInCard(t.id, seed: "HANDOFF", model: "m2")
+
+        // Unstamped (nil-epoch) report from the still-dying session, claiming to be running.
+        try await env.svc.report(t.id, StatusReport(modelId: "m1", run: .running))
+
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.phase.kind == .relaunching)                 // NOT force-lived
+        #expect(after.pendingModel == "m2")                       // the re-seat is still owed...
+        #expect(after.pendingSeed?.contains("HANDOFF") == true)   // ...and the handoff seed undelivered
+
+        // The relaunch then happens for real and consumes both.
+        let live = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(live.pendingModel == nil)
+        #expect(argv(env, t.id).contains("m2"))
+    }
+
+    @Test("a DATED report keeps the catalog model (and its contextWindow), not a metadata-less handle")
+    func datedReportDoesNotClobberCatalogMetadata() async throws {
+        // Every Claude card hits this: the table carries `claude-haiku-4-5`, the statusline answers
+        // `claude-haiku-4-5-20251001`. Resolving that with `model(for:)` alone yields a bare AgentModel with
+        // NO contextWindow — the very denominator `ctxPct` divides by — and every later launch would then use
+        // the dated id.
+        let env = TestEnv.make(grace: 2)
+        let t = try await liveCard(env)
+        _ = try await env.svc.restart(t.id, model: "m2")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        try await env.svc.report(t.id, StatusReport(modelId: "m2-20251001"))
+
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.model.id == "m2")   // canonicalized back to the catalog id, not the dated form
+    }
+
+    @Test("a handoff REFUSED mid-flight (card archived) puts the drained inbox back")
+    func refusedHandoffRestoresTheDrainedInbox() async throws {
+        // `inbox.drain` is destructive and suspends the actor, so an `archive` can interleave and the funnel
+        // then REFUSES the `→ .relaunching` intent — discarding the folded seed, and with it the messages.
+        // Validation runs before the drain, but it cannot cover this window; the messages must be put back.
+        let env = TestEnv.make(grace: 2)
+        let t = try await liveCard(env)
+        try await env.svc.send(t.id, "do not lose me")
+        try await env.svc.archive(t.id)   // terminal ⇒ the relaunch intent will be refused
+
+        _ = try? await env.svc.resumeInCard(t.id, seed: "ctx", model: "m2")
+
+        #expect(try await env.svc.inboxPeek(t.id).count == 1)   // survived the refused handoff
     }
 
     // MARK: - the REAL adapters, not the stub

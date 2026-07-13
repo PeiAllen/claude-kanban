@@ -134,7 +134,16 @@ extension OrchestraService {
                 // switches), resolved to a full handle via the adapter; the display label is UI-only
                 // and never becomes the launch id. (Storing the label as the id broke resume/restart.)
                 if let mid = snap.modelId, !mid.isEmpty, mid != task.model.id {
-                    var m = (try? registry.get(task.agentId))?.model(for: mid) ?? AgentModel(id: mid)
+                    // Canonicalize through the catalog: the vendor answers with its DATED id
+                    // (`claude-haiku-4-5-20251001`) where the offline table carries the floating one
+                    // (`claude-haiku-4-5`). `model(for:)` doesn't know the dated form, so it fell back to a
+                    // bare `AgentModel(id:)` with NO contextWindow — and that is the denominator `ctxPct`
+                    // divides by, so the card's context gauge went blank and every later launch used the
+                    // dated id. Resolve the dated form back to its catalog entry and keep the real metadata.
+                    let catalog = (try? registry.get(task.agentId))?.models() ?? []
+                    var m = catalog.first { $0.id == mid }
+                        ?? catalog.first { Self.isModelVariant(mid, of: $0.id) }
+                        ?? AgentModel(id: mid)
                     if let label = snap.modelDisplay, !label.isEmpty { m.displayName = label }
                     task.model = m
                 } else if let label = snap.modelDisplay, !label.isEmpty, label != task.model.displayName {
@@ -169,8 +178,26 @@ extension OrchestraService {
                     task.title = name
                     task.titleProvisional = false
                 }
-                // The agent's observed run-state maps onto a `.live(_)` phase.
-                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding {
+                // The agent's observed run-state maps onto a `.live(_)` phase — UNLESS doing so would rip a
+                // card with an OUTSTANDING LAUNCH INTENT out of its being-born phase on the word of a report
+                // we cannot attribute to the relaunched session.
+                //
+                // `.relaunching → .live` is a legal edge and report()'s phase write is only epoch-fenced when
+                // the report is STAMPED. An unstamped one (Codex's file-tail reports carry no epoch) from the
+                // still-dying old session would otherwise land the card `.live` before the stepper ever
+                // claims it: the relaunch is then never performed (no stepper visits a `.live` card), and the
+                // staged `pendingSeed`/`pendingModel` are stranded on a card that silently kept running its
+                // OLD session — the handoff dropped, the re-seat replayed onto some later launch.
+                //
+                // Today the daemon happens to be safe only because `reconcile()` runs before `pollTelemetry()`
+                // in the same tick (orchestrad/main.swift), so the tailer never observes an unclaimed
+                // `.relaunching` card. That is an ordering coincidence, not a guarantee. This fence makes the
+                // invariant explicit: only a report proven to come from the CURRENT generation may land a card
+                // that still owes a launch. The stepper (or the adopt path) lands it otherwise, consuming the
+                // intent as it goes.
+                let owesLaunch = task.pendingSeed != nil || task.pendingModel != nil
+                let mayLandBringUp = !(beingBorn && owesLaunch && observedEpoch != task.sessionEpoch)
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
                     task.phase = .live(run)
                 }
                 // A worktree card stays long-lived on a completed turn (`.live(.waiting(.humanTurn))`, set

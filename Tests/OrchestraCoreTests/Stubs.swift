@@ -337,7 +337,7 @@ final class StubAdapter: Adapter, @unchecked Sendable {
     /// and prove a cross-adapter `--model` (a Codex id on a claude-code card) is rejected.
     let modelIds: [String]
     init(transcriptDir: String, capabilities: AgentCapabilities = .stub,
-         id: String = "claude-code", name: String = "Stub", modelIds: [String] = ["m1", "m2"]) {
+         id: String = "claude-code", name: String = "Stub", modelIds: [String] = ["m1", "m2", "m3"]) {
         self.transcriptDir = transcriptDir
         self.capabilities = capabilities
         self.id = id

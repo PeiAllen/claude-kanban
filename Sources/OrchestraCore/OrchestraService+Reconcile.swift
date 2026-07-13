@@ -142,7 +142,7 @@ extension OrchestraService {
                         // later launch (and leave `model` showing whatever a stale report last wrote).
                         _ = await transition(t.id, to: .live(land), observedEpoch: probed) {
                             $0.pendingSeed = nil
-                            if let adopted { consumeModelReseat(&$0, adopted) }
+                            consumeModelReseat(&$0, adopted)   // consumed even if the adapter didn't resolve
                         }
                         continue
                     }

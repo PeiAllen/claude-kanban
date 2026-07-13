@@ -150,7 +150,16 @@ extension OrchestraService {
         _ = try resolveModelOverride(model, for: task)
         let drained = (try? await inbox.drain(id)) ?? []
         let folded = HandoffSeed.fold(handoff: seed, inbox: drained)
-        return try await resume(id, graceSeconds: graceSeconds, seed: folded, model: model, source: source)
+        let updated = try await resume(id, graceSeconds: graceSeconds, seed: folded, model: model, source: source)
+        // The drain is DESTRUCTIVE and the resume below it can still be REFUSED: `drain` suspends the actor,
+        // so an `archive` can interleave and the funnel will then reject the `→ .relaunching` intent. The
+        // folded seed — carrying these messages — is discarded with it, so put them back rather than let a
+        // lost race silently eat the card's durable queue. (Validation already runs before the drain; this
+        // covers the window the validation cannot.)
+        if updated.phase.kind != .relaunching, !drained.isEmpty {
+            for m in drained { try? await inbox.enqueue(id, m.text) }
+        }
+        return updated
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
