@@ -175,7 +175,8 @@ public struct CommandRegistry: Sendable {
 
             "handoff": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                let updated = try await svc.resumeInCard(t.id, seed: try p.string("context"), source: src)
+                let updated = try await svc.resumeInCard(t.id, seed: try p.string("context"),
+                                                         model: p.optString("model"), source: src)
                 return try JSONValue(encodable: updated)
             },
 
@@ -242,13 +243,13 @@ public struct CommandRegistry: Sendable {
 
             "restart": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                let updated = try await svc.restart(t.id, source: src)
+                let updated = try await svc.restart(t.id, model: p.optString("model"), source: src)
                 return try JSONValue(encodable: updated)
             },
 
             "resume": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                let updated = try await svc.resume(t.id, source: src)
+                let updated = try await svc.resume(t.id, model: p.optString("model"), source: src)
                 return try JSONValue(encodable: updated)
             },
 

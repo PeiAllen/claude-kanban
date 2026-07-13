@@ -420,7 +420,9 @@ Read the verbs against that seam and each one collapses into a composition of th
   `git merge-base`** — because [`transition()`](#the-transition-funnel--the-sole-writer-of-phase) is the
   sole concluder, so a `Conclusion` fires exactly once per child on *any* terminal phase, a crash as
   surely as a clean Done. Fan-out **coalesces rather than barriers**: watching N children yields one
-  conclusion per child, as each concludes.
+  conclusion per child, as each concludes. A child that merely *finishes talking* has not concluded: a
+  worktree card that `send`s its result and ends its turn sits in `waiting`, holding its session and
+  worktree, until its parent `archive`s it.
 
 The two agents differ only *behind* the `AgentCapabilities` seam (`wakeTransport`, `inboxDrain`) — core
 never branches on the agent id. This is the machinery the README's fan-out demo is exercising: the

@@ -34,6 +34,63 @@ public enum LaunchFlavor: Sendable {
 
 extension OrchestraService {
 
+    /// Resolve a `--model` re-seat request against the CARD'S OWN adapter catalog, or throw.
+    ///
+    /// `agentId` never changes on a re-seat (the vendor transcript we are resuming is vendor-specific), so
+    /// a Codex id handed to a claude-code card must be REJECTED here rather than becoming
+    /// `claude --model gpt-5.6-terra` and dying at the process. `Adapter.model(for:)` cannot do this — it
+    /// falls back to `AgentModel(id:)` for anything it doesn't know (Adapter.swift:78) — so this is the gate.
+    ///
+    /// A DATED variant of a catalog id is accepted: the offline table carries `claude-haiku-4-5` while the
+    /// vendor's own resolved id (and the id people have written down) is `claude-haiku-4-5-20251001`.
+    /// It resolves to the catalog entry, so the launch id stays canonical and `model` keeps its real
+    /// `contextWindow` (the `ctxPct` denominator). Cross-adapter ids still fail — a Codex id is not a
+    /// variant of any Claude entry. Case-sensitive: fails closed.
+    ///
+    /// Known limit: if the bundled catalog resource fails to load, `models()` is a hardcoded fallback list
+    /// (ClaudeCodeAdapter.swift:30), so a genuinely valid id could be rejected. That fails closed, and the
+    /// error names the ids we actually know about.
+    func resolveModelOverride(_ requested: String?, for task: Task) throws -> AgentModel? {
+        guard let requested else { return nil }   // absent ⇒ no override (every pre-existing caller)
+        let want = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        let catalog = try registry.get(task.agentId).models()
+        // EXACT ids win across the WHOLE catalog before any variant matching, so a catalog that ever carried
+        // both a floating and a dated id can't have an exact request captured by an earlier entry's variant.
+        // An EXPLICIT empty/whitespace model is a mistake, not "no override": silently relaunching on the
+        // old model and reporting success is exactly the quiet no-op this feature exists to prevent.
+        if !want.isEmpty {
+            if let m = catalog.first(where: { $0.id == want }) { return m }
+            if let m = catalog.first(where: { Self.isModelVariant(want, of: $0.id) }) { return m }
+        }
+        throw OrchestraError.invalidParams(
+            "unknown model '\(requested)' for agent '\(task.agentId)'. Valid: "
+            + catalog.map(\.id).joined(separator: ", "))
+    }
+
+    /// Is `id` the vendor's DATED form of the catalog id `base` (`claude-haiku-4-5-20251001` of
+    /// `claude-haiku-4-5`)? Used both to accept a dated id on the way in and to recognize the agent's own
+    /// dated report as a match on the way out — never a raw `==`, which would false-reject and false-warn.
+    ///
+    /// The suffix must be all DIGITS. Accepting any suffix would silently downgrade a typo — `--model
+    /// claude-haiku-4-5-oops` would prefix-match and quietly launch on `claude-haiku-4-5` — which is exactly
+    /// the "fails closed" promise this validation makes. A mistyped id must be an error, not a substitution.
+    static func isModelVariant(_ id: String, of base: String) -> Bool {
+        guard id.hasPrefix(base + "-") else { return false }
+        let suffix = id.dropFirst(base.count + 1)
+        return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
+    }
+
+    /// Did the agent actually come up on the model we asked for? Compared through the catalog, never raw
+    /// string equality. An id we cannot resolve at all is treated as a MATCH — this check exists to catch a
+    /// vendor that ignores `--model`, and a false accusation is worse than a missed one.
+    func modelHonored(reported: String, requested: String, agentId: String) -> Bool {
+        if reported == requested { return true }
+        let ids = ((try? registry.get(agentId))?.models() ?? []).map(\.id)
+        guard let canon = ids.first(where: { reported == $0 || Self.isModelVariant(reported, of: $0) })
+        else { return true }   // unknown id — cannot judge, so do not accuse
+        return canon == requested
+    }
+
     /// INTENT-ONLY (PR4b Task 4): record the relaunch intent (`transition(→ .relaunching)` — bumps the
     /// generation, the atomic single-winner claim + closes the ghost-SessionEnd window) and RETURN. The
     /// reconciler's `RelaunchStepper` drives the walk: re-materializes a missing worktree, kills+ensures the
@@ -43,16 +100,34 @@ extension OrchestraService {
     /// side); the RelaunchStepper consumes + clears it on readiness. No subprocess runs before the return.
     @discardableResult
     public func resume(_ id: UUID, graceSeconds: Int? = nil, seed: String? = nil,
-                       source: ActivitySource = .daemon) async throws -> Task {
-        _ = try await require(id)
+                       model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
+        let task = try await require(id)
+        // Validate BEFORE the first mutation: a rejected model must leave the card completely untouched —
+        // not merely un-relaunched, but with its startup-watch (below) and its durable inbox (drained by
+        // `resumeInCard`, which validates for the same reason) still intact.
+        let override = try resolveModelOverride(model, for: task)
         clearSpawnPending(id)   // a user-driven resume supersedes any in-flight spawn startup-watch
+        modelOverrideWatch[id] = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
         // The `relaunching → relaunching` supersede self-edge is legal, so a newer relaunch bumps the epoch
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
             t.deadReason = nil; t.deadDetail = nil; t.deadResource = nil
             if let seed { t.pendingSeed = seed }   // folded handoff/wake seed rides the relaunch (carried #1)
+            if let override {
+                // `pendingModel` is the launch intent and the ONLY thing `finishLaunch` trusts; `model` is
+                // set purely so the board reflects the re-seat at once. If the dying session's last
+                // statusline reverts `model` before the stepper runs (it can — that write is not
+                // epoch-fenced), the launch is unaffected and the `.live` landing restores `model`.
+                t.pendingModel = override.id
+                t.model = override
+            }
         })
         guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        // Arm the tripwire from the PERSISTED card, not from our local `override`: two concurrent re-seats can
+        // interleave across the `await transition` above, and arming from the loser would later accuse the
+        // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
+        // are leaving — the one a vendor that ignored `--model` would keep reporting.
+        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "resuming “\(updated.title)”")
         return updated
     }
@@ -66,10 +141,25 @@ extension OrchestraService {
     /// `.relaunch` agent (`resumeSeedWake`). Backs D1's `handoff` Command.
     @discardableResult
     public func resumeInCard(_ id: UUID, seed: String? = nil, graceSeconds: Int? = nil,
-                             source: ActivitySource = .daemon) async throws -> Task {
+                             model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
+        // Validate the re-seat BEFORE the drain. `inbox.drain` is DESTRUCTIVE (Inbox.swift:55-62 removes the
+        // messages and persists), so letting an invalid model reach `resume`'s validation would throw only
+        // AFTER the card's durable queue had been eaten — the messages are folded into a seed that is then
+        // thrown away with the error. Reject first; the queue survives a rejected `handoff --model`.
+        let task = try await require(id)
+        _ = try resolveModelOverride(model, for: task)
         let drained = (try? await inbox.drain(id)) ?? []
         let folded = HandoffSeed.fold(handoff: seed, inbox: drained)
-        return try await resume(id, graceSeconds: graceSeconds, seed: folded, source: source)
+        let updated = try await resume(id, graceSeconds: graceSeconds, seed: folded, model: model, source: source)
+        // The drain is DESTRUCTIVE and the resume below it can still be REFUSED: `drain` suspends the actor,
+        // so an `archive` can interleave and the funnel will then reject the `→ .relaunching` intent. The
+        // folded seed — carrying these messages — is discarded with it, so put them back rather than let a
+        // lost race silently eat the card's durable queue. (Validation already runs before the drain; this
+        // covers the window the validation cannot.)
+        if updated.phase.kind != .relaunching, !drained.isEmpty {
+            for m in drained { try? await inbox.enqueue(id, m.text) }
+        }
+        return updated
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
@@ -81,10 +171,13 @@ extension OrchestraService {
     /// through `confirmReadiness`, never an immediate `.live`). The `relaunching → relaunching` supersede
     /// self-edge + `inFlightSteps` give verb-vs-verb restart a single-winner (carried #5).
     @discardableResult
-    public func restart(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
+    public func restart(_ id: UUID, model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
         let task = try await require(id)
         let adapter = try registry.get(task.agentId)
+        // Validate before the first mutation — a rejected model leaves the card exactly as it was.
+        let override = try resolveModelOverride(model, for: task)
         clearSpawnPending(id)   // a user-driven restart supersedes any in-flight spawn startup-watch
+        modelOverrideWatch[id] = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
 
         // Same capability gate as spawn: only a `.seeded` agent mints a fresh id on restart.
         let freshId: String?
@@ -107,8 +200,17 @@ extension OrchestraService {
             $0.deadResource = nil
             $0.desc = ""
             $0.pendingSeed = nil   // a blank restart carries no seed
+            if let override {      // re-seat: the launch intent (see `resume`), not just the display model
+                $0.pendingModel = override.id
+                $0.model = override
+            }
         })
         guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        // Arm the tripwire from the PERSISTED card, not from our local `override`: two concurrent re-seats can
+        // interleave across the `await transition` above, and arming from the loser would later accuse the
+        // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
+        // are leaving — the one a vendor that ignored `--model` would keep reporting.
+        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "new session “\(updated.title)”")
         return updated
     }
@@ -396,6 +498,11 @@ extension OrchestraService {
     }
 
     /// Drop a card's startup-pending bookkeeping (on graduation, give-up, or any death).
+    /// Deliberately does NOT touch `modelOverrideWatch`: this fires when a healthy card GRADUATES its
+    /// startup grace, which is exactly when the re-seat watch still has its job to do. The watch is cleared
+    /// where it genuinely dies — on a fresh re-seat (which re-arms it), and on ANY conclusion, in
+    /// `concludeCard` (the single terminal chokepoint — `markDead` alone would miss a failed launch, which
+    /// concludes through the steppers).
     func clearSpawnPending(_ id: UUID) {
         spawnPending[id] = nil; spawnAttempts[id] = nil; spawnRelaunch[id] = nil
     }
@@ -491,6 +598,7 @@ extension OrchestraService {
         })
         guard result == .applied, let updated = await store.get(id) else { return }
         clearSpawnPending(id)   // a dead card is never startup-pending (covers give-up + any other death)
+        modelOverrideWatch[id] = nil   // nothing left to confirm — the card is gone
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
         // An exhausted host is a MACHINE-wide fault — every card's spawn/resume is failing, not just this
         // one — so it also gets a board-level warning naming the resource and what to do about it.
