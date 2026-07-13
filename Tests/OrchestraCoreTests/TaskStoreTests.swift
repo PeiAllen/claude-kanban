@@ -329,12 +329,23 @@ struct TaskStoreTests {
     }
 
     // MARK: - Telemetry-persist debounce (bug #13). rev/memory/emit stay SYNCHRONOUS; only the file write coalesces.
+    //
+    // Every test below sets the debounce/max-deferral windows to an hour. That is NOT a "generous timeout" —
+    // it is a SENTINEL meaning "this timer must not fire during the test", and the test then forces the write
+    // with `flushPendingWrites()`. None of these tests asserts that the timer eventually fires on its own; they
+    // assert COALESCING and ABSORPTION semantics, which have nothing to do with the window's length.
+    //
+    // The window used to be 10s here, which is a sentinel only if the test finishes in under 10s. Under
+    // `--parallel` starvation the 20-delta loop took longer than that, the debounce fired, a real disk write
+    // landed, and `diskWriteCount == base` failed — reading like a debounce bug when the store behaved
+    // perfectly. An hour is a window the test cannot outlive, so what is under test is the behavior, not the
+    // machine's speed.
 
     @Test("telemetry writes debounce: rev advances synchronously per delta, but the burst coalesces to one disk write")
     func test_telemetryPersistDebounced() async throws {
         let store = TaskStore(path: tmpPath())
         let created = try await store.create(sample()).task          // one immediate write
-        await store.setPersistDebounce(.seconds(10)); await store.setMaxDeferral(.seconds(30))
+        await store.setPersistDebounce(.seconds(3600)); await store.setMaxDeferral(.seconds(3600))
         let base = await store.diskWriteCount
         var lastRev = await store.currentRev
         for pct in 1...20 {                                          // 20 rapid telemetry deltas
@@ -352,7 +363,7 @@ struct TaskStoreTests {
         let path = tmpPath()
         let store = TaskStore(path: path)
         let created = try await store.create(sample()).task
-        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        await store.setPersistDebounce(.seconds(3600)); await store.setMaxDeferral(.seconds(3600))
         _ = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 5 }
         let c0 = await store.diskWriteCount
         _ = try await store.move(created.id, to: .impl)             // immediate → absorbs the pending delta
@@ -370,7 +381,7 @@ struct TaskStoreTests {
         let store = TaskStore(path: path)
         _ = try await store.create(sample()).task                  // immediate write; on-disk rev == this
         let flushedRev = await store.currentRev
-        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        await store.setPersistDebounce(.seconds(3600)); await store.setMaxDeferral(.seconds(3600))
         let (_, bumpedRev) = try await store.update(await store.all().first!.id, debounceFlush: true) { $0.ctxPct = 9 }
         #expect(bumpedRev == flushedRev + 1)                       // in-memory rev advanced synchronously
         // A fresh store (crash before flush) restores the last FLUSHED rev, below the in-memory rev.
@@ -384,7 +395,7 @@ struct TaskStoreTests {
         let path = tmpPath()
         let store = TaskStore(path: path)
         let created = try await store.create(sample()).task
-        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        await store.setPersistDebounce(.seconds(3600)); await store.setMaxDeferral(.seconds(3600))
         let (_, bumpedRev) = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 11 }
         await store.flushPendingWrites()
         let reloaded = TaskStore(path: path)
@@ -397,7 +408,7 @@ struct TaskStoreTests {
     func test_noOpUpdateDoesNotAdvanceRev() async throws {
         let store = TaskStore(path: tmpPath())
         let created = try await store.create(sample()).task
-        await store.setPersistDebounce(.seconds(30)); await store.setMaxDeferral(.seconds(60))
+        await store.setPersistDebounce(.seconds(3600)); await store.setMaxDeferral(.seconds(3600))
         let revBefore = await store.currentRev
         let writesBefore = await store.diskWriteCount
         let (unchanged, rev) = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = created.ctxPct }
@@ -412,7 +423,7 @@ struct TaskStoreTests {
     @Test("OrchestraService.flushBeforeShutdown() forwards to the store — a debounced delta lands on disk")
     func test_flushBeforeShutdownPersists() async throws {
         let env = TestEnv.make()
-        await env.svc.store.setPersistDebounce(.seconds(30)); await env.svc.store.setMaxDeferral(.seconds(60))
+        await env.svc.store.setPersistDebounce(.seconds(3600)); await env.svc.store.setMaxDeferral(.seconds(3600))
         let created = try await env.svc.store.create(sample()).task
         _ = try await env.svc.store.update(created.id, debounceFlush: true) { $0.ctxPct = 7 }
         // Not yet on disk (debounced).

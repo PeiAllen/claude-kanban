@@ -53,9 +53,16 @@ public final class ControlClient: @unchecked Sendable {
     public var onReconnect: (@Sendable () -> Void)?
 
     /// Back-compat convenience: a UDS client by socket path.
+    /// The socket-path convenience init now FORWARDS the deadlines (it used to hard-wire the 15s defaults,
+    /// so a CLI/app client had no way to raise them). An RPC deadline is client POLICY, not a product
+    /// invariant: a client talking to a daemon on a heavily loaded host — or over a slow link — legitimately
+    /// needs a longer bound than one on an idle laptop. Defaults are unchanged.
     public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app,
-                            clientId: String? = nil) {
-        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source, clientId: clientId)
+                            clientId: String? = nil,
+                            callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
+                            probeTimeout: Duration = .seconds(15)) {
+        self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source, clientId: clientId,
+                  callTimeout: callTimeout, pingInterval: pingInterval, probeTimeout: probeTimeout)
     }
 
     /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.

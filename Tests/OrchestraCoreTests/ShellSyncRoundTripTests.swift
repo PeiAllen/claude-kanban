@@ -73,9 +73,9 @@ struct ShellSyncRoundTripTests {
         try server.start(); defer { server.stop() }
 
         // Two clients: "desktop" and "phone".
-        let desktop = ControlClient(socketPath: path, source: .app)
+        let desktop = TestEnv.controlClient(path, source: .app)
         try desktop.connect(); defer { desktop.close() }
-        let phone = ControlClient(socketPath: path, source: .app)
+        let phone = TestEnv.controlClient(path, source: .app)
         try phone.connect(); defer { phone.close() }
 
         // Spawn the card BEFORE the phone subscribes, so the spawn's activity is in the ring and gets

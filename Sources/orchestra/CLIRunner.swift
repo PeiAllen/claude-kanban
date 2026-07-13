@@ -3,9 +3,19 @@ import OrchestraCore
 
 /// Parses argv flags into command params and calls the daemon.
 enum CLIRunner {
+    /// RPC deadline (call + first-connect probe). `ORCHESTRA_RPC_TIMEOUT_MS` raises it for a client running
+    /// against a heavily loaded host, where the daemon is healthy but the machine cannot schedule its reply
+    /// inside the default 15s — the daemon then looks "not reachable" when it is merely slow. The E2E suite
+    /// uses this: it runs a real daemon IN-PROCESS on a box oversubscribed by the whole parallel test suite.
+    static var rpcTimeout: Duration {
+        ProcessInfo.processInfo.environment["ORCHESTRA_RPC_TIMEOUT_MS"]
+            .flatMap(Int.init).map { .milliseconds($0) } ?? .seconds(15)
+    }
+
     static func run(verb: String, args: [String], socketPath: String) async {
         let flags = Flags(args)
-        let client = ControlClient(socketPath: socketPath, source: .cli)
+        let client = ControlClient(socketPath: socketPath, source: .cli,
+                                   callTimeout: rpcTimeout, probeTimeout: rpcTimeout)
         do { try client.connect() }
         catch {
             FileHandle.standardError.write(Data("orchestra: daemon not reachable at \(socketPath) (\(error))\n".utf8))

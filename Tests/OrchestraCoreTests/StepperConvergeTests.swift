@@ -125,7 +125,7 @@ struct MaterializeStepperTests {
     /// `materialize` re-derives everything from the persisted card — mirroring a reconciler-driven walk.
     private func seedRealCreating(_ svc: OrchestraService, base: String, branch: String, spawnBase: String?) async throws -> Task {
         let repo = base + "/repos/app"
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base])
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
         let cwd = WorktreeRegistry(config: config, borrowsPath: base + "/b.json", markersDir: base + "/m")
             .path(repo: repo, branch: branch)
         let t = Task(title: branch, titleProvisional: true, repo: repo, branch: branch, cwd: cwd,

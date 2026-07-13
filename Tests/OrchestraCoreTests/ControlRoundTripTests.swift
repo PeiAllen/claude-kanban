@@ -17,7 +17,7 @@ struct ControlRoundTripTests {
         try server.start()
         defer { server.stop() }
 
-        let client = ControlClient(socketPath: path, source: .cli)
+        let client = TestEnv.controlClient(path, source: .cli)
         try client.connect()
         defer { client.close() }
 
@@ -62,7 +62,7 @@ struct ControlRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .app)
+        let client = TestEnv.controlClient(path, source: .app)
         try client.connect(); defer { client.close() }
 
         let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -88,7 +88,7 @@ struct ControlRoundTripTests {
         defer { server.stop() }
 
         // First client spawns (producing a .spawned activity into the ring).
-        let c1 = ControlClient(socketPath: path, source: .cli)
+        let c1 = TestEnv.controlClient(path, source: .cli)
         try c1.connect()
         _ = try await c1.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Earlier card"), "repo": .string(repo), "branch": .string("b")]))
@@ -96,7 +96,7 @@ struct ControlRoundTripTests {
         c1.close()
 
         // A brand-new client subscribes and should get the prior .spawned via ring replay.
-        let c2 = ControlClient(socketPath: path, source: .app)
+        let c2 = TestEnv.controlClient(path, source: .app)
         try c2.connect()
         defer { c2.close() }
         let box = EventBox()
@@ -119,7 +119,7 @@ struct ControlRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .agent)
+        let client = TestEnv.controlClient(path, source: .agent)
         try client.connect(); defer { client.close() }
 
         let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -142,7 +142,7 @@ struct ControlRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .agent)
+        let client = TestEnv.controlClient(path, source: .agent)
         try client.connect(); defer { client.close() }
 
         let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -175,7 +175,7 @@ struct ControlRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .app)
+        let client = TestEnv.controlClient(path, source: .app)
         try client.connect(); defer { client.close() }
 
         let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -214,7 +214,7 @@ struct ControlRoundTripTests {
         let path = Self.sock()
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .app)
+        let client = TestEnv.controlClient(path, source: .app)
         try client.connect(); defer { client.close() }
 
         let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -254,7 +254,7 @@ struct ControlRoundTripTests {
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start()
         defer { server.stop() }
-        let client = ControlClient(socketPath: path, source: .cli)
+        let client = TestEnv.controlClient(path, source: .cli)
         try client.connect()
         defer { client.close() }
 
@@ -272,7 +272,7 @@ struct ControlRoundTripTests {
         let server = ControlServer(service: env.svc, socketPath: path)
         try server.start(); defer { server.stop() }
 
-        let client = ControlClient(socketPath: path, source: .cli)
+        let client = TestEnv.controlClient(path, source: .cli)
         try client.connect(); defer { client.close() }
 
         let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 

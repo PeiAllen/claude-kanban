@@ -135,7 +135,15 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         if !alive.contains(name) { return .gone }
         return deadPanes.contains(name) ? .dead : .alive
     }
+    /// One-shot hook invoked synchronously INSIDE `agentPaneDeadSessions()` — the reconciler's SECOND
+    /// off-actor probe, which runs after the `list()` session snapshot and before the card phases are read.
+    /// That gap is the actor-released window a real bring-up step lands in, so a test can inject "the
+    /// relaunch just finished" exactly there. Same shape as `onStampedEpochProbe`. Fires once, then clears.
+    var onAgentPaneDeadProbe: (@Sendable () -> Void)?
     func agentPaneDeadSessions() throws -> Set<String> {
+        let hook: (@Sendable () -> Void)?
+        lock.lock(); hook = onAgentPaneDeadProbe; onAgentPaneDeadProbe = nil; lock.unlock()
+        hook?()   // OUTSIDE the lock so the test's concurrent actor work can't deadlock on it
         lock.lock(); defer { lock.unlock() }
         return deadPanes.intersection(alive)   // only present sessions with a dead pane
     }
@@ -476,7 +484,20 @@ enum TestEnv {
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
                             allowlist: [PathResolver.canonical(base)],
-                            maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace)
+                            maxConcurrentRevivals: maxRevivals, revivalGraceSeconds: grace,
+                            // A launch timeout the test cannot outlive. The product default is 30s, which is
+                            // right for a real daemon — but a test's bring-up is driven by ITS OWN
+                            // `reconcile()` polling, and under `--parallel` load a single reconcile can cost
+                            // ~20s. The card then blows the 30s launch deadline and the reconciler correctly
+                            // concludes `dead(spawnFailed)` — so the test's premise ("the card reaches
+                            // `.live`") evaporates and it fails asserting a behavior that never got to run.
+                            // Same trap as the startup grace (see `spawnStartupPending`): a wall-clock
+                            // deadline the machine, not the product, decides.
+                            //
+                            // Tests that genuinely EXERCISE the timeout are unaffected: they back-date
+                            // `phaseChangedAt` by `-(config.sessionLaunchTimeout + n)`, reading the value
+                            // from config, so the arm still fires deterministically at any setting.
+                            sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -507,7 +528,7 @@ enum TestEnv {
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base])
+                            allowlist: [base], sessionLaunchTimeout: 3600)
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -543,8 +564,62 @@ enum TestEnv {
     /// `.sessionStartHook`/`.rolloutMeta`; harmless for the immediate `.relaunchLiveness` stub). Returns the
     /// live card.
     @discardableResult
+    /// A `ControlClient` pointed at an IN-PROCESS test daemon, with deadlines sized for the test machine.
+    ///
+    /// `ControlClient`'s 15s call/probe defaults are a PRODUCT default: the right bound for a real daemon in
+    /// its own process, answering a client on an idle box. A test daemon shares a machine oversubscribed by
+    /// the whole `--parallel` suite (900 tests, thousands of git/tmux forks), where even a trivial `version`
+    /// reply — which never touches the service actor — waits tens of seconds for a thread. Inheriting the
+    /// product default therefore makes every round-trip test a wall-clock assertion about the HOST, and it
+    /// fails as `daemon did not answer version probe (connection closed)`: the daemon is healthy, merely
+    /// descheduled. Deadlines are client POLICY (see `CLIRunner.rpcTimeout`, which exposes the same knob to
+    /// the real CLI for a loaded host) — so give the in-process tests room and let them assert behavior.
+    static func controlClient(_ socketPath: String, source: ActivitySource) -> ControlClient {
+        ControlClient(socketPath: socketPath, source: source,
+                      callTimeout: .seconds(120), probeTimeout: .seconds(120))
+    }
+
+    /// Spawn, drive to `.live`, and leave the card STILL STARTUP-PENDING — with a grace the spawn cannot
+    /// outlive.
+    ///
+    /// `spawnPending[id]` bakes its deadline at ARM time (`Date() + spawnGraceSeconds`, inside the spawn), so
+    /// raising the grace afterwards CANNOT re-arm an existing deadline — the widespread
+    /// `spawnAndAwaitLive(…)` then `setStartupConfirmation(graceSeconds: …)` order was arming the default 4s
+    /// and only *then* asking for a longer one. And `spawnAndAwaitLive` itself polls `reconcile()`, which
+    /// folds in the liveness pass: under `--parallel` load the spawn routinely outlives its own 4s deadline,
+    /// so `confirmSpawnStartup` sees `.alive` past-deadline and GRADUATES the card (`clearSpawnPending`).
+    /// A later `setPaneDead` is then classified `.sessionVanished` rather than `.spawnExitedImmediately`,
+    /// and the test fails asserting a product behavior that never had a chance to run.
+    ///
+    /// Arming a grace the spawn cannot outlive makes these tests about the BEHAVIOR (how an abort is
+    /// classified) instead of about whether the machine was fast enough. Tests that need the retry's or the
+    /// graduation's deadline to be in the PAST set `graceSeconds: 0` AFTER this call — that re-arms on the
+    /// retry, which is exactly the deadline they mean.
+    static func spawnStartupPending(_ svc: OrchestraService, _ input: SpawnInput,
+                                    maxRetries: Int = 1) async throws -> Task {
+        await svc.setStartupConfirmation(graceSeconds: 3600, maxRetries: maxRetries)
+        return try await spawnAndAwaitLive(svc, input)
+    }
+
+    /// Drive the reconciler until `id` is `.live`. On timeout, re-read the card and say what phase it was
+    /// ACTUALLY stuck in — "never reached .live" is useless on its own; "stuck in .dead(.agentExited)" names
+    /// the bug. A card that lands `.dead` will never reach `.live`, so the wait was doomed, not merely slow.
     static func reconcileToLive(_ svc: OrchestraService, _ id: UUID, inject: Bool = false) async throws -> Task {
-        try await pollUntil {
+        do {
+            try await pollUntilInner(svc, id, inject: inject)
+        } catch let e as PollTimeout {
+            let card = await svc.list(includeArchived: true).first { $0.id == id }
+            let phase = card.map { "\($0.phase.kind)\($0.deadReason.map { r in "(\(r))" } ?? "")" } ?? "<no such card>"
+            throw PollTimeout(what: "\(e.what) — card was stuck in phase: \(phase)", waited: e.waited, polls: e.polls)
+        }
+        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == id }) else {
+            throw OrchestraError.unknownTask(id.uuidString)
+        }
+        return live
+    }
+
+    private static func pollUntilInner(_ svc: OrchestraService, _ id: UUID, inject: Bool) async throws {
+        try await pollUntil("card \(id) to reconcile to .live (inject: \(inject))") {
             await svc.reconcile()
             let card = await svc.list(includeArchived: true).first { $0.id == id }
             // Deliver the readiness signal only once the stepper's finishLaunch has REGISTERED its waiter
@@ -557,10 +632,6 @@ enum TestEnv {
             }
             return card?.phase.kind == .live
         }
-        guard let live = await svc.list(includeArchived: true).first(where: { $0.id == id }) else {
-            throw OrchestraError.unknownTask(id.uuidString)
-        }
-        return live
     }
 
     /// Make a repo dir under reposRoot and return its path.
@@ -585,9 +656,16 @@ enum TestEnv {
     static func spawnAndAwaitLive(_ svc: OrchestraService, _ input: SpawnInput,
                                  source: ActivitySource = .daemon) async throws -> Task {
         let created = try await svc.spawn(input, source: source)
-        try await pollUntil {
-            await svc.reconcile()
-            return await svc.list(includeArchived: true).first { $0.id == created.id }?.phase.kind == .live
+        do {
+            try await pollUntil("spawned card \(created.id) to reach .live") {
+                await svc.reconcile()
+                return await svc.list(includeArchived: true).first { $0.id == created.id }?.phase.kind == .live
+            }
+        } catch let e as PollTimeout {
+            // Say what phase it got STUCK in — "never reached .live" alone names no bug.
+            let card = await svc.list(includeArchived: true).first { $0.id == created.id }
+            let phase = card.map { "\($0.phase.kind)\($0.deadReason.map { r in "(\(r))" } ?? "")" } ?? "<no such card>"
+            throw PollTimeout(what: "\(e.what) — card was stuck in phase: \(phase)", waited: e.waited, polls: e.polls)
         }
         guard let live = await svc.list(includeArchived: true).first(where: { $0.id == created.id }) else {
             throw OrchestraError.unknownTask(created.id.uuidString)
@@ -643,7 +721,7 @@ enum TestEnv {
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base])
+                            allowlist: [base], sessionLaunchTimeout: 3600)
         let resolver = PathResolver(config: config)
         let sessions = StubSessions()
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)

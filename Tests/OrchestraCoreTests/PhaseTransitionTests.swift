@@ -149,6 +149,16 @@ struct PhaseTransitionTests {
             #expect(env.sessions.ensureCount == ensureBefore)          // still parked
         }
 
+        // A `.live` card ALWAYS has a session in production — `finishLaunch` ensures one BEFORE landing the
+        // card `.live`. This test seeds the phase directly (spawn is non-blocking, so nothing ever ensured a
+        // session), so seed the session too. Without it the card is `.live` with no session, and the
+        // reconciler correctly concludes the agent vanished and kills it before the parked-message delivery
+        // can run. That kill used to be masked by reconcile()'s stale snapshot order (the session sample
+        // suspended the actor long enough for the wake's `.relaunching` intent to land first) — the very race
+        // fixed in `freshlyLiveCardNotKilledByStaleSnapshot`. Model the real precondition instead of relying
+        // on a race to dodge it.
+        env.sessions.setAlive(card.id, true)
+
         // Going live (idle) fires wakeIfPending → resume-seed enqueues a `.relaunching` intent (PARKED folded
         // into pendingSeed); the reconciler's RelaunchStepper then delivers it (PR4b Task 4 — intent-only wake).
         #expect(await env.svc.transition(card.id, to: .live(.waiting(.humanTurn))) == .applied)

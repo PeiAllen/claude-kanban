@@ -21,7 +21,7 @@ struct StartupAbortTests {
     func immediateExitClassified() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)   // no retry; deadline already past
         env.sessions.setPaneText(t.id, "Error: usage limit reached\nprocess exited")
         env.sessions.setPaneDead(t.id)                                          // aborted: pane dead, session present
@@ -41,7 +41,7 @@ struct StartupAbortTests {
     func retryRecovers() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let ensureAfterSpawn = env.sessions.ensureCount
         let worktreesAfterSpawn = env.worktrees.ensured.count
@@ -63,7 +63,7 @@ struct StartupAbortTests {
     func midRunVanishStillSessionVanished() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
 
         await env.svc.reconcileLiveness()                  // pane alive + deadline past → graduate (pending cleared)
@@ -80,7 +80,7 @@ struct StartupAbortTests {
     func retryExhaustionEndsDead() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "unauthorized")
         env.sessions.setPaneDead(t.id)
@@ -101,7 +101,7 @@ struct StartupAbortTests {
     func archiveDuringGraceNotResurrected() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneDead(t.id)
         let ensureAfterSpawn = env.sessions.ensureCount
@@ -119,7 +119,7 @@ struct StartupAbortTests {
     func sessionEndDuringGraceStaysDead() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         let ensureAfterSpawn = env.sessions.ensureCount
 
@@ -142,7 +142,7 @@ struct StartupAbortTests {
     func daemonRestartBootConverges() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "usage limit reached")
         env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
@@ -165,7 +165,7 @@ struct StartupAbortTests {
     func reconcileConvergesOrphanedDeadPane() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneText(t.id, "unauthorized")
         env.sessions.setPaneDead(t.id)                     // aborted: session present, pane dead
@@ -189,8 +189,8 @@ struct StartupAbortTests {
     func daemonRestartWhilePaneAliveNotMisclassified() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // long grace: still armed at "restart"
+        // Still startup-pending at "restart" — the arm must outlive the spawn (see `spawnStartupPending`).
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         let name = env.sessions.sessionName(t.id)
         #expect(env.sessions.remainOnExit[name] == true)   // spawn (finishLaunch) armed it
 
@@ -219,7 +219,7 @@ struct StartupAbortTests {
     func failedGraduationTogglePreservesPending() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         env.sessions.failRemainOnExitOff = true            // graduation's toggle-off will throw
 
@@ -244,7 +244,7 @@ struct StartupAbortTests {
         let env = TestEnv.make(grace: 1)
         // A scratch read-only card is the durable form of a one-shot delegation: it concludes on
         // `turnCompleted` (→ `.dead(.completed)`), which is what "turns done" means in the phase machine.
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", access: .readOnly, scratch: true))
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", access: .readOnly, scratch: true))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneDead(t.id)
         env.sessions.captureSleepMs = 200                  // widen the capture window
@@ -266,8 +266,8 @@ struct StartupAbortTests {
     func sendDuringGraceNotDropped() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
-        await env.svc.setStartupConfirmation(graceSeconds: 4, maxRetries: 1)   // stay pending across the send
+        // The card must still be startup-pending when the send lands (see `spawnStartupPending`).
+        let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running, startup-pending
         try await env.svc.send(t.id, "hello during grace")
         // A running card queues the send for its Stop-drain — the point is it is NOT lost at the wake gate.
         #expect(try await env.svc.inboxPeek(t.id).map(\.text) == ["hello during grace"])
@@ -281,7 +281,10 @@ struct StartupAbortTests {
         let env = TestEnv.make(grace: 1, capabilities: caps)
         let repo = TestEnv.repo(env.base)
         // Awaiting caps (`.sessionStartHook`/`.rolloutMeta`): drive to live by hand-delivering the readiness
-        // signal (arm is already in place — finishLaunch armed regardless of cap).
+        // signal (arm is already in place — finishLaunch armed regardless of cap). The grace is raised BEFORE
+        // the spawn arms it for the same reason as `spawnStartupPending` — this path arms identically, so both
+        // the Claude- and the Codex-shaped adapter must be immune to the spawn outliving its own deadline.
+        await env.svc.setStartupConfirmation(graceSeconds: 3600, maxRetries: 0)
         let t = try await TestEnv.spawnAwaited(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
         env.sessions.setPaneText(t.id, "unauthorized")
