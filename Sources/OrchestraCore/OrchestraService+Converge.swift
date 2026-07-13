@@ -173,12 +173,15 @@ extension OrchestraService {
             argv = adapter.start(ctx)
             armCtx = ctx
         case .resume(let seed):
-            // `access:` is NOT optional here, whatever the defaulted initializer suggests: `AdapterContext`
-            // defaults it to `.readWrite`, and both adapters emit their lockdown flags from `ctx.access` on
-            // resume as well as on start — so omitting it silently relaunched a READ-ONLY card as writable.
-            // (`startIn` is deliberately not passed: it only picks the launch column for a NEW session, and
-            // a resumed card already has one.)
-            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel,
+            // Every card-derived launch flag the `.blank` ctx carries must be carried HERE too. Both were
+            // being dropped on resume, because this context is built field-by-field and simply omitted them:
+            //  • `access` — `AdapterContext` defaults it to `.readWrite`, and both adapters emit their
+            //    lockdown flags from `ctx.access` on resume as well as on start, so a READ-ONLY card came
+            //    back writable.
+            //  • `startIn` — not merely a board column: `.plan` becomes `--permission-mode auto`
+            //    (ClaudeCodeAdapter.swift:204-206), so a resumed plan card silently lost it and began
+            //    prompting for permissions mid-task.
+            let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
                                      access: task.access,
                                      trustCwd: trustDecision == .trusted, seed: seed)

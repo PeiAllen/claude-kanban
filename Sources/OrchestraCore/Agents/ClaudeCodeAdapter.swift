@@ -224,6 +224,10 @@ public struct ClaudeCodeAdapter: Adapter {
         var argv = [binary, "--resume", sid] + settingsFlags(ctx)
         if let n = ctx.name, !n.isEmpty { argv += ["--name", n] }
         argv += modelFlag(ctx.model)
+        // A plan-column card gets `--permission-mode auto` on START; without it here it silently LOST that
+        // mode the first time it was resumed, handed off, or revived — and began prompting mid-task. The
+        // launch posture must be identical whether a session is starting or continuing.
+        argv += startInFlags(ctx.startIn)
         argv += accessFlags(ctx.access)
         // F1 (C3): a handoff/fork seed (authored ctx + folded inbox) rides as the resumed session's
         // opening positional turn — history holds the task, the seed adds the new instruction.
