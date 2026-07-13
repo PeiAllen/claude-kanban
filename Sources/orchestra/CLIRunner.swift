@@ -89,6 +89,7 @@ enum CLIRunner {
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let context = flags.value("context") ?? flags.positionalsFrom(1).joined(separator: " ")
                 guard !context.isEmpty else { die("handoff needs context text: orchestra handoff <ref> <context...>") }
+                requireValue(flags, "model")
                 let task = try await client.call("handoff", .object(["ref": .string(ref), "context": .string(context)]
                     .merging(optional("model", flags.value("model"))) { a, _ in a }))
                 printRef(task)
@@ -169,6 +170,7 @@ enum CLIRunner {
 
             case "restart", "resume":
                 let ref = flags.positional(0) ?? flags.require("ref")
+                requireValue(flags, "model")
                 let task = try await client.call(verb, .object(["ref": .string(ref)]
                     .merging(optional("model", flags.value("model"))) { a, _ in a }))
                 printRef(task)
@@ -343,6 +345,15 @@ enum CLIRunner {
     static func optional(_ key: String, _ value: String?) -> [String: JSONValue] {
         guard let v = value else { return [:] }
         return [key: .string(v)]
+    }
+
+    /// A valued flag written with NO value (`orchestra restart X --model`) parses as a BOOLEAN, so
+    /// `flags.value(_:)` is nil and `optional(_:_:)` drops the key — the command would then run as if the
+    /// flag had never been passed. For `--model` that means a plain restart on the old model while the user
+    /// believes they re-seated the card: precisely the silent no-op the daemon-side validation exists to
+    /// prevent, sneaking past it because the daemon never sees the arg. Fail loudly at the CLI instead.
+    static func requireValue(_ flags: Flags, _ key: String) {
+        if flags.has(key), flags.value(key) == nil { die("--\(key) needs a value") }
     }
 }
 

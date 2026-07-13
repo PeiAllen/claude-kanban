@@ -151,11 +151,15 @@ extension OrchestraService {
                    task.pendingModel == nil, let watch = modelOverrideWatch[id] {
                     if modelHonored(reported: mid, requested: watch.requested, agentId: task.agentId) {
                         modelOverrideWatch[id] = nil          // re-seat confirmed by the agent itself
+                    } else if !modelHonored(reported: mid, requested: watch.left, agentId: task.agentId) {
+                        // Neither the model we asked for NOR the one we left — the session deliberately
+                        // switched to a third model (`/model`). Not a vendor fault; stop watching.
+                        modelOverrideWatch[id] = nil
                     } else if watch.strikes >= 1 {
                         modelOverrideWatch[id] = nil
                         modelReseatIgnored = (watch.requested, mid)   // emitted below, once the write lands
                     } else {
-                        modelOverrideWatch[id] = (watch.requested, watch.strikes + 1)
+                        modelOverrideWatch[id] = (watch.requested, watch.left, watch.strikes + 1)
                     }
                 }
                 // session_name (a /rename mirror): apply only a *genuine* change, so a statusline
@@ -215,9 +219,34 @@ extension OrchestraService {
         // signal is dropped as a no-op). The companion `mutate` carries the dead metadata atomically with
         // the phase write; the funnel emits the upsert, runs conclusions, and fires wake-on-live.
         if targetPhase != before.phase {
+            // report() is the THIRD `.live` landing, besides the two steppers — and it needs their COMPANION
+            // CLEANUP, not just their phase write. When a relaunch's readiness times out, the RelaunchStepper
+            // `break`s (PhaseStepper.swift:256) leaving the card `.relaunching` even though the session came
+            // up, and `runStep` releases its claim (+Reconcile.swift:218). The new session's own report then
+            // finds `bringUpOwnsLanding == false` and lands the card `.live` here, over a legal
+            // `.relaunching → .live` edge (+Lifecycle.swift:132). Without this, `pendingSeed`/`pendingModel`
+            // are stranded SET on a live card that no stepper will visit again — so the next ordinary
+            // restart/resume would replay the handoff seed and silently relaunch on a stale re-seat model,
+            // overriding whatever the session had switched to. Scoped to a landing FROM a being-born phase,
+            // which is the only way an intent can still be outstanding.
+            //
+            // Gated on the report being STAMPED WITH THE CURRENT GENERATION. That is the proof the launch
+            // actually happened and this is the new session talking — only then have the seed and the model
+            // been delivered, and only then may they be consumed. An UNSTAMPED report is not proof of
+            // anything (Codex's file-tail reports carry no epoch), and the dying session can still be writing
+            // rollout lines while the card sits `.relaunching` with its relaunch not yet run; consuming on
+            // one of those would DROP a handoff seed that was never delivered. Fail safe: don't consume.
+            let landsFromBringUp = targetPhase.kind == .live
+                && (before.phase.kind == .relaunching || before.phase.kind == .launching)
+                && observedEpoch == task.sessionEpoch
+            let landingAdapter = try? registry.get(task.agentId)
             let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
                 t.deadReason = targetDeadReason
                 t.deadDetail = targetDeadDetail
+                if landsFromBringUp {
+                    t.pendingSeed = nil
+                    if let landingAdapter { consumeModelReseat(&t, landingAdapter) }
+                }
             }
             if result == .applied {
                 didChange = true

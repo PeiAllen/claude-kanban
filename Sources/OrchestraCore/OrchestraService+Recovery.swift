@@ -54,18 +54,31 @@ extension OrchestraService {
         guard let requested else { return nil }   // absent ⇒ no override (every pre-existing caller)
         let want = requested.trimmingCharacters(in: .whitespacesAndNewlines)
         let catalog = try registry.get(task.agentId).models()
+        // EXACT ids win across the WHOLE catalog before any variant matching, so a catalog that ever carried
+        // both a floating and a dated id can't have an exact request captured by an earlier entry's variant.
         // An EXPLICIT empty/whitespace model is a mistake, not "no override": silently relaunching on the
         // old model and reporting success is exactly the quiet no-op this feature exists to prevent.
-        if let m = catalog.first(where: { $0.id == want || Self.isModelVariant(want, of: $0.id) }) { return m }
+        if !want.isEmpty {
+            if let m = catalog.first(where: { $0.id == want }) { return m }
+            if let m = catalog.first(where: { Self.isModelVariant(want, of: $0.id) }) { return m }
+        }
         throw OrchestraError.invalidParams(
             "unknown model '\(requested)' for agent '\(task.agentId)'. Valid: "
             + catalog.map(\.id).joined(separator: ", "))
     }
 
-    /// Is `id` the vendor's dated form of the catalog id `base` (`claude-haiku-4-5-20251001` of
-    /// `claude-haiku-4-5`)? Used both to ACCEPT a dated id on the way in and to recognize the agent's own
+    /// Is `id` the vendor's DATED form of the catalog id `base` (`claude-haiku-4-5-20251001` of
+    /// `claude-haiku-4-5`)? Used both to accept a dated id on the way in and to recognize the agent's own
     /// dated report as a match on the way out — never a raw `==`, which would false-reject and false-warn.
-    static func isModelVariant(_ id: String, of base: String) -> Bool { id.hasPrefix(base + "-") }
+    ///
+    /// The suffix must be all DIGITS. Accepting any suffix would silently downgrade a typo — `--model
+    /// claude-haiku-4-5-oops` would prefix-match and quietly launch on `claude-haiku-4-5` — which is exactly
+    /// the "fails closed" promise this validation makes. A mistyped id must be an error, not a substitution.
+    static func isModelVariant(_ id: String, of base: String) -> Bool {
+        guard id.hasPrefix(base + "-") else { return false }
+        let suffix = id.dropFirst(base.count + 1)
+        return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
+    }
 
     /// Did the agent actually come up on the model we asked for? Compared through the catalog, never raw
     /// string equality. An id we cannot resolve at all is treated as a MATCH — this check exists to catch a
@@ -109,8 +122,12 @@ extension OrchestraService {
                 t.model = override
             }
         })
-        if let override { modelOverrideWatch[id] = (override.id, 0) }   // did the vendor honor it? (report())
         guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        // Arm the tripwire from the PERSISTED card, not from our local `override`: two concurrent re-seats can
+        // interleave across the `await transition` above, and arming from the loser would later accuse the
+        // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
+        // are leaving — the one a vendor that ignored `--model` would keep reporting.
+        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "resuming “\(updated.title)”")
         return updated
     }
@@ -179,8 +196,12 @@ extension OrchestraService {
                 $0.model = override
             }
         })
-        if let override { modelOverrideWatch[id] = (override.id, 0) }   // did the vendor honor it? (report())
         guard let updated = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        // Arm the tripwire from the PERSISTED card, not from our local `override`: two concurrent re-seats can
+        // interleave across the `await transition` above, and arming from the loser would later accuse the
+        // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
+        // are leaving — the one a vendor that ignored `--model` would keep reporting.
+        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "new session “\(updated.title)”")
         return updated
     }
@@ -470,7 +491,9 @@ extension OrchestraService {
     /// Drop a card's startup-pending bookkeeping (on graduation, give-up, or any death).
     /// Deliberately does NOT touch `modelOverrideWatch`: this fires when a healthy card GRADUATES its
     /// startup grace, which is exactly when the re-seat watch still has its job to do. The watch is cleared
-    /// where it genuinely dies — on a fresh re-seat (below) and on death (`markDead`).
+    /// where it genuinely dies — on a fresh re-seat (which re-arms it), and on ANY conclusion, in
+    /// `concludeCard` (the single terminal chokepoint — `markDead` alone would miss a failed launch, which
+    /// concludes through the steppers).
     func clearSpawnPending(_ id: UUID) {
         spawnPending[id] = nil; spawnAttempts[id] = nil; spawnRelaunch[id] = nil
     }

@@ -190,6 +190,9 @@ struct ModelReseatTests {
 
     // MARK: - "did the vendor honor it?" tripwire
 
+    /// NOTE: every tripwire test below reports with NO `observedEpoch` — i.e. the CODEX shape (its file-tail
+    /// reports carry no epoch at all, OrchestraService.swift:382). That is deliberate: it proves the
+    /// `pendingModel == nil` fence works without an epoch, which is the whole reason it isn't epoch-gated.
     @Test("an agent that comes up on the WRONG model warns once — it does not revert in silence")
     func vendorIgnoredTheFlagWarns() async throws {
         let env = TestEnv.make(grace: 2)
@@ -273,6 +276,102 @@ struct ModelReseatTests {
         let a = argv(env, t.id)
         #expect(a.contains("--resume"))
         #expect(a.contains("--read-only"))   // the launch is still locked down
+    }
+
+    @Test("report() is a THIRD `.live` landing and must consume the re-seat, or it strands forever")
+    func reportLandingConsumesTheReseat() async throws {
+        // When a relaunch's readiness times out, the RelaunchStepper `break`s and LEAVES the card
+        // `.relaunching` even though the session came up, releasing its claim. The new session's own report
+        // is then what lands the card `.live` (a legal `.relaunching → .live` edge) — bypassing both
+        // steppers. If that landing doesn't consume `pendingModel`, it is stranded SET on a live card no
+        // stepper will visit again, and the NEXT ordinary restart would silently relaunch on the stale
+        // re-seat model. `grace: 0` forces exactly that timeout.
+        let env = TestEnv.make(grace: 2)
+        let t = try await liveCard(env)
+
+        // The card is `.relaunching` with the re-seat staged and NO stepper holding the claim — exactly the
+        // state a readiness timeout leaves behind (the stepper `break`s and `runStep` releases the claim,
+        // while the session is actually up). We reproduce that state directly rather than racing a real
+        // timeout: the code under test is report()'s `.live` landing, not the stepper's clock.
+        // The spawn's own bring-up step outlives its `.live` landing by a moment; wait it out, or this test
+        // races it and `bringUpOwnsLanding` suppresses the very landing we are here to exercise.
+        try await pollUntil { await !env.svc.hasStepInFlight(t.id) }
+        _ = try await env.svc.restart(t.id, model: "m2")
+        #expect(await !env.svc.hasStepInFlight(t.id))
+
+        // The NEW session reports itself running, stamped with the card's current generation (Claude's hooks
+        // carry the epoch) — that stamp is the proof the relaunch happened, and this is the landing.
+        let relaunching = try #require(await env.svc.list().first { $0.id == t.id })
+        try await env.svc.report(t.id, StatusReport(modelId: "m2", run: .running),
+                                 observedEpoch: relaunching.sessionEpoch)
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.phase.kind == .live)
+        #expect(after.pendingModel == nil)   // consumed by report()'s landing, not stranded
+        #expect(after.pendingSeed == nil)
+
+        // Proof it isn't stranded: a plain restart (NO --model) must not replay the old re-seat. It relaunches
+        // on whatever the card is actually on — not on a ghost intent from a previous re-seat.
+        _ = try await env.svc.restart(t.id)
+        let plain = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(plain.pendingModel == nil)
+    }
+
+    @Test("a typo'd model id is an ERROR, not a silent downgrade to the model it prefixes")
+    func typoIdIsNotSilentlyDowngraded() async throws {
+        let env = TestEnv.make(grace: 2)
+        let t = try await liveCard(env)
+        // `m2-oops` prefix-matches the catalog id `m2`. Accepting it would quietly launch on m2 while the
+        // user believes they asked for something else. Only an all-DIGITS suffix is a real vendor date form.
+        await #expect(throws: OrchestraError.self) { try await env.svc.restart(t.id, model: "m2-oops") }
+        #expect(try #require(await env.svc.list().first { $0.id == t.id }).pendingModel == nil)
+    }
+
+    @Test("a deliberate in-session /model switch to a THIRD model is not blamed on the vendor")
+    func inSessionModelSwitchDoesNotFalseWarn() async throws {
+        // The tripwire only accuses the vendor when the agent reports the model we were LEAVING — that is
+        // what "the CLI ignored --model and kept the session's model" actually looks like. An agent that
+        // moves to some other model has made its own choice.
+        let env = TestEnv.make(grace: 2, extraAgents: [(id: "codex", models: ["g1", "g2"])])
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+        let t = try await liveCard(env)   // on m1
+
+        _ = try await env.svc.restart(t.id, model: "m2")
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+
+        // Reports a third model (not m2 = requested, not m1 = left) → a genuine /model switch.
+        try await env.svc.report(t.id, StatusReport(modelId: "m3"))
+        try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m3"))
+        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
+    }
+
+    // MARK: - the REAL adapters, not the stub
+
+    /// The stub-driven test above proves Converge puts `access`/`startIn` into the resume context. It would
+    /// still pass if the real adapters dropped their lockdown flags on the resume path — so pin the actual
+    /// argv both vendors build. This is a security guarantee; it deserves an assertion on the real thing.
+    @Test("both REAL adapters carry the read-only + plan flags on RESUME, not only on start")
+    func realAdaptersLockDownOnResume() throws {
+        let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-4-8", startIn: .plan,
+                                 sessionId: "sid-1", name: "Reviewer", access: .readOnly)
+
+        let claude = try #require(ClaudeCodeAdapter().resume(ctx))
+        #expect(claude.contains("--resume"))
+        #expect(claude.contains("--disallowedTools"))   // the read-only tool lockdown
+        #expect(claude.contains("Edit"))
+        #expect(claude.contains("--model"))
+        // `.plan` → `--permission-mode auto`; a resumed plan card must not start prompting mid-task.
+        #expect(claude.contains("--permission-mode"))
+
+        let codexCtx = AdapterContext(cwd: "/wt", model: "gpt-5.6-terra", startIn: .plan,
+                                      sessionId: "01990000-0000-7000-8000-000000000000",
+                                      name: "Reviewer", access: .readOnly)
+        let codex = try #require(CodexAdapter().resume(codexCtx))
+        #expect(codex.contains("resume"))
+        #expect(codex.contains("-s") && codex.contains("read-only"))   // Codex's read-only sandbox
+        #expect(codex.contains("-a") && codex.contains("never"))       // ...and no approvals
+        #expect(codex.contains("-m"))
     }
 
     // MARK: - persistence
