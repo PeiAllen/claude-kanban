@@ -1070,7 +1070,7 @@ recorded here.
 
 **The `--model` re-seat** (`notes/plans/restart-handoff-model.md`) adds an optional `model` to `restart`,
 `handoff`, and `resume` — declared in the [command catalog](05-command-reference.md#registry-commands), so
-it reaches both the CLI and MCP. It **re-seats a live card onto another model in place** (same card, same
+it reaches both the CLI and MCP. It **re-seats a card onto another model in place** (same card, same
 worktree, same session lineage): `handoff --model` carries the context across, which is how an agent that
 finds its task needs a stronger model **escalates itself** instead of spawning a successor; `restart
 --model` deliberately drops it. Both vendors were probed for real — `claude --resume <sid> --model X` and
@@ -1083,11 +1083,19 @@ owns `model` and would otherwise revert it from the dying session's statusline �
 stops an unstamped report landing a card that still owes a launch (see
 [report() vs the launch intent](#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence) above).
 And a non-persisted **tripwire** warns once, on the board, if a vendor ever accepts `--model` and ignores
-it — an honest check for the mechanism, not part of it. Three bugs it surfaced were fixed alongside: a
-read-only card came back **writable** when resumed and a plan card lost `--permission-mode auto` (both were
-launch flags the `.blank` context carried and the `.resume` context silently dropped), and a **dated** vendor
-model id (`claude-haiku-4-5-20251001`) fell out of the catalog into a bare `AgentModel` with no
-`contextWindow`, blanking the `ctxPct` gauge for every Claude card.
+it — an honest check for the mechanism, not part of it. It only accuses the vendor when the agent reports
+the model the card was *leaving*, which makes it reliable on a `resume` (an ignored flag leaves the session
+on its transcript's model) and best-effort on a blank `restart` (an ignored flag would land on the vendor's
+configured default, which reads as a deliberate in-session switch and goes unreported) — a missed warning
+being much the lesser evil against falsely accusing an agent that legitimately changed its own model.
+Three bugs it surfaced were fixed alongside: a
+read-only card came back **writable** when resumed (the shared `.resume` context dropped the card's
+`access`, and *both* adapters emit their lockdown flags from it — so Codex read-only cards were equally
+affected, and are equally fixed) and a plan card lost `--permission-mode auto` (Claude-only: it is the
+`startIn` flag the `.resume` context dropped and `ClaudeCodeAdapter.resume` never re-emitted; Codex emits no
+`startIn` flags at all). The third: a **dated** vendor model id (`claude-haiku-4-5-20251001`) fell out of the
+catalog into a bare `AgentModel`, dropping the model's catalog metadata — display name, `contextWindow`,
+flags — and pinning every later launch to the dated id.
 
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

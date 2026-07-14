@@ -204,9 +204,12 @@ Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
 - **resume**: `claude --resume <sid> --settings <one file> [--name] [--model] [--permission-mode auto for
   plan] [read-only flags] [<seed>]` — no `--session-id`, no prompt re-handed; when a handoff/fork **seed**
   is present (F1, PR C3) it rides as the trailing positional opening turn. The **launch posture is now
-  identical whether a session starts or continues**: the resume argv used to omit the card's `access` and
-  `startIn` flags, so a read-only card came back *writable* and a plan card silently lost
-  `--permission-mode auto` the first time it was resumed or handed off. The `--model` here is what the
+  identical whether a session starts or continues**: the shared `.resume` `AdapterContext` used to omit the
+  card's `access`, so a read-only card came back *writable* — an **agent-agnostic** bug, since Codex emits
+  its lockdown flags from `ctx.access` on resume too, so read-only Codex cards were equally affected and are
+  equally fixed. It also omitted `startIn`, which is Claude-only in effect: a **plan** card silently lost
+  `--permission-mode auto` the first time it was resumed or handed off (Codex emits no `startIn` flags), so
+  that half needed `ClaudeCodeAdapter.resume` to re-emit them as well. The `--model` here is what the
   [`--model` re-seat](05-command-reference.md#the---model-re-seat) re-binds (the vendor honors it on
   `--resume`; Codex likewise honors `-m` on `codex resume`).
 
@@ -599,30 +602,33 @@ of being marked dead.
   them through the phase-keyed steppers (Materialize / Launch / Relaunch / Teardown) — a launch derives
   `resume`-vs-blank via `deriveLaunchFlavor`, and an unrevivable card lands `.dead(.rebootUnrevived)`.
   Idempotent — a `.live` card whose session is still alive at the matching epoch is left untouched.
-- **`resume(id, graceSeconds, seed:, model:)`.** Enters `.relaunching` through the funnel (which bumps the
-  generation — the atomic **generation claim** — and clears dead metadata in the same patch), kills +
-  re-`ensure`s the session **off-actor**, inline-confirms readiness, then finalizes `→ .live` **epoch-fenced**
-  (`observedEpoch: epoch`) so a superseded attempt's finalize is a no-op. Success → `recovered` activity;
-  failure → `.dead(.resumeFailed)` + a `deadDetail`. The defaulted `seed:` (PR C3) is threaded onto
-  `ctx.seed`; every recovery caller passes none, so the argv is byte-identical.
+- **`resume(id, graceSeconds, seed:, model:)`.** **Intent-only** (PR4b): it enters `.relaunching` through
+  the funnel (which bumps the generation — the atomic **generation claim** — and clears dead metadata in the
+  same patch) and **returns**; no subprocess runs before that return. The reconciler's `RelaunchStepper`
+  then drives the walk — re-materialize a missing worktree, kill + re-`ensure` the session **off-actor**,
+  confirm readiness (capability-gated), and finalize `→ .live` **epoch-fenced** (`observedEpoch: epoch`), so
+  a superseded attempt's finalize is a no-op. Success → `recovered` activity; failure →
+  `.dead(.resumeFailed)` + a `deadDetail`. The defaulted `seed:` (PR C3) is threaded onto `ctx.seed`; every
+  recovery caller passes none, so the argv is byte-identical.
 - **`resumeInCard(id, seed:, model:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh
   process with **clean context while keeping its `agentSessionId`**. It drains the inbox, folds it with the
   authored handoff/fork context (`HandoffSeed.fold`), and calls `resume(seed:)`. It is the seam the
   [`handoff` Command](05-command-reference.md#registry-commands) (PR D1) drives and the idle-wake path for a
   resume-seed agent; forks instead `spawn` a fresh card carrying a `SpawnInput.seed`.
-- **`restart(id, model:)`.** Enters `.relaunching` with the real persist block applied atomically (fresh
-  `agentSessionId`, old id rolled onto `priorSessionIds`, `titleProvisional=true`, cleared dead/desc), then
-  launches a blank session in the *same* worktree and finalizes `→ .live` epoch-fenced. Never touches
-  worktree contents. The "Start new session" Recovery button — distinct from the seeded, id-preserving
-  `resumeInCard`.
+- **`restart(id, model:)`.** Also **intent-only**: it enters `.relaunching` with the real persist block
+  applied atomically (fresh `agentSessionId`, old id rolled onto `priorSessionIds`, `titleProvisional=true`,
+  cleared dead/desc) and returns; the same `RelaunchStepper` then launches a blank session in the *same*
+  worktree and finalizes `→ .live` epoch-fenced. Never touches worktree contents. The "Start new session"
+  Recovery button — distinct from the seeded, id-preserving `resumeInCard`.
 - **The `model:` re-seat** (all three above). A `--model` on `restart`/`handoff`/`resume`
   ([the re-seat](05-command-reference.md#the---model-re-seat)) is validated against the card's **own**
   adapter catalog (`resolveModelOverride` — `agentId` never changes, so a cross-adapter id is refused) and
   staged as [`Task.pendingModel`](03-data-model.md#the-task-card) in the same funnel patch as the
   `→ .relaunching` intent. `finishLaunch` builds its `AdapterContext` from `pendingModel ?? model.id`, and
-  every `.live` landing — both steppers and the boot **adopt** path — consumes it through the shared
-  `consumeModelReseat`, exactly as it consumes `pendingSeed`. A failed launch leaves it staged for the
-  retry. Why the intent gets its own field, rather than just writing `model`:
+  each of the four `.live` landings — the two steppers, the boot **adopt** path, and `report()` itself when
+  a stamped current-generation report lands a card the steppers left behind — consumes it through the
+  shared `consumeModelReseat`, exactly as it consumes `pendingSeed`. A failed launch leaves it staged for
+  the retry. Why the intent gets its own field, rather than just writing `model`:
   [report() vs the launch intent](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence).
 - **`reopen(id)` — un-finish a Done card.** Walks the legal path `archived → creatingWorktree → launching →
   live`: it first normalizes the still-Bool-bridged archived phase (an archived card's `phase` is

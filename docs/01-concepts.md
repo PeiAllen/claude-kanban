@@ -107,7 +107,7 @@ stateDiagram-v2
     launching --> dead : timeout · dead(.spawnExitedImmediately)
     relaunching --> dead : dead(.resumeFailed)
 
-    dead --> relaunching : resume / restart (revival)
+    dead --> relaunching : resume / restart / handoff (revival)
     dead --> live : live session observed (signal-gated only)
 
     live --> archivedPending : archive

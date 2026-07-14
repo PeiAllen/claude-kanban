@@ -27,7 +27,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `archive` | `ref` (required) | Finish a card: record the intent (`phase = .archived(teardownComplete: false)`, `archived=true`) and return; the reconciler's Teardown stepper kills the session, cleans the run dir per origin, and flips the phase to `.archived(teardownComplete: true)`. |
 | `reopen` | `ref` (required) | Bring an archived (Done) card back onto the board: recreate the run dir the archive reclaimed, unarchive (keeping its column, clearing stale dead state), then `resume` its transcript when resumable else `restart` a fresh session. Idempotent on a non-archived card. Backs the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers)'s **Reopen** button. |
 | `restart` | `ref` (required), `model?` | Fresh blank session in the same worktree (new session id; no prompt re-handed). `model` **re-seats** the card onto that model for the new session — deliberately *without* the old context (see [the `--model` re-seat](#the---model-re-seat)). |
-| `resume` | `ref` (required), `model?` | Re-attempt `claude --resume` of the card's existing session. `model` **re-seats** the card onto that model as it resumes (see [the `--model` re-seat](#the---model-re-seat)). |
+| `resume` | `ref` (required), `model?` | Re-attempt resuming the card's existing agent session (each adapter's own resume argv — `claude --resume`, `codex resume`). `model` **re-seats** the card onto that model as it resumes (see [the `--model` re-seat](#the---model-re-seat)). |
 | `shell` | `ref` (required) | Open a shell window in the card's `cwd`; returns the tmux target to attach to. |
 | `inspect` | `ref` (required) | Open a throwaway **read-only** `claude` in the card's `cwd` (locked-down sandbox, edit tools denied, no hooks). |
 | `closeShell` | `ref` (required), `window` (required, e.g. `shell-1`) | Close a shell window opened via `shell`. |
@@ -161,7 +161,7 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
 
 `restart`, `handoff`, and `resume` each take an optional **`model`** (the CLI spelling is `--model <id>`;
 the MCP tool arg is generated from the same [catalog](#registry-commands) schema, so both surfaces carry
-it). It **re-seats a live card onto a different model in place** — same card, same worktree, same branch,
+it). It **re-seats a card onto a different model in place** — same card, same worktree, same branch,
 same session lineage — which is how an agent that discovers its task needs a stronger model **escalates
 itself** instead of spawning a successor card. Both vendors were probed for real: `claude --resume <sid>
 --model X` and `codex resume <sid> -m X` genuinely re-bind the model.
@@ -176,11 +176,14 @@ itself** instead of spawning a successor card. Both vendors were probed for real
   first mutation, so a refused re-seat leaves the card completely untouched — notably its durable inbox,
   which `handoff` otherwise drains destructively. The vendor's **dated** form of a catalog id
   (`claude-haiku-4-5-20251001` for `claude-haiku-4-5`) resolves to the catalog entry, keeping the launch id
-  canonical and preserving the model's `contextWindow` (the `ctxPct` denominator); a mistyped suffix is an
-  error, not a substitution.
-- **The request is staged, not applied.** The override is persisted as
+  canonical and preserving the model's catalog metadata — including the `contextWindow` that is the `ctxPct`
+  denominator for the *token-reporting* agents (Codex; Claude pushes its percentage directly); a mistyped
+  suffix is an error, not a substitution.
+- **The launch reads the intent, not the display field.** The override is persisted as
   [`Task.pendingModel`](03-data-model.md#the-task-card) — the *launch intent*, mirroring `pendingSeed` —
-  and it is `pendingModel`, never `model`, that `finishLaunch` builds the argv from. See
+  and it is `pendingModel`, never `model`, that `finishLaunch` builds the argv from. `model` is written
+  eagerly too, so the board reflects the re-seat at once, but nothing depends on that write surviving: a
+  stale report may revert it, and the `.live` landing re-asserts it from the intent. See
   [report() vs the launch intent](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)
   for why the intent has to live in its own field.
 

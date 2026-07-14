@@ -41,7 +41,7 @@ orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
 orchestra sessions <ref> --json      # debug handles
 orchestra restart <ref> [--model <id>]   # blank fresh session, same worktree (--model re-seats it)
-orchestra resume <ref> [--model <id>]    # re-attempt claude --resume (--model re-seats it)
+orchestra resume <ref> [--model <id>]    # re-attempt resuming the card's session (--model re-seats it)
 orchestra archive <ref>
 orchestra ping
 ```
