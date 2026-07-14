@@ -126,6 +126,10 @@ socket) against per-test private temp repos, no concurrency tricks, asserting "t
 invocation does what the production code believes." The existing hidden-integration suites are
 the quarry: most of their *logic* assertions move to unit tests over `FakeProc`; their
 real-git essence distills into contract tests. `GitHermeticityTests` already is one.
+Contract tests run inside the `GitHermeticBootstrap` throwaway HOME with a fixed injected git
+identity, so the suite is independent of the machine's git settings — it behaves identically on
+a box with no `~/.gitconfig` at all. The only machine requirements are the tool binaries
+themselves (`git`, `tmux`; built products for e2e).
 
 **No virtual filesystem.** Isolate (per-test roots), don't mock. A fake FS would route every
 `FileManager` call through a seam forever and buy nothing — the FS was never the cost.
@@ -140,8 +144,9 @@ Tests/
     OrchestraKit/  …
     OrchestraUI/   …
   ContractTests/                 ← real git / real tmux, per-test private roots
-    Git/  Tmux/  Proc/
+    Git/  Tmux/  Proc/           (grouped by the tool whose behavior they pin)
   E2ETests/                      ← built binaries + slow-repo fixture (both agents)
+    Cli/  Mcp/  Daemon/  SlowRepo/   (mirrors the product targets: orchestra, orchestra-mcp, orchestrad)
   TestSupport/                   ← TestClock, FakeProc, Paths fixtures, TestEnv (target, not tests)
   GitHermeticBootstrap/          ← existing C hermeticity target (unchanged)
 ```
