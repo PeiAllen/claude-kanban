@@ -3,97 +3,73 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
+/// A canned `DiffProvider` recording which baseline the service asked for and returning scripted
+/// `DiffStat`/render per `DiffBase` — so `DiffServiceTests` exercises the service's baseline-selection
+/// and emit LOGIC without a real repo. The real `git diff --numstat`/render shape these canned values
+/// stand in for is the fidelity pin owned by `DiffProviderTests` (MOVES-TO ContractTests/Git): this
+/// suite asserts "the service asked the provider with baseline X and emitted its result", NEVER a real
+/// byte count.
+final class StubDiffProvider: DiffProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private let stats: [DiffBase: DiffStat?]
+    private let renders: [DiffBase: String]
+    private var _statCalls: [(base: DiffBase, parentBranch: String?)] = []
+    private var _renderCalls: [(base: DiffBase, parentBranch: String?)] = []
+
+    init(stats: [DiffBase: DiffStat?] = [:], renders: [DiffBase: String] = [:]) {
+        self.stats = stats; self.renders = renders
+    }
+    var statCalls: [(base: DiffBase, parentBranch: String?)] { lock.withLock { _statCalls } }
+    var renderCalls: [(base: DiffBase, parentBranch: String?)] { lock.withLock { _renderCalls } }
+
+    func stat(worktree: String, base: DiffBase, parentBranch: String?) throws -> DiffStat? {
+        lock.withLock { _statCalls.append((base, parentBranch)) }
+        return stats[base] ?? nil
+    }
+    func render(worktree: String, base: DiffBase, parentBranch: String?) throws -> String {
+        lock.withLock { _renderCalls.append((base, parentBranch)) }
+        return renders[base] ?? ""
+    }
+}
+
 @Suite("OrchestraService — diff endpoints + event-driven refresh")
 struct DiffServiceTests {
     typealias Env = (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String)
 
-    /// Spawn a `.worktree` card and turn its cwd into a real git repo (`a.txt` committed on `main`).
-    private func worktreeCardWithRepo() async throws -> (env: Env, task: Task) {
-        let env = TestEnv.make()
+    /// Spawn a `.worktree` card wired to a canned `StubDiffProvider` — the card cwd needs no real repo,
+    /// the stub answers the diff. Returns the env, the live card, and the stub for call/return assertions.
+    private func worktreeCard(stub: StubDiffProvider, branch: String = "b")
+        async throws -> (env: Env, task: Task) {
+        let env = TestEnv.make(proc: FakeProc())
+        await env.svc._setDiffProviderForTest(stub)
         let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "task", repo: repo, branch: "b"))
-        try gitInit(t.cwd)
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "task", repo: repo, branch: branch))
         return (env, t)
     }
 
-    private func gitInit(_ dir: String) throws {
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        for args in [["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]] {
-            #expect(try Proc.run(["git"] + args, cwd: dir).ok)
-        }
-        try "one\ntwo\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
-        #expect(try Proc.run(["git", "add", "-A"], cwd: dir).ok)
-        #expect(try Proc.run(["git", "commit", "-q", "-m", "base"], cwd: dir).ok)
-    }
-    private func modify(_ dir: String) throws {
-        try "one\ntwo\nthree\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
-    }
-
-    /// Turn `dir` into a real repo with topology: main(base) → parent(parent's own commit) →
-    /// child=HEAD(child's own file). `.parent` should see only the child's file; `.branch` (vs main)
-    /// sees both the parent's and the child's changes.
-    private func gitParentChild(_ dir: String) throws {
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        func git(_ a: String...) { #expect((try? Proc.run(["git"] + a, cwd: dir))?.ok == true) }
-        git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
-        try "base\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
-        git("add", "-A"); git("commit", "-q", "-m", "base")
-        git("checkout", "-q", "-b", "parent")
-        try "base\nPARENT\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
-        git("commit", "-q", "-am", "parent work")
-        git("checkout", "-q", "-b", "child")
-        try "child\n".write(toFile: dir + "/b.txt", atomically: true, encoding: .utf8)
-        git("add", "-A"); git("commit", "-q", "-m", "child work")
-    }
-
-    /// main(a.txt) → parent(+parent.md) → child=HEAD(+child.md). Once the card baselines against its
-    /// parent, only `child.md` counts as the card's changed note.
-    private func gitParentChildNotes(_ dir: String) throws {
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        func git(_ a: String...) { #expect((try? Proc.run(["git"] + a, cwd: dir))?.ok == true) }
-        git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
-        try "base\n".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
-        git("add", "-A"); git("commit", "-q", "-m", "base")
-        git("checkout", "-q", "-b", "parent")
-        try "# parent\n".write(toFile: dir + "/parent.md", atomically: true, encoding: .utf8)
-        git("add", "-A"); git("commit", "-q", "-m", "parent note")
-        git("checkout", "-q", "-b", "child")
-        try "# child\n".write(toFile: dir + "/child.md", atomically: true, encoding: .utf8)
-        git("add", "-A"); git("commit", "-q", "-m", "child note")
-    }
-
-    @Test("footer diffstat auto-selects the parent baseline for a card with a parent")
+    @Test("footer diffstat auto-selects the parent baseline for a card with a parent; an explicit base overrides")
     func footerSelectsParentBaseline() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "task", repo: repo, branch: "child"))
-        try gitParentChild(t.cwd)
+        let stub = StubDiffProvider(stats: [.parent: DiffStat(filesChanged: 1, insertions: 0, deletions: 0),
+                                            .branch: DiffStat(filesChanged: 2, insertions: 0, deletions: 0)])
+        let (env, t) = try await worktreeCard(stub: stub, branch: "child")
         _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
 
-        // No explicit base ⇒ the funnel/default path. Parent-relative ⇒ only the child's own file.
+        // No explicit base ⇒ the service resolves the card's parent and asks the provider for `.parent`.
         let s = try #require(await env.svc.recomputeDiffStat(t.id))
-        #expect(s.filesChanged == 1)   // b.txt only — NOT the parent's a.txt change
+        #expect(s.filesChanged == 1)                             // the provider's parent-baseline stat
+        #expect(stub.statCalls.last?.base == .parent)            // ← the behavior under test: baseline picked
+        #expect(stub.statCalls.last?.parentBranch == "refs/heads/parent")
 
-        // The .branch baseline (vs main) instead includes the parent's work too (a.txt + b.txt).
+        // An explicit `.branch` base overrides the default; the provider's branch-baseline stat comes back.
         let branchStat = try #require(await env.svc.recomputeDiffStat(t.id, base: .branch))
         #expect(branchStat.filesChanged == 2)
-    }
-
-    @Test("changedNotes baselines against the parent — the parent's note is excluded")
-    func changedNotesUsesParentBaseline() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "task", repo: repo, branch: "child"))
-        try gitParentChildNotes(t.cwd)
-        _ = try await env.svc.store.update(t.id) { $0.parentBranch = "parent" }
-        let notes = try await env.svc.changedNotes(t.id)
-        #expect(notes.map(\.path) == ["child.md"])   // parent.md excluded
+        #expect(stub.statCalls.last?.base == .branch)
     }
 
     @Test("recomputeDiffStat sets the stat + emits; a no-change recompute does not re-emit")
     func recomputeEmitsOnChange() async throws {
-        let (env, t) = try await worktreeCardWithRepo()
-        try modify(t.cwd)
+        let stub = StubDiffProvider(stats: [.branch: DiffStat(filesChanged: 1, insertions: 1, deletions: 0)])
+        let (env, t) = try await worktreeCard(stub: stub)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
@@ -102,7 +78,7 @@ struct DiffServiceTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.diffStat?.filesChanged == 1)
 
-        _ = await env.svc.recomputeDiffStat(t.id)   // no tree change → must not re-emit
+        _ = await env.svc.recomputeDiffStat(t.id)   // provider returns the same stat → must not re-emit
         // Exactly one diffstat-bearing upsert for this card — the first recompute; the second was a no-op.
         try await pollUntil("first diffstat upsert delivered") {
             await collector.upserts.contains { $0.id == t.id && $0.diffStat != nil }
@@ -114,8 +90,8 @@ struct DiffServiceTests {
 
     @Test("a plain report (no tool info) schedules a coalesced re-stat — adapter-agnostic")
     func reportTriggersRestat() async throws {
-        let (env, t) = try await worktreeCardWithRepo()
-        try modify(t.cwd)
+        let stub = StubDiffProvider(stats: [.branch: DiffStat(filesChanged: 1, insertions: 1, deletions: 0)])
+        let (env, t) = try await worktreeCard(stub: stub)
         // A normalized snapshot carrying NO tool_name — the diff core must still refresh off it.
         try await env.svc.report(t.id, StatusReport(desc: "working", run: .running))
         try await pollUntil {
@@ -125,16 +101,22 @@ struct DiffServiceTests {
         #expect(after.diffStat?.filesChanged == 1)
     }
 
-    @Test("diffText returns a rendered diff for a worktree card")
+    @Test("diffText returns the provider's rendered diff for a worktree card")
     func diffTextWorktree() async throws {
-        let (env, t) = try await worktreeCardWithRepo()
-        try modify(t.cwd)
+        let stub = StubDiffProvider(renders: [.branch: "diff --git a/a.txt b/a.txt\n@@ -1 +1,2 @@\n+three\n"])
+        let (env, t) = try await worktreeCard(stub: stub)
         #expect(try await env.svc.diffText(t.id, base: .branch).isEmpty == false)
+        #expect(stub.renderCalls.last?.base == .branch)
     }
 
-    @Test("non-worktree (borrowed) card: diffText empty, diffStat stays nil")
+    @Test("non-worktree (borrowed) card: diffText empty, diffStat stays nil, provider never asked")
     func borrowedGuarded() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: FakeProc())
+        // Arm the stub with data it would return IF asked — proving the origin guard short-circuits BEFORE
+        // the provider (a stronger statement than the old real-git version, which couldn't observe that).
+        let stub = StubDiffProvider(stats: [.branch: DiffStat(filesChanged: 9, insertions: 9, deletions: 9)],
+                                    renders: [.branch: "SHOULD NOT APPEAR"])
+        await env.svc._setDiffProviderForTest(stub)
         let dir = env.base + "/data"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", cwd: dir, access: .readWrite))
@@ -143,11 +125,13 @@ struct DiffServiceTests {
         _ = await env.svc.recomputeDiffStat(t.id)
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.diffStat == nil)
+        #expect(stub.statCalls.isEmpty)     // the origin guard fired before any provider call
+        #expect(stub.renderCalls.isEmpty)
     }
 
     @Test("unknown card → unknownTask")
     func unknownCard() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: FakeProc())
         await #expect(throws: OrchestraError.self) {
             _ = try await env.svc.diffText(UUID())
         }

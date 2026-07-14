@@ -1,3 +1,4 @@
+// MOVES-TO: ContractTests/Git — GitDiffProvider stat/render over real repos (git diff --numstat shape)
 import Foundation
 import Testing
 @testable import OrchestraCore
