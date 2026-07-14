@@ -1,9 +1,25 @@
 # Test-suite redesign: isolate everything, mock most, fake time always
 
-**Status:** design for review · **Card:** 581da4 · **Branch:** `perf/tiered-test-suite`
-**Baseline (all measured 2026-07-13, AFTER the nudge-leak fix `e5ee73d`, contended machine):**
-full suite = 1,157 tests / 179 suites / all green / **99.8s** · minus the `IntegrationTests`
-target = 1,108 / 52.4s · pure-unit subset = 908 / **12.1s**.
+**Status:** IMPLEMENTED (2026-07-14) · **Card:** 581da4 · **Branch:** `perf/tiered-test-suite`
+
+**Before** (2026-07-13, post-nudge-fix `e5ee73d`, contended): full suite = 1,157 tests / 99.8s,
+no tiers, 146 sleep sites, global scratch mutex, pure-unit subset only reachable by hand-rolled
+skip regexes (908 tests / 12.1s).
+
+**After** (2026-07-14, medians of 3, lightly contended, post-nudge-fix):
+| invocation | tests | wall-clock |
+|---|---|---|
+| `./scripts/test.sh` (unit, the per-task loop) | 1,044 (849 st + 195 xc) | **9.4s** |
+| `--contract` | 1,170 cumulative | 28.1s |
+| `--e2e` | 1,053 cumulative | 64.6s |
+| `--all` (merge gate + lint) | **1,179** (976 st + 203 xc) | 80.3s |
+
+**Accounting** (nothing silently dropped): 1,157 → 1,179 = **+24 added** (TestClock/FakeProc/
+SyncGate/emulator infrastructure tests, the three fidelity matrices, scratch-isolation and
+debounce-cap coverage, per-area conversion additions) **− 2 deleted** (byte-identical duplicates,
+recorded in `2026-07-13-test-deletion-decisions.md`). Every converted real-git assertion is
+traced in its area commit's assertion map (`e91926b`..`861bc79`). Category-4 regression guards:
+both kept (decision list stands unless Allen vetoes).
 
 ## 1. What this replaces
 
