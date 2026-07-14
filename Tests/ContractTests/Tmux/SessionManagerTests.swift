@@ -1,22 +1,32 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
+
+/// ONE throwaway tmux server for the whole suite. Booting a fresh `tmux` server per test instance (the
+/// old `deinit` kill-server ran per case) forked a new server for each of the dozen-plus tests — the
+/// dominant cost of the contract tier. Tests use distinct session names (`orchestra-<uuid>`, one per
+/// task) and each kills its own session, and no test assumes an EMPTY server (`list()` only asserts
+/// `contains`), so a single shared server is safe. Killed exactly once at process exit (swift-testing
+/// has no suite teardown); tmux's own idle-server GC is the backstop.
+enum SharedTmux {
+    static let socket: String = {
+        let s = "orch-test-\(UUID().uuidString.prefix(8))"
+        registerProcessExitCleanup { _ = try? Proc.run(["tmux", "-L", s, "kill-server"]) }
+        return s
+    }()
+}
 
 @Suite("SessionManager — real tmux", .enabled(if: IntegrationSupport.tmuxAvailable), .serialized)
 final class SessionManagerTests {
 
-    // A unique tmux socket per test instance so suites don't collide; killed in deinit.
-    let socket = "orch-test-\(UUID().uuidString.prefix(8))"
+    // The single suite-scoped tmux socket (see `SharedTmux`); torn down once at process exit.
+    let socket = SharedTmux.socket
     var createdSessions: [String] = []
     let sm: SessionManager
 
     init() {
         sm = SessionManager(socket: socket, confPath: SessionManager.bundledConf, sockEnvPath: "/tmp/fake.sock")
-    }
-
-    deinit {
-        // Tear down the whole throwaway tmux server.
-        _ = try? Proc.run(["tmux", "-L", socket, "kill-server"])
     }
 
     private func makeTask(cwd: String) -> Task {

@@ -1,11 +1,35 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 /// PR7 (cross-cutting) — SMOKE, not the regression guard. Every race exercised here has a deterministic
 /// stub test in a prior PR (`test_concurrentSameBranchEnsureJoins` — PR3b; `test_actorNotBlockedByExec`/
 /// `_byLivenessList` — PR5; `test_spawnDrivesPhases` — PR2). This just proves the shipped machinery holds
 /// together over a REAL git checkout + REAL tmux.
+
+/// The 12k-file slow repo, generated EXACTLY ONCE for the whole E2E target and `cp -R`-copied per case.
+///
+/// A truly shared repo is impossible: `WorktreeManager.ensure` runs `git -C repo worktree add …`, which
+/// writes branch refs + `.git/worktrees` metadata INTO the repo, so two parameterized cases (claude/codex)
+/// would interleave writes and there is no suite-final teardown across cases (reviewed finding). So the
+/// expensive part — generation — happens once into a template `T`; each case then does a cheap `cp -R T`
+/// into its own private base and runs entirely there. `T` is reaped at process exit (after the last case)
+/// with TMPDIR reaping as the backstop.
+enum SlowRepoTemplate {
+    /// async-lazy: the first `.value` access starts ONE generation; every case (and the sanity suite)
+    /// awaits the same task, so the 12k files are written exactly once for the run (was three times:
+    /// 2k sanity + 12k×2 cases).
+    static let generation = _Concurrency.Task.detached(priority: .userInitiated) { () throws -> String in
+        let dir = IntegrationSupport.tempDir("slowrepo-template")
+        registerProcessExitCleanup { try? FileManager.default.removeItem(atPath: dir) }
+        return try SlowRepoFixture.generate(base: dir)      // <dir>/repos/app (canonical)
+    }
+
+    /// The template's canonical repo path; awaits (and, on first call, triggers) the one-time generation.
+    static func repo() async throws -> String { try await generation.value }
+}
+
 enum SlowRepoFixture {
     /// Absolute path to the bundled generator script.
     static var scriptPath: String {
@@ -50,15 +74,15 @@ final class PhaseWalk: @unchecked Sendable {
 @Suite("Slow-repo fixture sanity", .enabled(if: IntegrationSupport.gitAvailable), .serialized)
 struct SlowRepoFixtureTests {
     @Test("generator produces a large committed working tree")
-    func fixtureGeneratesSlowCheckout() throws {
+    func fixtureGeneratesSlowCheckout() async throws {
+        // Asserts on the SHARED template `T` — the separate 2k generation this used to do was pure
+        // duplicate work (a third full generation on top of the two case copies). Awaiting the shared
+        // task proves the generator produced a large committed tree without generating anything new.
         #expect(!SlowRepoFixture.scriptPath.isEmpty)
-        let base = IntegrationSupport.tempDir("slowfix")
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        // A small count keeps this sanity test fast; the E2E uses the 12k default (see `generate`).
-        let repo = try SlowRepoFixture.generate(base: base, count: 2_000)
+        let repo = try await SlowRepoTemplate.repo()
         let n = try Proc.checked(["git", "-C", repo, "ls-files"]).stdout
             .split(whereSeparator: \.isNewline).count
-        #expect(n >= 2_000)
+        #expect(n >= 12_000)                                 // the 12k default (see `generate`)
         // HEAD is a single commit on main
         let head = try Proc.checked(["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -116,7 +140,12 @@ final class SlowRepoE2ETests {
     @Test("slow-repo spawn: race-free ensure + non-frozen actor + phase walk",
           arguments: ["claude-code", "codex"])
     func slowRepoSpawn(agentId: String) async throws {
-        let repo = try SlowRepoFixture.generate(base: base)      // 12k files → multi-second checkout
+        // Copy the ONE-time 12k template into this case's private base — `git worktree add` writes into
+        // the repo, so each case needs its own; generation happened once (see `SlowRepoTemplate`).
+        let templateRepo = try await SlowRepoTemplate.repo()
+        try FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
+        try Proc.checked(["cp", "-R", templateRepo, base + "/repos/app"])   // cheap copy → multi-second checkout
+        let repo = PathResolver.canonical(base + "/repos/app")
         service = makeService(repo: repo)
         let branch = "slow-\(agentId)"
 
