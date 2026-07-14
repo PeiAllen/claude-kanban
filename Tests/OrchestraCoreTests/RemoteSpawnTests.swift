@@ -11,7 +11,7 @@ struct RemoteSpawnTests {
         _ = svc
         let repo = base + "/repos/app"
         let (_, _) = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let oid = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
+        let oid = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))
         let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
                             scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let wm = WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
@@ -42,7 +42,7 @@ struct RemoteSpawnTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let prTip = try await RemoteParents().fetch(repo: repo, .pullRequest(7))  // expected OID
+        let prTip = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))  // expected OID
         let t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         #expect(t.parentBranch == "pr#7")                    // canonical remote form stored
         let link = try #require(await svc.lineage.read(repo: repo, branch: "childP"))

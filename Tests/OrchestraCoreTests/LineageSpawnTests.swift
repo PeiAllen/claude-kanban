@@ -21,7 +21,7 @@ struct LineageSpawnTests {
         let env = TestEnv.make()
         let repo = try Self.gitRepo(env.base)
         // Pre-seed durable lineage for branch "child" (as if a prior card set it, then archived).
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         env.worktrees.markBranchExists("child")   // the branch survived the prior card's archival
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
@@ -44,7 +44,7 @@ struct LineageSpawnTests {
     func freshBranchIgnoresStaleConfig() async throws {
         let env = TestEnv.make()
         let repo = try Self.gitRepo(env.base)
-        try await BranchLineage().set(repo: repo, branch: "ghost",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "ghost",
                                       link: ParentLink(parent: "parent", base: "deadbeef"))
         // "ghost" is NOT marked existing ⇒ ensure reports branchExisted=false ⇒ churn is skipped.
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "ghost"))

@@ -17,6 +17,13 @@ import Foundation
 extension OrchestraService {
     /// The repo's configured git remotes (for remote-parent classification). A cheap local `git remote`,
     /// memoized per-repo until `.git/config`'s mtime changes.
+    ///
+    /// Task 5 (proc threading): deliberately still on `Proc.run`, NOT the async `ProcRunning` seam.
+    /// This helper must stay synchronous — it is called from sync `@Sendable` closures inside `offActor`
+    /// hops across out-of-scope files (+Diff/+Notes/+Remote/+Borrow/materialize, and every
+    /// `RemoteParentRef.parse(_:remotes:)` consumer), and its memo (`GitRemotesCache.remotes`) takes a
+    /// sync compute closure. Making it async would ripple async-ness through those seams and change
+    /// their actor-hop shape; convert it together with the diff tier when that tier moves to the seam.
     nonisolated func gitRemotes(repo: String) -> [String] {
         gitRemotesCache.remotes(repo: repo, configMtime: gitConfigMtime(repo: repo)) {
             guard let r = try? Proc.run(["git", "-C", repo, "remote"]), r.ok else { return [] }

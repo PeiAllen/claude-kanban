@@ -18,7 +18,7 @@ struct MergeRequestTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
         _ = try await env.svc.mergeRequest(ref: child.ref())
@@ -34,7 +34,7 @@ struct MergeRequestTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
         _ = try await env.svc.mergeRequest(ref: child.ref())
@@ -50,7 +50,7 @@ struct MergeRequestTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.recomputeTreeStat(child.id)              // a funnel recompute must not clobber it
@@ -63,7 +63,7 @@ struct MergeRequestTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
         try TreeStatTests.advanceParent(repo, 1)               // simulate the merge (S2-2 gate)

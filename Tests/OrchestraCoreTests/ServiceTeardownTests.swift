@@ -64,7 +64,7 @@ struct ServiceTeardownTests {
                 env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
             let child = try await TestEnv.spawnAndAwaitLive(
                 env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-            try await BranchLineage().set(repo: repo, branch: "child",
+            try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                           link: ParentLink(parent: "parent", base: parentTip))
             await env.svc.setMergeRequestNudgeInterval(.seconds(3600))   // park the loop in its sleep
             _ = try await env.svc.mergeRequest(ref: child.ref())

@@ -50,10 +50,10 @@ public actor OrchestraService {
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
     /// Branch-tree lineage store (git-config parent links). The single writer; `Task.parentBranch`
-    /// is a cache derived from it at spawn / set-parent.
-    let lineage = BranchLineage()
+    /// is a cache derived from it at spawn / set-parent. Built in init over the service's own `proc`.
+    let lineage: BranchLineage
     /// The isolated remote-parent tier (BT6): hardened `fetch`/`lsRemoteTip` for remote bases + watch.
-    let remoteParents = RemoteParents()
+    let remoteParents: RemoteParents
     /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
     /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
     var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
@@ -245,6 +245,8 @@ public actor OrchestraService {
         self.config = config
         self.clock = clock
         self.proc = proc
+        self.lineage = BranchLineage(proc: proc)
+        self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)

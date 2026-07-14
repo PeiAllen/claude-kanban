@@ -48,7 +48,7 @@ struct TreeStatTests {
     static func linkedChild(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String),
                             repo: String, base recorded: String) async throws -> Task {
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: recorded))
         return card
     }
@@ -146,7 +146,7 @@ struct TreeStatTests {
         _ = try await env.svc.synced(ref: card.ref())              // "I merged the parent down"
         #expect(await treeStat(env, card.id)?.state == .inSync)
         #expect(await treeStat(env, card.id)?.behind == 0)
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.base == tip2)                                 // recorded base advanced to parent tip
     }
 

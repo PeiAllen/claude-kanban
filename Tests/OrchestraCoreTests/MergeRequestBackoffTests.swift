@@ -73,7 +73,7 @@ struct MergeRequestCapTests {
             env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let c = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         return (p, c)
     }
@@ -273,7 +273,7 @@ struct MergeStalledTrackingTests {
             env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: tip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)
@@ -295,7 +295,7 @@ struct MergeStalledTrackingTests {
             env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: tip))
 
         await env.svc.setMergeRequestNudgeInterval(.milliseconds(20))

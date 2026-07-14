@@ -18,7 +18,7 @@ struct RebuildMergeRequestNudgesTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
         #expect(await treeState(env.svc, child.id) == .mergeRequested)
@@ -49,7 +49,7 @@ struct RebuildMergeRequestNudgesTests {
 
         // (a) live, pending — the positive control that MUST be re-armed.
         let live = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: live.ref())
         await env.svc.stopMergeRequestNudge(live.id)   // restart sim: clear the in-memory timer
@@ -77,7 +77,7 @@ struct RebuildMergeRequestNudgesTests {
         let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
         _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)   // restart sim

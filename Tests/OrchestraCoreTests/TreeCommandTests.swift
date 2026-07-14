@@ -30,7 +30,7 @@ struct TreeCommandTests {
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child"))
         let updated = try await env.svc.setParent(ref: t.shortId, parent: "parent")
         #expect(updated.parentBranch == "parent")
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.parent == "parent")
         let mb = try Proc.run(["git", "-C", repo, "merge-base", "child", "parent"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,7 +45,7 @@ struct TreeCommandTests {
         _ = try await env.svc.setParent(ref: t.shortId, parent: "parent")
         let cleared = try await env.svc.setParent(ref: t.shortId, parent: nil)
         #expect(cleared.parentBranch == nil)
-        #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") == nil)
     }
 
     @Test("set-parent mode 'move' repoints the lineage and marks restack-needed (BT5)")
@@ -56,7 +56,7 @@ struct TreeCommandTests {
         let updated = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "move")
         #expect(updated.parentBranch == "parent")
         #expect(updated.treeStat?.state == .restackNeeded)
-        #expect(await BranchLineage().read(repo: repo, branch: "child")?.parent == "parent")
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child")?.parent == "parent")
         // invalid mode is still rejected
         await #expect(throws: OrchestraError.self) {
             _ = try await env.svc.setParent(ref: t.shortId, parent: "parent", mode: "teleport")

@@ -57,7 +57,7 @@ struct SpawnBaseValidationTests {
         try g("branch", "feat-x-fix", "feat-x")
         let fxTip = try Proc.run(["git", "-C", repo, "rev-parse", "feat-x"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        try await BranchLineage().set(repo: repo, branch: "feat-x-fix",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "feat-x-fix",
                                       link: ParentLink(parent: "feat-x", base: fxTip))
         // Delete feat-x — its config section goes, but feat-x-fix.orchestra-parent = feat-x now dangles.
         try g("branch", "-D", "feat-x")

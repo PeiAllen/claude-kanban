@@ -94,8 +94,9 @@ extension OrchestraService {
             _ = try? await worktrees.release(cardId: id, cards: await store.all(), force: false)
             if !ensured.branchExisted {
                 let ctl = Duration.seconds(config.controlTimeout)
-                _ = try? await offActor {
-                    try? Proc.run(["git", "-C", realRepo, "branch", "-D", card.branch], timeout: ctl)
+                _ = await offActorValue { [proc] in
+                    try? await proc.run(["git", "-C", realRepo, "branch", "-D", card.branch],
+                                        cwd: nil, env: [:], timeout: ctl)
                 }
             }
             return .failed(detail: "spawn rolled back (worktree/branch removed): \(error)")

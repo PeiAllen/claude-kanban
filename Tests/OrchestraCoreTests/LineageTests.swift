@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 @Suite("BranchLineage — git-config lineage CRUD + tree queries")
@@ -29,7 +30,7 @@ struct LineageTests {
     @Test("S4: a failed re-point (config lock) leaves the prior link intact")
     func setPartialWriteKeepsPrior() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "p1", base: "aaa"))
         // Hold the config lock so the re-point's git-config writes all fail.
         let lock = repo + "/.git/config.lock"
@@ -48,7 +49,7 @@ struct LineageTests {
     @Test("set/read round-trip — local parent")
     func roundTripLocal() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child",
                           link: ParentLink(parent: "feature-a", base: "deadbeef"))
         let got = try #require(await lin.read(repo: repo, branch: "child"))
@@ -61,7 +62,7 @@ struct LineageTests {
     @Test("set/read round-trip — remote parent with PR + watch keys")
     func roundTripRemote() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child",
                           link: ParentLink(parent: "origin/feature-b", base: "cafe", prNumber: 12, watch: true))
         let got = try #require(await lin.read(repo: repo, branch: "child"))
@@ -73,7 +74,7 @@ struct LineageTests {
     @Test("clear removes all orchestra-* keys")
     func clearAll() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child",
                           link: ParentLink(parent: "p", base: "b", prNumber: 3, watch: true))
         try await lin.clear(repo: repo, branch: "child")
@@ -83,7 +84,7 @@ struct LineageTests {
     @Test("updateBase rewrites only the base OID")
     func updateBaseOnly() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "p", base: "old"))
         try await lin.updateBase(repo: repo, branch: "child", oid: "new")
         let got = try #require(await lin.read(repo: repo, branch: "child"))
@@ -94,7 +95,7 @@ struct LineageTests {
     @Test("read of an unlinked branch → nil")
     func readUnlinked() async throws {
         let repo = try Self.makeRepo()
-        #expect(await BranchLineage().read(repo: repo, branch: "nope") == nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "nope") == nil)
     }
 
     // MARK: cycle guard
@@ -102,7 +103,7 @@ struct LineageTests {
     @Test("self-parent rejected")
     func selfParentRejected() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         await #expect(throws: OrchestraError.self) {
             try await lin.set(repo: repo, branch: "x", link: ParentLink(parent: "x", base: "b"))
         }
@@ -112,7 +113,7 @@ struct LineageTests {
     func cycleRejected() async throws {
         // a → b → c  (a.parent=b, b.parent=c). Now try c.parent=a, which closes a→b→c→a.
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "a", link: ParentLink(parent: "b", base: "1"))
         try await lin.set(repo: repo, branch: "b", link: ParentLink(parent: "c", base: "1"))
         await #expect(throws: OrchestraError.self) {
@@ -125,7 +126,7 @@ struct LineageTests {
     @Test("children finds every branch whose parent is the target (fan-out)")
     func childrenFanOut() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         for c in ["c1", "c2", "c3"] {
             try await lin.set(repo: repo, branch: c, link: ParentLink(parent: "p", base: "b"))
         }
@@ -139,7 +140,7 @@ struct LineageTests {
         // A child whose recorded base OID string coincidentally equals the parent name would double-
         // count if `children`'s key match leaked past the `orchestra-parent` anchor onto `-base`.
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "c1", link: ParentLink(parent: "target", base: "target"))
         #expect(await lin.children(repo: repo, of: "target") == ["c1"])   // once, from the parent key only
     }
@@ -147,7 +148,7 @@ struct LineageTests {
     @Test("ancestors walks the parent chain nearest-first")
     func ancestorsChain() async throws {
         let repo = try Self.makeRepo()
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "a", link: ParentLink(parent: "b", base: "1"))
         try await lin.set(repo: repo, branch: "b", link: ParentLink(parent: "c", base: "1"))
         #expect(await lin.ancestors(repo: repo, of: "a") == ["b", "c"])
@@ -157,7 +158,7 @@ struct LineageTests {
     func foreignKeysUntouched() async throws {
         let repo = try Self.makeRepo()
         try Self.git(repo, "config", "branch.child.description", "hello")
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "p", base: "b"))
         try await lin.clear(repo: repo, branch: "child")
         // The non-orchestra key survives.
@@ -182,5 +183,25 @@ struct LineageTests {
                 == .branch(remote: "origin", name: "feature-b"))                          // remote
         #expect(RemoteParentRef.parse("feature/foo", remotes: remotes) == nil)           // local slashed
         _ = repo
+    }
+
+    // MARK: proc seam
+
+    @Test("lineage round-trips through the proc seam — no filesystem, no git")
+    func lineageOverFakeProc() async throws {
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        fake.on(["git", "rev-parse"]) { _ in ProcResult(stdout: "abc123\n", stderr: "", exitCode: 0) }  // fall-through composition
+        let lineage = BranchLineage(proc: fake)
+        try await lineage.set(repo: "/nonexistent/repo", branch: "child",
+                              link: ParentLink(parent: "main", base: "abc123"))
+        let rec = await lineage.read(repo: "/nonexistent/repo", branch: "child")
+        #expect(rec?.parent == "main")
+        #expect(rec?.base == "abc123")
+        // Fall-through composition: the emulator's broad ["git"] rule returned nil for this shape,
+        // so the later ["git", "rev-parse"] rule answered.
+        let rp = try await fake.run(["git", "rev-parse", "HEAD"], cwd: nil, env: [:], timeout: nil)
+        #expect(rp.stdout == "abc123\n")
+        #expect(fake.calls.contains { $0.argv.starts(with: ["git", "-C", "/nonexistent/repo", "config"]) })
     }
 }

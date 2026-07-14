@@ -24,7 +24,7 @@ struct ShipChoreoTests {
         let (repo, parentTip) = try Self.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the parent agent's squash-merge (S2-2 gate)
 
@@ -35,7 +35,7 @@ struct ShipChoreoTests {
         #expect(msgs.first?.text.contains("child") == true)
         #expect(msgs.first?.text.contains("merged into you") == true)
         // shipped clears the child's own lineage (idempotency key)
-        #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") == nil)
     }
 
     // (a) bare parent (no card) ⇒ neutral activity (S3-1: NOT a warning — it's the documented success
@@ -45,7 +45,7 @@ struct ShipChoreoTests {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the merge (S2-2 gate)
         let collector = EventCollector()
@@ -66,14 +66,14 @@ struct ShipChoreoTests {
         let env = TestEnv.make()
         let (repo, parentTip) = try Self.repoWithChild(env.base)
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         // Parent has NOT advanced — nothing merged. Refuse, and leave the lineage intact.
         await #expect(throws: OrchestraError.self) { try await env.svc.shipped(ref: child.ref()) }
-        #expect(await BranchLineage().read(repo: repo, branch: "child") != nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") != nil)
         // Force overrides (a genuinely empty squash).
         _ = try await env.svc.shipped(ref: child.ref(), force: true)
-        #expect(await BranchLineage().read(repo: repo, branch: "child") == nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") == nil)
     }
 
     // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now
@@ -84,7 +84,7 @@ struct ShipChoreoTests {
         let (repo, parentTip) = try Self.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
         // Intent-only archive: the child nudge is a TeardownStepper actor-duty (PR4b Task 4) — drive it.
@@ -101,7 +101,7 @@ struct ShipChoreoTests {
         let repo = try TreeStatTests.repoWithParent(env.base)
         let tip = try TreeStatTests.git(repo, "rev-parse", "parent")
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: tip))
         try await env.svc.archive(card.id)
         await env.svc.recomputeTreeStat(card.id)
@@ -117,7 +117,7 @@ struct ShipChoreoTests {
         let (repo, parentTip) = try Self.repoWithChild(env.base)
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         try TreeStatTests.advanceParent(repo, 1)   // simulate the parent's squash-merge (S2-2 gate)
 
@@ -152,12 +152,12 @@ struct ShipChoreoTests {
 
         let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "A", repo: repo, branch: "A"))   // no link
         let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "B", repo: repo, branch: "B"))
-        try await BranchLineage().set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
 
         try await env.svc.shipped(ref: a.ref())
 
         // B retargeted onto the default branch (main), recorded base KEPT, restackNeeded + nudged.
-        let lB = try #require(await BranchLineage().read(repo: repo, branch: "B"))
+        let lB = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "B"))
         #expect(lB.parent == "main")
         #expect(lB.base == aTip)
         #expect(await env.svc.list().first { $0.id == b.id }?.treeStat?.state == .restackNeeded)
@@ -190,7 +190,7 @@ struct ShipChoreoTests {
         let mid = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "mid", repo: repo, branch: "mid"))
         let c1 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c1", repo: repo, branch: "c1"))
         let c2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c2", repo: repo, branch: "c2"))
-        let lin = BranchLineage()
+        let lin = BranchLineage(proc: RealProc())
         try await lin.set(repo: repo, branch: "mid",
                           link: ParentLink(parent: "grandparent", base: grandparentTip))
         try await lin.set(repo: repo, branch: "c1", link: ParentLink(parent: "mid", base: midTip))

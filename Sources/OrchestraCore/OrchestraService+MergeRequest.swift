@@ -178,9 +178,9 @@ extension OrchestraService {
         let to = Duration.seconds(config.controlTimeout)
         let probe = treeProbeHolder.get()
         let repo = child.repo
-        let fresh: TreeStat? = (try? await offActor {
-            self.computeTreeStat(repo: repo, link: link, timeout: to, probe: probe)
-        }) ?? nil
+        let fresh: TreeStat? = await offActorValue {
+            await self.computeTreeStat(repo: repo, link: link, timeout: to, probe: probe)
+        }
 
         var flagged = false
         if let (saved, rev) = try? await store.update(childId, { t in

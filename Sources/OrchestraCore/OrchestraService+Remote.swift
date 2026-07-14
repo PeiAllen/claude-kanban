@@ -140,7 +140,7 @@ extension OrchestraService {
         // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
         // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
         let repo = t.repo, ctl = Duration.seconds(config.controlTimeout)
-        let db = (try? await offActor { self.defaultBranch(repo: repo, timeout: ctl) }) ?? "main"
+        let db = await offActorValue { await self.defaultBranch(repo: repo, timeout: ctl) }
         let keepWatching = (grandparent != db)
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,

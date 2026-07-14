@@ -26,7 +26,7 @@ struct SpawnBaseTests {
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "parent")
 
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.parent == "parent")
         // Recorded base OID = the parent branch's tip at creation.
         let parentTip = try Proc.run(["git", "-C", repo, "rev-parse", "parent"]).stdout
@@ -47,13 +47,13 @@ struct SpawnBaseTests {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
         // The branch pre-exists with its OWN durable lineage (parent = other), as after a prior card.
-        try await BranchLineage().set(repo: repo, branch: "child",
+        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "other", base: "deadbeef"))
         env.worktrees.markBranchExists("child")
         // Even though we pass base = parent, the existing branch must derive parent from config (= other).
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "other")
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.parent == "other")   // not overwritten by base
     }
 
@@ -74,7 +74,7 @@ struct SpawnBaseTests {
 
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(t.parentBranch == "parent")
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.base == branchTip)   // the branch tip, not the tag's OID
     }
 
@@ -93,7 +93,7 @@ struct SpawnBaseTests {
         let repo = try Self.repoWithParent(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "solo"))
         #expect(t.parentBranch == nil)
-        #expect(await BranchLineage().read(repo: repo, branch: "solo") == nil)
+        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "solo") == nil)
     }
 
     @Test("spawn threads base through the registry handler")

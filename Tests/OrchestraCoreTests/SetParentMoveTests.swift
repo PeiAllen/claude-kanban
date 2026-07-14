@@ -25,7 +25,7 @@ struct SetParentMoveTests {
         let (svc, repo, child, base0) = try await Self.env()
         try await svc.setParent(ref: child.ref(), parent: "other", mode: "move")
 
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.parent == "other")
         #expect(link.base == base0)   // recorded base KEPT (the rebase anchor)
         #expect(await svc.list().first { $0.id == child.id }?.treeStat?.state == .restackNeeded)
@@ -40,7 +40,7 @@ struct SetParentMoveTests {
         let (svc, repo, child, _) = try await Self.env()
         try await svc.setParent(ref: child.ref(), parent: "other", mode: "adopt")
 
-        let link = try #require(await BranchLineage().read(repo: repo, branch: "child"))
+        let link = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child"))
         #expect(link.parent == "other")
         let mb = try TreeStatTests.git(repo, "merge-base", "child", "other")
         #expect(link.base == mb)                       // merge-base, not the old base

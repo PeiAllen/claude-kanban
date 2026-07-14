@@ -142,7 +142,7 @@ struct MaterializeStepperTests {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
-        let prTip = try await RemoteParents().fetch(repo: repo, .pullRequest(7))   // expected tip
+        let prTip = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))   // expected tip
         let card = try await seedRealCreating(svc, base: base, branch: "childP", spawnBase: "pr#7")
         try await MaterializeStepper().step(card, await svc.convergeContext())
 

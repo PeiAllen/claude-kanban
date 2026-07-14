@@ -54,7 +54,7 @@ struct RemoteParentTests {
     func fetchPR() async throws {
         let (repo, bare) = try Self.makeOriginWithPR()
         let prTip = try Self.oid(bare, "refs/pull/7/head")
-        let oid = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
+        let oid = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))
         #expect(oid == prTip)
         #expect(try Self.oid(repo, "refs/orch/parents/pr/7") == prTip)
     }
@@ -62,7 +62,7 @@ struct RemoteParentTests {
     @Test("force refspec survives a remote history rewrite")
     func fetchForce() async throws {
         let (repo, bare) = try Self.makeOriginWithPR()
-        _ = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
+        _ = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))
         // Rewrite the PR head to an unrelated commit (non-fast-forward), then re-point the PR ref.
         try Self.git(repo, "checkout", "-q", "pr-src")
         try Self.write(repo, "z.txt", "rewrite\n"); try Self.git(repo, "add", "-A")
@@ -72,7 +72,7 @@ struct RemoteParentTests {
         try Self.git(repo, "push", "-q", "-f", "origin", "pr-src:refs/heads/feature-b")
         try Self.git(bare, "update-ref", "refs/pull/7/head", newTip)
         try Self.git(repo, "checkout", "-q", "main")
-        let oid2 = try await RemoteParents().fetch(repo: repo, .pullRequest(7))
+        let oid2 = try await RemoteParents(proc: RealProc()).fetch(repo: repo, .pullRequest(7))
         #expect(oid2 == newTip)   // the + refspec forced past the non-ff rewrite
         #expect(try Self.oid(repo, "refs/orch/parents/pr/7") == newTip)
     }
@@ -81,8 +81,8 @@ struct RemoteParentTests {
     func lsRemote() async throws {
         let (repo, bare) = try Self.makeOriginWithPR()
         let tip = try Self.oid(bare, "refs/heads/feature-b")
-        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .oid(tip))
+        #expect(await RemoteParents(proc: RealProc()).lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .oid(tip))
         try Self.git(bare, "update-ref", "-d", "refs/heads/feature-b")   // delete on the remote
-        #expect(await RemoteParents().lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .gone)
+        #expect(await RemoteParents(proc: RealProc()).lsRemoteTip(repo: repo, .branch(remote: "origin", name: "feature-b")) == .gone)
     }
 }
