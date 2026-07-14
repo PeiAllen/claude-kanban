@@ -51,13 +51,20 @@ struct ServiceTeardownTests {
         // Scope the ONLY strong reference so it drops at the end of this block. A long interval parks
         // the loop in its sleep holding NOTHING — exactly the state that used to hold `self` strongly.
         do {
-            let env = TestEnv.make()
-            let (repo, parentTip) = try ShipChoreoTests.repoWithChild(env.base)
+            // Unit-converted (Task 10, card-lifecycle): the parent/child graph is modelled over FakeProc +
+            // RepoGraph and lineage lives in GitConfigEmulator — no real git. The fake/graph are scoped to
+            // this block, so they drop with `env`, keeping the deallocation assertion honest.
+            let fake = FakeProc()
+            GitConfigEmulator().install(on: fake)
+            let graph = RepoScripts.withChild(on: fake)   // main + parent + a child branch
+            let env = TestEnv.make(proc: fake)
+            let repo = TestEnv.repo(env.base)
+            let parentTip = graph.tip("parent")!
             _ = try await TestEnv.spawnAndAwaitLive(
                 env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
             let child = try await TestEnv.spawnAndAwaitLive(
                 env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-            try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+            try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                           link: ParentLink(parent: "parent", base: parentTip))
             await env.svc.setMergeRequestNudgeInterval(.seconds(3600))   // park the loop in its sleep
             _ = try await env.svc.mergeRequest(ref: child.ref())

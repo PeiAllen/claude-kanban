@@ -6,6 +6,24 @@ import TestSupport
 // PR4b Task 1 — the four phase-keyed steppers driven DIRECTLY (no reconciler, no verb changes) via
 // `env.svc.convergeContext()` + `stepper.step(card, ctx)`, plus the ConvergeContext extensions and the
 // `spawnBase` carrier they depend on.
+//
+// Unit-converted (Task 10, card-lifecycle): the stepper/rollback/converge LOGIC runs over `FakeProc`
+// carrying `GitConfigEmulator` (lineage CRUD, pinned to real git by ContractTests/Git/GitConfigContractTests)
+// — no real git. The two REMOTE cases (`test_materializeRemoteBaseFromCarrier` /
+// `test_materializeRemoteFetchFailureClassified`) assert real-worktree-HEAD / real-fetch effects; they stay
+// real git in place as movers (see the note at `seedRealCreating`). Their worktree-add essence is pinned by
+// ContractTests/Git/WorktreeAddContractTests + RemoteFetchContractTests.
+
+/// A FakeProc carrying just the git-config emulator — the seam the converted stepper tests hand to
+/// `TestEnv.make(proc:)`. These cases exercise reconciler/rollback LOGIC (ensureError injection,
+/// removedForce routing, cwd, epoch stamping, child nudges), not commit-graph reads, so no RepoGraph is
+/// installed; a bad local `spawnBase`'s `recordSpawnBase` throw is faithfully produced by the emulator-only
+/// fake yielding no `rev-parse` OID (exactly the "non-git repo → git fails → throw" the old real dir gave).
+private func cfgFake() -> FakeProc {
+    let f = FakeProc()
+    GitConfigEmulator().install(on: f)
+    return f
+}
 
 // MARK: - Step 0 · ConvergeContext + spawnBase carrier
 
@@ -14,7 +32,7 @@ struct ConvergeContextTests {
 
     @Test("test_convergeContextTransitionAppliesMutate")
     func test_convergeContextTransitionAppliesMutate() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env.base)
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         _ = try await env.svc.store.update(card.id) { $0.phase = .creatingWorktree }
@@ -62,7 +80,7 @@ struct MaterializeStepperTests {
 
     @Test("test_materializeStepAdvancesToLaunching")
     func test_materializeStepAdvancesToLaunching() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedCreating(env, branch: "b")
         let before = env.worktrees.ensured.count
         let ctx = await env.svc.convergeContext()
@@ -76,7 +94,7 @@ struct MaterializeStepperTests {
     @Test("test_materializeFailureClassified")
     func test_materializeFailureClassified() async throws {
         // (a) an ensure that throws → dead(.spawnFailed), git stderr in deadDetail.
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedCreating(env, branch: "b")
         env.worktrees.ensureError = OrchestraError.io("fatal: bad object HEAD")
         let ctx = await env.svc.convergeContext()
@@ -86,7 +104,7 @@ struct MaterializeStepperTests {
         #expect(a.deadDetail?.contains("bad object HEAD") == true)
 
         // (b) a timeout → the explicit "timed out after Ns" wording (no generic passthrough).
-        let env2 = TestEnv.make()
+        let env2 = TestEnv.make(proc: cfgFake())
         let card2 = try await seedCreating(env2, branch: "b")
         env2.worktrees.ensureError = OrchestraError.io("git worktree add: operation timed out")
         try await MaterializeStepper().step(card2, await env2.svc.convergeContext())
@@ -98,9 +116,11 @@ struct MaterializeStepperTests {
 
     @Test("test_materializeLineageRecordFailureRollsBack")
     func test_materializeLineageRecordFailureRollsBack() async throws {
-        // A local `spawnBase` on a NON-git repo makes `recordSpawnBase` throw AFTER `ensure` — the S2-3(iii)
-        // rollback runs. (a) with no sibling the just-cut tree is released (force:false).
-        let env = TestEnv.make()
+        // A local `spawnBase` that `recordSpawnBase` can't resolve makes it throw AFTER `ensure` — the
+        // S2-3(iii) rollback runs. The emulator-only fake (no RepoGraph) answers `rev-parse` with the empty
+        // default, so `recordSpawnBase` throws exactly as it did on the old non-git repo. (a) with no sibling
+        // the just-cut tree is released (force:false).
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedCreating(env, branch: "child") { $0.spawnBase = "main" }
         let ctx = await env.svc.convergeContext()
         try await MaterializeStepper().step(card, ctx)
@@ -109,7 +129,7 @@ struct MaterializeStepperTests {
         #expect(env.worktrees.removedForce.contains { $0.path == card.cwd && $0.force == false })
 
         // (b) a SHARED sibling on the same tree is NEVER removed by the rollback.
-        let env2 = TestEnv.make()
+        let env2 = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env2.base)
         let c1 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "shared"))
         let c2 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "shared"))  // co-located sibling
@@ -121,6 +141,12 @@ struct MaterializeStepperTests {
         #expect(try #require(await env2.svc.store.get(c1.id)).phase == .dead(.spawnFailed))
         #expect(!env2.worktrees.removedForce.contains { $0.path == c1.cwd })   // sibling kept the tree
     }
+
+    // MOVERS (kept real git, Task 10 card-lifecycle): the two `materializeRemote*` cases below assert a
+    // REAL worktree HEAD == the fetched PR tip and a REAL fetch-failure leaving no worktree dir — real-fetch
+    // + real-worktree effects a FakeProc cannot carry. Left running real git in place (makeReal +
+    // RemoteParentTests.makeOriginWithPR + real `rev-parse HEAD`); their worktree-add / remote-fetch essence
+    // is pinned by ContractTests/Git/WorktreeAddContractTests + RemoteFetchContractTests.
 
     /// Create a `.creatingWorktree` worktree card directly in a real-git service's store (no spawn), so
     /// `materialize` re-derives everything from the persisted card — mirroring a reconciler-driven walk.
@@ -176,7 +202,7 @@ struct MaterializeStepperTests {
         // A newer intent made the card terminal — the epilogue (which re-reads AFTER the ensure await)
         // must release the just-cut tree and NOT advance to `.launching`. Deterministic (no wall-clock
         // race): the terminal phase is set before the step, and materialize's epilogue re-read sees it.
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedCreating(env, branch: "b")
         _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.sessionVanished) }
         let fresh = try #require(await env.svc.store.get(card.id))
@@ -203,7 +229,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchFlavorDerivedFromState")
     func test_launchFlavorDerivedFromState() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env.base)
         // Resumable: agentSessionId + a transcript on disk → .resume (pendingSeed folded).
         let resumable = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "hi", repo: repo, branch: "b"))
@@ -236,7 +262,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchStepReachesLiveOnReady_immediate")   // .relaunchLiveness (stub) lands on ensure
     func test_launchStepReachesLiveOnReady_immediate() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedLaunching(env, branch: "b")
         let ctx = await env.svc.convergeContext()
         try await LaunchStepper().step(card, ctx)
@@ -258,7 +284,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchStepReachesLiveOnReady_claude")   // .sessionStartHook awaits the signal
     func test_launchStepReachesLiveOnReady_claude() async throws {
-        let env = TestEnv.make(grace: 10, capabilities: .claudeCode)
+        let env = TestEnv.make(grace: 10, capabilities: .claudeCode, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()
         async let stepping: Void = LaunchStepper().step(card, ctx)
@@ -273,7 +299,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchStepReachesLiveOnReady_codex")   // .rolloutMeta awaits; the ready signal resolves it
     func test_launchStepReachesLiveOnReady_codex() async throws {
-        let env = TestEnv.make(grace: 10, capabilities: ReadinessSignalTests.codexStubCaps)
+        let env = TestEnv.make(grace: 10, capabilities: ReadinessSignalTests.codexStubCaps, proc: cfgFake())
         let card = try await seedLaunchingAwaited(env, branch: "b")
         let ctx = await env.svc.convergeContext()
         async let stepping: Void = LaunchStepper().step(card, ctx)
@@ -285,7 +311,7 @@ struct LaunchStepperTests {
 
     @Test("test_launchConsumesPendingSeed")
     func test_launchConsumesPendingSeed() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env.base)
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "hi", repo: repo, branch: "b"))
         env.adapter.writeTranscript(for: card.agentSessionId!)   // resumable ⇒ the seed folds into resume
@@ -318,7 +344,7 @@ struct RelaunchStepperTests {
 
     @Test("test_relaunchStepKillsThenEnsures")
     func test_relaunchStepKillsThenEnsures() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedRelaunching(env, branch: "b")
         env.sessions.setAlive(card.id, true)   // an old session exists to be killed
         let ctx = await env.svc.convergeContext()
@@ -332,7 +358,7 @@ struct RelaunchStepperTests {
 
     @Test("test_relaunchReMaterializesMissingWorktree")
     func test_relaunchReMaterializesMissingWorktree() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedRelaunching(env, branch: "b")
         try? FileManager.default.removeItem(atPath: card.cwd)   // the tree vanished under a live card
         let collector = EventCollector()
@@ -346,7 +372,7 @@ struct RelaunchStepperTests {
 
     @Test("test_relaunchBranchGoneFailsSafe")
     func test_relaunchBranchGoneFailsSafe() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await seedRelaunching(env, branch: "b")
         try? FileManager.default.removeItem(atPath: card.cwd)   // tree gone → ensure must re-cut
         env.worktrees.ensureError = OrchestraError.io("fatal: branch 'b' not found")   // branch also gone → throws
@@ -363,9 +389,8 @@ struct TeardownStepperTests {
 
     @Test("test_teardownFullDutyList_worktree")
     func test_teardownFullDutyList_worktree() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        _ = try Proc.run(["git", "-C", repo, "init"])   // lineage config needs a real git repo
+        let env = TestEnv.make(proc: cfgFake())
+        let repo = TestEnv.repo(env.base)   // lineage lives in GitConfigEmulator (the fake) — no real git repo
         // Non-blocking spawn: drive to live so the worktree is genuinely materialized (marker recorded) —
         // teardown's release then has a real tree to reclaim.
         let parent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
@@ -389,7 +414,7 @@ struct TeardownStepperTests {
 
     @Test("test_teardownFullDutyList_scratch")
     func test_teardownFullDutyList_scratch() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", scratch: true))
         #expect(FileManager.default.fileExists(atPath: card.cwd))
         let cfg = await env.svc.getConfig()
@@ -403,7 +428,7 @@ struct TeardownStepperTests {
 
     @Test("test_teardownFullDutyList_borrowed")
     func test_teardownFullDutyList_borrowed() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let dir = env.base + "/borrowed-work"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", cwd: dir))
@@ -418,9 +443,8 @@ struct TeardownStepperTests {
 
     @Test("test_teardownRedriveNoDuplicateNudges")
     func test_teardownRedriveNoDuplicateNudges() async throws {
-        let env = TestEnv.make()
-        let repo = TestEnv.repo(env.base)
-        _ = try Proc.run(["git", "-C", repo, "init"])
+        let env = TestEnv.make(proc: cfgFake())
+        let repo = TestEnv.repo(env.base)   // lineage lives in GitConfigEmulator (the fake) — no real git repo
         let parent = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
         try await env.svc.lineage.set(repo: repo, branch: "child",

@@ -12,18 +12,8 @@ import TestSupport
 @Suite("Ship choreography — shipped notify + retarget + idempotence")
 struct ShipChoreoTests {
 
-    // LEGACY real-git fixture — still used by unconverted ServiceTeardownTests; delete when card-lifecycle converts.
-    /// A repo on main with `parent`, plus a `child` branch off parent's tip. Returns (repo, parent tip).
-    static func repoWithChild(_ base: String) throws -> (repo: String, parentTip: String) {
-        let repo = try TreeStatTests.repoWithParent(base)   // main + parent
-        try TreeStatTests.git(repo, "checkout", "-q", "-b", "child", "parent")
-        try TreeStatTests.write(repo, "c.txt", "child\n")
-        try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "child work")
-        try TreeStatTests.git(repo, "checkout", "-q", "main")
-        let parentTip = try TreeStatTests.git(repo, "rev-parse", "parent")
-        return (repo, parentTip)
-    }
+    // (LEGACY real-git fixture `repoWithChild` DELETED in Task 10 card-lifecycle: its only remaining
+    // consumer, ServiceTeardownTests, converted to RepoScripts.withChild over FakeProc.)
 
     /// A FakeProc-backed env with main + parent + child modelled over RepoGraph (parent tip recorded),
     /// lineage in the config emulator. The unit analogue of `repoWithChild`.

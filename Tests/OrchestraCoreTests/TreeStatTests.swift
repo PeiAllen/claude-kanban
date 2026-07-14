@@ -36,56 +36,10 @@ struct TreeStatTests {
         await env.svc.list().first { $0.id == id }?.treeStat
     }
 
-    // MARK: LEGACY real-git fixtures
-    // Still referenced by the not-yet-converted merge-collab / card-lifecycle suites (ShipChoreo,
-    // MergeRequest, MergeRequestBackoff, and ShipChoreo.repoWithChild's consumers). They are DELETED
-    // once those areas convert to RepoScripts; TreeStatTests's OWN cases no longer use them.
-
-    /// A real repo on `main` (one base commit) with a `parent` branch at the same tip. Returns the path.
-    static func repoWithParent(_ base: String) throws -> String {
-        let repo = TestEnv.repo(base)
-        try git(repo, "init", "-q", "-b", "main")
-        try git(repo, "config", "user.email", "t@t")
-        try git(repo, "config", "user.name", "t")
-        try write(repo, "a.txt", "0\n")
-        try git(repo, "add", "-A")
-        try git(repo, "commit", "-q", "-m", "base")
-        try git(repo, "branch", "parent")
-        return repo
-    }
-
-    /// Add `n` commits to `parent` (leaves `main` checked out afterwards). Returns the new `parent` tip.
-    @discardableResult
-    static func advanceParent(_ repo: String, _ n: Int) throws -> String {
-        try git(repo, "checkout", "-q", "parent")
-        for i in 0..<n {
-            try write(repo, "p\(i)-\(UUID().uuidString).txt", "x")
-            try git(repo, "add", "-A")
-            try git(repo, "commit", "-q", "-m", "p\(i)")
-        }
-        let tip = try git(repo, "rev-parse", "parent")
-        try git(repo, "checkout", "-q", "main")
-        return tip
-    }
-
-    @discardableResult
-    static func git(_ repo: String, _ a: String...) throws -> String {
-        let r = try Proc.run(["git", "-C", repo] + a)
-        #expect(r.ok, "git \(a.joined(separator: " ")): \(r.stderr)")
-        return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    static func write(_ repo: String, _ rel: String, _ s: String) throws {
-        try s.write(toFile: repo + "/" + rel, atomically: true, encoding: .utf8)
-    }
-
-    /// Spawn a `.worktree` card on `child` linked to `parent` over REAL git (legacy — for unconverted
-    /// suites). Converted cases use the `fake:`-labelled overload above.
-    static func linkedChild(_ env: Env, repo: String, base recorded: String) async throws -> Task {
-        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
-                                      link: ParentLink(parent: "parent", base: recorded))
-        return card
-    }
+    // (MARK: LEGACY real-git fixtures — repoWithParent / advanceParent / git / write / the real-git
+    // linkedChild overload — DELETED in Task 10 card-lifecycle. Their last consumer,
+    // ShipChoreoTests.repoWithChild, was itself deleted when ServiceTeardownTests converted to
+    // RepoScripts.withChild; TreeStatTests's own cases already use RepoScripts + the `fake:` linkedChild.)
 
     // MARK: compute cases
 

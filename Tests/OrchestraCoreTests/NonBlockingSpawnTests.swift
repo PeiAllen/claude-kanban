@@ -3,9 +3,22 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
+/// A FakeProc carrying the git-config emulator — the seam the converted non-blocking-spawn tests hand to
+/// `TestEnv.make(proc:)`. Cases that record a base install their own `RepoGraph` on it (main + parent).
+private func cfgFake() -> FakeProc {
+    let f = FakeProc()
+    GitConfigEmulator().install(on: f)
+    return f
+}
+
 /// PR4b Task 3 — the FLAG-DAY: `spawn` is now NON-BLOCKING. Its synchronous part shrinks to persist a
 /// `.creatingWorktree` card (+ the security allowlist / base-validation fail-fasts) and RETURN; the
 /// reconciler's steppers (Materialize → Launch) drive it to `.live`. These tests pin that contract.
+///
+/// Unit-converted (Task 10, card-lifecycle): the whole suite runs over FakeProc — no real git.
+/// `RepoGraph`/`GitConfigEmulator` (pinned by GitRevContractTests / GitConfigContractTests) stand in for
+/// the base branch + lineage config; the real-worktree HEAD effects live in
+/// ContractTests/Git/WorktreeAddContractTests.
 @Suite("Non-blocking spawn (reconciler-driven) — PR4b Task 3")
 struct NonBlockingSpawnTests {
 
@@ -24,7 +37,7 @@ struct NonBlockingSpawnTests {
 
     @Test("test_spawnReturnsBeforeProvisioned")
     func test_spawnReturnsBeforeProvisioned() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env.base)
         env.worktrees.blockEnsure()   // the NEXT ensure (materialize's) parks on a gate
 
@@ -52,7 +65,7 @@ struct NonBlockingSpawnTests {
     @Test("test_spawnStepperCrashRestart", arguments: [AgentCapabilities.claudeCode,
                                                         ReadinessSignalTests.codexStubCaps])
     func test_spawnStepperCrashRestart(caps: AgentCapabilities) async throws {
-        let env = TestEnv.make(grace: 30, capabilities: caps)
+        let env = TestEnv.make(grace: 30, capabilities: caps, proc: cfgFake())
         let repo = TestEnv.repo(env.base)
 
         // spawn persists `.creatingWorktree`; drive ONE materialize step so it lands `.launching`, then
@@ -62,7 +75,7 @@ struct NonBlockingSpawnTests {
             await env.svc.reconcile()
             return await env.svc.list().first { $0.id == created.id }?.phase.kind == .launching
         }
-        let env2 = TestEnv.remake(base: env.base, capabilities: caps)
+        let env2 = TestEnv.remake(base: env.base, capabilities: caps, proc: cfgFake())
 
         // The fresh daemon's reconciler must converge the stranded `.launching` card to `.live` — no
         // duplicate card, exactly one session.
@@ -79,7 +92,7 @@ struct NonBlockingSpawnTests {
     @Test("test_spawnFailureClassified")
     func test_spawnFailureClassified() async throws {
         // (a) a checkout failure → dead(.spawnFailed) with the git stderr in deadDetail.
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: cfgFake())
         let repo = TestEnv.repo(env.base)
         let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         env.worktrees.ensureError = OrchestraError.io("fatal: could not checkout branch")
@@ -92,7 +105,7 @@ struct NonBlockingSpawnTests {
         #expect(a.deadDetail?.contains("could not checkout branch") == true)
 
         // (b) a timeout → the explicit "timed out after Ns" wording (no generic git passthrough).
-        let env2 = TestEnv.make()
+        let env2 = TestEnv.make(proc: cfgFake())
         let repo2 = TestEnv.repo(env2.base)
         let c2 = try await env2.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo2, branch: "b"))
         env2.worktrees.ensureError = OrchestraError.io("git worktree add: operation timed out")
@@ -111,8 +124,10 @@ struct NonBlockingSpawnTests {
     /// than fall through the "existing branch → derive from config" path (which would lose the parent link).
     @Test("test_materializeReRecordsBaseAfterCrashWindow")
     func test_materializeReRecordsBaseAfterCrashWindow() async throws {
-        let env = TestEnv.make()
-        let repo = try SpawnBaseTests.repoWithParent(env.base)          // real git repo with a `parent` branch
+        let fake = cfgFake()
+        RepoScripts.withParent(on: fake)                               // main + a `parent` branch (modelled)
+        let env = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(env.base)
         let created = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "child", base: "parent"))
         #expect(created.spawnBase == "parent")                          // base carried, not yet recorded
 
@@ -138,20 +153,16 @@ struct NonBlockingSpawnTests {
     /// is cleared before recording, so the cycle guard doesn't reject a legitimate name reuse.
     @Test("test_materializeStaleChildPrune")
     func test_materializeStaleChildPrune() async throws {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
-        func g(_ a: String...) throws { #expect(try Proc.run(["git", "-C", repo] + a).ok) }
-        try g("init", "-q", "-b", "main"); try g("config", "user.email", "t@t"); try g("config", "user.name", "t")
-        try "0\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
-        try g("add", "-A"); try g("commit", "-q", "-m", "base")
-        // feat-x with a child feat-x-fix recording feat-x as parent; then delete feat-x (its config section
+        let fake = cfgFake()
+        let graph = RepoGraph(); graph.commit(on: "main"); graph.branch("feat-x", at: "main")
+        graph.branch("feat-x-fix", at: "feat-x"); graph.install(on: fake)
+        let (svc, _, _, _, _, base) = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(base)
+        // feat-x with a child feat-x-fix recording feat-x as parent; then delete feat-x (its branch ref
         // goes, but feat-x-fix.orchestra-parent = feat-x now dangles).
-        try g("branch", "feat-x", "main"); try g("branch", "feat-x-fix", "feat-x")
-        let fxTip = try Proc.run(["git", "-C", repo, "rev-parse", "feat-x"]).stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fxTip = graph.tip("feat-x")!
         try await svc.lineage.set(repo: repo, branch: "feat-x-fix", link: ParentLink(parent: "feat-x", base: fxTip))
-        try g("branch", "-D", "feat-x")
+        graph.deleteBranch("feat-x")
 
         // Reuse the name: spawn a NEW feat-x on top of feat-x-fix. Materialize's prune must clear the dangling
         // link so no false cycle is tripped; the card reaches launching with parentBranch = feat-x-fix.
