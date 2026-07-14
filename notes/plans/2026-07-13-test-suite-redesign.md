@@ -542,9 +542,29 @@ func backoffScheduleOnTestClock() async throws {
 
 ### Task 6: Stub race-knobs become Gates
 
-As previously specified (convert `ensureSleepMs`/`isAliveSleepMs`/report-capture `sleepMs` knobs at Stubs.swift:49,192,202,246,273,290 to `Gate?` fields; stub methods `if let g = xGate { _ = await g.park() }` — the stub protocol methods are async, so suspension works), with one addition:
+**AMENDED (implementation finding):** the premise "the stub protocol methods are async" was FALSE —
+every knob-bearing method (`WorktreeManaging.ensure`/`remove`, `SessionManaging.ensure`/`isAlive`/
+`capture`) is sync `throws` (Protocols.swift:14-16, 46-67), so a suspension `Gate.park()` cannot run
+there. Asyncifying the protocols is rejected: ~35 cross-cutting call sites, and it would insert an
+await into `WorktreeRegistry.ensure`'s DOCUMENTED no-await critical section (WorktreeRegistry.swift:
+249-251 — the serialization that makes concurrent same-branch ensures fire `git worktree add` once).
 
-- **The worktree-add race gate lives HERE, not in FakeProc** (review BLOCKER-1's third leg): `WorktreeRegistry` is its own actor with its own `run:` closure that `proc` never reaches. `StubWorktrees` gains `ensureGate`/`removeGate`, and the spec §4.3 flagship example is delivered at this seam. Full suite ×3 green; commit.
+**Sanctioned mechanism for sync seams: a bounded BLOCKING rendezvous (`SyncGate` in TestSupport).**
+Stub-side `parkBlocking(timeout: 30s)` on a semaphore — the same thread-blocking semantics as the
+`usleep` it replaces at the same call site (wherever usleep was safe, the gate is safe: these run
+off-actor on GCD, or the blocking IS the invariant under test); test-side `reached() async` /
+`release()` stay suspension-based. Precedent already in-tree: `StubWorktrees.blockEnsure`'s bounded
+semaphore. Suspension `Gate` remains the mechanism for ASYNC seams (ProcRunning). The safety
+timeout means a mis-armed test fails loudly instead of hanging the suite.
+
+- Consumed knobs → SyncGate: `StubSessions.ensureSleepMs` (RecoveryTests), `isAliveSleepMs`
+  (ReconcilerTests), `captureSleepMs` (StartupAbortTests), `StubWorktrees.ensureSleepMs`
+  (WorktreeRegistryTests — the contention test becomes: gate first ensure, fire second, assert it
+  has NOT entered via the stub's recorded state only — never await the blocked registry actor —
+  release, assert both completed with one add).
+- Dead knobs (`windowsSleepMs`, `listSleepMs`) deleted outright (already done).
+- `blockEnsure`/`releaseEnsure` fold into the same SyncGate pattern if trivially compatible, else stay.
+- Full suite ×3 green; commit.
 
 ---
 

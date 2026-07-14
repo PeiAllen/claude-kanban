@@ -236,14 +236,11 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     /// Recorded call count for `windows()` — the boardSnapshot-cache tests (PR5 actor-hygiene Task 5.2)
     /// assert a cache HIT shells zero times and a MISS shells exactly once.
     private(set) var windowsCount = 0
-    /// Optional off-actor latency injected into `windows()`, honored like `isAliveSleepMs`.
-    var windowsSleepMs: UInt32 = 0
     func windows(_ name: String) throws -> [TmuxTarget] {
         // Mirror the real SessionManager contract: a dead session can't yield an authoritative
         // listing, so THROW rather than return `[]` (so `emitShells` skips instead of wiping).
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
-        lock.lock(); windowsCount += 1; let ms = windowsSleepMs; lock.unlock()
-        if ms > 0 { usleep(ms * 1000) }
+        lock.lock(); windowsCount += 1; lock.unlock()
         func t(_ window: String, _ kind: WindowKind) -> TmuxTarget {
             TmuxTarget(socket: "orchestra", session: name, window: window, kind: kind,
                        target: "\(name):\(window)", attach: "tmux -L orchestra attach -t \(name):\(window)")
@@ -263,14 +260,12 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         lock.lock(); let ws = shellWins[name] ?? []; lock.unlock()
         return [t("agent", .agent)] + ws.map { t($0, .shell) }
     }
-    /// Optional off-actor latency injected into `list()` (the reconcile/reconcileLiveness batched liveness
-    /// snapshot), so a test can prove the call runs OFF the service actor: a concurrent fast RPC returns
-    /// while the stub sleeps. `listCount` records how many times it was queried.
-    var listSleepMs: UInt32 = 0
+    /// `listCount` records how many times `list()` (the reconcile/reconcileLiveness batched liveness
+    /// snapshot) was queried. (The off-actor-ness of that call is proven by `ActorHygieneTests`, whose
+    /// own `SlowListSessionStub` carries the latency knob — not by this stub.)
     private(set) var listCount = 0
     func list() throws -> [SessionInfo] {
-        lock.lock(); listCount += 1; let ms = listSleepMs; let out = alive.map { SessionInfo(name: $0, running: true) }; lock.unlock()
-        if ms > 0 { usleep(ms * 1000) }
+        lock.lock(); listCount += 1; let out = alive.map { SessionInfo(name: $0, running: true) }; lock.unlock()
         return out
     }
     func sendKeys(_ name: String, text: String, window: String) throws {

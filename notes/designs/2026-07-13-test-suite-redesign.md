@@ -113,11 +113,11 @@ closure and `Stubs.swift` has a `Recorder`. This generalizes into one seam:
 
   ```swift
   let gate = worktrees.ensureGate           // the StubWorktrees seam — WorktreeRegistry is its
-  async let spawn = service.spawn(card)     // own actor, so its gate lives at the stub, and the
-  await gate.reached()                      // lineage/remote gates live on FakeProc; both park
-  await service.reconcile()                 // by SUSPENSION, so the racing op runs deterministically
-  gate.release(.success)
-  #expect(await spawn.phase == .live)
+  async let spawn = service.spawn(card)     // own actor, so its gate lives at the stub. Async seams
+  await gate.reached()                      // (ProcRunning) park by SUSPENSION; sync stub seams use
+  await service.reconcile()                 // a bounded BLOCKING rendezvous (SyncGate) — identical
+  gate.release(.success)                    // thread semantics to the usleep it replaces, made
+  #expect(await spawn.phase == .live)       // deterministic. Test-side is suspension either way.
   ```
 
   A gated call suspends until the test releases it, so every race/interleaving test exercises the
