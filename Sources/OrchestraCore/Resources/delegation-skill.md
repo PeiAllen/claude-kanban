@@ -54,9 +54,16 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   A spawn either cuts a git **worktree** (`repo` + `branch`) *or* runs **freeform** in an existing
   directory (`cwd`, no worktree) — optionally **read-only** (`access: readOnly`: the agent can
   read/search/git but not edit/write/commit).
-- **`handoff <ref> <context…>`** — F1 clean-context resume: kill + `--resume` the SAME session seeded with
-  `context` (folded together with the card's pending inbox). Same worktree, same branch, fresh context
-  window. Hand off to a *new* card instead by spawning with the context as the seed.
+- **`handoff <ref> <context…> [--model <id>]`** — F1 clean-context resume: kill + `--resume` the SAME
+  session seeded with `context` (folded together with the card's pending inbox). Same worktree, same
+  branch, fresh context window. Hand off to a *new* card instead by spawning with the context as the seed.
+- **`--model <id>` on `handoff` / `restart` / `resume`** — **re-seat** the card onto a different model
+  *in place*: same card, same worktree, same session lineage. `handoff --model` **carries the context
+  across** (that's how you escalate yourself to a higher tier mid-task); `restart --model` deliberately
+  **drops** it (fresh blank session); `resume --model` re-attaches the existing session on the new model.
+  The id must come from your **own agent's** model list — a Claude card cannot re-seat onto a Codex model
+  (the session transcript pins the agent), and an unknown id is rejected outright rather than silently
+  ignored.
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox (F3); it drains at the card's
   next turn-end, waking it if idle.
 - **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
@@ -77,6 +84,9 @@ tightly-coupled work.
 - **Handoff** — *your context is exhausted or messy but the task continues.*
   - *Same card* (`handoff <thisCard> <summary>`): keep going on the SAME work with a clean context window,
     same worktree/branch. Write a tight summary as the seed.
+  - *Same card, higher tier* (`handoff <thisCard> <summary> --model <id>`): the work turned out to need a
+    stronger model. **Re-seat yourself** — same card, same branch, context carried across in the summary —
+    rather than spawning a successor card and abandoning this one.
   - *New card* (spawn with the summary as seed): when the continuation is distinct work, a different agent,
     or should run while THIS card stays alive.
 - **Fork** — *you want an independent exploration or side-discussion of a slice, and you'll want the

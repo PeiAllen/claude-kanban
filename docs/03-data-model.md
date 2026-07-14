@@ -30,6 +30,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `sessionEpoch` | `Int` | Monotonic per-card session generation, bumped on each (re)launch entry so a stale signal (a late hook, a liveness poll) from a superseded session is fenced out. |
 | `phaseChangedAt` | `Date` | When `phase` last changed — drives phase-relative timers and terminal-dwell checks. |
 | `pendingSeed` | `String?` | Handoff/seeded-wake seed staged for the NEXT (re)launch, written by `resume(seed:)` and consumed+cleared by the `RelaunchStepper`/`LaunchStepper` on readiness (see [migration & persistence](#persistence-and-migration)). |
+| `pendingModel` | `String?` | A [`--model` re-seat](05-command-reference.md#the---model-re-seat) staged for the NEXT (re)launch (`restart`/`handoff`/`resume`), consumed+cleared on the `.live` landing exactly like `pendingSeed`. Separate from `model` because it is the **launch intent**, and it is the one thing `report()` cannot clobber: the report path owns `model` and is not epoch-fenced, so the *dying* session's last statusline would otherwise revert the override before the relaunch read it (see [migration & persistence](#persistence-and-migration) and [ch. 9](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)). |
 | `deadReason` | `DeadReason?` | Set together with `phase = .dead(_)`; carries the terminal reason. |
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
@@ -165,6 +166,16 @@ before borrowed/scratch cards existed still opens.
 > — and `LaunchStepper` for a reopened resumable card — consumes and clears `pendingSeed` on readiness-at-
 > current-epoch (the same `mutate` closure that lands `.live`); a `resumeFailed` leaves it in place so a
 > retried relaunch still carries the seed.
+
+> **Note on `pendingModel`.** It mirrors `pendingSeed` field-for-field: written in the same funnel patch as
+> `transition(.relaunching)` by `restart`/`resume` (and `handoff` through `resumeInCard`), encoded only when
+> present (`encodeIfPresent`, so an older board decodes unchanged), consumed by the same three `.live`
+> landings — `RelaunchStepper`, `LaunchStepper`, and the reconciler's *adopt* path — through the shared
+> `consumeModelReseat(_:_:)`, and left in place by a failed launch so the retry still carries the re-seat.
+> The one thing it adds beyond `pendingSeed` is that consuming it **re-asserts `model`** from the request,
+> because a stale statusline can have moved `model` while the card was `.relaunching`. `finishLaunch` builds
+> the launch argv from `pendingModel ?? model.id`, so the intent — not the display field — is what actually
+> launches.
 
 ## The inbox store (F3)
 

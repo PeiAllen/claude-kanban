@@ -22,12 +22,12 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
 | `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder a card's queued messages (`Inbox.reorder`); `ids` is the full new order and must be a permutation of the card's pending message ids. Refills exactly that card's array slots, so other cards' interleaving is preserved. |
 | `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done, a read-only freeform/scratch delegated card finishes its agent turn, or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
-| `handoff` | `ref` (required), `context` (required) | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. |
+| `handoff` | `ref` (required), `context` (required), `model?` | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. `model` additionally **re-seats** the card onto that model while the context rides across — the self-escalation path (see [the `--model` re-seat](#the---model-re-seat)). |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: record the intent (`phase = .archived(teardownComplete: false)`, `archived=true`) and return; the reconciler's Teardown stepper kills the session, cleans the run dir per origin, and flips the phase to `.archived(teardownComplete: true)`. |
 | `reopen` | `ref` (required) | Bring an archived (Done) card back onto the board: recreate the run dir the archive reclaimed, unarchive (keeping its column, clearing stale dead state), then `resume` its transcript when resumable else `restart` a fresh session. Idempotent on a non-archived card. Backs the [Done popover](07-app-ui.md#onboarding-settings-recovery-and-popovers)'s **Reopen** button. |
-| `restart` | `ref` (required) | Fresh blank session in the same worktree (new session id; no prompt re-handed). |
-| `resume` | `ref` (required) | Re-attempt `claude --resume` of the card's existing session. |
+| `restart` | `ref` (required), `model?` | Fresh blank session in the same worktree (new session id; no prompt re-handed). `model` **re-seats** the card onto that model for the new session — deliberately *without* the old context (see [the `--model` re-seat](#the---model-re-seat)). |
+| `resume` | `ref` (required), `model?` | Re-attempt `claude --resume` of the card's existing session. `model` **re-seats** the card onto that model as it resumes (see [the `--model` re-seat](#the---model-re-seat)). |
 | `shell` | `ref` (required) | Open a shell window in the card's `cwd`; returns the tmux target to attach to. |
 | `inspect` | `ref` (required) | Open a throwaway **read-only** `claude` in the card's `cwd` (locked-down sandbox, edit tools denied, no hooks). |
 | `closeShell` | `ref` (required), `window` (required, e.g. `shell-1`) | Close a shell window opened via `shell`. |
@@ -156,6 +156,33 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   idempotent no-op. See [CLI & MCP](06-clients-cli-mcp.md#the-orchestra-cli) for the two surfaces.
   (`notes/plans/2026-07-01-t2-trust-grant-surfaces.md`;
   `notes/designs/agent-provider-interface/02-contract.md` §Area 3.)
+
+### The `--model` re-seat
+
+`restart`, `handoff`, and `resume` each take an optional **`model`** (the CLI spelling is `--model <id>`;
+the MCP tool arg is generated from the same [catalog](#registry-commands) schema, so both surfaces carry
+it). It **re-seats a live card onto a different model in place** — same card, same worktree, same branch,
+same session lineage — which is how an agent that discovers its task needs a stronger model **escalates
+itself** instead of spawning a successor card. Both vendors were probed for real: `claude --resume <sid>
+--model X` and `codex resume <sid> -m X` genuinely re-bind the model.
+
+- **`handoff --model` carries the context across** (the summary rides as the resumed session's opening
+  turn) — the escalation path. **`restart --model` deliberately drops it** (a blank session is the point).
+  **`resume --model`** re-attaches the existing session on the new model.
+- **Own-adapter models only.** The id is resolved against the card's **own** agent's catalog
+  (`resolveModelOverride`, `OrchestraService+Recovery.swift`), because `agentId` is pinned by the vendor
+  transcript being resumed — a Claude card handed a Codex id would become `claude --model gpt-…` and die at
+  the process. An unknown id (or an explicitly empty one) is **rejected with `invalidParams`** *before* the
+  first mutation, so a refused re-seat leaves the card completely untouched — notably its durable inbox,
+  which `handoff` otherwise drains destructively. The vendor's **dated** form of a catalog id
+  (`claude-haiku-4-5-20251001` for `claude-haiku-4-5`) resolves to the catalog entry, keeping the launch id
+  canonical and preserving the model's `contextWindow` (the `ctxPct` denominator); a mistyped suffix is an
+  error, not a substitution.
+- **The request is staged, not applied.** The override is persisted as
+  [`Task.pendingModel`](03-data-model.md#the-task-card) — the *launch intent*, mirroring `pendingSeed` —
+  and it is `pendingModel`, never `model`, that `finishLaunch` builds the argv from. See
+  [report() vs the launch intent](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence)
+  for why the intent has to live in its own field.
 
 ## Server-only built-in methods
 
