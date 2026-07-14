@@ -33,7 +33,9 @@ enum BoardSnapshotSupport {
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,

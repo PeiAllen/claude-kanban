@@ -5,7 +5,7 @@ import Testing
 /// The canary for bundle-wide `HOME` isolation.
 ///
 /// Almost everything Orchestra persists is derived from `$HOME` — `Config.dataDir` (the daemon's
-/// state, the *rendered Claude/Codex hooks files*), `Config.scratchRoot`, `Config.worktreesRoot`,
+/// state, the *rendered Claude/Codex hooks files*), `Config.defaultScratchRoot`, `Config.worktreesRoot`,
 /// plus the agents' own homes (`~/.claude`, `~/.claude.json`, `~/.codex`). A test that exercises
 /// production code which writes any of those wrote them into the DEVELOPER'S REAL HOME, on their live
 /// board, mid-session. That is not hypothetical: `ClaudeCodeAdapter.prepareToLaunch` renders the
@@ -78,7 +78,7 @@ struct HomeIsolationTests {
     func configPathsFollowTheTempHome() {
         let home = Config.home
         for path in [Config.dataDir, Config.hooksPath, Config.codexHooksPath,
-                     Config.scratchRoot, Config.defaultWorktreesRoot, Config.defaultReposRoot] {
+                     Config.defaultScratchRoot, Config.defaultWorktreesRoot, Config.defaultReposRoot] {
             #expect(path == home || path.hasPrefix(home + "/"), "escapes the temp home: \(path)")
         }
     }

@@ -36,7 +36,8 @@ struct WorktreeBoundedTests {
         let base = NSTemporaryDirectory() + "wt-bound-\(UUID().uuidString)"
         let cfg = Config(reposRoot: base, worktreesRoot: base + "/wt",
                          allowlist: [base, base + "/wt"],
-                         worktreeAddTimeout: 600, controlTimeout: 15)
+                         worktreeAddTimeout: 600, controlTimeout: 15,
+                         scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         return (cfg, { try? FileManager.default.removeItem(atPath: base) })
     }
 

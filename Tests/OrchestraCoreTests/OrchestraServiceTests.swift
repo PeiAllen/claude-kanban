@@ -58,26 +58,24 @@ struct OrchestraServiceTests {
 
     @Test("move rejects non-worktree cards instead of silently changing their lifecycle column")
     func moveRejectsNonWorktreeCards() async throws {
-        try await withScratchLock {
-            let env = TestEnv.make()
-            let dir = env.base + "/borrowed"
-            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            let borrowed = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "borrowed", startIn: .plan, cwd: dir))
-            let scratch = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "scratch", startIn: .plan, scratch: true))
-            defer { try? FileManager.default.removeItem(atPath: scratch.cwd) }
+        let env = TestEnv.make()
+        let dir = env.base + "/borrowed"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let borrowed = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "borrowed", startIn: .plan, cwd: dir))
+        let scratch = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "scratch", startIn: .plan, scratch: true))
+        defer { try? FileManager.default.removeItem(atPath: scratch.cwd) }
 
-            let message = "freeform cards stay in Freeform; only worktree cards can move between Plan, Implementation, and Review"
-            await #expect(throws: OrchestraError.invalidParams(message)) {
-                _ = try await env.svc.move(borrowed.id, to: .review, source: .mcp)
-            }
-            await #expect(throws: OrchestraError.invalidParams(message)) {
-                _ = try await env.svc.move(scratch.id, to: .impl, source: .cli)
-            }
-
-            let after = await env.svc.list()
-            #expect(after.first { $0.id == borrowed.id }?.column == .plan)
-            #expect(after.first { $0.id == scratch.id }?.column == .plan)
+        let message = "freeform cards stay in Freeform; only worktree cards can move between Plan, Implementation, and Review"
+        await #expect(throws: OrchestraError.invalidParams(message)) {
+            _ = try await env.svc.move(borrowed.id, to: .review, source: .mcp)
         }
+        await #expect(throws: OrchestraError.invalidParams(message)) {
+            _ = try await env.svc.move(scratch.id, to: .impl, source: .cli)
+        }
+
+        let after = await env.svc.list()
+        #expect(after.first { $0.id == borrowed.id }?.column == .plan)
+        #expect(after.first { $0.id == scratch.id }?.column == .plan)
     }
 
     @Test("archive sets archived + off the board immediately; the stepper kills the session")

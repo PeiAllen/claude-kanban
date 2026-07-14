@@ -125,7 +125,8 @@ struct MaterializeStepperTests {
     /// `materialize` re-derives everything from the persisted card — mirroring a reconciler-driven walk.
     private func seedRealCreating(_ svc: OrchestraService, base: String, branch: String, spawnBase: String?) async throws -> Task {
         let repo = base + "/repos/app"
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let cwd = WorktreeRegistry(config: config, borrowsPath: base + "/b.json", markersDir: base + "/m")
             .path(repo: repo, branch: branch)
         let t = Task(title: branch, titleProvisional: true, repo: repo, branch: branch, cwd: cwd,
@@ -387,17 +388,16 @@ struct TeardownStepperTests {
 
     @Test("test_teardownFullDutyList_scratch")
     func test_teardownFullDutyList_scratch() async throws {
-        try await withScratchLock {
-            let env = TestEnv.make()
-            let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", scratch: true))
-            #expect(FileManager.default.fileExists(atPath: card.cwd))
-            #expect(card.cwd.hasPrefix(Config.scratchRoot + "/"))
-            _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: false) }
-            let fresh = try #require(await env.svc.store.get(card.id))
-            try await TeardownStepper().step(fresh, await env.svc.convergeContext())
-            #expect(!FileManager.default.fileExists(atPath: card.cwd))       // scratch rm -rf (path-guarded)
-            #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .archivedComplete)
-        }
+        let env = TestEnv.make()
+        let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", scratch: true))
+        #expect(FileManager.default.fileExists(atPath: card.cwd))
+        let cfg = await env.svc.getConfig()
+        #expect(card.cwd.hasPrefix(cfg.scratchRoot + "/"))
+        _ = try await env.svc.store.update(card.id) { $0.phase = .archived(teardownComplete: false) }
+        let fresh = try #require(await env.svc.store.get(card.id))
+        try await TeardownStepper().step(fresh, await env.svc.convergeContext())
+        #expect(!FileManager.default.fileExists(atPath: card.cwd))       // scratch rm -rf (path-guarded)
+        #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .archivedComplete)
     }
 
     @Test("test_teardownFullDutyList_borrowed")

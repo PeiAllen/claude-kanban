@@ -23,7 +23,8 @@ struct ArchiveIntentTests {
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, base: String) {
         let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-arch-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtReg = WorktreeRegistry(config: config, manager: worktrees,
@@ -138,75 +139,69 @@ struct ArchiveIntentTests {
 
     @Test("test_archiveDuringMidCheckout", arguments: Origin.allCases, agentCaps)
     func test_archiveDuringMidCheckout(origin: Origin, agent: (id: String, caps: AgentCapabilities)) async throws {
-        try await withScratchLock {
-            let e = Self.env(agent.caps, id: agent.id)
-            let card = try await Self.spawnLive(e, origin, "mc")
-            let epoch = card.sessionEpoch
-            // Rewind to `.creatingWorktree` (mid-checkout) — the run dir + session from the live drive are still present.
-            _ = try await e.svc.store.update(card.id) { $0.phase = .creatingWorktree }
+        let e = Self.env(agent.caps, id: agent.id)
+        let card = try await Self.spawnLive(e, origin, "mc")
+        let epoch = card.sessionEpoch
+        // Rewind to `.creatingWorktree` (mid-checkout) — the run dir + session from the live drive are still present.
+        _ = try await e.svc.store.update(card.id) { $0.phase = .creatingWorktree }
 
-            // Archive lands mid-checkout → the funnel takes the card to archivedPending (+ archived mirror).
-            try await e.svc.archive(card.id)
-            let pending = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
-            #expect(pending.phase.kind == .archivedPending)
-            #expect(pending.archived)
+        // Archive lands mid-checkout → the funnel takes the card to archivedPending (+ archived mirror).
+        try await e.svc.archive(card.id)
+        let pending = try #require(await e.svc.list(includeArchived: true).first { $0.id == card.id })
+        #expect(pending.phase.kind == .archivedPending)
+        #expect(pending.archived)
 
-            // A late materialize advance (creatingWorktree → launching) is funnel-rejected from archivedPending.
-            let r = await e.svc.transition(card.id, to: .launching, observedEpoch: epoch)
-            #expect(r == .rejected(from: .archived(teardownComplete: false), to: .launching))
+        // A late materialize advance (creatingWorktree → launching) is funnel-rejected from archivedPending.
+        let r = await e.svc.transition(card.id, to: .launching, observedEpoch: epoch)
+        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .launching))
 
-            try await pollUntil { await e.svc.reconcile(); return await Self.phaseKind(e, card.id) == .archivedComplete }
-            #expect(e.sessions.killed.contains(e.sessions.sessionName(card.id)))   // session reclaimed
-            Self.assertReclaim(e, card, origin)
-        }
+        try await pollUntil { await e.svc.reconcile(); return await Self.phaseKind(e, card.id) == .archivedComplete }
+        #expect(e.sessions.killed.contains(e.sessions.sessionName(card.id)))   // session reclaimed
+        Self.assertReclaim(e, card, origin)
     }
 
     @Test("test_archiveDuringLaunching", arguments: Origin.allCases, agentCaps)
     func test_archiveDuringLaunching(origin: Origin, agent: (id: String, caps: AgentCapabilities)) async throws {
-        try await withScratchLock {
-            let e = Self.env(agent.caps, id: agent.id)
-            let card = try await Self.spawnLive(e, origin, "lc")
-            let epoch = card.sessionEpoch
-            _ = try await e.svc.store.update(card.id) { $0.phase = .launching }
+        let e = Self.env(agent.caps, id: agent.id)
+        let card = try await Self.spawnLive(e, origin, "lc")
+        let epoch = card.sessionEpoch
+        _ = try await e.svc.store.update(card.id) { $0.phase = .launching }
 
-            try await e.svc.archive(card.id)
-            #expect(await Self.phaseKind(e, card.id) == .archivedPending)
+        try await e.svc.archive(card.id)
+        #expect(await Self.phaseKind(e, card.id) == .archivedPending)
 
-            // The late LaunchStepper finalize (launching → live at the same epoch) is funnel-rejected.
-            let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
-            #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
+        // The late LaunchStepper finalize (launching → live at the same epoch) is funnel-rejected.
+        let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
+        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
 
-            try await pollUntil { await e.svc.reconcile(); return await Self.phaseKind(e, card.id) == .archivedComplete }
-            #expect(e.sessions.killed.contains(e.sessions.sessionName(card.id)))
-            Self.assertReclaim(e, card, origin)
-        }
+        try await pollUntil { await e.svc.reconcile(); return await Self.phaseKind(e, card.id) == .archivedComplete }
+        #expect(e.sessions.killed.contains(e.sessions.sessionName(card.id)))
+        Self.assertReclaim(e, card, origin)
     }
 
     @Test("test_archiveRacesLaunch_reclaimsSession", arguments: Origin.allCases, agentCaps)
     func test_archiveRacesLaunch_reclaimsSession(origin: Origin, agent: (id: String, caps: AgentCapabilities)) async throws {
-        try await withScratchLock {
-            let e = Self.env(agent.caps, id: agent.id)
-            let card = try await Self.spawnLive(e, origin, "rl")
-            let epoch = card.sessionEpoch
-            _ = try await e.svc.store.update(card.id) { $0.phase = .launching }
+        let e = Self.env(agent.caps, id: agent.id)
+        let card = try await Self.spawnLive(e, origin, "rl")
+        let epoch = card.sessionEpoch
+        _ = try await e.svc.store.update(card.id) { $0.phase = .launching }
 
-            // Archive wins the race to the funnel.
-            try await e.svc.archive(card.id)
-            #expect(await Self.phaseKind(e, card.id) == .archivedPending)
+        // Archive wins the race to the funnel.
+        try await e.svc.archive(card.id)
+        #expect(await Self.phaseKind(e, card.id) == .archivedPending)
 
-            // The racing launch's `ensure` lands AFTER archive: a fresh epoch-stamped session appears, and its
-            // finalize is funnel-rejected. The orphan-session sweep (+ teardown kill) must reclaim it.
-            e.sessions.setStampedEpoch(card.id, epoch)
-            #expect(e.sessions.isAliveTest(card.id))
-            let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
-            #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
+        // The racing launch's `ensure` lands AFTER archive: a fresh epoch-stamped session appears, and its
+        // finalize is funnel-rejected. The orphan-session sweep (+ teardown kill) must reclaim it.
+        e.sessions.setStampedEpoch(card.id, epoch)
+        #expect(e.sessions.isAliveTest(card.id))
+        let r = await e.svc.transition(card.id, to: .live(.waiting(.humanTurn)), observedEpoch: epoch)
+        #expect(r == .rejected(from: .archived(teardownComplete: false), to: .live(.waiting(.humanTurn))))
 
-            try await pollUntil {
-                await e.svc.reconcile()
-                return await Self.phaseKind(e, card.id) == .archivedComplete && !e.sessions.isAliveTest(card.id)
-            }
-            #expect(!e.sessions.isAliveTest(card.id))   // the orphaned session was reclaimed
-            Self.assertReclaim(e, card, origin)
+        try await pollUntil {
+            await e.svc.reconcile()
+            return await Self.phaseKind(e, card.id) == .archivedComplete && !e.sessions.isAliveTest(card.id)
         }
+        #expect(!e.sessions.isAliveTest(card.id))   // the orphaned session was reclaimed
+        Self.assertReclaim(e, card, origin)
     }
 }

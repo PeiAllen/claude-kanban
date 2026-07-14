@@ -126,7 +126,9 @@ enum ActorHygieneSupport {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
@@ -157,7 +159,9 @@ enum ActorHygieneSupport {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
@@ -180,7 +184,9 @@ enum ActorHygieneSupport {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        registry: AgentRegistry(adapters: [adapter]),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
@@ -204,7 +210,9 @@ enum ActorHygieneSupport {
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let stub = SlowListSessionStub()
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        sessions: stub,

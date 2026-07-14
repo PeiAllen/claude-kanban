@@ -17,29 +17,27 @@ struct TeardownFenceTests {
     /// A scratch teardown that lost the card must NOT rm -rf its cwd.
     @Test("test_teardownStandsDownWhenCardReopenedUnderIt_scratch")
     func test_teardownStandsDownWhenCardReopenedUnderIt_scratch() async throws {
-        try await withScratchLock {
-            let env = TestEnv.make()
-            let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", scratch: true))
+        let env = TestEnv.make()
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", scratch: true))
 
-            // Archive → the step is DISPATCHED off this snapshot (card is `.archivedPending`).
-            try await env.svc.archive(card.id)
-            let dispatched = try #require(await env.svc.store.get(card.id))
-            #expect(dispatched.phase.kind == .archivedPending)
+        // Archive → the step is DISPATCHED off this snapshot (card is `.archivedPending`).
+        try await env.svc.archive(card.id)
+        let dispatched = try #require(await env.svc.store.get(card.id))
+        #expect(dispatched.phase.kind == .archivedPending)
 
-            // …and while it is in flight, the card is reopened: it leaves `.archivedPending` and is
-            // brought back up. The cwd is live again — it belongs to the reopened card now.
-            _ = try await env.svc.reopen(card.id)
-            #expect(await env.svc.store.get(card.id)?.phase.kind != .archivedPending)
-            #expect(FileManager.default.fileExists(atPath: card.cwd))
+        // …and while it is in flight, the card is reopened: it leaves `.archivedPending` and is
+        // brought back up. The cwd is live again — it belongs to the reopened card now.
+        _ = try await env.svc.reopen(card.id)
+        #expect(await env.svc.store.get(card.id)?.phase.kind != .archivedPending)
+        #expect(FileManager.default.fileExists(atPath: card.cwd))
 
-            // Now the stale step lands. It must stand down, not delete the reopened card's run dir.
-            try await TeardownStepper().step(dispatched, await env.svc.convergeContext())
+        // Now the stale step lands. It must stand down, not delete the reopened card's run dir.
+        try await TeardownStepper().step(dispatched, await env.svc.convergeContext())
 
-            #expect(FileManager.default.fileExists(atPath: card.cwd))   // the cwd survives the stale teardown
-            let after = try #require(await env.svc.store.get(card.id))
-            #expect(after.phase.kind != .archivedComplete)              // and it is not force-archived back
-            #expect(!after.archived)
-        }
+        #expect(FileManager.default.fileExists(atPath: card.cwd))   // the cwd survives the stale teardown
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.phase.kind != .archivedComplete)              // and it is not force-archived back
+        #expect(!after.archived)
     }
 
     /// The same fence for a worktree card: the stale teardown must not release the tree, nor kill the

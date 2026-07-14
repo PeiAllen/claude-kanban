@@ -91,7 +91,9 @@ final class SlowRepoE2ETests {
     private func makeService(repo: String) -> OrchestraService {
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let sessions = SessionManager(socket: tmuxSock, confPath: SessionManager.bundledConf, sockEnvPath: ctlSock)
         let claude = ClaudeCodeAdapter(binOverride: IntegrationSupport.fakeAgentPath)
         let codex = CodexAdapter(binOverride: IntegrationSupport.fakeAgentPath, codexHome: base + "/codexhome")

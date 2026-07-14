@@ -106,13 +106,11 @@ struct ResolveTrustTests {
 struct SpawnTrustRoutingTests {
     @Test("scratch spawn records its cwd in the ledger (trust resolved, not hardcoded)")
     func scratchSpawnRecordsLedger() async throws {
-        try await withScratchLock {
-            let env = TestEnv.make()
-            let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "scratch work", scratch: true))
-            #expect(t.origin == .scratch)
-            #expect(await env.trust.isTrusted(t.cwd) == true)   // resolveTrust recorded it during spawn
-            try? FileManager.default.removeItem(atPath: t.cwd)
-        }
+        let env = TestEnv.make()
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "scratch work", scratch: true))
+        #expect(t.origin == .scratch)
+        #expect(await env.trust.isTrusted(t.cwd) == true)   // resolveTrust recorded it during spawn
+        try? FileManager.default.removeItem(atPath: t.cwd)
     }
 
     @Test("borrowed spawn of an un-ledgered dir does NOT record it (needsGrant → untrusted)")

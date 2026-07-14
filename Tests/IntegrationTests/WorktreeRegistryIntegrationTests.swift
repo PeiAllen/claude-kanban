@@ -17,7 +17,9 @@ struct WorktreeRegistryIntegrationTests {
         try "hi".write(toFile: repo + "/README.md", atomically: true, encoding: .utf8)
         try Proc.checked(["git", "-C", repo, "add", "."])
         try Proc.checked(["git", "-C", repo, "commit", "-q", "-m", "init"])
-        let config = Config(reposRoot: PathResolver.canonical(base), worktreesRoot: PathResolver.canonical(wtRoot))
+        let config = Config(reposRoot: PathResolver.canonical(base), worktreesRoot: PathResolver.canonical(wtRoot),
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         return (PathResolver.canonical(repo), config, base)
     }
 
@@ -62,10 +64,13 @@ struct WorktreeRegistryIntegrationTests {
         let wm = registry(config, base: base)
         _ = try await wm.ensure(repo: repo, branch: "shared", cardId: UUID())
         // A different worktree path for the same branch must fail.
-        let cfg2 = Config(reposRoot: config.reposRoot, worktreesRoot: config.worktreesRoot + "-other")
+        let cfg2 = Config(reposRoot: config.reposRoot, worktreesRoot: config.worktreesRoot + "-other",
+                          scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let wm2 = WorktreeRegistry(config: Config(reposRoot: config.reposRoot,
                                                   worktreesRoot: cfg2.worktreesRoot,
-                                                  allowlist: [config.worktreesRoot, cfg2.worktreesRoot]),
+                                                  allowlist: [config.worktreesRoot, cfg2.worktreesRoot],
+                                                  scratchRoot: base + "/scratch",
+                                                  runtimeStateDir: base + "/state"),
                                    borrowsPath: base + "/borrows2.json",
                                    markersDir: base + "/worktree-markers2")
         await #expect(throws: OrchestraError.self) {

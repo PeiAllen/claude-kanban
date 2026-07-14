@@ -437,7 +437,7 @@ public actor OrchestraService {
         // never fires a spurious warning.
         var siblingCard: Task? = nil
         if input.scratch {
-            cwd = Config.scratchDir(id)
+            cwd = config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
             origin = .scratch
             realRepo = input.repo            // optional context only; never resolved/allowlisted
@@ -577,8 +577,9 @@ public actor OrchestraService {
     ///  (a) never touch a dir whose tmux session is live (agent-agnostic — rides `sessions.list()`);
     ///  (b) never touch a dir modified within the mtime grace window — a just-spawned dir whose card /
     ///      session hasn't registered yet must survive the race.
-    public func sweepOrphanScratch(root: String = Config.scratchRoot,
+    public func sweepOrphanScratch(root: String? = nil,
                                    graceInterval: TimeInterval = 300) async {
+        let root = root ?? config.scratchRoot
         // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
         // "nothing is live" — bail rather than delete every scratch dir, live ones included. Kept
         // on-actor (a pure store read, no IO) so the off-actor hop below only runs once we know
@@ -854,7 +855,8 @@ public actor OrchestraService {
         let settings = ReadOnlyLaunch.settingsJSON(
             cwd: t.cwd,
             gitDir: ReadOnlyLaunch.gitDir(repo: t.repo, worktreeName: name))
-        let settingsPath = "\(Config.dataDir)/readonly-\(t.shortId).json"
+        let settingsPath = "\(config.runtimeStateDir)/readonly-\(t.shortId).json"
+        try FileManager.default.createDirectory(atPath: config.runtimeStateDir, withIntermediateDirectories: true)
         try settings.write(toFile: settingsPath, atomically: true, encoding: .utf8)
 
         let session = sessions.sessionName(t.id)
@@ -1088,7 +1090,14 @@ public actor OrchestraService {
 
     @discardableResult
     public func setConfig(_ patch: (inout Config) -> Void) -> Config {
+        let scratchRoot = config.scratchRoot
+        let runtimeStateDir = config.runtimeStateDir
         patch(&config)
+        // Non-wire runtime paths are NOT settable via config replacement — scratchRoot is the
+        // fence PhaseStepper checks immediately before `rm -rf`, and a control-plane client
+        // decodes+replaces the whole Config. Preserve the running instance's values always.
+        config.scratchRoot = scratchRoot
+        config.runtimeStateDir = runtimeStateDir
         resolver = PathResolver(config: config)
         worktrees = WorktreeRegistry(config: config, resolver: resolver)
         return config
@@ -1196,6 +1205,7 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },

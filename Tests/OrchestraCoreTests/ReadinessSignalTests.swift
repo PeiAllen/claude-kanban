@@ -59,7 +59,9 @@ struct ReadinessSignalTests {
         try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
-                            allowlist: [PathResolver.canonical(base)], revivalGraceSeconds: 30, sessionLaunchTimeout: 3600)
+                            allowlist: [PathResolver.canonical(base)], revivalGraceSeconds: 30, sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
         let svc = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                    registry: AgentRegistry(adapters: [codex]),

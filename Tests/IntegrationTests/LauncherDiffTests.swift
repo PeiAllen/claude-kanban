@@ -38,7 +38,9 @@ struct LauncherDiffTests {
         try FileManager.default.removeItem(atPath: wt + "/gone.txt")
 
         let config = Config(reposRoot: PathResolver.canonical(root),
-                            worktreesRoot: PathResolver.canonical(root))
+                            worktreesRoot: PathResolver.canonical(root),
+                            scratchRoot: PathResolver.canonical(root) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(root) + "/state")
         return (PathResolver.canonical(wt), base, Launcher(resolver: PathResolver(config: config)))
     }
 
@@ -84,7 +86,9 @@ struct LauncherDiffTests {
         let wt = root + "/wt"
         try git(repo, "worktree", "add", "-q", "-b", "clean", wt)   // forked from main, no changes
         let config = Config(reposRoot: PathResolver.canonical(root),
-                            worktreesRoot: PathResolver.canonical(root))
+                            worktreesRoot: PathResolver.canonical(root),
+                            scratchRoot: PathResolver.canonical(root) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(root) + "/state")
         let launcher = Launcher(resolver: PathResolver(config: config))
         #expect(try launcher.branchDiffDirs(worktree: PathResolver.canonical(wt), parentRef: nil) == nil)
     }
@@ -130,7 +134,9 @@ struct LauncherDiffTests {
         try "changed\n".write(toFile: wt + "/main.swift", atomically: true, encoding: .utf8)
 
         let config = Config(reposRoot: PathResolver.canonical(root),
-                            worktreesRoot: PathResolver.canonical(root))
+                            worktreesRoot: PathResolver.canonical(root),
+                            scratchRoot: PathResolver.canonical(root) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(root) + "/state")
         return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
     }
 
@@ -215,7 +221,9 @@ struct LauncherDiffTests {
         try git(wt, "commit", "-q", "-m", "child note")
 
         let config = Config(reposRoot: PathResolver.canonical(root),
-                            worktreesRoot: PathResolver.canonical(root))
+                            worktreesRoot: PathResolver.canonical(root),
+                            scratchRoot: PathResolver.canonical(root) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(root) + "/state")
         return (PathResolver.canonical(wt), Launcher(resolver: PathResolver(config: config)))
     }
 

@@ -32,7 +32,8 @@ private let batteryAgents: [(id: String, caps: AgentCapabilities)] =
 private func batteryEnv(_ caps: AgentCapabilities, id: String) -> BEnv {
     let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-battery-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
-    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                        scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
     let sessions = StubSessions()
     let worktrees = StubWorktrees(root: config.worktreesRoot)
     let wtReg = WorktreeRegistry(config: config, manager: worktrees,
@@ -52,7 +53,8 @@ private func batteryEnv(_ caps: AgentCapabilities, id: String) -> BEnv {
 /// persisted phase. The adapter id/caps MUST match (the persisted card carries the agentId,
 /// so a bare `TestEnv.remake` — always "claude-code" — would fail `registry.get("codex")`).
 private func batteryRemake(base: String, caps: AgentCapabilities, id: String) -> BEnv {
-    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                        scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
     let sessions = StubSessions()
     let worktrees = StubWorktrees(root: config.worktreesRoot)
     let wtReg = WorktreeRegistry(config: config, manager: worktrees,

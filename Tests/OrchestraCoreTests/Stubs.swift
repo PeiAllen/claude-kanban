@@ -425,36 +425,6 @@ actor EventCollector {
     }
 }
 
-/// A minimal async mutex. Scratch-card tests share ONE global resource — the real
-/// `Config.scratchRoot` (`~/.orchestra/scratch`, not test-overridable) — and one of them
-/// (`sweepOrphanScratch`) deletes every dir there that isn't a live card. swift-testing runs suites
-/// in parallel, so without serialization that sweep would yank a sibling suite's in-flight scratch
-/// dir out from under it. `.serialized` only orders tests *within* one suite; this lock orders the
-/// filesystem-touching scratch tests *across* suites. Wrap each such test body in `withScratchLock`.
-final class AsyncLock: @unchecked Sendable {
-    private let nslock = NSLock()
-    private var locked = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    func acquire() async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            nslock.withLock {
-                if !locked { locked = true; c.resume() } else { waiters.append(c) }
-            }
-        }
-    }
-    func release() {
-        nslock.withLock {
-            if waiters.isEmpty { locked = false } else { waiters.removeFirst().resume() }
-        }
-    }
-}
-let scratchTestLock = AsyncLock()
-func withScratchLock<T>(_ body: () async throws -> T) async rethrows -> T {
-    await scratchTestLock.acquire()
-    defer { scratchTestLock.release() }
-    return try await body()
-}
-
 /// Stub human-grant resolver: returns a fixed outcome and records what it was asked (drives the
 /// approve / deny grant tests without a live MCP client or tty — O7).
 final class StubGrantResolver: TrustGrantResolver, @unchecked Sendable {
@@ -497,7 +467,9 @@ enum TestEnv {
                             // Tests that genuinely EXERCISE the timeout are unaffected: they back-date
                             // `phaseChangedAt` by `-(config.sessionLaunchTimeout + n)`, reading the value
                             // from config, so the arm still fires deterministically at any setting.
-                            sessionLaunchTimeout: 3600)
+                            sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -528,7 +500,8 @@ enum TestEnv {
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base], sessionLaunchTimeout: 3600)
+                            allowlist: [base], sessionLaunchTimeout: 3600,
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let sessions = StubSessions()
         let worktrees = StubWorktrees(root: config.worktreesRoot)
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
@@ -721,7 +694,8 @@ enum TestEnv {
         try? FileManager.default.createDirectory(atPath: base + "/repos", withIntermediateDirectories: true)
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
-                            allowlist: [base], sessionLaunchTimeout: 3600)
+                            allowlist: [base], sessionLaunchTimeout: 3600,
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let resolver = PathResolver(config: config)
         let sessions = StubSessions()
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)

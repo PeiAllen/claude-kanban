@@ -5,7 +5,8 @@ import Testing
 
 func makeRegistry() -> (reg: WorktreeRegistry, stub: StubWorktrees, base: String) {
     let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-reg-\(UUID().uuidString)")
-    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+    let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                        scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
     try? FileManager.default.createDirectory(atPath: config.worktreesRoot, withIntermediateDirectories: true)
     let stub = StubWorktrees(root: config.worktreesRoot)
     let reg = WorktreeRegistry(config: config, resolver: PathResolver(config: config), manager: stub,
@@ -97,7 +98,8 @@ struct WorktreeRegistryTests {
         let borrower = UUID()
         let w = try await reg.ensureBorrow(repo: "app", parentBranch: "main", borrowerCardId: borrower)
         // Fresh registry instance reading the SAME borrows.json (simulates daemon restart).
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                        scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let reg2 = WorktreeRegistry(config: config, resolver: PathResolver(config: config), manager: stub,
                                     borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         // A different child cannot re-borrow the still-registered parent.
@@ -209,7 +211,8 @@ struct WorktreeRegistryTests {
         // Corrupt the persisted borrows file — simulates a torn/garbage write discovered on restart.
         try "not json".write(toFile: base + "/borrows.json", atomically: true, encoding: .utf8)
         // Fresh registry over the SAME paths (simulates a daemon restart reading the corrupt file).
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees", allowlist: [base], sessionLaunchTimeout: 3600,
+                        scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let reg2 = WorktreeRegistry(config: config, resolver: PathResolver(config: config), manager: stub,
                                     borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         await reg2.sweepOrphanBorrows(cards: [card(UUID(), cwd: "/x")])   // live worktree card in repo "app"
@@ -221,7 +224,8 @@ struct WorktreeRegistryTests {
         let base = PathResolver.canonical(NSTemporaryDirectory() + "orch-reg-\(UUID().uuidString)")
         let worktreesRoot = base + "/worktrees"
         try FileManager.default.createDirectory(atPath: worktreesRoot, withIntermediateDirectories: true)
-        let config = Config(reposRoot: base + "/repos", worktreesRoot: worktreesRoot, allowlist: [base], sessionLaunchTimeout: 3600)
+        let config = Config(reposRoot: base + "/repos", worktreesRoot: worktreesRoot, allowlist: [base], sessionLaunchTimeout: 3600,
+                            scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let stub = StubWorktrees(root: worktreesRoot)
         // `blocker` is a regular FILE — its child path `blocker/borrows.json` can never be created
         // (createDirectory + write both fail), guaranteeing persistBorrows() fails durably.

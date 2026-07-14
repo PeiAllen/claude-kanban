@@ -82,9 +82,7 @@ struct SpawnBaseTests {
     func scratchIgnoresBase() async throws {
         let env = TestEnv.make()
         let repo = try Self.repoWithParent(env.base)
-        let t = try await withScratchLock {
-            try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "", scratch: true, base: "parent"))
-        }
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "", scratch: true, base: "parent"))
         #expect(t.origin == .scratch)
         #expect(t.parentBranch == nil)   // base never consulted off the worktree arm
     }
