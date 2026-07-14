@@ -90,12 +90,18 @@ let package = Package(
         // suffice — declaring it on all three is cheap insurance against a future SwiftPM that builds a
         // bundle per test target.
         .target(name: "GitHermeticBootstrap", path: "Tests/GitHermeticBootstrap"),
+        // Pure test-support code shared by every test target: the fake clock, the gateable
+        // fake process runner, and the yield-based wait helper. Depends on OrchestraCore only
+        // for ProcResult/ProcRunning. NEVER a dependency of a product target.
+        .target(name: "TestSupport",
+                dependencies: ["OrchestraCore"],
+                path: "Tests/TestSupport"),
         .testTarget(
             name: "OrchestraCoreTests",
             // OrchestraKit is a direct dep so tests can `@testable import OrchestraKit` for the few
             // internal helpers (e.g. Config.dataDir(isLinux:home:env:)) that moved to Kit in F1 —
             // keeping those helpers internal instead of forcing them into Kit's public surface.
-            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"]
+            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap", "TestSupport"]
         ),
         .testTarget(
             name: "IntegrationTests",
