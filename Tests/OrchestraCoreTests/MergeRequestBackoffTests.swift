@@ -350,9 +350,13 @@ struct MergeStalledTrackingTests {
         let ts = await stat(env.svc, child.id)
         #expect(ts?.state == .stale)                      // the TRUE state, written with the flag...
         #expect((ts?.behind ?? 0) >= 1)                   // ...not an .inSync placeholder
-        let msgs = try await env.svc.inboxPeek(child.id).map(\.text)
-        #expect(msgs.contains { $0.contains("merge-request stalled") })
-        #expect(msgs.contains { $0.contains("moved ahead") })   // the nudge the frozen funnel couldn't send
+        // giveUp sets the flag in its store write and enqueues the two messages AFTERWARDS — synchronize
+        // on the messages themselves, not the flag (reading right after the flag races the enqueues).
+        try await pollUntil("give-up messages delivered") {
+            let m = (try? await env.svc.inboxPeek(child.id))?.map(\.text) ?? []
+            return m.contains { $0.contains("merge-request stalled") }
+                && m.contains { $0.contains("moved ahead") }   // the nudge the frozen funnel couldn't send
+        }
 
         // And the funnel keeps tracking underneath the flag, rather than freezing on it.
         RepoScripts.advanceParent(fx.graph, 1)

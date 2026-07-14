@@ -489,7 +489,7 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? RealProc())
+                                   clock: clock, proc: proc ?? Self.defaultFakeProc())
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
@@ -518,8 +518,18 @@ enum TestEnv {
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   proc: proc ?? RealProc())
+                                   proc: proc ?? Self.defaultFakeProc())
         return (svc, sessions, worktrees, adapter, trust, base)
+    }
+
+    /// Tier honesty (Task 10 flip): the DEFAULT git seam for a stub-wired service is a fresh FakeProc
+    /// with the GitConfigEmulator pre-installed — never a real fork. A test that genuinely needs real
+    /// git threads its own `proc:` (or uses `makeReal`, which keeps the OrchestraService RealProc
+    /// default for the real-worktree tier). One fresh instance per call: no cross-test sharing.
+    static func defaultFakeProc() -> any ProcRunning {
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        return fake
     }
 
     /// **Intent-only-archive migration helper (PR4b Task 4).** `archive` now records the intent

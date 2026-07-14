@@ -82,7 +82,7 @@ struct SpawnBaseTests {
     // ContractTests/Git/WorktreeAddContractTests.addBasePrefersLocalBranchOverTag.
     @Test("recorded base OID is the LOCAL branch tip even when a same-named tag exists")
     func recordedBaseIsLocalBranchNotTag() async throws {
-        let env = TestEnv.make()
+        let env = TestEnv.make(proc: RealProc())   // mover: real repo — the base probe must run real git
         let repo = try Self.repoWithParent(env.base)
         func git(_ a: String...) throws { #expect(try Proc.run(["git", "-C", repo] + a).ok) }
         // Advance `parent` one commit, then add a TAG `parent` at main (a different OID). Plain
