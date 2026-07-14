@@ -2,47 +2,43 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rebuild the test suite around three injected seams (clock, paths, process-runner) so no test waits on wall-clock time or shares ambient state, prune dead tests, and reorganize the tree into `UnitTests` / `ContractTests` / `E2ETests` mirroring `Sources/`.
+**Goal:** Rebuild the test suite around three injected seams (clock, paths, async process-runner) so no test waits on wall-clock time or shares ambient state, prune dead tests, and reorganize the tree into `UnitTests` / `ContractTests` / `E2ETests` mirroring `Sources/`.
 
-**Architecture:** Stage 1 introduces the seams (`TestClock`, `Config.scratchRoot` instance property, `ProcRunning` + gateable `FakeProc`) and converts every sleep/race-window to deterministic control, deleting the global `scratchTestLock`. Stage 2 splits the 30 hidden-integration suites into FakeProc unit tests + distilled contract tests, then `git mv`s everything into the mirror layout with new SwiftPM targets. Stage 3 updates docs, lints, and reports the accounting.
+**Architecture:** Stage 1 introduces the seams (`TestClock`, injected `scratchRoot`/`runtimeStateDir`, an **async** `ProcRunning` + suspension-gated `FakeProc`) and converts every sleep/race-window to deterministic control, deleting the global `scratchTestLock`. Stage 2 splits the 30 hidden-integration suites into FakeProc unit tests + fidelity-pinned contract tests, then flips targets + `git mv`s everything into the mirror layout in one interlocked commit. Stage 3 updates docs, lints, and reports the accounting.
 
 **Tech Stack:** Swift 6 / swift-testing + XCTest (mixed), SwiftPM test targets, existing `GitHermeticBootstrap` C constructor.
 
-**Spec:** `notes/designs/2026-07-13-test-suite-redesign.md` (approved 2026-07-13).
+**Spec:** `notes/designs/2026-07-13-test-suite-redesign.md` (approved 2026-07-13; amended per plan-review — see §"Spec amendments" at bottom).
+**Plan review:** one bounded Claude (Opus 4.8) + Codex (GPT-5.6 Terra) pass, 2026-07-14. All findings verified against the code; every confirmed finding is folded in below. Rebutted (with evidence): Codex's "async-let initializer missing `try` doesn't compile" — `swiftc -typecheck` accepts the SE-0317 form (try marks the read).
 
 ## Global Constraints
 
 - **Always run tests via `./scripts/test.sh`** — a bare `swift build --build-tests` relinks the bundle with a broken `@rpath/libTesting.dylib`. The script takes the machine-wide build mutex for the compile.
-- `swift test` needs `dangerouslyDisableSandbox: true` in this harness (its `sandbox-exec` can't nest). For long runs log via `script -q .scratch/run.log ./scripts/test.sh …` (stdout is block-buffered off-TTY).
-- **The suite must be green after every task.** Baseline: 1,157 tests (953 swift-testing + 204 XCTest), all green, 99.8s full run (post-nudge-fix, contended machine).
-- **Selection mechanism is `--filter`/`--skip` regex over `<target>.<suite>/<test>`.** Tag-based filtering does not exist on Swift 6.3.3 (swiftlang/swift-testing#591, milestone 6.4.0). `--list-tests` ignores `--filter`; verify selection with a real run.
-- **Production behavior must not change.** Every new init parameter defaults to today's behavior (`ContinuousClock()`, `RealProc()`, current path values). Both agent backends (claude-code + codex) keep parity; the slow-repo E2E stays parameterized over both.
-- **No new external package dependencies.** `TestClock`, `Gate`, `FakeProc` are hand-rolled in-repo.
-- Commit after every task (its final step). Deletions are recorded one line each in the commit message body.
-- Plan-tier: **L** (cross-cutting, concurrency-bearing).
+- `swift test` needs `dangerouslyDisableSandbox: true` in this harness. Log long runs via `script -q .scratch/run.log ./scripts/test.sh …` (stdout block-buffers off-TTY).
+- **Green after every task.** Baseline: 1,157 tests (953 swift-testing + 204 XCTest), all green, 99.8s (post-nudge-fix, contended machine).
+- **Selection = `--filter`/`--skip` regex over `<target>.<suite>/<test>`** (no tag filtering on Swift 6.3.3; `--list-tests` ignores `--filter` — verify with real runs).
+- **Production behavior must not change.** Every new init parameter defaults to today's behavior. `RealProc` preserves `Proc.run`'s exact thread-blocking semantics AND its `timeout: nil == unbounded` contract. Both agent backends keep e2e parity.
+- **No new external package dependencies.**
+- Commit after every task; deletions get one line each in the commit body.
+- Plan-tier: **L**.
 
 ## File Structure (end state)
 
 ```
-Sources/OrchestraCore/ProcRunning.swift        NEW — ProcRunning protocol + RealProc
-Sources/OrchestraKit/Config.swift              MODIFIED — scratchRoot becomes an instance property
-Sources/OrchestraCore/{OrchestraService,TaskStore,BranchLineage,RemoteParents}.swift
-                                               MODIFIED — clock + proc injection
+Sources/OrchestraCore/ProcRunning.swift        NEW — async ProcRunning + RealProc; ProcResult gains public init
+Sources/OrchestraKit/Config.swift              MODIFIED — scratchRoot + runtimeStateDir instance props (NON-Codable)
+Sources/OrchestraKit/Control/ControlClient.swift  MODIFIED — clock injection (ping/probe/call timers)
+Sources/OrchestraUI/BoardStore.swift           MODIFIED — clock injection (3 sleep sites)
+Sources/OrchestraCore/{OrchestraService,TaskStore,BranchLineage,RemoteParents,PhaseStepper}.swift
+                                               MODIFIED — clock/proc/scratchRoot threading
 Sources/OrchestraCore/OrchestraService+{MergeRequest,Diff,Tree,Remote,Recovery,ParentRef,Converge}.swift
-                                               MODIFIED — clock.sleep / proc.run
-Tests/TestSupport/                             NEW target: TestClock.swift, Gate.swift, FakeProc.swift,
-                                               GitConfigEmulator.swift, Wait.swift (pollUntil)
-Tests/UnitTests/                               NEW target (mirror of Sources/)
-  OrchestraCore/  — flat files 1:1 with flat Sources files; Agents/ Control/ Diff/ Keyboard/ mirror dirs;
-                    Service/<Flow>Tests.swift for cross-area service flows
-  OrchestraKit/   OrchestraUI/
-  Support/        — Stubs.swift (TestEnv, stubs), split into StubWorktrees.swift, StubSessions.swift,
-                    StubAdapter.swift, TestEnv.swift
-Tests/ContractTests/                           NEW target: Git/ Tmux/ Proc/ + Support/ (TestEnv.makeReal)
-Tests/E2ETests/                                NEW target: Cli/ Mcp/ Daemon/ SlowRepo/ + Fixtures/
-Tests/GitHermeticBootstrap/                    UNCHANGED (all four test-ish targets depend on it)
-scripts/test.sh                                MODIFIED — --contract/--e2e/--all flags + lint hook
-scripts/lint-tests.sh                          NEW — the re-clumping guards
+                                               MODIFIED — clock.sleep / await proc.run
+Tests/TestSupport/                             NEW target: TestClock, Gate, FakeProc, GitConfigEmulator, Wait
+Tests/UnitTests/                               NEW target (mirror of Sources/) + Support/ (TestEnv & stubs, split)
+Tests/ContractTests/                           NEW target: Git/ Tmux/ Proc/ + Support/ + Fixtures/ (resources)
+Tests/E2ETests/                                NEW target: Cli/ Mcp/ Daemon/ SlowRepo/ + Support/ + Fixtures/
+scripts/test.sh                                MODIFIED — tier flags parsed FIRST, then BUILD_ARGS from the remainder
+scripts/lint-tests.sh                          NEW — re-clumping guards (no exemption markers in the unit tier)
 notes/designs/2026-07-13-test-deletion-decisions.md   NEW — category-4 list for Allen
 ```
 
@@ -53,16 +49,14 @@ notes/designs/2026-07-13-test-deletion-decisions.md   NEW — category-4 list fo
 ### Task 1: `TestSupport` target + `TestClock`
 
 **Files:**
-- Modify: `Package.swift` (add target)
+- Modify: `Package.swift` (add target; add `"TestSupport"` to `OrchestraCoreTests` deps)
 - Create: `Tests/TestSupport/TestClock.swift`
-- Create: `Tests/UnitTests/` does not exist yet — TestClock's own tests go in `Tests/OrchestraCoreTests/TestClockTests.swift` for now (they move in Task 11)
+- Test: `Tests/OrchestraCoreTests/TestClockTests.swift` (moves in Task 11)
 
 **Interfaces:**
-- Produces: `TestClock: Clock` with `advance(by: Duration)`, `parked(_ count: Int = 1) async`, `now: TestClock.Instant`. Conforms to stdlib `Clock`, so anything typed `any Clock<Duration>` accepts it and `clock.sleep(for:)` (SE-0374) works.
+- Produces: `TestClock: Clock` with `advance(by:)`, `parked(_ count: Int = 1, deadlineAtLeast: Duration? = nil) async`, `now`. Stdlib `Clock` conformance → anything typed `any Clock<Duration>` accepts it; `clock.sleep(for:)` is SE-0374.
 
-- [ ] **Step 1: Add the target to `Package.swift`**
-
-In the `targets:` array, after the `GitHermeticBootstrap` target:
+- [ ] **Step 1: Add the target** (after `GitHermeticBootstrap`):
 
 ```swift
         // Pure test-support code shared by every test target: the fake clock, the gateable
@@ -73,11 +67,10 @@ In the `targets:` array, after the `GitHermeticBootstrap` target:
                 path: "Tests/TestSupport"),
 ```
 
-and add `"TestSupport"` to `OrchestraCoreTests`' dependencies.
-
 - [ ] **Step 2: Write the failing tests** — `Tests/OrchestraCoreTests/TestClockTests.swift`:
 
 ```swift
+import Foundation
 import Testing
 import TestSupport
 
@@ -86,7 +79,7 @@ struct TestClockTests {
     @Test("advance resumes a parked sleeper; wall-clock does not")
     func advanceResumes() async throws {
         let clock = TestClock()
-        let done = Signal()                    // tiny helper below
+        let done = Signal()
         let t = _Concurrency.Task {
             try await clock.sleep(for: .seconds(300))
             done.set()
@@ -103,11 +96,23 @@ struct TestClockTests {
     @Test("advance past several deadlines resumes all due sleepers in one jump")
     func multiSleeper() async throws {
         let clock = TestClock()
-        async let a: Void = clock.sleep(for: .seconds(5))
+        async let a: Void = clock.sleep(for: .seconds(5))     // SE-0317: `try` marks the read below
         async let b: Void = clock.sleep(for: .seconds(10))
         await clock.parked(2)
         clock.advance(by: .seconds(10))
-        _ = try await (a, b)                   // both resume; nothing hangs
+        _ = try await (a, b)
+    }
+
+    @Test("parked(deadlineAtLeast:) ignores unrelated short sleepers")
+    func scopedParked() async throws {
+        let clock = TestClock()
+        let short = _Concurrency.Task { try await clock.sleep(for: .milliseconds(750)) }   // a debounce, say
+        await clock.parked(1)
+        let long = _Concurrency.Task { try await clock.sleep(for: .seconds(300)) }         // the loop under test
+        await clock.parked(1, deadlineAtLeast: .seconds(300))   // does NOT return early on the 750ms sleeper
+        clock.advance(by: .seconds(300))
+        _ = try? await short.value
+        _ = try await long.value
     }
 
     @Test("a cancelled sleeper throws CancellationError instead of hanging teardown")
@@ -119,15 +124,19 @@ struct TestClockTests {
         await #expect(throws: CancellationError.self) { try await t.value }
     }
 
-    @Test("sleep with an already-past deadline returns immediately")
-    func pastDeadline() async throws {
-        let clock = TestClock()
-        clock.advance(by: .seconds(10))
-        try await clock.sleep(until: TestClock.Instant(offset: .seconds(5)), tolerance: nil)
+    @Test("cancel racing registration cannot strand the sleeper")
+    func cancelRegistrationRace() async {
+        // Regression guard for the lost-cancel window: cancel fired between checkCancellation
+        // and the sleeper append must still resume-throwing (the `cancelled` id-set path).
+        for _ in 0..<100 {
+            let clock = TestClock()
+            let t = _Concurrency.Task { try await clock.sleep(for: .seconds(60)) }
+            t.cancel()                                        // no parked() — race the registration
+            await #expect(throws: CancellationError.self) { try await t.value }
+        }
     }
 }
 
-/// Lock-guarded flag for asserting "has not happened yet".
 final class Signal: @unchecked Sendable {
     private let lock = NSLock(); private var flag = false
     var isSet: Bool { lock.withLock { flag } }
@@ -135,25 +144,21 @@ final class Signal: @unchecked Sendable {
 }
 ```
 
-- [ ] **Step 3: Run to verify failure**
-
-Run: `./scripts/test.sh --filter "TestClockTests" 2>&1 | tail -3`
-Expected: compile FAILURE — `no such module 'TestSupport'` resolves after Step 1; then `cannot find 'TestClock'`.
+- [ ] **Step 3: Verify failure** — `./scripts/test.sh --filter "TestClockTests" 2>&1 | tail -3` → `cannot find 'TestClock'`.
 
 - [ ] **Step 4: Implement `Tests/TestSupport/TestClock.swift`**
 
 ```swift
 import Foundation
 
-/// A manually-advanced Clock for tests. Design notes:
-/// - Conforms to stdlib `Clock`, so production seams typed `any Clock<Duration>` accept it and
-///   `clock.sleep(for:)` (SE-0374) works unchanged.
-/// - `parked(_:)` is the anti-race primitive: a naive fake clock lets the test `advance` BEFORE
-///   the code under test reaches its `sleep`, and the sleeper then never wakes. Tests synchronize
-///   on "N sleepers are parked", never on timing.
-/// - Cancellation resumes the parked sleeper with `CancellationError` — production loops are
-///   `while !Task.isCancelled { try? await clock.sleep(…) }`, and a cancelled loop must exit
-///   rather than hang suite teardown.
+/// A manually-advanced Clock for tests.
+/// - Stdlib `Clock` conformance: seams typed `any Clock<Duration>` accept it unchanged.
+/// - `parked(_:deadlineAtLeast:)` is the anti-race primitive: tests synchronize on "the code
+///   under test is parked", never on timing. `deadlineAtLeast` scopes the wait to the sleeper
+///   you mean — one service shares one clock across its nudge/debounce/watch loops, so a bare
+///   count can be satisfied by an unrelated short sleeper.
+/// - Cancellation: a `cancelled` id-set closes the lost-cancel window (onCancel firing between
+///   checkCancellation and the sleeper append must still resume-throwing).
 public final class TestClock: Clock, @unchecked Sendable {
     public struct Instant: InstantProtocol, Hashable, Sendable {
         public var offset: Duration
@@ -167,7 +172,8 @@ public final class TestClock: Clock, @unchecked Sendable {
     private let lock = NSLock()
     private var _now = Instant()
     private var sleepers: [Sleeper] = []
-    private var parkWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var cancelled: Set<UUID> = []
+    private var parkWaiters: [(count: Int, minDeadline: Instant?, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init() {}
     public var now: Instant { lock.withLock { _now } }
@@ -176,19 +182,27 @@ public final class TestClock: Clock, @unchecked Sendable {
     public func sleep(until deadline: Instant, tolerance: Duration?) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
-            try _Concurrency.Task.checkCancellation()
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
-                let resumeNow: Bool = lock.withLock {
-                    if deadline <= _now { return true }
+                enum Verdict { case resume, cancel, park }
+                let verdict: Verdict = lock.withLock {
+                    if cancelled.remove(id) != nil { return .cancel }      // onCancel already fired
+                    if deadline <= _now { return .resume }
                     sleepers.append(Sleeper(id: id, deadline: deadline, continuation: c))
                     wakeParkWaitersLocked()
-                    return false
+                    return .park
                 }
-                if resumeNow { c.resume() }
+                switch verdict {
+                case .resume: c.resume()
+                case .cancel: c.resume(throwing: CancellationError())
+                case .park: break
+                }
             }
         } onCancel: {
             let c: CheckedContinuation<Void, any Error>? = lock.withLock {
-                guard let i = sleepers.firstIndex(where: { $0.id == id }) else { return nil }
+                guard let i = sleepers.firstIndex(where: { $0.id == id }) else {
+                    cancelled.insert(id)                                   // not appended yet — mark for the append path
+                    return nil
+                }
                 defer { sleepers.remove(at: i) }
                 return sleepers[i].continuation
             }
@@ -207,47 +221,54 @@ public final class TestClock: Clock, @unchecked Sendable {
         for s in due { s.continuation.resume() }
     }
 
-    /// Suspend until at least `count` sleepers are parked. The ONLY correct way to order an
-    /// `advance` after the code under test has started sleeping.
-    public func parked(_ count: Int = 1) async {
+    /// Suspend until at least `count` sleepers are parked — optionally only counting sleepers
+    /// whose remaining duration is >= `deadlineAtLeast` (scope the wait to the loop you mean).
+    public func parked(_ count: Int = 1, deadlineAtLeast: Duration? = nil) async {
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let minDeadline = deadlineAtLeast.map { Instant(offset: lock.withLock { _now }.offset + $0) }
             let done: Bool = lock.withLock {
-                if sleepers.count >= count { return true }
-                parkWaiters.append((count, c))
+                if matchingSleepersLocked(minDeadline: minDeadline) >= count { return true }
+                parkWaiters.append((count, minDeadline, c))
                 return false
             }
             if done { c.resume() }
         }
     }
 
+    private func matchingSleepersLocked(minDeadline: Instant?) -> Int {
+        guard let m = minDeadline else { return sleepers.count }
+        return sleepers.count { $0.deadline >= m }
+    }
     private func wakeParkWaitersLocked() {
-        let n = sleepers.count
-        let met = parkWaiters.filter { $0.count <= n }
-        parkWaiters.removeAll { $0.count <= n }
-        for w in met { w.continuation.resume() }
+        let met = parkWaiters.enumerated().filter { matchingSleepersLocked(minDeadline: $0.element.minDeadline) >= $0.element.count }
+        for (i, w) in met.reversed() { parkWaiters.remove(at: i); w.continuation.resume() }
     }
 }
 ```
 
-- [ ] **Step 5: Run to verify pass**
+(Note `parked(deadlineAtLeast:)` computes the threshold against `_now` at wait time; advance() does not re-lower it — fine for its purpose: ordering an advance after a specific park.)
 
-Run: `./scripts/test.sh --filter "TestClockTests" 2>&1 | tail -3`
-Expected: `Test run with 4 tests in 1 suite passed`.
-
-- [ ] **Step 6: Commit** — `git add Package.swift Tests/TestSupport Tests/OrchestraCoreTests/TestClockTests.swift && git commit -m "test: TestSupport target + TestClock (advance/parked/cancellation)"`
+- [ ] **Step 5: Verify pass** — 6 tests green (the 100-iteration cancel-race case included).
+- [ ] **Step 6: Commit** — `git commit -m "test: TestSupport target + TestClock (advance/scoped-parked/cancel-race-safe)"`
 
 ---
 
-### Task 2: `ProcRunning` seam + gateable `FakeProc`
+### Task 2: async `ProcRunning` seam + suspension-gated `FakeProc`
 
 **Files:**
 - Create: `Sources/OrchestraCore/ProcRunning.swift`
+- Modify: `Sources/OrchestraCore/Proc.swift:4-9` — add `public init(stdout: String, stderr: String, exitCode: Int32)` to `ProcResult` (memberwise init is internal today; TestSupport imports non-`@testable`).
 - Create: `Tests/TestSupport/Gate.swift`, `Tests/TestSupport/FakeProc.swift`
 - Test: `Tests/OrchestraCoreTests/FakeProcTests.swift`
 
 **Interfaces:**
-- Produces: `public protocol ProcRunning: Sendable { @discardableResult func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) throws -> ProcResult }`; `public struct RealProc: ProcRunning`; `FakeProc` (`on(_:respond:)`, `onDefault(_:)`, `calls`, `gate(on:)`); `Gate` (`reached() async`, `release(_:)`).
-- Consumed by: Task 5 (BranchLineage/RemoteParents/service extensions), Task 6 (stub gates), Task 10 (suite conversion).
+- Produces:
+  - `public protocol ProcRunning: Sendable { @discardableResult func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) async throws -> ProcResult }`
+    **Async on purpose:** `BranchLineage` and `RemoteParents` are ACTORS calling the seam from isolated methods. A blocking gate there would wedge the actor's cooperative-pool thread and deadlock the test's next `await` on that actor. An async seam lets `FakeProc` SUSPEND at a gate (deadlock-free from actors and `async let` alike) while `RealProc` runs blocking `Proc.run` inline — byte-for-byte today's thread semantics.
+    **Timeout contract:** `nil` means truly unbounded, exactly like `Proc.run` (Proc.swift:18-22). Converted call sites that previously used the implicit default pass `.seconds(120)` explicitly.
+  - `public struct RealProc: ProcRunning` — `try Proc.run(argv, cwd: cwd, env: env, timeout: timeout)` verbatim (nil passes through).
+  - `FakeProc` (`on(_:_:)` rules returning `ProcResult?` — nil falls through to later rules/default; `onDefault`; `calls`; `gate(on:)`), `Gate` (`reached() async`, `release(_:)`, `park() async -> ProcResult` — all `public`).
+- Consumed by: Task 5 (lineage/remote/tree), Task 6 (stub gates), Task 10.
 
 - [ ] **Step 1: Write the failing tests** — `Tests/OrchestraCoreTests/FakeProcTests.swift`:
 
@@ -256,147 +277,119 @@ import Testing
 import TestSupport
 @testable import OrchestraCore
 
-@Suite("FakeProc — scripting, recording, gates")
+@Suite("FakeProc — scripting, fall-through, recording, gates")
 struct FakeProcTests {
-    @Test("scripted rule matches by argv prefix; default answers the rest; calls are recorded")
-    func scripting() throws {
+    @Test("first matching rule wins; nil falls through; default answers the rest")
+    func scripting() async throws {
         let proc = FakeProc()
-        proc.on(["git", "config", "--get"]) { _ in ProcResult(stdout: "main\n", stderr: "", exitCode: 0) }
-        proc.onDefault(ProcResult(stdout: "", stderr: "", exitCode: 0))
-        let r = try proc.run(["git", "config", "--get", "orchestra.b.parent"], cwd: "/r", env: [:], timeout: nil)
+        proc.on(["git"]) { argv in                       // a broad rule that only handles config
+            argv.count > 3 && argv[3] == "config" ? ProcResult(stdout: "main\n", stderr: "", exitCode: 0) : nil
+        }
+        proc.on(["git", "fetch"]) { _ in ProcResult(stdout: "", stderr: "", exitCode: 0) }
+        let r = try await proc.run(["git", "-C", "/r", "config", "--get", "k"], cwd: nil, env: [:], timeout: nil)
         #expect(r.stdout == "main\n")
-        _ = try proc.run(["git", "fetch"], cwd: "/r", env: [:], timeout: nil)
-        #expect(proc.calls.map(\.argv.first) == ["git", "git"])
-        #expect(proc.calls[1].argv == ["git", "fetch"])
+        let f = try await proc.run(["git", "fetch"], cwd: nil, env: [:], timeout: nil)   // fell through the broad rule
+        #expect(f.ok)
+        #expect(proc.calls.count == 2)
     }
 
-    @Test("a gated call parks until release; the test observes the park deterministically")
+    @Test("a gated call suspends until release — no thread is blocked")
     func gates() async throws {
         let proc = FakeProc()
-        proc.onDefault(ProcResult(stdout: "", stderr: "", exitCode: 0))
         let gate = proc.gate(on: ["git", "worktree", "add"])
-        let t = _Concurrency.Task.detached {          // detached: FakeProc.run blocks its thread, like real Proc.run
-            try proc.run(["git", "worktree", "add", "/w", "-b", "b"], cwd: "/r", env: [:], timeout: nil)
-        }
-        await gate.reached()                          // provably parked inside "git worktree add"
+        async let r = proc.run(["git", "worktree", "add", "/w", "-b", "b"], cwd: "/r", env: [:], timeout: nil)
+        await gate.reached()                              // provably parked inside "git worktree add"
         gate.release(ProcResult(stdout: "", stderr: "", exitCode: 0))
-        let r = try await t.value
-        #expect(r.ok)
+        #expect(try await r.ok)
     }
 
-    @Test("release with a failure result makes the parked call return that failure")
+    @Test("release with a failure makes the parked call return that failure")
     func gateFailure() async throws {
         let proc = FakeProc()
         let gate = proc.gate(on: ["git", "fetch"])
-        let t = _Concurrency.Task.detached { try proc.run(["git", "fetch"], cwd: nil, env: [:], timeout: nil) }
+        async let r = proc.run(["git", "fetch"], cwd: nil, env: [:], timeout: nil)
         await gate.reached()
         gate.release(ProcResult(stdout: "", stderr: "fatal: no remote", exitCode: 128))
-        let r = try await t.value
-        #expect(r.exitCode == 128)
+        #expect(try await r.exitCode == 128)
     }
 }
 ```
 
-- [ ] **Step 2: Run to verify failure** — `./scripts/test.sh --filter "FakeProcTests" 2>&1 | tail -3` → compile error, `ProcRunning`/`FakeProc` unknown.
-
-- [ ] **Step 3: Implement `Sources/OrchestraCore/ProcRunning.swift`**
-
-```swift
-import Foundation
-
-/// The seam production code forks subprocesses through. `Proc` remains the mechanism; this is
-/// the injectable boundary — components that shell out (BranchLineage, RemoteParents, the tree/
-/// parent-ref git probes) take a `ProcRunning` so unit tests substitute a scripted, gateable fake.
-/// Launch-time forks (Launcher, adapters, SessionManager, daemon lifecycle) stay on `Proc`
-/// directly: unit tests never reach them — they are stubbed at their own protocol seams
-/// (SessionManaging, the adapter registry), and their real behavior is contract/e2e territory.
-public protocol ProcRunning: Sendable {
-    @discardableResult
-    func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) throws -> ProcResult
-}
-
-/// Production implementation — a pass-through to `Proc.run` with its default timeout policy.
-public struct RealProc: ProcRunning {
-    public init() {}
-    @discardableResult
-    public func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) throws -> ProcResult {
-        try Proc.run(argv, cwd: cwd, env: env, timeout: timeout ?? .seconds(120))
-    }
-}
-```
-
-- [ ] **Step 4: Implement `Tests/TestSupport/Gate.swift`**
+- [ ] **Step 2: Verify failure**, then implement. `Gate.swift`:
 
 ```swift
 import Foundation
 import OrchestraCore
 
-/// A rendezvous for deterministic race tests: the code under test PARKS inside a faked call
+/// A rendezvous for deterministic race tests: the code under test SUSPENDS inside a faked call
 /// until the test releases it. Replaces every usleep-to-widen-the-race-window.
-///
-///     let gate = proc.gate(on: ["git", "worktree", "add"])
-///     async let spawn = service.spawn(card)
-///     await gate.reached()          // provably parked inside git
-///     await service.reconcile()     // fire the racing op, deterministically
-///     gate.release(.ok)
-///
-/// `parkAndAwaitRelease` BLOCKS the calling thread (matching real `Proc.run`'s blocking
-/// semantics). Production only forks off-actor (the actor-hygiene invariant), so the parked
-/// thread is never a cooperative-pool thread the test itself needs.
+/// Suspension (not semaphore-blocking) is load-bearing: gated calls happen inside actor-isolated
+/// methods (BranchLineage/RemoteParents), where parking the thread would deadlock the actor.
 public final class Gate: @unchecked Sendable {
     private let lock = NSLock()
-    private let sem = DispatchSemaphore(value: 0)
-    private var reachedWaiters: [CheckedContinuation<Void, Never>] = []
     private var hits = 0
-    private var result = ProcResult(stdout: "", stderr: "", exitCode: 0)
+    private var reachedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var released: ProcResult? = nil
+    private var parkedWaiters: [CheckedContinuation<ProcResult, Never>] = []
 
-    /// Suspend until the gated call has parked (at least once).
+    public init() {}
+
+    /// Test-side: suspend until the gated call has parked (at least once).
     public func reached() async {
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             let done: Bool = lock.withLock {
                 if hits > 0 { return true }
-                reachedWaiters.append(c)
-                return false
+                reachedWaiters.append(c); return false
             }
             if done { c.resume() }
         }
     }
 
-    /// Let the parked call return `result`.
+    /// Test-side: let the parked call return `result`. Also satisfies a call that arrives late.
     public func release(_ result: ProcResult = ProcResult(stdout: "", stderr: "", exitCode: 0)) {
-        lock.withLock { self.result = result }
-        sem.signal()
+        let waiters: [CheckedContinuation<ProcResult, Never>] = lock.withLock {
+            released = result
+            defer { parkedWaiters.removeAll() }
+            return parkedWaiters
+        }
+        for w in waiters { w.resume(returning: result) }
     }
 
-    /// Called by FakeProc from the gated invocation's thread.
-    func parkAndAwaitRelease() -> ProcResult {
-        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+    /// FakeProc-side: record the hit, wake `reached()` waiters, suspend until released.
+    public func park() async -> ProcResult {
+        let reached: [CheckedContinuation<Void, Never>] = lock.withLock {
             hits += 1
             defer { reachedWaiters.removeAll() }
             return reachedWaiters
         }
-        for w in waiters { w.resume() }
-        sem.wait()
-        return lock.withLock { result }
+        for r in reached { r.resume() }
+        return await withCheckedContinuation { (c: CheckedContinuation<ProcResult, Never>) in
+            let early: ProcResult? = lock.withLock {
+                if let r = released { return r }
+                parkedWaiters.append(c); return nil
+            }
+            if let early { c.resume(returning: early) }
+        }
     }
 }
 ```
 
-- [ ] **Step 5: Implement `Tests/TestSupport/FakeProc.swift`**
+`FakeProc.swift`:
 
 ```swift
 import Foundation
 import OrchestraCore
 
-/// Scripted, recording, gateable ProcRunning. Rules match by argv PREFIX (first rule wins);
-/// unmatched calls get `defaultResult` (exit 0, empty output) so incidental probes never fail
-/// a test that doesn't care about them. Every call is recorded for intent assertions.
+/// Scripted, recording, gateable ProcRunning. Rules match by argv PREFIX in registration order;
+/// a rule may return nil to FALL THROUGH (so the GitConfigEmulator's broad ["git"] rule composes
+/// with later fetch/rev-parse rules). Unmatched calls get `defaultResult` (exit 0, empty output).
+/// Respond closures run OUTSIDE the internal lock (a closure may re-enter the fake).
 public final class FakeProc: ProcRunning, @unchecked Sendable {
     public struct Call: Sendable, Equatable {
         public let argv: [String]
         public let cwd: String?
     }
-    private struct Rule { let prefix: [String]; let respond: ([String]) -> ProcResult }
+    private struct Rule { let prefix: [String]; let respond: ([String]) -> ProcResult? }
 
     private let lock = NSLock()
     private var rules: [Rule] = []
@@ -407,13 +400,13 @@ public final class FakeProc: ProcRunning, @unchecked Sendable {
     public init() {}
     public var calls: [Call] { lock.withLock { _calls } }
 
-    public func on(_ prefix: [String], _ respond: @escaping ([String]) -> ProcResult) {
+    public func on(_ prefix: [String], _ respond: @escaping ([String]) -> ProcResult?) {
         lock.withLock { rules.append(Rule(prefix: prefix, respond: respond)) }
     }
     public func onDefault(_ result: ProcResult) { lock.withLock { defaultResult = result } }
 
-    /// Install a one-shot park on the next call whose argv starts with `prefix`.
-    /// The gate's release value REPLACES the scripted response for that call.
+    /// One-shot park on the next call whose argv starts with `prefix`; the gate's release value
+    /// REPLACES any scripted response for that call.
     public func gate(on prefix: [String]) -> Gate {
         let g = Gate()
         lock.withLock { gates.append((prefix, g)) }
@@ -421,331 +414,174 @@ public final class FakeProc: ProcRunning, @unchecked Sendable {
     }
 
     @discardableResult
-    public func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) throws -> ProcResult {
-        let gate: Gate? = lock.withLock {
+    public func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) async throws -> ProcResult {
+        let (gate, candidateRules, fallback): (Gate?, [Rule], ProcResult) = lock.withLock {
             _calls.append(Call(argv: argv, cwd: cwd))
-            guard let i = gates.firstIndex(where: { argv.starts(with: $0.prefix) }) else { return nil }
-            return gates.remove(at: i).gate
+            var g: Gate? = nil
+            if let i = gates.firstIndex(where: { argv.starts(with: $0.prefix) }) { g = gates.remove(at: i).gate }
+            return (g, rules.filter { argv.starts(with: $0.prefix) }, defaultResult)
         }
-        if let gate { return gate.parkAndAwaitRelease() }
-        return lock.withLock { rules.first { argv.starts(with: $0.prefix) }?.respond(argv) ?? defaultResult }
+        if let gate { return await gate.park() }
+        for rule in candidateRules {                       // outside the lock — re-entrant-safe
+            if let r = rule.respond(argv) { return r }
+        }
+        return fallback
     }
 }
 ```
 
-- [ ] **Step 6: Run to verify pass** — `./scripts/test.sh --filter "FakeProcTests" 2>&1 | tail -3` → 3 tests pass.
+- [ ] **Step 3: Add `public init` to `ProcResult`** (Proc.swift, inside the struct):
 
-- [ ] **Step 7: Commit** — `git commit -m "feat: ProcRunning seam (RealProc) + gateable FakeProc for deterministic race tests"`
+```swift
+    public init(stdout: String, stderr: String, exitCode: Int32) {
+        self.stdout = stdout; self.stderr = stderr; self.exitCode = exitCode
+    }
+```
+
+- [ ] **Step 4: Verify pass** — 3 tests green. **Step 5: Full suite green.** **Step 6: Commit.**
 
 ---
 
-### Task 3: `scratchRoot` becomes injected state; delete `scratchTestLock`
+### Task 3: scratch + runtime-state paths become injected state; delete `scratchTestLock`
 
 **Files:**
-- Modify: `Sources/OrchestraKit/Config.swift` (instance property), `Sources/OrchestraCore/OrchestraService.swift:440,580`, `Sources/OrchestraCore/PhaseStepper.swift:310,315`
-- Modify: `Tests/OrchestraCoreTests/Stubs.swift` (TestEnv wires per-test scratchRoot; delete `AsyncLock`/`scratchTestLock`/`withScratchLock`, lines 428–455)
-- Modify: the 12 `withScratchLock` call sites — `ArchiveIntentTests.swift` (3), `TrustLedgerTests.swift`, `TeardownFenceTests.swift`, `StepperConvergeTests.swift`, `SpawnBaseTests.swift`, `ScratchSpawnTests.swift`, `ScratchArchiveTests.swift`, `OrchestraServiceTests.swift` (1 each), `Stubs.swift` (2 internal)
-- Modify: `Tests/OrchestraCoreTests/ScratchPathTests.swift`, `ScratchSweepTests.swift`, `ScratchSpawnTests.swift`, `StepperConvergeTests.swift:394`, `HomeIsolationTests.swift:81` (static → instance references)
+- Modify: `Sources/OrchestraKit/Config.swift` — instance `scratchRoot` + `runtimeStateDir`, **both OUTSIDE `CodingKeys`**
+- Modify: `Sources/OrchestraCore/OrchestraService.swift:440,580,857` + `setConfig` (preserve non-wire fields)
+- Modify: `Sources/OrchestraCore/PhaseStepper.swift:310,315` + `ConvergeContext` (new `scratchRoot: String` field) + its construction site (`OrchestraService.swift:~1197`)
+- Modify: `Tests/OrchestraCoreTests/Stubs.swift` (TestEnv wires both; delete `AsyncLock`/`scratchTestLock`/`withScratchLock` :428-455)
+- Modify: **every test-side `Config(` construction** — enumerate with `grep -rn 'Config(reposRoot' Tests/` — known extra site: `ArchiveIntentTests.swift:26` builds its own Config (its local `env()` helper); wire `scratchRoot`/`runtimeStateDir` there too
+- Modify: the 12 `withScratchLock` call sites (ArchiveIntentTests ×3, Stubs ×2, TrustLedgerTests, TeardownFenceTests, StepperConvergeTests, SpawnBaseTests, ScratchSpawnTests, ScratchArchiveTests, OrchestraServiceTests)
+- Modify: static→instance references in `ScratchPathTests`, `ScratchSweepTests`, `ScratchSpawnTests:13`, `StepperConvergeTests:394`, `HomeIsolationTests:81` (uses `Config.defaultScratchRoot` — that suite is about ambient defaults and moves to ContractTests in Task 11)
 
 **Interfaces:**
-- Produces: `Config.scratchRoot` (instance, Codable-with-default), `config.scratchDir(_ id: UUID)`. The static `Config.scratchRoot` REMAINS as the production default value used by the instance's fallback; call sites in service/stepper code switch to the instance.
-
-- [ ] **Step 1: Write the failing test** — append to `Tests/OrchestraCoreTests/ScratchPathTests.swift`:
+- Produces: `config.scratchRoot`, `config.scratchDir(_ id: UUID)`, `config.runtimeStateDir` (instance); `Config.defaultScratchRoot` (static, the default value).
+- **Wire-safety (review BLOCKER):** `ControlServer` `setConfig` decodes a whole `Config` off the control plane (`ControlServer.swift:130-133`) and `PhaseStepper` uses `scratchRoot` as the fence immediately before `rm -rf`. So: (a) neither new property appears in `CodingKeys` — decode always recomputes the default from the CURRENT `$HOME` (no stale persisted absolute path under HOME-redirect, no wire-settable fence); (b) `OrchestraService.setConfig` explicitly carries the running instance's values across the swap:
 
 ```swift
-@Test("scratchRoot is per-Config state: two services sweep only their own roots")
-func scratchRootIsInjected() async throws {
-    let a = TestEnv.make(), b = TestEnv.make()
-    let cardA = try await TestEnv.spawnAndAwaitLive(a.svc, SpawnInput(prompt: "p", scratch: true, agentId: a.adapter.id))
-    // b's sweep must not see (or delete) a's scratch dir:
-    _ = try await b.svc.sweepOrphanScratch()
-    #expect(FileManager.default.fileExists(atPath: cardA.cwd))
-    #expect(cardA.cwd.hasPrefix(a.base))          // the scratch dir lives under a's private base
+    public func setConfig(_ mutate: (inout Config) -> Void) {
+        var next = config
+        mutate(&next)
+        // Non-wire runtime paths are NOT settable via config replacement (the rm -rf fence must
+        // never move at runtime): preserve the running instance's values unconditionally.
+        next.scratchRoot = config.scratchRoot
+        next.runtimeStateDir = config.runtimeStateDir
+        config = next
+        …existing persistence/emit…
+    }
+```
+
+  (Adapt to the actual `setConfig` body — the invariant is the two carried-across lines.)
+
+- [ ] **Step 1: Failing test** — as previously specified (`ScratchPathTests`: two `TestEnv.make()` services; spawn a scratch card in A; `b.svc.sweepOrphanScratch()`; A's dir survives and lives under `a.base`). PLUS a wire-safety test in `ControlServerTests` or `OrchestraServiceTests`:
+
+```swift
+@Test("setConfig cannot move the scratch fence")
+func setConfigPreservesScratchRoot() async throws {
+    let env = TestEnv.make()
+    let before = await env.svc.getConfig().scratchRoot
+    await env.svc.setConfig { $0.reposRoot = $0.reposRoot }     // any wire-shaped replacement
+    #expect(await env.svc.getConfig().scratchRoot == before)
 }
 ```
 
-(Adjust the `SpawnInput` scratch spelling to the existing scratch-spawn test idiom in `ScratchSpawnTests.swift` — copy its input literally.)
-
-- [ ] **Step 2: Run to verify failure** — `./scripts/test.sh --filter "ScratchPathTests" 2>&1 | tail -3`
-Expected: FAIL — `cardA.cwd` is under the process-global `~/.orchestra/scratch` (the bootstrap HOME), not under `a.base`.
-
-- [ ] **Step 3: Make `scratchRoot` an instance property.** In `Sources/OrchestraKit/Config.swift`:
-
-```swift
-    /// Root for ephemeral scratch-card dirs. INSTANCE state (not a process-global): every
-    /// OrchestraService sweeps and creates under ITS config's root, so tests give each service a
-    /// private root and concurrent daemons/tests can never delete each other's scratch dirs.
-    /// Not persisted in config.json unless explicitly set (defaults to the historical location).
-    public var scratchRoot: String
-    /// The scratch dir for a given card id — `scratchRoot/<lowercased-uuid>`.
-    public func scratchDir(_ id: UUID) -> String { "\(scratchRoot)/\(id.uuidString.lowercased())" }
-
-    /// Historical default, kept for the instance default + any remaining display-only uses.
-    public static var defaultScratchRoot: String { "\(home)/.orchestra/scratch" }
-```
-
-Mechanics: add `scratchRoot` to the memberwise/`init` with default `Config.defaultScratchRoot`; in `init(from:)` decode with `decodeIfPresent … ?? Config.defaultScratchRoot`; add to `CodingKeys` and `encode` (encode unconditionally — harmless). Delete the old `static var scratchRoot` and `static func scratchDir` **after** step 4 fixes their callers (compiler finds every one).
-
-- [ ] **Step 4: Switch the callers to the instance.**
-  - `OrchestraService.swift:440`: `cwd = Config.scratchDir(id)` → `cwd = config.scratchDir(id)`
-  - `OrchestraService.swift:580`: `public func sweepOrphanScratch(root: String = Config.scratchRoot,` → make the parameter non-defaulted internally: `public func sweepOrphanScratch(root: String? = nil, …)` with first line `let root = root ?? config.scratchRoot`.
-  - `PhaseStepper.swift:310,315`: `Config.scratchRoot` → the stepper's config access (`config.scratchRoot` — the stepper already holds/receives the service's config; follow whichever accessor line 310's enclosing scope uses for other config reads).
-  - Tests `ScratchPathTests.swift:10-11`, `ScratchSpawnTests.swift:13`, `StepperConvergeTests.swift:394`, `HomeIsolationTests.swift:81`, `ScratchSweepTests` — change `Config.scratchDir(id)`/`Config.scratchRoot` to the env's config instance (in TestEnv-based tests: `a.svc` config paths assert `hasPrefix(a.base + "/scratch")`); `HomeIsolationTests:81` uses `Config.defaultScratchRoot` (it asserts the *default* landing spot is under the bootstrap HOME — that is exactly the static default's job).
-
-- [ ] **Step 5: Wire TestEnv.** In `Stubs.swift` `TestEnv.make` (and `remake`), the `Config(...)` literal gains: `scratchRoot: PathResolver.canonical(base) + "/scratch",` (make) / `scratchRoot: base + "/scratch",` (remake).
-
-- [ ] **Step 6: Delete the mutex.** Remove `AsyncLock`, `scratchTestLock`, `withScratchLock` (Stubs.swift:428–455) and unwrap the 12 call-site bodies (delete the `try await withScratchLock {` / matching `}` — keep the body). Files listed in **Files** above.
-
-- [ ] **Step 7: Full suite green ×3.** Run: `for i in 1 2 3; do script -q .scratch/t3-$i.log ./scripts/test.sh >/dev/null; grep -aE "Test run with" .scratch/t3-$i.log | tail -1; done`
-Expected: `… passed` all three times (three runs because this task de-serializes previously-serialized tests — one green run does not prove the races are gone).
-
-- [ ] **Step 8: Commit** — `git commit -m "feat: scratchRoot is injected Config state; delete the global scratchTestLock"`
+- [ ] **Step 2: Verify both fail.**
+- [ ] **Step 3: Implement Config** (instance props, non-Codable — `init(from:)` sets defaults, `encode` omits them; memberwise init gains `scratchRoot: String = Config.defaultScratchRoot, runtimeStateDir: String = Config.dataDir`).
+- [ ] **Step 4: Switch callers.** `:440` → `config.scratchDir(id)`; `:580` → `root: String? = nil` + `let root = root ?? config.scratchRoot`; `:857` (`readonly-<shortId>.json` under `Config.dataDir`) → `config.runtimeStateDir`; `ConvergeContext` gains `public let scratchRoot: String`, PhaseStepper :310/:315 use it, construction at :~1197 passes `config.scratchRoot`.
+- [ ] **Step 5: Wire TestEnv + ArchiveIntentTests + any other `Config(` sites from the grep** (`scratchRoot: base + "/scratch"`, `runtimeStateDir: base + "/state"`).
+- [ ] **Step 6: Delete the mutex + unwrap the 12 call sites.**
+- [ ] **Step 7: Full suite green ×3** (de-serialization needs repetition to trust).
+- [ ] **Step 8: Commit.**
 
 ---
 
 ### Task 4: Clock injection through production sleeps
 
 **Files:**
-- Modify: `Sources/OrchestraCore/OrchestraService.swift` (init + stored `clock`), and the sleep sites:
-  `OrchestraService+MergeRequest.swift:90`, `OrchestraService+Diff.swift:73`, `OrchestraService+Tree.swift:474,489`, `OrchestraService+Remote.swift:208`, `OrchestraService+Recovery.swift:640`
-- Modify: `Sources/OrchestraCore/TaskStore.swift:35,186,194` (clock) and its `Date()` stamping (injected `now`)
-- Modify: `Tests/OrchestraCoreTests/Stubs.swift` (TestEnv `clock:` parameter)
-- Test: `Tests/OrchestraCoreTests/MergeRequestBackoffTests.swift` gains one TestClock-driven case; `Tests/OrchestraCoreTests/TaskStoreTests.swift:86` converts to injected `now`
+- Modify: `OrchestraService.swift` (init: `clock: any Clock<Duration> = ContinuousClock()`, `proc: any ProcRunning = RealProc()` — both params land HERE so the init changes once; stored as `nonisolated let`)
+- Modify sleep sites: `+MergeRequest:90`, `+Diff:73`, `+Tree:474,489`, `+Remote:208`, `+Recovery:640` → `try? await clock.sleep(for: …)` (preserve each site's exact `try` spelling)
+- Modify: `Sources/OrchestraCore/TaskStore.swift` — see the two-timeline note
+- Modify: `Stubs.swift` TestEnv (`clock:` param, forwarded to BOTH the service and the TaskStore it builds)
+- Test: `MergeRequestBackoffTests` TestClock case; `TaskStoreTests:86` conversion
 
-**Interfaces:**
-- Produces: `OrchestraService.init(…, clock: any Clock<Duration> = ContinuousClock(), proc: any ProcRunning = RealProc())` — **add both parameters in this task** (proc is threaded to consumers in Task 5). Stored as `nonisolated let clock: any Clock<Duration>` / `nonisolated let proc: any ProcRunning`. `TaskStore.init(path:…, clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = { Date() })`.
-- Consumes: `TestClock` (Task 1), `ProcRunning` (Task 2).
+**TaskStore two-timeline note (review MAJOR):** today the debounce sleep AND the max-deferral checkpoint both live on monotonic `ContinuousClock` (`TaskStore.swift:35,186-190,194`). Do NOT move the checkpoint to `Date` (wall-clock jumps would flush early/late) and do NOT leave it on `ContinuousClock` while the sleep moves (TestClock advance would never trip the cap). Restructure the debounce internals onto ONE injected clock with no instant arithmetic across existentials: on first deferral arm TWO competing sleepers — the extendable debounce sleep and a hard-cap task (`try? await clock.sleep(for: maxDeferral)` then flush) — whichever fires first flushes and cancels the other. Production default `ContinuousClock` keeps monotonic semantics; tests advance one TestClock and can exercise BOTH paths deterministically. The injected `now: @Sendable () -> Date = { Date() }` is used ONLY for persisted ISO-8601 stamps (never for scheduling).
 
-- [ ] **Step 1: Write the failing test** — append to `MergeRequestBackoffTests.swift` (this suite is real-git today; the new case uses `TestEnv.make` + the clock only — it exercises the loop's schedule, not git):
+- [ ] **Step 1: Failing test** — `MergeRequestBackoffTests`:
 
 ```swift
 @Test("nudge backoff follows the schedule under a fake clock — no real waiting")
 func backoffScheduleOnTestClock() async throws {
     let clock = TestClock()
     let env = TestEnv.make(clock: clock)
-    // Arrange a child in .mergeRequested exactly as the existing loop tests do (copy the
-    // arrangement from the suite's first test), then:
+    // Arrange a child in .mergeRequested exactly as the suite's existing first test does, then:
     await env.svc.startMergeRequestNudge(childId: child.id)
-    await clock.parked(1)                          // loop reached its first sleep (base 300s)
+    await clock.parked(1, deadlineAtLeast: .seconds(300))   // scoped: ignore unrelated debounce sleepers
     clock.advance(by: .seconds(300))
-    await clock.parked(1)                          // second sleep = 600s — the backoff doubled
-    // Assert exactly one re-nudge was sent (whatever the suite's existing sent-count probe is).
+    await clock.parked(1, deadlineAtLeast: .seconds(600))   // backoff doubled — proves the schedule
+    // assert exactly one re-nudge sent (the suite's existing sent-count probe)
 }
 ```
 
-- [ ] **Step 2: Verify failure** — `TestEnv.make` has no `clock:`; `startMergeRequestNudge` sleeps real time.
-
-- [ ] **Step 3: Thread the clock.**
-  - `OrchestraService`: add `nonisolated let clock: any Clock<Duration>` + `nonisolated let proc: any ProcRunning`; init params `clock: any Clock<Duration> = ContinuousClock(), proc: any ProcRunning = RealProc()`; assign both.
-  - Each sleep site: `try? await _Concurrency.Task.sleep(for: X)` → `try? await clock.sleep(for: X)` (keep the exact `try?`/`try` spelling each site has). Sites: `+MergeRequest:90`, `+Diff:73`, `+Tree:474`, `+Tree:489`, `+Remote:208`, `+Recovery:640`.
-  - `TaskStore`: init gains `clock`/`now` (stored `let`); `:35` `ContinuousClock.Instant?` → `(any Clock<Duration>)`-agnostic — store `firstDeferredAt` as the store-clock's instant is generic-hostile with an existential, so instead keep the debounce arithmetic in `Duration` via `clock.now`… **Simplification that avoids existential-Instant algebra:** keep two fields, `private var debounceStart: Date?` stamped from `now()` and use `clock.sleep(for: debounceInterval)` at `:194` unchanged in shape. The only *behavioral* need is that the sleep is fake-advanceable and the ISO stamp is injectable.
-  - Every place TaskStore stamps a persisted timestamp with `Date()` uses `now()` instead (grep `Date()` within TaskStore.swift; ~2–4 sites).
-- [ ] **Step 4: TestEnv gains the parameter.** `TestEnv.make(…, clock: any Clock<Duration> = ContinuousClock(), proc: (any ProcRunning)? = nil)` → passes through to `OrchestraService(…, clock: clock, proc: proc ?? RealProc())`. (Default stays real for now; suites convert file-by-file in Task 7.)
-- [ ] **Step 5: Convert `TaskStoreTests.swift:86`** — replace the `sleep(for: .milliseconds(1100))  // ensure a distinct ISO8601 second` with an injected `now`: construct that test's TaskStore with `var t = Date(); let store = TaskStore(path: p, now: { t })`, and between the two writes do `t += 1` — the "distinct second" is now a variable assignment.
-- [ ] **Step 6: Run** — `./scripts/test.sh --filter "MergeRequestBackoff|TaskStoreTests" 2>&1 | tail -3` → pass, and the TaskStore suite loses ~1.1s.
-- [ ] **Step 7: Full suite green** — `script -q .scratch/t4.log ./scripts/test.sh >/dev/null; grep -aE "Test run with" .scratch/t4.log`
-- [ ] **Step 8: Commit** — `git commit -m "feat: inject the clock through every production sleep + TaskStore timestamps"`
+- [ ] **Step 2–3: Thread it** (service init as above; sleep sites; TaskStore restructure per the note; TestEnv builds `TaskStore(path: …, clock: clock, now: …)` and forwards `clock`/`proc` to the service — review minor-11: without this forwarding, no TestEnv test can advance the store).
+- [ ] **Step 4: Convert `TaskStoreTests:86`** to injected `now` (`var t = Date()` closure; `t += 1` replaces the 1.1s sleep) and add a debounce-cap test on TestClock (advance past `maxDeferral`, expect the flush — deterministic coverage the wall-clock version never had).
+- [ ] **Step 5–6: Suite green; commit.**
 
 ---
 
 ### Task 5: `proc` threading — BranchLineage, RemoteParents, tree/parent-ref probes
 
-**Files:**
-- Modify: `Sources/OrchestraCore/BranchLineage.swift` (init + 4 `Proc.run` sites: :33,:40,:46,:123)
-- Modify: `Sources/OrchestraCore/RemoteParents.swift` (init + its `Proc.run` sites)
-- Modify: `Sources/OrchestraCore/OrchestraService.swift:47` (`let lineage = BranchLineage()` → built in init from `proc`), same for `remoteParents`
-- Modify: `Sources/OrchestraCore/OrchestraService+Tree.swift`, `+ParentRef.swift`, `+Converge.swift` — their direct `Proc.run` git probes go through `proc`
-- Create: `Tests/TestSupport/GitConfigEmulator.swift`
-- Test: `Tests/OrchestraCoreTests/LineageTests.swift` — ONE test converted to FakeProc as the proof (the suite converts wholesale in Task 10)
+**Files:** as before (`BranchLineage.swift` :33,:40,:46,:123; `RemoteParents.swift`; `OrchestraService.swift:47` + init; `+Tree/+ParentRef/+Converge` probe sites), plus `Tests/TestSupport/GitConfigEmulator.swift`; proof-test in `LineageTests`.
 
 **Interfaces:**
-- Produces: `BranchLineage(proc: any ProcRunning = RealProc())`, `RemoteParents(proc: any ProcRunning = RealProc())`; `GitConfigEmulator` — an in-memory `git config` get/set/unset/get-regexp emulator exposing `func install(on: FakeProc)` so lineage tests script a repo's config space with a dictionary.
-- Consumes: `ProcRunning`/`FakeProc` (Task 2).
+- Produces: `BranchLineage(proc: any ProcRunning = RealProc())`, `RemoteParents(proc: any ProcRunning = RealProc())`; call sites become `try await proc.run(argv, cwd: nil, env: [:], timeout: .seconds(120))` (the previous implicit default made explicit — review minor-13). Since the seam is async and these are actors, adding `await` inside isolated methods is legal and does not change callers (they already `await` the actor).
+- `GitConfigEmulator.install(on:)` registers a `["git"]` rule that handles ONLY `git -C <repo> config …` shapes and returns **nil for everything else** (fall-through — review MAJOR-7), so fetch/rev-parse/merge-base rules registered before OR after compose. Emulator semantics per the prior draft (get/set/unset/get-regexp; exit 1 on missing), now returning `ProcResult?`.
+- **Off-actor sync probes:** `+Tree`/`+ParentRef`/`+Converge` sites that run inside sync `offActor`/`offActorValue` closures get an async-closure overload of that helper (a `Task.detached`-based twin, ~6 lines, same name) rather than blocking bridges. Note it in the conversion commit.
 
-- [ ] **Step 1: Write the failing test** — in `LineageTests.swift` add:
-
-```swift
-@Test("lineage set/get round-trips through the proc seam — no real git")
-func lineageOverFakeProc() async throws {
-    let fake = FakeProc()
-    let emu = GitConfigEmulator()
-    emu.install(on: fake)
-    let lineage = BranchLineage(proc: fake)
-    try await lineage.set(repo: "/nonexistent/repo", branch: "child", parent: "main")
-    let rec = await lineage.get(repo: "/nonexistent/repo", branch: "child")
-    #expect(rec?.parent == "main")
-    #expect(fake.calls.contains { $0.argv.starts(with: ["git", "-C", "/nonexistent/repo", "config"]) })
-}
-```
-
-(`/nonexistent/repo` is the point: no filesystem, no git — pure seam.)
-
-- [ ] **Step 2: Implement `GitConfigEmulator`** in TestSupport:
-
-```swift
-import Foundation
-import OrchestraCore
-
-/// In-memory `git config` semantics for FakeProc: --get (exit 1 when missing), set, --unset,
-/// --get-regexp (KEY SP VALUE lines, exit 1 when nothing matches). Enough for BranchLineage,
-/// whose every op is `git -C <repo> config …`. Fidelity is pinned by
-/// ContractTests/Git/GitConfigContractTests (Task 10), which runs the SAME operation matrix
-/// against real git and asserts identical exit codes/output shapes.
-public final class GitConfigEmulator: @unchecked Sendable {
-    private let lock = NSLock()
-    private var store: [String: [String: String]] = [:]   // repo → key → value
-
-    public init() {}
-    public func install(on fake: FakeProc) {
-        fake.on(["git"]) { [self] argv in
-            // Expected shapes: git -C <repo> config [--get|--unset|--get-regexp] key [value]
-            guard argv.count >= 4, argv[1] == "-C", argv[3] == "config" else {
-                return ProcResult(stdout: "", stderr: "emulator: unhandled: \(argv)", exitCode: 1)
-            }
-            let repo = argv[2]; let rest = Array(argv.dropFirst(4))
-            return lock.withLock { handle(repo: repo, rest: rest) }
-        }
-    }
-
-    private func handle(repo: String, rest: [String]) -> ProcResult {
-        func ok(_ s: String = "") -> ProcResult { ProcResult(stdout: s, stderr: "", exitCode: 0) }
-        func miss() -> ProcResult { ProcResult(stdout: "", stderr: "", exitCode: 1) }
-        switch rest.first {
-        case "--get":
-            guard rest.count == 2, let v = store[repo]?[rest[1]] else { return miss() }
-            return ok(v + "\n")
-        case "--unset":
-            guard rest.count == 2, store[repo]?[rest[1]] != nil else { return miss() }
-            store[repo]?[rest[1]] = nil
-            return ok()
-        case "--get-regexp":
-            guard rest.count == 2, let re = try? NSRegularExpression(pattern: rest[1]) else { return miss() }
-            let hits = (store[repo] ?? [:])
-                .filter { re.firstMatch(in: $0.key, range: NSRange($0.key.startIndex..., in: $0.key)) != nil }
-                .sorted { $0.key < $1.key }
-                .map { "\($0.key) \($0.value)" }
-            return hits.isEmpty ? miss() : ok(hits.joined(separator: "\n") + "\n")
-        default:
-            guard rest.count == 2 else { return miss() }
-            store[repo, default: [:]][rest[0]] = rest[1]
-            return ok()
-        }
-    }
-}
-```
-
-- [ ] **Step 3: Thread `proc`.**
-  - `BranchLineage`: `public init(proc: any ProcRunning = RealProc()) { self.proc = proc }`; each `Proc.run(argv)` → `proc.run(argv, cwd: nil, env: [:], timeout: nil)` (keep `try?`/`try` spellings).
-  - `RemoteParents`: same pattern for its sites.
-  - `OrchestraService.swift:47`: `let lineage: BranchLineage` and in init `self.lineage = BranchLineage(proc: proc)`; same for `remoteParents = RemoteParents(proc: proc)`.
-  - `+Tree.swift` / `+ParentRef.swift` / `+Converge.swift`: their direct `Proc.run`/`Proc.checked` git probes (16 sites total across Remote/Tree per the audit grep) become `proc.run(…)`. These are `nonisolated`/off-actor closures — `proc` is a `nonisolated let`, so capture is legal.
-- [ ] **Step 4: Run** — `./scripts/test.sh --filter "LineageTests" 2>&1 | tail -3` → the new test passes AND the suite's existing real-git tests still pass (default `RealProc` preserved behavior).
-- [ ] **Step 5: Full suite green** — as Task 4 Step 7.
-- [ ] **Step 6: Commit** — `git commit -m "feat: thread ProcRunning through lineage/remote/tree git probes + GitConfigEmulator"`
+- [ ] Steps as previously specified (failing LineageTests seam test over `/nonexistent/repo`; implement; thread; suite green ×1; commit). The Task-5 proof test asserts fall-through composition too: register a `["git", "rev-parse"]` rule after `install(on:)` and verify both answer.
 
 ---
 
 ### Task 6: Stub race-knobs become Gates
 
-**Files:**
-- Modify: `Tests/OrchestraCoreTests/Stubs.swift` — the deliberate-latency knobs at :49, :192, :202 (`isAliveSleepMs`), :246, :273, :290 (`sleepMs` report-capture window)
-- Modify: their consumer tests (grep `ensureSleepMs|isAliveSleepMs|sleepMs` in `Tests/` — the spawn/liveness race suites: `SpawnRaceTests.swift`, `StepperTests.swift` ensure-failure cases, `ReconcilerTests.swift` liveness cases, plus any other hits)
+As previously specified (convert `ensureSleepMs`/`isAliveSleepMs`/report-capture `sleepMs` knobs at Stubs.swift:49,192,202,246,273,290 to `Gate?` fields; stub methods `if let g = xGate { _ = await g.park() }` — the stub protocol methods are async, so suspension works), with one addition:
 
-**Interfaces:**
-- Produces: `StubSessions.ensureGate: Gate?`, `StubSessions.isAliveGate: Gate?`, `StubAdapter.reportGate: Gate?` (names matching each existing `*SleepMs` knob 1:1). Semantics: when set, the stub method calls `gate.parkAndAwaitRelease()` at exactly the point it used to `usleep`.
-
-- [ ] **Step 1: Convert ONE consumer first as the failing-test step** — take the suite comment-tagged "widen the capture window so a concurrent report can race" (`Stubs.swift:290`'s consumer): rewrite that test to (a) set `stub.reportGate = Gate()`, (b) fire the operation `async let`, (c) `await gate.reached()`, (d) fire the racing report, (e) `gate.release()`, (f) assert the same outcome the test asserted before. Run it: it fails to compile (`reportGate` doesn't exist).
-- [ ] **Step 2: Add the gate fields to the stubs** — each `if xSleepMs > 0 { usleep(…) }` becomes `if let g = xGate { _ = g.parkAndAwaitRelease() }`. Delete the `*SleepMs` fields once no consumer references them.
-- [ ] **Step 3: Convert the remaining consumers** (the grep list from **Files**), one test at a time, same recipe. Each conversion REMOVES a timing assumption; the assertion should not change.
-- [ ] **Step 4: Full suite green ×3** (this task rewires race tests — three runs, as in Task 3).
-- [ ] **Step 5: Commit** — `git commit -m "test: race windows are gates, not sleeps — deterministic interleavings"`
+- **The worktree-add race gate lives HERE, not in FakeProc** (review BLOCKER-1's third leg): `WorktreeRegistry` is its own actor with its own `run:` closure that `proc` never reaches. `StubWorktrees` gains `ensureGate`/`removeGate`, and the spec §4.3 flagship example is delivered at this seam. Full suite ×3 green; commit.
 
 ---
 
-### Task 7: The test-sleep sweep
+### Task 7: The test-sleep sweep + Kit/UI clock seams
 
-**Files:** every remaining sleep site in `Tests/` — inventory at task start with:
-`grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(' Tests/ --include='*.swift'`
-Known majors: `CodexWakeTests.swift:143` (1300ms), `ControlClientTests.swift:152` (1s), `TransportReconnectTests.swift:139` (500ms), `StepperTests.swift:584` (250ms), `TerminalOwnershipRoundTripTests.swift:97` (300ms), `UDSShutdownTests.swift:45,76`, `UDSSigPipeTests.swift:34`, plus `pollUntil` itself (`MergeWatchTests.swift:120`).
+**Files:** inventory via `grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(' Tests/ --include='*.swift'`, plus:
+- Modify: `Sources/OrchestraKit/Control/ControlClient.swift` — `clock: any Clock<Duration> = ContinuousClock()` init param; sleep sites :155 (ping), :195 (probe), :241 (call timeout) → `clock.sleep` (its `callTimeout`/`pingInterval`/`probeTimeout` are already injectable `Duration`s, so this is mechanical)
+- Modify: `Sources/OrchestraUI/BoardStore.swift` — same treatment for :274 (grace), :497 (retry backoff), :1163 (4.2s banner) 
+- Create: `Tests/TestSupport/Wait.swift` (pollUntil moved from `MergeWatchTests.swift:120`, yield-based; coarse ContinuousClock deadline only as the failure backstop; the ONLY lint-allowlisted file)
 
-**Interfaces:**
-- Produces: `Tests/TestSupport/Wait.swift` — `pollUntil` moved from MergeWatchTests, rewritten yield-based; it is the ONLY file the sleep-lint (Task 12) allowlists.
+**No `SLEEP-EXEMPT` marker exists** (review minor-12: an open-ended escape hatch voids the tier guarantee). The four remedies are: TestClock advance · pollUntil · Gate · **move the suite to ContractTests/Proc** (for real-fd/socket settling that has no observable condition — candidates: `UDSShutdownTests`, `UDSSigPipeTests`; decide per-file here, record the decision, Task 11's map follows it).
 
-- [ ] **Step 1: Move + rewrite `pollUntil` into `Tests/TestSupport/Wait.swift`.** Keep its signature and `PollTimeout` shape identical (all of Stubs' helpers call it); replace its inter-poll `Task.sleep` with `await _Concurrency.Task.yield()` and keep a coarse `ContinuousClock` deadline purely as the failure backstop. Re-point the `import`/callers (it was file-internal to the OrchestraCoreTests target; now `import TestSupport`).
-- [ ] **Step 2: Classify every remaining sleep site** into the four remedies, then convert file-by-file:
-  1. **Waiting for service work driven by a clock** → `TestClock` + `parked`/`advance` (the CodexWake 1300ms wake-delay wait is this).
-  2. **Waiting for a condition with no clock involved** → `pollUntil { condition }`.
-  3. **Widening a race window** → a `Gate` (should be gone after Task 6; any stragglers).
-  4. **Real-transport settling (UDS close/propagate: `UDSShutdownTests`, `UDSSigPipeTests`, `ControlClientTests`, `TransportReconnectTests`)** → these exercise REAL sockets in-process; where a condition-wait can express readiness (poll the socket state / retry the connect) use `pollUntil`; where the OS genuinely provides no observable signal, the sleep stays, the file gets `// SLEEP-EXEMPT: <reason>` and moves to `ContractTests/Proc` in Task 11 (the lint only guards UnitTests).
-- [ ] **Step 3: Convert `CodexWakeTests.swift:143` first** (the flagship 1.3s): the test arms the wake path, `await clock.parked(1)`, `clock.advance(by: .milliseconds(1300))`, asserts. If the wake delay is currently a raw `Task.sleep` in production code found during conversion, thread it through `clock` (same recipe as Task 4 — that's in-scope for this task).
-- [ ] **Step 4: Sweep the rest of the inventory.** After each file: `./scripts/test.sh --filter "<Suite>" | tail -3` green.
-- [ ] **Step 5: Flip `TestEnv.make`'s default `clock` to `TestClock()`?** — NO. Keep the default `ContinuousClock()`: reconcile-driven helpers (`spawnAndAwaitLive` etc.) poll with yields and work under either; flipping the default would make any un-audited time dependency HANG rather than fail. The lint keeps new sleeps out; suites that need time control pass `clock:` explicitly. (Recorded as a deliberate decision — revisit only if a future flake proves a hidden dependency.)
-- [ ] **Step 6: Full suite ×3 green, note the wall-clock** — expect the `OrchestraCoreTests` portion to drop well under the 52.4s pre-redesign floor. Record the number for Task 13.
-- [ ] **Step 7: Commit** — `git commit -m "test: the sleep sweep — every unit wait is a clock advance, a gate, or a yield-poll"`
+- [ ] Steps as before (pollUntil first; classify; `CodexWakeTests:143` flagship; sweep; ControlClient/BoardStore seams + their suites converted). TestEnv's default `clock` stays `ContinuousClock()` until Task 10 (transition safety), and its default `proc` flips in Task 10. Full suite ×3; note the wall-clock; commit.
 
 ---
 
 ### Task 8: Prune
 
-**Files:**
-- Create: `notes/designs/2026-07-13-test-deletion-decisions.md`
-- Delete/modify: per findings
-
-- [ ] **Step 1: Sweep all 148 test files** with the three safe criteria. For each file list every `@Test`/`test…` case and classify:
-  - **(1) dead code path** — the production symbol/flow it exercises no longer exists (verify: the symbol is absent from `Sources/`, not merely renamed — check `git log -S`).
-  - **(2) provable duplicate** — another named test makes the identical assertion on the identical path (name it).
-  - **(3) tests the stub** — every assertion is about `Stub*`/fake behavior with no production code in the loop.
-  Delete categories 1–3 directly; each deletion is one line in the commit body: `- <Suite>/<test>: <category> — <one-line reason>`.
-- [ ] **Step 2: Build the category-4 decision list** (regression guards whose bug may be unrepresentable now) in `notes/designs/2026-07-13-test-deletion-decisions.md` with the format:
-
-```markdown
-## <Suite>/<test> — KEEP-or-DELETE?
-- Guards: <the original bug, with the commit/PR that fixed it if findable via git log -S>
-- Today: <why the state may be impossible now / what still makes it representable>
-- Recommendation: <keep | delete | rewrite-as-gate> — <one sentence>
-```
-
-- [ ] **Step 3: Full suite green; record the new total** (must reconcile: 1,157 − deletions = new count).
-- [ ] **Step 4: Commit** — deletions + the decision list. **Do not act on category 4 until Allen answers.**
+As previously specified (three safe categories deleted directly with one-line reasons in the commit body; category-4 regression-guard judgment calls to `notes/designs/2026-07-13-test-deletion-decisions.md` in the stated format; **gated on Allen**; count reconciliation). One addition per review (d): a test whose ONLY real-git assertion is re-expressed over the emulator does NOT count as category 1-3 — its real-git assertion must appear in the Task-10 assertion map (below) or the test is not deletable.
 
 ---
 
 # Stage 2 — The moves
 
-### Task 9: New targets + `scripts/test.sh` flags + lint
+### Task 9+11 (interlocked): targets, flags, lint, and the mirror move — ONE commit for the flip
 
-**Files:**
-- Modify: `Package.swift` — rename/create test targets
-- Modify: `scripts/test.sh`
-- Create: `scripts/lint-tests.sh`
+Review made the interlock explicit (both reviewers): replacing the three test targets strands every legacy file (placeholder route), and new-path targets before the moves reference nothing (deferred route). So the sanctioned sequencing is:
 
-**Interfaces:**
-- Produces: targets `UnitTests`, `ContractTests`, `E2ETests` (all depending on GitHermeticBootstrap + TestSupport); `./scripts/test.sh [--contract] [--e2e] [--all]`.
+1. **Task 10 runs FIRST** (suite conversions happen in place, under the OLD target names).
+2. Then ONE commit contains: the `Package.swift` target flip + ALL `git mv`s + `import TestSupport` fixes + the `Stubs.swift` split. Nothing is unowned at any commit boundary.
+3. `scripts/test.sh` + `scripts/lint-tests.sh` land in the SAME commit (the flags are meaningless before the flip and the default invocation is wrong after it without them).
+4. Immediately verify: `--all` runs and the count equals the pre-flip count exactly; default / `--contract` / `--e2e` counts sum to it.
 
-- [ ] **Step 1: Create the target skeletons.** In `Package.swift` replace the three `.testTarget` blocks:
-
-```swift
-        .testTarget(name: "UnitTests",
-                    dependencies: ["OrchestraCore", "OrchestraKit", "OrchestraUI",
-                                   "TestSupport", "GitHermeticBootstrap"],
-                    path: "Tests/UnitTests"),
-        .testTarget(name: "ContractTests",
-                    dependencies: ["OrchestraCore", "OrchestraKit",
-                                   "TestSupport", "GitHermeticBootstrap"],
-                    path: "Tests/ContractTests"),
-        .testTarget(name: "E2ETests",
-                    dependencies: ["OrchestraCore", "OrchestraKit",
-                                   "TestSupport", "GitHermeticBootstrap"],
-                    path: "Tests/E2ETests",
-                    resources: [.copy("Fixtures")]),
-```
-
-Do this as the FIRST move step by renaming the directories wholesale (`git mv Tests/OrchestraCoreTests Tests/UnitTests` etc. happens in Task 11; for THIS task, create the new dirs with placeholder `Placeholder.swift` files containing one trivial `@Test` each so the targets build) — **alternative that avoids placeholders:** do Task 9 and Task 11 in one commit series; Step 1 here just WRITES the Package.swift change without committing, and Task 11's moves make it build. Choose the placeholder route only if you want the flags testable before the big move; either is acceptable, say which you did.
-
-- [ ] **Step 2: Rewrite `scripts/test.sh` selection.** After the existing BUILD_ARGS filtering block, map tier flags to selectors (tier flags are consumed, never passed to swift):
+**`scripts/test.sh` (corrected order — tier flags parsed FIRST, then BUILD_ARGS from the remainder; review MAJOR):**
 
 ```bash
-# Tier selection (additive): default = unit only; --contract/--e2e add tiers; --all = everything.
+# --- tier selection (parse FIRST so tier flags never reach swift build) -------------------
 TIER_ARGS=(); PASS=()
 want_contract=0; want_e2e=0; want_all=0
 for a in "$@"; do
@@ -759,110 +595,90 @@ done
 if [[ $want_all == 0 ]]; then
   [[ $want_contract == 0 ]] && TIER_ARGS+=(--skip '^ContractTests\.')
   [[ $want_e2e == 0 ]]      && TIER_ARGS+=(--skip '^E2ETests\.')
+else
+  scripts/lint-tests.sh    # the merge-gate run enforces the guards
 fi
+# --- build-arg filtering: EXACTLY the existing loop, but over PASS not "$@" ---------------
+BUILD_ARGS=()
+skip_next=0
+for a in ${PASS[@]+"${PASS[@]}"}; do
+  … existing case statement unchanged …
+done
+scripts/lib/with-lock.sh build -- \
+  swift build --build-tests "${SWIFT_TESTING_FLAGS[@]}" ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
+exec swift test --skip-build "${SWIFT_TESTING_FLAGS[@]}" ${TIER_ARGS[@]+"${TIER_ARGS[@]}"} ${PASS[@]+"${PASS[@]}"}
 ```
 
-and the exec line becomes `exec swift test --skip-build "${SWIFT_TESTING_FLAGS[@]}" ${TIER_ARGS[@]+"${TIER_ARGS[@]}"} ${PASS[@]+"${PASS[@]}"}`. (`BUILD_ARGS` filtering loops over `PASS`, not `$@`, so tier flags never reach `swift build`.)
-
-- [ ] **Step 3: Write `scripts/lint-tests.sh`:**
+**`scripts/lint-tests.sh` (revised per MAJOR-8/-9, minor-12):**
 
 ```bash
 #!/bin/bash
-# Guards against the test suite re-clumping. Run standalone or via scripts/test.sh --all.
+# Guards against the test suite re-clumping. Runs on --all and standalone.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
 say() { echo "lint-tests: $1" >&2; fail=1; }
 
-# 1. No wall-clock waits in the unit tier (Wait.swift's coarse backstop is the one exemption).
+# 1. No wall-clock waits in the unit tier. NO exemption marker — a test that truly needs to
+#    settle real fds/sockets belongs in ContractTests. Wait.swift's coarse backstop is the
+#    single allowlisted file.
 if grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(' Tests/UnitTests Tests/TestSupport \
-     --include='*.swift' | grep -v 'Tests/TestSupport/Wait.swift' | grep -v 'SLEEP-EXEMPT'; then
-  say "wall-clock sleep in the unit tier — use TestClock.advance, a Gate, or pollUntil"
+     --include='*.swift' | grep -v 'Tests/TestSupport/Wait.swift'; then
+  say "wall-clock sleep in the unit tier — TestClock.advance, a Gate, pollUntil, or move the suite to ContractTests"
 fi
-# 2. No ambient path statics in unit tests.
-if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot' Tests/UnitTests --include='*.swift'; then
+# 2. No ambient WRITE-TARGET path statics in unit tests. (Config.home itself is excluded by
+#    design: it is a pure derivation input asserted by the config-derivation tests; the hazard
+#    is filesystem state shared through the derived write targets.)
+if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot|Config\.(dataDir|tasksPath|hooksPath|socketPath|logPath)\b' \
+     Tests/UnitTests --include='*.swift'; then
   say "ambient path in a unit test — use the TestEnv per-test base"
 fi
-# 3. No real forks in the unit tier. (Valid as a FORWARD guard now that the hidden-integration
-#    suites are converted; it was NOT valid as an audit tool — see the design doc.)
-if grep -rnE '\bProc\.(run|checked|runShell)\(' Tests/UnitTests --include='*.swift'; then
-  say "direct Proc call in a unit test — inject FakeProc"
+# 3. No real forks in the unit tier — neither direct Proc calls nor a RealProc handed to a seam.
+if grep -rnE '\bProc\.(run|checked|runShell)\(|\bRealProc\(' Tests/UnitTests --include='*.swift'; then
+  say "real process runner in a unit test — inject FakeProc"
 fi
 # 4. makeReal is contract-tier-only.
 if grep -rn 'makeReal' Tests/UnitTests --include='*.swift'; then
-  say "TestEnv.makeReal in the unit tier — that wires real git; move the test to ContractTests"
+  say "TestEnv.makeReal in the unit tier — real git; move the test to ContractTests"
 fi
 exit $fail
 ```
 
-`chmod +x scripts/lint-tests.sh`; add to `scripts/test.sh` immediately before the build when `want_all == 1`: `scripts/lint-tests.sh`.
+**`Package.swift` targets:** as previously drafted, with one review fix — `ContractTests` gets `resources: [.copy("Fixtures")]` (SessionManagerTests loads `Fixtures/menu.sh` via `Bundle.module` — `SessionManagerTests.swift:210-212`); the fixture files split: `menu.sh` (and anything else contract-side) → `Tests/ContractTests/Fixtures/`, `gen-slow-repo.sh` + fake-agent fixtures → `Tests/E2ETests/Fixtures/` (follow `IntegrationSupport`'s actual `Bundle.module` lookups when splitting).
 
-- [ ] **Step 4: Verify flags** with real runs (after Task 11 lands the moves): default run excludes both tiers; `--all` includes everything; totals reconcile.
-- [ ] **Step 5: Commit** (or fold into Task 11's first commit if you chose the no-placeholder route).
+**Move-map corrections (review MAJOR):**
+- `ReadOnlyLaunchTests` (omitted before) → `Tests/UnitTests/OrchestraCore/Service/`.
+- `ModelReseatTests` has ONE home: `Service/` (drop the earlier "adapter-half" double listing).
+- `HomeIsolationTests` → `Tests/ContractTests/Proc/` (it FileManager-probes ambient HOME paths — that is the process-environment contract, and it references `Config.defaultScratchRoot`, which lint rule 2 rightly bans from UnitTests).
+- `UDSShutdownTests`/`UDSSigPipeTests` → per Task 7's recorded decision (default: `ContractTests/Proc/`).
+- `RepoScannerTests` stays in UnitTests (its `Config.home` use is a pure derivation equality — lint rule 2 deliberately doesn't match `Config.home`).
+- `E2EBinaryTests.swift:70-72` and `ReportHelperPipeTests.swift:16-18` compute the package root as three `deletingLastPathComponent()`s off `#filePath` — moving one level deeper breaks it. Replace with a walk-up helper in each target's `Support/` (`while !FileManager.default.fileExists(atPath: dir + "/Package.swift") { dir = parent }`), immune to future moves.
+- Everything else per the original mapping table (unchanged and carried forward).
 
----
+- [ ] **Step 1: Task 10 completes first** (below — it is sequenced before this task despite the numbering).
+- [ ] **Step 2: The flip commit** (Package.swift + moves + test.sh + lint, as one).
+- [ ] **Step 3: Verify counts** (`--all` == pre-flip total; default+contract+e2e sum; record each tier's count + wall-clock).
+- [ ] **Step 4: `scripts/lint-tests.sh` clean.**
+- [ ] **Step 5: Commit is already made in Step 2; push nothing extra.**
 
-### Task 10: Split the 30 hidden-integration suites
+### Task 10: Split the 30 hidden-integration suites (runs BEFORE the flip)
 
-**Files:** the 30 suites (below), `Tests/ContractTests/Git/*`, plus `TestEnv.makeReal` relocation.
+Per-area table as previously specified, with these review-driven strengthenings:
 
-**The 30 (audited; destinations):**
-
-| suites | area | unit rewrite over | contract distillate |
-|---|---|---|---|
-| LineageTests, LineageSpawnTests, TreeStatTests, TreeCommandTests, TreeErrorWordingTests, LadderTests, SetParentMoveTests, StaleNudgeTests, RebuildMergeRequestNudgesTests | branch-tree | FakeProc + GitConfigEmulator | GitConfigContractTests (the emulator-fidelity matrix) + one TreeStat-over-real-repo case |
-| MergeRequestTests, MergeRequestBackoffTests, ShipChoreoTests, BorrowLifecycleTests, RedirectMechanicsTests | merge-collab | FakeProc + emulator + scripted `git merge-base`/`rev-parse` rules | ShipChoreography real-repo happy path (1 test) |
-| RemoteParentTests, RemoteParentRefTests, RemoteRecomputeTests, RemoteSpawnTests, RemoteWatchLoopTests, SetParentRemoteTests | remote-git | FakeProc scripted `fetch`/`ls-remote` | RemoteFetchContractTests (fetch/ls-remote against a local `--bare` origin) |
-| SpawnBaseTests, SpawnBaseValidationTests, NonBlockingSpawnTests, StepperConvergeTests, ServiceTeardownTests | card-lifecycle | FakeProc (worktree/branch rules) | WorktreeAddContractTests (real `git worktree add/remove` matrix — subsumes today's WorktreeRegistryIntegrationTests) |
-| DiffProviderTests, DiffServiceTests | diff-review | already behind `DiffProvider` — stub it; FakeProc for baseline probes | GitDiffContractTests (real `git diff --numstat` shape) |
-| NotesServiceTests, ControlRoundTripTests | notes / control | FakeProc / in-process UDS (no git) | — (ControlRoundTrip's UDS is in-process; it moves to UnitTests if it forks nothing, else ContractTests/Proc) |
-| GitHermeticityTests | infra | — (it IS a contract suite) | moves to ContractTests/Git verbatim |
-| ProcShellTests, GhProbeTests | proc | — | ContractTests/Proc verbatim |
-
-**Recipe per suite** (worked example = LineageTests, from Task 5's proof-test):
-1. Read the suite; list which helpers it reaches git through (`TestEnv.makeReal`, `TreeStatTests.git/repoWithParent/advanceParent`, `RemoteParentTests.git/makeOriginWithPR`, `ShipChoreoTests.repoWithChild`, own `Proc.run`).
-2. Re-express the repo arrangement as emulator state + FakeProc rules. The cross-file repo helpers get FakeProc-equivalents in `Tests/UnitTests/Support/RepoScripts.swift` (e.g. `RepoScripts.withParent(fake:emu:)` scripts the same config keys + rev-parse answers the git helper used to create for real).
-3. Convert the suite's tests; assertions unchanged. Anything asserting on REAL git effects (a branch actually exists, a merge actually fast-forwards) is the contract distillate: move THAT assertion into the area's contract suite (right column), one test per real behavior, not per original test.
-4. Green: suite filter run. Then delete the old real-git helper if orphaned.
-
-- [ ] **Step 1: Do branch-tree** (worked example area). Includes writing `ContractTests/Git/GitConfigContractTests.swift`: run the emulator's operation matrix (`set/get/unset/get-regexp` × present/missing) against BOTH `GitConfigEmulator+FakeProc` and real git in a temp repo; assert identical `(exitCode, stdout-shape)` — this is what licenses every emulator-backed unit test.
-- [ ] **Step 2: merge-collab.** — [ ] **Step 3: remote-git.** — [ ] **Step 4: card-lifecycle.** — [ ] **Step 5: diff-review + notes/control.** — [ ] **Step 6: move the verbatim three** (GitHermeticity, ProcShell, GhProbe).
-- [ ] **Step 7: Relocate `TestEnv.makeReal`** to `Tests/ContractTests/Support/RealEnv.swift` (the unit tier loses access — the lint's rule 4 and the type system now agree).
-- [ ] **Step 8: Full suite ×3 green; commit per area** (6 commits: `test(branch-tree): unit-convert lineage/tree suites over FakeProc + git-config contract`, etc.)
-
----
-
-### Task 11: The mirror move
-
-**Files:** everything under `Tests/`; `Package.swift` (Task 9's block goes live here if not already).
-
-**Mapping (complete; source-of-truth for the moves):**
-
-- `Tests/OrchestraCoreTests/Stubs.swift` → split into `Tests/UnitTests/Support/{TestEnv,StubWorktrees,StubSessions,StubAdapter}.swift` (mechanical split at the type boundaries; TestEnv keeps everything service-wiring).
-- OrchestraKit-owned tests → `Tests/UnitTests/OrchestraKit/`: ConfigDataDirTests, ConfigTimeoutTests, ConnectionMacTests, ConnectionSocketResolverTests, ConnectionStoreTests, ModelCodableTests, ModelTableTests, TaskRefTests, TaskMigrationTests, KeyNameTests, KeybindingsTests, PushCoreTests, NotificationPrefsTests, ClientIdentityTests (verify each `import`s OrchestraKit primarily; any that are Core-owned stay in Core's dir).
-- Mirror dirs: DiffModelTests, DiffTextParserTests (+ the unit-converted DiffProvider/DiffService) → `Tests/UnitTests/OrchestraCore/Diff/`; AdapterEncodeTests, AdapterTests, CodexAdapterTests, CodexRolloutTests, CodexWakeTests, CapabilitiesTests, ReadOnlyAdapterTests, ModelReseatTests(adapter-half), ParseTests, HandleHookTests, HookChannelTests → `Tests/UnitTests/OrchestraCore/Agents/`; ControlClientTests, ControlLineBufferTests, ControlServerTests, DaemonLifecycleTests, TransportReconnectTests, UDSShutdownTests, UDSSigPipeTests, ShellSyncRoundTripTests → `Tests/UnitTests/OrchestraCore/Control/` (minus any SLEEP-EXEMPT movers to ContractTests/Proc per Task 7).
-- Service flows → `Tests/UnitTests/OrchestraCore/Service/`: OrchestraServiceTests, ReconcilerTests, RecoveryTests, StepperTests, StepperConvergeTests, SpawnPhaseTests, SpawnRaceTests, SpawnSeedTrustTests, SpawnBaseTests, SpawnBaseValidationTests, NonBlockingSpawnTests, StartupAbortTests, ReadinessSignalTests, PhaseTransitionTests, ArchiveIntentTests, ArchiveOriginTests, TeardownFenceTests, ServiceTeardownTests, ReopenTests, HandoffResumeTests, ModelReseatTests, IdempotencyTests, MoveNotifyTests, ResourceExhaustionTests, ScratchSpawnTests, ScratchArchiveTests, ScratchPathTests, ScratchSweepTests, BorrowedSpawnTests, BorrowLifecycleTests, MergeRequestTests, MergeRequestBackoffTests, ShipChoreoTests, RedirectMechanicsTests, WakeMergeWatchTests, MergeWatchTests, SendWakeTests, LineageTests, LineageSpawnTests, LineageModelTests, TreeStatTests, TreeCommandTests, TreeErrorWordingTests, TreeDocsTests, LadderTests, SetParentMoveTests, SetParentRemoteTests, StaleNudgeTests, RebuildMergeRequestNudgesTests, RemoteParentTests, RemoteParentRefTests, RemoteRecomputeTests, RemoteSpawnTests, RemoteWatchLoopTests, RemoteCommandsTests — *within* Service/ use one file per flow as today; a second-level split (Service/Tree/, Service/Remote/…) is allowed if a dir exceeds ~25 files, mirroring the `OrchestraService+<Area>.swift` extension names.
-- Flat 1:1s stay flat in `Tests/UnitTests/OrchestraCore/`: TaskStoreTests, PathResolverTests, WorktreeTests, WorktreeRegistryTests, TmuxAttachTests, RepoScannerTests, InboxTests, TrustGrantTests, TrustLedgerTests, DeviceTokenStoreTests, PushNotifierTests, AuthRateMonitorTests, AuthWarnSpawnTests, CommandsTests, CommandRegistryCatalogTests, VerbContractTests, DelegationDocsTests, SessionBriefTests, ListDirTests, BoardNavigatorTests, BoardSnapshotTests, BoardTreeTests, SendKeysArgvTests, SendKeysCommandTests, TerminalKeyBytesTests, TerminalOwnership*Tests, ShellPanelStateTests, ReportTests, NotesServiceTests, HomeIsolationTests, GhProbeTests→(moved T10), SettingsComposerTests, ControlRoundTripTests(per T10 outcome).
-- `Tests/OrchestraUITests/*` → `Tests/UnitTests/OrchestraUI/` (all 16 audited unit).
-- `Tests/IntegrationTests/`: SessionManagerTests → `ContractTests/Tmux/`; ActorHygieneTests, WorktreeRegistryIntegrationTests, LauncherDiffTests → `ContractTests/Git/`; E2EBinaryTests → `E2ETests/Daemon/`; ReportHelperPipeTests → `E2ETests/Cli/`; SlowRepoE2ETests → `E2ETests/SlowRepo/`; `Fixtures/` → `Tests/E2ETests/Fixtures/`; IntegrationSupport.swift → split between `ContractTests/Support/` and `E2ETests/Support/`.
-
-- [ ] **Step 1: Execute the moves** as pure `git mv` per the table (no content edits in this commit beyond `import TestSupport` additions and the Stubs split).
-- [ ] **Step 2: Build + full suite `--all` green.** Compare test COUNT to pre-move (identical — moves change nothing).
-- [ ] **Step 3: Verify selection**: `./scripts/test.sh` (unit only — record count+time), `--contract`, `--e2e`, `--all` — counts sum to the total.
-- [ ] **Step 4: Run `scripts/lint-tests.sh`** — clean.
-- [ ] **Step 5: Commit** — `git commit -m "test: the mirror move — Tests/ now parallels Sources/ (UnitTests/ContractTests/E2ETests)"`
-
----
+- **Fidelity matrices extend beyond `git config`** (both reviewers' (d)): the exit codes that carry semantics are exactly where drift bites — `+Tree.swift:585` distinguishes nil-from-0 on `rev-list --count`, `:593` treats non-1 failures of `merge-base --is-ancestor` differently from exit 1, `RemoteParents.swift:32-49` branches on `fetch`/`ls-remote` exit codes. So THREE contract matrices, each running one operation table against BOTH the FakeProc rules and real git in a temp repo, asserting identical `(exitCode, stdout-shape, stderr-presence)`:
+  1. `GitConfigContractTests` (get/set/unset/get-regexp × present/missing),
+  2. `GitRevContractTests` (rev-parse, rev-list --count, merge-base --is-ancestor: ancestor/non-ancestor/unknown-ref),
+  3. `RemoteFetchContractTests` (fetch/ls-remote against a local `--bare` origin: reachable/unreachable/missing-branch).
+  The shared FakeProc rule-sets used by unit suites live in `Tests/UnitTests/Support/RepoScripts.swift` and are THE SAME rule objects the matrices exercise (export them from a support file both targets compile, or duplicate with a comment pinning them together — prefer the former via TestSupport).
+- **Assertion mapping is mandatory** (review MAJOR): each suite's conversion commit includes, in the commit body, a table mapping every original real-git assertion → `unit(<new test>)` | `contract(<matrix row / test>)` | `deleted(<reason>)`. "One test per real behavior" is replaced by this exhaustive mapping — nothing is silently discarded.
+- **At the end of this task:** flip `TestEnv.make`'s default `proc` to `FakeProc` with `GitConfigEmulator` pre-installed (review MAJOR-9 — the unit tier's default construction path hands out no real runner); `TestEnv.makeReal` moves to `Tests/ContractTests/Support/RealEnv.swift` in the Task-9/11 flip commit.
+- Full suite ×3 green; commit per area (6 commits), each with its assertion map.
 
 ### Task 12: E2E fat-cutting
 
-**Files:** `Tests/E2ETests/SlowRepo/SlowRepoE2ETests.swift`, `Tests/E2ETests/Daemon/E2EBinaryTests.swift`, `Tests/E2ETests/Fixtures/gen-slow-repo.sh`, `Tests/ContractTests/Tmux/SessionManagerTests.swift`
+As previously specified (single 12k fixture; hoisted E2EBinary setup; pollUntil for its 1.5s/200ms waits; one tmux server per SessionManager suite), with the review fix:
 
-- [ ] **Step 1: One slow repo, generated once.** Give `SlowRepoFixture` a suite-scoped async-lazy singleton (a `static let task = Task { generate(…) }`; each test `await`s it) so both agent parameterizations share ONE 12k-file generation. Fold `SlowRepoFixtureTests`' sanity assertions into an assertion on the shared fixture (delete the separate 2k generation — reason recorded per prune policy).
-- [ ] **Step 2: Hoist `E2EBinaryTests` per-test `init()` setup** into the same suite-scoped-fixture pattern (build/locate binaries once), and convert its `Thread.sleep(1.5)` at :219 + 200ms `usleep`s to `pollUntil` on the observable condition (the server's response file/socket readiness).
-- [ ] **Step 3: One tmux server for `SessionManagerTests`** — a suite-scoped socket (`orch-test-<uuid>` once per suite, `kill-server` in a suite-teardown), not per-test; tests already target distinct session names.
-- [ ] **Step 4: Measure**: `./scripts/test.sh --e2e --contract 2>&1 | tail -3` before/after numbers for Task 13.
-- [ ] **Step 5: Commit.**
+- **Shared slow-repo layout made explicit** (review MAJOR): the fixture generates ONCE under a shared root `S = IntegrationSupport.tempDir("slowrepo-shared")` (async-lazy static task). Each parameterized instance keeps its own private `base` (stores, worktrees) but constructs its Config as `reposRoot: base + "/repos", allowlist: [canonical(base), canonical(S)]` and spawns with `repo: S + "/repo"` — `PathResolver.allowedRoots = reposRoot + worktreesRoot + allowlist` admits it. The repo is treated as READ-ONLY by both instances (worktrees are cut into each instance's private `worktreesRoot`; nothing writes into `S`). A final cleanup hook removes `S` after the suite.
 
 ---
 
@@ -870,22 +686,18 @@ exit $fail
 
 ### Task 13: Docs + final report
 
-**Files:**
-- Modify: `CLAUDE.md` (the "Keep the test suite tiered" section), `docs/08-building-operations.md`
-- Create: final numbers in the PR description / merge-request body
-
-- [ ] **Step 1: Rewrite the CLAUDE.md tiering section** to the new contract: *default `./scripts/test.sh` = unit tier per task; `--all` once at the merge gate; `--contract`/`--e2e` when touching git/tmux command generation or binaries; new tests go in the mirror position; `scripts/lint-tests.sh` is the law on sleeps/ambient paths/forks.* Update `docs/08-building-operations.md` equivalently (it regenerates from docs tooling on main — edit the source the update-docs hook consumes, check `scripts/update-docs.sh` for which).
-- [ ] **Step 2: Plan-guidance sweep** — the "run full `swift test` after every task" mandate lives in `notes/plans/*` templates/history (~126 references): do NOT rewrite history; add the new contract prominently to CLAUDE.md (done in Step 1) which supersedes; grep `notes/plans/` for any LIVING template and update only those.
-- [ ] **Step 3: Final measurement on an idle machine**: 3× each of default / `--contract` / `--e2e` / `--all`, medians, stated as post-nudge-fix. Full accounting: start 1,157 → deletions (per-category counts) → merges → additions → end count per tier.
-- [ ] **Step 4: Update the design doc's baseline table** with the final numbers; commit.
-- [ ] **Step 5: Verify** via `superpowers:verification-before-completion`, then request the diff review pair (Claude + Codex per the house rule), then `merge-request`.
+As previously specified (CLAUDE.md tiering section → new contract; `docs/08-building-operations.md`; living plan templates only; 3× idle-machine measurements of default/`--contract`/`--e2e`/`--all` with medians, stated post-nudge-fix; exact accounting start 1,157 → deletions/merges/additions → per-tier end counts; design-doc baseline table updated; then `superpowers:verification-before-completion`, the Claude+Codex diff review pair, and `merge-request`).
 
 ---
 
-## Self-review notes (already applied)
+## Spec amendments (applied to `notes/designs/2026-07-13-test-suite-redesign.md` alongside this revision)
 
-- Task 4 adds BOTH `clock` and `proc` params to `OrchestraService.init` so the init signature changes once, not twice.
-- Task 9/11 interlock (targets need files; files need targets) is called out with two sanctioned sequencings.
-- The lint's `Proc.` grep is valid FORWARD-only (post-Task-10); the design doc's "grep lints are wrong" claim refers to auditing the OLD tree — noted in the lint comments.
-- `ControlClientTests`' 1s sleep may be irreducible (real socket retry backoff) — Task 7's remedy 4 covers it without pretending.
-- Category-4 deletions are GATED on Allen; nothing in Stage 2 depends on his answer.
+1. **§4.2 Paths — deliberate narrowing.** The full `Paths` value type is narrowed to instance `scratchRoot` + `runtimeStateDir`: every other derived path is ALREADY per-instance injected via store constructors (`TaskStore(path:)`, `TrustLedger(path:)`, `Inbox(path:)`, `WatchRegistryStore(path:)`, `borrowsPath`, `markersDir` — TestEnv passes all of them under its private base), and the remaining statics (`socketPath`, `hooksPath`, `tmuxSocket`) are launch/CLI-surface values that unit tests never exercise (stubbed at the SessionManaging/adapter seams; real behavior is contract/e2e territory). The two narrowed-in properties are exactly the two through which one test's filesystem effects could reach another.
+2. **§4.3 example** — the `git worktree add` gate is delivered at the `StubWorktrees` seam (WorktreeRegistry is its own actor with its own `run:` closure), and `ProcRunning` is async (suspension gates; RealProc preserves blocking semantics inline).
+3. **§8 tier honesty** — enforced by the default construction path (`TestEnv.make` hands out `FakeProc`; `makeReal` lives in ContractTests) plus lint rules 3/4 — not "the type system" (RealProc remains a public symbol).
+
+## Self-review notes (applied)
+
+- Both reviewers' findings folded; one rebuttal (async-let `try`) with the `swiftc -typecheck` probe as evidence.
+- Task numbering kept (9..13) but the EXECUTION order is 10 → 9+11 (interlocked flip) → 12 → 13, stated at each site.
+- Category-4 deletions remain gated on Allen; nothing in Stage 2 depends on the answer.

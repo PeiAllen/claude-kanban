@@ -80,11 +80,17 @@ enforced by a lint (§8).
 
 ### 4.2 Paths are injected (`Paths`)
 
-A small value type carrying the derived locations (`home`, `dataDir`, `scratchRoot`,
-`socketPath`, `configPath`, `hooksPath`), constructed once in production from `$HOME` (exactly
-today's values) and injected into `OrchestraService` and the stores. `Config`'s statics remain
-as the production default, delegating to a default `Paths` instance; tests construct a `Paths`
-rooted in a per-test `mkdtemp`.
+Injected path state, deliberately narrowed (plan-review amendment) to the two properties through
+which one test's filesystem effects can reach another: instance `Config.scratchRoot` and
+`Config.runtimeStateDir` (the readonly-settings write under `dataDir`). Every other derived path
+is ALREADY per-instance injected via store constructors (`TaskStore(path:)`, `TrustLedger(path:)`,
+`Inbox(path:)`, `WatchRegistryStore(path:)`, `borrowsPath`, `markersDir` — TestEnv passes all of
+them under its private base), and the remaining statics (`socketPath`, `hooksPath`, `tmuxSocket`)
+are launch/CLI-surface values unit tests never exercise. Both new properties are **non-Codable**:
+`setConfig` replaces `Config` wholesale from the control plane, and `scratchRoot` is the fence
+`PhaseStepper` checks immediately before `rm -rf` — it must be neither wire-settable nor persisted
+as a stale absolute path across HOME redirects. `OrchestraService.setConfig` carries the running
+instance's values across every replacement.
 
 Consequences, in order: `sweepOrphanScratch` sweeps only its own root → the cross-suite
 destruction disappears → `scratchTestLock` and its 12 call sites are **deleted** → the suite
@@ -95,22 +101,26 @@ de-serializes → concurrent cards stop colliding on `~/.orchestra` paths entire
 Today `Proc.run` is a static reached from everywhere; `WorktreeRegistry` already takes a `run:`
 closure and `Stubs.swift` has a `Recorder`. This generalizes into one seam:
 
-- A `ProcRunner` protocol (`run(argv, cwd, timeout) → output/exit`), production-implemented by
-  `Proc`, injected wherever production forks (WorktreeRegistry, BranchLineage, adapters,
-  diff/tree stat, tmux session manager).
+- An **async** `ProcRunning` protocol (`run(argv, cwd, env, timeout) async throws → ProcResult`),
+  production-implemented by `RealProc` (blocking `Proc.run` inline — today's thread semantics
+  exactly), injected into the components the hidden-integration suites reach git through
+  (BranchLineage, RemoteParents, the tree/parent-ref probes). Async is load-bearing:
+  BranchLineage and RemoteParents are actors, so a blocking gate would wedge their cooperative
+  thread and deadlock the test's next await; a suspension gate cannot. Launch-time forks
+  (Launcher, adapters, SessionManager) stay on `Proc` behind their existing protocol seams.
 - `FakeProc`: scripted responses keyed by argv pattern, full invocation recording (assert on
   *intent*: "we ran `git worktree add -b …`"), and — the load-bearing part — **gates**:
 
   ```swift
-  let gate = proc.gate(on: ["git", "worktree", "add"])
-  async let spawn = service.spawn(card)     // enters worktree creation…
-  await gate.reached()                      // …provably parked inside "git"
-  await service.reconcile()                 // fire the racing op, deterministically
+  let gate = worktrees.ensureGate           // the StubWorktrees seam — WorktreeRegistry is its
+  async let spawn = service.spawn(card)     // own actor, so its gate lives at the stub, and the
+  await gate.reached()                      // lineage/remote gates live on FakeProc; both park
+  await service.reconcile()                 // by SUSPENSION, so the racing op runs deterministically
   gate.release(.success)
   #expect(await spawn.phase == .live)
   ```
 
-  A gated call parks until the test releases it, so every race/interleaving test exercises the
+  A gated call suspends until the test releases it, so every race/interleaving test exercises the
   *exact* schedule it names, every run — including interleavings (a poll landing in a 3ms
   window) that real timing can essentially never produce. Gates replace every
   `usleep`-to-widen-the-window in `Stubs.swift` and every `ensureSleepMs`-style knob.
@@ -224,12 +234,15 @@ Exclusive repo access (no other cards until this lands), so staging is for revie
 - **No-sleep lint:** CI/script check that `Tests/UnitTests/` contains no
   `sleep`/`usleep`/`Task.sleep`/`Thread.sleep` (contract/e2e allowed where genuinely waiting on
   an external process, but condition-waits preferred).
-- **No-ambient-path lint:** `Tests/UnitTests/` must not reference `Config.home`/`Config.scratchRoot`
-  statics or `NSHomeDirectory()`.
-- **Tier honesty:** `UnitTests` never links a real `ProcRunner`; the only construction path for
-  tests is `TestEnv` handing out `FakeProc` + per-test `Paths`. (`TestEnv.makeReal()` moves to
-  `ContractTests`' support and is unavailable to unit code — the type system enforces the tier,
-  not a grep.)
+- **No-ambient-path lint:** `Tests/UnitTests/` must not reference `NSHomeDirectory()`,
+  `Config.defaultScratchRoot`, or the derived write-target statics (`dataDir`/`tasksPath`/
+  `hooksPath`/`socketPath`/`logPath`). `Config.home` itself is deliberately excluded — it is a
+  pure derivation input asserted by the config-derivation tests; the hazard is shared filesystem
+  state through the write targets, not reading the env var.
+- **Tier honesty:** enforced by the default construction path plus the lint, not the type system
+  (`RealProc` remains a public symbol): `TestEnv.make` hands out `FakeProc` + per-test paths by
+  default, `TestEnv.makeReal()` lives in `ContractTests`' support, and lint rules ban `Proc.`
+  calls, `RealProc(`, and `makeReal` from the unit tier.
 - **Both agents stay covered:** the slow-repo E2E remains parameterized over claude-code and
   codex; the shared 12k-repo fixture is generated once per run and shared across both cases.
 
