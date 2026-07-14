@@ -7,6 +7,12 @@ import TestSupport
 // O2 backoff + give-up cap: the re-nudge loop used to re-prod the parent every 300s forever. It now backs
 // off geometrically and, after `mergeRequestNudgeCap` unanswered reminders, gives up — flagging the child
 // `mergeStalled` so a human can see it. Design: notes/designs/2026-07-11-merge-request-nudge-backoff.md.
+//
+// Unit-converted (Task 10, merge-collab): the parent/child commit graph is modelled over FakeProc/RepoGraph
+// (pinned to real git by ContractTests/Git/GitRevContractTests) and the lineage link lives in
+// GitConfigEmulator (pinned by GitConfigContractTests). The restart test shares one emulator + graph across
+// the `remake` (the in-memory analogue of the durable on-disk `git config` lineage a real restart re-reads).
+// The `MergeRequestBackoffModelTests` suite below is pure (codable / schedule arithmetic) — no git, left as-is.
 
 /// Pure — no git, no cards.
 @Suite("merge-request re-nudge — model + schedule")
@@ -52,9 +58,36 @@ struct MergeRequestBackoffModelTests {
     }
 }
 
-/// The loop. These cut a real git repo + cards, so each one earns its keep: one test per guarantee.
+/// The loop. These drive cards over a modelled parent graph, so each one earns its keep: one test per guarantee.
 @Suite("merge-request re-nudge — give up, and don't be defeatable")
 struct MergeRequestCapTests {
+
+    /// A FakeProc-backed env: main + parent + child modelled over RepoGraph, lineage in a shared emulator.
+    struct Fixture {
+        let env: TreeStatTests.Env
+        let fake: FakeProc
+        let emu: GitConfigEmulator
+        let graph: RepoGraph
+        let repo: String
+        let parentTip: String
+    }
+
+    private func setup() -> Fixture {
+        let fake = FakeProc()
+        let emu = GitConfigEmulator()
+        emu.install(on: fake)
+        let graph = RepoScripts.withChild(on: fake)
+        let env = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(env.base)
+        return Fixture(env: env, fake: fake, emu: emu, graph: graph, repo: repo, parentTip: graph.tip("parent")!)
+    }
+
+    /// A fresh service over the SAME on-disk stores AND the SAME emulator + graph — a simulated daemon restart
+    /// that re-reads the durable lineage (the in-memory analogue of on-disk `git config`).
+    private func remade(_ fx: Fixture) -> TreeStatTests.Env {
+        let f = FakeProc(); fx.emu.install(on: f); fx.graph.install(on: f)
+        return TestEnv.remake(base: fx.env.base, proc: f)
+    }
 
     private func stat(_ svc: OrchestraService, _ id: UUID) async -> TreeStat? {
         await svc.list().first { $0.id == id }?.treeStat
@@ -64,23 +97,22 @@ struct MergeRequestCapTests {
         return await check()
     }
 
-    /// A parent card + a child card whose branch is parented to it.
-    private func pair(_ env: (svc: OrchestraService, base: String),
-                      _ repo: String, _ parentTip: String) async throws -> (parent: Task, child: Task) {
+    /// A parent card + a child card whose branch is parented to it (lineage stored through the fake).
+    private func pair(_ fx: Fixture) async throws -> (parent: Task, child: Task) {
         let p = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+            fx.env.svc, SpawnInput(id: UUID(), prompt: "p", repo: fx.repo, branch: "parent"))
         let c = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
-                                      link: ParentLink(parent: "parent", base: parentTip))
+            fx.env.svc, SpawnInput(id: UUID(), prompt: "c", repo: fx.repo, branch: "child"))
+        try await BranchLineage(proc: fx.fake).set(repo: fx.repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: fx.parentTip))
         return (p, c)
     }
 
     @Test("the cap fires: N reminders, then it gives up, tells both parties, and goes quiet")
     func capFiresAndStalls() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (parent, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (parent, child) = try await pair(fx)
         let collector = EventCollector()          // activity items are ephemeral — subscribe before arming
         await collector.start(await env.svc.subscribe())
 
@@ -120,14 +152,14 @@ struct MergeRequestCapTests {
     /// a restart must not resurrect a loop we already gave up on.
     @Test("the backoff resumes across a restart, and a stalled card is never re-armed")
     func backoffSurvivesRestart() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (parent, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (parent, child) = try await pair(fx)
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)                      // the daemon dies mid-budget
         _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 2 }   // 2 of 3 already sent
 
-        let b = TestEnv.remake(base: env.base)                             // restart over the same store
+        let b = remade(fx)                                                 // restart over the same store
         await b.svc.setMergeRequestNudgeInterval(.milliseconds(20))
         await b.svc.setMergeRequestNudgeCap(3)
         await b.svc.rebuildMergeRequestNudges()
@@ -138,7 +170,7 @@ struct MergeRequestCapTests {
         #expect(await stat(b.svc, child.id)?.nudges == 3)
 
         // Now stalled: a further restart must not re-arm it (that would resurrect the spam).
-        let c = TestEnv.remake(base: env.base)
+        let c = remade(fx)
         await c.svc.setMergeRequestNudgeInterval(.milliseconds(20))
         await c.svc.rebuildMergeRequestNudges()
         #expect(await c.svc.mergeRequestNudgeActive(child.id) == false)
@@ -152,9 +184,9 @@ struct MergeRequestCapTests {
     /// re-send on a STALLED child is the escape hatch and must reset it.
     @Test("a re-send preserves a running budget, but re-arms a stalled one")
     func reSendSemantics() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (parent, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (parent, child) = try await pair(fx)
 
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)                    // freeze the loop; drive by hand
@@ -186,9 +218,9 @@ struct MergeRequestCapTests {
     /// loop that replaced it, and its ghost tick must not nudge.
     @Test("a superseded loop can neither evict the live loop nor send a ghost reminder")
     func generationFence() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (parent, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (parent, child) = try await pair(fx)
 
         _ = try await env.svc.mergeRequest(ref: child.ref())
         let genA = await env.svc.mergeRequestNudgeGeneration(child.id)
@@ -213,9 +245,9 @@ struct MergeRequestCapTests {
     /// guard would accept the stale write and could flip a brand-new request straight to stalled.
     @Test("a write computed against a stale count is dropped; a matching one lands")
     func casRejectsStaleWrites() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (_, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (_, child) = try await pair(fx)
         _ = try await env.svc.mergeRequest(ref: child.ref())
         await env.svc.stopMergeRequestNudge(child.id)
         _ = try await env.svc.store.update(child.id) { $0.treeStat?.nudges = 3 }
@@ -232,9 +264,9 @@ struct MergeRequestCapTests {
     /// lowered under us, or cap <= 0) — that path skips the reminder and must not stamp a fresh request.
     @Test("a stale tick on an exhausted budget cannot stamp a freshly re-armed request")
     func exhaustedPathCannotStampAFreshRequest() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let (_, child) = try await pair((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let env = fx.env
+        let (_, child) = try await pair(fx)
 
         await env.svc.setMergeRequestNudgeCap(2)
         _ = try await env.svc.mergeRequest(ref: child.ref())
@@ -260,6 +292,16 @@ struct MergeRequestCapTests {
 @Suite("merge-request re-nudge — stalled, but still tracking")
 struct MergeStalledTrackingTests {
 
+    private func setup() -> MergeRequestCapTests.Fixture {
+        let fake = FakeProc()
+        let emu = GitConfigEmulator()
+        emu.install(on: fake)
+        let graph = RepoScripts.withChild(on: fake)
+        let env = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(env.base)
+        return MergeRequestCapTests.Fixture(env: env, fake: fake, emu: emu, graph: graph, repo: repo, parentTip: graph.tip("parent")!)
+    }
+
     private func stat(_ svc: OrchestraService, _ id: UUID) async -> TreeStat? {
         await svc.list().first { $0.id == id }?.treeStat
     }
@@ -268,17 +310,16 @@ struct MergeStalledTrackingTests {
         return await check()
     }
 
-    private func stalledChild(_ env: (svc: OrchestraService, base: String),
-                              _ repo: String, _ tip: String) async throws -> Task {
+    private func stalledChild(_ fx: MergeRequestCapTests.Fixture) async throws -> Task {
         _ = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+            fx.env.svc, SpawnInput(id: UUID(), prompt: "p", repo: fx.repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
-                                      link: ParentLink(parent: "parent", base: tip))
-        _ = try await env.svc.mergeRequest(ref: child.ref())
-        await env.svc.stopMergeRequestNudge(child.id)
-        _ = try await env.svc.store.update(child.id) {
+            fx.env.svc, SpawnInput(id: UUID(), prompt: "c", repo: fx.repo, branch: "child"))
+        try await BranchLineage(proc: fx.fake).set(repo: fx.repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: fx.parentTip))
+        _ = try await fx.env.svc.mergeRequest(ref: child.ref())
+        await fx.env.svc.stopMergeRequestNudge(child.id)
+        _ = try await fx.env.svc.store.update(child.id) {
             $0.treeStat = TreeStat(state: .inSync, nudges: 8, mergeStalled: true)
         }
         return child
@@ -290,19 +331,19 @@ struct MergeStalledTrackingTests {
     /// `giveUp` fires it. Then the funnel must keep tracking afterwards.
     @Test("a parent that moved before the give-up still gets a merge-down nudge, and tracking continues")
     func stalledCardTracksItsParent() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
+        let fx = setup()
+        let env = fx.env
         _ = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: fx.repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
-                                      link: ParentLink(parent: "parent", base: tip))
+            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: fx.repo, branch: "child"))
+        try await BranchLineage(proc: fx.fake).set(repo: fx.repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: fx.parentTip))
 
         await env.svc.setMergeRequestNudgeInterval(.milliseconds(20))
         await env.svc.setMergeRequestNudgeCap(1)
         _ = try await env.svc.mergeRequest(ref: child.ref())
-        try TreeStatTests.advanceParent(repo, 2)          // parent moves WHILE pending — funnel is frozen
+        RepoScripts.advanceParent(fx.graph, 2)            // parent moves WHILE pending — funnel is frozen
 
         #expect(try await eventually { await stat(env.svc, child.id)?.mergeStalled == true })
 
@@ -314,7 +355,7 @@ struct MergeStalledTrackingTests {
         #expect(msgs.contains { $0.contains("moved ahead") })   // the nudge the frozen funnel couldn't send
 
         // And the funnel keeps tracking underneath the flag, rather than freezing on it.
-        try TreeStatTests.advanceParent(repo, 1)
+        RepoScripts.advanceParent(fx.graph, 1)
         await env.svc.recomputeTreeStat(child.id)
         let after = await stat(env.svc, child.id)
         #expect(after?.mergeStalled == true)              // flag survives the recompute...
@@ -326,11 +367,10 @@ struct MergeStalledTrackingTests {
     /// outright), so it is the one that can regress back to testing `state` alone.
     @Test("synced clears the stalled flag — the merge finally happened")
     func syncedClearsStalled() async throws {
-        let env = TestEnv.make()
-        let (repo, tip) = try ShipChoreoTests.repoWithChild(env.base)
-        let child = try await stalledChild((env.svc, env.base), repo, tip)
+        let fx = setup()
+        let child = try await stalledChild(fx)
 
-        _ = try await env.svc.synced(ref: child.ref())
-        #expect(await stat(env.svc, child.id)?.mergeStalled != true)
+        _ = try await fx.env.svc.synced(ref: child.ref())
+        #expect(await stat(fx.env.svc, child.id)?.mergeStalled != true)
     }
 }

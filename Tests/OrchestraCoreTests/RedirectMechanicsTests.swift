@@ -1,3 +1,10 @@
+// MOVES-TO: ContractTests/Git — rebase --onto redirect transplant
+//
+// WHOLE-SUITE contract mover (Task 10, merge-collab): NOT unit-convertible. The single test is a real
+// `git rebase --onto <grandparent> <recorded-base> <child>` transplant proof — it asserts that git
+// replays EXACTLY the child's own commits onto the new base with no phantom conflict after the parent
+// was squash-merged. That is a property of real git's rebase machinery over real commit contents; a
+// modelled graph cannot exercise it. Left running real git; it relocates to ContractTests/Git at the flip.
 import Foundation
 import Testing
 @testable import OrchestraCore

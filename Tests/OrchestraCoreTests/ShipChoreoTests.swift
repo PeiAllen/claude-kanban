@@ -3,9 +3,16 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
+/// Unit-converted (Task 10, merge-collab): the parent/child/grandchild commit graphs are modelled over
+/// FakeProc/RepoGraph (TestSupport/RepoScripts.swift, pinned to real git by
+/// ContractTests/Git/GitRevContractTests) and lineage lives in GitConfigEmulator (pinned by
+/// GitConfigContractTests). The one genuine real-git effect — that shipped's notify+retarget+clear runs
+/// end-to-end when a REAL merge advanced the parent — is distilled into
+/// ContractTests/Git/ShipChoreoContractTests. No real git here.
 @Suite("Ship choreography — shipped notify + retarget + idempotence")
 struct ShipChoreoTests {
 
+    // LEGACY real-git fixture — still used by unconverted ServiceTeardownTests; delete when card-lifecycle converts.
     /// A repo on main with `parent`, plus a `child` branch off parent's tip. Returns (repo, parent tip).
     static func repoWithChild(_ base: String) throws -> (repo: String, parentTip: String) {
         let repo = try TreeStatTests.repoWithParent(base)   // main + parent
@@ -18,16 +25,26 @@ struct ShipChoreoTests {
         return (repo, parentTip)
     }
 
+    /// A FakeProc-backed env with main + parent + child modelled over RepoGraph (parent tip recorded),
+    /// lineage in the config emulator. The unit analogue of `repoWithChild`.
+    private func setup() -> (env: TreeStatTests.Env, fake: FakeProc, graph: RepoGraph, repo: String, parentTip: String) {
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let graph = RepoScripts.withChild(on: fake)
+        let env = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(env.base)
+        return (env, fake, graph, repo, graph.tip("parent")!)
+    }
+
     // (a) live parent card gets an inbox message + wake
     @Test("live parent card is notified when its child ships")
     func liveParentNotified() async throws {
-        let env = TestEnv.make()
-        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let (env, fake, graph, repo, parentTip) = setup()
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
-        try TreeStatTests.advanceParent(repo, 1)   // simulate the parent agent's squash-merge (S2-2 gate)
+        RepoScripts.advanceParent(graph, 1)   // simulate the parent agent's squash-merge (S2-2 gate)
 
         try await env.svc.shipped(ref: child.ref())
 
@@ -36,19 +53,18 @@ struct ShipChoreoTests {
         #expect(msgs.first?.text.contains("child") == true)
         #expect(msgs.first?.text.contains("merged into you") == true)
         // shipped clears the child's own lineage (idempotency key)
-        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") == nil)
+        #expect(await BranchLineage(proc: fake).read(repo: repo, branch: "child") == nil)
     }
 
     // (a) bare parent (no card) ⇒ neutral activity (S3-1: NOT a warning — it's the documented success
     // path where the child borrowed + merged the bare parent), no throw.
     @Test("bare parent (no card) yields a neutral (non-warning) activity, not a throw")
     func bareParentActivity() async throws {
-        let env = TestEnv.make()
-        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let (env, fake, graph, repo, parentTip) = setup()
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
-        try TreeStatTests.advanceParent(repo, 1)   // simulate the merge (S2-2 gate)
+        RepoScripts.advanceParent(graph, 1)   // simulate the merge (S2-2 gate)
         let collector = EventCollector()
         await collector.start(await env.svc.subscribe())
 
@@ -67,28 +83,26 @@ struct ShipChoreoTests {
     // merged) — otherwise a mistaken/aborted call rebases grandchildren toward data loss. --force overrides.
     @Test("S2-2: shipped refuses when nothing was merged; force overrides")
     func shippedRefusesWhenNothingMerged() async throws {
-        let env = TestEnv.make()
-        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let (env, fake, _, repo, parentTip) = setup()
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
         // Parent has NOT advanced — nothing merged. Refuse, and leave the lineage intact.
         await #expect(throws: OrchestraError.self) { try await env.svc.shipped(ref: child.ref()) }
-        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") != nil)
+        #expect(await BranchLineage(proc: fake).read(repo: repo, branch: "child") != nil)
         // Force overrides (a genuinely empty squash).
         _ = try await env.svc.shipped(ref: child.ref(), force: true)
-        #expect(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "child") == nil)
+        #expect(await BranchLineage(proc: fake).read(repo: repo, branch: "child") == nil)
     }
 
     // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now
     // bare, and a stopped child would otherwise wait on a rotted inbox forever.
     @Test("archiving a parent card nudges its live children (parent branch now bare)")
     func archiveNudgesLiveChildren() async throws {
-        let env = TestEnv.make()
-        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let (env, fake, _, repo, parentTip) = setup()
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
 
         // Intent-only archive: the child nudge is a TeardownStepper actor-duty (PR4b Task 4) — drive it.
@@ -101,12 +115,10 @@ struct ShipChoreoTests {
     // S3-5: an archived card must not get a post-archive treeStat rewrite even if a recompute fires.
     @Test("recompute on an archived card is a no-op")
     func archivedCardNoRecompute() async throws {
-        let env = TestEnv.make()
-        let repo = try TreeStatTests.repoWithParent(env.base)
-        let tip = try TreeStatTests.git(repo, "rev-parse", "parent")
+        let (env, fake, _, repo, parentTip) = setup()
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
-                                      link: ParentLink(parent: "parent", base: tip))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
         try await env.svc.archive(card.id)
         await env.svc.recomputeTreeStat(card.id)
         #expect(await env.svc.list(includeArchived: true).first { $0.id == card.id }?.treeStat == nil)
@@ -117,13 +129,12 @@ struct ShipChoreoTests {
     // a wasted self-echo.
     @Test("live-parent ship notifies+wakes the child; parent self-echo skipped when caller is the parent")
     func shippedNotifiesChild() async throws {
-        let env = TestEnv.make()
-        let (repo, parentTip) = try Self.repoWithChild(env.base)
+        let (env, fake, graph, repo, parentTip) = setup()
         let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "child",
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
                                       link: ParentLink(parent: "parent", base: parentTip))
-        try TreeStatTests.advanceParent(repo, 1)   // simulate the parent's squash-merge (S2-2 gate)
+        RepoScripts.advanceParent(graph, 1)   // simulate the parent's squash-merge (S2-2 gate)
 
         // The PARENT agent performed the squash-merge and calls `orchestra shipped <child>` — caller = parent.
         try await env.svc.shipped(ref: child.ref(), by: parentCard.ref())
@@ -139,29 +150,26 @@ struct ShipChoreoTests {
     // onto the default branch — otherwise the child shows inSync-forever against a dead parent.
     @Test("root ship (no parent link) retargets children onto the default branch — goal-4")
     func rootShipRetargetsChildren() async throws {
-        let env = TestEnv.make()
         // main → A → B; A is a ROOT (no parent link), ships to main.
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let graph = RepoGraph()
+        graph.commit(on: "main")                          // base
+        graph.branch("A", at: "main"); graph.commit(on: "A")   // A work
+        let aTip = graph.tip("A")!
+        graph.branch("B", at: "A")
+        graph.install(on: fake)
+        let env = TestEnv.make(proc: fake)
         let repo = TestEnv.repo(env.base)
-        try TreeStatTests.git(repo, "init", "-q", "-b", "main")
-        try TreeStatTests.git(repo, "config", "user.email", "t@t")
-        try TreeStatTests.git(repo, "config", "user.name", "t")
-        try TreeStatTests.write(repo, "a.txt", "0\n"); try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "base")
-        try TreeStatTests.git(repo, "checkout", "-q", "-b", "A", "main")
-        try TreeStatTests.write(repo, "A.txt", "a\n"); try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "A work")
-        let aTip = try TreeStatTests.git(repo, "rev-parse", "A")
-        try TreeStatTests.git(repo, "branch", "B", "A")
-        try TreeStatTests.git(repo, "checkout", "-q", "main")
 
         let a = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "A", repo: repo, branch: "A"))   // no link
         let b = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "B", repo: repo, branch: "B"))
-        try await BranchLineage(proc: RealProc()).set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "B", link: ParentLink(parent: "A", base: aTip))
 
         try await env.svc.shipped(ref: a.ref())
 
         // B retargeted onto the default branch (main), recorded base KEPT, restackNeeded + nudged.
-        let lB = try #require(await BranchLineage(proc: RealProc()).read(repo: repo, branch: "B"))
+        let lB = try #require(await BranchLineage(proc: fake).read(repo: repo, branch: "B"))
         #expect(lB.parent == "main")
         #expect(lB.base == aTip)
         #expect(await env.svc.list().first { $0.id == b.id }?.treeStat?.state == .restackNeeded)
@@ -172,38 +180,31 @@ struct ShipChoreoTests {
     // (b) two children retargeted to grandparent, base preserved, restackNeeded, nudged; idempotent
     @Test("shipping a mid branch retargets its two children onto the grandparent (base kept), once")
     func retargetsGrandchildren() async throws {
-        let env = TestEnv.make()
         // Tree: main → grandparent → mid → {c1, c2}. Ship `mid`.
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let graph = RepoGraph()
+        graph.commit(on: "main")                          // base
+        graph.branch("grandparent", at: "main")
+        graph.branch("mid", at: "grandparent"); graph.commit(on: "mid")   // mid work
+        let midTip = graph.tip("mid")!
+        graph.branch("c1", at: "mid")
+        graph.branch("c2", at: "mid")
+        let grandparentTip = graph.tip("grandparent")!
+        graph.install(on: fake)
+        let env = TestEnv.make(proc: fake)
         let repo = TestEnv.repo(env.base)
-        try TreeStatTests.git(repo, "init", "-q", "-b", "main")
-        try TreeStatTests.git(repo, "config", "user.email", "t@t")
-        try TreeStatTests.git(repo, "config", "user.name", "t")
-        try TreeStatTests.write(repo, "a.txt", "0\n")
-        try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "base")
-        try TreeStatTests.git(repo, "branch", "grandparent")
-        try TreeStatTests.git(repo, "checkout", "-q", "-b", "mid", "grandparent")
-        try TreeStatTests.write(repo, "m.txt", "m\n"); try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "mid work")
-        let midTip = try TreeStatTests.git(repo, "rev-parse", "mid")
-        try TreeStatTests.git(repo, "branch", "c1", "mid")
-        try TreeStatTests.git(repo, "branch", "c2", "mid")
-        try TreeStatTests.git(repo, "checkout", "-q", "main")
-        let grandparentTip = try TreeStatTests.git(repo, "rev-parse", "grandparent")
 
         let mid = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "mid", repo: repo, branch: "mid"))
         let c1 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c1", repo: repo, branch: "c1"))
         let c2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c2", repo: repo, branch: "c2"))
-        let lin = BranchLineage(proc: RealProc())
+        let lin = BranchLineage(proc: fake)
         try await lin.set(repo: repo, branch: "mid",
                           link: ParentLink(parent: "grandparent", base: grandparentTip))
         try await lin.set(repo: repo, branch: "c1", link: ParentLink(parent: "mid", base: midTip))
         try await lin.set(repo: repo, branch: "c2", link: ParentLink(parent: "mid", base: midTip))
         // Simulate mid's squash-merge into grandparent so grandparent advances past mid's base (S2-2 gate).
-        try TreeStatTests.git(repo, "checkout", "-q", "grandparent")
-        try TreeStatTests.write(repo, "gp-merge.txt", "merged"); try TreeStatTests.git(repo, "add", "-A")
-        try TreeStatTests.git(repo, "commit", "-q", "-m", "merge mid")
-        try TreeStatTests.git(repo, "checkout", "-q", "main")
+        graph.commit(on: "grandparent")
 
         try await env.svc.shipped(ref: mid.ref())
 

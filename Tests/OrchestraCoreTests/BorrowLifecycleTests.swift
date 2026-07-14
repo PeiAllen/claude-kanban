@@ -1,3 +1,12 @@
+// MOVES-TO: ContractTests/Git — borrow over real worktrees
+//
+// WHOLE-SUITE contract mover (Task 10, merge-collab): NOT unit-convertible. Every test here asserts a
+// REAL `git worktree add`/borrow effect that only exists on disk — the `orch-borrow-*` worktree is
+// created and checked out at the bare parent's tip (HEAD == parent tip), `release`/`sweepOrphanBorrows`
+// actually remove it from `.git/worktrees`, and the rival-checkout classification depends on real git
+// refusing a second checkout of the same branch. A FakeProc has no worktree to point at, so there is
+// nothing to assert — the suite's value IS the real-worktree behavior. Left running real git
+// (`TestEnv.makeReal`); it relocates to ContractTests/Git at the target flip.
 import Foundation
 import Testing
 @testable import OrchestraCore
