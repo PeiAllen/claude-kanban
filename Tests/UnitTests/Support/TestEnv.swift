@@ -84,7 +84,8 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc())
+                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
@@ -95,6 +96,7 @@ enum TestEnv {
     /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
     /// itself a realistic "fresh daemon" trait.
     static func remake(base: String, capabilities: AgentCapabilities = .stub,
+                       clock: any Clock<Duration> = ContinuousClock(),
                        proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
@@ -106,14 +108,15 @@ enum TestEnv {
         let wtRegistry = WorktreeRegistry(config: config, manager: worktrees,
                                           borrowsPath: base + "/borrows.json", markersDir: base + "/worktree-markers")
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
-        let store = TaskStore(path: base + "/tasks.json")
+        let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   proc: proc ?? Self.defaultFakeProc())
+                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 

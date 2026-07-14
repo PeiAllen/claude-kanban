@@ -227,7 +227,8 @@ struct CodexTelemetryE2ETests {
                                    registry: AgentRegistry(adapters: [codex]),
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
-                                   trust: TrustLedger(path: base + "/trust.json"))
+                                   trust: TrustLedger(path: base + "/trust.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
         // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
         // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
@@ -274,7 +275,8 @@ struct CodexTelemetryE2ETests {
                                    registry: AgentRegistry(adapters: [codex]),
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
-                                   trust: TrustLedger(path: base + "/trust.json"))
+                                   trust: TrustLedger(path: base + "/trust.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         async let sa = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look a", model: "gpt-5.5",
                                             agentId: "codex", cwd: workA))
         async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look b", model: "gpt-5.5",

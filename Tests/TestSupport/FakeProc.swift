@@ -12,6 +12,7 @@ public final class FakeProc: ProcRunning, @unchecked Sendable {
     public struct Call: Sendable, Equatable {
         public let argv: [String]
         public let cwd: String?
+        public let timeout: Duration?
     }
 
     private struct Rule {
@@ -49,7 +50,7 @@ public final class FakeProc: ProcRunning, @unchecked Sendable {
     @discardableResult
     public func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) async throws -> ProcResult {
         let (gate, candidateRules, fallback): (Gate?, [Rule], ProcResult) = lock.withLock {
-            _calls.append(Call(argv: argv, cwd: cwd))
+            _calls.append(Call(argv: argv, cwd: cwd, timeout: timeout))
             var g: Gate? = nil
             if let i = gates.firstIndex(where: { argv.starts(with: $0.prefix) }) {
                 g = gates.remove(at: i).gate

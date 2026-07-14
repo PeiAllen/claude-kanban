@@ -68,7 +68,8 @@ struct ReadinessSignalTests {
                                    registry: AgentRegistry(adapters: [codex]),
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: StubSessions(),
-                                   trust: TrustLedger(path: base + "/trust.json"))
+                                   trust: TrustLedger(path: base + "/trust.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
 
         let created = try await svc.spawn(SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
                                                      agentId: "codex", cwd: work))

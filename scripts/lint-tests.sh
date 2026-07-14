@@ -8,8 +8,8 @@ say() { echo "lint-tests: $1" >&2; fail=1; }
 # 1. No wall-clock waits in the unit tier. NO exemption marker — a test that truly needs to
 #    settle real fds/sockets belongs in ContractTests. Wait.swift's coarse backstop is the
 #    single allowlisted file.
-if grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(' Tests/UnitTests Tests/TestSupport \
-     --include='*.swift' | grep -v 'Tests/TestSupport/Wait.swift'; then
+if grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(|asyncAfter|DispatchSemaphore.*wait\(timeout|ContinuousClock\(\)\.sleep|\bsleep\([0-9]' \
+     Tests/UnitTests Tests/TestSupport --include='*.swift' | grep -v 'Tests/TestSupport/Wait.swift'; then
   say "wall-clock sleep in the unit tier — TestClock.advance, a Gate, pollUntil, or move the suite to ContractTests"
 fi
 # 2. No ambient WRITE-TARGET path statics in unit tests. Deliberately narrow (confirm/deny fix):
@@ -30,5 +30,20 @@ fi
 # 4. makeReal is contract-tier-only.
 if grep -rn 'makeReal' Tests/UnitTests --include='*.swift'; then
   say "TestEnv.makeReal in the unit tier — real git; move the test to ContractTests"
+fi
+# 5. Service/Config construction is TestEnv-only in the unit tier (impl-review M4). A bare `Config()`
+#    picks up production DEFAULTS no grep for literals can see — chiefly scratchRoot, which defaults to
+#    the developer's REAL ~/.orchestra/scratch (an `rm -rf` fence). Route every unit-tier service through
+#    TestEnv (make/remake) or a temp-rooted Config. The `\b` rejects getConfig()/FromConfig()/WindowConfig();
+#    the config-DERIVATION suite (ConfigTimeoutTests) legitimately builds a default Config to assert its
+#    derived fields (same carve-out as rule 2's Config.home) — excluded.
+#    NARROWED to bare Config(): the companion hazard — an `OrchestraService(config:)` that omits `proc:` and
+#    so forks via the RealProc default — can't be caught by a fixed grep window; these constructions span up
+#    to 7 lines, so `proc:` routinely lands past any -A context (a -A3/awk gate false-positives on all of
+#    them). It's enforced structurally instead: unit-tier services go through TestEnv (FakeProc default) or
+#    pass an explicit `proc:`.
+if grep -rnE '\bConfig\(\)' Tests/UnitTests --include='*.swift' \
+     | grep -vE 'Support/TestEnv.swift|OrchestraKit/ConfigTimeoutTests.swift'; then
+  say "bare Config() in a unit test — its scratchRoot defaults to the real ~/.orchestra fence; use a temp-rooted Config or TestEnv"
 fi
 exit $fail

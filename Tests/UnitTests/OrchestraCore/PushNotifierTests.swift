@@ -86,8 +86,13 @@ final class PushNotifierTests: XCTestCase {
     }
 
     private func makeService() -> OrchestraService {
-        OrchestraService(config: Config(), store: TaskStore(path: tempPath()),
-                         devices: DeviceTokenStore(path: tempPath()))
+        let base = NSTemporaryDirectory() + "unit-\(UUID().uuidString)"
+        return OrchestraService(config: Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees",
+                                               allowlist: [base], scratchRoot: base + "/scratch",
+                                               runtimeStateDir: base + "/state"),
+                                store: TaskStore(path: tempPath()),
+                                devices: DeviceTokenStore(path: tempPath()),
+                                proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
     }
 
     func testTransitionFansOutToRegisteredDevice() async throws {

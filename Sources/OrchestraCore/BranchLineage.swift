@@ -23,6 +23,23 @@ public actor BranchLineage {
     private let proc: any ProcRunning
     public init(proc: any ProcRunning) { self.proc = proc }
 
+    // MARK: op serialization (impl-review M2)
+    // Every public method was SYNCHRONOUS before the async proc seam — no suspension points, so the
+    // actor ran each op to completion and the multi-key write invariants (satellites first,
+    // `orchestra-parent` last; the catch-block prior-restore) held for free. The seam introduced an
+    // await at every git leaf, so without this FIFO gate two ops could interleave mid-write and
+    // manufacture exactly the old-parent/new-base torn state the restore exists to prevent.
+    // Public methods acquire; internal cross-calls (`set` → `ancestors`) use the ungated privates.
+    private var opBusy = false
+    private var opWaiters: [CheckedContinuation<Void, Never>] = []
+    private func opAcquire() async {
+        if !opBusy { opBusy = true; return }
+        await withCheckedContinuation { opWaiters.append($0) }
+    }
+    private func opRelease() {
+        if opWaiters.isEmpty { opBusy = false } else { opWaiters.removeFirst().resume() }
+    }
+
     private static let kParent = "orchestra-parent"
     private static let kBase   = "orchestra-parent-base"
     private static let kPr     = "orchestra-parent-pr"
@@ -54,7 +71,7 @@ public actor BranchLineage {
     // MARK: CRUD
 
     /// The parent link for `branch`, or nil if it has no `orchestra-parent` key.
-    public func read(repo: String, branch: String) async -> ParentLink? {
+    private func _read(repo: String, branch: String) async -> ParentLink? {
         guard let parent = await get(repo, branch, Self.kParent) else { return nil }
         return ParentLink(parent: parent,
                           base: await get(repo, branch, Self.kBase) ?? "",
@@ -65,7 +82,7 @@ public actor BranchLineage {
     /// Write the link's keys. Rejects an empty parent, self-parent, and cycles (via `ancestors`) with
     /// `.invalidParams`. The parent key is written LAST — `read` keys on it, so a mid-write failure
     /// leaves NO link rather than a partial one.
-    public func set(repo: String, branch: String, link: ParentLink) async throws {
+    private func _set(repo: String, branch: String, link: ParentLink) async throws {
         guard !link.parent.isEmpty else {
             throw OrchestraError.invalidParams("parent ref must not be empty")
         }
@@ -74,7 +91,7 @@ public actor BranchLineage {
                 "a branch cannot be its own parent: \(branch) — pick a different branch as the parent")
         }
         // If `branch` already sits above the proposed parent, adopting it would close a loop.
-        if await ancestors(repo: repo, of: link.parent).contains(branch) {
+        if await _ancestors(repo: repo, of: link.parent).contains(branch) {
             throw OrchestraError.invalidParams(
                 "parent link would create a cycle: \(branch) → \(link.parent) — pick a parent that is not a "
                 + "descendant of \(branch)")
@@ -83,7 +100,7 @@ public actor BranchLineage {
         // makes a torn write read as "no link" only when there was NO prior link; RE-pointing an existing
         // link that fails between the base write and the parent write (e.g. `git config` losing to a held
         // `.git/config.lock`) would otherwise leave OLD parent + NEW base — a wrong rebase anchor.
-        let prior = await read(repo: repo, branch: branch)
+        let prior = await _read(repo: repo, branch: branch)
         do {
             // Satellite keys first; the `orchestra-parent` key (read's existence marker) is the last write.
             try await setKey(repo, branch, Self.kBase, link.base)
@@ -111,19 +128,19 @@ public actor BranchLineage {
     }
 
     /// Remove every `orchestra-*` lineage key for `branch` (tolerates already-unset keys).
-    public func clear(repo: String, branch: String) async throws {
+    private func _clear(repo: String, branch: String) async throws {
         for suffix in Self.allSuffixes { await unset(repo, branch, suffix) }
     }
 
     /// Update just the recorded parent-tip OID (after a sync/restack).
-    public func updateBase(repo: String, branch: String, oid: String) async throws {
+    private func _updateBase(repo: String, branch: String, oid: String) async throws {
         try await setKey(repo, branch, Self.kBase, oid)
     }
 
     // MARK: tree queries
 
     /// Child branch names whose recorded parent is `parent` — a fan-out over all lineage keys.
-    public func children(repo: String, of parent: String) async -> [String] {
+    private func _children(repo: String, of parent: String) async -> [String] {
         let pattern = "^branch\\..*\\.\(Self.kParent)$"
         guard let r = try? await proc.run(["git", "-C", repo, "config", "--get-regexp", pattern],
                                           cwd: nil, env: [:], timeout: .seconds(120)), r.ok
@@ -143,11 +160,11 @@ public actor BranchLineage {
     }
 
     /// The parent chain above `branch`, nearest first (cycle-safe via a visited set).
-    public func ancestors(repo: String, of branch: String) async -> [String] {
+    private func _ancestors(repo: String, of branch: String) async -> [String] {
         var out: [String] = []
         var seen: Set<String> = [branch]
         var cur = branch
-        while let link = await read(repo: repo, branch: cur) {
+        while let link = await _read(repo: repo, branch: cur) {
             let p = link.parent
             if seen.contains(p) { break }   // defensive: a pre-existing cycle can't loop us forever
             out.append(p); seen.insert(p); cur = p
@@ -157,4 +174,30 @@ public actor BranchLineage {
     // O4/S4: `classify` deleted — it was dead (zero production callers) and disagreed with the
     // load-bearing `RemoteParentRef.parse` (which now also consults `git remote`). Classification runs
     // through that one seam.
+
+    // MARK: gated public surface (see "op serialization" above)
+    public func read(repo: String, branch: String) async -> ParentLink? {
+        await opAcquire(); defer { opRelease() }
+        return await _read(repo: repo, branch: branch)
+    }
+    public func set(repo: String, branch: String, link: ParentLink) async throws {
+        await opAcquire(); defer { opRelease() }
+        try await _set(repo: repo, branch: branch, link: link)
+    }
+    public func clear(repo: String, branch: String) async throws {
+        await opAcquire(); defer { opRelease() }
+        try await _clear(repo: repo, branch: branch)
+    }
+    public func updateBase(repo: String, branch: String, oid: String) async throws {
+        await opAcquire(); defer { opRelease() }
+        try await _updateBase(repo: repo, branch: branch, oid: oid)
+    }
+    public func children(repo: String, of parent: String) async -> [String] {
+        await opAcquire(); defer { opRelease() }
+        return await _children(repo: repo, of: parent)
+    }
+    public func ancestors(repo: String, of branch: String) async -> [String] {
+        await opAcquire(); defer { opRelease() }
+        return await _ancestors(repo: repo, of: branch)
+    }
 }

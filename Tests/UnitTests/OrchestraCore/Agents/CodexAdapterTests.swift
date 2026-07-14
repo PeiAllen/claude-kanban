@@ -356,7 +356,8 @@ struct CodexSpawnWiringTests {
                                    registry: AgentRegistry(adapters: [codex]),
                                    worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
                                    sessions: sessions,
-                                   trust: TrustLedger(path: base + "/trust.json"))
+                                   trust: TrustLedger(path: base + "/trust.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         let t = try await TestEnv.spawnAwaited(svc, SpawnInput(id: UUID(), prompt: "look around", agentId: "codex",
                                                cwd: PathResolver.canonical(work), access: .readOnly))
         #expect(t.agentId == "codex")

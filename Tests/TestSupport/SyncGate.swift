@@ -28,7 +28,10 @@ public final class SyncGate: @unchecked Sendable {
     /// Test-side: unpark the stub.
     public func release() { sem.signal() }
 
-    /// Stub-side: record the hit, wake reached() waiters, BLOCK until release (safety-bounded).
+    /// Stub-side: record the hit, wake reached() waiters, BLOCK until release. The safety timeout
+    /// is a mis-arm tripwire, not a graceful path: if `release()` never arrives the gate FATALS
+    /// rather than silently continuing (a swallowed timeout let a mis-armed test pass on a stub
+    /// that was never unparked).
     public func parkBlocking(timeout: DispatchTimeInterval = .seconds(30)) {
         let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
             hits += 1
@@ -36,6 +39,8 @@ public final class SyncGate: @unchecked Sendable {
             return reachedWaiters
         }
         for w in waiters { w.resume() }
-        _ = sem.wait(timeout: .now() + timeout)
+        if sem.wait(timeout: .now() + timeout) == .timedOut {
+            fatalError("SyncGate.parkBlocking: release() never arrived within \(timeout) — mis-armed test (gate set but never released)")
+        }
     }
 }

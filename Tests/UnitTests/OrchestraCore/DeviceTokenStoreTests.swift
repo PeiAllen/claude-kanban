@@ -66,9 +66,13 @@ final class DeviceTokenStoreTests: XCTestCase {
     }
 
     func testServiceRegisterRoundTrips() async throws {
-        let service = OrchestraService(config: Config(),
+        let base = NSTemporaryDirectory() + "unit-\(UUID().uuidString)"
+        let service = OrchestraService(config: Config(reposRoot: base + "/repos", worktreesRoot: base + "/worktrees",
+                                                      allowlist: [base], scratchRoot: base + "/scratch",
+                                                      runtimeStateDir: base + "/state"),
                                        store: TaskStore(path: tempPath()),
-                                       devices: DeviceTokenStore(path: tempPath()))
+                                       devices: DeviceTokenStore(path: tempPath()),
+                                       proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         _ = try await service.registerDevice(reg(client: "c1", token: validToken(1)))
         let devices = await service.registeredDevices()
         XCTAssertEqual(devices.first?.clientId, "c1")

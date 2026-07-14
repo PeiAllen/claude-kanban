@@ -21,13 +21,21 @@ public protocol ProcRunning: Sendable {
     func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) async throws -> ProcResult
 }
 
-/// Production implementation — a pass-through to `Proc.run`, preserving its blocking semantics
-/// (the calling thread blocks for the child's lifetime, exactly as before this seam existed)
-/// and its `nil == unbounded` timeout contract.
+/// Production implementation. The blocking `Proc.run` wait is HOPPED to GCD's overcommitting
+/// pool: the async caller may be an actor (BranchLineage/RemoteParents) or a detached task, and
+/// both are scheduled on the ~one-per-core cooperative pool, which a blocking `waitpid` would
+/// starve (the exact hazard documented on `Proc.run`'s timeout note — impl-review M1). GCD grows
+/// under blocking, so this preserves the pre-seam behavior of the sync `offActor` hops for the
+/// converted probe sites, and strictly IMPROVES the lineage/remote actors: they now suspend for
+/// the child's lifetime instead of pinning their executor thread. `nil` timeout stays unbounded.
 public struct RealProc: ProcRunning {
     public init() {}
     @discardableResult
     public func run(_ argv: [String], cwd: String?, env: [String: String], timeout: Duration?) async throws -> ProcResult {
-        try Proc.run(argv, cwd: cwd, env: env, timeout: timeout)
+        try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global().async {
+                cont.resume(with: Result { try Proc.run(argv, cwd: cwd, env: env, timeout: timeout) })
+            }
+        }
     }
 }

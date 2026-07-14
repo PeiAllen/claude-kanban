@@ -36,7 +36,8 @@ struct ArchiveIntentTests {
         let inbox = Inbox(path: base + "/inbox.json")
         let svc = OrchestraService(config: config, store: store, registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtReg, sessions: sessions, trust: trust, inbox: inbox,
-                                   watchStore: WatchRegistryStore(path: base + "/watch.json"))
+                                   watchStore: WatchRegistryStore(path: base + "/watch.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, base)
     }
 

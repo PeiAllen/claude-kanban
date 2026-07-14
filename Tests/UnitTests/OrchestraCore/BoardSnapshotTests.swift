@@ -48,7 +48,8 @@ enum BoardSnapshotSupport {
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [claude, nilInfo]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
-                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
         let repo = TestEnv.repo(PathResolver.canonical(base))
         return (svc, sessions, repo, nilInfo.id)
     }

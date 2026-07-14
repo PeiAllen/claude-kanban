@@ -12,6 +12,9 @@ public actor OrchestraService {
     /// The subprocess seam for the components the hidden-integration suites reach git through
     /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
     nonisolated let proc: any ProcRunning
+    /// The one sync git probe (`git remote`, memoized by GitRemotesCache) — injectable because the
+    /// memo's compute closure can't ride the async seam. Tests pass `{ _ in [] }`.
+    nonisolated let gitRemotesProbe: @Sendable (String) -> [String]
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
@@ -241,10 +244,12 @@ public actor OrchestraService {
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
                 clock: any Clock<Duration> = ContinuousClock(),
-                proc: any ProcRunning = RealProc()) {
+                proc: any ProcRunning = RealProc(),
+                gitRemotesProbe: @escaping @Sendable (String) -> [String] = OrchestraService.defaultGitRemotesProbe) {
         self.config = config
         self.clock = clock
         self.proc = proc
+        self.gitRemotesProbe = gitRemotesProbe
         self.lineage = BranchLineage(proc: proc)
         self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin

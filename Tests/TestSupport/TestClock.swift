@@ -40,6 +40,10 @@ public final class TestClock: Clock, @unchecked Sendable {
 
     public func sleep(until deadline: Instant, tolerance: Duration?) async throws {
         let id = UUID()
+        // Always reclaim this id from `cancelled` once the whole sleep (park + any cancellation
+        // handshake) unwinds. Without it, a sleeper that resumed normally and was cancelled LATER
+        // leaves its id in `cancelled` forever — an unbounded per-clock leak across a long test.
+        defer { lock.withLock { _ = cancelled.remove(id) } }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
                 enum Verdict { case resume, cancel, park }

@@ -68,7 +68,10 @@ struct ControlLineBufferTests {
         let buf = ControlLineBuffer()
         let result = await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
             DispatchQueue.global().async { cont.resume(returning: buf.readLine()) }   // blocks until EOF
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { buf.signalEOF() }
+            // No wall-clock delay: `eof` is sticky under the buffer's NSCondition, so whether signalEOF
+            // lands before the reader parks (fast path: eof already set) or after (broadcast wakes it),
+            // readLine returns nil either way — deterministic, no lost wakeup, no race on ordering.
+            DispatchQueue.global().async { buf.signalEOF() }
         }
         #expect(result == nil)
     }

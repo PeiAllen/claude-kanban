@@ -26,10 +26,18 @@ extension OrchestraService {
     /// their actor-hop shape; convert it together with the diff tier when that tier moves to the seam.
     nonisolated func gitRemotes(repo: String) -> [String] {
         gitRemotesCache.remotes(repo: repo, configMtime: gitConfigMtime(repo: repo)) {
-            guard let r = try? Proc.run(["git", "-C", repo, "remote"]), r.ok else { return [] }
-            return r.stdout.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            gitRemotesProbe(repo)
         }
+    }
+
+    /// Production probe for `gitRemotesProbe` — the ONE remaining sync `Proc` fork on the service
+    /// (the memo's compute closure is sync, so it can't ride the async ProcRunning seam; see the
+    /// Task 5 deferral note). Unit tests inject `{ _ in [] }` via TestEnv, so the unit tier's
+    /// default path genuinely forks nothing (impl-review M3).
+    public static func defaultGitRemotesProbe(_ repo: String) -> [String] {
+        guard let r = try? Proc.run(["git", "-C", repo, "remote"]), r.ok else { return [] }
+        return r.stdout.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// The mtime of the repo's REAL `.git/config` — resolving through a linked worktree's `.git` FILE
