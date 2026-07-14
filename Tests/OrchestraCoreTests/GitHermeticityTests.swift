@@ -1,3 +1,4 @@
+// MOVES-TO: ContractTests/Git — git hermeticity (real git identity/config isolation)
 import Foundation
 import Testing
 @testable import OrchestraCore

@@ -1,3 +1,4 @@
+// MOVES-TO: ContractTests/Proc — real gh CLI probe
 import Foundation
 import Testing
 @testable import OrchestraCore
