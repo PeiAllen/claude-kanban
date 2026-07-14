@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Stale nudge — inSync→stale transition only")
 struct StaleNudgeTests {
@@ -54,12 +55,11 @@ struct StaleNudgeTests {
         // The parent card reports activity → funnel schedules the child's TreeStat recompute. The path
         // debounces twice (fan-out 750ms → child recompute 750ms), so poll with headroom past ~1.5s.
         try await env.svc.report(parentCard.id, StatusReport(desc: "did work", run: .running))
-        var nudged = false
-        for _ in 0..<400 {   // ≈ 4s ceiling — comfortably past the two 750ms debounce hops
-            if (try? await env.svc.inboxPeek(child.id))?.isEmpty == false { nudged = true; break }
-            try await _Concurrency.Task.sleep(for: .milliseconds(10))
+        // The two 750ms debounce hops ride the service's (production-default) ContinuousClock, so the
+        // condition converges in ~1.5s of real time; the poll itself is yield-based, not a sleep.
+        try await pollUntil("the funnel's staleness nudge reached the child") {
+            (try? await env.svc.inboxPeek(child.id))?.isEmpty == false
         }
-        #expect(nudged)
         let msgs = try await env.svc.inboxPeek(child.id)
         #expect(msgs.count == 1)                                    // fan-out coalesced ⇒ exactly one nudge
         #expect(msgs.first?.text.contains("moved ahead") == true)

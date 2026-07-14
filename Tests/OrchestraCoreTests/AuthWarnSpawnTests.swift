@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("authMode soft-warn on spawn — advisory only, never caps")
 struct AuthWarnSpawnTests {
@@ -26,8 +27,11 @@ struct AuthWarnSpawnTests {
         #expect(tasks.count == 4)
         #expect(env.sessions.ensureArgv.count == 4)
 
-        // Let the async event stream flush, then assert exactly one warning fired (only the 4th spawn).
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        // Poll for the (async) warning fan-out, then settle and assert exactly one fired (only the 4th spawn).
+        try await pollUntil("subscription warning delivered") {
+            await collector.activities.contains { $0.kind == .warning }
+        }
+        await yieldBriefly()
         let warnings = await collector.activities.filter { $0.kind == .warning }
         #expect(warnings.count == 1)
         #expect(warnings.first?.text.contains("subscription") == true)
@@ -42,7 +46,7 @@ struct AuthWarnSpawnTests {
 
         for i in 0..<3 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
 
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         let warnings = await collector.activities.filter { $0.kind == .warning }
         #expect(warnings.isEmpty)
     }
@@ -56,7 +60,7 @@ struct AuthWarnSpawnTests {
 
         for i in 0..<6 { _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p\(i)", repo: repo, branch: "b\(i)")) }
 
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         let warnings = await collector.activities.filter { $0.kind == .warning }
         #expect(warnings.isEmpty)
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// Regression tests for the "freshly spawned/restarted agent reads as dead" flake. Two distinct
 /// actor-reentrancy races, both rooted in the `recovering` guard not covering the full launch window:
@@ -49,8 +50,9 @@ struct SpawnRaceTests {
         let first = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "parent"))
         let second = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "parent"))  // co-located: allowed
         _ = second
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        #expect(await collector.activities.contains { $0.kind == .warning && $0.text.contains("second live card") })
+        try await pollUntil("multiplicity warning delivered") {
+            await collector.activities.contains { $0.kind == .warning && $0.text.contains("second live card") }
+        }
 
         // A child on `parent`: shipping it (root ship) / notify must resolve to the OLDEST parent card.
         let child = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))

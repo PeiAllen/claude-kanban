@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// S2-3: spawn lineage failures fire AFTER the worktree is cut. (i) a user-supplied `refs/`-prefixed
 /// local base double-prefixes in recordSpawnBase; (ii) a dangling `orchestra-parent` value (deleted

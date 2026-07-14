@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// O2 restart durability: `merge-request` arms an in-memory re-nudge timer that dies on a daemon
 /// restart while its durable state (child `mergeRequested` + the parent's inbox request) survives.
@@ -30,14 +31,9 @@ struct RebuildMergeRequestNudgesTests {
         let before = try await svcB.svc.inboxPeek(parentCard.id).count
         await svcB.svc.rebuildMergeRequestNudges()
 
-        var reProdded = false
-        for _ in 0..<100 {
-            if try await svcB.svc.inboxPeek(parentCard.id).contains(where: { $0.text.contains("reminder") }) {
-                reProdded = true; break
-            }
-            try await _Concurrency.Task.sleep(for: .milliseconds(20))
+        try await pollUntil("the re-armed nudge timer ticked a reminder") {
+            (try? await svcB.svc.inboxPeek(parentCard.id))?.contains(where: { $0.text.contains("reminder") }) == true
         }
-        #expect(reProdded)                                                    // the timer re-armed and ticked
         #expect(try await svcB.svc.inboxPeek(parentCard.id).count > before)   // a new message arrived
     }
 
@@ -91,11 +87,8 @@ struct RebuildMergeRequestNudgesTests {
         #expect(await treeState(env.svc, child.id) == nil)   // cleared
 
         // The next tick sees the child no longer pending, breaks the loop, and clears the slot.
-        var stopped = false
-        for _ in 0..<100 {
-            if await env.svc.mergeRequestNudgeActive(child.id) == false { stopped = true; break }
-            try await _Concurrency.Task.sleep(for: .milliseconds(20))
+        try await pollUntil("the nudge loop observed the ship and cleared its slot") {
+            await env.svc.mergeRequestNudgeActive(child.id) == false
         }
-        #expect(stopped)
     }
 }

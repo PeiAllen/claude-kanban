@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 // PR4b Task 1 — the four phase-keyed steppers driven DIRECTLY (no reconciler, no verb changes) via
 // `env.svc.convergeContext()` + `stepper.step(card, ctx)`, plus the ConvergeContext extensions and the

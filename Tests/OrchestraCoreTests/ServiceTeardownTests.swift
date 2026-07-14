@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// The nudge/watch loops hoisted `guard let self` ABOVE their `while`, so `[weak self]` bought
 /// nothing: an armed loop held a STRONG reference and pinned `OrchestraService` (plus its store,
@@ -31,11 +32,7 @@ struct ServiceTeardownTests {
     }
 
     private func awaitLatch(_ latch: Latch, within: Duration = .seconds(60)) async -> Bool {
-        let deadline = ContinuousClock.now + within
-        while ContinuousClock.now < deadline {
-            if latch.isTripped { return true }
-            try? await _Concurrency.Task.sleep(for: .milliseconds(25))
-        }
+        try? await pollUntil("latch tripped", timeout: within) { latch.isTripped }
         return latch.isTripped
     }
 
@@ -43,11 +40,7 @@ struct ServiceTeardownTests {
     /// unwind — so poll rather than asserting immediately. The bound is generous because a loop
     /// cancelled mid-`Proc.run` keeps a transient strong reference until that fork returns.
     private func awaitDeallocated(_ box: WeakBox, within: Duration = .seconds(30)) async -> Bool {
-        let deadline = ContinuousClock.now + within
-        while ContinuousClock.now < deadline {
-            if box.svc == nil { return true }
-            try? await _Concurrency.Task.sleep(for: .milliseconds(25))
-        }
+        try? await pollUntil("service deallocated", timeout: within) { box.svc == nil }
         return box.svc == nil
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("C3 · F1 — HandoffSeed.fold")
 struct HandoffSeedTests {

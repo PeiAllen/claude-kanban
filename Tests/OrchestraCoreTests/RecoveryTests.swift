@@ -273,7 +273,7 @@ struct RecoveryTests {
 
         // send B lands mid-relaunch (card `.relaunching`, readiness pending) → wake defers, B stranded.
         try await env.svc.send(card.id, "B")
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        await yieldBriefly()   // negative: a wrongful second resume's detached task gets its chance to run
         #expect(env.sessions.ensureCount == ensureAfterA)                          // deferred: not resumed yet
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])         // stranded (A rode the seed)
 
@@ -300,7 +300,7 @@ struct RecoveryTests {
         let ensureBefore = env.sessions.ensureCount
 
         await env.svc.wakeIfPending(card.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        await yieldBriefly()   // negative: a wrongful wake's detached resume gets its chance to run
         #expect(env.sessions.ensureCount == ensureBefore)                // no relaunch — running turn untouched
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["later"])   // stays for its Stop-drain
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Transport + reconnect", .serialized)
 struct TransportReconnectTests {
@@ -107,9 +108,8 @@ struct TransportReconnectTests {
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
         client.onState = { s in _Concurrency.Task { await states.add(s) } }
         try client.connect()
-        _ = client.subscribe()                                     // sends subscribe #1
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
-        #expect(box.subscribeCount == 1)
+        _ = client.subscribe()                                     // sends subscribe #1 (detached task)
+        try await pollUntil("subscribe #1 written") { box.subscribeCount == 1 }
 
         box.dropCurrent()                                          // drop mid-stream
         // Poll for the reconnect to converge rather than a fixed 700ms sleep: the reconnect BACKOFF TIMER
@@ -134,10 +134,15 @@ struct TransportReconnectTests {
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
         client.onState = { s in _Concurrency.Task { await states.add(s) } }
         try client.connect()
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        try await pollUntil("first connect published .live") { await states.values.contains(.live) }
         client.close()
-        try await _Concurrency.Task.sleep(for: .milliseconds(500))
+        // A wrongful post-close reconnect would emit `.retrying` from the reader thread MICROSECONDS
+        // after the EOF (the `stopping` check precedes the backoff sleep), and only then re-open after
+        // the ~250ms backoff. Wait for the terminal .down, settle, and assert neither trace exists.
+        try await pollUntil("close published .down") { await states.values.last == .down }
+        await yieldBriefly(2000)
         #expect(box.opens == 1)                                    // never reconnected after an intentional close
+        #expect(!(await states.values.contains(.retrying)))        // the reader honored `stopping` before retrying
         #expect(await states.values.last == .down)
     }
     @Test("clientId is stamped on requests and preserved across a reconnect")
@@ -145,8 +150,8 @@ struct TransportReconnectTests {
         let box = FakeBox()
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app, clientId: "phone-xyz")
         try client.connect()
-        _ = client.subscribe()                                       // subscribe #1
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        _ = client.subscribe()                                       // subscribe #1 (detached task)
+        try await pollUntil("subscribe #1 written") { box.subscribeClientIds.count == 1 }
         box.dropCurrent()                                            // force a reconnect
         // Poll for the reconnect + re-subscribe (real backoff timer) rather than a fixed 700ms — see the
         // reconnectResubscribes note: fixed-sleep timing fragility under parallel load, deterministic poll.
@@ -163,7 +168,7 @@ struct TransportReconnectTests {
         let client = ControlClient(transport: { FakeTransport(box) }, source: .cli)   // clientId defaults nil
         try client.connect()
         _ = client.subscribe()
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        try await pollUntil("subscribe written") { box.subscribeCount == 1 }
         #expect(box.subscribeClientIds.allSatisfy { $0 == nil })
         client.close()
     }
@@ -176,7 +181,9 @@ struct TransportReconnectTests {
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
         try client.connect()
         try client.connect()                                       // no-op: a loop is already live
-        try await _Concurrency.Task.sleep(for: .milliseconds(150))
+        // `open()` records synchronously inside `connect()`, so a wrongful second open is already
+        // visible; the yields settle any wrongly-spawned second runLoop's early writes.
+        await yieldBriefly()
         #expect(box.opens == 1)                                    // exactly one open, one runLoop
         client.close()
     }
@@ -189,7 +196,8 @@ struct TransportReconnectTests {
         client.onReconnect = { _Concurrency.Task { await hits.bump() } }
         try client.connect()
         _ = client.subscribe()
-        try await _Concurrency.Task.sleep(for: .milliseconds(150))
+        try await pollUntil("subscribe #1 written") { box.subscribeCount == 1 }   // the async machinery ran
+        await yieldBriefly()   // negative: a wrongful first-connect onReconnect gets its chance to fire
         #expect(await hits.value == 0)                             // NOT on the first connect
         box.dropCurrent()                                          // force a reconnect
         // Poll for the reconnect + onReconnect hook (real backoff timer) rather than a fixed 700ms — same

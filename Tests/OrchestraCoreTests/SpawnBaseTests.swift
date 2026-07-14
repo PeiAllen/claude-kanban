@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Spawn with base — lineage recorded at branch creation (local parents)")
 struct SpawnBaseTests {

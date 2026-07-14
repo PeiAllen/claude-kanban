@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("OrchestraService.report — merge / rollover / seq-guard / re-title")
 struct ReportTests {
@@ -228,7 +229,10 @@ struct ReportTests {
         await collector.start(await env.svc.subscribe())
         try await env.svc.report(t.id, StatusReport(ctxPct: 10))
         try await env.svc.report(t.id, StatusReport(ctxPct: 10))   // same value → no event
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("first report's upsert delivered") {
+            await collector.upserts.contains { $0.id == t.id }
+        }
+        await yieldBriefly()   // then settle: a wrongful second upsert gets its chance to land
         let upserts = await collector.upserts.filter { $0.id == t.id }
         #expect(upserts.count == 1)
     }
@@ -279,7 +283,10 @@ struct ReportTests {
         await collector.start(await env.svc.subscribe())
         try await env.svc.report(t.id, StatusReport(ctxPct: 5))                      // no activity
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))              // transition
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("statusChanged activity delivered") {
+            await collector.activities.contains { $0.kind == .statusChanged }
+        }
+        await yieldBriefly()   // settle so a wrongful ctx activity would also have landed
         let acts = await collector.activities
         #expect(acts.contains { $0.kind == .statusChanged })
         #expect(!acts.contains { $0.kind == .statusChanged && $0.text.contains("ctx") })

@@ -1,6 +1,7 @@
 import XCTest
 import OrchestraKit
 @testable import OrchestraUI
+import TestSupport
 
 /// #7: the phone must re-register for push on reconnect. The APNs token routinely arrives before the
 /// link is live, and the F3 dev transport can drop and rebuild `client` against a fresh socket; if a
@@ -53,9 +54,9 @@ final class PushRegistrationReconnectTests: XCTestCase {
         prefs.setScope(flipped, for: .permission)
         NotificationCenter.default.post(name: .orchNotificationPrefsChanged, object: nil)
 
-        // The observer hops to the MainActor and spawns the re-register; give it a moment to run.
-        for _ in 0..<20 where model.lastRegisteredPrefs?.permission.scope != flipped {
-            try? await _Concurrency.Task.sleep(nanoseconds: 10_000_000)
+        // The observer hops to the MainActor and spawns the re-register; poll for it (yield-based).
+        try? await pollUntil("the pref change re-registers with the fresh snapshot") {
+            await model.lastRegisteredPrefs?.permission.scope == flipped
         }
         XCTAssertEqual(model.lastRegisteredPrefs?.permission.scope, flipped,
                        "a pref write must re-register with the updated snapshot")

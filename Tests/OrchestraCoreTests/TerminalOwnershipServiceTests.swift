@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("OrchestraService — agent-terminal ownership", .serialized)
 struct TerminalOwnershipServiceTests {
@@ -34,8 +35,10 @@ struct TerminalOwnershipServiceTests {
         let r = try await env.svc.takeOverAgentTerminal(ref, clientId: "desk", kind: .desktop)
         #expect(r.state.epoch == 3)
 
-        // three ownership events reached subscribers
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        // three ownership events reached subscribers (the fan-out is async — poll for them)
+        try await pollUntil("3 owner events delivered") {
+            await collector.ownerStates.filter { $0.cardId == task.id }.count >= 3
+        }
         let owns = await collector.ownerStates
         #expect(owns.filter { $0.cardId == task.id }.count >= 3)
         #expect(owns.last?.owner?.ownerKind == .desktop)
@@ -102,7 +105,10 @@ struct TerminalOwnershipServiceTests {
         let ref = task.shortId
 
         let p = try await env.svc.takeOverAgentTerminal(ref, clientId: "phone", kind: .phone)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        // wait for the takeover's own event so `before` includes it
+        try await pollUntil("takeover owner event delivered") {
+            await collector.ownerStates.contains { $0.cardId == task.id }
+        }
         let before = await collector.ownerStates.filter { $0.cardId == task.id }.count
 
         // Several healthy beats at the held epoch — owner/epoch/staleness all unchanged, so the emit is
@@ -111,7 +117,8 @@ struct TerminalOwnershipServiceTests {
             let r = try await env.svc.heartbeatAgentTerminal(ref, clientId: "phone", epoch: p.state.epoch)
             #expect(r.owner?.ownerKind == .phone)
         }
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        // negative: give a wrongful emit's fan-out ample scheduling chances, then assert none arrived
+        await yieldBriefly()
         let after = await collector.ownerStates.filter { $0.cardId == task.id }.count
         #expect(after == before)
     }

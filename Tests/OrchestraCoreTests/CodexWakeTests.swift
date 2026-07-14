@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// F2 · Codex wakes by **resume-seed** (`wakeTransport == .relaunch`), NOT a TUI keystroke. An idle Codex
 /// card `send`-ed a message relaunches via `resumeInCard` with the inbox folded into the opening turn — the
@@ -93,7 +94,9 @@ struct CodexWakeTests {
                 ]), .mcp)
             }
             group.addTask {
-                try await _Concurrency.Task.sleep(for: .milliseconds(120))
+                // yield-based failure backstop: fires only if `wait` wrongly PARKS on the child's
+                // conclusion instead of registering-and-returning (the child never concludes here)
+                try await pollUntil("MCP wait returns without parking", timeout: .seconds(60)) { false }
                 throw OrchestraError.invalidParams("MCP wait did not return immediately")
             }
             let first = try await group.next()!
@@ -114,7 +117,7 @@ struct CodexWakeTests {
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(card.id, "later")
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongful wake's detached resume-seed gets its chance to run
 
         #expect(env.sessions.ensureCount == ensureBefore)                         // no relaunch
         #expect(env.sessions.killed.isEmpty)                                      // live turn untouched
@@ -127,7 +130,10 @@ struct CodexWakeTests {
     /// stays alive. This drives the REAL confirmation path — NO hand-injected `sessionSource:"resume"`.
     @Test("send wakes an idle Codex card with NO resume hook — the live relaunch confirms; card stays alive")
     func codexWakeConfirmsOnRelaunchLiveness() async throws {
-        let env = TestEnv.make(grace: 1, capabilities: Self.realCodexCaps)
+        // The service clock is a TestClock: the revival-grace watchdog parks on it, so "waiting past
+        // the grace" is a deterministic `advance`, not a 1.3s wall sleep.
+        let clock = TestClock()
+        let env = TestEnv.make(grace: 1, capabilities: Self.realCodexCaps, clock: clock)
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // .running
         env.adapter.writeTranscript(for: card.agentSessionId!)                                  // resumable
@@ -139,8 +145,18 @@ struct CodexWakeTests {
             await env.svc.reconcile()
             return env.sessions.ensureArgv[name]?.contains("--resume") == true
         }     // relaunched
-        // Wait PAST the grace: before the fix the resume would time out and markDead by now.
-        try await _Concurrency.Task.sleep(for: .milliseconds(1300))
+        // First let the live relaunch CONFIRM readiness (before the fix, this confirmation never came
+        // and the grace watchdog would kill the card — that regression shows up here as a PollTimeout).
+        try await pollUntil("the live relaunch confirms and the card leaves .relaunching") {
+            await env.svc.reconcile()
+            let t = await env.svc.list().first { $0.id == card.id }
+            return t?.phase.kind == .live
+        }
+        // Then jump PAST the grace: the parked watchdog fires and must be a stale no-op — before the
+        // fix it fired `markDead(resumeFailed)` here.
+        await clock.parked(1, deadlineAtLeast: .milliseconds(500))
+        clock.advance(by: .seconds(2))
+        await env.svc.reconcile()
 
         let after = try #require(await env.svc.list().first { $0.id == card.id })
         #expect(after.waitReason != nil)                     // alive — NOT .dead(resumeFailed)

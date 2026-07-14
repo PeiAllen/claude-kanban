@@ -1,21 +1,17 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("C2 · wake + merge-watch (real card state; subscriber; settled-terminal)")
 struct WakeMergeWatchTests {
 
     /// Run `body` with a deadline. Returns nil if it did not finish in time — so a LOST conclusion
     /// fails the test instead of suspending it forever (the suite-wide `--parallel` hang this guards).
+    /// Backed by TestSupport's yield-based `withDeadline` (no wall-clock sleep in the race).
     static func withDeadline<T: Sendable>(_ seconds: Double,
                                           _ body: @escaping @Sendable () async -> T) async -> T? {
-        await withTaskGroup(of: T?.self) { g in
-            g.addTask { await body() }
-            g.addTask { try? await _Concurrency.Task.sleep(for: .seconds(seconds)); return nil }
-            let first = await g.next() ?? nil
-            g.cancelAll()
-            return first
-        }
+        await TestSupport.withDeadline(.seconds(seconds), body)
     }
 
     /// **Bug #2 — the `--parallel` suite hang.** A child that concludes WHILE a `wait` is still between
@@ -75,7 +71,10 @@ struct WakeMergeWatchTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "ancestor"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        // negative: drive the machinery that COULD wrongly conclude (a reconcile pass over real state),
+        // give its async fan-out room, then assert the subscription survived
+        await env.svc.reconcile()
+        await yieldBriefly()
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // still subscribed — real state, not git
         waiting.cancel(); _ = await waiting.value
     }
@@ -101,7 +100,7 @@ struct WakeMergeWatchTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
         let waiting = _Concurrency.Task { await env.svc.wait(watcher: nil, refs: [child.id]) }
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        await yieldBriefly()   // negative: a wrongful premature resolve gets its chance to land
         #expect(await env.svc.activeWaitSubscriptionCount() == 1) // no premature resolve
         try await env.svc.archive(child.id)                    // the single authority marks terminal
         #expect(await waiting.value?.cardId == child.id)       // now it resolves
@@ -216,7 +215,9 @@ struct WakeMergeWatchTests {
                 ]), .mcp)
             }
             group.addTask {
-                try await _Concurrency.Task.sleep(for: .milliseconds(120))
+                // yield-based failure backstop: fires only if `wait` wrongly PARKS on the child's
+                // conclusion instead of registering-and-returning (the child never concludes here)
+                try await pollUntil("MCP wait returns without parking", timeout: .seconds(60)) { false }
                 throw OrchestraError.invalidParams("MCP wait did not return immediately")
             }
             let first = try await group.next()!
@@ -319,7 +320,7 @@ struct WakeMergeWatchTests {
 
         let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "stop", payload: .object([:]))))
         try await env.svc.report(child.id, report)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
@@ -358,7 +359,7 @@ struct WakeMergeWatchTests {
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
         try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })
@@ -380,7 +381,7 @@ struct WakeMergeWatchTests {
             kind: "notification",
             payload: try JSONValue.parse(Data(#"{"notification_type":"idle_prompt","message":"done"}"#.utf8)))))
         try await env.svc.report(child.id, report)
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))
+        await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
 
         #expect(await env.svc.activeWaitSubscriptionCount() == 1)
         let after = try #require(await env.svc.list().first { $0.id == child.id })

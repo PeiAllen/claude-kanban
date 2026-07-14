@@ -1,6 +1,7 @@
 import XCTest
 import OrchestraKit
 @testable import OrchestraUI
+import TestSupport
 
 /// Regression: the board's live-event consumer must survive a redundant `start()`.
 ///
@@ -125,10 +126,10 @@ final class EventStreamConsumerTests: XCTestCase {
                       "the moved card must land in its new column on the live board")
     }
 
-    /// Poll the board (the consumer applies on the MainActor) for up to ~2s.
+    /// Poll the board (the consumer applies on the MainActor) until the pushed card is applied.
     private func waitForCard(_ id: UUID, in model: BoardModel) async throws {
-        for _ in 0..<200 where !model.tasks.contains(where: { $0.id == id }) {
-            try await _Concurrency.Task.sleep(nanoseconds: 10_000_000)
+        try await pollUntil("the pushed card is applied to the board", timeout: .seconds(30)) {
+            await model.tasks.contains { $0.id == id }
         }
     }
 }

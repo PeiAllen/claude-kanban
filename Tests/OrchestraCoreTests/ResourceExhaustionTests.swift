@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// HOST resource exhaustion is its own diagnosable death — `.dead(.resourceExhausted)` carrying WHICH
 /// resource ran out — instead of a cryptic misattribution to the card.

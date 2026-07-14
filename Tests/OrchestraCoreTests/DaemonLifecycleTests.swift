@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// Records launchctl invocations instead of touching the real user agent.
 final class LaunchdMock: Launchctl, @unchecked Sendable {

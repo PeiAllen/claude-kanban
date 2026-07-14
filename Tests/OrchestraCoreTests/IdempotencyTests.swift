@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 @testable import OrchestraKit
+import TestSupport
 
 @Suite("Spawn idempotency (client-minted ids)")
 struct IdempotencyTests {
@@ -37,7 +38,7 @@ struct IdempotencyTests {
         async let b = env.svc.spawn(SpawnInput(id: id, prompt: "p", repo: repo, branch: "b"))
         _ = try await (a, b)
         #expect(await env.svc.list(includeArchived: true).filter { $0.id == id }.count == 1)
-        try? await _Concurrency.Task.sleep(for: .milliseconds(50))
+        await yieldBriefly()   // negative: let any wrongful warning's fan-out land before asserting none did
         let warnings = await box.events.filter { if case .activity(let it) = $0 { return it.kind == .warning } else { return false } }
         #expect(warnings.isEmpty, "a same-id retry must not emit a spurious multiplicity warning")
         collector.cancel()

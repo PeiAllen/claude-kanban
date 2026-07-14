@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// Task 2.3 — the single `transition()` funnel + `isLegalEdge` edge validator + conclusions +
 /// wake-on-live. Exercises the funnel in isolation (spawn/resume/report are NOT yet rerouted through
@@ -145,7 +146,7 @@ struct PhaseTransitionTests {
         // If seeded at creatingWorktree, first advance to launching (no wake on a non-live target).
         if seed.kind == .creatingWorktree {
             #expect(await env.svc.transition(card.id, to: .launching) == .applied)
-            try await _Concurrency.Task.sleep(for: .milliseconds(40))
+            await yieldBriefly()   // negative: a wrongful wake-on-transition gets its chance to run
             #expect(env.sessions.ensureCount == ensureBefore)          // still parked
         }
 
@@ -188,7 +189,7 @@ struct PhaseTransitionTests {
 
         // dead → archived is terminal→terminal: the funnel must NOT conclude again.
         #expect(await env.svc.transition(child.id, to: .archived(teardownComplete: false)) == .applied)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        await yieldBriefly()   // negative: a wrongful second conclusion gets its chance to land
         #expect(await inbox.peek(parent.id).count == 1)   // no second notice
     }
 
@@ -214,7 +215,7 @@ struct PhaseTransitionTests {
         // A later DIRECT conclusion of the same child (the archive verb calls concludeCard) must NOT
         // re-notify the parent — the short-circuit already unregistered the watch.
         try await env.svc.archive(child.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        await yieldBriefly()   // negative: a wrongful stale re-notification gets its chance to land
         #expect(await inbox.peek(parent.id).isEmpty)   // no stale re-notification
     }
 }
@@ -291,7 +292,10 @@ struct EpochGuardReportFunnelTests {
         await collector.start(await env.svc.subscribe())
 
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        try await pollUntil("the funnel's upsert is delivered") {
+            await collector.upserts.contains { $0.id == card.id }
+        }
+        await yieldBriefly()   // settle: a wrongful second write would also have landed
 
         let after = try #require(await env.svc.store.get(card.id))
         #expect(after.phase == .live(.waiting(.humanTurn)))
@@ -321,7 +325,7 @@ struct EpochGuardReportFunnelTests {
         let worktree = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wt", repo: repo, branch: "wt"))
         await env.svc.registerWatch(watcherB.id, [worktree.id])
         try await env.svc.report(worktree.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        await yieldBriefly()   // negative: a wrongful conclusion gets its chance to land
         let wt = try #require(await env.svc.store.get(worktree.id))
         #expect(wt.phase == .live(.waiting(.humanTurn)))      // NOT terminal
         #expect(await inbox.peek(watcherB.id).isEmpty)        // no conclusion

@@ -110,7 +110,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OrchestraUITests",
-            dependencies: ["OrchestraUI", "OrchestraKit", "GitHermeticBootstrap"]
+            dependencies: ["OrchestraUI", "OrchestraKit", "GitHermeticBootstrap", "TestSupport"]
         ),
     ]
 )

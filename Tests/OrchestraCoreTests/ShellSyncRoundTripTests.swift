@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// The acceptance harness for the shell-sync fix: a shell opened on one surface must appear on the
 /// other. Two `ControlClient`s ("desktop" + "phone") talk to one in-process `ControlServer` over a
@@ -35,31 +36,26 @@ struct ShellSyncRoundTripTests {
     /// the invariant is the SET reaching the other surface, not window order). Returns as soon as it
     /// matches; on timeout returns the last-observed value so the caller's `#expect` prints what settled.
     private func waitForShells(_ box: EventBox, _ cardId: UUID, equals expected: [String],
-                               within: Duration = .seconds(5)) async throws -> [String]? {
+                               within: Duration = .seconds(30)) async throws -> [String]? {
         let want = expected.sorted()
-        let deadline = ContinuousClock.now.advanced(by: within)
-        while true {
-            let latest = latestShellWindows(await box.events, cardId)
-            if latest?.sorted() == want || ContinuousClock.now >= deadline { return latest }
-            try await _Concurrency.Task.sleep(for: .milliseconds(5))
+        try? await pollUntil("shells == \(want)", timeout: within) {
+            latestShellWindows(await box.events, cardId)?.sorted() == want
         }
+        return latestShellWindows(await box.events, cardId)
     }
 
     /// Wait (bounded) until the phone has demonstrably registered its subscription: the pre-subscribe
     /// spawn's activity is replayed from the ring under the same lock that registers the subscriber, so
     /// observing any event for `cardId` proves every subsequent live broadcast will be delivered.
-    private func waitForCard(_ box: EventBox, _ cardId: UUID, within: Duration = .seconds(5)) async throws {
-        let deadline = ContinuousClock.now.advanced(by: within)
-        while ContinuousClock.now < deadline {
-            let seen = await box.events.contains { e in
+    private func waitForCard(_ box: EventBox, _ cardId: UUID, within: Duration = .seconds(30)) async throws {
+        try await pollUntil("an event for the card reached the subscription", timeout: within) {
+            await box.events.contains { e in
                 switch e {
                 case .activity(let a): return a.taskId == cardId
                 case .taskUpserted(let t): return t.id == cardId
                 default: return false
                 }
             }
-            if seen { return }
-            try await _Concurrency.Task.sleep(for: .milliseconds(5))
         }
     }
 

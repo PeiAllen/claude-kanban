@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 @testable import OrchestraKit
+import TestSupport
 
 // O2 backoff + give-up cap: the re-nudge loop used to re-prod the parent every 300s forever. It now backs
 // off geometrically and, after `mergeRequestNudgeCap` unanswered reminders, gives up — flagging the child
@@ -58,12 +59,9 @@ struct MergeRequestCapTests {
     private func stat(_ svc: OrchestraService, _ id: UUID) async -> TreeStat? {
         await svc.list().first { $0.id == id }?.treeStat
     }
-    private func eventually(_ check: () async -> Bool) async throws -> Bool {
-        for _ in 0..<200 {
-            if await check() { return true }
-            try await _Concurrency.Task.sleep(for: .milliseconds(20))
-        }
-        return false
+    private func eventually(_ check: @Sendable () async -> Bool) async throws -> Bool {
+        try? await pollUntil("eventually", timeout: .seconds(60)) { await check() }
+        return await check()
     }
 
     /// A parent card + a child card whose branch is parented to it.
@@ -98,7 +96,10 @@ struct MergeRequestCapTests {
         #expect(await stat(env.svc, child.id)?.nudges == 3)
         #expect(try await eventually { await env.svc.mergeRequestNudgeActive(child.id) == false })
 
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        try await pollUntil("the stalled warning is delivered") {
+            await collector.activities.contains { $0.kind == .warning && $0.text.contains("merge-request stalled") }
+        }
+        await yieldBriefly()   // settle: a wrongful second warning gets its chance to land
         let warns = await collector.activities.filter {
             $0.kind == .warning && $0.text.contains("merge-request stalled")
         }
@@ -106,8 +107,10 @@ struct MergeRequestCapTests {
         // The blocked CHILD is told durably — it can borrow the parent and merge itself.
         #expect(try await env.svc.inboxPeek(child.id).contains { $0.text.contains("merge-request stalled") })
 
-        // Terminal: stays stalled, stays silent.
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        // Terminal: stays stalled, stays silent. `mergeRequestNudgeActive == false` (asserted above)
+        // means no loop is armed, so no future tick exists to wait out — settle the already-scheduled
+        // work and re-assert.
+        await yieldBriefly()
         #expect(await stat(env.svc, child.id)?.mergeStalled == true)
         #expect(try await env.svc.inboxPeek(parent.id).filter { $0.text.contains("reminder") }.count == 3)
     }
@@ -139,7 +142,8 @@ struct MergeRequestCapTests {
         await c.svc.setMergeRequestNudgeInterval(.milliseconds(20))
         await c.svc.rebuildMergeRequestNudges()
         #expect(await c.svc.mergeRequestNudgeActive(child.id) == false)
-        try await _Concurrency.Task.sleep(for: .milliseconds(100))
+        // no loop armed (asserted above) ⇒ no future tick to wait out; settle and re-assert
+        await yieldBriefly()
         #expect(try await c.svc.inboxPeek(parent.id).filter { $0.text.contains("reminder") }.count == 1)
     }
 
@@ -259,12 +263,9 @@ struct MergeStalledTrackingTests {
     private func stat(_ svc: OrchestraService, _ id: UUID) async -> TreeStat? {
         await svc.list().first { $0.id == id }?.treeStat
     }
-    private func eventually(_ check: () async -> Bool) async throws -> Bool {
-        for _ in 0..<200 {
-            if await check() { return true }
-            try await _Concurrency.Task.sleep(for: .milliseconds(20))
-        }
-        return false
+    private func eventually(_ check: @Sendable () async -> Bool) async throws -> Bool {
+        try? await pollUntil("eventually", timeout: .seconds(60)) { await check() }
+        return await check()
     }
 
     private func stalledChild(_ env: (svc: OrchestraService, base: String),

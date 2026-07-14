@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// PR4b Task 4 — `archive` becomes an INTENT-ONLY verb: its synchronous part records the archive intent
 /// (`transition(→ .archivedPending)` + the `archived` Bool mirror so the card leaves the board instantly)

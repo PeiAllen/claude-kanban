@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// 2.6 — the capability-gated READINESS signal that drives `launching → live` AND `relaunching → live`
 /// for BOTH agents. A being-born card's inline `awaitReadiness` waiter is resolved by the agent's own
@@ -79,7 +80,9 @@ struct ReadinessSignalTests {
             await svc.reconcile()
             return await svc.list().first { $0.id == created.id }?.phase.kind == .launching
         }
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))   // let the LaunchStepper register its waiter
+        // the LaunchStepper registers its readiness waiter on an off-actor hop — wait for the
+        // registration itself (actor state, @testable) rather than a fixed sleep
+        try await pollUntil("readiness waiter registered") { await svc.readinessWaiters[created.id] != nil }
         let sid = UUID().uuidString.lowercased()
         let rollout = "\(day)/rollout-2026-07-09T10-00-00-\(sid).jsonl"
         FileManager.default.createFile(atPath: rollout, contents:

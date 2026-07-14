@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Remote watch loop — lifecycle, backoff, startup rebuild")
 struct RemoteWatchLoopTests {
@@ -49,10 +50,11 @@ struct RemoteWatchLoopTests {
             #expect(await svc.remoteWatchActive(card.id) == true)
         }
         // Let cancelled loops run their terminal cleanup, which must no-op against the current generation.
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        await yieldBriefly()   // negative: cancelled loops' cleanups get their chance to (wrongly) clear us
         #expect(await svc.remoteWatchActive(card.id) == true)   // still active after all the cleanups
         await svc.stopRemoteWatch(card.id)
-        try await _Concurrency.Task.sleep(for: .milliseconds(60))
+        try await pollUntil("stop deactivates the watch") { await svc.remoteWatchActive(card.id) == false }
+        await yieldBriefly()   // and no orphan loop revives it
         #expect(await svc.remoteWatchActive(card.id) == false)  // stop wins; no orphan revives it
     }
 
@@ -64,12 +66,9 @@ struct RemoteWatchLoopTests {
             state: PrState(state: "MERGED", mergedAt: "t", mergeCommit: nil, baseRefName: "main")))
         await svc.startRemoteWatch(cardId: card.id)         // restart with the fake gh + short intervals
         // Poll for the redirect (bounded); the loop should observe MERGED within a few ticks.
-        var redirected = false
-        for _ in 0..<50 {
-            if (await svc.lineage.read(repo: repo, branch: "childP"))?.parent == "origin/main" { redirected = true; break }
-            try await _Concurrency.Task.sleep(for: .milliseconds(20))
+        try await pollUntil("the loop observed MERGED and redirected the lineage") {
+            (await svc.lineage.read(repo: repo, branch: "childP"))?.parent == "origin/main"
         }
-        #expect(redirected)
         await svc.stopRemoteWatch(card.id)
     }
 }

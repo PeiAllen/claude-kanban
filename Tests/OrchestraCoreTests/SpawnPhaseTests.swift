@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// Task 2.5 — spawn/reopen walk the phase funnel synchronously; liveness respects being-born phases;
 /// markDead concludes; the `relaunchClaimed` atomic claim replaces the deleted `recovering` set.
@@ -21,7 +22,9 @@ struct SpawnPhaseTests {
         await collector.start(await env.svc.subscribe())
 
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "go", repo: repo, branch: "b"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("the .live upsert is delivered") {
+            await phases(collector, t.id).contains(where: isLive)
+        }
 
         let ps = await phases(collector, t.id)
         let cw = ps.firstIndex(of: .creatingWorktree)
@@ -42,7 +45,9 @@ struct SpawnPhaseTests {
         await collector.start(await env.svc.subscribe())
 
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "go", repo: repo, branch: "b"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("the spawn upserts are delivered") {
+            await collector.upserts.contains { $0.id == t.id }
+        }
 
         let first = await collector.upserts.first { $0.id == t.id }
         #expect(first?.phase == .creatingWorktree)
@@ -164,7 +169,7 @@ struct SpawnPhaseTests {
             return env.sessions.ensureArgv[name]?.contains("--resume") == true
         }
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))     // confirm the ONE resume
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongful second resume-seed gets its chance to run
         #expect(env.sessions.ensureCount == before + 1)                           // one relaunch, not two
     }
 
@@ -225,7 +230,9 @@ struct SpawnPhaseTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "child", repo: repo, branch: "c"))
 
         async let concl = env.svc.wait(watcher: parent.id, refs: [child.id])
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("the wait subscription is registered") {
+            await env.svc.activeWaitSubscriptionCount() == 1
+        }
         env.sessions.setAlive(child.id, false)          // crash: session vanished, no SessionEnd
         await env.svc.reconcileLiveness()
 

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Agent-terminal ownership ⇄ ControlServer — the acceptance harness", .serialized)
 struct TerminalOwnershipRoundTripTests {
@@ -24,11 +25,12 @@ struct TerminalOwnershipRoundTripTests {
         let phone = TestEnv.controlClient(path, source: .app)
         try phone.connect(); defer { phone.close() }
 
-        // Subscribe on the desktop to observe owner events.
+        // Subscribe on the desktop to observe owner events. `subscribeWithRev` does NOT auto-issue
+        // the RPC, so the awaited `call("subscribe")` is a registration BARRIER — no fixed sleep.
         let box = EventBox()
-        let stream = desktop.subscribe()
-        _Concurrency.Task { for await e in stream { await box.add(e) } }
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        let stream = desktop.subscribeWithRev()
+        _Concurrency.Task { for await e in stream { await box.add(e.event) } }
+        _ = try await desktop.call("subscribe")
 
         let task = try await desktop.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("own me"), "repo": .string(repo), "branch": .string("feat")]))
@@ -64,12 +66,12 @@ struct TerminalOwnershipRoundTripTests {
         }
         #expect(try await desktop.agentTerminalOwner(ref).owner?.ownerKind == .desktop)
 
-        // owner events reached the subscriber (≥ 3 takeovers)
-        try await _Concurrency.Task.sleep(for: .milliseconds(100))
-        let owners = await box.events.compactMap {
-            if case .agentTerminalOwner(let s) = $0 { return s } else { return nil }
+        // owner events reached the subscriber (≥ 3 takeovers) — the delivery is async, poll for it
+        try await pollUntil("3 owner events delivered") {
+            await box.events.compactMap {
+                if case .agentTerminalOwner(let s) = $0 { return s } else { return nil }
+            }.filter { $0.cardId == task.id }.count >= 3
         }
-        #expect(owners.filter { $0.cardId == task.id }.count >= 3)
     }
 
     @Test("a phone that stops heartbeating goes stale after the window (disconnect staleness)")
@@ -94,7 +96,11 @@ struct TerminalOwnershipRoundTripTests {
 
         _ = try await phone.takeOverAgentTerminal(ref, clientId: "phone", kind: .phone)
         #expect(try await phone.agentTerminalOwner(ref).stale == false)   // fresh right after
-        try await _Concurrency.Task.sleep(for: .milliseconds(300))        // let the 0.2s window lapse
+        // Staleness is computed from the wall-clock heartbeat window (0.2s); poll for the flip rather
+        // than sleeping past it — the wait is condition-based and immune to scheduler starvation.
+        try await pollUntil("the heartbeat window lapses and the owner reads stale") {
+            (try? await phone.agentTerminalOwner(ref))?.stale == true
+        }
         let after = try await phone.agentTerminalOwner(ref)
         #expect(after.stale == true)              // stale — but still the phone owner
         #expect(after.owner?.ownerKind == .phone)

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("ControlServer ⇄ ControlClient — UDS JSON-RPC round-trip", .serialized)
 struct ControlRoundTripTests {
@@ -21,11 +22,12 @@ struct ControlRoundTripTests {
         try client.connect()
         defer { client.close() }
 
-        // subscribe + collect events
+        // subscribe + collect events. `subscribeWithRev` does NOT auto-issue the RPC, so the awaited
+        // `call("subscribe")` is a registration BARRIER — acked before we proceed (no fixed sleep).
         let collected = EventBox()
-        let stream = client.subscribe()
-        _Concurrency.Task { for await e in stream { await collected.add(e) } }
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        let stream = client.subscribeWithRev()
+        _Concurrency.Task { for await e in stream { await collected.add(e.event) } }
+        _ = try await client.call("subscribe")
 
         // spawn
         let spawnRes = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
@@ -48,11 +50,12 @@ struct ControlRoundTripTests {
         let listRes2 = try await client.call("list", .object([:]))
         #expect(try listRes2.decode([Task].self).isEmpty)
 
-        // we should have received pushed events
-        try await _Concurrency.Task.sleep(for: .milliseconds(100))
-        let events = await collected.events
-        #expect(events.contains { if case .taskUpserted = $0 { return true } else { return false } })
-        #expect(events.contains { if case .activity(let a) = $0 { return a.kind == .spawned } else { return false } })
+        // we should have received pushed events — the delivery is async, so poll for them
+        try await pollUntil("pushed events delivered") {
+            let events = await collected.events
+            return events.contains { if case .taskUpserted = $0 { return true } else { return false } }
+                && events.contains { if case .activity(let a) = $0 { return a.kind == .spawned } else { return false } }
+        }
     }
 
     @Test("boardSnapshot returns tasks + config + models + agents + per-card sessions/owners in one call (#7)")
@@ -92,7 +95,8 @@ struct ControlRoundTripTests {
         try c1.connect()
         _ = try await c1.call("spawn", .object(["id": .string(UUID().uuidString), 
             "prompt": .string("Earlier card"), "repo": .string(repo), "branch": .string("b")]))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        // the .spawned activity is appended to the replay ring synchronously inside the handled
+        // `spawn` call, so it is durably in the ring by the time the RPC returns — no settling wait
         c1.close()
 
         // A brand-new client subscribes and should get the prior .spawned via ring replay.

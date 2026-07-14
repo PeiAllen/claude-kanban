@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("OrchestraService — spawn / move / archive / exec / sessions")
 struct OrchestraServiceTests {
@@ -29,9 +30,12 @@ struct OrchestraServiceTests {
         #expect(argv.contains(sid))
         #expect(argv.last == "Add OAuth login flow\nwith refresh")
 
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        #expect(await collector.upserts.contains { $0.id == task.id })
-        #expect(await collector.activities.contains { $0.kind == .spawned && $0.source == .app })
+        try await pollUntil("spawn events delivered") {
+            let upserts = await collector.upserts
+            let acts = await collector.activities
+            return upserts.contains { $0.id == task.id }
+                && acts.contains { $0.kind == .spawned && $0.source == .app }
+        }
     }
 
     @Test("spawn rejects a non-allowlisted repo before creating anything")
@@ -52,8 +56,9 @@ struct OrchestraServiceTests {
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b", startIn: .plan))
         let moved = try await env.svc.move(t.id, to: .review, source: .app)
         #expect(moved.column == .review)
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        #expect(await collector.activities.contains { $0.kind == .moved })
+        try await pollUntil("moved activity delivered") {
+            await collector.activities.contains { $0.kind == .moved }
+        }
     }
 
     @Test("move rejects non-worktree cards instead of silently changing their lifecycle column")

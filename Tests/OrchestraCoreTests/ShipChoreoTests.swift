@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Ship choreography — shipped notify + retarget + idempotence")
 struct ShipChoreoTests {
@@ -53,7 +54,10 @@ struct ShipChoreoTests {
 
         try await env.svc.shipped(ref: child.ref())   // must not throw (no parent card)
 
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        try await pollUntil("bare-parent notice delivered") {
+            await collector.activities.contains { $0.text.contains("bare parent") }
+        }
+        await yieldBriefly()   // settle so a wrongful ownership warning would also have landed
         let acts = await collector.activities
         #expect(acts.contains { $0.text.contains("bare parent") })
         #expect(!acts.contains { $0.kind == .warning && $0.text.contains("no active card owns") })

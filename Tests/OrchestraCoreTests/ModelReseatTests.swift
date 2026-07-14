@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// `--model` on restart / handoff / resume: re-seat a LIVE card onto a different model in place, carrying
 /// its context, instead of spawning a successor card. The launch id is staged in `pendingModel` (not read
@@ -206,7 +207,7 @@ struct ModelReseatTests {
         // The NEW session insists it is running m1. One stale line is tolerated (the tailer can surface a
         // last pre-kill rollout line); a vendor that truly ignored `--model` says so on every tick.
         try await env.svc.report(t.id, StatusReport(modelId: "m1"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))   // let the event stream flush
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
 
         try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m1"))
@@ -233,7 +234,7 @@ struct ModelReseatTests {
         // mismatch and accuse the vendor of ignoring a flag it honored.
         try await env.svc.report(t.id, StatusReport(modelId: "m2-20251001"))
         try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m2-20251001"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))   // let the event stream flush
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
     }
 
@@ -250,7 +251,7 @@ struct ModelReseatTests {
         // carry no epoch at all, so this fence — `pendingModel == nil` — is deliberately epoch-free.
         try await env.svc.report(t.id, StatusReport(modelId: "m1"))
         try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m1"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))   // let the event stream flush
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
     }
 
@@ -347,7 +348,7 @@ struct ModelReseatTests {
         // Reports a third KNOWN model (not m2 = requested, not m1 = left) → a genuine /model switch.
         try await env.svc.report(t.id, StatusReport(modelId: "m3"))
         try await env.svc.report(t.id, StatusReport(seq: 2, modelId: "m3"))
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        await yieldBriefly()   // negative: let a wrongful warning's fan-out land before asserting none did
         #expect(await collector.activities.filter { $0.kind == .warning }.isEmpty)
     }
 

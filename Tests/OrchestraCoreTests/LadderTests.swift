@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// Scriptable gh double: a fixed PrState (or nil), an availability flag, and a recorded editBase call.
 final class FakeGh: GhClient, @unchecked Sendable {
@@ -67,7 +68,11 @@ struct LadderTests {
         await collector.start(await svc.subscribe())
         _ = await svc.remoteMergeStep(cardId: card.id)
         _ = await svc.remoteMergeStep(cardId: card.id)          // second tick: latched, no re-warn
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
+        // poll for the (async) warning fan-out, then yield-settle and assert it warned exactly ONCE
+        try await pollUntil("closed-PR warning delivered") {
+            await collector.activities.contains { $0.kind == .warning && $0.text.contains("closed without merging") }
+        }
+        await yieldBriefly()
         let warns = await collector.activities.filter { $0.kind == .warning && $0.text.contains("closed without merging") }
         #expect(warns.count == 1)
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// PR4b Task 3 — the FLAG-DAY: `spawn` is now NON-BLOCKING. Its synchronous part shrinks to persist a
 /// `.creatingWorktree` card (+ the security allowlist / base-validation fail-fasts) and RETURN; the

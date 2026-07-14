@@ -29,6 +29,11 @@ public final class ControlClient: @unchecked Sendable {
     private let callTimeout: Duration
     private let pingInterval: Duration
     private let probeTimeout: Duration                     // first-connect probe bound — DECOUPLED from callTimeout
+    /// Drives every async deadline (ping cadence, probe watchdog, per-call timeout). Production uses the
+    /// default `ContinuousClock`; tests inject a manual clock so timer tests advance virtual time instead
+    /// of sleeping. The reconnect backoff (`runLoop`) is a `Thread.sleep` on the dedicated reader thread —
+    /// not a Task — so it stays wall-clock.
+    private let clock: any Clock<Duration>
     private var pingTask: _Concurrency.Task<Void, Never>?
     private var eventContinuation: AsyncStream<Event>.Continuation?
     /// The rev-carrying continuation for BoardStore's per-card gate (Stage 6.3). Separate from
@@ -60,22 +65,26 @@ public final class ControlClient: @unchecked Sendable {
     public convenience init(socketPath: String = Config.socketPath, source: ActivitySource = .app,
                             clientId: String? = nil,
                             callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
-                            probeTimeout: Duration = .seconds(15)) {
+                            probeTimeout: Duration = .seconds(15),
+                            clock: any Clock<Duration> = ContinuousClock()) {
         self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source, clientId: clientId,
-                  callTimeout: callTimeout, pingInterval: pingInterval, probeTimeout: probeTimeout)
+                  callTimeout: callTimeout, pingInterval: pingInterval, probeTimeout: probeTimeout,
+                  clock: clock)
     }
 
     /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
     public init(transport: @escaping @Sendable () -> Transport, source: ActivitySource = .app,
                 clientId: String? = nil,
                 callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
-                probeTimeout: Duration = .seconds(15)) {
+                probeTimeout: Duration = .seconds(15),
+                clock: any Clock<Duration> = ContinuousClock()) {
         self.makeTransport = transport
         self.source = source
         self.clientId = clientId
         self.callTimeout = callTimeout
         self.pingInterval = pingInterval
         self.probeTimeout = probeTimeout
+        self.clock = clock
     }
 
     private func setState(_ s: ConnectionState) {
@@ -149,10 +158,10 @@ public final class ControlClient: @unchecked Sendable {
     /// Keepalive that detects a dead-BUT-OPEN tunnel the reader can't see (no EOF, no reply). Periodically
     /// issues a `version` call (which carries the per-call deadline); on failure it flips `.retrying` and
     /// `shutdown()`s the transport → reader EOF → runLoop reconnects. Idempotent across mutations; cancelled
-    /// on `close()`. Uses async `Task.sleep(for:)` so sub-second intervals aren't truncated.
+    /// on `close()`. Uses async `clock.sleep(for:)` so sub-second intervals aren't truncated.
     private func pingLoop() async {
         while !stateLock.withLock({ stopping }) {
-            try? await _Concurrency.Task.sleep(for: pingInterval)
+            try? await clock.sleep(for: pingInterval)
             if stateLock.withLock({ stopping }) { return }
             guard stateLock.withLock({ state == .live }) else { continue }
             do { _ = try await call("version") }                         // carries the per-call deadline
@@ -191,8 +200,8 @@ public final class ControlClient: @unchecked Sendable {
         // Watchdog: if no reply within probeTimeout, shutdown() the transport so readLine() returns nil →
         // the loop falls through and throws. Bound by probeTimeout, NOT callTimeout — an aggressive
         // product callTimeout (or the near-zero test) must not make first-connect flaky (Opus NEW-1).
-        let watchdog = _Concurrency.Task { [probeTimeout] in
-            try? await _Concurrency.Task.sleep(for: probeTimeout)
+        let watchdog = _Concurrency.Task { [probeTimeout, clock] in
+            try? await clock.sleep(for: probeTimeout)
             if !_Concurrency.Task.isCancelled { t.shutdown() }
         }
         defer { watchdog.cancel() }
@@ -237,8 +246,8 @@ public final class ControlClient: @unchecked Sendable {
             // resolved just cancels here; a continuation is never left without a resolver.
             let p = PendingCall(cont)
             stateLock.withLock { pending[id] = p }                        // continuation live FIRST
-            let timer = _Concurrency.Task { [weak self] in
-                try? await _Concurrency.Task.sleep(for: self?.callTimeout ?? .seconds(15))
+            let timer = _Concurrency.Task { [weak self, callTimeout, clock] in
+                try? await clock.sleep(for: callTimeout)
                 if _Concurrency.Task.isCancelled { return }
                 self?.resolve(id, .failure(OrchestraError.io("call '\(method)' timed out")))
             }

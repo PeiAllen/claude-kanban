@@ -1,3 +1,7 @@
+// MOVES-TO: ContractTests/Proc (real-fd settling — no observable condition; see Task 7 decision log)
+// The Thread.sleep(s) below wait for kernel-side socket state (a reader entering a blocking
+// read(2) / a close(2) propagating to the peer) that exposes no pollable condition — faking or
+// yield-polling it would test nothing. This suite therefore belongs in the contract tier.
 import Foundation
 import Testing
 @testable import OrchestraCore

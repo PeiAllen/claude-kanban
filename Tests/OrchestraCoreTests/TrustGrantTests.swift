@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("Trust grant seam — types")
 struct TrustGrantSeamTests {
@@ -81,11 +82,11 @@ struct UntrustedSpawnTests {
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "peek", cwd: dir, access: .readWrite))
         #expect(t.origin == .borrowed)
         #expect(await env.trust.isTrusted(dir) == false)   // still untrusted (no auto-trust, no block)
-        // wait a tick for the async event fan-out, then assert an actionable warning was emitted
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))
-        let acts = await collector.activities
-        let grant = acts.first { $0.text.contains("orchestra trust") }
-        #expect(grant != nil)
+        // the event fan-out is async — poll until the actionable warning lands, then assert its content
+        try await pollUntil("needsGrant activity emitted") {
+            await collector.activities.contains { $0.text.contains("orchestra trust") }
+        }
+        let grant = await collector.activities.first { $0.text.contains("orchestra trust") }
         #expect(grant?.text.contains(dir) == true)
     }
 }

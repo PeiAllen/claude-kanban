@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import TestSupport
 @testable import OrchestraKit
 
 /// A controllable transport for exercising `ControlClient`'s deadline / probe / ping paths without a
@@ -77,9 +78,14 @@ final class _Locked<T>: @unchecked Sendable {
     // call-timeout path specifically.
     @Test func test_callTimesOut() async throws {
         let stub = StubTransport()
-        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .milliseconds(200), pingInterval: .seconds(3600))
+        let clock = TestClock()
+        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .milliseconds(200),
+                              pingInterval: .seconds(3600), clock: clock)
         try c.connect()
-        let err = await #expect(throws: OrchestraError.self) { _ = try await c.call("list", .object([:])) }
+        let call = _Concurrency.Task { _ = try await c.call("list", .object([:])) }
+        await clock.parked(2)                    // the ping loop (3600s) + THIS call's deadline timer
+        clock.advance(by: .milliseconds(200))    // fire the call deadline; the ping stays parked
+        let err = await #expect(throws: OrchestraError.self) { _ = try await call.value }
         guard case .io(let msg)? = err else { Issue.record("expected .io, got \(String(describing: err))"); return }
         #expect(msg.contains("timed out"))          // the call-timeout path fired — not a write/EOF failure
         #expect(msg.contains("list"))               // and it is THIS call that was bounded
@@ -90,22 +96,32 @@ final class _Locked<T>: @unchecked Sendable {
     // (throw), never double-resume (crash) and never leak (hang).
     @Test func test_callTimesOutNearZero() async throws {
         let stub = StubTransport()
+        let clock = TestClock()
         // probeTimeout defaults to 15s, so the near-zero CALL deadline can't racily fail connect()'s probe.
-        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .nanoseconds(1), pingInterval: .seconds(3600))
+        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .nanoseconds(1),
+                              pingInterval: .seconds(3600), clock: clock)
         try c.connect()
-        await #expect(throws: (any Error).self) { _ = try await c.call("list", .object([:])) }
+        let call = _Concurrency.Task { _ = try await c.call("list", .object([:])) }
+        await clock.parked(2)                    // ping loop + the near-zero deadline timer
+        clock.advance(by: .milliseconds(1))
+        await #expect(throws: (any Error).self) { _ = try await call.value }
         c.close()
     }
 
     // The keepalive marks the connection degraded when pings stop returning.
     @Test func test_pingDetectsDeadTunnel() async throws {
         let stub = StubTransport()
-        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .milliseconds(200), pingInterval: .milliseconds(100))
+        let clock = TestClock()
+        let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .milliseconds(200),
+                              pingInterval: .milliseconds(100), clock: clock)
         try c.connect(); #expect(c.state == .live)
         stub.answerVersion = false
-        var degraded = false
-        for _ in 0..<50 { if c.state == .retrying { degraded = true; break }; try? await _Concurrency.Task.sleep(for: .milliseconds(50)) }
-        #expect(degraded); c.close()
+        await clock.parked(1)                        // the ping loop is parked on its interval
+        clock.advance(by: .milliseconds(100))        // fire a ping → it issues `version`, never answered
+        await clock.parked(1, deadlineAtLeast: .milliseconds(150))   // that call's 200ms deadline parked
+        clock.advance(by: .milliseconds(200))        // fire the deadline → ping fails → .retrying
+        try await pollUntil("state degrades to .retrying") { c.state == .retrying }
+        c.close()
     }
 
     // A dead-but-open tunnel on FIRST connect must not hang connect() forever (bounded probeVersion).
@@ -115,11 +131,23 @@ final class _Locked<T>: @unchecked Sendable {
     // exists to prove.
     @Test func test_firstConnectProbeTimesOut() async throws {
         let stub = StubTransport(); stub.answerVersion = false          // never answers the probe
-        // probeTimeout short so the test doesn't wait the 15s default.
+        let clock = TestClock()
         let c = ControlClient(transport: { stub }, source: .cli, callTimeout: .seconds(5),
-                              pingInterval: .seconds(3600), probeTimeout: .milliseconds(200))
-        let err = #expect(throws: OrchestraError.self) { try c.connect() }   // throws, doesn't hang
-        guard case .io(let msg)? = err else { Issue.record("expected .io, got \(String(describing: err))"); return }
+                              pingInterval: .seconds(3600), probeTimeout: .milliseconds(200), clock: clock)
+        // `connect()` BLOCKS its thread in readLine until the watchdog shuts the transport, so run it
+        // on a GCD thread (not the cooperative pool) and drive the watchdog from the test clock.
+        let connecting = _Concurrency.Task { () -> Error? in
+            await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
+                DispatchQueue.global().async {
+                    do { try c.connect(); cont.resume(returning: nil) }
+                    catch { cont.resume(returning: error) }
+                }
+            }
+        }
+        await clock.parked(1, deadlineAtLeast: .milliseconds(150))   // the probe watchdog is armed
+        clock.advance(by: .milliseconds(200))                        // fire it → shutdown → readLine nil → throw
+        let err = await connecting.value                             // throws, doesn't hang
+        guard case OrchestraError.io(let msg)? = err else { Issue.record("expected .io, got \(String(describing: err))"); return }
         #expect(msg.contains("version probe"))      // the probe watchdog shut the transport → connect threw
         c.close()
     }
@@ -127,7 +155,10 @@ final class _Locked<T>: @unchecked Sendable {
     // subscribeWithRev does not auto-issue; the awaited subscribe completes (ack fed) BEFORE any snapshot.
     @Test func test_subscribeAwaitedBeforeSnapshot() async throws {
         let stub = StubTransport()
-        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .seconds(5), pingInterval: .seconds(3600))
+        // A TestClock the test never advances: the call deadline can NOT fire, so a starved scheduler
+        // can never turn the awaited subscribe ack into a spurious timeout (the old 5s-flake).
+        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .seconds(5),
+                              pingInterval: .seconds(3600), clock: TestClock())
         try c.connect()
         _ = c.subscribeWithRev()
         #expect(!stub.writes.contains("subscribe"))                   // NOT auto-issued — caller owns the barrier
@@ -143,13 +174,24 @@ final class _Locked<T>: @unchecked Sendable {
     // retry loop (openOnce briefly sets .live before the detached subscribe fails), so we do NOT assert on it.
     @Test func test_subscribeFailureDoesNotFireOnReconnect() async throws {
         let stub = StubTransport(); stub.answerVersion = true; stub.answerSubscribe = false; stub.reopenOnConnect = true
-        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .milliseconds(200), pingInterval: .seconds(3600))
+        let clock = TestClock()
+        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .milliseconds(200),
+                              pingInterval: .seconds(3600), clock: clock)
         let reconnected = _Locked(false)
         c.onReconnect = { reconnected.value = true }
         try c.connect()
         _ = c.subscribeWithRev()                                      // sets `subscribed` so the reconnect re-subscribes
         (c as ControlClient).forceReconnect()                         // drop → runLoop reconnects → subscribe deadline-fails
-        try? await _Concurrency.Task.sleep(for: .seconds(1))          // several failed subscribe attempts
+        // Drive TWO full failed-re-subscribe cycles deterministically: each reconnect's detached
+        // `subscribe` call parks its 200ms deadline on the test clock; firing it fails the barrier →
+        // forceReconnect → (real backoff on the reader thread) → next attempt.
+        for cycle in 1...2 {
+            try await pollUntil("re-subscribe attempt #\(cycle) issued") {
+                stub.writes.filter { $0 == "subscribe" }.count >= cycle
+            }
+            await clock.parked(2)                     // ping (3600s) + this subscribe's deadline timer
+            clock.advance(by: .milliseconds(250))     // fail the barrier → forces the next reconnect
+        }
         #expect(reconnected.value == false)                           // onReconnect NEVER fired → never snapshots unsubscribed
         c.close()
     }
@@ -158,15 +200,16 @@ final class _Locked<T>: @unchecked Sendable {
     // onReconnect MUST fire — proving the ack is actually read (reader live after break), not deadlocked.
     @Test func test_subscribeSuccessFiresOnReconnect() async throws {
         let stub = StubTransport(); stub.answerVersion = true; stub.answerSubscribe = true; stub.reopenOnConnect = true
-        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .seconds(2), pingInterval: .seconds(3600))
+        // TestClock pins the 2s call deadline: it can never fire, so `onReconnect` firing proves the
+        // ack was READ (reader live after the break), not that a timeout resolved the call.
+        let c = ControlClient(transport: { stub }, source: .app, callTimeout: .seconds(2),
+                              pingInterval: .seconds(3600), clock: TestClock())
         let reconnected = _Locked(false)
         c.onReconnect = { reconnected.value = true }
         try c.connect()
         _ = c.subscribeWithRev()                                      // subscribed = true
         (c as ControlClient).forceReconnect()                         // drop → runLoop reconnects, subscribe acked
-        var fired = false
-        for _ in 0..<40 { if reconnected.value { fired = true; break }; try? await _Concurrency.Task.sleep(for: .milliseconds(50)) }
-        #expect(fired)                                               // fired well under the 2s callTimeout → ack WAS read
+        try await pollUntil("onReconnect fires after the acked re-subscribe") { reconnected.value }
         c.close()
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("D3 · spawn seed (Fork/Fan-out primitive)")
 struct SpawnSeedTests {

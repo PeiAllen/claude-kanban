@@ -1,6 +1,7 @@
 import XCTest
 import OrchestraKit
 @testable import OrchestraUI
+import TestSupport
 
 /// The acceptance's "fake-platform test double": drive `BoardModel`'s three UI-op call sites through
 /// spy protocol impls and assert they route correctly, with no daemon (the macOS host machinery is
@@ -232,7 +233,7 @@ final class BoardModelPlatformTests: XCTestCase {
 
         XCTAssertEqual(model.selectedId, a.id)
         XCTAssertEqual(model.focusZone, .terminal)
-        try await _Concurrency.Task.sleep(for: .milliseconds(100))
+        try await pollUntil("the terminal focus re-enter lands") { await win.enterCount == 1 }
         XCTAssertEqual(win.enterCount, 1)
     }
 

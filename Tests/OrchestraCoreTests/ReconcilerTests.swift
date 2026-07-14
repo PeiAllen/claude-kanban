@@ -63,7 +63,7 @@ struct ReconcilerTests {
 
         // Immediate re-ticks land inside the (pinned 3600s) backoff window → the step must NOT re-run (no hot loop).
         for _ in 0..<6 { await env.svc.reconcile() }
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongly-dispatched step task gets its chance to run first
         #expect(stepper.count == afterFirst)
 
         // The failure surfaced an activity.

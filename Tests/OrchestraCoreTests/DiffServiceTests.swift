@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 @Suite("OrchestraService — diff endpoints + event-driven refresh")
 struct DiffServiceTests {
@@ -102,8 +103,11 @@ struct DiffServiceTests {
         #expect(after.diffStat?.filesChanged == 1)
 
         _ = await env.svc.recomputeDiffStat(t.id)   // no tree change → must not re-emit
-        try await _Concurrency.Task.sleep(for: .milliseconds(150))   // let the AsyncStream drain
         // Exactly one diffstat-bearing upsert for this card — the first recompute; the second was a no-op.
+        try await pollUntil("first diffstat upsert delivered") {
+            await collector.upserts.contains { $0.id == t.id && $0.diffStat != nil }
+        }
+        await yieldBriefly()   // settle: a wrongful second upsert gets its chance to land
         let statUpserts = await collector.upserts.filter { $0.id == t.id && $0.diffStat != nil }.count
         #expect(statUpserts == 1)
     }

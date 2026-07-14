@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 /// F2 · `send` must wake an idle native-reinvoke (Claude) card. A message queued onto a card that has
 /// already ended its turn (`.waiting`) has no in-flight turn to Stop-drain it and no background
@@ -53,7 +54,7 @@ struct SendWakeTests {
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(card.id, "later")
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongful wake's detached resume-seed gets its chance to run
 
         #expect(env.sessions.ensureCount == ensureBefore)                     // no relaunch
         #expect(env.sessions.killed.isEmpty)                                  // the live turn is untouched
@@ -73,7 +74,7 @@ struct SendWakeTests {
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(parent.id, "poke")
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongful wake's detached resume-seed gets its chance to run
 
         #expect(env.sessions.ensureCount == ensureBefore)                     // NOT relaunched — fan-out preserved
         #expect(try await env.svc.inboxPeek(parent.id).contains { $0.text == "poke" })
@@ -89,7 +90,7 @@ struct SendWakeTests {
         let ensureBefore = env.sessions.ensureCount
 
         try await env.svc.send(card.id, "hello")
-        try await _Concurrency.Task.sleep(for: .milliseconds(120))
+        await yieldBriefly()   // negative: a wrongful wake's detached resume-seed gets its chance to run
 
         #expect(env.sessions.ensureCount == ensureBefore)                     // no relaunch
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["hello"])    // durable until the first real turn

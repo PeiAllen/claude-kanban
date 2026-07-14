@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OrchestraCore
+import TestSupport
 
 // ============================================================================
 // PR4b Task 5 — the matrix + crash-recovery battery (Tests B–E). Test A
@@ -582,8 +583,9 @@ struct StaleBringUpFenceTests {
 
         for _ in 0..<5 { await e.svc.reconcile() }        // ticks that WOULD re-step an unclaimed card
         // Steps are dispatched as unstructured tasks, so a dispatched one would land its kill+ensure just
-        // after the tick returns — give it room to, then assert it never happened.
-        try await _Concurrency.Task.sleep(for: .milliseconds(250))
+        // after the tick returns — give it ample scheduling room (yields, no wall-clock), then assert it
+        // never happened.
+        await yieldBriefly(2000)
 
         #expect(e.sessions.ensureCount == ensuresBefore)  // no second bring-up: no kill, no ensure
         #expect(e.sessions.killed.count == killsBefore)
