@@ -63,6 +63,32 @@ enum + funnel + epochs landed correctly first; the reconciler, the four phase-st
 spawn shipped in PR4b (Stage 4) — built once against the settled Stage-2 model rather than twice. Every
 `Convergence`-kind verb is intent-only now: see [the Convergence model](02-architecture.md#the-convergence-model).
 
+### `report()` vs the launch intent: `pendingModel` and the epoch fence
+
+The [`--model` re-seat](05-command-reference.md#the---model-re-seat) exposed a structural collision between
+the two writers of a card's `model`. The telemetry path (`report()`) **owns** `model` — it mirrors whatever
+model the agent's own statusline names — and that write is *not* epoch-fenced. But `restart`/`resume`/
+`handoff` are **intent-only** verbs: they persist the intent and return, so the *outgoing* session stays
+alive and reporting for a reconcile tick or two before the stepper kills it. Written naively, the re-seat
+would set `task.model` and the dying session's last statusline would revert it — and the relaunch would
+come up on precisely the model it was trying to leave.
+
+The fix is to keep the **launch intent in a field the report path does not own**: `pendingModel`
+(mirroring `pendingSeed`), which is absent from `applyReportFields` and is what `finishLaunch` builds the
+argv from. `model` is still written eagerly so the board reflects the re-seat at once, but nothing depends
+on it surviving; the `.live` landing re-asserts it from the intent. A stale report can no longer erase the
+override, rather than merely being unlikely to.
+
+The same asymmetry needed a second guard on the *other* side. `.relaunching → .live` is a legal edge, and
+report()'s phase write is only epoch-fenced when the report is **stamped** (Codex's file-tail reports carry
+no epoch). An unstamped report from the still-dying session could therefore land the card `.live` **before
+the stepper ever claimed it** — no stepper visits a live card, so the relaunch would never run and the
+staged `pendingSeed`/`pendingModel` would strand on a card quietly still running its old session. So a
+report may only land a card that **still owes a launch** if it is stamped with the current generation, and
+only such a report may **consume** the intent. The daemon happened to be safe already, but only because
+`reconcile()` runs before `pollTelemetry()` in the same tick — an ordering coincidence, not a guarantee.
+The fence makes the invariant explicit and fails safe: when in doubt, don't land, and don't consume.
+
 ### The Stage-2 wire break: `status` → `phase`
 
 Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.
@@ -1041,6 +1067,35 @@ above, this ships the *connection spine* — a `Transport` seam, reconnect, a `C
 Linux port — not the whole [phone-client axis](10-roadmap.md#the-nine-axes), which still owes the iOS app
 itself (it inherits this spine); so axis 9's row stays in [chapter 10](10-roadmap.md) as history is
 recorded here.
+
+**The `--model` re-seat** (`notes/plans/restart-handoff-model.md`) adds an optional `model` to `restart`,
+`handoff`, and `resume` — declared in the [command catalog](05-command-reference.md#registry-commands), so
+it reaches both the CLI and MCP. It **re-seats a card onto another model in place** (same card, same
+worktree, same session lineage): `handoff --model` carries the context across, which is how an agent that
+finds its task needs a stronger model **escalates itself** instead of spawning a successor; `restart
+--model` deliberately drops it. Both vendors were probed for real — `claude --resume <sid> --model X` and
+`codex resume <sid> -m X` genuinely re-bind — so the mechanism is a flag, not a workaround. Three decisions
+shape it. The id resolves against the card's **own** adapter catalog only (`agentId` is pinned by the vendor
+transcript being resumed), and an unknown id is rejected *before* the first mutation, so a refused re-seat
+cannot eat the card's durable inbox. The request is staged in
+[`Task.pendingModel`](03-data-model.md#the-task-card) rather than applied to `model`, because `report()`
+owns `model` and would otherwise revert it from the dying session's statusline — with the epoch fence that
+stops an unstamped report landing a card that still owes a launch (see
+[report() vs the launch intent](#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence) above).
+And a non-persisted **tripwire** warns once, on the board, if a vendor ever accepts `--model` and ignores
+it — an honest check for the mechanism, not part of it. It only accuses the vendor when the agent reports
+the model the card was *leaving*, which makes it reliable on a `resume` (an ignored flag leaves the session
+on its transcript's model) and best-effort on a blank `restart` (an ignored flag would land on the vendor's
+configured default, which reads as a deliberate in-session switch and goes unreported) — a missed warning
+being much the lesser evil against falsely accusing an agent that legitimately changed its own model.
+Three bugs it surfaced were fixed alongside: a
+read-only card came back **writable** when resumed (the shared `.resume` context dropped the card's
+`access`, and *both* adapters emit their lockdown flags from it — so Codex read-only cards were equally
+affected, and are equally fixed) and a plan card lost `--permission-mode auto` (Claude-only: it is the
+`startIn` flag the `.resume` context dropped and `ClaudeCodeAdapter.resume` never re-emitted; Codex emits no
+`startIn` flags at all). The third: a **dated** vendor model id (`claude-haiku-4-5-20251001`) fell out of the
+catalog into a bare `AgentModel`, dropping the model's catalog metadata — display name, `contextWindow`,
+flags — and pinning every later launch to the dated id.
 
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

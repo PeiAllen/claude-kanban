@@ -35,12 +35,13 @@ orchestra send <ref> "use a token bucket"
 orchestra inbox <ref>                # list a card's queued inbox messages (also inbox-edit/-remove/-reorder)
 orchestra wait <ref> <ref> …          # block until one watched card concludes, print it, exit
 orchestra handoff <ref> "handoff summary…"   # clean-context resume of THIS card, seeded (F1)
+orchestra handoff <ref> "summary…" --model claude-fable-5   # …and RE-SEAT it onto a stronger model
 orchestra trust <path>               # grant a human's write-trust for a dir (interactive only)
 orchestra move <ref> --col review
 orchestra exec <ref> "swift build" --timeout 300
 orchestra sessions <ref> --json      # debug handles
-orchestra restart <ref>              # blank fresh session, same worktree
-orchestra resume <ref>               # re-attempt claude --resume
+orchestra restart <ref> [--model <id>]   # blank fresh session, same worktree (--model re-seats it)
+orchestra resume <ref> [--model <id>]    # re-attempt resuming the card's session (--model re-seats it)
 orchestra archive <ref>
 orchestra ping
 ```
@@ -58,6 +59,14 @@ background `orchestra wait` process ends, so the orchestrator wakes, reads the d
 so conclusions coalesce into the caller's own inbox. (See
 [merge-watch / `wait`](05-command-reference.md#notes-on-key-commands) and
 [chapter 9](09-design-decisions.md#shipped-feature-history).)
+
+`--model <id>` on `restart` / `handoff` / `resume` **re-seats the card onto another model in place** — the
+[`--model` re-seat](05-command-reference.md#the---model-re-seat). It is declared on those three schemas in
+the [command catalog](05-command-reference.md#registry-commands), so it is a real MCP tool argument too (the
+tool schemas are generated from the catalog — see [tool generation](#the-mcp-bridge)), not a CLI-only flag;
+the CLI side is the hand-wired half, and it rejects `--model` written with **no value** rather than let the
+flag parse as a boolean and silently relaunch on the old model. The id must belong to the card's **own**
+agent's catalog; anything else is refused with `invalidParams` before the card is touched.
 
 `orchestra trust <path>` is the **interactive-only** grant surface (PR T2). Because trust is a human
 decision, the verb gates on `isatty(STDIN)`: at a real terminal it prints a `[y/N]` confirmation and,
