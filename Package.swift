@@ -105,7 +105,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"],
+            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap", "TestSupport"],
             resources: [.copy("Fixtures")]
         ),
         .testTarget(

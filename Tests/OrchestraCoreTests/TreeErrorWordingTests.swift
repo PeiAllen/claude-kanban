@@ -1,11 +1,12 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 import OrchestraKit
 
 /// Wording pass over the branch-tree command surface: every failure an agent reads must carry WHAT
 /// failed, WHY, and a runnable NEXT STEP. These lock the improved key messages so a future edit can't
-/// silently drop the recovery command.
+/// silently drop the recovery command. Unit-converted (Task 10, branch-tree) over FakeProc/RepoGraph.
 @Suite("Branch-tree error wording — WHAT · WHY · runnable NEXT STEP")
 struct TreeErrorWordingTests {
 
@@ -38,11 +39,10 @@ struct TreeErrorWordingTests {
 
     @Test("synced on a deleted parent names the deletion cause and both runnable recoveries")
     func syncedParentGoneWording() async throws {
-        let env = TestEnv.make()
-        let repo = try TreeStatTests.repoWithParent(env.base)
-        let tip = try TreeStatTests.git(repo, "rev-parse", "parent")
-        let card = try await TreeStatTests.linkedChild(env, repo: repo, base: tip)
-        try TreeStatTests.git(repo, "branch", "-D", "parent")   // main is already checked out
+        let (env, fake, graph, repo) = TreeStatTests.setup()
+        let tip = graph.tip("parent")!
+        let card = try await TreeStatTests.linkedChild(env, fake: fake, repo: repo, base: tip)
+        graph.deleteBranch("parent")
 
         await #expect { _ = try await env.svc.synced(ref: card.ref()) } throws: { error in
             guard case let OrchestraError.invalidParams(m) = error else { return false }
@@ -54,8 +54,7 @@ struct TreeErrorWordingTests {
 
     @Test("merge-request / borrow with no parent link name the runnable set-parent recovery")
     func noParentLinkWording() async throws {
-        let env = TestEnv.make()
-        let repo = try TreeStatTests.repoWithParent(env.base)
+        let (env, _, _, repo) = TreeStatTests.setup()
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
 
         await #expect { _ = try await env.svc.mergeRequest(ref: card.ref()) } throws: { error in

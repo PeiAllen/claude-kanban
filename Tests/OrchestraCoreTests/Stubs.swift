@@ -499,7 +499,8 @@ enum TestEnv {
     /// `NSTemporaryDirectory()` prefix, which is the same inode via the macOS `/var → /private/var` symlink,
     /// so this reads exactly the files `make` wrote. Non-path knobs (revival tuning) reset to defaults —
     /// itself a realistic "fresh daemon" trait.
-    static func remake(base: String, capabilities: AgentCapabilities = .stub)
+    static func remake(base: String, capabilities: AgentCapabilities = .stub,
+                       proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
                             worktreesRoot: base + "/worktrees",
@@ -516,7 +517,8 @@ enum TestEnv {
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
-                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                   proc: proc ?? RealProc())
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 

@@ -1,3 +1,11 @@
+// MOVES-TO: ContractTests/Git — remote merge ladder over a real `--bare` origin
+//
+// Whole-suite contract candidate (Task 10): every case drives `remoteMergeStep` against a REAL bare
+// origin built by `RemoteParentTests.makeOriginWithPR` and asserts on real remote effects — `ls-remote`
+// tip / `.gone` after a real `update-ref -d`, real `fetch` ancestry from a pushed child object,
+// PR-head advancement. The gh decision is already a fake (`FakeGh`); it is the git/remote layer that is
+// load-bearing and real, so this stays real-git and moves to ContractTests/Git verbatim at the flip.
+
 import Foundation
 import Testing
 @testable import OrchestraCore
