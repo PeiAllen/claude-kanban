@@ -532,7 +532,7 @@ func backoffScheduleOnTestClock() async throws {
 **Files:** as before (`BranchLineage.swift` :33,:40,:46,:123; `RemoteParents.swift`; `OrchestraService.swift:47` + init; `+Tree/+ParentRef/+Converge` probe sites), plus `Tests/TestSupport/GitConfigEmulator.swift`; proof-test in `LineageTests`.
 
 **Interfaces:**
-- Produces: `BranchLineage(proc: any ProcRunning = RealProc())`, `RemoteParents(proc: any ProcRunning = RealProc())`; call sites become `try await proc.run(argv, cwd: nil, env: [:], timeout: .seconds(120))` (the previous implicit default made explicit — review minor-13). Since the seam is async and these are actors, adding `await` inside isolated methods is legal and does not change callers (they already `await` the actor).
+- Produces: `BranchLineage(proc: any ProcRunning)`, `RemoteParents(proc: any ProcRunning)` — **NO default value** (confirm/deny fix: a `= RealProc()` default lets a unit test write `BranchLineage()` and run real git invisibly to every lint). This is the one sanctioned exception to the "new params default to today's behavior" constraint: the only production construction sites are inside `OrchestraService.init`, which passes its own `proc`, so production behavior is unchanged while the tier becomes structurally honest. Add a step: `grep -rn 'BranchLineage()\|RemoteParents()' Sources/ Tests/` and fix every construction (known test-side directs: `LineageTests.swift:32`, `MergeRequestBackoffTests.swift:76`). Call sites become `try await proc.run(argv, cwd: nil, env: [:], timeout: .seconds(120))` (the previous implicit default made explicit — review minor-13). Since the seam is async and these are actors, adding `await` inside isolated methods is legal and does not change callers (they already `await` the actor).
 - `GitConfigEmulator.install(on:)` registers a `["git"]` rule that handles ONLY `git -C <repo> config …` shapes and returns **nil for everything else** (fall-through — review MAJOR-7), so fetch/rev-parse/merge-base rules registered before OR after compose. Emulator semantics per the prior draft (get/set/unset/get-regexp; exit 1 on missing), now returning `ProcResult?`.
 - **Off-actor sync probes:** `+Tree`/`+ParentRef`/`+Converge` sites that run inside sync `offActor`/`offActorValue` closures get an async-closure overload of that helper (a `Task.detached`-based twin, ~6 lines, same name) rather than blocking bridges. Note it in the conversion commit.
 
@@ -626,10 +626,14 @@ if grep -rnE 'Task\.sleep|Thread\.sleep|usleep\(' Tests/UnitTests Tests/TestSupp
      --include='*.swift' | grep -v 'Tests/TestSupport/Wait.swift'; then
   say "wall-clock sleep in the unit tier — TestClock.advance, a Gate, pollUntil, or move the suite to ContractTests"
 fi
-# 2. No ambient WRITE-TARGET path statics in unit tests. (Config.home itself is excluded by
-#    design: it is a pure derivation input asserted by the config-derivation tests; the hazard
-#    is filesystem state shared through the derived write targets.)
-if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot|Config\.(dataDir|tasksPath|hooksPath|socketPath|logPath)\b' \
+# 2. No ambient WRITE-TARGET path statics in unit tests. Deliberately narrow (confirm/deny fix):
+#    - Config.home is a pure derivation input (asserted by config-derivation tests) — excluded.
+#    - `Config.dataDir(` with a paren is the PURE resolver dataDir(isLinux:home:env:) — excluded;
+#      the bare static `Config.dataDir` is the ambient write target — matched.
+#    - socketPath/hooksPath are asserted as derived STRINGS by resolver/adapter unit tests
+#      (ConnectionSocketResolverTests:15, AdapterTests:40) and their write paths are launch-time
+#      (contract tier) — excluded. The hazard this rule guards is shared filesystem STATE.
+if grep -rnE 'NSHomeDirectory\(\)|Config\.defaultScratchRoot|Config\.dataDir[^(A-Za-z]|Config\.(tasksPath|logPath)\b' \
      Tests/UnitTests --include='*.swift'; then
   say "ambient path in a unit test — use the TestEnv per-test base"
 fi
@@ -669,7 +673,7 @@ Per-area table as previously specified, with these review-driven strengthenings:
   1. `GitConfigContractTests` (get/set/unset/get-regexp × present/missing),
   2. `GitRevContractTests` (rev-parse, rev-list --count, merge-base --is-ancestor: ancestor/non-ancestor/unknown-ref),
   3. `RemoteFetchContractTests` (fetch/ls-remote against a local `--bare` origin: reachable/unreachable/missing-branch).
-  The shared FakeProc rule-sets used by unit suites live in `Tests/UnitTests/Support/RepoScripts.swift` and are THE SAME rule objects the matrices exercise (export them from a support file both targets compile, or duplicate with a comment pinning them together — prefer the former via TestSupport).
+  The shared FakeProc rule-sets used by unit suites live in **`Tests/TestSupport/RepoScripts.swift`** — TestSupport exists from Task 1 and is a dependency of every test target, so the location is valid BEFORE the flip (Task 10 runs under the old target names) and AFTER it; the matrices exercise THE SAME rule objects (confirm/deny fix: the earlier `Tests/UnitTests/Support/` location was unowned pre-flip).
 - **Assertion mapping is mandatory** (review MAJOR): each suite's conversion commit includes, in the commit body, a table mapping every original real-git assertion → `unit(<new test>)` | `contract(<matrix row / test>)` | `deleted(<reason>)`. "One test per real behavior" is replaced by this exhaustive mapping — nothing is silently discarded.
 - **At the end of this task:** flip `TestEnv.make`'s default `proc` to `FakeProc` with `GitConfigEmulator` pre-installed (review MAJOR-9 — the unit tier's default construction path hands out no real runner); `TestEnv.makeReal` moves to `Tests/ContractTests/Support/RealEnv.swift` in the Task-9/11 flip commit.
 - Full suite ×3 green; commit per area (6 commits), each with its assertion map.
@@ -678,7 +682,7 @@ Per-area table as previously specified, with these review-driven strengthenings:
 
 As previously specified (single 12k fixture; hoisted E2EBinary setup; pollUntil for its 1.5s/200ms waits; one tmux server per SessionManager suite), with the review fix:
 
-- **Shared slow-repo layout made explicit** (review MAJOR): the fixture generates ONCE under a shared root `S = IntegrationSupport.tempDir("slowrepo-shared")` (async-lazy static task). Each parameterized instance keeps its own private `base` (stores, worktrees) but constructs its Config as `reposRoot: base + "/repos", allowlist: [canonical(base), canonical(S)]` and spawns with `repo: S + "/repo"` — `PathResolver.allowedRoots = reposRoot + worktreesRoot + allowlist` admits it. The repo is treated as READ-ONLY by both instances (worktrees are cut into each instance's private `worktreesRoot`; nothing writes into `S`). A final cleanup hook removes `S` after the suite.
+- **Slow-repo template + per-case copy** (confirm/deny fix — a truly shared repo is impossible: `WorktreeManager.ensure` runs `git -C realRepo worktree add -b …`, which writes branch refs and `.git/worktrees` metadata into the repo, so two parameterized cases would interleave writes and no suite-final teardown exists across cases). Instead: generate the 12k-file repo ONCE into a template `T = IntegrationSupport.tempDir("slowrepo-template")` (async-lazy static task — the expensive part, ~one generation instead of two), then each case does `cp -R T base/repos/repo` (cheap — the design doc's own template trick) and runs entirely inside its private base with today's per-case cleanup. No shared writes, no cross-case coordination; `T` lives under the OS temp dir (best-effort `removeItem` by whichever case runs last, and TMPDIR reaping as the backstop).
 
 ---
 
