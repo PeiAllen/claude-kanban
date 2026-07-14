@@ -470,8 +470,8 @@ extension OrchestraService {
     /// twin of `scheduleDiffStat`.
     func scheduleTreeStat(_ id: UUID) {
         treeStatDebounce[id]?.cancel()
-        treeStatDebounce[id] = _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+        treeStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(750))
             if _Concurrency.Task.isCancelled { return }
             await self?.recomputeTreeStat(id)
             await self?.clearTreeStatDebounce(id)
@@ -485,8 +485,8 @@ extension OrchestraService {
     /// child lookup runs once per activity burst instead of once per report on the hot path.
     func scheduleChildFanout(_ id: UUID) {
         childFanoutDebounce[id]?.cancel()
-        childFanoutDebounce[id] = _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+        childFanoutDebounce[id] = _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(750))
             if _Concurrency.Task.isCancelled { return }
             await self?.fanOutChildTreeStats(id)
             await self?.clearChildFanoutDebounce(id)

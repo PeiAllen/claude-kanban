@@ -83,11 +83,11 @@ extension OrchestraService {
         mergeRequestNudgeGen[childId] = gen
         // `self` is re-acquired PER HOP, never hoisted above the loop: a hoisted `guard let self` would hold
         // a strong ref across the sleep (~all of the loop's life) and the service could never deallocate.
-        mergeRequestNudge[childId] = _Concurrency.Task { [weak self] in
+        mergeRequestNudge[childId] = _Concurrency.Task { [weak self, clock] in
             while !_Concurrency.Task.isCancelled {
                 guard let sent = await self?.nudgesSent(childId),
                       let base = await self?.mergeRequestNudgeInterval else { return }
-                try? await _Concurrency.Task.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
+                try? await clock.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
                 if _Concurrency.Task.isCancelled { return }
                 guard let stop = await self?.reNudgeMergeRequest(childId, gen: gen) else { return }
                 if stop { break }                     // no longer pending / parent gone / superseded / gave up

@@ -636,8 +636,8 @@ extension OrchestraService {
             if let old = readinessWaiters[id] { old.cont.resume(returning: .superseded) }
             readinessWaiters[id] = (token, cont)
             let grace = max(0, graceSeconds)
-            _Concurrency.Task { [weak self] in
-                try? await _Concurrency.Task.sleep(for: .seconds(grace))
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .seconds(grace))
                 await self?.timeoutReadiness(id, token: token)
             }
         }

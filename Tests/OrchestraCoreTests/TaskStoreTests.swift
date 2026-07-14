@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 @Suite("TaskStore — atomic Codable persistence")
@@ -78,13 +79,13 @@ struct TaskStoreTests {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let base = (path as NSString).lastPathComponent
-        func corruptAndLoad() async {
+        func corruptAndLoad(at date: Date) async {
             try? "{ not json".write(toFile: path, atomically: true, encoding: .utf8)
-            _ = await TaskStore(path: path).load()
+            _ = await TaskStore(path: path, now: { date }).load()
         }
-        await corruptAndLoad()
-        try await _Concurrency.Task.sleep(for: .milliseconds(1100))   // ensure a distinct ISO8601 second
-        await corruptAndLoad()
+        let t0 = Date()
+        await corruptAndLoad(at: t0)
+        await corruptAndLoad(at: t0 + 1)          // a distinct ISO8601 second, by injection not by waiting
         let backups = (try? FileManager.default.contentsOfDirectory(atPath: dir))?
             .filter { $0.hasPrefix(base + ".corrupt-") } ?? []
         #expect(backups.count == 2)   // both preserved
@@ -356,6 +357,29 @@ struct TaskStoreTests {
         #expect(await store.get(created.id)?.ctxPct == 20)          // memory current despite deferred write
         await store.flushPendingWrites()
         #expect(await store.diskWriteCount == base + 1)             // burst coalesced to ONE write
+    }
+
+    @Test("debounce AND max-deferral run on the injected clock — advance, don't wait")
+    func test_debounceAndCapOnTestClock() async throws {
+        let clock = TestClock()
+        let store = TaskStore(path: tmpPath(), clock: clock)
+        let created = try await store.create(sample()).task            // one immediate write
+        let base = await store.diskWriteCount
+
+        // Debounce path: one deferred delta; jump past the quiet period → exactly one write.
+        await store.setPersistDebounce(.milliseconds(500)); await store.setMaxDeferral(.seconds(2))
+        _ = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 1 }
+        await clock.parked(2)                                          // debounce + cap sleepers both armed
+        clock.advance(by: .milliseconds(500))
+        try await pollUntil("debounce flush") { await store.diskWriteCount == base + 1 }
+
+        // Cap path: debounce set beyond reach, so ONLY the max-deferral checkpoint can flush.
+        // The wall-clock version of this suite could never exercise the cap deterministically.
+        await store.setPersistDebounce(.seconds(3600))
+        _ = try await store.update(created.id, debounceFlush: true) { $0.ctxPct = 2 }
+        await clock.parked(2)
+        clock.advance(by: .seconds(2))
+        try await pollUntil("max-deferral checkpoint") { await store.diskWriteCount == base + 2 }
     }
 
     @Test("an immediate mutation force-flushes the pending telemetry write (one write carries both)")

@@ -5,6 +5,13 @@ import Foundation
 /// truth is federated (tasks.json + tmux liveness + git).
 public actor OrchestraService {
     public private(set) var config: Config
+    /// Every production sleep (nudge backoff, debounces, watch polls, recovery grace) runs on this
+    /// clock; tests inject a TestClock and ADVANCE it instead of waiting. `nonisolated let` so
+    /// off-actor closures can capture it.
+    nonisolated let clock: any Clock<Duration>
+    /// The subprocess seam for the components the hidden-integration suites reach git through
+    /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
+    nonisolated let proc: any ProcRunning
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
@@ -232,8 +239,12 @@ public actor OrchestraService {
                 devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
-                orchestraBin: String = siblingBinary("orchestra")) {
+                orchestraBin: String = siblingBinary("orchestra"),
+                clock: any Clock<Duration> = ContinuousClock(),
+                proc: any ProcRunning = RealProc()) {
         self.config = config
+        self.clock = clock
+        self.proc = proc
         self.orchestraBin = orchestraBin
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)

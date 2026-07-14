@@ -199,13 +199,13 @@ extension OrchestraService {
         // `self` is re-acquired PER HOP, never hoisted above the loop — see the note on
         // `startMergeRequestNudge`. A hoisted `guard let self` pinned the service for the loop's whole
         // life, so `[weak self]` bought nothing. The generation token above is unchanged.
-        remoteWatch[cardId] = _Concurrency.Task { [weak self] in
+        remoteWatch[cardId] = _Concurrency.Task { [weak self, clock] in
             while !_Concurrency.Task.isCancelled {
                 guard let stop = await self?.shouldStopRemoteWatch(cardId) else { return }
                 if stop { break }
                 guard let outcome = await self?.remoteMergeStep(cardId: cardId) else { return }
                 guard let delay = await self?.remoteWatchDelay(after: outcome) else { return }
-                try? await _Concurrency.Task.sleep(for: delay)
+                try? await clock.sleep(for: delay)
             }
             await self?.clearRemoteWatch(cardId, gen: gen)
         }

@@ -69,8 +69,8 @@ extension OrchestraService {
     /// sees only that the card had activity, never which tool ran).
     func scheduleDiffStat(_ id: UUID) {
         diffStatDebounce[id]?.cancel()
-        diffStatDebounce[id] = _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+        diffStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(750))
             if _Concurrency.Task.isCancelled { return }
             await self?.recomputeDiffStat(id)
             await self?.clearDiffStatDebounce(id)
