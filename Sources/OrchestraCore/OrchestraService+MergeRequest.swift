@@ -178,8 +178,9 @@ extension OrchestraService {
         let to = Duration.seconds(config.controlTimeout)
         let probe = treeProbeHolder.get()
         let repo = child.repo
+        let remotes = await offActorValue { self.gitRemotes(repo: repo) }   // sync fork → GCD hop (M1 residual)
         let fresh: TreeStat? = await offActorValue {
-            await self.computeTreeStat(repo: repo, link: link, timeout: to, probe: probe)
+            await self.computeTreeStat(repo: repo, link: link, remotes: remotes, timeout: to, probe: probe)
         }
 
         var flagged = false

@@ -241,7 +241,9 @@ extension OrchestraService {
         if let p = link?.parent {
             grandparent = p
         } else {
-            grandparent = await offActorValue { await self.defaultBranch(repo: repo, timeout: shipTimeout) }
+            let (hint, remotes) = await offActorValue { (DiffBaseline.defaultBaseRef(worktree: repo), self.gitRemotes(repo: repo)) }
+            grandparent = await offActorValue { await self.defaultBranch(repo: repo, timeout: shipTimeout,
+                                                                         baseRefHint: hint, remotes: remotes) }
         }
 
         // S2-2: sanity gate — refuse to retarget grandchildren / clear lineage when the parent tip has NOT
@@ -423,9 +425,12 @@ extension OrchestraService {
         // passed in as call-scoped arguments — `computeTreeStat` itself reads no actor-stored hook.
         let to = Duration.seconds(config.controlTimeout)
         let probe = treeProbeHolder.get()                       // Sendable-locked; nil in prod
+        // The one sync fork (gitRemotes) hoists to a GCD hop; the async twin below runs on the
+        // cooperative pool and must not block it (impl-review M1 residual).
+        let remotes = await offActorValue { self.gitRemotes(repo: t.repo) }
         let new: TreeStat? = await offActorValue {
             guard let link else { return nil as TreeStat? }
-            return await self.computeTreeStat(repo: t.repo, link: link, timeout: to, probe: probe)
+            return await self.computeTreeStat(repo: t.repo, link: link, remotes: remotes, timeout: to, probe: probe)
         }
         // Cheap no-op filter for the steady funnel (avoids a tasks.json write on every unchanged
         // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
@@ -530,16 +535,19 @@ extension OrchestraService {
     /// leaf it calls (no unbounded `Proc.run`); `probe` is a call-scoped test hook (never actor-stored —
     /// a stored hook read from here would be an actor-state read + data race) fired first, so a test can
     /// prove the compute genuinely parked off-actor before the concurrent RPC assertion.
-    nonisolated func computeTreeStat(repo: String, link: ParentLink, timeout: Duration,
+    /// `remotes` is CALL-SCOPED (like `probe`): the caller hoists `gitRemotes` into a sync GCD
+    /// hop before entering the async twin, so this body — which runs on the cooperative pool via
+    /// Task.detached — never reaches the sync `Proc.run` fork (impl-review M1 residual).
+    nonisolated func computeTreeStat(repo: String, link: ParentLink, remotes: [String], timeout: Duration,
                                      probe: (@Sendable () -> Void)? = nil) async -> TreeStat {
         probe?()
         // O1/S1-1: resolve the parent through `resolvableRef` (local → refs/heads/<b>, remote →
         // refs/orch/parents/…). Passing the raw canonical (`pr#N`) here was the S1-1 break: `rev-parse
         // pr#7` fails → false restackNeeded. `parentIsRemote` rides EVERY constructed stat so the badge
         // and the remote-tier UX never lose it.
-        let isRemote = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: repo)) != nil
+        let isRemote = RemoteParentRef.parse(link.parent, remotes: remotes) != nil
         guard !link.base.isEmpty,
-              let tip = await treeTip(repo: repo, resolvableRef(link, repo: repo), timeout: timeout) else {
+              let tip = await treeTip(repo: repo, resolvableRef(link, remotes: remotes), timeout: timeout) else {
             return TreeStat(state: .restackNeeded, parentIsRemote: isRemote)
         }
         let behind = await treeBehind(repo: repo, base: link.base, tip: tip, timeout: timeout)
@@ -562,9 +570,13 @@ extension OrchestraService {
     /// Prefers `origin/HEAD`'s short name when a local branch of that name exists, else falls back to
     /// `main`/`master`. Never returns a remote-tracking ref (`origin/…`), which would be mis-parsed as a
     /// remote parent by `RemoteParentRef.parse`.
-    nonisolated func defaultBranch(repo: String, timeout: Duration) async -> String {
-        if let ref = DiffBaseline.defaultBaseRef(worktree: repo),
-           RemoteParentRef.parse(ref, remotes: gitRemotes(repo: repo)) == nil,
+    /// `baseRefHint`/`remotes` are CALL-SCOPED: both come from sync blocking probes
+    /// (DiffBaseline.defaultBaseRef's two Proc.runs + gitRemotes), which the caller hoists into
+    /// a sync GCD hop so this async-twin body never blocks a cooperative thread (M1 residual).
+    nonisolated func defaultBranch(repo: String, timeout: Duration,
+                                   baseRefHint: String?, remotes: [String]) async -> String {
+        if let ref = baseRefHint,
+           RemoteParentRef.parse(ref, remotes: remotes) == nil,
            await treeTip(repo: repo, "refs/heads/\(ref)", timeout: timeout) != nil {
             return ref
         }

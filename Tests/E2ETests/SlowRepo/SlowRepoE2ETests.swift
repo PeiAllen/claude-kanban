@@ -125,7 +125,8 @@ final class SlowRepoE2ETests {
                                    registry: AgentRegistry(adapters: [claude, codex]),
                                    worktrees: WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json",
                                                                markersDir: base + "/worktree-markers"),
-                                   sessions: sessions)
+                                   sessions: sessions,
+                               proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let s = svc
         pollLoop = _Concurrency.Task {
             while !_Concurrency.Task.isCancelled {

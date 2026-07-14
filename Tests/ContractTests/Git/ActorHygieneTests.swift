@@ -132,7 +132,8 @@ enum ActorHygieneSupport {
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
-                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                          proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let card = Task(title: "actor-hygiene", repo: repo, branch: "work", cwd: repo,
                         model: AgentModel(id: "m1"), startIn: .impl, column: .impl, order: 0,
                         initialPrompt: "")
@@ -165,7 +166,8 @@ enum ActorHygieneSupport {
         let service = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
-                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                          proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let card = Task(title: "actor-hygiene-treestat", repo: repo, branch: "work", cwd: repo,
                         model: AgentModel(id: "m1"), startIn: .impl, column: .impl, order: 0,
                         initialPrompt: "", parentBranch: "main")
@@ -191,7 +193,8 @@ enum ActorHygieneSupport {
                                        registry: AgentRegistry(adapters: [adapter]),
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
-                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                          proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let card = Task(title: "actor-hygiene", repo: cwd, branch: "work", cwd: cwd,
                         origin: .scratch, agentId: adapter.id, model: AgentModel(id: "m1"),
                         startIn: .impl, column: .impl, order: 0, initialPrompt: "")
@@ -218,7 +221,8 @@ enum ActorHygieneSupport {
                                        sessions: stub,
                                        trust: TrustLedger(path: base + "/trust-ledger.json"),
                                        inbox: Inbox(path: base + "/inbox.json"),
-                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                       watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                          proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let card = Task(title: "actor-hygiene-list", repo: cwd, branch: "work", cwd: cwd,
                         model: AgentModel(id: "m1"), startIn: .impl, column: .impl, order: 0,
                         initialPrompt: "")

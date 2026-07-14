@@ -489,7 +489,8 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc())
+                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
 
@@ -518,7 +519,8 @@ enum TestEnv {
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   proc: proc ?? Self.defaultFakeProc())
+                                   proc: proc ?? Self.defaultFakeProc(),
+                                   gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         return (svc, sessions, worktrees, adapter, trust, base)
     }
 
@@ -722,7 +724,8 @@ enum TestEnv {
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: worktrees, sessions: sessions, resolver: resolver,
-                                   trust: trust, inbox: inbox)
+                                   trust: trust, inbox: inbox,
+                                   proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         return (svc, sessions, adapter, base)
     }
 

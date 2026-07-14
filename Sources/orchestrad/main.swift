@@ -8,7 +8,8 @@ func log(_ msg: String) {
 }
 
 let config = ConfigStore.load()
-let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath))
+let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath),
+                               proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
 
 // The daemon renders NO hook files — each adapter renders its own in `prepareToLaunch`, per launch,
 // so new launches always reflect the current binary path + statusLine config (see [[HooksRenderer]]).

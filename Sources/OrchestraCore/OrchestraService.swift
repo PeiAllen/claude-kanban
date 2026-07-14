@@ -244,8 +244,11 @@ public actor OrchestraService {
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
                 clock: any Clock<Duration> = ContinuousClock(),
-                proc: any ProcRunning = RealProc(),
-                gitRemotesProbe: @escaping @Sendable (String) -> [String] = OrchestraService.defaultGitRemotesProbe) {
+                // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
+                // RemoteParents): a defaulted RealProc lets a unit test fork real git invisibly to
+                // every lint. The caller chooses — production passes RealProc + the real probe.
+                proc: any ProcRunning,
+                gitRemotesProbe: @escaping @Sendable (String) -> [String]) {
         self.config = config
         self.clock = clock
         self.proc = proc

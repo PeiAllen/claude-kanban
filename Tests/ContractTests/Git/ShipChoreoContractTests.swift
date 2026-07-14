@@ -57,7 +57,8 @@ struct ShipChoreoContractTests {
         let svc = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
                                    trust: TrustLedger(path: base + "/trust-ledger.json"),
                                    inbox: Inbox(path: base + "/inbox.json"),
-                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"))
+                                   watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
+                                   proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         func card(_ branch: String, parent: String?) -> Task {
             Task(title: branch, repo: repo, branch: branch, cwd: repo, model: AgentModel(id: "m1"),
                  startIn: .impl, column: .impl, order: 0, initialPrompt: "", parentBranch: parent)

@@ -65,7 +65,14 @@ extension OrchestraService {
     /// The resolvable git ref for a lineage link (O1) — the ONE canonical→resolvable rule. Local →
     /// `refs/heads/<b>`; remote → its fetched private ref.
     nonisolated func resolvableRef(_ link: ParentLink, repo: String) -> String {
-        RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: repo))?.privateRef
+        resolvableRef(link, remotes: gitRemotes(repo: repo))
+    }
+
+    /// Remotes-taking variant for callers that already hoisted `gitRemotes` to a GCD hop —
+    /// async-twin bodies (Task.detached → cooperative pool) must not reach the sync fork
+    /// (impl-review M1 residual).
+    nonisolated func resolvableRef(_ link: ParentLink, remotes: [String]) -> String {
+        RemoteParentRef.parse(link.parent, remotes: remotes)?.privateRef
             ?? "refs/heads/\(link.parent)"
     }
 

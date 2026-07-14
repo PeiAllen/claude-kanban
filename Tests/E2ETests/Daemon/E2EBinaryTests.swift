@@ -58,7 +58,8 @@ actor E2EFixture {
                                        registry: AgentRegistry(adapters: [adapter]),
                                        worktrees: WorktreeRegistry(config: config, borrowsPath: base + "/borrows.json",
                                                                    markersDir: base + "/worktree-markers"),
-                                       sessions: sessions)
+                                       sessions: sessions,
+                               proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
         let server = ControlServer(service: service, socketPath: ctlSock)
         try server.start()
 
