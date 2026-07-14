@@ -1,4 +1,5 @@
 import Foundation
+import TestSupport
 @testable import OrchestraCore
 
 /// In-memory worktree stub — never touches git.
@@ -8,19 +9,21 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     private(set) var removed: [String] = []
     private(set) var ensured: [String] = []   // repo+branch pairs ensure() was called for
     private var existingBranches: Set<String> = []   // branches ensure() should report as pre-existing
-    /// Simulated `git worktree add` latency so concurrent-`ensure` tests can genuinely contend on the actor.
-    var ensureSleepMs: UInt32 = 0
+    /// Deterministic rendezvous inside `ensure` (`git worktree add`), so concurrent-`ensure` tests can
+    /// genuinely contend on the actor: the stub PARKS (blocking, bounded — the same thread semantics as
+    /// the sleep knob it replaced) until the test `release()`s it. Sync seam ⇒ `SyncGate`, not `Gate`.
+    var ensureGate: SyncGate? = nil
     init(root: String) { self.root = root }
 
     /// A test-armed gate proving an RPC can return WHILE `ensure` is still provisioning: `blockEnsure`
     /// parks the next `ensure` call on a semaphore (bounded by a safety timeout so a mis-armed test can't
-    /// hang the suite); `releaseEnsure` opens it. Distinct from `ensureSleepMs` (a fixed latency).
-    private let ensureGate = DispatchSemaphore(value: 0)
+    /// hang the suite); `releaseEnsure` opens it. Distinct from `ensureGate` (a test-scheduled rendezvous).
+    private let blockEnsureSem = DispatchSemaphore(value: 0)
     private var ensureBlocked = false
     func blockEnsure() { lock.lock(); ensureBlocked = true; lock.unlock() }
     func releaseEnsure() {
         lock.lock(); let wasBlocked = ensureBlocked; ensureBlocked = false; lock.unlock()
-        if wasBlocked { ensureGate.signal() }
+        if wasBlocked { blockEnsureSem.signal() }
     }
 
     /// Mark a branch as pre-existing so `ensure` reports `branchExisted = true` (the churn scenario:
@@ -46,8 +49,8 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
         let err = ensureError
         lock.unlock()
         if let err { throw err }
-        if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
-        if blocked { _ = ensureGate.wait(timeout: .now() + .seconds(30)) }   // parked until releaseEnsure (safety-bounded)
+        if let g = ensureGate { g.parkBlocking() }
+        if blocked { _ = blockEnsureSem.wait(timeout: .now() + .seconds(30)) }   // parked until releaseEnsure (safety-bounded)
         let wt = path(repo: repo, branch: branch)
         try? FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
         return (wt, true, existed)
@@ -86,7 +89,7 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
 // `sweepOrphanBorrows(cards:)` guarded loop replaced its only caller.)
 
 /// In-memory tmux stub — tracks alive sessions and records launch argv; thread-safe (offActor runs
-/// ensure on a background queue). `ensureSleepMs` lets the throttle test create overlap.
+/// ensure on a background queue). `ensureGate` lets overlap/ordering tests park inside `ensure`.
 final class StubSessions: SessionManaging, @unchecked Sendable {
     private let lock = NSLock()
     private var alive: Set<String> = []
@@ -96,12 +99,14 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     private(set) var ensureCount = 0
     private(set) var peakConcurrentEnsure = 0
     private var curConcurrentEnsure = 0
-    var ensureSleepMs: UInt32 = 0
+    /// Deterministic rendezvous inside `ensure` — the stub parks (blocking, bounded) until the test
+    /// releases it. Lets a test land another event in the exact off-actor bring-up window.
+    var ensureGate: SyncGate? = nil
     private(set) var sentKeys: [(name: String, text: String)] = []
     private var deadPanes: Set<String> = []       // sessions whose agent pane process exited (remain-on-exit)
     private var paneText: [String: String] = [:]  // canned capture-pane text per session (the "stderr")
     private(set) var remainOnExit: [String: Bool] = [:]
-    var captureSleepMs: UInt32 = 0                 // delay `capture` to open a race window in tests
+    var captureGate: SyncGate? = nil               // park `capture` to open a race window in tests
     var failRemainOnExitOff = false               // make `setRemainOnExit(on:false)` throw (tmux-hiccup sim)
     /// Simulate a HOST that has run out of a launch resource (see `hostResourceFault`). nil = healthy host.
     var simulatedHostFault: HostResource?
@@ -168,9 +173,9 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
         ensureEnv[n, default: [:]]["ORCH_EPOCH"] = String(epoch); lock.unlock()
     }
 
-    /// Optional off-actor latency injected into `isAlive` (the reconciler's pre-kill probe), so a test can
-    /// prove the probe runs OFF the service actor: a concurrent fast RPC returns while the probe sleeps.
-    var isAliveSleepMs: UInt32 = 0
+    /// Optional rendezvous inside `isAlive` (the reconciler's pre-kill probe), so a test can prove the
+    /// probe runs OFF the service actor: a concurrent fast RPC returns while the probe is parked.
+    var isAliveGate: SyncGate? = nil
 
     func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
 
@@ -189,7 +194,7 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
             lock.lock(); curConcurrentEnsure -= 1; lock.unlock()
             throw OrchestraError.io(stderr)
         }
-        if ensureSleepMs > 0 { usleep(ensureSleepMs * 1000) }
+        if let g = ensureGate { g.parkBlocking() }
         // A fresh launch re-mints a LIVE pane — clear any prior dead-pane mark (models a healthy retry).
         lock.lock(); curConcurrentEnsure -= 1; alive.insert(name); deadPanes.remove(name); ensureArgv[name] = argv; ensureEnv[name] = env; lock.unlock()
         return (name, true)
@@ -198,8 +203,8 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     /// a pre-upgrade SessionEnd must consult `isAlive` before it is allowed to kill the card.
     private(set) var isAliveQueries: [String] = []
     func isAlive(_ name: String) throws -> Bool {
-        lock.lock(); isAliveQueries.append(name); let sleepMs = isAliveSleepMs; let a = alive.contains(name); lock.unlock()
-        if sleepMs > 0 { usleep(sleepMs * 1000) }   // simulate a slow off-actor probe (isAliveSleepMs)
+        lock.lock(); isAliveQueries.append(name); let g = isAliveGate; let a = alive.contains(name); lock.unlock()
+        if let g { g.parkBlocking() }   // simulate a slow off-actor probe (isAliveGate), deterministically
         return a
     }
 
@@ -281,8 +286,8 @@ final class StubSessions: SessionManaging, @unchecked Sendable {
     }
     func capture(_ name: String, window: String, maxChars: Int) throws -> CaptureResult {
         guard try isAlive(name) else { throw OrchestraError.io("session not alive: \(name)") }
-        lock.lock(); let canned = paneText[name]; let sleepMs = captureSleepMs; lock.unlock()
-        if sleepMs > 0 { usleep(sleepMs * 1000) }   // widen the capture window so a concurrent report can race
+        lock.lock(); let canned = paneText[name]; let g = captureGate; lock.unlock()
+        if let g { g.parkBlocking() }   // hold the capture window open so a concurrent report can race
         let text = canned ?? "stub-pane:\(name):\(window)"
         return CaptureResult(window: window, text: String(text.prefix(maxChars)), truncated: false)
     }

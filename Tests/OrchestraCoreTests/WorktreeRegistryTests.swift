@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 @testable import OrchestraKit
 
@@ -27,14 +28,23 @@ struct WorktreeRegistryTests {
 
     @Test func test_concurrentSameBranchEnsureJoins() async throws {
         let (reg, stub, _) = makeRegistry()
-        stub.ensureSleepMs = 40   // widen the window: a regression that inserted an `await` mid-critical-section
-                                  // would let the 2nd call cut a 2nd tree (ensured.count==2). Serialization is
-                                  // structural (no await), so on correct code the count stays 1 regardless.
+        // Park the FIRST `git worktree add` mid-flight (SyncGate blocks the stub's thread — the registry's
+        // critical section is structurally await-free, so the actor stays HELD while parked). A regression
+        // that inserted an `await` mid-critical-section would free the actor and let the 2nd call cut a
+        // 2nd tree (ensured.count==2). Serialization is structural (no await), so the count stays 1.
+        let gate = SyncGate()
+        stub.ensureGate = gate
         // DISTINCT card ids on the SAME branch — proves joining is keyed on branch/PATH, not on card id
         // (a registry that deduped by cardId would wrongly pass with equal ids).
-        async let a = reg.ensure(repo: "app", branch: "feat/x", cardId: UUID())
-        async let b = reg.ensure(repo: "app", branch: "feat/x", cardId: UUID())
-        let (wa, wb) = try await (a, b)
+        let a = _Concurrency.Task { try await reg.ensure(repo: "app", branch: "feat/x", cardId: UUID()) }
+        await gate.reached()                      // 1st call is provably inside `git worktree add`
+        let b = _Concurrency.Task { try await reg.ensure(repo: "app", branch: "feat/x", cardId: UUID()) }
+        // The 2nd call CANNOT have entered `ensure` while the actor is held — assert via the stub's
+        // recorded state only (never await the blocked registry actor itself here).
+        #expect(stub.ensured.count == 1)
+        stub.ensureGate = nil                     // the 2nd call adopts; a re-ensure must not park
+        gate.release()
+        let (wa, wb) = (try await a.value, try await b.value)
         #expect(wa.path == wb.path)
         #expect(stub.ensured.count == 1)          // exactly ONE git worktree add
         #expect((wa.created ? 1 : 0) + (wb.created ? 1 : 0) == 1)   // one created, one adopted

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import OrchestraKit
+import TestSupport
 @testable import OrchestraCore
 
 /// A stepper whose `step` ALWAYS throws — drives the backoff test. Counts its invocations thread-safely
@@ -165,13 +166,16 @@ struct ReconcilerTests {
         let x = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "x"))
         await env.svc.seedPhase(x.id, .archived(teardownComplete: true))
         env.sessions.setAlive(x.id, true)
-        env.sessions.isAliveSleepMs = 500   // slow probe
+        let gate = SyncGate()
+        env.sessions.isAliveGate = gate   // park the probe
 
         async let sweep: Void = env.svc.reconcile()
-        try await _Concurrency.Task.sleep(for: .milliseconds(80))   // let reconcile reach the probe
+        await gate.reached()                                        // the probe is genuinely parked, off-actor
+        env.sessions.isAliveGate = nil                              // only the scheduled probe parks
         let t0 = Date()
-        _ = await env.svc.list()                                    // must not block behind the 500ms probe
+        _ = await env.svc.list()                                    // must not block behind the parked probe
         let elapsed = Date().timeIntervalSince(t0)
+        gate.release()
         await sweep
 
         #expect(elapsed < 0.3)

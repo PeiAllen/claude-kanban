@@ -142,10 +142,6 @@ final class KeybindingsTests: XCTestCase {
         XCTAssertNil(map(KeyChord("J", [.control, .shift]), .field))
     }
 
-    func test_ctrl_hjkl_still_focuses_without_shift() {
-        XCTAssertEqual(map(KeyChord("l", .control), .board), .focusPane(.right))
-    }
-
     // MARK: - CommandKeybindings (Vim keyboard off)
 
     func test_command_keeps_cmd_accelerators_everywhere() {

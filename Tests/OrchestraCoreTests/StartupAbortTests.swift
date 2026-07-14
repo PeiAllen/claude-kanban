@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 /// Spawn startup-abort classification: an agent that exits within its first seconds is a DISTINCT,
@@ -247,12 +248,15 @@ struct StartupAbortTests {
         let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", access: .readOnly, scratch: true))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneDead(t.id)
-        env.sessions.captureSleepMs = 200                  // widen the capture window
+        let gate = SyncGate()
+        env.sessions.captureGate = gate                    // hold the capture window open
         let ensureAfterSpawn = env.sessions.ensureCount
 
-        async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, suspends in capture
-        try await _Concurrency.Task.sleep(for: .milliseconds(50))  // land inside the capture await
+        async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, parks in capture
+        await gate.reached()                                       // provably inside the capture window
+        env.sessions.captureGate = nil                             // only the scheduled capture parks
         try await env.svc.report(t.id, StatusReport(turnCompleted: true))  // card concludes mid-capture
+        gate.release()
         await reconciled
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })

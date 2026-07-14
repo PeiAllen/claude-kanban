@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
 @Suite("OrchestraService — recovery: reconcilePhasesAtBoot / resume / restart / reconcile")
@@ -85,18 +86,21 @@ struct RecoveryTests {
         env.adapter.writeTranscript(for: t.agentSessionId!)
         let oldId = t.agentSessionId
 
-        // Force the exact ordering behind the parallel-load flake: make the off-actor relaunch (now inside the
-        // RelaunchStepper's `finishLaunch`) slow so the SessionStart(resume) `report()` lands WHILE the step is
+        // Force the exact ordering behind the parallel-load flake: PARK the off-actor relaunch (now inside the
+        // RelaunchStepper's `finishLaunch`) so the SessionStart(resume) `report()` lands WHILE the step is
         // still inside `offActor` — i.e. before `awaitReadiness` registers its continuation. It must not drop.
         // Drive the RelaunchStepper DIRECTLY (not the full reconcile loop) so the ordering is deterministic.
-        env.sessions.ensureSleepMs = 250
+        let gate = SyncGate()
+        env.sessions.ensureGate = gate
 
         let intent = try await env.svc.resume(t.id)            // intent → `.relaunching`
         #expect(intent.phase.kind == .relaunching)
         let ctx = await env.svc.convergeContext()
         async let stepping: Void = RelaunchStepper().step(intent, ctx)
-        try await _Concurrency.Task.sleep(for: .milliseconds(40))   // inside the 250ms ensure window
+        await gate.reached()                                   // provably parked inside the off-actor ensure
+        env.sessions.ensureGate = nil                          // only the scheduled call parks
         try await env.svc.report(t.id, StatusReport(sessionSource: "resume"))   // lands before the waiter registers
+        gate.release()
         try await stepping
 
         let updated = try #require(await env.svc.store.get(t.id))

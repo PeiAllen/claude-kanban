@@ -22,12 +22,8 @@ struct ResourceExhaustionTests {
 
     // MARK: - classification (pure)
 
-    @Test("the incident's tmux stderr classifies as a pty exhaustion")
-    func classifiesTheIncident() {
-        #expect(HostResource.classify(Self.tmuxPtyExhausted) == .pty)
-    }
-
     @Test("host-exhaustion signatures classify to the right resource", arguments: [
+        // first case = the incident's literal tmux stderr (`Self.tmuxPtyExhausted`)
         ("create window failed: fork failed: Device not configured", HostResource.pty),
         ("OSError: out of pty devices", .pty),
         ("openpty failed", .pty),
