@@ -94,6 +94,25 @@ public final class RepoGraph: @unchecked Sendable {
     /// Delete a branch ref (`git branch -D`).
     public func deleteBranch(_ name: String) { lock.withLock { refs[name] = nil } }
 
+    /// Mint a standalone commit (no branch), returning its OID — a detached tip a remote ref can point at.
+    /// `RemoteRules` uses it to model a fetched remote tip that `rev-parse --verify <privateRef>` resolves.
+    @discardableResult
+    public func mintCommit() -> String {
+        lock.withLock {
+            let oid = mint()
+            parents[oid] = []
+            depth[oid] = 0
+            return oid
+        }
+    }
+
+    /// Point an arbitrary ref name (e.g. a `refs/orch/parents/…` private ref) at `oid` — the effect a
+    /// `fetch +<src>:<privateRef>` has, so a later `rev-parse --verify <privateRef>` resolves through the
+    /// graph's rev-parse rule.
+    public func setRef(_ name: String, to oid: String) {
+        lock.withLock { refs[normalize(name)] = oid }
+    }
+
     /// The current tip OID of `branch` (test-side read; never runs git).
     public func tip(_ branch: String) -> String? { lock.withLock { refs[branch] } }
 
@@ -201,5 +220,91 @@ public enum RepoScripts {
         g.branch("child", at: "parent")
         g.commit(on: "child")
         return g
+    }
+
+    /// The remote-tier setup over FakeProc: a fresh `RepoGraph` (its rev-parse/rev-list/merge-base rules,
+    /// which also answer `RemoteParents.fetch`'s trailing `rev-parse <privateRef>`) plus a `RemoteRules`
+    /// (its `fetch`/`ls-remote` answers). Returns both so a suite can register reachable/gone/unreachable
+    /// refs and read tips. Does NOT install the config emulator — the caller shares one across lineage,
+    /// graph, and remote (mirrors `withParent`). The SAME `RemoteRules` object RemoteFetchContractTests
+    /// exercises against a real `--bare` origin.
+    @discardableResult
+    public static func withRemote(on fake: FakeProc) -> (graph: RepoGraph, rules: RemoteRules) {
+        let g = RepoGraph()
+        g.install(on: fake)
+        let r = RemoteRules(graph: g)
+        r.install(on: fake)
+        return (g, r)
+    }
+}
+
+/// Scripted `fetch` / `ls-remote` answers for the isolated remote-git tier — the FakeProc analogue of a
+/// real `--bare` origin. Keyed by `(remoteName, remoteSrc)`; each ref is `reachable` (a tip `ls-remote`
+/// reports and `fetch` lands into its private ref), `gone` (`ls-remote` ok + empty ⇒ `RemoteTip.gone`,
+/// `fetch` fails), or `unreachable` (`ls-remote` errors ⇒ `.unavailable`, `fetch` fails). Faithful to the
+/// exact exit-code semantics `RemoteParents.fetch`/`lsRemoteTip` branch on:
+///   - fetch: `git -C <r> fetch --no-tags <remote> +<src>:<priv>` → exit 0 lands `<priv>`, else throws.
+///   - ls-remote: `git -C <r> ls-remote <remote> <src>` → first token of the first line is the tip;
+///     ok + empty ⇒ `.gone`; any error ⇒ `.unavailable`.
+/// A landed private ref is set in the SHARED `RepoGraph` so `RemoteParents.fetch`'s trailing
+/// `rev-parse --verify <priv>` resolves. Fidelity is pinned by ContractTests/Git/RemoteFetchContractTests,
+/// which runs THESE rules AND a real bare origin through the identical reachable/missing/unreachable matrix.
+public final class RemoteRules: @unchecked Sendable {
+    public enum Reach: Sendable { case reachable, gone, unreachable }
+    private let graph: RepoGraph
+    private let lock = NSLock()
+    private var entries: [String: (reach: Reach, tip: String)] = [:]
+
+    public init(graph: RepoGraph) { self.graph = graph }
+    private func key(_ remote: String, _ src: String) -> String { remote + "\u{0}" + src }
+
+    /// Mark `<remote> <src>` reachable at a freshly-minted tip (or `tip` if given); returns the tip OID —
+    /// the value `ls-remote` reports and `fetch` lands into the private ref.
+    @discardableResult
+    public func reachable(remote: String, src: String, tip: String? = nil) -> String {
+        let oid = tip ?? graph.mintCommit()
+        lock.withLock { entries[key(remote, src)] = (.reachable, oid) }
+        return oid
+    }
+    /// Branch/PR-head deleted on the remote: `ls-remote` returns ok + empty (⇒ `.gone`), `fetch` fails.
+    public func gone(remote: String, src: String) {
+        lock.withLock { entries[key(remote, src)] = (.gone, "") }
+    }
+    /// Origin path / network unreachable: `ls-remote` errors (⇒ `.unavailable`), `fetch` fails.
+    public func unreachable(remote: String, src: String) {
+        lock.withLock { entries[key(remote, src)] = (.unreachable, "") }
+    }
+    private func lookup(_ remote: String, _ src: String) -> (reach: Reach, tip: String)? {
+        lock.withLock { entries[key(remote, src)] }
+    }
+
+    /// Install the `ls-remote` + `fetch` rules on `fake`. Repo-agnostic; returns nil for any other verb so
+    /// the RepoGraph rev/merge rules and the config emulator compose (FakeProc falls through on nil). A ref
+    /// with no registered entry also falls through (unregistered ⇒ the suite didn't script it).
+    public func install(on fake: FakeProc) {
+        fake.on(["git", "-C"]) { [self] argv in                        // ls-remote <remote> <src>
+            guard argv.count >= 6, argv[3] == "ls-remote" else { return nil }
+            guard let e = lookup(argv[4], argv[5]) else { return nil }
+            switch e.reach {
+            case .reachable:   return ProcResult(stdout: "\(e.tip)\t\(argv[5])\n", stderr: "", exitCode: 0)
+            case .gone:        return ProcResult(stdout: "", stderr: "", exitCode: 0)
+            case .unreachable: return ProcResult(stdout: "", stderr: "fatal: could not read from remote repository\n", exitCode: 128)
+            }
+        }
+        fake.on(["git", "-C"]) { [self] argv in                        // fetch --no-tags <remote> +<src>:<priv>
+            guard argv.count >= 7, argv[3] == "fetch" else { return nil }
+            let remote = argv[argv.count - 2]
+            let spec = argv[argv.count - 1]
+            let body = spec.hasPrefix("+") ? String(spec.dropFirst()) : spec
+            let parts = body.components(separatedBy: ":")
+            guard parts.count == 2, let e = lookup(remote, parts[0]) else { return nil }
+            switch e.reach {
+            case .reachable:
+                graph.setRef(parts[1], to: e.tip)                      // land the private ref
+                return ProcResult(stdout: "", stderr: "", exitCode: 0)
+            case .gone, .unreachable:
+                return ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref \(parts[0])\n", exitCode: 128)
+            }
+        }
     }
 }

@@ -3,13 +3,26 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
+/// Unit-converted (Task 10, remote-git). The watch loop's lifecycle (start/stop/rebuild/archive), its
+/// restart generation-fence, and its redirect DECISION are all logic over actor state + the `gh` fake —
+/// no real remote effect. The remote tip is scripted (`RemoteRules` on `FakeProc`, `pr#7` reachable),
+/// pinned to real git by ContractTests/Git/RemoteFetchContractTests; the merge decision is driven by
+/// `FakeGh` (already a fake). No real git in this file.
 @Suite("Remote watch loop — lifecycle, backoff, startup rebuild")
 struct RemoteWatchLoopTests {
 
+    /// A spawned remote-parent (`pr#7`) card over FakeProc, watch auto-started. Shared with the
+    /// card-lifecycle leak test (ServiceTeardownTests) — keep the `(svc, repo, card)` shape. `origin/main`
+    /// is pre-registered reachable so the MERGED-redirect path's target private ref resolves.
     static func remoteChild() async throws -> (svc: OrchestraService, repo: String, card: Task) {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let (_, rules) = RepoScripts.withRemote(on: fake)
+        rules.reachable(remote: "origin", src: "refs/pull/7/head")
+        rules.reachable(remote: "origin", src: "refs/heads/main")   // the redirect target's private ref
+        let (svc, _, _, _, _, base) = TestEnv.make(proc: fake)
+        await svc.setGh(FakeGh(available: false))            // no real gh from the auto-started loop
+        let repo = TestEnv.repo(base)
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
         return (svc, repo, card)
     }

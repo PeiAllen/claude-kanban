@@ -1,3 +1,12 @@
+// MOVES-TO: ContractTests/Git — real ensure(base:) cutting a worktree at a fetched private ref
+//
+// Whole-suite contract candidate (Task 10, remote-git): every case is a REAL-worktree effect — a real
+// `RemoteParents.fetch` lands a private ref, then `WorktreeRegistry.ensure(base:)` cuts a real worktree
+// whose HEAD must EQUAL the fetched OID (start-point equality), an unknown start-point throws and leaves
+// no worktree dir, and the `origin/feature-b` branch case needs the repo's REAL configured remotes
+// (`gitRemotes` shells real git, not the seam) to classify. None of that is a decision a FakeProc could
+// stand in for, so the suite stays real git (over `makeReal`) and relocates verbatim at the flip.
+
 import Foundation
 import Testing
 @testable import OrchestraCore

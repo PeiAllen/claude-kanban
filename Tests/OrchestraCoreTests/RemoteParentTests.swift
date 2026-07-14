@@ -1,3 +1,15 @@
+// MOVES-TO: ContractTests/Git — RemoteParents fetch/lsRemoteTip against a real `--bare` origin
+//
+// Whole-suite contract candidate (Task 10, remote-git): every case drives `RemoteParents` against a REAL
+// bare `file://` origin and asserts on real remote effects — a `fetch` that lands a real OID into
+// `refs/orch/parents/…`, a `+` refspec forcing past a real non-ff history rewrite, `ls-remote` returning
+// the real tip and `.gone` after a real `update-ref -d`. These ARE the fetch/ls-remote fidelity the new
+// RemoteFetchContractTests pins as a matrix; the suite stays real git and relocates verbatim at the flip.
+//
+// LEGACY real-git fixture: `makeOriginWithPR` / `git` / `write` / `oid` are still consumed by the
+// not-yet-converted card-lifecycle suite StepperConvergeTests (and the RemoteSpawnTests mover) — grep
+// `RemoteParentTests.` before deleting. They are removed once those areas convert.
+
 import Foundation
 import Testing
 @testable import OrchestraCore

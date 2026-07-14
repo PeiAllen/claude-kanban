@@ -1,7 +1,15 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
+/// Unit-converted (Task 10, remote-git). The five `parse` cases were already pure (they pass `remotes:`
+/// explicitly — no git, no service). `resolvesToPrivateRef` converts to FakeProc: `resolvedParentRef`'s
+/// routing for a PR parent (`pr#N` — classified BEFORE any remotes lookup) and a local parent is
+/// seam-independent, so it runs over `TestEnv.make(proc:)` with `gitRemotes` harmlessly empty against the
+/// fake repo. The one sub-assertion that genuinely needs real `git remote` (an `origin/<b>` parent
+/// classified via the repo's configured remotes — `gitRemotes` shells real git, not the seam) moves to
+/// ContractTests/Git/RemoteFetchContractTests.gitRemoteClassifies. No real git in this file.
 @Suite("RemoteParentRef — remote-aware parsing + disjoint namespaces (O4, S4)")
 struct RemoteParentRefTests {
     @Test("pr#N parses to a pull-request ref in the pr/ sub-namespace")
@@ -57,16 +65,18 @@ struct RemoteParentRefTests {
         #expect(RemoteParentRef.parse("origin/", remotes: ["origin"]) == nil)       // empty branch
     }
 
-    @Test("resolvedParentRef maps remote forms to the private fetch ref; local pins refs/heads/")
+    // resolvedParentRef routing over FakeProc: a PR parent (classified before any remotes lookup) maps to
+    // its private ref; a local parent pins refs/heads/ (O1/S3-6); nil stays nil. The `origin/<b>` remote
+    // case (needs real `git remote`) is pinned by RemoteFetchContractTests.gitRemoteClassifies.
+    @Test("resolvedParentRef maps a PR form to its private fetch ref; local pins refs/heads/; nil stays nil")
     func resolvesToPrivateRef() async throws {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)   // gives the repo an `origin` remote
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let (svc, _, _, _, _, base) = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(base)
         var t = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "c1"))
         t.parentBranch = "pr#7"
         #expect(await svc.resolvedParentRef(t) == "refs/orch/parents/pr/7")
-        t.parentBranch = "origin/feature-b"
-        #expect(await svc.resolvedParentRef(t) == "refs/orch/parents/branch/origin/feature-b")
         t.parentBranch = "feature-a"   // local (no such remote) → pins refs/heads/ (O1/S3-6)
         #expect(await svc.resolvedParentRef(t) == "refs/heads/feature-a")
         t.parentBranch = nil

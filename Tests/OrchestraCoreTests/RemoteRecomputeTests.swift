@@ -1,11 +1,14 @@
 import Foundation
 import Testing
+import TestSupport
 @testable import OrchestraCore
 
-/// S1-1: TreeStat/`synced` must resolve a remote parent (`pr#N` / `origin/<b>`) to its fetched private
-/// ref — the exact case with NO coverage before this round. Before the fix, `rev-parse pr#7` fails so
-/// `computeTreeStat` flips to a false `restackNeeded` and drops `parentIsRemote`, and `synced` throws
-/// `parent ref not found: pr#7`.
+/// Unit-converted (Task 10, remote-git). S1-1: TreeStat/`synced` must resolve a remote parent (`pr#N`) to
+/// its fetched private ref. The private-ref fetch runs over `FakeProc` (`RemoteRules` lands
+/// `refs/orch/parents/pr/7` into the shared `RepoGraph`), so the whole recompute/synced path — resolve →
+/// `treeTip`/`treeBehind`/`merge-base` — runs over the seam, pinned to real git by
+/// ContractTests/Git/RemoteFetchContractTests (fetch/ls-remote) + GitRevContractTests (rev probes). The
+/// S2-1 merge-base case models the child + parent branches in the RepoGraph. No real git in this file.
 @Suite("Remote-parent recompute + synced (S1-1)")
 struct RemoteRecomputeTests {
 
@@ -13,12 +16,24 @@ struct RemoteRecomputeTests {
         await svc.list().first { $0.id == id }?.treeStat
     }
 
+    /// A service whose git seam is a FakeProc carrying the config emulator + a RepoGraph + RemoteRules with
+    /// `pr#7` reachable at a minted tip. `gh` is a non-available fake so an auto-started watch never shells
+    /// real `gh`. Returns the service + a fake repo dir.
+    static func remoteSetup() async -> (svc: OrchestraService, graph: RepoGraph, rules: RemoteRules, repo: String) {
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let (graph, rules) = RepoScripts.withRemote(on: fake)
+        rules.reachable(remote: "origin", src: "refs/pull/7/head")
+        let (svc, _, _, _, _, base) = TestEnv.make(proc: fake)
+        await svc.setGh(FakeGh(available: false))
+        return (svc, graph, rules, TestEnv.repo(base))
+    }
+
     @Test("recompute on a pr# parent card resolves the private ref → inSync, parentIsRemote true")
     func remoteParentRecomputeInSync() async throws {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let (svc, _, _, repo) = await Self.remoteSetup()
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        await svc.stopRemoteWatch(card.id)                   // drive recompute deterministically
         await svc.recomputeTreeStat(card.id)                 // the funnel's ~750ms recompute, run directly
         let ts = try #require(await treeStat(svc, card.id))
         #expect(ts.state == .inSync)                          // was a false .restackNeeded before the fix
@@ -28,25 +43,22 @@ struct RemoteRecomputeTests {
 
     // S2-1: `synced` must record merge-base(child-HEAD, parent), NOT the trusted parent tip. If the
     // parent advances between the child's merge and its `synced` call, over-recording the tip would
-    // mask the un-merged parent work (a false inSync). Real worktree so the child branch actually exists.
+    // mask the un-merged parent work (a false inSync). The child + parent branches are modelled in the
+    // RepoGraph so the merge-base is the true fork point (pinned by GitRevContractTests).
     @Test("S2-1: synced records merge-base(child,parent) — a racy parent advance isn't over-recorded")
     func syncedRecordsMergeBase() async throws {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
-        func g(_ a: String...) throws { #expect(try Proc.run(["git", "-C", repo] + a).ok) }
-        try g("init", "-q", "-b", "main"); try g("config", "user.email", "t@t"); try g("config", "user.name", "t")
-        try "0\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
-        try g("add", "-A"); try g("commit", "-q", "-m", "base"); try g("branch", "parent")
-        let base0 = try Proc.run(["git", "-C", repo, "rev-parse", "parent"]).stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let graph = RepoScripts.withParent(on: fake)          // main base + `parent` branch at that tip
+        let (svc, _, _, _, _, base) = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(base)
+        let base0 = graph.tip("parent")!
 
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child", base: "parent"))
+        graph.branch("child", at: "parent")                   // the child branch really forks parent@base0
 
         // Parent advances to base1 AFTER the child's claimed merge, BEFORE synced (the race).
-        try g("checkout", "-q", "parent")
-        try "p\n".write(toFile: repo + "/p.txt", atomically: true, encoding: .utf8)
-        try g("add", "-A"); try g("commit", "-q", "-m", "p1"); try g("checkout", "-q", "main")
+        RepoScripts.advanceParent(graph, 1)
 
         _ = try await svc.synced(ref: card.ref())
         let link = try #require(await svc.lineage.read(repo: repo, branch: "child"))
@@ -56,10 +68,9 @@ struct RemoteRecomputeTests {
 
     @Test("synced on a pr# parent card resolves the private ref (no 'parent ref not found')")
     func syncedRemoteParent() async throws {
-        let (svc, _, _, base) = TestEnv.makeReal()
-        let repo = base + "/repos/app"
-        _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let (svc, _, _, repo) = await Self.remoteSetup()
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
+        await svc.stopRemoteWatch(card.id)
         _ = try await svc.synced(ref: card.ref())            // must not throw for a remote parent
         #expect(await treeStat(svc, card.id)?.state == .inSync)
     }
