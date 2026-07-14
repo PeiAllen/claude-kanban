@@ -105,16 +105,15 @@ struct TransportReconnectTests {
     func reconnectResubscribes() async throws {
         let box = FakeBox()
         let states = StateBox()
-        let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
+        // Collapse the reconnect backoff to a near-zero wait so the reader thread re-opens immediately —
+        // no real wall-clock backoff to sleep through, no fixed-window timing fragility.
+        let client = ControlClient(transport: { FakeTransport(box) }, source: .app, reconnectBackoff: { _ in 0.001 })
         client.onState = { s in _Concurrency.Task { await states.add(s) } }
         try client.connect()
         _ = client.subscribe()                                     // sends subscribe #1 (detached task)
         try await pollUntil("subscribe #1 written") { box.subscribeCount == 1 }
 
         box.dropCurrent()                                          // drop mid-stream
-        // Poll for the reconnect to converge rather than a fixed 700ms sleep: the reconnect BACKOFF TIMER
-        // is real time, and a heavily-parallel run starves it past a fixed window (in-memory FakeTransport,
-        // so this is a fixed-sleep timing fragility — not a real-socket env flake). Generous cap, deterministic.
         try await pollUntil {
             guard box.opens >= 2, box.subscribeCount == 2 else { return false }
             return await states.values.last == .live
@@ -148,13 +147,12 @@ struct TransportReconnectTests {
     @Test("clientId is stamped on requests and preserved across a reconnect")
     func clientIdAcrossReconnect() async throws {
         let box = FakeBox()
-        let client = ControlClient(transport: { FakeTransport(box) }, source: .app, clientId: "phone-xyz")
+        let client = ControlClient(transport: { FakeTransport(box) }, source: .app, clientId: "phone-xyz",
+                                   reconnectBackoff: { _ in 0.001 })   // near-zero backoff: reconnect drives fast
         try client.connect()
         _ = client.subscribe()                                       // subscribe #1 (detached task)
         try await pollUntil("subscribe #1 written") { box.subscribeClientIds.count == 1 }
         box.dropCurrent()                                            // force a reconnect
-        // Poll for the reconnect + re-subscribe (real backoff timer) rather than a fixed 700ms — see the
-        // reconnectResubscribes note: fixed-sleep timing fragility under parallel load, deterministic poll.
         try await pollUntil { box.subscribeClientIds.count >= 2 }
         let ids = box.subscribeClientIds
         #expect(ids.count >= 2)                                      // subscribed on both transports
@@ -192,7 +190,7 @@ struct TransportReconnectTests {
     func onReconnectFiresOnlyOnReconnect() async throws {
         let box = FakeBox()
         let hits = Counter()
-        let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
+        let client = ControlClient(transport: { FakeTransport(box) }, source: .app, reconnectBackoff: { _ in 0.001 })
         client.onReconnect = { _Concurrency.Task { await hits.bump() } }
         try client.connect()
         _ = client.subscribe()
@@ -200,8 +198,6 @@ struct TransportReconnectTests {
         await yieldBriefly()   // negative: a wrongful first-connect onReconnect gets its chance to fire
         #expect(await hits.value == 0)                             // NOT on the first connect
         box.dropCurrent()                                          // force a reconnect
-        // Poll for the reconnect + onReconnect hook (real backoff timer) rather than a fixed 700ms — same
-        // fixed-sleep timing fragility under parallel load as the other reconnect tests; deterministic poll.
         try await pollUntil {
             guard box.opens >= 2 else { return false }
             return await hits.value >= 1

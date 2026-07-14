@@ -34,6 +34,10 @@ public final class ControlClient: @unchecked Sendable {
     /// of sleeping. The reconnect backoff (`runLoop`) is a `Thread.sleep` on the dedicated reader thread —
     /// not a Task — so it stays wall-clock.
     private let clock: any Clock<Duration>
+    /// The reconnect-backoff SCHEDULE: attempt → seconds to `Thread.sleep` before the next re-open. Injected
+    /// (default: production `backoffMillis` math) so a unit test can collapse it to a near-zero wait and drive
+    /// reconnect cycles deterministically instead of sleeping out real wall-clock backoff on the reader thread.
+    private let reconnectBackoff: @Sendable (Int) -> TimeInterval
     private var pingTask: _Concurrency.Task<Void, Never>?
     private var eventContinuation: AsyncStream<Event>.Continuation?
     /// The rev-carrying continuation for BoardStore's per-card gate (Stage 6.3). Separate from
@@ -66,10 +70,11 @@ public final class ControlClient: @unchecked Sendable {
                             clientId: String? = nil,
                             callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
                             probeTimeout: Duration = .seconds(15),
-                            clock: any Clock<Duration> = ContinuousClock()) {
+                            clock: any Clock<Duration> = ContinuousClock(),
+                            reconnectBackoff: @escaping @Sendable (Int) -> TimeInterval = ControlClient.defaultReconnectBackoff) {
         self.init(transport: { UDSTransport(socketPath: socketPath) }, source: source, clientId: clientId,
                   callTimeout: callTimeout, pingInterval: pingInterval, probeTimeout: probeTimeout,
-                  clock: clock)
+                  clock: clock, reconnectBackoff: reconnectBackoff)
     }
 
     /// Designated init: a factory so reconnect can mint a FRESH transport each attempt.
@@ -77,7 +82,8 @@ public final class ControlClient: @unchecked Sendable {
                 clientId: String? = nil,
                 callTimeout: Duration = .seconds(15), pingInterval: Duration = .seconds(20),
                 probeTimeout: Duration = .seconds(15),
-                clock: any Clock<Duration> = ContinuousClock()) {
+                clock: any Clock<Duration> = ContinuousClock(),
+                reconnectBackoff: @escaping @Sendable (Int) -> TimeInterval = ControlClient.defaultReconnectBackoff) {
         self.makeTransport = transport
         self.source = source
         self.clientId = clientId
@@ -85,6 +91,7 @@ public final class ControlClient: @unchecked Sendable {
         self.pingInterval = pingInterval
         self.probeTimeout = probeTimeout
         self.clock = clock
+        self.reconnectBackoff = reconnectBackoff
     }
 
     private func setState(_ s: ConnectionState) {
@@ -409,8 +416,7 @@ public final class ControlClient: @unchecked Sendable {
             // Backoff-reconnect until success or an explicit close().
             while true {
                 if stateLock.withLock({ stopping }) { closeTransport(); setState(.down); return }
-                let ms = Self.backoffMillis(attempt); attempt += 1
-                Thread.sleep(forTimeInterval: Double(ms) / 1000.0)
+                Thread.sleep(forTimeInterval: reconnectBackoff(attempt)); attempt += 1
                 if stateLock.withLock({ stopping }) { closeTransport(); setState(.down); return }
                 do {
                     try openOnce()
@@ -484,5 +490,11 @@ public final class ControlClient: @unchecked Sendable {
         let jitter = base / 5
         let sign = attempt % 2 == 0 ? 1 : -1
         return max(50, base + sign * (jitter * (attempt % 3)) / 3)
+    }
+
+    /// The production reconnect-backoff schedule: `backoffMillis` in seconds. The injectable default, so
+    /// production behavior is identical while tests can substitute a near-zero schedule.
+    public static let defaultReconnectBackoff: @Sendable (Int) -> TimeInterval = { attempt in
+        Double(backoffMillis(attempt)) / 1000.0
     }
 }

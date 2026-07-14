@@ -301,7 +301,11 @@ public final class RemoteRules: @unchecked Sendable {
             switch e.reach {
             case .reachable:
                 graph.setRef(parts[1], to: e.tip)                      // land the private ref
-                return ProcResult(stdout: "", stderr: "", exitCode: 0)
+                // Real git prints a fetch summary to STDERR on a new-ref fetch ("From <remote>\n * [new ref]
+                // <src> -> <priv>"), never stdout — model it so the contract's stderr-presence matches real git.
+                return ProcResult(stdout: "",
+                                  stderr: "From \(remote)\n * [new ref]         \(parts[0]) -> \(parts[1])\n",
+                                  exitCode: 0)
             case .gone, .unreachable:
                 return ProcResult(stdout: "", stderr: "fatal: couldn't find remote ref \(parts[0])\n", exitCode: 128)
             }

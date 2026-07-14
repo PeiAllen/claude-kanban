@@ -147,6 +147,45 @@ struct MergeRequestCapTests {
         #expect(try await env.svc.inboxPeek(parent.id).filter { $0.text.contains("reminder") }.count == 3)
     }
 
+    /// The schedule itself, driven on the injected clock: no wall-clock waiting, and the interval is NOT
+    /// shrunk — the loop parks the full production 300s base and re-parks the DOUBLED 600s after the first
+    /// tick. Proves the geometric backoff runs on the requested delays: a loop that ignored `nudgeDelay`
+    /// (e.g. slept `.zero`) would never park at ≥300s, so neither `parked` deadline is ever satisfied and the
+    /// test hangs. On the shared clock only the nudge loop parks that far out (tree/diff debounces are ≤750ms,
+    /// the store's max-deferral 2s, recovery grace 1s), so `deadlineAtLeast` scopes cleanly to it.
+    @Test("the nudge loop honors the schedule on the injected clock — no waiting, no interval shrinking")
+    func backoffScheduleDeterministic() async throws {
+        let clock = TestClock()
+        let fake = FakeProc()
+        let emu = GitConfigEmulator(); emu.install(on: fake)
+        let graph = RepoScripts.withChild(on: fake)
+        let env = TestEnv.make(clock: clock, proc: fake)
+        let repo = TestEnv.repo(env.base)
+        let parentTip = graph.tip("parent")!
+
+        let parent = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                      link: ParentLink(parent: "parent", base: parentTip))
+
+        // DO NOT shrink the interval — leave the production 300s base so this exercises the real schedule.
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        let svc = env.svc, pid = parent.id
+        @Sendable func reminders() async -> Int {
+            ((try? await svc.inboxPeek(pid).map(\.text)) ?? []).filter { $0.contains("reminder") }.count
+        }
+
+        await clock.parked(1, deadlineAtLeast: .seconds(299))   // loop parked on the full 300s base
+        #expect(await reminders() == 0)                         // nothing sent before the interval elapses
+
+        clock.advance(by: .seconds(300))
+        await clock.parked(1, deadlineAtLeast: .seconds(599))   // re-parked on the DOUBLED 600s delay
+        try await pollUntil("first reminder lands") { await reminders() == 1 }
+    }
+
     /// The count is persisted, not held in the Task — `rebuildMergeRequestNudges()` re-arms every pending
     /// card at boot, so an in-memory counter would reset each restart and the cap would never fire. Also:
     /// a restart must not resurrect a loop we already gave up on.

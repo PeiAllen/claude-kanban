@@ -5,6 +5,10 @@ cd "$(dirname "$0")/.."
 fail=0
 say() { echo "lint-tests: $1" >&2; fail=1; }
 
+# Tier boundary note: IN-PROCESS UDS (ControlServer + UDSTransport over a private socket path)
+# is unit-legitimate — deterministic, forks nothing, milliseconds. What belongs in ContractTests
+# is raw-fd SETTLING that needs wall-clock (UDSShutdown/UDSSigPipe moved there). Impl-review
+# clarification; see spec §5.
 # 1. No wall-clock waits in the unit tier. NO exemption marker — a test that truly needs to
 #    settle real fds/sockets belongs in ContractTests. Wait.swift's coarse backstop is the
 #    single allowlisted file.

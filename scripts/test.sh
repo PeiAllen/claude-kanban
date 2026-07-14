@@ -41,7 +41,7 @@ for a in ${PASS[@]+"${PASS[@]}"}; do
   case "$a" in
     --filter|--skip|--num-workers|--xunit-output) skip_next=1 ;;   # selector + its value
     --filter=*|--skip=*|--num-workers=*|--xunit-output=*) ;;
-    --parallel|--no-parallel|--list-tests|--show-codecov-path) ;;
+    --parallel|--no-parallel|--list-tests|--show-codecov-path|--skip-build) ;;   # test-only, never build args
     *) BUILD_ARGS+=("$a") ;;
   esac
 done

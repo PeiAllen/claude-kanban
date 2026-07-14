@@ -59,7 +59,17 @@ struct RemoteFetchContractTests {
         catch { return .threw }
     }
 
-    @Test("fetch + ls-remote outcome classes match real git for reachable / missing / unreachable")
+    /// The raw command Shape (mirrors GitRevContractTests): the exact fields the production remote tier
+    /// branches on — exit code EXACTLY (`r.ok`), whether stdout is empty (`lsRemoteTip`'s gone-vs-oid),
+    /// and whether stderr is present. Pinned identical between real git and the RepoScripts rule.
+    private struct Shape: Equatable { let exit: Int32; let stdoutNonEmpty: Bool; let hasStderr: Bool }
+    private func shape(_ r: ProcResult) -> Shape {
+        Shape(exit: r.exitCode,
+              stdoutNonEmpty: !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              hasStderr: !r.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    @Test("fetch + ls-remote command Shape AND outcome classes match real git for reachable / missing / unreachable")
     func matrix() async throws {
         let repo = try realOrigin()
         let real = RemoteParents(proc: RealProc())
@@ -72,13 +82,38 @@ struct RemoteFetchContractTests {
         rules.unreachable(remote: "dead", src: "refs/heads/x")           // unreachable path
         let faked = RemoteParents(proc: fake)
 
-        struct Case { let label: String; let ref: RemoteParentRef; let tip: TipClass; let fetch: FetchClass }
+        struct Case {
+            let label: String; let ref: RemoteParentRef
+            let remote: String; let src: String; let priv: String
+            let tip: TipClass; let fetch: FetchClass
+        }
         let cases = [
-            Case(label: "reachable branch",  ref: .branch(remote: "origin", name: "feature-b"), tip: .oid,         fetch: .landed),
-            Case(label: "missing branch",    ref: .branch(remote: "origin", name: "nope"),      tip: .gone,        fetch: .threw),
-            Case(label: "unreachable path",  ref: .branch(remote: "dead",   name: "x"),         tip: .unavailable, fetch: .threw),
+            Case(label: "reachable branch", ref: .branch(remote: "origin", name: "feature-b"),
+                 remote: "origin", src: "refs/heads/feature-b", priv: "refs/orch/parents/branch/origin/feature-b",
+                 tip: .oid, fetch: .landed),
+            Case(label: "missing branch", ref: .branch(remote: "origin", name: "nope"),
+                 remote: "origin", src: "refs/heads/nope", priv: "refs/orch/parents/branch/origin/nope",
+                 tip: .gone, fetch: .threw),
+            Case(label: "unreachable path", ref: .branch(remote: "dead", name: "x"),
+                 remote: "dead", src: "refs/heads/x", priv: "refs/orch/parents/branch/dead/x",
+                 tip: .unavailable, fetch: .threw),
         ]
+        let env = RemoteParents.remoteEnv()
         for c in cases {
+            // --- Raw command Shape: ls-remote (run the fetch shape AFTER, so the reachable fetch is a new-ref
+            //     fetch on both sides — the deterministic stderr-summary case, matching real git). ---
+            let lsArgv = ["git", "-C", repo, "ls-remote", c.remote, c.src]
+            let rLs = shape(try Proc.run(lsArgv, env: env, timeout: .seconds(20)))
+            let fLs = shape(try await fake.run(lsArgv, cwd: nil, env: env, timeout: nil))
+            #expect(fLs == rLs, "\(c.label): ls-remote Shape RepoGraph \(fLs) != real git \(rLs)")
+
+            let fetchArgv = ["git", "-C", repo, "fetch", "--no-tags", c.remote, "+\(c.src):\(c.priv)"]
+            let rFe = shape(try Proc.run(fetchArgv, env: env, timeout: .seconds(20)))
+            let fFe = shape(try await fake.run(fetchArgv, cwd: nil, env: env, timeout: nil))
+            #expect(fFe == rFe, "\(c.label): fetch Shape RepoGraph \(fFe) != real git \(rFe)")
+
+            // --- Semantic outcome classes through RemoteParents (the production seam). The reachable
+            //     fetch/ls-remote here run against the ref just landed above (up-to-date), still landing. ---
             let rTip = tipClass(await real.lsRemoteTip(repo: repo, c.ref))
             let fTip = tipClass(await faked.lsRemoteTip(repo: repo, c.ref))
             #expect(rTip == c.tip, "\(c.label): real ls-remote \(rTip) != \(c.tip)")
