@@ -99,11 +99,11 @@ flowchart TD
 |---|---|---|
 | B1 | Types, envelope, claim/confirm/ring, compose | claim/token/claimable/handoff-only/migration/ring/editor |
 | B2 | State decls + confirm helper; sibling field; `payloadForStop` | stopDrain confirm + fence + payload + plumbing |
-| B3 | De-drain, stepper claims, watermark, held confirm | relaunchSeed + watermark + de-drain + provisional + crash (remake) |
+| B3 | De-drain, stepper claims, watermark, held confirm, resume-modal env suppression | relaunchSeed + watermark + de-drain + provisional + resume-modal env + crash (remake) |
 | B4 | Broker skeleton; wake ladder; arm; stuck flip; teardown duties; service knobs; activity line | arm/attempts/stuck-flip/wake/wakeIfPending/attach-grace (minus `test_attachClearsGraceStamp` → D1)/teardown + races + `test_idleWakeRestartEmitsActivity` |
 | B5a | Send flip + id + editor semantics | send-verb battery + ring-dedup no-op |
 | B5b | Surfacing + tracker one-shot | surfacing battery (first flip / suppression / clear / re-flip) |
-| D1 | SDK patch, bridge target, `channel-wait` wiring, close hook, `.bridge` + consumers, allowlist | broker/source-gating/pump/SDK batteries |
+| D1 | SDK patch, bridge target, `channel-wait` wiring, close hook + in-flight-handler cancellation (wait-gate leak), `.bridge` + consumers, allowlist | broker/source-gating/pump/SDK batteries + wait-gate leak tests + `test_attachClearsGraceStamp` |
 | D2 | Probe, injected config, argv, consent, computed transport, grace wiring | enablement/consent/capability tests + manual probe |
 | E1 | Pin test, docs seams | E-battery (minus the B4-owned activity test) |
 | F | — | isolated-stack smoke |

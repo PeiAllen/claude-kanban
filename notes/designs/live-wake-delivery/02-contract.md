@@ -537,6 +537,8 @@ classDiagram
 | Agent-agnostic (no `if agentId`) | Everything behind `wakeTransport`/`consentChoreography`/existing capability axes; stop-drain confirm marker (`stopHookActive`) is common to both agents |
 | Keep the native TUI | Channels and clean-restart both preserve tmux+SwiftTerm; no app-server |
 | Resume-seed stays the cold fallback | `relaunchSeed` route (now claim/confirm-gated) |
+| Resume-modal seed swallow (L1 defect list, 5866ea) | Adapter-env threshold suppression on the cold path (fail-soft) |
+| `activeWaitProcesses` wake-gate leak (L1 defect list, 5866ea) | Connection-close hook cancels in-flight handler tasks |
 
 ## Decisions made
 

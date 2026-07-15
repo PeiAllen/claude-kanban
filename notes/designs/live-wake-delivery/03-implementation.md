@@ -193,11 +193,11 @@ sequenceDiagram
 |-------------|---------------------|
 | Inbox claim API + envelope + ring + compose | B1 |
 | Route: stopDrain (sibling field, fence, confirm) + delivery state decls + confirm helper | B2 |
-| Route: relaunchSeed (de-drain, stepper claims, watermark, held confirm) | B3 |
+| Route: relaunchSeed (de-drain, stepper claims, watermark, held confirm, resume-modal env) | B3 |
 | Delivery arm + stuck flip + wake chokepoint + broker skeleton + knobs + activity line | B4 |
 | `send` flip + required id + rev exception + editor semantics | B5a |
 | Delivery-stuck surfacing (badge, tracker one-shot, notification) | B5b |
-| `channel-wait` wiring/close hook/`.bridge`+consumers/allowlist/pump target/SDK patch | D1 |
+| `channel-wait` wiring/close hook (+ handler cancellation, wait-gate leak)/`.bridge`+consumers/allowlist/pump target/SDK patch | D1 |
 | Claude enablement (probe, injected config, argv, consent, computed transport, attach grace) | D2 |
 | E — safety-gate pin + deferred seams | E1 (activity line: B4) |
 | Confirm helper (archive guard, resets) | B2 introduces, B3/B4/D1 reuse |

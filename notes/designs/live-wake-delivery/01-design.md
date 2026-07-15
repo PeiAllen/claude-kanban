@@ -54,6 +54,14 @@ relaunch, full replay, and the flakiness of resume (timeout, session-vanished, t
 - **Codex idle-lag no-op.** Codex idle is detected from the 2 s rollout-tail poll, so a `send` arriving in
   the lag window sees a still-`.running` card and `wake` no-ops; delivery depends on a later turn that may
   never come.
+- **Resume-modal swallow (confirmed post-gate by investigation 5866ea).** `claude --resume` on an
+  old+large session (>~70min AND >~100k tokens, 2.1.209 thresholds) opens a human modal *instead of*
+  running the seeded prompt — a machine-driven cold resume deadlocks there and the seed is swallowed
+  (two live cards observed). Cure: adapter-env threshold overrides, [[02-contract]].
+- **`activeWaitProcesses` leak (confirmed post-gate by 5866ea).** A killed CLI `orchestra wait` leaves
+  its daemon handler parked forever (connection EOF cancels nothing), pinning the wake gate so every
+  later `.nativeReinvoke` wake to that card silently no-ops. Cure: the connection-close hook cancels
+  in-flight handlers, [[02-contract]].
 
 **Defect 3 — the macOS terminal couldn't survive its session being killed. ✅ FIXED (merged).** Historically
 `AgentTerminalView.processTerminated` was a no-op and the pane went **black until the user reselected the
@@ -90,7 +98,7 @@ restart-for-wake instead of hardening it:
 | Job | Replaced by | Empirically verified |
 |-----|-------------|---------------------|
 | Wake an idle **Claude** card (kill + `--resume`) | **Channel push** — the `orchestra-mcp` stdio bridge advertises `claude/channel` and emits `notifications/claude/channel`; the daemon pushes the inbox item over the existing control socket → injects a new turn in-place | **Yes** — real `claude` 2.1.206, idle→turn, **PID unchanged**, ~2 s |
-| Wake an idle **Codex** card (kill + `codex resume`) | **blocking Stop-hook park** (near-term, TUI-preserving) *or* **App Server `turn/start`** (long-horizon control channel) | both **verified** — park keeps the TUI free; `turn/start` costs the attached TUI |
+| Wake an idle **Codex** card (kill + `codex resume`) | **Clean restart** riding the reliable-delivery guarantee (busy-path Stop-drain covers the common case with no restart at all) — *final decision; supersedes the interim park recommendation.* The **blocking Stop-hook park** and **App Server `turn/start`** are both verified and stay documented as deferred options | park + `turn/start` both **verified** (park keeps the TUI free; `turn/start` costs the attached TUI) — neither taken |
 | Drain the inbox safely | Drain **after** delivery is confirmed, not before the resume | design change |
 | Survive a session recreate in the UI | Per-launch **epoch** in the terminal `.id` + a `processTerminated` re-attach (port the iOS reconnect to macOS) | design change |
 
@@ -137,7 +145,7 @@ Per the "empirically test every feature" mandate. Versions: **Claude Code 2.1.20
   is [[../lifecycle-convergence-design|its own approved design]] and is the structural backstop for the
   variable races underneath; this design layers on top and can land before or after it.
 - **Not** removing resume-seed — it stays as the **cold fallback** (session dead, not resumable, channel
-  unavailable, park expired).
+  unavailable, channel unattached).
 - **Not** changing the durable inbox / Stop-drain payload semantics or caps. *(Amended by
   [[02-contract]]: payload format, header, and caps stay byte-identical, but `InboxMessage` gains
   lease fields and removal moves from drain-time to receipt-confirm time — required by the "never
@@ -157,7 +165,7 @@ Per the "empirically test every feature" mandate. Versions: **Claude Code 2.1.20
 | **A — Codex busy-path drain** | Restore the clean busy-path Stop drain: (1) build-probed `--dangerously-bypass-hook-trust`; (2) broaden `CodexHooks` marker to `_report --event`; (3) strip `_comment` from the rendered Codex hooks so Codex parses them. | ✅ **MERGED** (`491109a` + `70db66f`). `bypassHookTrustSupported` + `CodexHooks.sentinel="_report --event"` + `HooksRenderer.renderCodex` strips `_comment`. **Verified working end-to-end on real Codex** (Stop hook drains a queued send at turn-end, no resume). |
 | **C — macOS terminal reconnect** | Reattach the terminal when the card re-enters `live`. | ✅ **MERGED** via convergence (`757d719`/`d7d1a68`). Implemented as a **pure phase-edge decision** — `TerminalReattachDecision.shouldReattachOnLiveEdge(paneAlive:wasLive:isLive:)` + `AgentTerminalView` reattaching on the false→true →live edge (`AgentTerminalView.swift:97-109`). Edge-driven, *not* an epoch-in-`.id` remount. Black-pane-on-recreate bug fixed. |
 | **B — Reliable at-least-once delivery** | **(1) Drain-after-confirm:** mostly *done* via convergence's `pendingSeed` (survives a failed relaunch); remaining = close the narrow **drain→persist crash window** by persisting the delivery intent *before* `inbox.drain`. **(2) Delivery reconciler (the core new work):** a level-triggered per-tick arm that re-drives delivery for any idle (`.live(.waiting)`) card with a non-empty inbox + no delivery in flight — **backoff** + a "delivery-stuck" surfaced state — so a raced/no-op'd `wake` is retried, never stranded. Flip **`send` from `.mutation` → `.convergence`** so it persists a delivery intent the reconciler drives to empty. | 🔜 **OPEN — the main remaining work.** Convergence built the *seams* (reconciler, `PhaseStepper`+`ConvergeContext.inbox`, `VerbKind.convergence`, `phaseGate`) but **no inbox-delivery reconciliation exists yet** — `send`/`wake` are still the imperative event-driven kill+resume path. |
-| **D — Claude no-restart wake** | `orchestra-mcp` advertises `claude/channel`; daemon→bridge push over the control socket emits `notifications/claude/channel`. New `wakeTransport` case; resume-seed → cold fallback. | 🔜 **OPEN — build on merged `main`.** Model as a fast **MutationVerb**; phase+epoch gate "is there a live session to push into?". |
+| **D — Claude no-restart wake** | `orchestra-mcp` advertises `claude/channel`; daemon→bridge push over the control socket emits `notifications/claude/channel`. New `wakeTransport` case; resume-seed → cold fallback. | 🔜 **OPEN — build on merged `main`.** *(As contracted in [[02-contract]]: the channel push is a route inside the internal `wake` primitive — no new verb; `send` is the convergence verb — gated on phase+epoch+a parked bridge poll.)* |
 | **E — Codex no-restart wake** | **Decided:** *kill the restart's jank, don't hold a hook.* Rely on the merged **busy-path drain** (common case, no restart) + a **clean restart** (via Layer B's drain-after-confirm + the merged terminal reconnect) for the rare genuinely-idle cold send. Optional short **grace-park** only if idle-wake restarts prove frequent. App Server `turn/start` remains a documented long-horizon option (costs the TUI — not taken). | 🔜 **OPEN — build on merged `main`.** Mostly *reuses* merged pieces; the new work is Layer B's correctness + the restart-only-when-safe gate. |
 
 ### Foundation now on `main` (lifecycle-convergence — MERGED `f52e640`)
@@ -168,9 +176,10 @@ The **card-lifecycle-convergence** redesign that this work sits on is **merged t
   the black-pane-on-session-recreate bug is fixed. Nothing to build here.
 - **The wake/recovery core is rewritten** — `recovering` is gone; the **`Phase` model + `transition()`
   funnel + per-launch epoch + reconciler (`+Reconcile`/`+Converge`) + the verb contract** are live. So
-  Layers **B/D/E build directly on that model**: the no-restart wake is a fast **MutationVerb** (in-place
-  channel push) and reliable delivery is a **ConvergenceVerb** (enqueue intent → reconciler drives to
-  empty), rather than a rework of the deleted `resumeSeedWake`.
+  Layers **B/D/E build directly on that model**: reliable delivery is a **convergence verb** (`send`
+  enqueues intent → the reconciler's delivery arm drives it to empty) and the no-restart channel push
+  is a **route inside the internal `wake` primitive** (as contracted in [[02-contract]] — no new
+  verb), rather than a rework of the deleted `resumeSeedWake`.
 - **Layer A is merged** (`491109a`) — Codex busy-path drain restored (hook-trust build-probe + broadened
   `_report --event` sentinel).
 
@@ -206,14 +215,19 @@ no live session to push into:
 | Card state at `send` | Claude path | Codex path |
 |----------------------|-------------|------------|
 | **Busy** (`.running`) | Stop hook drains at turn-end (unchanged) | Stop hook drains at turn-end (once Layer A restores it) |
-| **Idle, live session** (`.waiting`) | **Channel push** injects a turn in-place (no restart) | **App Server `turn/start`** or **parked Stop hook** (no restart) |
+| **Idle, live session** (`.waiting`) | **Channel push** injects a turn in-place (no restart) | **Clean restart** (relaunch-seed, confirm-gated) — *final decision; park/`turn/start` deferred* |
 | **Idle, no live session** (dead / not resumable / channel not attached) | resume-seed relaunch (cold fallback) | resume-seed relaunch (cold fallback) |
 | **Never-prompted / provisional** | delivered on its first turn's Stop; guaranteed (Layer B) | same |
 
-The inbox item is removed **only** after the channel/turn-start/drain confirms receipt (Layer B) — a failed
+The inbox item is removed **only** after the channel/relaunch/drain confirms receipt (Layer B) — a failed
 push leaves it durable for the next attempt, so no send is ever lost.
 
-## Parked Stop-hook — verified properties & design requirements (the Codex near-term wake)
+## Parked Stop-hook — verified properties (DEFERRED research seam; superseded by clean-restart)
+
+> **Status:** the park is **not** the Codex design — the final decision (see Open questions) is a
+> clean restart, with the park kept as a deferred option should idle-wake restarts prove frequent.
+> The empirical record below stays because it is what makes the deferred option *credible*, and
+> its "design requirements" column is the spec a future revival must meet.
 
 Empirically settled (Claude 2.1.206 decisive; Codex 0.142.5 tracking the same, final 18-min hold pending):
 
@@ -274,18 +288,20 @@ auto-notified:
 the visible stuck state + notify + conclude-waiters once it's clearly **not self-healing** (N failures /
 dead-and-unresumable). Don't cry wolf on a 2 s race.
 
-**Net:** the parked hook meets the "idle a day · never a timeout drop · never a restart · survives daemon
-restart · glance-safe" bar, with two must-dos: **(1) set a large explicit timeout**, and **(2) track
-park-state out-of-band and render parked-as-idle**. Release is keyed on **real input**, so viewing never
-disturbs it and an accidental release is free.
+**Net (would-be-viable record):** the parked hook meets the "idle a day · never a timeout drop ·
+never a restart · survives daemon restart · glance-safe" bar, with two must-dos: **(1) set a large
+explicit timeout**, and **(2) track park-state out-of-band and render parked-as-idle**. Release is
+keyed on **real input**, so viewing never disturbs it and an accidental release is free. *(These
+are revival requirements for the deferred seam, not shipping design.)*
 
 ## App Server Option A — costs vs the tmux+CLI baseline (a deliberate long-horizon bet, NOT taken now)
 
-**Decision (2026-07-10): we are NOT taking the app-server bet.** Codex's no-restart wake is the **parked
-Stop-hook**; app-server Option A stays documented as a future option only. This section records *why* — the
-concrete features the current tmux+CLI model gives for free that Option A would trade away. (Note: this
-asymmetry is **Option-A-only** — the Claude channel path and the Codex parked-hook path both keep the
-tmux+CLI model fully intact.)
+**Decision (2026-07-10): we are NOT taking the app-server bet.** Codex's idle-cold wake is the
+**clean restart** (Layer E; the parked Stop-hook is the deferred alternative); app-server Option A
+stays documented as a future option only. This section records *why* — the concrete features the
+current tmux+CLI model gives for free that Option A would trade away. (Note: this asymmetry is
+**Option-A-only** — the Claude channel path and the Codex tmux-based paths both keep the tmux+CLI
+model fully intact.)
 
 | Property (tmux+CLI today) | How tmux gives it | What Option A costs |
 |---------------------------|-------------------|---------------------|
@@ -325,10 +341,10 @@ flowchart LR
   Send --> Wake{wake · transport?}
   Wake -->|Claude: channel| Bridge[orchestra-mcp bridge]
   Bridge -->|notifications/claude/channel| CS[live Claude session · same PID]
-  Wake -->|Codex: turn/start or parked hook| CX[live Codex session · same PID]
+  Wake -->|Codex idle-cold: clean restart| CX[codex session · relaunch-seed]
   Wake -->|no live session| RS[resume-seed · cold fallback]
   CS -->|ack| Deq[remove from inbox AFTER receipt]
-  CX -->|ack| Deq
+  CX -->|readiness confirm| Deq
   Enq -.stays durable until ack.-> Deq
 ```
 
@@ -336,7 +352,7 @@ flowchart LR
 
 | Decision | Why | Rejected |
 |----------|-----|----------|
-| In-place **control-channel** wake per agent, not a hardened relaunch | The only reliable no-restart wake; empirically proven for Claude channels (PID-stable) | Harden resume-seed; keystroke/send-keys nudge (already retired as flaky) |
+| In-place **control-channel** wake for Claude, not a hardened relaunch | The only reliable no-restart wake; empirically proven for Claude channels (PID-stable). *(Amended: for Codex the final call is the inverse — a **clean restart made reliable** by Layer B, since its only no-restart channels cost the TUI or hold a hook; park/`turn/start` deferred.)* | Harden resume-seed alone; keystroke/send-keys nudge (already retired as flaky) |
 | **Channels** for Claude, hosted **inside `orchestra-mcp`** | Reuses the existing per-session stdio bridge + its control-socket link; no Node process | A separate Node channel server per session (extra dependency/process) |
 | Keep resume-seed as the **cold fallback** | A dead/unresumable/unattached session has nothing to push into | Remove it (no fallback for cold sessions) |
 | **Drain-after-confirm** | The current drain-before-resume is a real data-loss path | Keep folding into an unconfirmed seed |

@@ -138,6 +138,8 @@ flowchart LR
 | Delivery-stuck visibility (human primary) | stuck lifecycle + surfacing tests |
 | Background-work safety | `test_backgroundTasksHoldIsTypeAgnostic` + `test_armSkipsRunning` |
 | Mass-restart on daemon/bridge bounce | attach-grace tests + `test_remakeConvergesAllLeaseStates` |
+| Resume-modal seed swallow (5866ea fold) | `test_claudeResumeEnvSuppressesResumeModal` |
+| `activeWaitProcesses` wake-gate leak (5866ea fold) | `test_eofCancelsParkedWaitHandler`, `test_deadWaitClientReleasesWakeGate` |
 
 ## Decisions made
 
