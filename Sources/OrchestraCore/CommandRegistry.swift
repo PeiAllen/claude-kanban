@@ -301,6 +301,16 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: cap)
             },
 
+            "publish-image": { svc, p, _ in
+                let t = try await svc.resolveRef(try p.string("ref"))
+                let path = try p.string("path")
+                guard (path as NSString).isAbsolutePath else {
+                    throw OrchestraError.invalidParams("image path must be absolute")
+                }
+                return try JSONValue(encodable: try await svc.publishImage(
+                    t.id, sourcePath: path, caption: p.optString("caption")))
+            },
+
             "send-keys": { svc, p, src in
                 // Decode + validate the chord BEFORE any session work so a bad request fails cleanly.
                 guard let arr = p["keys"]?.arrayValue, !arr.isEmpty else {
