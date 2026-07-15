@@ -33,16 +33,29 @@ When another card holds the lock you'll see `[build-lock] waiting for slot…` o
 wait is bounded and **fails open**, so it can never fail your build. Details + the numbers:
 `notes/designs/build-contention.md`.
 
-## Keep the test suite tiered — don't let it re-clump
+## The test suite is tiered — run the unit tier per task, `--all` once at the merge gate
 
-The mutex caps the damage from *concurrency*; it does nothing about the **165s baseline that
-concurrency multiplies**. `OrchestraCoreTests` is already the biggest target in the repo
-(123 files / 17k lines), `swift test` cannot skip the MCP/swift-nio dependency tree, and
-every target and test you add raises that baseline permanently — for every card, forever.
+The suite is split into three targets that mirror `Sources/` (`Tests/UnitTests` — pure logic
+over `FakeProc`/`TestClock`, per-test private roots, forks nothing; `Tests/ContractTests` —
+real git/tmux/fd behavior pinning the fakes' fidelity; `Tests/E2ETests` — built binaries +
+the slow-repo fixture, parameterized over BOTH agents):
 
-When adding code, ask whether it grows the critical path, and **keep tests tiered** (a fast
-unit tier agents run constantly; a slow integration tier run deliberately) rather than one
-monolithic target everything must compile. Don't collapse the tiers back together.
+- **Per task / inner loop:** `./scripts/test.sh` — the unit tier, ~1,050 tests in seconds.
+- **Touching git/tmux command generation:** add `--contract`. **Touching binaries/daemon
+  wiring:** add `--e2e`. Selection is ADDITIVE — a scoped run is never smaller than the
+  full unit tier (a change-to-test map that skips is provably unsafe; see the design doc).
+- **Merge gate, once per PR:** `./scripts/test.sh --all` (also runs `scripts/lint-tests.sh`).
+
+Do NOT mandate full-suite runs after every task in plans — that is the pattern that made
+past projects cost wall-clock days.
+
+Keep it from re-clumping (enforced by `scripts/lint-tests.sh`): no wall-clock sleeps in the
+unit tier (use `TestClock.advance`, a `Gate`/`SyncGate`, or `pollUntil` from TestSupport);
+no ambient path statics (every test gets private roots via `TestEnv`); no real forks
+(`FakeProc` is the default seam — a genuinely-real test belongs in ContractTests). New tests
+go in the mirror position of the source file they cover.
+
+Full rationale + the mechanisms: `notes/designs/2026-07-13-test-suite-redesign.md`.
 
 ## Scratch / experiments — keep them contained
 Do all throwaway work — probes, experiments, scratch scripts, dumped output, temporary

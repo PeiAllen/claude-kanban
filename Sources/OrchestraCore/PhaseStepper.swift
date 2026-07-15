@@ -39,6 +39,9 @@ public struct ConvergeContext: Sendable {
     public let adapters: AgentRegistry
     /// The card durable message queue — Teardown's dedup child-nudge writes through here.
     public let inbox: Inbox
+    /// The scratch-root fence — teardown's `rm -rf` guard. Carried as a plain value (the stepper
+    /// bundle has no Config); always the owning service's `config.scratchRoot`.
+    public let scratchRoot: String
     /// The sole `phase` writer, closed over the service actor. Steppers make progress ONLY through here.
     /// `mutate` is the companion field-write applied INSIDE the same `store.update` patch as the phase, so
     /// e.g. clearing `pendingSeed` (carried #1) or setting `archived`/`deadDetail`/`parentBranch`/`spawnBase`
@@ -65,14 +68,15 @@ public struct ConvergeContext: Sendable {
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
 
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
-                adapters: AgentRegistry, inbox: Inbox,
+                adapters: AgentRegistry, inbox: Inbox, scratchRoot: String,
                 transition: @escaping @Sendable (UUID, Phase, Int?, Phase.Kind?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
                 emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
-        self.adapters = adapters; self.inbox = inbox; self.transition = transition
+        self.adapters = adapters; self.inbox = inbox; self.scratchRoot = scratchRoot
+        self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
     }
@@ -307,12 +311,12 @@ public struct TeardownStepper: PhaseStepper {
             // Truly ephemeral — rm -rf, DOUBLE-guarded (debug `assert` + the release-safe runtime `if`).
             // Conservative mode (post-corrupt boot, carry #3) removes NOTHING — the scratch dir's ownership
             // is as unprovable as a worktree's from an empty board, so the reclaim is gated on it too.
-            assert(card.cwd.hasPrefix(Config.scratchRoot + "/"))   // never rm -rf outside the scratch root
+            assert(card.cwd.hasPrefix(ctx.scratchRoot + "/"))   // never rm -rf outside the scratch root
             let conservative = await ctx.worktrees.conservativeMode
             // Re-fence AFTER that actor hop: the `rm -rf` is the point of no return, so it takes the
             // LAST possible ownership check (a reopen landing during the hop must not lose its cwd).
             guard await stillArchiving(card.id, ctx), !conservative,
-                  card.cwd.hasPrefix(Config.scratchRoot + "/") else { break }
+                  card.cwd.hasPrefix(ctx.scratchRoot + "/") else { break }
             try? FileManager.default.removeItem(atPath: card.cwd)
         case .borrowed:
             break   // Orchestra never deletes a borrowed dir.

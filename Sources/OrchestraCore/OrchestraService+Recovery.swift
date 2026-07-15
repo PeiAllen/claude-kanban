@@ -636,8 +636,8 @@ extension OrchestraService {
             if let old = readinessWaiters[id] { old.cont.resume(returning: .superseded) }
             readinessWaiters[id] = (token, cont)
             let grace = max(0, graceSeconds)
-            _Concurrency.Task { [weak self] in
-                try? await _Concurrency.Task.sleep(for: .seconds(grace))
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .seconds(grace))
                 await self?.timeoutReadiness(id, token: token)
             }
         }
@@ -679,5 +679,18 @@ extension OrchestraService {
         await withCheckedContinuation { cont in
             DispatchQueue.global().async { cont.resume(returning: work()) }
         }
+    }
+
+    /// Async-closure twin of `offActor` (Task 5, proc threading): git probes that now route through the
+    /// async `ProcRunning` seam can no longer live in a sync closure. `Task.detached` keeps the body off
+    /// the caller's actor exactly like the DispatchQueue hop — `RealProc` still blocks only the detached
+    /// task's thread, and a `FakeProc` gate SUSPENDS there instead of wedging a dispatch thread.
+    nonisolated func offActor<T: Sendable>(_ work: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await _Concurrency.Task.detached { try await work() }.value
+    }
+
+    /// Async-closure twin of `offActorValue` — see the async `offActor` overload above.
+    nonisolated func offActorValue<T: Sendable>(_ work: @escaping @Sendable () async -> T) async -> T {
+        await _Concurrency.Task.detached { await work() }.value
     }
 }

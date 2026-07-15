@@ -6,6 +6,12 @@ public struct ProcResult: Sendable {
     public let stderr: String
     public let exitCode: Int32
     public var ok: Bool { exitCode == 0 }
+
+    public init(stdout: String, stderr: String, exitCode: Int32) {
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exitCode = exitCode
+    }
 }
 
 /// Thin wrapper around `Process` for running git/tmux/agents with `[String]` argv (never an

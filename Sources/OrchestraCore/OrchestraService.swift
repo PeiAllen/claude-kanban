@@ -5,6 +5,16 @@ import Foundation
 /// truth is federated (tasks.json + tmux liveness + git).
 public actor OrchestraService {
     public private(set) var config: Config
+    /// Every production sleep (nudge backoff, debounces, watch polls, recovery grace) runs on this
+    /// clock; tests inject a TestClock and ADVANCE it instead of waiting. `nonisolated let` so
+    /// off-actor closures can capture it.
+    nonisolated let clock: any Clock<Duration>
+    /// The subprocess seam for the components the hidden-integration suites reach git through
+    /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
+    nonisolated let proc: any ProcRunning
+    /// The one sync git probe (`git remote`, memoized by GitRemotesCache) — injectable because the
+    /// memo's compute closure can't ride the async seam. Tests pass `{ _ in [] }`.
+    nonisolated let gitRemotesProbe: @Sendable (String) -> [String]
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
@@ -43,10 +53,10 @@ public actor OrchestraService {
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
     /// Branch-tree lineage store (git-config parent links). The single writer; `Task.parentBranch`
-    /// is a cache derived from it at spawn / set-parent.
-    let lineage = BranchLineage()
+    /// is a cache derived from it at spawn / set-parent. Built in init over the service's own `proc`.
+    let lineage: BranchLineage
     /// The isolated remote-parent tier (BT6): hardened `fetch`/`lsRemoteTip` for remote bases + watch.
-    let remoteParents = RemoteParents()
+    let remoteParents: RemoteParents
     /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
     /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
     var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
@@ -232,8 +242,19 @@ public actor OrchestraService {
                 devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
-                orchestraBin: String = siblingBinary("orchestra")) {
+                orchestraBin: String = siblingBinary("orchestra"),
+                clock: any Clock<Duration> = ContinuousClock(),
+                // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
+                // RemoteParents): a defaulted RealProc lets a unit test fork real git invisibly to
+                // every lint. The caller chooses — production passes RealProc + the real probe.
+                proc: any ProcRunning,
+                gitRemotesProbe: @escaping @Sendable (String) -> [String]) {
         self.config = config
+        self.clock = clock
+        self.proc = proc
+        self.gitRemotesProbe = gitRemotesProbe
+        self.lineage = BranchLineage(proc: proc)
+        self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
@@ -437,7 +458,7 @@ public actor OrchestraService {
         // never fires a spurious warning.
         var siblingCard: Task? = nil
         if input.scratch {
-            cwd = Config.scratchDir(id)
+            cwd = config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
             origin = .scratch
             realRepo = input.repo            // optional context only; never resolved/allowlisted
@@ -577,8 +598,9 @@ public actor OrchestraService {
     ///  (a) never touch a dir whose tmux session is live (agent-agnostic — rides `sessions.list()`);
     ///  (b) never touch a dir modified within the mtime grace window — a just-spawned dir whose card /
     ///      session hasn't registered yet must survive the race.
-    public func sweepOrphanScratch(root: String = Config.scratchRoot,
+    public func sweepOrphanScratch(root: String? = nil,
                                    graceInterval: TimeInterval = 300) async {
+        let root = root ?? config.scratchRoot
         // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
         // "nothing is live" — bail rather than delete every scratch dir, live ones included. Kept
         // on-actor (a pure store read, no IO) so the off-actor hop below only runs once we know
@@ -854,7 +876,8 @@ public actor OrchestraService {
         let settings = ReadOnlyLaunch.settingsJSON(
             cwd: t.cwd,
             gitDir: ReadOnlyLaunch.gitDir(repo: t.repo, worktreeName: name))
-        let settingsPath = "\(Config.dataDir)/readonly-\(t.shortId).json"
+        let settingsPath = "\(config.runtimeStateDir)/readonly-\(t.shortId).json"
+        try FileManager.default.createDirectory(atPath: config.runtimeStateDir, withIntermediateDirectories: true)
         try settings.write(toFile: settingsPath, atomically: true, encoding: .utf8)
 
         let session = sessions.sessionName(t.id)
@@ -1088,7 +1111,14 @@ public actor OrchestraService {
 
     @discardableResult
     public func setConfig(_ patch: (inout Config) -> Void) -> Config {
+        let scratchRoot = config.scratchRoot
+        let runtimeStateDir = config.runtimeStateDir
         patch(&config)
+        // Non-wire runtime paths are NOT settable via config replacement — scratchRoot is the
+        // fence PhaseStepper checks immediately before `rm -rf`, and a control-plane client
+        // decodes+replaces the whole Config. Preserve the running instance's values always.
+        config.scratchRoot = scratchRoot
+        config.runtimeStateDir = runtimeStateDir
         resolver = PathResolver(config: config)
         worktrees = WorktreeRegistry(config: config, resolver: resolver)
         return config
@@ -1196,6 +1226,7 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },
