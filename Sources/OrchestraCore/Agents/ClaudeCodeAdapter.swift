@@ -155,6 +155,9 @@ public struct ClaudeCodeAdapter: Adapter {
         // its own dir, so it composes with (never clobbers) the delegation skill. Best-effort, keyed via
         // forAgent(id) — no `if claude` here. Installed on every spawn + recovery (this runs from both).
         TreeDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-tree/SKILL.md")
+        // Image publishing is an explicit agent action, rather than a parser over arbitrary terminal paths.
+        // Deliver the neutral instructions as an independent Claude project skill on every launch.
+        ImageDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-image-publishing/SKILL.md")
     }
 
     private func modelFlag(_ model: String?) -> [String] {

@@ -277,6 +277,9 @@ public struct CodexAdapter: Adapter {
         if let tree = TreeDocs.forAgent(id) {
             AgentsFileComposer.upsert(section: "tree", content: tree, at: agentsPath)
         }
+        if let images = ImageDocs.forAgent(id) {
+            AgentsFileComposer.upsert(section: "image-publishing", content: images, at: agentsPath)
+        }
         // Render + install the managed Codex hooks file (per-launch; the daemon renders nothing), pointing
         // at the live orchestra binary with `--agent codex` baked in. Two hooks: SessionStart→`session`
         // (column/mode/self-id orientation) and Stop→`stop` (drain the durable inbox at turn-end, parity
