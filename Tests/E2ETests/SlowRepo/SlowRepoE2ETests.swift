@@ -91,7 +91,10 @@ struct SlowRepoFixtureTests {
 }
 
 @Suite("Slow-repo lifecycle E2E — SMOKE (both agents)",
-       .enabled(if: IntegrationSupport.gitAvailable && IntegrationSupport.tmuxAvailable), .serialized)
+       .enabled(if: IntegrationSupport.gitAvailable && IntegrationSupport.tmuxAvailable))
+// NOT .serialized (was, historically): each agent case owns a private base, a private cp -R copy
+// of the read-only template, and its own tmux server (orch-slow-<uuid>) — nothing contends, so the
+// two slow checkouts overlap and the merge gate's pole is one checkout, not two back-to-back.
 final class SlowRepoE2ETests {
     // one harness per test instance (swift-testing makes a fresh instance per case/arg)
     let base: String
