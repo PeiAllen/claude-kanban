@@ -108,13 +108,34 @@ handle `requestOpenLink` in `AgentTerminalView.Coordinator`.
 - Only the `https://orchestra.invalid/media/<UUID>` form is intercepted. Any other link retains
   SwiftTerm's current behavior.
 - Command-clicking a valid reference fetches the media record and presents an AppKit popover anchored at
-  the activation point. It contains the image at a bounded size, the caption, and an open-in-full-preview
-  action.
+  the activation point. It contains a fit-to-window image preview, the caption, and compact Copy and Open
+  actions.
 - The popover closes on Escape, clicking outside it, selecting another reference, changing cards, or
   scrolling the terminal. Closing on scroll is intentional: the reference has moved, so the preview never
   looks pinned to unrelated transcript content.
 - Failure, expiry, MIME rejection, or a transport error produces brief in-place feedback and leaves the
   terminal unchanged.
+
+## Preview actions, zoom, and pan
+
+The popover's image is a native AppKit preview rather than an image embedded in the terminal grid.
+
+- **Copy image** writes an actual image to `NSPasteboard`, using the exact PNG source bytes when available
+  and a PNG representation generated from the decoded image for JPEG. It does not copy the media URL,
+  caption, or a temporary filesystem path. The action briefly changes to "Copied" after a successful
+  pasteboard write.
+- **Open** materializes the exact fetched bytes in an app-owned temporary preview cache with a safe
+  UUID filename and the validated `.png` or `.jpg` extension, then calls `NSWorkspace.shared.open`. macOS
+  selects the user's default image viewer. Cache files stay available until the next app launch's
+  age-based cleanup, so an external viewer never races a file deletion.
+- The image starts fitted inside a bounded preview area. A native `NSScrollView` hosts the image and
+  supports pinch magnification plus compact minus, reset-to-fit, and plus controls. Magnification ranges
+  from fit to the larger of 8× fit and the image's native 1:1 scale.
+- Once magnified above fit, dragging directly on the image pans its scroll view; trackpad scrolling and
+  the scroll bars pan as well. At fit, drag does nothing, so it cannot look like a terminal drag or move
+  the popover away from its transcript reference.
+- Copy, Open, zoom, and pan all live inside the popover. They never send a mouse event to tmux or the
+  provider TUI.
 
 The embedded tmux configuration advertises `hyperlinks` in addition to its current `sixel` feature and
 keeps `allow-passthrough on`. A proof test must verify the full embedded path rather than assuming that
@@ -153,15 +174,18 @@ Automated coverage includes:
   and plain-text fallback;
 - the client link policy, which accepts only valid Orchestra media URLs and rejects ordinary web or file
   links;
+- temporary preview-cache naming and cleanup, plus the image-copy conversion policy for PNG and JPEG;
 - existing-command compatibility and the agent-instruction document installation paths.
 
 Native SwiftTerm popover placement and the two real agent renderers remain manual acceptance coverage,
 because they depend on the actual AppKit terminal and provider TUI rather than a fake terminal buffer.
+Manual acceptance also confirms that Copy pastes pixels into another image-capable app, Open uses the
+configured default viewer, and a magnified image pans under both mouse drag and trackpad scroll.
 
 ## Scope and non-goals
 
 This feature does not add a persistent image shelf, a rich transcript renderer, Sixel/Kitty/iTerm image
 interchange, automatic parsing of paths, direct filesystem URL handling, or passive hover activation. It
 does not alter the existing image-paste behavior. iOS receives the opaque-link resolver only after the
-macOS proof succeeds; mobile tap/hover semantics are intentionally a follow-up rather than a second
-unproven input path in this change.
+macOS proof succeeds; mobile tap/hover, copy, open, and zoom semantics are intentionally a follow-up
+rather than a second unproven input path in this change.
