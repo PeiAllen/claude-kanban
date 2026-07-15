@@ -11,6 +11,52 @@ shared code; if something genuinely needs agent-specific handling, isolate it be
 boundary. Before calling a change done, sanity-check it against **at least Claude and Codex** —
 a fix that only works for the agent you happened to test is a regression for the rest.
 
+## Always build via `scripts/` — never a bare `swift build`
+
+Builds on this machine are **contention-bound, not CPU-bound**. Measured: one cold
+`swift build --build-tests` takes **165s**, but **three concurrent ones take 520s *each*** —
+degradation is super-linear, so concurrent building is pure loss (3 serialized finish sooner
+than 3 in parallel) and it drags the Orchestra app and daemon down with it (daemon RPC p95:
+6.5ms → 22ms). The reported "8m36s cold build" *was* three cards building at once.
+
+So every heavy build goes through a **machine-wide build mutex**:
+
+```sh
+scripts/build.sh          # instead of `swift build`
+scripts/test.sh           # instead of `swift test`
+scripts/build-app.sh      # app bundle (also takes the SHIP mutex)
+```
+
+A bare `swift build` **bypasses the mutex** and re-creates the problem for every other card.
+If you need a raw invocation, wrap it: `scripts/lib/with-lock.sh build -- swift build …`.
+When another card holds the lock you'll see `[build-lock] waiting for slot…` on stderr; the
+wait is bounded and **fails open**, so it can never fail your build. Details + the numbers:
+`notes/designs/build-contention.md`.
+
+## The test suite is tiered — run the unit tier per task, `--all` once at the merge gate
+
+The suite is split into three targets that mirror `Sources/` (`Tests/UnitTests` — pure logic
+over `FakeProc`/`TestClock`, per-test private roots, forks nothing; `Tests/ContractTests` —
+real git/tmux/fd behavior pinning the fakes' fidelity; `Tests/E2ETests` — built binaries +
+the slow-repo fixture, parameterized over BOTH agents):
+
+- **Per task / inner loop:** `./scripts/test.sh` — the unit tier, ~1,050 tests in seconds.
+- **Touching git/tmux command generation:** add `--contract`. **Touching binaries/daemon
+  wiring:** add `--e2e`. Selection is ADDITIVE — a scoped run is never smaller than the
+  full unit tier (a change-to-test map that skips is provably unsafe; see the design doc).
+- **Merge gate, once per PR:** `./scripts/test.sh --all` (also runs `scripts/lint-tests.sh`).
+
+Do NOT mandate full-suite runs after every task in plans — that is the pattern that made
+past projects cost wall-clock days.
+
+Keep it from re-clumping (enforced by `scripts/lint-tests.sh`): no wall-clock sleeps in the
+unit tier (use `TestClock.advance`, a `Gate`/`SyncGate`, or `pollUntil` from TestSupport);
+no ambient path statics (every test gets private roots via `TestEnv`); no real forks
+(`FakeProc` is the default seam — a genuinely-real test belongs in ContractTests). New tests
+go in the mirror position of the source file they cover.
+
+Full rationale + the mechanisms: `notes/designs/2026-07-13-test-suite-redesign.md`.
+
 ## Scratch / experiments — keep them contained
 Do all throwaway work — probes, experiments, scratch scripts, dumped output, temporary
 files — inside **`./.scratch/`** (gitignored). Don't scatter temp files across the repo or

@@ -31,16 +31,27 @@ public actor TaskStore {
     private var debounceInterval: Duration = .milliseconds(500)
     /// Hard cap: an always-active card is checkpointed at least this often since its first deferred write.
     private var maxDeferral: Duration = .seconds(2)
-    /// When the current pending burst first deferred a write — drives the `maxDeferral` checkpoint.
-    private var firstDeferredAt: ContinuousClock.Instant? = nil
+    /// The hard-cap sleeper, armed at the burst's FIRST deferred write and racing the debounce
+    /// timer: whichever fires first flushes and cancels the other. Both sleep on the injected
+    /// clock — one timeline, so a TestClock advance exercises debounce AND cap deterministically.
+    private var persistCap: _Concurrency.Task<Void, Never>? = nil
 
     /// Test seam: tune the debounce quiet-period.
     func setPersistDebounce(_ d: Duration) { debounceInterval = d }
     /// Test seam: tune the max-deferral checkpoint.
     func setMaxDeferral(_ d: Duration) { maxDeferral = d }
 
-    public init(path: String = Config.tasksPath) {
+    /// Scheduling runs on `clock` (production: ContinuousClock — monotonic, wall-clock-jump-proof);
+    /// `now()` stamps PERSISTED timestamps only (updatedAt, corrupt-backup names), never scheduling.
+    private let clock: any Clock<Duration>
+    private let now: @Sendable () -> Date
+
+    public init(path: String = Config.tasksPath,
+                clock: any Clock<Duration> = ContinuousClock(),
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.path = path
+        self.clock = clock
+        self.now = now
     }
 
     /// On-disk payload shape (post-upgrade). Pre-upgrade files are a bare `[Task]` array.
@@ -80,7 +91,7 @@ public actor TaskStore {
             // Top-level unparseable: side-line to a TIMESTAMPED backup so a second corruption never
             // clobbers the first (`.corrupt-<ISO8601>`), then boot empty and raise `loadWasCorrupt` so the
             // daemon enters conservative worktree mode (carry #3). Never `removeItem` the prior corrupt file.
-            let stamp = Self.corruptStamp(Date())
+            let stamp = Self.corruptStamp(now())
             let backup = path + ".corrupt-\(stamp)"
             try? FileManager.default.moveItem(atPath: path, toPath: backup)
             FileHandle.standardError.write(Data(
@@ -183,15 +194,16 @@ public actor TaskStore {
     private func persistDebounced() {
         currentRev += 1
         pendingDirty = true
-        let now = ContinuousClock.now
-        if let first = firstDeferredAt {
-            if now - first >= maxDeferral { flushPendingWrites(); return }   // max-deferral checkpoint
-        } else {
-            firstDeferredAt = now
+        if persistCap == nil {                                   // burst's first deferral arms the cap
+            persistCap = _Concurrency.Task { [maxDeferral, clock] in
+                try? await clock.sleep(for: maxDeferral)
+                guard !_Concurrency.Task.isCancelled else { return }
+                await self.flushPendingWrites()                  // max-deferral checkpoint
+            }
         }
         persistDebounce?.cancel()
-        persistDebounce = _Concurrency.Task { [debounceInterval] in
-            try? await _Concurrency.Task.sleep(for: debounceInterval)
+        persistDebounce = _Concurrency.Task { [debounceInterval, clock] in
+            try? await clock.sleep(for: debounceInterval)
             guard !_Concurrency.Task.isCancelled else { return }
             await self.flushPendingWrites()
         }
@@ -202,7 +214,7 @@ public actor TaskStore {
     /// so a later mutation retries.
     public func flushPendingWrites() {
         persistDebounce?.cancel(); persistDebounce = nil
-        firstDeferredAt = nil
+        persistCap?.cancel(); persistCap = nil
         guard pendingDirty else { return }
         pendingDirty = false
         do {
@@ -218,8 +230,8 @@ public actor TaskStore {
     /// and memory already includes the deferred deltas, so its write absorbs them.
     private func cancelPendingFlush() {
         persistDebounce?.cancel(); persistDebounce = nil
+        persistCap?.cancel(); persistCap = nil
         pendingDirty = false
-        firstDeferredAt = nil
     }
 
     /// Insert a new task at the end of its column's order. Fills order; persists. Returns the created
@@ -230,7 +242,7 @@ public actor TaskStore {
         ensureLoaded()
         var t = task
         t.order = nextOrder(in: t.column)
-        t.updatedAt = Date()
+        t.updatedAt = now()
         tasks.append(t)
         try persist()                     // bumps currentRev
         return (t, currentRev)
@@ -247,7 +259,7 @@ public actor TaskStore {
         if let existing = tasks.first(where: { $0.id == task.id }) { return (existing, currentRev, false) }
         var t = task
         t.order = nextOrder(in: t.column)
-        t.updatedAt = Date()
+        t.updatedAt = now()
         tasks.append(t)
         try persist()                     // bumps currentRev
         return (t, currentRev, true)
@@ -285,7 +297,7 @@ public actor TaskStore {
         let before = tasks[idx]
         mutate(&tasks[idx])
         guard tasks[idx] != before else { return (tasks[idx], currentRev) }  // no-op: no persist, no rev bump, no flush
-        tasks[idx].updatedAt = Date()
+        tasks[idx].updatedAt = now()
         if debounceFlush { persistDebounced() } else { try persist() }
         return (tasks[idx], currentRev)
     }

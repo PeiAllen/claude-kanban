@@ -9,6 +9,12 @@ struct CardView: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
 
+    /// Transient state for the id watermark: the post-copy checkmark flash, the pointer being over
+    /// the card (which wakes the id), and over the id itself (which fills its chip).
+    @State private var idCopied = false
+    @State private var idHover = false
+    @State private var cardHover = false
+
     private var isSelected: Bool { model.selectedId == task.id }
     private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
     private var display: PhaseDisplayKey { ds.statusKey }
@@ -50,7 +56,9 @@ struct CardView: View {
                 x: 0, y: isSelected ? 8 : 1)
         .opacity(dimmed ? 0.32 : ((isDead || ds.isStale) ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
+        .overlay(alignment: .topTrailing) { idBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onHover { cardHover = $0 }
         // Clicking a card selects it AND descends into its agent terminal, so the glow, the
         // inspector ring, and the real keyboard first responder all agree after the click.
         .onTapGesture { model.selectAndEnterTerminal(task.id) }
@@ -79,6 +87,52 @@ struct CardView: View {
                 .frame(height: 2)
         }
     }
+
+    // MARK: - Card id watermark
+
+    /// The card's short id (`shortId` — the ref the CLI and agents address it by), tucked into the
+    /// opposite corner from the `f` hint badge. At rest it's a watermark: faint enough that the eye
+    /// skips it while scanning the board. Hovering *the card* (not just the id) brings it to full
+    /// contrast and grows the copy affordance leftward, so the id itself never moves. Click copies;
+    /// `y i` yanks the selected card's id the same way.
+    private var idBadge: some View {
+        Button {
+            model.copy(.id, of: task)
+            idCopied = true
+            _Concurrency.Task {
+                try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
+                idCopied = false
+            }
+        } label: {
+            HStack(spacing: 3) {
+                // Trailing-anchored, so this only ever grows to the left — the id stays put.
+                if awake {
+                    Image(systemName: idCopied ? "checkmark" : "doc.on.doc")
+                        .font(F.ui(8))
+                }
+                Text("#\(task.shortId)")
+                    .font(F.mono(9.5, .medium))
+                    .tracking(0.2)
+            }
+            .foregroundStyle(idCopied ? theme.green.dot : theme.text3)
+            .opacity(awake ? 1 : 0.45)
+            .padding(.horizontal, 4)
+            .frame(height: 15)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(idHover ? theme.chip : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { idHover = $0 }
+        .help(idCopied ? "Copied!" : "Copy card id \(task.shortId)")
+        .padding(.top, 7)
+        .padding(.trailing, 7)
+        .animation(.easeOut(duration: 0.12), value: awake)
+    }
+
+    /// The id is lit — the pointer is anywhere on the card, or a copy just landed.
+    private var awake: Bool { cardHover || idCopied }
 
     // MARK: - Status pill
 
@@ -212,24 +266,33 @@ struct CardView: View {
     /// pill; hidden when in-sync or untracked (`treeStat == nil`). Reads `Task` directly — no store plumbing.
     @ViewBuilder private var treeBadge: some View {
         if let ts = task.treeStat {
-            switch ts.state {
-            case .stale:
-                HStack(spacing: 2) {
-                    Image(systemName: "arrow.down").font(F.ui(8.5))
-                    Text("\(ts.behind)").font(F.mono(10, .medium))
-                }
-                .foregroundStyle(theme.amber.text)
-                .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
-            case .restackNeeded:
-                Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+            // The give-up flag outranks the tracking state: a stalled card still computes stale/↓N underneath,
+            // but "nobody answered the merge-request" is what the human needs to see first.
+            if ts.mergeStalled {
+                Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
                     .foregroundStyle(theme.red.text)
-                    .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
-            case .mergeRequested:
-                Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                    .help("Merge-request unanswered — \(ts.nudges) reminders sent and \(task.parentBranch ?? "the parent") "
+                          + "never merged this branch. Merge it yourself, or re-send the merge-request.")
+            } else {
+                switch ts.state {
+                case .stale:
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.down").font(F.ui(8.5))
+                        Text("\(ts.behind)").font(F.mono(10, .medium))
+                    }
                     .foregroundStyle(theme.amber.text)
-                    .help("Merge requested — waiting for the parent card to squash-merge this branch")
-            case .inSync:
-                EmptyView()
+                    .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
+                case .restackNeeded:
+                    Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
+                        .foregroundStyle(theme.red.text)
+                        .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
+                case .mergeRequested:
+                    Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
+                        .foregroundStyle(theme.amber.text)
+                        .help("Merge requested — waiting for the parent card to squash-merge this branch")
+                case .inSync:
+                    EmptyView()
+                }
             }
         }
     }

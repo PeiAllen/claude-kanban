@@ -10,6 +10,9 @@ extension OrchestraService {
     public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
+        // Set when a re-seat is judged to have been IGNORED by the vendor; emitted after the write below, so
+        // the warning rides a card whose `model` already shows what is really running.
+        var modelReseatIgnored: (requested: String, actual: String)? = nil
 
         // A bring-up STEP owns this card's landing while it is in flight (`inFlightSteps` is the claim, held
         // across its off-actor `kill`+`ensure`). A report must NOT land the card `.live` under it: the step's
@@ -131,11 +134,42 @@ extension OrchestraService {
                 // switches), resolved to a full handle via the adapter; the display label is UI-only
                 // and never becomes the launch id. (Storing the label as the id broke resume/restart.)
                 if let mid = snap.modelId, !mid.isEmpty, mid != task.model.id {
-                    var m = (try? registry.get(task.agentId))?.model(for: mid) ?? AgentModel(id: mid)
+                    // Canonicalize through the catalog: the vendor answers with its DATED id
+                    // (`claude-haiku-4-5-20251001`) where the offline table carries the floating one
+                    // (`claude-haiku-4-5`). `model(for:)` doesn't know the dated form, so it fell back to a
+                    // bare `AgentModel(id:)` with NO contextWindow — and that is the denominator `ctxPct`
+                    // divides by, so the card's context gauge went blank and every later launch used the
+                    // dated id. Resolve the dated form back to its catalog entry and keep the real metadata.
+                    let catalog = (try? registry.get(task.agentId))?.models() ?? []
+                    var m = catalog.first { $0.id == mid }
+                        ?? catalog.first { Self.isModelVariant(mid, of: $0.id) }
+                        ?? AgentModel(id: mid)
                     if let label = snap.modelDisplay, !label.isEmpty { m.displayName = label }
                     task.model = m
                 } else if let label = snap.modelDisplay, !label.isEmpty, label != task.model.displayName {
                     task.model.displayName = label
+                }
+                // Did a `--model` re-seat (restart/handoff/resume) actually take? Fenced on
+                // `pendingModel == nil`, i.e. the relaunch has LANDED and the old process is dead: reports
+                // arriving before that are the DYING session's, and judging them would accuse the vendor of
+                // ignoring a flag it was never passed. That fence needs no epoch, which matters — Codex's
+                // file-tail reports carry none (OrchestraService.swift:382). Compared through the catalog,
+                // never raw `==`: the vendor answers `claude-haiku-4-5-20251001` where the table says
+                // `claude-haiku-4-5`. One warning, then the watch is dropped — never a per-tick drumbeat.
+                if let mid = snap.modelId, !mid.isEmpty,
+                   task.pendingModel == nil, let watch = modelOverrideWatch[id] {
+                    if modelHonored(reported: mid, requested: watch.requested, agentId: task.agentId) {
+                        modelOverrideWatch[id] = nil          // re-seat confirmed by the agent itself
+                    } else if !modelHonored(reported: mid, requested: watch.left, agentId: task.agentId) {
+                        // Neither the model we asked for NOR the one we left — the session deliberately
+                        // switched to a third model (`/model`). Not a vendor fault; stop watching.
+                        modelOverrideWatch[id] = nil
+                    } else if watch.strikes >= 1 {
+                        modelOverrideWatch[id] = nil
+                        modelReseatIgnored = (watch.requested, mid)   // emitted below, once the write lands
+                    } else {
+                        modelOverrideWatch[id] = (watch.requested, watch.left, watch.strikes + 1)
+                    }
                 }
                 // session_name (a /rename mirror): apply only a *genuine* change, so a statusline
                 // echoing the `--name` we launched with never prematurely clears `titleProvisional`
@@ -144,8 +178,26 @@ extension OrchestraService {
                     task.title = name
                     task.titleProvisional = false
                 }
-                // The agent's observed run-state maps onto a `.live(_)` phase.
-                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding {
+                // The agent's observed run-state maps onto a `.live(_)` phase — UNLESS doing so would rip a
+                // card with an OUTSTANDING LAUNCH INTENT out of its being-born phase on the word of a report
+                // we cannot attribute to the relaunched session.
+                //
+                // `.relaunching → .live` is a legal edge and report()'s phase write is only epoch-fenced when
+                // the report is STAMPED. An unstamped one (Codex's file-tail reports carry no epoch) from the
+                // still-dying old session would otherwise land the card `.live` before the stepper ever
+                // claims it: the relaunch is then never performed (no stepper visits a `.live` card), and the
+                // staged `pendingSeed`/`pendingModel` are stranded on a card that silently kept running its
+                // OLD session — the handoff dropped, the re-seat replayed onto some later launch.
+                //
+                // Today the daemon happens to be safe only because `reconcile()` runs before `pollTelemetry()`
+                // in the same tick (orchestrad/main.swift), so the tailer never observes an unclaimed
+                // `.relaunching` card. That is an ordering coincidence, not a guarantee. This fence makes the
+                // invariant explicit: only a report proven to come from the CURRENT generation may land a card
+                // that still owes a launch. The stepper (or the adopt path) lands it otherwise, consuming the
+                // intent as it goes.
+                let owesLaunch = task.pendingSeed != nil || task.pendingModel != nil
+                let mayLandBringUp = !(beingBorn && owesLaunch && observedEpoch != task.sessionEpoch)
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
                     task.phase = .live(run)
                 }
                 // A worktree card stays long-lived on a completed turn (`.live(.waiting(.humanTurn))`, set
@@ -178,13 +230,50 @@ extension OrchestraService {
             didChange = true
         }
 
+        // The re-seat did not take: the card is running a model the user did not ask for, and now that
+        // `pendingModel` owns the launch argv the only way that happens is the vendor CLI ignoring `--model`
+        // on resume. Say it out loud rather than let the board quietly show the old model as if nothing had
+        // been asked for. Emitted OUTSIDE the field-delta write above — deliberately: the report that strikes
+        // the vendor out is the SECOND one naming the wrong model, which by definition changes no field
+        // (`model` already holds that wrong value), so a warning gated on `task != before` would never fire.
+        if let ignored = modelReseatIgnored {
+            emitActivity(.warning, task, .daemon,
+                         "re-seat did not take: asked for \(ignored.requested), "
+                         + "but the agent is running \(ignored.actual)")
+        }
+
         // Phase change → the funnel. `observedEpoch` fences a superseded generation (a stale liveness
         // signal is dropped as a no-op). The companion `mutate` carries the dead metadata atomically with
         // the phase write; the funnel emits the upsert, runs conclusions, and fires wake-on-live.
         if targetPhase != before.phase {
+            // report() is the THIRD `.live` landing, besides the two steppers — and it needs their COMPANION
+            // CLEANUP, not just their phase write. When a relaunch's readiness times out, the RelaunchStepper
+            // `break`s (PhaseStepper.swift:256) leaving the card `.relaunching` even though the session came
+            // up, and `runStep` releases its claim (+Reconcile.swift:218). The new session's own report then
+            // finds `bringUpOwnsLanding == false` and lands the card `.live` here, over a legal
+            // `.relaunching → .live` edge (+Lifecycle.swift:132). Without this, `pendingSeed`/`pendingModel`
+            // are stranded SET on a live card that no stepper will visit again — so the next ordinary
+            // restart/resume would replay the handoff seed and silently relaunch on a stale re-seat model,
+            // overriding whatever the session had switched to. Scoped to a landing FROM a being-born phase,
+            // which is the only way an intent can still be outstanding.
+            //
+            // Gated on the report being STAMPED WITH THE CURRENT GENERATION. That is the proof the launch
+            // actually happened and this is the new session talking — only then have the seed and the model
+            // been delivered, and only then may they be consumed. An UNSTAMPED report is not proof of
+            // anything (Codex's file-tail reports carry no epoch), and the dying session can still be writing
+            // rollout lines while the card sits `.relaunching` with its relaunch not yet run; consuming on
+            // one of those would DROP a handoff seed that was never delivered. Fail safe: don't consume.
+            let landsFromBringUp = targetPhase.kind == .live
+                && (before.phase.kind == .relaunching || before.phase.kind == .launching)
+                && observedEpoch == task.sessionEpoch
+            let landingAdapter = try? registry.get(task.agentId)
             let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
                 t.deadReason = targetDeadReason
                 t.deadDetail = targetDeadDetail
+                if landsFromBringUp {
+                    t.pendingSeed = nil
+                    if let landingAdapter { consumeModelReseat(&t, landingAdapter) }
+                }
             }
             if result == .applied {
                 didChange = true

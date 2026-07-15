@@ -204,11 +204,17 @@ public class BoardStore: ObservableObject {
     }()
     #endif
 
+    /// Drives the store's own timers (offline grace, connect retry backoff, toast auto-dismiss).
+    /// Production uses the default `ContinuousClock`; tests inject a manual clock so timer tests
+    /// advance virtual time instead of sleeping.
+    private let clock: any Clock<Duration>
+
     /// No `.noop` default on purpose: every construction site must pass its platform bundle (desktop
     /// `MacPlatform.ui`, iOS `.ios`) so a future macOS call site can't silently no-op clipboard/settings/
     /// focus. Tests pass an explicit spy bundle; `.noop` stays available for those that want it.
-    public init(platform: PlatformUI) {
+    public init(platform: PlatformUI, clock: any Clock<Duration> = ContinuousClock()) {
         self.platform = platform
+        self.clock = clock
         client = ControlClient(socketPath: Config.socketPath, source: .app, clientId: clientId)
         wireState()
         wireNotificationPrefsObserver()   // N1: re-register push on a notification-pref change
@@ -270,8 +276,8 @@ public class BoardStore: ObservableObject {
         offlineGraceToken &+= 1
         let token = offlineGraceToken
         let grace = offlineGrace
-        _Concurrency.Task { @MainActor [weak self] in
-            try? await _Concurrency.Task.sleep(for: grace)
+        _Concurrency.Task { @MainActor [weak self, clock] in
+            try? await clock.sleep(for: grace)
             guard let self, self.offlineGraceToken == token,
                   self.connectionState == .retrying else { return }
             self.connected = false
@@ -494,7 +500,7 @@ public class BoardStore: ObservableObject {
         connected = false
         for _ in 0..<25 {
             do { try await client.connectAsync(); connected = true; break }
-            catch { try? await _Concurrency.Task.sleep(for: .milliseconds(200)) }
+            catch { try? await clock.sleep(for: .milliseconds(200)) }
         }
         guard gen == connGeneration else { return }   // a newer activate() superseded this one
         guard connected else { return }
@@ -1159,8 +1165,8 @@ public class BoardStore: ObservableObject {
     public func toast(_ title: String, sub: String?, color: Toast.ToastColor = .green) {
         let t = Toast(title: title, sub: sub, color: color)
         toasts.append(t)
-        _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(4200))
+        _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(4200))
             self?.toasts.removeAll { $0.id == t.id }
         }
     }

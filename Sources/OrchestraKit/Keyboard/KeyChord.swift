@@ -26,7 +26,7 @@ public enum KeyContext: Sendable, Equatable { case board, terminal, field, overl
 public enum Direction: Sendable, Equatable { case up, down, left, right }
 
 /// A yank (copy) target on the selected card.
-public enum CopyTarget: Sendable, Equatable { case chatLink, tmux, path }
+public enum CopyTarget: Sendable, Equatable { case chatLink, tmux, path, id }
 
 /// A `g`-prefixed go-to destination.
 public enum GoTarget: String, Sendable, CaseIterable, Equatable {
@@ -51,7 +51,7 @@ public enum KeyIntent: Equatable, Sendable {
     case openNotes                  // O — open the card's worktree as an Obsidian vault, on its changed notes
     case toggleDiff                 // d — toggle Agent/Diff inspector view
     case openInbox                  // I — open the inbox editor
-    case copy(CopyTarget)           // yc/yt/yp — yank
+    case copy(CopyTarget)           // yc/yt/yp/yi — yank
     case beginYank                  // y — begin a yank (copy) sequence
     case beginGoTo                  // g — begin a go-to sequence
     case goTo(GoTarget)             // g<letter> — jump to a region

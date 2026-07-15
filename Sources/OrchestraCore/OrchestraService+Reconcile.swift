@@ -45,11 +45,27 @@ extension OrchestraService {
     /// readiness ticking, epoch-identity adoption, stepping the transitional set, and launch timeouts;
     /// finally the orphan-session sweep. Never freezes the actor — every slow probe hops off it.
     public func reconcile() async {
+        // ORDER IS LOAD-BEARING: read the CARD PHASES **first**, then sample the sessions.
+        //
+        // These two reads are a snapshot pair, and the session data must never be OLDER than the phase data.
+        // It used to be: `list()` was sampled first, then `agentPaneDeadSessions()` — two off-actor tmux hops,
+        // each of which RELEASES the actor — and only then were the phases read. A card that was
+        // `.relaunching` (session not yet created) at the session snapshot, but whose bring-up step landed
+        // during those suspensions, was then read as `.live` and tested against a session set that predated
+        // its session: the `.live` case saw `!alive` and killed a healthy, freshly-launched agent with
+        // `.sessionVanished`. Bug #2 was a stale bring-up RESURRECTING a live session; this is the same
+        // stale-snapshot hazard pointing the other way — a stale snapshot KILLING a live one.
+        //
+        // Reading phases first makes the pair fail-safe by direction: a card observed `.live` at T0 must have
+        // `ensure`d its session before T0, so the session sample at T1 > T0 necessarily sees it. A card that
+        // goes live after T0 is still read as being-born and is simply skipped this tick — the next tick,
+        // whose snapshot pair is consistent, lands it. We can be late to notice a death; we must never
+        // invent one. (Pinned by `freshlyLiveCardNotKilledByStaleSnapshot`.)
+        let tasks = await store.all()
         let aliveNames = Set((try? await offActor { [sessions] in try? sessions.list() })??.map(\.name) ?? [])
         // Sessions whose `agent` pane process DIED but whose session persists (remain-on-exit) — the
         // observable startup-abort / orphaned-dead-pane signal (folded from spawn-startup-abort).
         let deadPaneNames = ((try? await offActor { [sessions] in try? sessions.agentPaneDeadSessions() }) ?? nil) ?? []
-        let tasks = await store.all()
         let now = Date()
 
         // Populate the `boardSnapshot` observed-session cache (PR5 actor-hygiene, Task 5.2) — non-archived
@@ -97,7 +113,15 @@ extension OrchestraService {
             case .live:
                 launchReadyTicks[t.id] = nil            // reached live — reset the being-born counter
                 if !alive {
-                    await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+                    // NEVER kill off a stale snapshot (the fail-safe `sweepOrphanSessions` already applies —
+                    // bug #7). The ordering above closes the race that produced a stale `aliveNames`; this
+                    // re-probe is the belt to that braces, and also covers a transient `list()` hiccup. The
+                    // loop suspends on every `await`, so by the time we reach this card the snapshot can be
+                    // arbitrarily old — confirm the session is REALLY gone before concluding the agent died.
+                    let reallyGone = !((try? await offActor { [sessions] in try sessions.isAlive(name) }) ?? false)
+                    if reallyGone {
+                        await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
+                    }
                 }
 
             case .launching, .relaunching:
@@ -129,14 +153,21 @@ extension OrchestraService {
                         // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
                         // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
                         // the adapter is momentarily unavailable (never worse than the old hardcode).
-                        let land = (try? registry.get(t.agentId)).map { landing(of: deriveLaunchFlavor(t, $0)) }
+                        let adopted = try? registry.get(t.agentId)
+                        let land = adopted.map { landing(of: deriveLaunchFlavor(t, $0)) }
                             ?? .waiting(.humanTurn)
                         // Mirror the Launch/RelaunchStepper's COMPANION cleanup, not just its landing: both
                         // clear `pendingSeed` on the successful `→ live` transition. Adopt jumps straight to
                         // live WITHOUT the stepper, so a crash between "session consumed the seed + came up"
                         // and the stepper's transition would otherwise leave `pendingSeed` set — and a later
                         // `resume(seed: nil)` preserves it, so `deriveLaunchFlavor` would REPLAY the seed.
-                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) { $0.pendingSeed = nil }
+                        // `pendingModel` is consumed here for the same reason as `pendingSeed`: adopt lands
+                        // `.live` without the stepper, so leaving it set would replay the re-seat onto a
+                        // later launch (and leave `model` showing whatever a stale report last wrote).
+                        _ = await transition(t.id, to: .live(land), observedEpoch: probed) {
+                            $0.pendingSeed = nil
+                            consumeModelReseat(&$0, adopted)   // consumed even if the adapter didn't resolve
+                        }
                         continue
                     }
                 }
@@ -150,10 +181,17 @@ extension OrchestraService {
                 //     a same-phase `transition(.launching)` is a funnel noop (no `phaseChangedAt` re-stamp),
                 //     so the bound stays fixed to the ORIGINAL entry across re-steps.
                 if now.timeIntervalSince(t.phaseChangedAt) > TimeInterval(config.sessionLaunchTimeout) {
-                    let reason: DeadReason = (t.phase.kind == .launching) ? .spawnFailed : .resumeFailed
-                    await markDead(t.id, reason: reason,
-                                   detail: "launch timed out after \(config.sessionLaunchTimeout)s",
-                                   source: .daemon)
+                    // Before writing down the timeout, ask WHY it timed out. A launch can clear `ensure`
+                    // (tmux got the last free pty) and still never come up, because the agent underneath it
+                    // cannot get one — the card then times out and, historically, was buried under a
+                    // "launch timed out after 30s" that named nothing. If the host is out of a launch
+                    // resource, say THAT; a healthy host keeps the existing timeout classification.
+                    let timeout = "launch timed out after \(config.sessionLaunchTimeout)s"
+                    let resource = await diagnoseHost(evidence: nil)
+                    let reason: DeadReason = resource != nil ? .resourceExhausted
+                        : (t.phase.kind == .launching ? .spawnFailed : .resumeFailed)
+                    await markDead(t.id, reason: reason, detail: timeout,
+                                   resource: resource, source: .daemon)
                     continue
                 }
                 // (4) step it — unless a bring-up is already in progress (don't double-drive).
@@ -306,7 +344,7 @@ extension OrchestraService {
                     continue                                // adopt — leave `.live`
                 }
                 _ = await transition(t.id, to: .relaunching,
-                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil })
+                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil })
                 continue
             }
             // Session gone (reboot). Route the recoverable ones to `.relaunching` — the ONE legal restart
@@ -318,7 +356,7 @@ extension OrchestraService {
             // and the RelaunchStepper already blank-restarts a provisional card — same outcome, legal edge.
             if await isResumable(t) || t.titleProvisional {
                 _ = await transition(t.id, to: .relaunching,
-                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil })
+                                     mutate: { $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil })
             } else {
                 await markDead(t.id, reason: .rebootUnrevived, detail: nil, source: .daemon)
             }

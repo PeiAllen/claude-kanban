@@ -140,7 +140,10 @@ extension OrchestraService {
         // S4: don't keep watching once redirected onto the DEFAULT branch — it can never "merge", so the
         // 5-min ls-remote loop would run forever. Watch a non-default base (it may itself land later).
         let repo = t.repo, ctl = Duration.seconds(config.controlTimeout)
-        let db = (try? await offActor { self.defaultBranch(repo: repo, timeout: ctl) }) ?? "main"
+        // Sync probes (defaultBaseRef's two Proc.runs + gitRemotes) hoist to a GCD hop (M1 residual).
+        let (hint, remotes) = await offActorValue { (DiffBaseline.defaultBaseRef(worktree: repo), self.gitRemotes(repo: repo)) }
+        let db = await offActorValue { await self.defaultBranch(repo: repo, timeout: ctl,
+                                                                baseRefHint: hint, remotes: remotes) }
         let keepWatching = (grandparent != db)
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
@@ -199,13 +202,13 @@ extension OrchestraService {
         // `self` is re-acquired PER HOP, never hoisted above the loop — see the note on
         // `startMergeRequestNudge`. A hoisted `guard let self` pinned the service for the loop's whole
         // life, so `[weak self]` bought nothing. The generation token above is unchanged.
-        remoteWatch[cardId] = _Concurrency.Task { [weak self] in
+        remoteWatch[cardId] = _Concurrency.Task { [weak self, clock] in
             while !_Concurrency.Task.isCancelled {
                 guard let stop = await self?.shouldStopRemoteWatch(cardId) else { return }
                 if stop { break }
                 guard let outcome = await self?.remoteMergeStep(cardId: cardId) else { return }
                 guard let delay = await self?.remoteWatchDelay(after: outcome) else { return }
-                try? await _Concurrency.Task.sleep(for: delay)
+                try? await clock.sleep(for: delay)
             }
             await self?.clearRemoteWatch(cardId, gen: gen)
         }

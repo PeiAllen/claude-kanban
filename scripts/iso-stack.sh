@@ -38,6 +38,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 # Real-agent auth for isolated runs: the DURABLE dev agent home (one-time `scripts/agent-auth.sh
 # login`), seeded into each throwaway $HOME. See scripts/lib/agent-auth.sh.
 source "$REPO_ROOT/scripts/lib/agent-auth.sh"
+source "$REPO_ROOT/scripts/lib/wm-float.sh"
 
 # --- fixed, single-instance isolated roots (short path: UDS socket must stay < 104 chars) ---
 # CANONICAL (symlink-resolved) root — macOS /tmp→/private/tmp. Claude/Codex canonicalize their cwd
@@ -124,15 +125,15 @@ cmd_up() {
   # --- 1. build daemon + Mac app (+ iOS app) off THIS branch ---
   if [[ "$build" == 1 ]]; then
     echo "▶ building daemon (debug)…"
-    swift build --package-path "$REPO_ROOT" --product orchestrad
+    "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad
     echo "▶ building Mac app (Debug)…"
     xcodegen generate --spec App/project.yml --project App >/dev/null
-    xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+    scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
       -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
     if [[ "$do_ios" == 1 ]]; then
       echo "▶ building iPhone app (Debug)…"
       xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
-      xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+      scripts/lib/with-lock.sh build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
         -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build >/dev/null
     fi
   fi
@@ -200,6 +201,8 @@ PY
   HOME="$ISO_HOME" ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET" PATH="$RUN_PATH" "$bin" >/dev/null 2>&1 &
   local app_pid=$!; disown "$app_pid" 2>/dev/null || true
   echo "  ✓ Mac app launched (pid $app_pid)"
+  # Float it off the user's tiling WM: this isolated app must not be tiled into their live workspace.
+  float_window_for_pid "$app_pid"
 
   # --- 5. iPhone app: boot a Simulator, install, launch pointed at the isolated socket ---
   local udid=""

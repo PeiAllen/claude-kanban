@@ -21,9 +21,39 @@ POSIX shims — so a musl static cross-build works from the Mac (see [Deploying 
 Linux box](#deploying-orchestrad-to-a-remote-linux-box)). Only the `App/` bundle stays macOS-only.
 
 ```sh
-scripts/build.sh        # swift build
-scripts/test.sh         # swift test (adds swift-testing search paths — see below)
+scripts/build.sh        # swift build, under the build mutex
+scripts/test.sh         # UNIT tier (default, seconds) — the per-task loop
+scripts/test.sh --contract   # + real git/tmux/fd contract tests
+scripts/test.sh --e2e        # + built-binary / slow-repo e2e
+scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE at the merge gate
 ```
+
+> **The suite is tiered** (`Tests/UnitTests` mirrors `Sources/`; `Tests/ContractTests` pins the
+> fakes' fidelity against real git/tmux; `Tests/E2ETests` runs the binaries). Run the unit tier
+> per task and `--all` once per PR — never mandate full-suite runs per task in plans. Selection
+> is additive: scoped runs add slow tiers on top of the unit floor, never skip below it.
+> Guards against re-clumping (no sleeps / ambient paths / real forks in the unit tier) are
+> enforced by `scripts/lint-tests.sh`. Design: `notes/designs/2026-07-13-test-suite-redesign.md`.
+
+> **Always build through `scripts/` — never a bare `swift build`.** Builds here are
+> **contention-bound, not CPU-bound**. Measured: one cold `swift build --build-tests` takes
+> **165s**, but **three concurrent ones take 520s *each*** — degradation is super-linear, so
+> concurrent building is pure loss (three serialized finish sooner than three in parallel) and it
+> drags the app and daemon down with it (daemon RPC p95: 6.5ms → 22ms). The reported "8m36s cold
+> build" *was* three cards building at once.
+>
+> So every heavy build takes a **machine-wide mutex** (`scripts/lib/with-lock.sh`). A bare
+> `swift build` bypasses it and re-creates the problem for every other card; to wrap a raw
+> invocation use `scripts/lib/with-lock.sh build -- swift build …`. When another card holds the
+> lock you'll see `[build-lock] waiting for slot…` on stderr — the wait is bounded
+> (`ORCH_BUILD_LOCK_TIMEOUT`, default 1200s) and **fails open**, so it can never fail your build.
+> (The bound must exceed the queue it absorbs: at 300s, three contending cards each timed out, ran
+> unlocked, and re-created the very concurrency the mutex prevents.)
+> `scripts/test.sh` holds the lock for the **compile only** and runs the suite unlocked.
+> `scripts/build-app.sh` additionally takes a **`--strict` ship mutex** (it rewrites the shared
+> `App/Orchestra.xcodeproj` and replaces `/Applications/Orchestra.app`); that one never fails open —
+> it fails closed rather than risk a half-written bundle. Rationale and numbers:
+> `notes/designs/build-contention.md`.
 
 This repo builds the package against the **Command Line Tools** (CLT) SDK — no full Xcode required. CLT
 ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the
@@ -75,7 +105,8 @@ single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pul
 | Script | Purpose |
 |--------|---------|
 | `scripts/build.sh` | `swift build` the package. |
-| `scripts/test.sh` | `swift test` with the CLT swift-testing flags. |
+| `scripts/test.sh` | Tiered `swift test` (unit by default; `--contract` / `--e2e` / `--all`) with the CLT swift-testing flags. |
+| `scripts/lint-tests.sh` | Re-clumping guards: no sleeps / ambient paths / real forks / `makeReal` in the unit tier. Runs on `--all`. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
 | `scripts/build-and-launch-app.sh` | Build & install the bundle, then **refresh the live instance**: quit + relaunch the app and restart the daemon on the new binary. Needed because `build-app.sh` only replaces the bundle on disk — the running app and the KeepAlive daemon keep executing the old code until they restart. Agent tmux sessions are left running (a code refresh, not a state reset — use `reset-state.sh` for a full teardown). `--debug` passes through; `--run` is dropped (it manages the relaunch itself). |
 | `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |

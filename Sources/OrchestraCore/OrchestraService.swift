@@ -5,6 +5,16 @@ import Foundation
 /// truth is federated (tasks.json + tmux liveness + git).
 public actor OrchestraService {
     public private(set) var config: Config
+    /// Every production sleep (nudge backoff, debounces, watch polls, recovery grace) runs on this
+    /// clock; tests inject a TestClock and ADVANCE it instead of waiting. `nonisolated let` so
+    /// off-actor closures can capture it.
+    nonisolated let clock: any Clock<Duration>
+    /// The subprocess seam for the components the hidden-integration suites reach git through
+    /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
+    nonisolated let proc: any ProcRunning
+    /// The one sync git probe (`git remote`, memoized by GitRemotesCache) — injectable because the
+    /// memo's compute closure can't ride the async seam. Tests pass `{ _ in [] }`.
+    nonisolated let gitRemotesProbe: @Sendable (String) -> [String]
     let store: TaskStore
     let trust: TrustLedger
     let registry: AgentRegistry
@@ -43,10 +53,10 @@ public actor OrchestraService {
     /// transitions — the service is the single authority (see `concludeCard` in `+Wake`).
     let mergeWatch = MergeWatch()
     /// Branch-tree lineage store (git-config parent links). The single writer; `Task.parentBranch`
-    /// is a cache derived from it at spawn / set-parent.
-    let lineage = BranchLineage()
+    /// is a cache derived from it at spawn / set-parent. Built in init over the service's own `proc`.
+    let lineage: BranchLineage
     /// The isolated remote-parent tier (BT6): hardened `fetch`/`lsRemoteTip` for remote bases + watch.
-    let remoteParents = RemoteParents()
+    let remoteParents: RemoteParents
     /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
     /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
     var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
@@ -64,8 +74,18 @@ public actor OrchestraService {
     /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
     /// parent card on a timer until the child leaves the `mergeRequested` state.
     var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep.
+    /// Per-child generation token for the re-nudge loop, exactly like `remoteWatchGen`: a re-arm bumps it,
+    /// so a loop cancelled mid-tick can neither nudge nor evict the loop that replaced it. Without this a
+    /// superseded loop's terminal cleanup nulls the LIVE task's slot, orphaning it (uncancellable, invisible
+    /// to `mergeRequestNudgeActive`) and letting two loops double-nudge the same parent.
+    var mergeRequestNudgeGen: [UUID: Int] = [:]
+    /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep. The BASE of the geometric
+    /// backoff (`nudgeDelay`), not a fixed interval.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
+    /// Reminders to send before giving up: the child is flagged `mergeStalled` and the loop stops. With the
+    /// 300s base and `nudgeDelay`'s 12× ceiling that is 5m/10m/20m/40m/1h/1h/1h/1h — roughly 5¼ hours of
+    /// prodding. A parent that ignored 8 reminders will not act on the 9th.
+    var mergeRequestNudgeCap: Int = 8
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
@@ -156,6 +176,26 @@ public actor OrchestraService {
     var spawnPending: [UUID: Date] = [:]
     var spawnAttempts: [UUID: Int] = [:]
     var spawnRelaunch: [UUID: (adapterId: String, ctx: AdapterContext)] = [:]
+    /// Armed by a `--model` re-seat (restart/handoff/resume), consumed by the first model-bearing report
+    /// AFTER the relaunch lands, to answer one question: did the vendor actually honor `--model`? (It does
+    /// — both CLIs were probed — so this is a tripwire for a vendor that changes its mind, not the
+    /// mechanism; `pendingModel` is the mechanism.) Deliberately NOT persisted: a daemon restart just drops
+    /// a best-effort check, which is strictly better than carrying a second field through Task's Codable.
+    ///
+    /// `left` is the model the card was ON before the re-seat, and it is what makes the tripwire precise: we
+    /// accuse the vendor ONLY when the agent reports the model we were leaving. An agent that switches to
+    /// some THIRD model has made a deliberate in-session `/model` change, which is none of this check's
+    /// business — and used to be reported as a vendor fault.
+    ///
+    /// Scope, honestly: this is exact for RESUME (an ignored `--model` leaves the session on its transcript's
+    /// model, which IS `left`) and weaker for a blank RESTART, where an ignored flag would start on the
+    /// vendor's CONFIGURED DEFAULT — which need not be `left`, and would then read as a deliberate switch and
+    /// go unreported. We accept that: the alternative is accusing the vendor whenever an agent legitimately
+    /// changes its own model, and a false accusation is worse than a missed one. Resume is also the case that
+    /// matters, since it is the one carrying context across (the escalation path).
+    /// `strikes` exists because the file-tailer can surface one last pre-kill rollout line after the
+    /// landing; a vendor that truly ignored the flag misreports on every tick and so strikes out at once.
+    var modelOverrideWatch: [UUID: (requested: String, left: String, strikes: Int)] = [:]
     /// Non-persisted tuning (short in tests). `spawnGraceSeconds` = how long a spawned card is watched for
     /// an immediate exit before it graduates to normal monitoring; `maxStartupRetries` = bounded
     /// auto-respawns of a transient startup abort before giving up.
@@ -202,8 +242,19 @@ public actor OrchestraService {
                 devices: DeviceTokenStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
-                orchestraBin: String = siblingBinary("orchestra")) {
+                orchestraBin: String = siblingBinary("orchestra"),
+                clock: any Clock<Duration> = ContinuousClock(),
+                // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
+                // RemoteParents): a defaulted RealProc lets a unit test fork real git invisibly to
+                // every lint. The caller chooses — production passes RealProc + the real probe.
+                proc: any ProcRunning,
+                gitRemotesProbe: @escaping @Sendable (String) -> [String]) {
         self.config = config
+        self.clock = clock
+        self.proc = proc
+        self.gitRemotesProbe = gitRemotesProbe
+        self.lineage = BranchLineage(proc: proc)
+        self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
@@ -407,7 +458,7 @@ public actor OrchestraService {
         // never fires a spurious warning.
         var siblingCard: Task? = nil
         if input.scratch {
-            cwd = Config.scratchDir(id)
+            cwd = config.scratchDir(id)
             try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
             origin = .scratch
             realRepo = input.repo            // optional context only; never resolved/allowlisted
@@ -547,8 +598,9 @@ public actor OrchestraService {
     ///  (a) never touch a dir whose tmux session is live (agent-agnostic — rides `sessions.list()`);
     ///  (b) never touch a dir modified within the mtime grace window — a just-spawned dir whose card /
     ///      session hasn't registered yet must survive the race.
-    public func sweepOrphanScratch(root: String = Config.scratchRoot,
+    public func sweepOrphanScratch(root: String? = nil,
                                    graceInterval: TimeInterval = 300) async {
+        let root = root ?? config.scratchRoot
         // (c) An empty store is indistinguishable from a failed load, so treat it as "unknown", not
         // "nothing is live" — bail rather than delete every scratch dir, live ones included. Kept
         // on-actor (a pure store read, no IO) so the off-actor hop below only runs once we know
@@ -824,7 +876,8 @@ public actor OrchestraService {
         let settings = ReadOnlyLaunch.settingsJSON(
             cwd: t.cwd,
             gitDir: ReadOnlyLaunch.gitDir(repo: t.repo, worktreeName: name))
-        let settingsPath = "\(Config.dataDir)/readonly-\(t.shortId).json"
+        let settingsPath = "\(config.runtimeStateDir)/readonly-\(t.shortId).json"
+        try FileManager.default.createDirectory(atPath: config.runtimeStateDir, withIntermediateDirectories: true)
         try settings.write(toFile: settingsPath, atomically: true, encoding: .utf8)
 
         let session = sessions.sessionName(t.id)
@@ -1058,7 +1111,14 @@ public actor OrchestraService {
 
     @discardableResult
     public func setConfig(_ patch: (inout Config) -> Void) -> Config {
+        let scratchRoot = config.scratchRoot
+        let runtimeStateDir = config.runtimeStateDir
         patch(&config)
+        // Non-wire runtime paths are NOT settable via config replacement — scratchRoot is the
+        // fence PhaseStepper checks immediately before `rm -rf`, and a control-plane client
+        // decodes+replaces the whole Config. Preserve the running instance's values always.
+        config.scratchRoot = scratchRoot
+        config.runtimeStateDir = runtimeStateDir
         resolver = PathResolver(config: config)
         worktrees = WorktreeRegistry(config: config, resolver: resolver)
         return config
@@ -1166,6 +1226,7 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
+            scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },

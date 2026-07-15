@@ -57,7 +57,7 @@ extension OrchestraService {
                 // prior base and would otherwise accept a typo'd parent (leaving a nudge to rebase onto a
                 // ref that isn't there). Local refs only in BT5; remote parents are BT6.
                 // S3-6: pin refs/heads/ so a same-named tag can't shadow the local parent branch.
-                let tip = (try? await offActor { self.treeTip(repo: repo, "refs/heads/\(p)", timeout: ctl) }) ?? nil
+                let tip = await offActorValue { await self.treeTip(repo: repo, "refs/heads/\(p)", timeout: ctl) }
                 guard tip != nil else {
                     throw OrchestraError.invalidParams(
                         "parent branch not found: \(p) — create or fetch it, or run `git branch` to see valid parents")
@@ -68,7 +68,7 @@ extension OrchestraService {
                     anchor = base
                 } else {
                     anchor = try await offActor {
-                        try self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
+                        try await self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
                     }
                 }
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
@@ -85,7 +85,7 @@ extension OrchestraService {
                 return updated
             }
             let base = try await offActor {
-                try self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
+                try await self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
             }
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
             // Nil treeStat so the scheduled recompute computes fresh against the NEW parent (and doesn't
@@ -123,8 +123,12 @@ extension OrchestraService {
         // the child's history). Fall back to `refs/heads/<base>` when the child ref can't be resolved
         // (only in stubbed tests; a live worktree card always has its branch). Both pin refs/heads/ (S3-6).
         let to = Duration.seconds(config.controlTimeout)
-        let oid = try (try? revParseOID(repo: repo, ref: "refs/heads/\(branch)", timeout: to))
-            ?? revParseOID(repo: repo, ref: "refs/heads/\(base)", timeout: to)
+        let oid: String
+        if let own = try? await revParseOID(repo: repo, ref: "refs/heads/\(branch)", timeout: to) {
+            oid = own
+        } else {
+            oid = try await revParseOID(repo: repo, ref: "refs/heads/\(base)", timeout: to)
+        }
         try await lineage.set(repo: repo, branch: branch, link: ParentLink(parent: base, base: oid))
         return base
     }
@@ -142,8 +146,9 @@ extension OrchestraService {
     }
 
     /// `git rev-parse --verify <ref>` in `repo`, or `.invalidParams` if it doesn't resolve.
-    private nonisolated func revParseOID(repo: String, ref: String, timeout: Duration) throws -> String {
-        let r = try Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref], timeout: timeout)
+    private nonisolated func revParseOID(repo: String, ref: String, timeout: Duration) async throws -> String {
+        let r = try await proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref],
+                                   cwd: nil, env: [:], timeout: timeout)
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard r.ok, !oid.isEmpty else {
             throw OrchestraError.invalidParams("base branch not found: \(ref)")
@@ -168,9 +173,9 @@ extension OrchestraService {
         // Batched hop: resolve the parent ref, look up its tip, then (S2-1) the merge-base against the
         // child's own branch — sequential, no intervening `await` in the original, so one hop covers all
         // three git leaves.
-        let probe: SyncProbe = (try? await offActor {
+        let probe: SyncProbe = await offActorValue {
             let rref = self.resolvableRef(link, repo: repo)
-            guard let tip = self.treeTip(repo: repo, rref, timeout: syncTimeout) else {
+            guard let tip = await self.treeTip(repo: repo, rref, timeout: syncTimeout) else {
                 return SyncProbe(tip: nil, syncBase: nil)
             }
             // S2-1: record merge-base(child-branch, resolved-parent) — the true sync point — instead of
@@ -178,9 +183,9 @@ extension OrchestraService {
             // equals the merged tip; after a racy/bogus `synced` (parent advanced, or no merge happened)
             // it equals the real fork, so it can't silently over-record and mask un-merged parent work.
             // Falls back to the tip only if the child's own branch ref can't be resolved (never live).
-            let syncBase = (try? self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", rref, timeout: syncTimeout)) ?? tip
+            let syncBase = (try? await self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", rref, timeout: syncTimeout)) ?? tip
             return SyncProbe(tip: tip, syncBase: syncBase)
-        }) ?? SyncProbe(tip: nil, syncBase: nil)
+        }
         guard let tip = probe.tip else {
             throw OrchestraError.invalidParams(
                 "parent ref not found: \(link.parent) — the parent branch was deleted; re-point with "
@@ -188,10 +193,12 @@ extension OrchestraService {
         }
         let syncBase = probe.syncBase ?? tip
         try await lineage.updateBase(repo: t.repo, branch: t.branch, oid: syncBase)
-        // O2: syncing resolves any pending merge-request — stop the re-nudge loop and drop the sticky
-        // `mergeRequested` badge so the recompute below reflects the true (inSync) state.
+        // O2: syncing resolves the merge-request — stop the loop and drop the badge, whether still waiting or
+        // given up on (else a card whose merge finally landed keeps the red "unanswered" badge).
         stopMergeRequestNudge(t.id)
-        _ = try? await store.update(t.id) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
+        _ = try? await store.update(t.id) {
+            if $0.treeStat?.state == .mergeRequested || $0.treeStat?.mergeStalled == true { $0.treeStat = nil }
+        }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
         treeStatDebounce[t.id]?.cancel()
@@ -234,7 +241,9 @@ extension OrchestraService {
         if let p = link?.parent {
             grandparent = p
         } else {
-            grandparent = (try? await offActor { self.defaultBranch(repo: repo, timeout: shipTimeout) }) ?? "main"
+            let (hint, remotes) = await offActorValue { (DiffBaseline.defaultBaseRef(worktree: repo), self.gitRemotes(repo: repo)) }
+            grandparent = await offActorValue { await self.defaultBranch(repo: repo, timeout: shipTimeout,
+                                                                         baseRefHint: hint, remotes: remotes) }
         }
 
         // S2-2: sanity gate — refuse to retarget grandchildren / clear lineage when the parent tip has NOT
@@ -247,11 +256,11 @@ extension OrchestraService {
         if !force, let link, !link.base.isEmpty {
             // Batched hop: resolve the parent ref, look up its tip, then the strict behind-count —
             // sequential, no intervening `await` in the original, so one hop covers all three git leaves.
-            let notAdvanced = (try? await offActor {
+            let notAdvanced = await offActorValue {
                 let rref = self.resolvableRef(link, repo: repo)
-                guard let parentTip = self.treeTip(repo: repo, rref, timeout: shipTimeout) else { return false }
-                return self.treeBehindStrict(repo: repo, base: link.base, tip: parentTip, timeout: shipTimeout) == 0
-            }) ?? false
+                guard let parentTip = await self.treeTip(repo: repo, rref, timeout: shipTimeout) else { return false }
+                return await self.treeBehindStrict(repo: repo, base: link.base, tip: parentTip, timeout: shipTimeout) == 0
+            }
             if notAdvanced {
                 throw OrchestraError.invalidParams(
                     "shipped \(child.branch): parent \(link.parent) has not advanced past the recorded base — "
@@ -416,13 +425,19 @@ extension OrchestraService {
         // passed in as call-scoped arguments — `computeTreeStat` itself reads no actor-stored hook.
         let to = Duration.seconds(config.controlTimeout)
         let probe = treeProbeHolder.get()                       // Sendable-locked; nil in prod
-        let new: TreeStat? = (try? await offActor { link.map { self.computeTreeStat(repo: t.repo, link: $0, timeout: to, probe: probe) } }) ?? nil
+        // The one sync fork (gitRemotes) hoists to a GCD hop; the async twin below runs on the
+        // cooperative pool and must not block it (impl-review M1 residual).
+        let remotes = await offActorValue { self.gitRemotes(repo: t.repo) }
+        let new: TreeStat? = await offActorValue {
+            guard let link else { return nil as TreeStat? }
+            return await self.computeTreeStat(repo: t.repo, link: link, remotes: remotes, timeout: to, probe: probe)
+        }
         // Cheap no-op filter for the steady funnel (avoids a tasks.json write on every unchanged
         // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
         // stale under a concurrent recompute, but the store.update closure below is the authority.
         let current0 = await store.get(id)?.treeStat
         if current0?.state == .mergeRequested, new?.state != .restackNeeded { return }
-        guard new != current0 else { return }
+        guard carryMergeRequestFields(new, from: current0) != current0 else { return }
         // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
         // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent
         // synced / fan-out recompute that already transitioned this card cannot make us fire a duplicate
@@ -430,13 +445,15 @@ extension OrchestraService {
         var staleEdge = false, restackEdge = false, changed = false
         let res = try? await store.update(id) { task in
             let cur = task.treeStat
-            // O2: the `mergeRequested` "waiting" badge is sticky — the funnel must not clobber it while
-            // the child waits. Only a genuine `restackNeeded` (parent history changed) supersedes it.
+            // O2: the `mergeRequested` waiting badge is sticky — only `restackNeeded` supersedes it. A
+            // GIVEN-UP request is deliberately NOT sticky (it's a flag, not a state), so a stalled card keeps
+            // tracking its parent instead of going blind to it.
             if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
-            guard new != cur else { return }                   // no delta → no state change, no emit/nudge
+            let merged = carryMergeRequestFields(new, from: cur)
+            guard merged != cur else { return }               // no delta → no state change, no emit/nudge
             staleEdge = (cur?.state == .inSync && new?.state == .stale)
             restackEdge = (cur?.state != .restackNeeded && new?.state == .restackNeeded)
-            task.treeStat = new
+            task.treeStat = merged
             changed = true
         }
         guard changed, let (saved, rev) = res else { return }
@@ -466,8 +483,8 @@ extension OrchestraService {
     /// twin of `scheduleDiffStat`.
     func scheduleTreeStat(_ id: UUID) {
         treeStatDebounce[id]?.cancel()
-        treeStatDebounce[id] = _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+        treeStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(750))
             if _Concurrency.Task.isCancelled { return }
             await self?.recomputeTreeStat(id)
             await self?.clearTreeStatDebounce(id)
@@ -481,8 +498,8 @@ extension OrchestraService {
     /// child lookup runs once per activity burst instead of once per report on the hot path.
     func scheduleChildFanout(_ id: UUID) {
         childFanoutDebounce[id]?.cancel()
-        childFanoutDebounce[id] = _Concurrency.Task { [weak self] in
-            try? await _Concurrency.Task.sleep(for: .milliseconds(750))
+        childFanoutDebounce[id] = _Concurrency.Task { [weak self, clock] in
+            try? await clock.sleep(for: .milliseconds(750))
             if _Concurrency.Task.isCancelled { return }
             await self?.fanOutChildTreeStats(id)
             await self?.clearChildFanoutDebounce(id)
@@ -518,19 +535,23 @@ extension OrchestraService {
     /// leaf it calls (no unbounded `Proc.run`); `probe` is a call-scoped test hook (never actor-stored —
     /// a stored hook read from here would be an actor-state read + data race) fired first, so a test can
     /// prove the compute genuinely parked off-actor before the concurrent RPC assertion.
-    nonisolated func computeTreeStat(repo: String, link: ParentLink, timeout: Duration,
-                                     probe: (@Sendable () -> Void)? = nil) -> TreeStat {
+    /// `remotes` is CALL-SCOPED (like `probe`): the caller hoists `gitRemotes` into a sync GCD
+    /// hop before entering the async twin, so this body — which runs on the cooperative pool via
+    /// Task.detached — never reaches the sync `Proc.run` fork (impl-review M1 residual).
+    nonisolated func computeTreeStat(repo: String, link: ParentLink, remotes: [String], timeout: Duration,
+                                     probe: (@Sendable () -> Void)? = nil) async -> TreeStat {
         probe?()
         // O1/S1-1: resolve the parent through `resolvableRef` (local → refs/heads/<b>, remote →
         // refs/orch/parents/…). Passing the raw canonical (`pr#N`) here was the S1-1 break: `rev-parse
         // pr#7` fails → false restackNeeded. `parentIsRemote` rides EVERY constructed stat so the badge
         // and the remote-tier UX never lose it.
-        let isRemote = RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: repo)) != nil
-        guard !link.base.isEmpty, let tip = treeTip(repo: repo, resolvableRef(link, repo: repo), timeout: timeout) else {
+        let isRemote = RemoteParentRef.parse(link.parent, remotes: remotes) != nil
+        guard !link.base.isEmpty,
+              let tip = await treeTip(repo: repo, resolvableRef(link, remotes: remotes), timeout: timeout) else {
             return TreeStat(state: .restackNeeded, parentIsRemote: isRemote)
         }
-        let behind = treeBehind(repo: repo, base: link.base, tip: tip, timeout: timeout)
-        if !treeBaseIsAncestor(repo: repo, base: link.base, tip: tip, timeout: timeout) {
+        let behind = await treeBehind(repo: repo, base: link.base, tip: tip, timeout: timeout)
+        if await !treeBaseIsAncestor(repo: repo, base: link.base, tip: tip, timeout: timeout) {
             return TreeStat(state: .restackNeeded, behind: behind, parentIsRemote: isRemote)
         }
         return TreeStat(state: behind == 0 ? .inSync : .stale, behind: behind, parentIsRemote: isRemote)
@@ -549,52 +570,60 @@ extension OrchestraService {
     /// Prefers `origin/HEAD`'s short name when a local branch of that name exists, else falls back to
     /// `main`/`master`. Never returns a remote-tracking ref (`origin/…`), which would be mis-parsed as a
     /// remote parent by `RemoteParentRef.parse`.
-    nonisolated func defaultBranch(repo: String, timeout: Duration) -> String {
-        if let ref = DiffBaseline.defaultBaseRef(worktree: repo),
-           RemoteParentRef.parse(ref, remotes: gitRemotes(repo: repo)) == nil,
-           treeTip(repo: repo, "refs/heads/\(ref)", timeout: timeout) != nil {
+    /// `baseRefHint`/`remotes` are CALL-SCOPED: both come from sync blocking probes
+    /// (DiffBaseline.defaultBaseRef's two Proc.runs + gitRemotes), which the caller hoists into
+    /// a sync GCD hop so this async-twin body never blocks a cooperative thread (M1 residual).
+    nonisolated func defaultBranch(repo: String, timeout: Duration,
+                                   baseRefHint: String?, remotes: [String]) async -> String {
+        if let ref = baseRefHint,
+           RemoteParentRef.parse(ref, remotes: remotes) == nil,
+           await treeTip(repo: repo, "refs/heads/\(ref)", timeout: timeout) != nil {
             return ref
         }
-        for name in ["main", "master"] where treeTip(repo: repo, "refs/heads/\(name)", timeout: timeout) != nil {
-            return name
+        for name in ["main", "master"] {
+            if await treeTip(repo: repo, "refs/heads/\(name)", timeout: timeout) != nil { return name }
         }
         return "main"
     }
 
     /// `git rev-parse --verify --quiet <ref>` — nil when the ref can't be resolved (parent deleted).
-    private nonisolated func treeTip(repo: String, _ ref: String, timeout: Duration) -> String? {
-        guard let r = try? Proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref], timeout: timeout),
+    private nonisolated func treeTip(repo: String, _ ref: String, timeout: Duration) async -> String? {
+        guard let r = try? await proc.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref],
+                                          cwd: nil, env: [:], timeout: timeout),
               r.ok else { return nil }
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return oid.isEmpty ? nil : oid
     }
 
     /// Commit count in `base..tip` (how far the parent advanced past the recorded base). 0 on error.
-    private nonisolated func treeBehind(repo: String, base: String, tip: String, timeout: Duration) -> Int {
-        treeBehindStrict(repo: repo, base: base, tip: tip, timeout: timeout) ?? 0
+    private nonisolated func treeBehind(repo: String, base: String, tip: String, timeout: Duration) async -> Int {
+        await treeBehindStrict(repo: repo, base: base, tip: tip, timeout: timeout) ?? 0
     }
 
     /// Like `treeBehind` but returns `nil` on a `rev-list` failure (e.g. a GC'd/unresolvable base) rather
     /// than conflating it with a genuine 0 — the S2-2 gate needs to distinguish "nothing merged" (real 0)
     /// from "couldn't verify" (nil ⇒ don't refuse a legit ship).
-    private nonisolated func treeBehindStrict(repo: String, base: String, tip: String, timeout: Duration) -> Int? {
-        guard let r = try? Proc.run(["git", "-C", repo, "rev-list", "--count", "\(base)..\(tip)"], timeout: timeout),
+    private nonisolated func treeBehindStrict(repo: String, base: String, tip: String, timeout: Duration) async -> Int? {
+        guard let r = try? await proc.run(["git", "-C", repo, "rev-list", "--count", "\(base)..\(tip)"],
+                                          cwd: nil, env: [:], timeout: timeout),
               r.ok, let n = Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         return n
     }
 
     /// True iff `base` is an ancestor of `tip` (exit 0). Exit 1 = not an ancestor; any other failure is
     /// treated as not-an-ancestor so a broken base surfaces as `restackNeeded` rather than silently inSync.
-    private nonisolated func treeBaseIsAncestor(repo: String, base: String, tip: String, timeout: Duration) -> Bool {
-        guard let r = try? Proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", base, tip], timeout: timeout) else {
+    private nonisolated func treeBaseIsAncestor(repo: String, base: String, tip: String, timeout: Duration) async -> Bool {
+        guard let r = try? await proc.run(["git", "-C", repo, "merge-base", "--is-ancestor", base, tip],
+                                          cwd: nil, env: [:], timeout: timeout) else {
             return false
         }
         return r.ok
     }
 
     /// `git merge-base <a> <b>` in `repo`, or `.invalidParams` if there is none (e.g. unknown parent).
-    private nonisolated func mergeBaseOID(repo: String, _ a: String, _ b: String, timeout: Duration) throws -> String {
-        let r = try Proc.run(["git", "-C", repo, "merge-base", a, b], timeout: timeout)
+    private nonisolated func mergeBaseOID(repo: String, _ a: String, _ b: String, timeout: Duration) async throws -> String {
+        let r = try await proc.run(["git", "-C", repo, "merge-base", a, b],
+                                   cwd: nil, env: [:], timeout: timeout)
         let oid = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard r.ok, !oid.isEmpty else {
             throw OrchestraError.invalidParams(
@@ -603,4 +632,15 @@ extension OrchestraService {
         }
         return oid
     }
+}
+
+/// `nudges`/`mergeStalled` belong to the re-nudge loop, not the tree funnel — `computeTreeStat` derives its
+/// `TreeStat` from git alone. Carry them across every recompute, or the next parent movement erases the flag
+/// and the budget (resurrecting "nudge forever": the loop reads `nudges` back from the store each tick).
+/// Free function because it runs inside a Sendable `store.update` closure, which can't capture `self`.
+func carryMergeRequestFields(_ new: TreeStat?, from cur: TreeStat?) -> TreeStat? {
+    guard var n = new else { return nil }   // no parent link ⇒ no treeStat ⇒ nothing pending to carry
+    n.nudges = cur?.nudges ?? 0
+    n.mergeStalled = cur?.mergeStalled ?? false
+    return n
 }

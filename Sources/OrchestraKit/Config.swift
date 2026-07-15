@@ -32,6 +32,21 @@ public struct Config: Codable, Sendable, Equatable {
     /// (`worktree list/remove/prune`, `rev-parse`, `status --porcelain`).
     public var controlTimeout: Int
 
+    /// Root for ephemeral scratch-card dirs. INSTANCE state, deliberately NON-Codable: every
+    /// OrchestraService sweeps and rm -rf's under ITS config's root, so tests give each service a
+    /// private root and concurrent daemons/tests can never delete each other's scratch dirs.
+    /// Not in CodingKeys — `setConfig` replaces Config wholesale from the control plane, and this
+    /// is the fence PhaseStepper checks immediately before `rm -rf`: it must be neither
+    /// wire-settable nor persisted as a stale absolute path across HOME redirects. Decode always
+    /// recomputes the default from the CURRENT $HOME; `OrchestraService.setConfig` carries the
+    /// running value across every replacement.
+    public var scratchRoot: String
+    /// Where the service writes small per-card runtime state (readonly-launch settings files).
+    /// Same non-Codable / per-instance rationale as `scratchRoot`.
+    public var runtimeStateDir: String
+    /// The scratch dir for a given card id — `scratchRoot/<lowercased-uuid>`.
+    public func scratchDir(_ id: UUID) -> String { "\(scratchRoot)/\(id.uuidString.lowercased())" }
+
     public init(
         reposRoot: String = Config.defaultReposRoot,
         worktreesRoot: String = Config.defaultWorktreesRoot,
@@ -44,7 +59,9 @@ public struct Config: Codable, Sendable, Equatable {
         customStatusLine: String? = nil,
         worktreeAddTimeout: Int = 600,
         sessionLaunchTimeout: Int = 30,
-        controlTimeout: Int = 15
+        controlTimeout: Int = 15,
+        scratchRoot: String = Config.defaultScratchRoot,
+        runtimeStateDir: String = Config.dataDir
     ) {
         self.reposRoot = reposRoot
         self.worktreesRoot = worktreesRoot
@@ -58,6 +75,8 @@ public struct Config: Codable, Sendable, Equatable {
         self.worktreeAddTimeout = worktreeAddTimeout
         self.sessionLaunchTimeout = sessionLaunchTimeout
         self.controlTimeout = controlTimeout
+        self.scratchRoot = scratchRoot
+        self.runtimeStateDir = runtimeStateDir
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -70,6 +89,9 @@ public struct Config: Codable, Sendable, Equatable {
     /// falling back to the defaults (the three knobs are additive-optional). `encode(to:)` stays
     /// synthesized. Existing keys keep their current required-decode semantics.
     public init(from decoder: Decoder) throws {
+        // Non-wire runtime paths: never decoded — always the CURRENT process's defaults.
+        scratchRoot = Config.defaultScratchRoot
+        runtimeStateDir = Config.dataDir
         let c = try decoder.container(keyedBy: CodingKeys.self)
         reposRoot = try c.decode(String.self, forKey: .reposRoot)
         worktreesRoot = try c.decode(String.self, forKey: .worktreesRoot)
@@ -96,11 +118,9 @@ public struct Config: Codable, Sendable, Equatable {
     public static var defaultReposRoot: String { home }
     public static var defaultWorktreesRoot: String { "\(home)/.orchestra/worktrees" }
 
-    /// Root for ephemeral scratch-card dirs (`~/.orchestra/scratch/<id>`), parallel to worktrees.
-    /// Not user-configurable: scratch dirs are throwaway and per-card-id, never shared.
-    public static var scratchRoot: String { "\(home)/.orchestra/scratch" }
-    /// The scratch dir for a given card id — `scratchRoot/<lowercased-uuid>`.
-    public static func scratchDir(_ id: UUID) -> String { "\(scratchRoot)/\(id.uuidString.lowercased())" }
+    /// Default root for ephemeral scratch-card dirs (`~/.orchestra/scratch/<id>`), parallel to
+    /// worktrees. The INSTANCE `scratchRoot` (defaulting to this) is what the service uses.
+    public static var defaultScratchRoot: String { "\(home)/.orchestra/scratch" }
 
     // MARK: Derived (not user-facing)
 

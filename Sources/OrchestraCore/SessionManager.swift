@@ -320,4 +320,11 @@ public struct SessionManager: Sendable {
         guard try isAlive(name) else { return }
         _ = try tmux(["kill-session", "-t", name])
     }
+
+    /// The REAL backend is bounded by the machine's pty pool — every tmux window is a pseudo-terminal — so
+    /// it answers this by asking the host itself, not just by reading the evidence. That live probe is what
+    /// catches the common case where a starved agent dies saying something wholly unrelated.
+    public func hostResourceFault(evidence: String?) -> HostResourceReport? {
+        HostResources.diagnose(evidence: evidence)
+    }
 }

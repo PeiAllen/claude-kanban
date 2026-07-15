@@ -53,6 +53,7 @@ set -euo pipefail
 export LANG="${LANG:-en_US.UTF-8}" LC_ALL="${LC_ALL:-en_US.UTF-8}"
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+source "$REPO_ROOT/scripts/lib/wm-float.sh"
 
 # --- args ---
 BUILD=1            # 0 with --no-build: reuse shared bundle
@@ -171,9 +172,9 @@ artifacts_present() {
 
 do_build() {
   echo "▶ building daemon (debug) + app (Debug)…"
-  swift build --package-path "$REPO_ROOT" --product orchestrad >&2
+  "$REPO_ROOT"/scripts/lib/with-lock.sh build -- swift build --package-path "$REPO_ROOT" --product orchestrad >&2
   xcodegen generate --spec App/project.yml --project App >/dev/null
-  xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
+  scripts/lib/with-lock.sh build -- xcodebuild -project App/Orchestra.xcodeproj -scheme Orchestra -configuration Debug \
     -destination 'platform=macOS' -derivedDataPath "$DD" build >/dev/null
 }
 
@@ -280,24 +281,9 @@ wid=""
 for _ in $(seq 1 50); do sleep 0.4; wid="$(window_id || true)"; [[ -n "$wid" ]] && break; done
 [[ -n "$wid" ]] || fail "app window never appeared"
 
-# --- AeroSpace (or any tiling WM via its CLI): FLOAT the demo window so it isn't folded into the
-#     user's live workspace — which would squish the live app and yield a narrow 1/2- or 1/3-width
-#     screenshot. Match strictly by APP_PID so we ONLY ever touch the demo window, never the live
-#     "Orchestra" app (same app-id/title). No-op if aerospace isn't installed or its server is down.
-if command -v aerospace >/dev/null 2>&1 && aerospace list-windows --all >/dev/null 2>&1; then
-  awid=""
-  for _ in $(seq 1 10); do   # the brand-new window may take a moment to register with the WM
-    awid="$(aerospace list-windows --all --format '%{window-id}|%{app-pid}' 2>/dev/null \
-              | awk -F'|' -v p="$APP_PID" '{a=$1;b=$2;gsub(/[^0-9]/,"",a);gsub(/[^0-9]/,"",b)} b==p{print a;exit}')"
-    [[ -n "$awid" ]] && break
-    sleep 0.3
-  done
-  if [[ -n "$awid" ]]; then
-    aerospace layout --window-id "$awid" floating >/dev/null 2>&1 || true
-    echo "  ✓ floated demo window in AeroSpace (id $awid) — off the live tiling, full-size capture"
-    sleep 0.4   # let the float settle before capture
-  fi
-fi
+# Float the demo window off the user's tiling WM — else it comes up a narrow sliver and every
+# screenshot captures a squished layout. See scripts/lib/wm-float.sh.
+float_window_for_pid "$APP_PID"
 
 # --- 5. PROVE isolation: the app can ONLY reach the isolated daemon, and it did connect ---
 # (a) By construction: the app's $HOME is the isolated one, so Config.socketPath can only ever

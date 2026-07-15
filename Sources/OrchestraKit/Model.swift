@@ -30,6 +30,9 @@ public enum DeadReason: String, Codable, Sendable {
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
     case completed         // the agent finished its work and the card was retired to Done
     case spawnFailed       // the initial spawn never came up (worktree/launch failure before first life)
+    case resourceExhausted // the HOST ran out of a launch resource (PTYs / processes / fds) — nothing could
+                           // start a terminal, so this is about the machine, not the card. TRANSIENT: the
+                           // card is resumable the moment the resource is reclaimed. See `deadResource`.
 }
 
 /// The running sub-state of a `live` card — the mid-life detail that used to live in `status`/`waitReason`.
@@ -337,6 +340,9 @@ public func diffBaselineLabel(_ base: DiffBase, parentBranch: String? = nil) -> 
 /// parent tip's ancestor (parent rewrote/shipped); `mergeRequested` = the child sent a merge-request
 /// and is waiting on its (live) parent to squash-merge it (O2 — the "waiting" badge, sticky until
 /// `shipped`/`synced`/`set-parent` clears it). (Replaces the never-produced `parentMerged`, S4.)
+///
+/// Giving up on a merge-request is deliberately NOT a case here — it rides on `TreeStat.mergeStalled`.
+/// See that field for why.
 public enum TreeState: String, Codable, Sendable { case inSync, stale, restackNeeded, mergeRequested }
 
 /// Per-child tree status for the card face (the `↓N` badge + restack signal). Small + persisted on
@@ -345,8 +351,38 @@ public struct TreeStat: Codable, Sendable, Equatable {
     public var state: TreeState
     public var behind: Int            // commits the parent is ahead of the recorded base (the ↓N badge)
     public var parentIsRemote: Bool
-    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false) {
+    /// Reminders sent for a pending merge-request (not counting the t=0 request). Persisted, not held in the
+    /// timer Task: `rebuildMergeRequestNudges()` re-arms every pending card at boot, so an in-memory counter
+    /// would reset each restart and the give-up cap would never fire.
+    public var nudges: Int
+    /// The merge-request was given up on — the parent ignored every reminder and the loop stopped. Cleared by
+    /// `shipped` / `synced` / `set-parent`, or by re-sending the merge-request.
+    ///
+    /// A FLAG, not a `TreeState` case, for two reasons — either fatal alone:
+    /// 1. It is orthogonal to `state`. As a state it froze the recompute funnel (which skips a card wearing a
+    ///    sticky merge badge), so a stalled child stopped tracking its parent entirely — no ↓N, and no
+    ///    "parent moved ahead" nudge. As a flag, `state` keeps tracking underneath.
+    /// 2. It cannot be an unknown rawValue on disk. `Task` decodes `treeStat` with `decodeIfPresent` (which
+    ///    rethrows) and `TaskStore.FailableTask` DROPS a throwing record — so a new `TreeState` rawValue would
+    ///    make any older binary silently lose the whole card. An unknown *key* is ignored; a rawValue is fatal.
+    public var mergeStalled: Bool
+
+    public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false,
+                nudges: Int = 0, mergeStalled: Bool = false) {
         self.state = state; self.behind = behind; self.parentIsRemote = parentIsRemote
+        self.nudges = nudges; self.mergeStalled = mergeStalled
+    }
+
+    // Hand-rolled: a synthesized decode would throw `keyNotFound` on the new fields for every card persisted
+    // before them — and `Task`'s `decodeIfPresent` rethrows, so FailableTask would DROP those cards. `state`
+    // is `try?`-guarded per the convention in `Task.init(from:)`: a garbage rawValue defaults, never throws.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.state = (try? c.decode(TreeState.self, forKey: .state)) ?? .inSync
+        self.behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
+        self.parentIsRemote = try c.decodeIfPresent(Bool.self, forKey: .parentIsRemote) ?? false
+        self.nudges = try c.decodeIfPresent(Int.self, forKey: .nudges) ?? 0
+        self.mergeStalled = try c.decodeIfPresent(Bool.self, forKey: .mergeStalled) ?? false
     }
 }
 
@@ -394,6 +430,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var order: Int          // sort within a column
     public var deadReason: DeadReason?  // set with `phase = .dead(_)`; carries the terminal reason
     public var deadDetail: String?      // optional human detail for `.resumeFailed`
+    /// WHICH host resource ran out, sampled on the affected host when `deadReason == .resourceExhausted`.
+    /// Structured (not parsed back out of `deadDetail`) so every client — Mac, iOS, CLI — can name the
+    /// resource and its numbers, while `deadDetail` keeps the raw tmux/pane evidence for debugging.
+    /// Additive-optional Codable (mirrors `pendingSeed`). nil for every other death.
+    public var deadResource: HostResourceReport?
     /// Persisted lifecycle phase — the convergence SSOT (Stage 2). The sole source of running/waiting/
     /// dead/archived truth: `status`/`waitReason` were retired into `phase` + `RunState` (Stage 2 flag-day).
     public var phase: Phase
@@ -404,6 +445,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var phaseChangedAt: Date
     /// Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. nil ⇒ none.
     public var pendingSeed: String?
+    /// A `--model` re-seat staged for the NEXT (re)launch (restart/handoff/resume), delivered once then
+    /// cleared on the `.live` landing — the launch INTENT, exactly like `pendingSeed`. It is what
+    /// `finishLaunch` builds the argv from, and it is deliberately ABSENT from `applyReportFields`: the
+    /// report path owns `model` and is not epoch-fenced, so the dying session's last statusline can (and
+    /// does) revert `model` in the window between the intent-only verb and the stepper's relaunch. Holding
+    /// the request here is what stops that report from silently erasing the override. nil ⇒ no override.
+    public var pendingModel: String?
     /// The RAW normalized base string exactly as `spawn` received it (`input.base` after the refs/heads
     /// strip). Carried on the card so a reconciler-driven `materialize` can re-derive the base
     /// classification (`RemoteParentRef.parse`) after a restart — a remote base (`origin/<b>` / `pr#<N>`)
@@ -437,10 +485,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         order: Int,
         deadReason: DeadReason? = nil,
         deadDetail: String? = nil,
+        deadResource: HostResourceReport? = nil,
         phase: Phase = .live(.running),
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
         pendingSeed: String? = nil,
+        pendingModel: String? = nil,
         spawnBase: String? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
@@ -469,10 +519,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.order = order
         self.deadReason = deadReason
         self.deadDetail = deadDetail
+        self.deadResource = deadResource
         self.phase = phase
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
         self.pendingSeed = pendingSeed
+        self.pendingModel = pendingModel
         self.spawnBase = spawnBase
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
@@ -497,8 +549,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
-        case agentId, model, startIn, column, order, deadReason, deadDetail
-        case phase, sessionEpoch, phaseChangedAt, pendingSeed, spawnBase
+        case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
+        case phase, sessionEpoch, phaseChangedAt, pendingSeed, pendingModel, spawnBase
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
@@ -531,9 +583,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.order = try c.decodeIfPresent(Int.self, forKey: .order) ?? 0
         self.deadReason = (try? c.decodeIfPresent(DeadReason.self, forKey: .deadReason)) ?? nil
         self.deadDetail = try c.decodeIfPresent(String.self, forKey: .deadDetail)
+        self.deadResource = (try? c.decodeIfPresent(HostResourceReport.self, forKey: .deadResource)) ?? nil
         self.ctxPct = try c.decodeIfPresent(Double.self, forKey: .ctxPct) ?? 0
         self.diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
-        self.treeStat = try c.decodeIfPresent(TreeStat.self, forKey: .treeStat)
+        // `try?`-guarded like the enum fields above (it contains one): a garbage `TreeState` rawValue must
+        // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
+        self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
@@ -545,6 +600,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
             ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
+        self.pendingModel = try c.decodeIfPresent(String.self, forKey: .pendingModel)
         self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
         // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
@@ -599,10 +655,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(order, forKey: .order)
         try c.encodeIfPresent(deadReason, forKey: .deadReason)
         try c.encodeIfPresent(deadDetail, forKey: .deadDetail)
+        try c.encodeIfPresent(deadResource, forKey: .deadResource)
         try c.encode(phase, forKey: .phase)
         try c.encode(sessionEpoch, forKey: .sessionEpoch)
         try c.encode(phaseChangedAt, forKey: .phaseChangedAt)
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
+        try c.encodeIfPresent(pendingModel, forKey: .pendingModel)
         try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)

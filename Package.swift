@@ -90,21 +90,39 @@ let package = Package(
         // suffice — declaring it on all three is cheap insurance against a future SwiftPM that builds a
         // bundle per test target.
         .target(name: "GitHermeticBootstrap", path: "Tests/GitHermeticBootstrap"),
+        // Pure test-support code shared by every test target: the fake clock, the gateable
+        // fake process runner, and the yield-based wait helper. Depends on OrchestraCore only
+        // for ProcResult/ProcRunning. NEVER a dependency of a product target.
+        .target(name: "TestSupport",
+                dependencies: ["OrchestraCore"],
+                path: "Tests/TestSupport"),
+        // The FAST tier: pure unit tests (FakeProc, per-test roots, no real git/tmux fork), mirroring
+        // Sources/ under Tests/UnitTests/. This is what `./scripts/test.sh` runs by default.
         .testTarget(
-            name: "OrchestraCoreTests",
+            name: "UnitTests",
             // OrchestraKit is a direct dep so tests can `@testable import OrchestraKit` for the few
             // internal helpers (e.g. Config.dataDir(isLinux:home:env:)) that moved to Kit in F1 —
             // keeping those helpers internal instead of forcing them into Kit's public surface.
-            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"]
+            dependencies: ["OrchestraCore", "OrchestraKit", "OrchestraUI",
+                           "TestSupport", "GitHermeticBootstrap"],
+            path: "Tests/UnitTests"
         ),
+        // The CONTRACT tier: real git / real tmux / real fds, pinning the fidelity the unit fakes stand
+        // in for. Selected via `./scripts/test.sh --contract`.
         .testTarget(
-            name: "IntegrationTests",
-            dependencies: ["OrchestraCore", "OrchestraKit", "GitHermeticBootstrap"],
+            name: "ContractTests",
+            dependencies: ["OrchestraCore", "OrchestraKit",
+                           "TestSupport", "GitHermeticBootstrap"],
+            path: "Tests/ContractTests",
             resources: [.copy("Fixtures")]
         ),
+        // The E2E tier: built binaries + slow-repo fixture. Selected via `./scripts/test.sh --e2e`.
         .testTarget(
-            name: "OrchestraUITests",
-            dependencies: ["OrchestraUI", "OrchestraKit", "GitHermeticBootstrap"]
+            name: "E2ETests",
+            dependencies: ["OrchestraCore", "OrchestraKit",
+                           "TestSupport", "GitHermeticBootstrap"],
+            path: "Tests/E2ETests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

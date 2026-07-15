@@ -15,7 +15,7 @@
 t4_build_install() {
   echo "=== build (Debug, ad-hoc signed — Keychain entitlement) ==="
   xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
-  xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
+  scripts/lib/with-lock.sh build -- xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration Debug \
     -destination 'generic/platform=iOS Simulator' \
     CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
     build > "$BUILD_LOG" 2>&1 || { echo "BUILD FAILED"; tail -20 "$BUILD_LOG"; exit 1; }

@@ -17,12 +17,27 @@ import Foundation
 extension OrchestraService {
     /// The repo's configured git remotes (for remote-parent classification). A cheap local `git remote`,
     /// memoized per-repo until `.git/config`'s mtime changes.
+    ///
+    /// Task 5 (proc threading): deliberately still on `Proc.run`, NOT the async `ProcRunning` seam.
+    /// This helper must stay synchronous — it is called from sync `@Sendable` closures inside `offActor`
+    /// hops across out-of-scope files (+Diff/+Notes/+Remote/+Borrow/materialize, and every
+    /// `RemoteParentRef.parse(_:remotes:)` consumer), and its memo (`GitRemotesCache.remotes`) takes a
+    /// sync compute closure. Making it async would ripple async-ness through those seams and change
+    /// their actor-hop shape; convert it together with the diff tier when that tier moves to the seam.
     nonisolated func gitRemotes(repo: String) -> [String] {
         gitRemotesCache.remotes(repo: repo, configMtime: gitConfigMtime(repo: repo)) {
-            guard let r = try? Proc.run(["git", "-C", repo, "remote"]), r.ok else { return [] }
-            return r.stdout.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            gitRemotesProbe(repo)
         }
+    }
+
+    /// Production probe for `gitRemotesProbe` — the ONE remaining sync `Proc` fork on the service
+    /// (the memo's compute closure is sync, so it can't ride the async ProcRunning seam; see the
+    /// Task 5 deferral note). Unit tests inject `{ _ in [] }` via TestEnv, so the unit tier's
+    /// default path genuinely forks nothing (impl-review M3).
+    public static func defaultGitRemotesProbe(_ repo: String) -> [String] {
+        guard let r = try? Proc.run(["git", "-C", repo, "remote"]), r.ok else { return [] }
+        return r.stdout.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// The mtime of the repo's REAL `.git/config` — resolving through a linked worktree's `.git` FILE
@@ -50,7 +65,14 @@ extension OrchestraService {
     /// The resolvable git ref for a lineage link (O1) — the ONE canonical→resolvable rule. Local →
     /// `refs/heads/<b>`; remote → its fetched private ref.
     nonisolated func resolvableRef(_ link: ParentLink, repo: String) -> String {
-        RemoteParentRef.parse(link.parent, remotes: gitRemotes(repo: repo))?.privateRef
+        resolvableRef(link, remotes: gitRemotes(repo: repo))
+    }
+
+    /// Remotes-taking variant for callers that already hoisted `gitRemotes` to a GCD hop —
+    /// async-twin bodies (Task.detached → cooperative pool) must not reach the sync fork
+    /// (impl-review M1 residual).
+    nonisolated func resolvableRef(_ link: ParentLink, remotes: [String]) -> String {
+        RemoteParentRef.parse(link.parent, remotes: remotes)?.privateRef
             ?? "refs/heads/\(link.parent)"
     }
 

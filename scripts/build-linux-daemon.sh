@@ -64,7 +64,7 @@ fi
 echo "Cross-compiling for $TRIPLE (static musl) → $OUT"
 for product in orchestrad orchestra orchestra-mcp; do
   echo "  building ${product}..."
-  swift build -c release --swift-sdk "$TRIPLE" --product "$product"
+  scripts/lib/with-lock.sh build -- swift build -c release --swift-sdk "$TRIPLE" --product "$product"
 done
 
 BIN_DIR=".build/$TRIPLE/release"
