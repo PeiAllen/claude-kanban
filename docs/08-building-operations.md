@@ -28,12 +28,31 @@ scripts/test.sh --e2e        # + built-binary / slow-repo e2e
 scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE at the merge gate
 ```
 
-> **The suite is tiered** (`Tests/UnitTests` mirrors `Sources/`; `Tests/ContractTests` pins the
-> fakes' fidelity against real git/tmux; `Tests/E2ETests` runs the binaries). Run the unit tier
-> per task and `--all` once per PR — never mandate full-suite runs per task in plans. Selection
-> is additive: scoped runs add slow tiers on top of the unit floor, never skip below it.
-> Guards against re-clumping (no sleeps / ambient paths / real forks in the unit tier) are
-> enforced by `scripts/lint-tests.sh`. Design: `notes/designs/2026-07-13-test-suite-redesign.md`.
+> **The suite is tiered into three targets that mirror `Sources/`.** `Tests/UnitTests` (the mirror
+> layout, directory-for-directory with `Sources/`) runs everything over `FakeProc` + `TestClock` in
+> per-test private roots and **forks nothing** — pure, parallel-safe, instant. `Tests/ContractTests`
+> pins the fakes' *fidelity* against real `git`/`tmux`/`fd` behaviour (a few dozen tests: "this exact
+> invocation does what the production code believes"), so a mock can't silently drift from the tool it
+> imitates. `Tests/E2ETests` runs the built binaries against the slow-repo fixture, parameterized over
+> **both agents** (claude-code and codex).
+>
+> Run the unit tier per task and `--all` once per PR — never mandate full-suite runs per task in
+> plans. **Selection is additive and never drops below the unit floor:** `--contract`/`--e2e` *add*
+> slow tiers on top of the whole unit tier; a scoped run is never smaller than it. This is deliberate
+> — a co-change analysis over 359 commits showed `Foo.swift → FooTests.swift` is right only ~51% of
+> the time and `OrchestraService.swift` co-changes with 82 files, so any name/history-based
+> change-to-test skip map under-selects badly and is provably unsafe. The directory mirror is for
+> *navigation* (find the tests for a change) and for choosing which *slow* tier to add — not for
+> skipping unit tests. Running the whole (seconds-fast) unit tier is cheaper than deciding what to
+> skip.
+>
+> **Re-clumping guards, enforced by `scripts/lint-tests.sh` (runs on `--all`):** the unit tier may
+> contain **no wall-clock sleeps** (use `TestClock.advance`, a `Gate`/`SyncGate` rendezvous, or
+> `pollUntil` — race windows become deterministic gate schedules, not timing hopes), **no ambient
+> path statics** (`NSHomeDirectory()`, the derived write-target statics — every test gets private
+> roots via `TestEnv`), and **no real forks** (`FakeProc` is the default seam; `RealProc`/`makeReal`
+> are banned from the unit tier and live in `ContractTests`). New tests go in the mirror position of
+> the source file they cover.
 
 > **Always build through `scripts/` — never a bare `swift build`.** Builds here are
 > **contention-bound, not CPU-bound**. Measured: one cold `swift build --build-tests` takes
@@ -52,8 +71,21 @@ scripts/test.sh --all        # everything + scripts/lint-tests.sh — run ONCE a
 > `scripts/test.sh` holds the lock for the **compile only** and runs the suite unlocked.
 > `scripts/build-app.sh` additionally takes a **`--strict` ship mutex** (it rewrites the shared
 > `App/Orchestra.xcodeproj` and replaces `/Applications/Orchestra.app`); that one never fails open —
-> it fails closed rather than risk a half-written bundle. Rationale and numbers:
-> `notes/designs/build-contention.md`.
+> it fails closed rather than risk a half-written bundle. The two policies are deliberately distinct:
+> the build lock guards no shared state, so proceeding unlocked only ever means "an extra build ran";
+> the ship lock guards the real shared checkout/xcodeproj/`/Applications`, where proceeding unlocked
+> would produce exactly the half-written bundle it exists to prevent.
+>
+> **Why a mutex and not a cache.** Both caching directions were tested and rejected on evidence.
+> *Clone-seeding a card's `.build`* looks appealing (`clonefile()` seeds 3.9 GB in ~0.9s) but the
+> seeded worktree recompiles everything anyway: SwiftPM's build DB is keyed on **absolute source
+> paths**, and cloned Clang `.pcm`s embed their absolute module-cache path so they're rejected every
+> build and never converge — seeding buys only `.build/checkouts` (offline dependency resolution),
+> which is already free. A *shared `--scratch-path`* fails the same way: same absolute-path keying, so
+> every card would force a full rebuild and thrash the shared dir. The contention is I/O/lock-bound,
+> not CPU-bound (a cold build sits ~60% idle at load 28 with dozens of *blocked* `swift-frontend`
+> processes), so throttling how many builds run at once — not sharing where they write — is the only
+> lever that helps.
 
 This repo builds the package against the **Command Line Tools** (CLT) SDK — no full Xcode required. CLT
 ships `swift-testing` as a framework but not on the default search path, so `scripts/test.sh` adds the
@@ -83,6 +115,67 @@ with a different SDK") — see [Troubleshooting](#troubleshooting).
 > nested `sandbox-exec`, which can't nest inside another sandbox and whose `~/Library` caches aren't
 > writable there — run those commands unsandboxed.
 
+### Test hermeticity — the suite never touches your real git config or home
+
+The test bundle is hermetic against the developer's machine by construction, not by discipline. A
+single load-time C constructor (`Tests/GitHermeticBootstrap/bootstrap.c`) installs a clean
+environment before the first test runs, so no git fork — from a test *or* from the production code
+under test, all of which funnel through `Proc.run` — can read `~/.gitconfig`, invoke the keychain
+credential helper, or write into the real `$HOME`.
+
+**Why a C constructor, and why it survives.** There is no shared repo-creating test helper — ~20 test
+files each roll their own `git(...)` closure — so any scheme that asks test authors to opt in leaks,
+and git forks made by production code under test would escape it entirely. A C target's
+`__attribute__((constructor))` is the one hook that runs unconditionally at **test-bundle load,
+before the first test of *both* the XCTest and swift-testing runners**, with no import and no call
+site. Because the target lives under `Tests/` and only the test targets depend on it, it **cannot**
+be linked into `orchestrad`/`orchestra`/`orchestra-mcp` — production keeps reading the user's real
+gitconfig. It survives dead-stripping *structurally*: SwiftPM emits no static archive here, it links
+each binary from a flat object list, and `bootstrap.c.o` is named directly on the test bundle's link
+line — an object named on the link line is loaded unconditionally, so the classic "archive member
+never pulled in" failure (which requires an archive) can't happen. (A constructor also emits a
+pointer into an initializer section that ld64/LLD treat as a GC root, so `-dead_strip` and LTO
+preserve it independently.)
+
+**It clears the entire `GIT_*` namespace — a wildcard, not a denylist.** Controlling git's *config*
+isn't enough: git takes much of its behaviour straight from the environment, and one inherited
+variable silently defeats the whole scheme. The first implementation used a denylist and two
+successive reviews each found *one more* variable it had missed — `GIT_CONFIG_PARAMETERS` (the older
+form of `-c`, which injected a credential-helper override straight past the config settings),
+`GIT_DIR`/`GIT_WORK_TREE` (point git at a *different* repo, overriding even an explicit `git -C`), and
+`GIT_EXTERNAL_DIFF` (replaces builtin diff, hijacking the very `DiffService` code under test). These
+are inherited for real whenever the suite runs from inside a git hook, alias, or a rebase `exec`
+step. Clearing the whole namespace and then installing exactly the variables the suite wants
+(`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, an empty `credential.helper` at `-c`
+precedence, a fixed `Orchestra Test` identity, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/usr/bin/false`)
+is the only version that is complete by construction rather than by vigilance.
+
+**It relocates `HOME` to a per-run temp dir — the post-mortem that forced it.** An earlier version
+left `HOME` alone, reasoning (correctly, for git) that `GIT_CONFIG_GLOBAL` already displaces
+`~/.gitconfig`. That was wrong about everything the suite *writes*. `ClaudeCodeAdapter.prepareToLaunch`
+renders the managed hooks settings to `Config.hooksPath` — the shared
+`~/Library/Application Support/Orchestra/claude-hooks.json`, the exact file every live Claude session
+is launched with — substituting a path derived from the *running* executable. Under `swift test` that
+executable is Xcode's `swiftpm-testing-helper`, so a bare `swift test` wrote a nonexistent
+`.../libexec/swift/pm/orchestra` into that shared file, and **every hook in every running Claude card
+on the board started failing at once** the moment a test ran (Claude re-reads the file mid-session).
+The fix is the same constructor `mkdtemp`-ing a per-run home and `setenv("HOME", …)` before the first
+test; because `Config.home` reads `$HOME` on every access, every derived path (and every child
+process, which inherits the test process's environment) follows it into the throwaway dir. The temp
+home must be *outside* the checkout (`Config.defaultReposRoot` is `$HOME` and `RepoScanner` scans it
+recursively) and `XDG_DATA_HOME` is unset (Linux would otherwise walk back out of it).
+
+**It fails closed, and its off-switch can't be silent.** If `mkdtemp` fails the bootstrap prints why
+and `abort()`s rather than falling back to the real home — the fallback *is* the failure being
+prevented, corrupting live state instead of merely failing a test. Both escape hatches
+(`ORCHESTRA_TEST_GIT_HERMETIC=0`, `ORCHESTRA_TEST_HOME_ISOLATION=0`) exist for debugging a
+config-sensitive failure, but each is guarded by an **ungated canary test** (`GitHermeticityTests`,
+`HomeIsolationTests`) that *fails* when the hatch is engaged. Without that, exporting the variable in
+a shell profile or a card's environment would strip the suite of both its hermeticity and its guards,
+skip every canary, and still exit 0. The canaries are also the permanent guard on the design's single
+fragile assumption: if SwiftPM ever stops linking the constructor, the suite goes **red** here instead
+of silently reverting to reading the developer's gitconfig.
+
 ## Building the app bundle
 
 The SwiftUI app is intentionally **not** a SwiftPM target (so the package stays light and
@@ -99,6 +192,31 @@ scripts/typecheck-app.sh        # type-check App/*.swift against the CLT SDK wit
 single-binary debug build (so ad-hoc signing works in the script). SwiftTerm pulls a Metal toolchain
 (its shader needs it) — the first app build fails without it; install with
 `xcodebuild -downloadComponent MetalToolchain`. See `App/README.md` for details.
+
+## Building the iOS app for a real device (free personal team)
+
+The iOS app installs on a physical iPhone with a **free Apple ID (Personal Team)** — no paid Apple
+Developer membership. `scripts/build-ios-device.sh` drives this lane (it reads your 10-char team id
+from `$ORCH_IOS_TEAM_ID` or the gitignored `App-iOS/DeviceSigning.local.xcconfig`, so the id never
+lands in git).
+
+The one thing that makes the free lane work is the entitlements swap. The Push Notifications
+capability requires a **paid** membership, so a free-account device signing **fails** if
+`aps-environment` is present at all. The default `App-iOS/OrchestraiOS.entitlements` hardcodes it (for
+the paid lane); the free lane signs with `App-iOS/OrchestraiOS-nopush.entitlements` instead —
+identical but with `aps-environment` stripped, keeping only `keychain-access-groups`. So a free-team
+device build sets `CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements` and your personal
+team. (The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane
+keeps `aps-environment` for real push.)
+
+Two operational consequences of the free tier:
+
+- **The provisioning profile lasts 7 days.** Re-deploy from Xcode weekly (cable or Wi-Fi to the Mac);
+  there is no TestFlight or App Store distribution on a personal team.
+- **Real APNs push is out of scope.** A free Apple ID can't mint a `.p8` or enable the Push
+  capability, so Orchestra's own push notifications don't work on this lane — "needs you" alerts come
+  via the Claude and Codex mobile apps' own notifications instead. Board, terminals, and takeover need
+  none of it.
 
 ## Development scripts
 
@@ -173,8 +291,7 @@ forwarding, and the daemon grows **no** network listener.
   key auth (a Tailscale hostname works) plus `git`, `tmux`, and the agent CLIs (`claude`, `codex`) must
   already be on the box — the daemon shells out to them and the agents run there.
 
-> **Shipped.** Both halves have now landed (merge `63bece4`; plan
-> [`2026-07-02-remote-daemon-connections`](../notes/plans/2026-07-02-remote-daemon-connections.md)). The
+> **Shipped.** Both halves have now landed (merge `63bece4`). The
 > **Linux port** (workstream **A**) makes `swift build` for Linux green: `UDSSocket` is Glibc/musl-ported
 > with a `MSG_NOSIGNAL` send-flag (the Darwin `SO_NOSIGPIPE` path stays under `#if os(macOS)` — see the
 > file-scope POSIX shims in `Platform.swift`), the launchd lifecycle in `DaemonLifecycle` is gated to
@@ -253,7 +370,13 @@ Settings → Privacy & Security:
 
 Granting Accessibility to the daemon takes effect **live** — a long-running agent flips from untrusted
 to trusted with no restart. Note that these preflights return `false` inside an agent's bash sandbox and
-`true` unsandboxed, so screenshot/control commands must run unsandboxed.
+`true` unsandboxed, so screenshot/control commands must run unsandboxed. This also means the sandbox can
+**hide whether a grant actually took effect** — a probe run sandboxed reports `false` even after the
+grant is live. To check the real grant state, run the probe **unsandboxed**:
+
+```
+swift -e 'import CoreGraphics; import ApplicationServices; print("SR:", CGPreflightScreenCaptureAccess()); print("AX:", AXIsProcessTrusted())'
+```
 
 ## Troubleshooting
 
@@ -285,9 +408,29 @@ to trusted with no restart. Note that these preflights return `false` inside an 
   rebuilds the module under the matching SDK, so the mismatch can't arise. (Before the pin, the only
   recovery was clearing a global SwiftPM module cache under `~/Library` — outside the sandbox-writable
   set, so it triggered a human-approval prompt that broke unattended runs.)
-- **Black rectangles / garbled glyphs in the terminal.** Caused by a missing UTF-8 locale (tmux and
-  Claude Code's renderer downconvert multibyte glyphs without it). `Proc` fills in `LC_CTYPE`/`LANG`
-  when unset; see `notes/designs/terminal-black-rectangles.md` for the full analysis.
+- **Garbled glyphs in the terminal.** Caused by a missing UTF-8 locale (tmux and Claude Code's
+  renderer downconvert multibyte glyphs without it). `Proc` fills in `LC_CTYPE`/`LANG` when unset.
+- **Solid black rectangles in the terminal (fixed — a SwiftTerm palette bug, not `bce`).** The precise
+  repro was hovering over Claude Code's expandable items ("Ran 1 shell command", …): the hover/expand
+  preview box rendered as a solid black rectangle with its dark text invisible, in a **light** theme.
+  Root cause: SwiftTerm **v1.13** added a "base16 LAB" 256-colour palette strategy and made it the
+  **default**, which — instead of the fixed historical xterm cube — re-derives the whole 16–255
+  palette by LAB-interpolating between the active theme's colours, background, and foreground. Walk
+  index **231** (cube `r=g=b=5`, normally pure white `#ffffff`) through that interpolation and every
+  interpolation factor is `5/5 = 1.0`, so it collapses to the theme **foreground** — which in a light
+  theme is near-black. Claude Code draws its preview box with background `48;5;231` (expecting white)
+  and default foreground, so base16Lab + a light theme turns it into black-on-black. Proven by
+  capturing the region two ways at once: `tmux -L orchestra capture-pane -p -e` showed a *correct*
+  `48;5;231` white background, while a simultaneous in-app screenshot (the `SIGUSR1` hook) showed the
+  same region solid black — so tmux's grid was right and SwiftTerm's palette mapping was wrong. The
+  fix is one line in `App/Views/AgentTerminalView.swift`'s `makeNSView`:
+  `term.getTerminal().ansi256PaletteStrategy = .xterm`, restoring the fixed xterm cube so index 231 is
+  white again. The trade-off is losing base16Lab's theme-coherent colour blending — which was the very
+  thing breaking hosted TUIs, so `.xterm` is the correct call for a terminal that hosts arbitrary ones.
+  (Earlier theories chased background-colour-erase — `set -ga terminal-overrides ",*:ut@"`,
+  `disableFullRedrawOnAnyChanges` — and were reverted as inert; the decisive break was the precise
+  hover repro plus capturing the artifact's actual colours, which pointed at the palette, not the
+  erase path.)
 - **Tools not found by the daemon/app.** launchd/Finder give a minimal `PATH`; `Proc.augmentedPATH`
   appends the common locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, …). If a tool
   still isn't found, ensure it's in one of those or on the inherited `PATH`.

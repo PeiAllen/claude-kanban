@@ -76,6 +76,12 @@ head_short="$(git rev-parse --short HEAD)"
 recent_log="$(git log -8 --pretty='- %h %s' 2>/dev/null || true)"
 changed_list="$(printf '%s\n' "$changed" | sed 's/^/- /')"
 
+# The rationale for a change ("why": alternatives weighed, tradeoffs, decisions) lives in the
+# commit messages across the range that just landed — the project no longer keeps a tracked
+# notes/ directory. Capture the full subject+body of every commit in base..HEAD so the doc-sync
+# run can read the reasoning straight from the merged history.
+range_log="$(git log --pretty=format:'--- %h %s%n%b' "$base"..HEAD 2>/dev/null || true)"
+
 read -r -d '' PROMPT <<EOF
 You are maintaining the documentation for Orchestra, a local-only macOS app that orchestrates
 many coding agents from a Kanban board (a Swift package: OrchestraCore + orchestrad/orchestra/
@@ -85,16 +91,22 @@ and you must keep the docs accurate and complete.
 The triggering commit ($head_short) changed these files:
 $changed_list
 
-Recent commits for context:
+The commit messages across the range that just landed — these carry the RATIONALE (the "why":
+alternatives weighed, tradeoffs, and decisions) for the change, because the project keeps that
+reasoning in commit/PR bodies and in docs/ itself, not in any separate notes directory:
+$range_log
+
+Recent commits for broader context:
 $recent_log
 
 Do this:
-1. Read the changed source files, and any new or modified files under notes/plans/ and
-   notes/designs/, to understand what actually changed.
+1. Read the changed source files to understand WHAT changed, and read the commit messages above
+   to understand WHY. The reasoning you need for the design-decision (docs/09) and roadmap
+   (docs/10) chapters is in those messages and in the existing docs/ — there is no notes/ folder
+   to consult.
 2. Update README.md and the reference manual under docs/ (docs/index.md and the numbered
    chapters docs/01-*.md … docs/11-*.md) so that every feature, design decision, and future plan
-   stays accurately reflected. Cross-reference the relevant notes/plans/ and notes/designs/
-   documents where appropriate. Consult project memory for design intent if available.
+   stays accurately reflected. Consult project memory for design intent if available.
 3. If a roadmap axis (docs/10-roadmap.md) has now shipped, move it into the shipped-feature
    history in docs/09-design-decisions.md.
 4. Preserve the existing structure, tone, and chapter layout. Make surgical edits — do NOT
@@ -108,7 +120,7 @@ Do this:
    scripts/docs-shots.sh should be re-run — do not silently drop it.
 
 Only edit README.md and files under docs/ (never the binaries under docs/images/). Do not modify
-source code, notes/, scripts, or anything else.
+source code, scripts, or anything else.
 EOF
 
 echo "[update-docs] $(date '+%Y-%m-%d %H:%M:%S') refreshing docs for $head_short" >>"$log"

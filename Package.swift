@@ -84,7 +84,7 @@ let package = Package(
         // Proc.run — can never read the developer's ~/.gitconfig. It lives under Tests/ and is
         // depended on ONLY by the test targets, so it cannot reach orchestrad/orchestra/orchestra-mcp:
         // production still reads the user's real gitconfig. See Tests/GitHermeticBootstrap/bootstrap.c
-        // and notes/designs/2026-07-11-test-suite-git-hermeticity.md.
+        // and docs/08-building-operations.md (§Test hermeticity).
         //
         // NEVER add this to a non-test target's dependencies — that is the one thing that would let it
         // reach production. All three test targets list it, even OrchestraUITests, which forks no git:

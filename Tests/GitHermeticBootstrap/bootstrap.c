@@ -20,7 +20,7 @@
 // into orchestrad / orchestra / orchestra-mcp. Production behaviour is unchanged by construction:
 // the daemon still reads the user's real gitconfig and the user's real home.
 //
-// Design: notes/designs/2026-07-11-test-suite-git-hermeticity.md
+// Design: docs/08-building-operations.md (§Test hermeticity)
 
 #include <limits.h>
 #include <stdio.h>

@@ -6,7 +6,7 @@ import TestSupport
 
 // O2 backoff + give-up cap: the re-nudge loop used to re-prod the parent every 300s forever. It now backs
 // off geometrically and, after `mergeRequestNudgeCap` unanswered reminders, gives up — flagging the child
-// `mergeStalled` so a human can see it. Design: notes/designs/2026-07-11-merge-request-nudge-backoff.md.
+// `mergeStalled` so a human can see it. Design: docs/09-design-decisions.md (§ merge-request nudge backoff).
 //
 // Unit-converted (Task 10, merge-collab): the parent/child commit graph is modelled over FakeProc/RepoGraph
 // (pinned to real git by ContractTests/Git/GitRevContractTests) and the lineage link lives in

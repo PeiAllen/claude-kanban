@@ -10,6 +10,14 @@
 .obsidian/
 .trash/
 
+# Planning scratch — the whole top-level notes/ vault (plans + designs) is gitignored local
+# scratch, never tracked. The durable rationale lives in docs/ (the SSOT) + commit bodies
+# instead; see CLAUDE.md and docs/11-doc-automation.md. The "Open notes" / NotesService product
+# features read these files off disk at runtime, so they keep working regardless of git-tracking.
+# Root-anchored (`/notes/`, not a bare `notes/`) so it ignores ONLY this repo's top-level vault —
+# never a deeper notes/ dir, nor the ContractTests synthetic-repo `notes/*.md` fixtures.
+/notes/
+
 # Swift / SwiftPM
 .build/
 .swiftpm/

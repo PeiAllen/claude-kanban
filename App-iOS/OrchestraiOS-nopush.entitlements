@@ -5,7 +5,7 @@
     <!-- FREE personal-team device build. Same as OrchestraiOS.entitlements but WITHOUT `aps-environment`:
          the Push Notifications capability requires a PAID Apple Developer membership, so a free-account
          device signing FAILS if `aps-environment` is present. Real APNs push is out of scope on the free
-         tier (see notes/designs/ios-real-device-onboarding-and-transport.md §7); board + terminals +
+         tier (see docs/08-building-operations.md §Building the iOS app for a real device); board + terminals +
          takeover need none of it. To build for a device with a free Apple ID, select this entitlements
          file (CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements) + your personal team. -->
     <key>keychain-access-groups</key>

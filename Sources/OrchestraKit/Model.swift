@@ -310,7 +310,7 @@ public struct DiffStat: Codable, Sendable, Equatable {
 
 /// Which baseline a diff is computed against. `.working` = vs `HEAD`; `.branch` = vs the base branch
 /// (merge-base); `.parent` = vs the card's parent branch for a stacked card — falls back to `.branch`
-/// until `Task.parentBranch` is set. See `notes/designs/code-review-on-board`.
+/// until `Task.parentBranch` is set. See `docs/09-design-decisions.md` (§ code review on the board — axis 7).
 public enum DiffBase: String, Codable, Sendable { case working, branch, parent }
 
 /// The diff baselines a card offers (design §3 Diff): **Working · Branch · Parent** — `.parent` only for a

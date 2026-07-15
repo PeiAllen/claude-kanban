@@ -3,7 +3,8 @@ import Testing
 @testable import OrchestraKit
 
 /// P1.1 — the NDJSON line buffer that bridges NIO's async byte delivery to `Transport.readLine()`'s
-/// synchronous contract. Pure; sibling of `LineReader`. See notes/designs/ios-real-device-transport/04-tests.md.
+/// synchronous contract. Pure; sibling of `LineReader`. See
+/// docs/02-architecture.md § "The client transport seam and reconnect" (the `Transport`/`readLine` contract).
 @Suite("ControlLineBuffer")
 struct ControlLineBufferTests {
     private func d(_ s: String) -> Data { Data(s.utf8) }
