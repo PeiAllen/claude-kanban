@@ -164,9 +164,17 @@ pinch zoom and direct drag pan are native, and the image initially fits the avai
 closes the viewer and leaves the terminal/capture at its existing position. A failed or expired reference
 shows an in-place error and never opens an arbitrary URL.
 
-The initial phone viewer intentionally does not add its own file-export/default-viewer behavior. The
-phone requirement is a fast, full-screen, pinch-and-pan inspection surface; share/save policy is separate
-from this transcript-link feature.
+The phone viewer uses the standard iOS image action sheet rather than recreating its actions as custom
+buttons. Its toolbar has a single Share control that presents `UIActivityViewController` with a decoded
+`UIImage` made only from fetched, validated PNG or JPEG data. The system sheet supplies Copy and its
+normal share, save, and compatible-app actions in one place; the exact app-specific choices vary with the
+installed apps and iOS version. It never shares the Orchestra media URL, a daemon path, or an unvalidated
+type. This also means the app does not own a separate `UIPasteboard` or document-interaction-controller
+flow on phone.
+
+**Zoom and pan** remain inside the full-screen `UIScrollView`: pinch changes magnification and direct
+dragging pans only the magnified image. The viewer provides compact zoom-out, fit, and zoom-in controls
+alongside the gesture support.
 
 ## Agent delivery
 
@@ -203,6 +211,8 @@ Automated coverage includes:
   links;
 - temporary preview-cache naming and cleanup, plus the image-copy conversion policy for PNG and JPEG;
 - phone capture tokenization, live-terminal link forwarding, and the one shared full-screen media route;
+- phone share-sheet item construction, including a validated image representation rather than a media
+  URL or daemon path;
 - existing-command compatibility and the agent-instruction document installation paths.
 
 Native SwiftTerm popover placement and the two real agent renderers remain manual acceptance coverage,
@@ -210,11 +220,13 @@ because they depend on the actual AppKit terminal and provider TUI rather than a
 Manual acceptance also confirms that Copy pastes pixels into another image-capable app, Open uses the
 configured default viewer, and a magnified image pans under both mouse drag and trackpad scroll.
 On iPhone it confirms a captured fallback reference and a live-terminal reference both open the same
-full-screen preview, which pinch-zooms and drag-pans without changing the terminal's position.
+full-screen preview, which pinch-zooms and drag-pans without changing the terminal's position. It also
+confirms that the native Share sheet provides Copy plus device-provided image actions without exposing a
+daemon path.
 
 ## Scope and non-goals
 
 This feature does not add a persistent image shelf, a rich transcript renderer, Sixel/Kitty/iTerm image
 interchange, automatic parsing of paths, direct filesystem URL handling, or passive hover activation. It
-does not alter the existing image-paste behavior. The iOS full-screen viewer is in scope and shares the
-same RPC; iOS copy, export/default-viewer opening, and hover semantics are not.
+does not alter the existing image-paste behavior. The iOS full-screen viewer, native image Share sheet,
+and zoom/pan are in scope and share the same RPC; passive hover remains out of scope.
