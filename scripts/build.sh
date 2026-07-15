@@ -5,7 +5,7 @@
 # concurrent ones take 520s EACH — build concurrency is super-linear loss, so serializing is
 # faster in total and keeps the app/daemon responsive. If another card is building you will
 # see "[build-lock] waiting for slot…" on stderr; the wait is bounded and never fails the
-# build. See notes/designs/build-contention.md.
+# build. See docs/08-building-operations.md (§Building the package — the build mutex).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 exec scripts/lib/with-lock.sh build -- swift build "$@"

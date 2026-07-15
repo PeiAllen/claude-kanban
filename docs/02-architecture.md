@@ -128,8 +128,8 @@ reviving. tmux also gives each agent a real PTY that the app and CLI attach to d
 ## The Convergence model
 
 Every card's lifecycle is **one persisted variable** — `Task.phase` — with **one writer**. This is the
-*lifecycle-convergence* redesign (full spec: the [design vault](../notes/designs/lifecycle-convergence/index.md)
-and [design decisions](09-design-decisions.md#the-phase-funnel-one-writer-epochs-and-capability-gated-readiness));
+*lifecycle-convergence* redesign (the rationale is narrated in
+[design decisions](09-design-decisions.md#the-phase-funnel-one-writer-epochs-and-capability-gated-readiness));
 this section is the as-shipped daemon-side picture, agent-agnostic throughout (nothing here branches on
 `claude-code` vs `codex`).
 
@@ -374,6 +374,11 @@ All three are `ControlClient`s differing only in their `source` tag and how they
 Because the CLI and MCP both generate their surface from the same registry, the three clients can never
 drift apart on *what* commands exist — only on presentation.
 
+The module layering enforces this split at the link level: **`OrchestraKit` is Foundation-only and
+SwiftUI-free** (it cross-compiles for the Linux daemon), **`OrchestraUI` is the SwiftUI layer** (mac +
+iOS only), and the daemon/CLI/MCP link **only Kit** — so SwiftUI is never compiled for Linux and shared
+model/contract types stay usable on every target.
+
 Every human-facing surface — the mac app and the iOS app (not the MCP bridge, which relays raw task JSON
 to another agent, not rendered status) and `orchestra list`'s CLI pill — renders a card's status through
 one shared, pure contract: `displayState(phase:connection:) -> DisplayState`
@@ -384,9 +389,11 @@ from it: `label` comes from `Phase.displayKey → PhaseDisplayKey.label` (the on
 vocabulary lives), the app's color comes from `Theme.statusColor(statusKey)`, and `validActions` is built
 by looping `CommandCatalog.all` for schemas whose `phaseGate` admits the phase's `Phase.Kind` — never a
 hand-copied per-surface table, so a verb's gate can't quietly drift from what the UI offers. A
-disconnected link (`connection != .live`) empties `validActions` of every daemon verb and sets `isStale`;
-the one action that survives is a local-only extra (`.openNotes`, gated on whether the phase has a
-materialized worktree cwd), since opening the notes file is a local disk op that needs no daemon.
+disconnected link (`connection != .live`) empties `validActions` of every daemon verb and sets `isStale`.
+That includes `.openNotes`: opening a card's notes is **not** a local file op but a daemon RPC
+(`BoardStore.openNotes → client.call`, which reaches `Launcher.openNotes` to open Obsidian on the *host*),
+so it is gated inside the live link like every other action and additionally requires a materialized
+worktree cwd (a being-born or spawn-failed card has none).
 `dead(.spawnFailed)` — like every other dead reason — maps through `Phase.displayKey` to the `.dead` key
 and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads as `.done` ("Done").
 

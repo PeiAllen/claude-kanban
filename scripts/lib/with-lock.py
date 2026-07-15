@@ -8,7 +8,7 @@ WHY THIS EXISTS
     concurrent ones take 520s EACH. Degradation is super-linear, so build concurrency has
     negative value — serializing is faster in total AND keeps the machine responsive
     (daemon RPC p95: 22ms under 3 builds vs 6.5ms under 1). See
-    notes/designs/build-contention.md.
+    docs/08-building-operations.md (§Building the package — the build mutex).
 
 TWO LOCK POLICIES — they are not interchangeable
   * default (the BUILD lock) — FAILS OPEN. It only throttles; it guards no shared state.

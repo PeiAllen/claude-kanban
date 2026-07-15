@@ -17,8 +17,8 @@
 #   parked  = threads that are BOTH -> a pool thread consumed by a git fork. THE NUMBER THAT MATTERS.
 #
 # Starvation requires `parked` to approach `hw.activecpu`. Measured 2026-07-12 on a wide run:
-# peak parked = 1 of 18 across 1060 tests / 73 samples. See the Postscript in
-# notes/designs/2026-07-11-nudge-leak-cooperative-pool-starvation.md.
+# peak parked = 1 of 18 across 1060 tests / 73 samples. See docs/09-design-decisions.md
+# (the nudge-leak + cooperative-pool-starvation note).
 #
 # The suite does not terminate today (an unrelated pre-existing hang), so this stops itself once the
 # helper goes CPU-idle and reaps its runner's whole descendant tree — otherwise a survivor holds the

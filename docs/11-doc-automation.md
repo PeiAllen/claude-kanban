@@ -9,7 +9,18 @@ remove it.
 
 The project owner adds features continuously. Rather than hand-updating the docs each time (and letting
 them rot), the docs regenerate themselves from the change that just landed — reading the modified
-source plus any new `notes/plans/` and `notes/designs/` documents — so the manual tracks `main` closely.
+source plus the commit messages across the merged range (which carry the rationale) — so the manual
+tracks `main` closely.
+
+## The rationale contract — what a change must carry
+
+The automation regenerates prose from the merged history, so the durable **"why"** has to live in that
+history — there is no tracked `notes/` planning vault for it. When a PR changes behavior or a design
+decision, put the reasoning (the alternatives weighed, the tradeoffs, and the decision) in the
+**commit / PR body**, and update the relevant `docs/` chapter **in the same PR** (design decisions and
+shipped roadmap axes → chapter 9; feature narrative → the numbered chapter; a still-open axis →
+chapter 10). The doc-sync run reads those commit messages to keep chapters 9 and 10 accurate; a
+decision explained only in a local, untracked file is invisible to it.
 
 ## Install it
 
@@ -36,7 +47,7 @@ hand at any time:
    feature worktree doesn't trigger a doc rebuild: the shared hook fires, but the script no-ops.)
 2. **Checks the change** — looks at the files the triggering commit touched.
 3. **Runs Claude Code headlessly** — `claude -p "<prompt>"` with a doc-only toolset, instructing it to
-   read the changed sources + new plans/designs and make **surgical** edits to `README.md` and `docs/`
+   read the changed sources + the merged-range commit messages and make **surgical** edits to `README.md` and `docs/`
    so every feature, design decision, and future plan stays accurate (and to migrate a shipped roadmap
    axis from chapter 10 into chapter 9's history).
 4. **Commits only the docs** — stages `README.md` + `docs/` and makes a single

@@ -31,7 +31,7 @@ A bare `swift build` **bypasses the mutex** and re-creates the problem for every
 If you need a raw invocation, wrap it: `scripts/lib/with-lock.sh build -- swift build …`.
 When another card holds the lock you'll see `[build-lock] waiting for slot…` on stderr; the
 wait is bounded and **fails open**, so it can never fail your build. Details + the numbers:
-`notes/designs/build-contention.md`.
+`docs/08-building-operations.md` (the build-contention / build-mutex section).
 
 ## The test suite is tiered — run the unit tier per task, `--all` once at the merge gate
 
@@ -55,7 +55,27 @@ no ambient path statics (every test gets private roots via `TestEnv`); no real f
 (`FakeProc` is the default seam — a genuinely-real test belongs in ContractTests). New tests
 go in the mirror position of the source file they cover.
 
-Full rationale + the mechanisms: `notes/designs/2026-07-13-test-suite-redesign.md`.
+Full rationale + the mechanisms: `docs/08-building-operations.md` (the tiered-test-suite section).
+
+## Docs are the SSOT — carry the "why" in commits + `docs/`, never in a notes/ vault
+
+The reference manual under `docs/` is the single source of truth, auto-synced from `main` by
+`scripts/update-docs.sh`. There is **no tracked `notes/` planning vault** — `notes/plans/` and
+`notes/designs/` are gitignored local scratch that never lands in the repo (so it can't clog PR
+diffs or linger as stale references a later agent wrongly trusts as current truth). Don't cite a
+`notes/` path as a source of truth; cite `docs/` or the code.
+
+So when a PR changes behavior or a design decision, the durable **"why"** — the alternatives
+weighed, the tradeoffs, the decision — has exactly two homes, and it must land in **both**:
+- **the commit / PR body** — this is what the doc-sync run reads (commit messages across the
+  merged range) to regenerate chapters 9 and 10, so a decision explained only in a local
+  untracked file is invisible to it;
+- **`docs/` directly, in the same PR** — update the right chapter (design decisions → `docs/09`,
+  a shipped roadmap axis → its history entry in `docs/09`, feature narrative → the numbered
+  chapter).
+
+Treat "the rationale is in the commit body **and** reflected in `docs/`" as part of the merge
+gate for any behavior- or design-changing PR.
 
 ## Scratch / experiments — keep them contained
 Do all throwaway work — probes, experiments, scratch scripts, dumped output, temporary

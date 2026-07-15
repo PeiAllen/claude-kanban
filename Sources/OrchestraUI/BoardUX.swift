@@ -19,7 +19,7 @@ public enum InspectorMode { case agent, diff }
 @MainActor
 public final class BoardUX: BoardStore {
 
-    // Keyboard-navigation state (see notes/plans/2026-07-02-keyboard-shortcuts.md).
+    // Keyboard-navigation state (see docs/07-app-ui.md, § Keyboard navigation).
     @Published public var focusZone: FocusZone = .board {
         didSet {
             // A committed `/` search bar stays up so `n`/`N` cycle matches while you browse the board.

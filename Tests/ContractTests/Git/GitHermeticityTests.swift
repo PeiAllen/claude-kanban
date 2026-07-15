@@ -15,7 +15,7 @@ import Testing
 /// LOUD: if the bootstrap ever stops running, the suite goes red here instead of silently going back
 /// to reading (and running the keychain credential helper from) the developer's personal git config.
 ///
-/// See notes/designs/2026-07-11-test-suite-git-hermeticity.md.
+/// See docs/08-building-operations.md (§Test hermeticity).
 @Suite("Git hermeticity — the test bundle never reads the developer's git config")
 struct GitHermeticityTests {
     /// The escape hatch is honoured by the bootstrap itself, so these assertions only hold when it is

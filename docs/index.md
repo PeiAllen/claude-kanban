@@ -4,9 +4,10 @@ This is the complete reference for **Orchestra**, a local-only macOS app that or
 agents across repositories from a single Kanban board. It is written as a book: read it front-to-back
 to understand the system, or jump to a chapter as a reference.
 
-For a one-page overview, see the [project README](../README.md). For the design rationale behind every
-decision, the chapters here link into the layered design vault under
-[`notes/designs/`](../notes/designs/) and the shipped-PR plans under [`notes/plans/`](../notes/plans/).
+For a one-page overview, see the [project README](../README.md). The design rationale behind every
+decision lives here in the manual — chapter [9, Design decisions](09-design-decisions.md) for the
+shipped history and chapter [10, Roadmap](10-roadmap.md) for what's ahead — and in the commit history
+this manual is regenerated from.
 
 ## Table of contents
 
@@ -41,7 +42,7 @@ decision, the chapters here link into the layered design vault under
 ## How to read the citations
 
 Where a chapter states a precise behavior, it usually names the file that implements it (for example,
-`OrchestraService.swift` or `notes/designs/kanban-board/index.md`). Those are pointers for going
-deeper, not required reading. Treat code paths as authoritative if the prose and the code ever drift —
+`OrchestraService.swift` or `Sources/OrchestraCore/OrchestraService+Diff.swift`). Those are pointers
+for going deeper, not required reading. Treat code paths as authoritative if the prose and the code ever drift —
 and remember that this manual is regenerated automatically (see chapter 11), so it tracks `main`
 closely.
