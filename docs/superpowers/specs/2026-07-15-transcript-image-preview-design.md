@@ -1,7 +1,7 @@
 # Transcript-Anchored Image Preview Design
 
 **Date:** 2026-07-15
-**Status:** Approved direction; awaiting review of this written spec
+**Status:** Approved for implementation
 
 ## Goal
 
