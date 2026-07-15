@@ -90,15 +90,17 @@ a reference that tmux still shows.
 
 Media is not card state and is never rendered in the board or inspector. It is valid only for the card's
 monotonic session epoch that published it, so Codex's briefly unavailable native session ID is never a
-lifecycle dependency. A relaunch/restart replaces the prior epoch's media directory, and archive removes
-the card's media directory. If an old terminal marker remains visible after its record has been removed,
-activation shows a small "Image preview expired" message rather than following a file path or failing
-silently.
+lifecycle dependency. An agent relaunch increments that epoch and removes the prior epoch's media
+directory; archiving a card removes the card's whole media directory. A daemon restart preserves media
+for the current active epoch, then runs an idempotent reconciliation after task state loads: it removes a
+media directory whose card is absent or archived, or whose epoch is no longer the card's current epoch.
+If an old terminal marker remains visible after its record has been removed, activation shows a small
+"Image preview expired" message rather than following a file path or failing silently.
 
 The app resolves the opaque URL through a read-only `media` RPC, not by opening the asset path itself.
 The response carries bounded Base64 image bytes plus caption and MIME type, so the exact same mechanism
-works when the daemon is remote. The app keeps decoded image data in memory only for the lifetime of an
-open preview.
+works when the daemon is remote. Both apps cancel a pending media request when its preview route closes
+and retain decoded data only while that preview, or the phone's Share sheet, remains presented.
 
 ## macOS interaction
 
@@ -124,10 +126,12 @@ The popover's image is a native AppKit preview rather than an image embedded in 
   and a PNG representation generated from the decoded image for JPEG. It does not copy the media URL,
   caption, or a temporary filesystem path. The action briefly changes to "Copied" after a successful
   pasteboard write.
-- **Open** materializes the exact fetched bytes in an app-owned temporary preview cache with a safe
-  UUID filename and the validated `.png` or `.jpg` extension, then calls `NSWorkspace.shared.open`. macOS
-  selects the user's default image viewer. Cache files stay available until the next app launch's
-  age-based cleanup, so an external viewer never races a file deletion.
+- **Open** materializes the exact fetched bytes in an app-owned temporary preview cache with a safe UUID
+  filename and the validated `.png` or `.jpg` extension, then calls `NSWorkspace.shared.open`. macOS
+  selects the user's default image viewer. The cache never deletes a file on popover close or app exit:
+  launch-time cleanup removes files older than seven days, then evicts least-recently-modified remaining
+  files only if the cache exceeds 256 MiB. This allows an external viewer to finish loading an image while
+  still bounding abandoned local copies.
 - The image starts fitted inside a bounded preview area. A native `NSScrollView` hosts the image and
   supports pinch magnification plus compact minus, reset-to-fit, and plus controls. Magnification ranges
   from fit to the larger of 8× fit and the image's native 1:1 scale.
@@ -170,7 +174,8 @@ buttons. Its toolbar has a single Share control that presents `UIActivityViewCon
 normal share, save, and compatible-app actions in one place; the exact app-specific choices vary with the
 installed apps and iOS version. It never shares the Orchestra media URL, a daemon path, or an unvalidated
 type. This also means the app does not own a separate `UIPasteboard` or document-interaction-controller
-flow on phone.
+flow on phone. It holds the `UIImage` until both the full-screen preview and the presented Share sheet
+have dismissed, then releases it; no Orchestra-managed image file is written on iOS.
 
 **Zoom and pan** remain inside the full-screen `UIScrollView`: pinch changes magnification and direct
 dragging pans only the magnified image. The viewer provides compact zoom-out, fit, and zoom-in controls
@@ -203,16 +208,17 @@ The implementation begins with a non-user-facing proof of the actual render path
 
 Automated coverage includes:
 
-- media-source validation, bounded copy, opaque URL construction, session cleanup, expiry, and remote
-  retrieval;
+- media-source validation, bounded copy, opaque URL construction, session cleanup, expiry, remote
+  retrieval, and startup reconciliation that preserves only a current active epoch;
 - `publish-image` command schema/registry/CLI rendering, including the exact OSC 8 open/close sequence
   and plain-text fallback;
 - the client link policy, which accepts only valid Orchestra media URLs and rejects ordinary web or file
   links;
-- temporary preview-cache naming and cleanup, plus the image-copy conversion policy for PNG and JPEG;
+- temporary macOS preview-cache naming, seven-day and 256-MiB cleanup behavior, plus the image-copy
+  conversion policy for PNG and JPEG;
 - phone capture tokenization, live-terminal link forwarding, and the one shared full-screen media route;
 - phone share-sheet item construction, including a validated image representation rather than a media
-  URL or daemon path;
+  URL or daemon path, and release after both the share sheet and viewer dismiss;
 - existing-command compatibility and the agent-instruction document installation paths.
 
 Native SwiftTerm popover placement and the two real agent renderers remain manual acceptance coverage,
