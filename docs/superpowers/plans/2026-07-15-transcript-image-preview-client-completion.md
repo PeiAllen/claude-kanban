@@ -345,7 +345,7 @@ Expected: PASS. The app target includes the UIKit viewer and SwiftTerm forwardin
 - Produces TranscriptImageCacheEntry, TranscriptImageCachePolicy.filesToRemove(entries:now:maxAge:maxBytes:), TranscriptImagePreviewPresenter, and AgentTerminalView.loadTranscriptImage.
 - A terminal callback supplies only a UUID and an opaque payload loader; it never sees an image path.
 
-- [ ] **Step 1: Write the cache-policy regression**
+- [x] **Step 1: Write the cache-policy regression**
 
 Add this pure test before AppKit code:
 
@@ -365,7 +365,7 @@ Add this pure test before AppKit code:
             maxAge: 7 * 86_400, maxBytes: 250) == [oldest.url])
     }
 
-- [ ] **Step 2: Run the focused test before implementation**
+- [x] **Step 2: Run the focused test before implementation**
 
 Run:
 
@@ -373,7 +373,7 @@ Run:
 
 Expected: compile failure naming TranscriptImageCacheEntry or TranscriptImageCachePolicy.
 
-- [ ] **Step 3: Implement the pure policy and cache**
+- [x] **Step 3: Implement the pure policy and cache**
 
 Add to TranscriptImage.swift:
 
@@ -403,7 +403,7 @@ Its implementation removes entries older than maxAge first, then removes remaini
 
 Create TranscriptImagePreviewCache under the app Application Support directory. Add `TranscriptImagePreviewCache.pruneAtLaunch()` and call it once from OrchestraApp initialization, before the app mounts terminal views. It enumerates only regular cache files, builds entries from size and modification date, and removes exactly the paths selected by the policy with 7 days and 256 MiB. Open creates a fresh UUID filename with only the validated png or jpg extension, writes the fetched bytes, then calls NSWorkspace.shared.open. It never deletes the file on popover close or app exit.
 
-- [ ] **Step 4: Implement one terminal-local AppKit presenter**
+- [x] **Step 4: Implement one terminal-local AppKit presenter**
 
 Create:
 
@@ -416,7 +416,7 @@ Create:
 
 show dismisses an existing popover and cancels its prior load Task, then loads bytes through the injected closure. dismiss cancels the current Task before closing the popover. The presenter accepts only image/png or image/jpeg plus valid Base64 and NSImage decoding, and then presents a transient NSPopover anchored at the actual activation point. Its controller has a bounded NSScrollView/NSImageView, initial fit, native pinch zoom, pan above fit, minus/fit/plus controls, and a maximum zoom of max(8 * fitScale, nativeScale). It shows the caption. Copy writes actual pixels to NSPasteboard: raw PNG bytes when PNG, a generated PNG representation when JPEG. Open uses only TranscriptImagePreviewCache. On expiry, bad MIME, bad Base64, or transport failure, present a small transient Image preview expired popover; do not insert feedback into terminal output.
 
-- [ ] **Step 5: Wire only valid SwiftTerm links**
+- [x] **Step 5: Wire only valid SwiftTerm links**
 
 Add to AgentTerminalView:
 
@@ -441,7 +441,7 @@ Record lastActivationPoint in the existing leftMouseDown monitor before returnin
         var onTerminalScroll: (() -> Void)?
     }
 
-- [ ] **Step 6: Build the desktop paths**
+- [x] **Step 6: Build the desktop paths**
 
 Run:
 
@@ -453,7 +453,7 @@ Run:
 
 Expected: PASS. The xcodebuild is compile-only: it must not install, launch, attach to tmux, or touch an existing Orchestra.app process. It validates the real SwiftTerm branch that typecheck-app.sh cannot compile without that package.
 
-- [ ] **Step 7: Commit macOS preview support**
+- [x] **Step 7: Commit macOS preview support**
 
     git add Sources/OrchestraKit/TranscriptImage.swift \
       Tests/UnitTests/OrchestraKit/TranscriptImageTests.swift \

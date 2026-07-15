@@ -59,4 +59,20 @@ struct TranscriptImageTests {
             #expect(TranscriptImageTextTokenizer.tokenize(invalid) == [.text(invalid)])
         }
     }
+
+    @Test("desktop export cache removes expired files before LRU overflow")
+    func desktopCacheUsesAgeThenLRU() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let old = TranscriptImageCacheEntry(url: URL(fileURLWithPath: "/tmp/old.png"), byteCount: 8,
+                                            modifiedAt: now.addingTimeInterval(-8 * 86_400))
+        let oldest = TranscriptImageCacheEntry(url: URL(fileURLWithPath: "/tmp/a.png"), byteCount: 200,
+                                               modifiedAt: now.addingTimeInterval(-3 * 86_400))
+        let newest = TranscriptImageCacheEntry(url: URL(fileURLWithPath: "/tmp/b.png"), byteCount: 100,
+                                               modifiedAt: now.addingTimeInterval(-60))
+
+        #expect(TranscriptImageCachePolicy.filesToRemove(entries: [newest, old, oldest], now: now,
+            maxAge: 7 * 86_400, maxBytes: 256 * 1024 * 1024) == [old.url])
+        #expect(TranscriptImageCachePolicy.filesToRemove(entries: [newest, oldest], now: now,
+            maxAge: 7 * 86_400, maxBytes: 250) == [oldest.url])
+    }
 }

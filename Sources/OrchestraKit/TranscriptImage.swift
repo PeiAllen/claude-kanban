@@ -126,3 +126,45 @@ public enum TranscriptImageTextTokenizer {
         }
     }
 }
+
+/// Metadata used by the macOS preview export cache. It stays platform-neutral so eviction ordering is
+/// hermetically testable without AppKit or filesystem access.
+public struct TranscriptImageCacheEntry: Sendable, Equatable {
+    public let url: URL
+    public let byteCount: Int
+    public let modifiedAt: Date
+
+    public init(url: URL, byteCount: Int, modifiedAt: Date) {
+        self.url = url
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+    }
+}
+
+/// Deterministic removal policy for temporary desktop exports: expire old files first, then evict the
+/// least-recently-modified survivors until their total size fits within the configured bound.
+public enum TranscriptImageCachePolicy {
+    public static func filesToRemove(entries: [TranscriptImageCacheEntry], now: Date,
+                                     maxAge: TimeInterval, maxBytes: Int) -> [URL] {
+        let stale = entries.filter { now.timeIntervalSince($0.modifiedAt) > maxAge }
+        var retained = entries.filter { !stale.contains($0) }.sorted(by: isNewer)
+        var total = retained.reduce(0) { $0 + $1.byteCount }
+        var removed = stale.sorted(by: isOlder).map(\.url)
+
+        while total > maxBytes, let oldest = retained.popLast() {
+            total -= oldest.byteCount
+            removed.append(oldest.url)
+        }
+        return removed
+    }
+
+    private static func isNewer(_ lhs: TranscriptImageCacheEntry, _ rhs: TranscriptImageCacheEntry) -> Bool {
+        if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt }
+        return lhs.url.path > rhs.url.path
+    }
+
+    private static func isOlder(_ lhs: TranscriptImageCacheEntry, _ rhs: TranscriptImageCacheEntry) -> Bool {
+        if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt < rhs.modifiedAt }
+        return lhs.url.path < rhs.url.path
+    }
+}

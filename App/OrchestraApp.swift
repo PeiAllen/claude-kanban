@@ -17,6 +17,9 @@ struct OrchestraApp: App {
         // The "Vim keyboard" setting defaults to on; register it so the plain-object
         // KeyboardController reads `true` before the user ever visits Settings.
         UserDefaults.standard.register(defaults: ["orch_vim_keys": true])
+        // Preview exports may outlive the transient popover so an external image app can finish opening
+        // them. Bound those app-owned copies once at launch, before any terminal can resolve a reference.
+        TranscriptImagePreviewCache.pruneAtLaunch()
     }
 
     var body: some Scene {

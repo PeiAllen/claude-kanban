@@ -42,6 +42,9 @@ struct ShellTabsView: View {
                         AgentTerminalView(socket: model.terminalTmuxSocket, session: task.tmuxSession,
                                           window: selectedWindow, host: model.terminalHost,
                                           background: theme.termBg, foreground: theme.term,
+                                          loadTranscriptImage: { referenceID in
+                                              try await model.transcriptImage(task.id, referenceID: referenceID)
+                                          },
                                           // A click into a shell counts as descending: mark the zone so the
                                           // inspector focus ring / chip track it.
                                           onFocused: {

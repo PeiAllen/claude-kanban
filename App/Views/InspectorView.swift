@@ -367,6 +367,9 @@ private struct AgentChrome: View {
                                       // next nav key would type into the agent instead of moving the selection.
                                       autofocus: model.focusZone == .terminal,
                                       terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
+                                      loadTranscriptImage: { referenceID in
+                                          try await model.transcriptImage(task.id, referenceID: referenceID)
+                                      },
                                       // A mouse click into the terminal also counts as descending: keep the
                                       // zone (and the focus ring / chip) honest.
                                       onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } },
