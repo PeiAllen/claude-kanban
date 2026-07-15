@@ -118,6 +118,14 @@ func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool
   exactly when a receipt proof was lost after genuine receipt — accepted (at-least-once).
 - **A `.timedOut`/`.superseded` relaunch keeps its lease** — the retry's claim re-owns it
   (claimable-set rule), so a retried relaunch never comes up seedless.
+- **Resume-modal suppression (cold path, Claude):** `claude --resume` on an old+large session
+  (> ~70min AND > ~100k tokens, thresholds read from the 2.1.209 binary by investigation card
+  5866ea; two live cards observed parked at the modal) opens a "Resume from summary/full" dialog
+  *instead of* running the seed — a machine-driven resume has no human to answer it, so it can
+  only deadlock. `ClaudeCodeAdapter.env` sets `CLAUDE_CODE_RESUME_THRESHOLD_MINUTES` +
+  `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` very high. Fail-soft by construction: undocumented
+  internals a different build ignores harmlessly; if the modal still appears, readiness times
+  out → the lease survives → the arm retries/stuck-flags (never a silent swallow).
 - **Handoff-only relaunch (empty inbox, `pendingSeed ≠ nil`):** a `relaunchSeed` claim returns a
   batch **whenever its render yields a non-empty payload** — with zero consumed messages if need
   be (ids may be empty; `confirm` on a 0-id batch is the usual idempotent no-op). `nil` means
@@ -281,7 +289,15 @@ response: { token: UUID, payload: String }        // held up to ~55s; empty time
   token's own epoch validity); then park. A newer poll for the same card supersedes the older
   (which returns empty). Parked polls die with their connection:
   `ControlServer` gains a universal per-connection close hook (EOF and broken-write both call it —
-  today only `subscribe` sets `onBroken`) that calls `broker.detach(connection)`.
+  today only `subscribe` sets `onBroken`) that calls `broker.detach(connection)` **and cancels
+  that connection's in-flight handler tasks** (tracked per connection at dispatch). The
+  cancellation half closes a CONFIRMED pre-existing silent-drop independent of channels: a killed
+  CLI `orchestra wait` (e.g. by archive's session-kill) leaves its handler parked in
+  `awaitConclusion` forever — EOF cancels nothing today — leaking `activeWaitProcesses[card] ≥ 1`,
+  so every later `.nativeReinvoke` wake to that card no-ops for the daemon's life.
+  `awaitConclusion(token:)` already resumes nil on cancellation, which flows through the existing
+  `releaseActiveWaitProcess` — task cancellation is the whole fix (investigation card 5866ea;
+  mechanism re-verified against `ControlServer.serve`/`handleReaderEOF` + `+Wake.swift:68-92`).
 - `ChannelBroker.push(cardId, batch) -> Bool` resolves the parked poll; a failed/absent write
   returns `false` (and detaches). `isAttached(id)` = a poll is currently parked. No parked poll ⇒
   channel route unavailable ⇒ `wake` falls through cold.
@@ -550,6 +566,8 @@ classDiagram
 | `inbox.json` migrates to a `{messages, confirmedIds}` envelope with a tolerant loader | The synthesized array decoder would `.bak` every existing inbox on upgrade — dropping pending sends (round-4 CRITICAL); lc's tolerant-envelope precedent applies | An envelope-only decoder (upgrade data loss); a sidecar ring file (two-file atomicity) |
 | Persisted per-lease tail watermark, captured post-kill pre-launch | fileTail lines carry no epoch; the fence must be ordered after predecessor termination (no post-fence appends) and survive daemon restarts (no historical replay) — round-4/5 CRITICALs | Trusting tail arrival order (2s-lag reordering); an in-memory EOF fast-forward (lost at daemon restart); pre-kill capture (old process appends past it); hook-only confirms (Codex resume may emit no early hook) |
 | Channel attachments epoch-bound via the bridge's inherited `ORCH_EPOCH` | A pre-relaunch bridge's parked poll must never take or ack a new-epoch batch into a dead session (round-5 P1); epoch bump revokes stale polls | Card-keyed-only parking (stale-bridge ack drops a send) |
+| Cold-path resume-modal suppression via adapter env thresholds | A machine-driven `claude --resume` parked on a human modal deadlocks and swallows the seed (5866ea: thresholds read from the 2.1.209 binary, two live cards observed stuck); fail-soft env — a differing build ignores it, and a still-appearing modal degrades to readiness-timeout → retry/stuck, never silence | Answering the modal by send-keys choreography (fragile content-match on a feature-flagged dialog); doing nothing (live deadlock evidence) |
+| The close hook cancels the connection's in-flight handler tasks | CONFIRMED leak: a dead `wait` client's parked handler pins `activeWaitProcesses` forever → all future nativeReinvoke wakes to that card silently no-op; `awaitConclusion`'s existing cancellation handler makes cancellation sufficient | Releasing only the counter (leaves the parked task leaked); a `wait` timeout (changes the verb's semantics) |
 
 ## Open questions — need your call
 

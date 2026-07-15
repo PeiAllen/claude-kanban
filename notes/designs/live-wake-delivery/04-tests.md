@@ -61,6 +61,8 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
 | relaunchSeed | `test_stepperClaimsSeedAtRender`, `test_retryReownsInflightBatch` (timeout → re-step → same messages), `test_signalReadinessConfirms`, `test_ticksReadinessHoldsToken` |
 | Held confirm + watermark | `test_heldLeaseConfirmedByPostWatermarkLine`, `test_preWatermarkLineNeverConfirms`, `test_wrongRolloutPathNeverConfirms`, `test_daemonRestartReplayNeverConfirms` (remake + reread from offset 0), `test_hookEpochMatchConfirmsHeld` |
 | De-drain | `test_resumeInCardNoLongerDrains` (crash between intent and launch loses nothing), `test_restartBlankPreservesInbox` (messages deliver after blank lands) |
+| Resume-modal suppression | `test_claudeResumeEnvSuppressesResumeModal` (adapter `env` carries both thresholds — FakeProc env-intent assertion, unit tier; other adapters unaffected) |
+| Wait-gate leak (D1) | `test_eofCancelsParkedWaitHandler` + `test_deadWaitClientReleasesWakeGate` (register a `wait`, drop the connection, assert `activeWaitProcesses` cleared and a subsequent send wakes the card — contract tier beside the `channel-wait` round trip, real UDS) |
 | Provisional delivery | `test_provisionalBlankLaunchCarriesPrompt` (argv positional = payload; lands `.running`), `test_neverPromptedStrandKilled` (arm delivers without a human) |
 | Delivery arm | `test_armRedrivesIdleLagNoop` (level trigger), `test_armSkipsPermissionWaiting`, `test_armSkipsRunning`, `test_armRevivesDeadResumable`, `test_deadUnresumableGoesStuck`, `test_armBackoffCapped` |
 | Attempt accounting | `test_expiryChargedOncePerToken`, `test_confirmResetsAttempts`, `test_ackWithoutNotifyCannotSuppressStuck` |
