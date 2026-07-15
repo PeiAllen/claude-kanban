@@ -64,3 +64,12 @@ Baseline at audit time: 1,170 test cases. After the two deletions: 1,168. Any fu
 deletion requires Allen's answer on the category-4 list (both currently recommended keep,
 so the expected end state is 1,168 + whatever Stage-2 conversions add/merge, reconciled in
 the final report).
+
+## Deferred follow-up (from the impl-review confirm/deny, recorded per the bounded contract)
+
+- **ControlClient reconnect backoff is shortened, not virtualized** (Codex DENY, accepted as
+  real, deferred as out-of-proportion): the reader is a dedicated OS thread (blocking `read(2)`,
+  reader-owns-close), so its `Thread.sleep(reconnectBackoff(attempt))` cannot ride the injected
+  async clock without redesigning the reader loop. Unit tests inject `{ _ in 0.001 }` and wait
+  on observable state via `pollUntil` — slower under load, never wrong. Virtualize if/when the
+  ControlClient reader moves off threads.
