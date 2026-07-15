@@ -23,19 +23,24 @@ links: ["[[index]]", "[[03-implementation]]", "[[02-contract]]"]
   silence*. Loss-shaped assertions ("message gone + never delivered") are the battery's spine.
 - **Crash-equivalence:** leases and watermarks are persisted, so every crash test is a
   `TestEnv.remake(base:)` reload asserting the reconciler/arm converges from disk.
+- **Tiered per the merged suite redesign:** unit tier (FakeProc/TestClock, mirror layout) is the
+  regression guard; two contract pins for the real-socket seams; E2E stays smoke. Change-scoped
+  runs per task, `--all` only at each PR's merge gate.
 - **Both-agent matrix:** stop-drain and relaunch-seed tests parameterize over claude-like
   (hooksPush, `.controlChannel`/`.nativeReinvoke`) and codex-like (fileTail, `.relaunch`)
   capability stubs; channel-plumbing tests are transport-level (agent-free).
 - **Deliberately not tested:** real MCP wire framing (SDK-owned); claude's channel *ingestion*
   (research preview — covered by the manual E2E probe, not CI); UI pixels.
 
-## Framework / tooling
+## Framework / tooling (re-grounded on the merged tiered suite, 2026-07-14)
 
 | Thing | Choice |
 |---|---|
-| Runner | `swift test` (existing targets; suite stays green per PR) |
-| Harness | `TestEnv.make()/remake()` (`Stubs.swift:417-615`), `StubSessions` recorders, `StubAdapter.writeTranscript`, `seedPhase`, `setStepBackoff`, `reconcileToLive` |
-| New stub seams | `StubChannelBridge` (drives `channel-wait` via a raw `ControlClient(source: .bridge)`); pane-text scripting for `awaitPaneMatch` (`StubSessions.setPaneText:113`); rollout fixture files for `TailedLine`/watermark |
+| Runner + cadence | `./scripts/test.sh` — **unit tier per task**; `--contract`/`--e2e` additively when touching git/tmux command generation or binaries; **`--all` (+ `scripts/lint-tests.sh`) once at each PR's merge gate**. Never mandate full-suite runs per task (project rule) |
+| Tier placement | Every battery below is **UnitTests** (FakeProc + TestClock, private roots, no forks) in the **mirror position of its source file** (Inbox battery → `Tests/UnitTests/OrchestraCore/InboxTests.swift`; wake/arm → `.../Service/SendWakeTests.swift` etc.). **ContractTests** only where realness IS the assertion: the `channel-wait` round trip over a real UDS `ControlServer` (mirror of `ControlRoundTripTests`) + the `.bridge` source gate on the real dispatch. **E2ETests**: the isolated-stack smoke |
+| Harness | `TestEnv.make()/remake()` (`Tests/UnitTests/Support/TestEnv.swift` — FakeProc + emulator by default, per-test private roots), `StubSessions`/`StubAdapter`/`StubWorktrees` (same dir), `seedPhase`, `setStepBackoff`, `reconcileToLive` |
+| **Time discipline (lint-enforced)** | Every time-based assertion — lease expiry (60s), backoff, stuck age (300s), attach grace (15s), the ~55s poll hold — is a **`TestClock.advance`** against the injected clock/`now` seams, synchronized via `parked(_:deadlineAtLeast:)`, never a wall-clock wait; race windows use `Gate`/`SyncGate`, readiness polls use `pollUntil` (all in `Tests/TestSupport`) |
+| New stub seams | `StubChannelBridge` (unit: drives the broker + a stub transport; contract: a raw `ControlClient(source: .bridge)` against the real server); pane-text scripting for `awaitPaneMatch` (`StubSessions.setPaneText`); rollout fixture files for `TailedLine`/watermark; probe tests via `FakeProc` argv-intent assertions (`channelsSupported` never forks in the unit tier) |
 | Fixtures | Legacy bare-array `inbox.json`; envelope with leased/lease-less rows; rollout `.jsonl` with pre/post-watermark lines; pre-change hook params (no `stopHookActive`) |
 
 ## Unit tests (per L2 contract)

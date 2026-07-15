@@ -56,6 +56,14 @@ links: ["[[index]]", "[[02-contract]]", "[[04-tests]]", "[[05-pr-tree]]"]
   reads this state, B5b the surfacing.
 - **Claim epoch always comes from the card's current `sessionEpoch`** read on the service actor
   at dispatch (wake/payloadForStop/stepper) — the Inbox never guesses epochs.
+- **All new time and process I/O flows through the merged injected seams** (test-suite redesign,
+  on main 2026-07-14): the `Inbox` gains a `now: @Sendable () -> Date` provider (the `TaskStore`
+  pattern) for `leasedAt` stamping — expiry math already takes `now` as a parameter per L2; the
+  arm's backoff/stuck-age/attach-grace read the service's injected time; the `channel-wait` hold
+  timer and the pump loop sleep via the service's `clock: any Clock<Duration>` (TestClock-
+  parkable); the `channelsSupported` `--help` probe runs through `ProcRunning` (FakeProc-
+  testable, argv-intent assertions). No new `Date()`/`ContinuousClock()`/`Proc.run` call sites
+  outside the seams — `scripts/lint-tests.sh` polices the test side.
 - **The arm charges expiry exactly once:** `outstandingTokens[cardId]` is populated at dispatch
   (claim success); each tick the arm intersects it with the inbox's live leases — a token no
   longer live (expired/re-owned) and never confirmed → charge + remove. Confirm removes it first,
@@ -210,11 +218,19 @@ sequenceDiagram
 
 ## Concerns / decisions for review
 
-- **Anchor drift since gating (noted 2026-07-12):** main's stale-bring-up fix (`e632e79`) threaded
-  `(Phase.Kind, epoch)` ownership params through `ConvergeContext.finishLaunch` and the stepper
-  `transition` callback (a `stillOwns` guard). No contract conflict — B3's watermark capture,
-  `ReadinessResult.via`, and seed claims compose with the extra params — but B3/B4 cards must
-  re-verify these signatures at execution (the standing symbols-are-fallback rule).
+- **Anchor drift since gating (updated 2026-07-14):** three main drops touched this plan's seams;
+  none conflict with the contract, all require anchor re-verification at execution:
+  1. The stale-bring-up fix (`e632e79`) threaded `(Phase.Kind, epoch)` ownership params through
+     `ConvergeContext.finishLaunch` and the stepper `transition` callback (a `stillOwns` guard) —
+     B3's watermark capture, `ReadinessResult.via`, and seed claims compose with the extra params.
+  2. The `--model` re-seat (`3857f12`) added `Task.pendingModel`, consumed by the RelaunchStepper
+     at launch — the same intent-only + stepper-consumed pattern as `pendingSeed`; B3's seed claim
+     coexists with it (orthogonal fields, same `.relaunching` mutate discipline).
+  3. The test-suite redesign (`d132158`) re-tiered `Tests/` (UnitTests/ContractTests/E2ETests
+     mirror layout, FakeProc/TestClock/TestSupport, `scripts/test.sh` cadence) — every test-file
+     path this vault cites moved (e.g. `Tests/UnitTests/OrchestraCore/Service/SendWakeTests.swift`);
+     [[04-tests]] is re-grounded; builds/tests go through `scripts/build.sh`/`scripts/test.sh`
+     (machine-wide build mutex — never bare `swift build`/`swift test`).
 - **Biggest churn:** B4 (wake rewrite + arm) touches the wake tests
   (`SendWakeTests`/`CodexWakeTests`) that assume `resumeSeedWake` semantics — they migrate to the
   route ladder in the same PR. Second: B1's inbox envelope (every inbox fixture).

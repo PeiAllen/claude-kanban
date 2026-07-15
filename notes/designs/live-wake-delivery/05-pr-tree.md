@@ -20,16 +20,21 @@ links: ["[[index]]", "[[03-implementation]]", "[[04-tests]]"]
 
 ## Execution model (Allen's standing workflow)
 
-- An **orchestrator card** (Opus 4.8) on branch `impl/live-wake-delivery` fans out one child PR
-  card per row below (`spawn --base <parent PR branch>` — branch-tree lineage, ONE base each).
+- An **orchestrator card** (T1: Opus 4.8 @ high) on branch `impl/live-wake-delivery` fans out one
+  child PR card per row below (`spawn --base <parent PR branch>` — branch-tree lineage, ONE base
+  each). PR cards start at T1 and escalate per the standing tier ladder if a PR turns out to be
+  cross-cutting (re-seat via `handoff --model`, or delegate the hard slice up).
 - Each PR card plans with `superpowers:writing-plans` (grounded in this vault + its row), has the
-  plan reviewed by **Opus 4.8 + GPT-5.6 Terra** until clean, implements via
-  `superpowers:subagent-driven-development` (high effort), has the diff reviewed by both models
+  plan reviewed by **Opus 4.8 + GPT-5.6 Terra, both @ xhigh** (the per-PR pair), implements via
+  `superpowers:subagent-driven-development` (@ high), has the diff reviewed by the same pair
   until clean, then files a `merge-request` to the orchestrator.
-- **`swift test` green at every PR**; both-agent coverage wherever the PR touches agent behavior
-  (project rule: claude-code AND codex).
-- After all PRs merge: the orchestrator runs a final whole-branch review (Opus + GPT until clean)
-  and lands in the Review column for Allen.
+- **Tests per the tiered-suite cadence:** unit tier (`./scripts/test.sh`) per task;
+  **`./scripts/test.sh --all` (+ `lint-tests.sh`) once at each PR's merge gate** — never
+  full-suite per task. Builds via `scripts/build.sh` (machine-wide mutex — no bare `swift`
+  invocations). Both-agent coverage wherever the PR touches agent behavior (claude-code AND codex).
+- After all PRs merge: the orchestrator runs the final whole-branch review at **T3 — Opus 4.8 +
+  GPT-5.6 Sol, both @ xhigh** (large-scale/adversarial tier) until clean, and lands in the Review
+  column for Allen.
 
 ## The PRs
 
