@@ -70,7 +70,7 @@ Expected: PASS. A failure is fixed in its owning foundation component before a c
 - Produces BoardStore.transcriptImage(_ cardID: UUID, referenceID: UUID) async throws -> TranscriptImagePayload.
 - App and App-iOS never call ControlClient.media directly.
 
-- [ ] **Step 1: Write a failing BoardStore transport test**
+- [x] **Step 1: Write a failing BoardStore transport test**
 
 Create an XCTest using a test-local semaphore-backed Transport. It decodes outgoing RPCRequest values, records method/params, returns a normal version response, returns one supplied payload for media, and returns an RPC error for every other method.
 
@@ -150,7 +150,7 @@ Define the test transport in that file as:
 
 The transport records the selected ref and id before it returns its payload. Its close implementation wakes a blocked reader, matching EventStreamConsumerTests.FakeTransport, so this test cannot leave a ControlClient reader running.
 
-- [ ] **Step 2: Run the focused test before implementation**
+- [x] **Step 2: Run the focused test before implementation**
 
 Run:
 
@@ -158,7 +158,7 @@ Run:
 
 Expected: compile failure naming the missing BoardStore.transcriptImage method.
 
-- [ ] **Step 3: Add the single BoardStore boundary**
+- [x] **Step 3: Add the single BoardStore boundary**
 
 Add this next to captureAgentPane:
 
@@ -170,7 +170,7 @@ Add this next to captureAgentPane:
 
 Do not swallow the error. The relevant platform preview needs to render expiry or transport feedback while leaving the terminal unchanged.
 
-- [ ] **Step 4: Run the unit proof**
+- [x] **Step 4: Run the unit proof**
 
 Run:
 
@@ -178,7 +178,7 @@ Run:
 
 Expected: PASS. The only request made by the new BoardStore API is media for the requested card and id.
 
-- [ ] **Step 5: Commit the data boundary**
+- [x] **Step 5: Commit the data boundary**
 
     git add Sources/OrchestraUI/BoardStore.swift Tests/UnitTests/OrchestraUI/TranscriptImageBoardStoreTests.swift
     git commit -m "feat: expose transcript images to app clients"
