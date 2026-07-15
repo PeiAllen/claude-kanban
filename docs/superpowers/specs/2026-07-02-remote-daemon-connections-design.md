@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-02
 **Status:** Design approved, pending implementation plan
-**Related:** `notes/designs/phone-client/01-design.md`, `docs/10-roadmap.md` (#9 phone client), `docs/superpowers/specs/2026-07-01-mobile-orchestra-design.md`
+**Related:** `docs/10-roadmap.md` (#9 phone client), `docs/superpowers/specs/2026-07-01-mobile-orchestra-design.md`
 
 ## Motivation
 

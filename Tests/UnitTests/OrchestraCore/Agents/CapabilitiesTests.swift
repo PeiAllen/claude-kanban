@@ -8,7 +8,8 @@ struct CapabilitiesTests {
     // The COMPLETE variant spelling, locked against SSOT §4 + 02-contract classDiagram.
     // If any spelling drifts (add/rename/remove a case), this fails — that is the point. `sendKeys` /
     // `sessionSeed` were retired when Codex moved to resume-seed wake + the Stop-hook drain (see
-    // notes/designs/codex-wake-delivery); capabilities are computed from the adapter, never persisted.
+    // docs/04-cards-worktrees-sessions.md § "Agent adapters" — the capability descriptor / wake
+    // transport); capabilities are computed from the adapter, never persisted.
     @Test("every enum variant spelling is frozen exactly")
     func variantSpellingsFrozen() {
         #expect(AgentCapabilities.SessionId.allCases.map(\.rawValue) == ["seeded", "discovered"])

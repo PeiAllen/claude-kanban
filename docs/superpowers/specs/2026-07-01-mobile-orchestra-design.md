@@ -5,7 +5,7 @@ type: design-spec
 status: approved
 created: 2026-07-01
 updated: 2026-07-03
-links: ["[[../../../notes/designs/phone-client/index|phone-client]]", "[[2026-07-02-remote-daemon-connections-design|remote-daemon-connections]]", "[[../../../notes/designs/2026-07-03-configurable-notifications-design|configurable-notifications]]"]
+links: ["[[2026-07-02-remote-daemon-connections-design|remote-daemon-connections]]"]
 ---
 
 # Mobile Orchestra — Design Spec
@@ -115,7 +115,7 @@ Deliberately *not* a pager column — matching the desktop's decision that Done 
   gauge, worktree breadcrumb (`repo/branch → path`), chat link.
 - **Tabs:** **Agent · Terminal · Diff · Inbox · Info** — the desktop separates the agent session
   from the worktree shells, so these are two distinct views. Their phone behavior follows the
-  [phone agent & terminal UX design](../../../notes/designs/2026-07-03-phone-agent-terminal-ux-design.md),
+  [phone agent & terminal UX design](../../07-app-ui.md),
   which resolves two problems the earlier spec left open — *a raw tmux isn't phone-native*, and
   *desktop + phone attaching the same tmux window fights over its one size*. The answer is a
   three-tier model (**Agent is primary; Terminal is a secondary escape hatch**):

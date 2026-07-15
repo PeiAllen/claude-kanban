@@ -17,7 +17,8 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `desc` | `String` | Live one-line blurb pushed by the agent's hooks (pane-parse fallback). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
-| `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **stub**: nil until stacked branches sets it. |
+| `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |
+| `treeStat` | `TreeStat?` | Daemon-maintained child-lineage status for the branch tree (`synced` / `restackNeeded` / …); nil = none or not yet computed. |
 | `cwd` | `String` | **The one directory** the agent and its shells run in. |
 | `origin` | `CardOrigin` | `worktree` \| `scratch` \| `borrowed` — how `cwd` came to be. |
 | `access` | `CardAccess` | `readWrite` \| `readOnly`. |
@@ -90,7 +91,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 - **`StartIn`** — `plan` or `impl`.
 - **`DiffBase`** — the baseline for a card's [code-review diff](09-design-decisions.md#shipped-feature-history)
   (axis 7): `working` (vs `HEAD`), `branch` (vs the default-branch merge-base — the PR diff, the default),
-  or `parent` (vs the card's `parentBranch`, for a stacked card; falls back to `branch` while the stub is nil).
+  or `parent` (vs the card's `parentBranch`, for a stacked card; falls back to `branch` when it has no parent link).
 
 ### Identity and references
 
@@ -204,8 +205,7 @@ so an idle agent drains promptly rather than at its next unprompted turn; `send`
 `StopDrain.maxMessageChars` at enqueue so any accepted one delivers whole — the inbox is a nudge channel, not
 a document transfer), and the Claude Stop hook drains it
 into the agent at its next turn-end (`OrchestraService.drainForStop`, dispatched by the [`hook` RPC](05-command-reference.md#server-only-built-in-methods)
-on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)). The C1 plan is
-[`notes/plans/2026-07-01-c1-inbox-stopdrain.md`](../notes/plans/2026-07-01-c1-inbox-stopdrain.md).
+on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 
 ## The trust ledger (T1)
 

@@ -10,7 +10,7 @@ source scripts/swift-testing-flags.sh
 # COMPILING is the contended resource; RUNNING the tests is not (much of the suite is
 # tmux/socket/sleep-bound). So we hold the machine-wide build mutex for the compile only, then
 # release it and run the suite unlocked — serializing test *execution* would cost throughput
-# with no evidence behind it. See notes/designs/build-contention.md.
+# with no evidence behind it. See docs/08-building-operations.md (§Building the package — the build mutex).
 #
 # Args: test-only SELECTORS (--filter etc.) must not reach `swift build` (it rejects them);
 # everything else (-c release, --scratch-path, -Xswiftc …) changes WHAT is built and must reach

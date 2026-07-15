@@ -104,8 +104,7 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   when the card is busy, drafting, mid-relaunch, or already watching children on a background `orchestra
   wait`. For a send-keys (Codex) card it fires the content-free nudge; for a `nativeReinvoke` (Claude) card
   that is genuinely idle with no live wait it **resume-seeds** — relaunches `claude --resume` with the inbox
-  folded into the opening turn. (`notes/plans/2026-07-01-c1-inbox-stopdrain.md`; the wake dispatcher is
-  C2/C4, extended by `send-wakes-idle-card`.)
+  folded into the opening turn. (The wake dispatcher is C2/C4, extended by `send-wakes-idle-card`.)
 - **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
   `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, a read-only
   freeform/scratch delegated card reports task completion (Codex `task_complete` / `turn_complete`, Claude
@@ -118,8 +117,7 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   one child concludes it returns, and the caller (an orchestrator card) re-issues on the cards that remain,
   so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also
   routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what
-  the reactive fan-out / stacked-PR DAG composes from. (`notes/plans/2026-07-01-c2-wake-mergewatch.md`;
-  `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
+  the reactive fan-out / stacked-PR DAG composes from.
 - **An idle card is not a concluded one — nothing reclaims it for you.** Those three branches are the
   *whole* of conclusion authority, so a worktree child told to `send` a result back and stop (a review-pair
   reviewer, a research fork) ends its turn `waiting`, not concluded: it keeps its agent process, worktree,
@@ -141,8 +139,6 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   delegation skill / AGENTS.md (PR D2) and now **auto-materialized into every launched card** by each
   adapter's `prepareToLaunch` (skill-injection; Claude a `.claude/skills` project skill, Codex an
   `AGENTS.md` in its isolated `CODEX_HOME`), see [chapter 9](09-design-decisions.md#shipped-feature-history).
-  (`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`;
-  `notes/designs/agent-provider-interface/02-contract.md` §Area 4.)
 - **`trust` is human-only — an agent can never self-grant.** As of T2, `trust` records a *human* grant
   into the [trust ledger](03-data-model.md#the-trust-ledger-t1), filling the `needsGrant` gap the core's
   `resolveTrust` (T1) leaves for a borrowed dir the user hasn't approved (see
@@ -154,8 +150,6 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   already answered) and **denies `.agent`/`.daemon`** (→ `trustDenied`, code 1011) — one rule that is
   both the *autonomy-exemption* and the *no-self-grant* guarantee. Granting an already-trusted path is an
   idempotent no-op. See [CLI & MCP](06-clients-cli-mcp.md#the-orchestra-cli) for the two surfaces.
-  (`notes/plans/2026-07-01-t2-trust-grant-surfaces.md`;
-  `notes/designs/agent-provider-interface/02-contract.md` §Area 3.)
 
 ### The `--model` re-seat
 
@@ -203,7 +197,7 @@ visible to the app but not auto-exposed as MCP tools — unifying this is part o
 | `agents` | The selectable **agents** for the Spawn sheet's agent picker: each enabled adapter's `{id, name, icon, models}` (default agent first) — the per-agent grouping of the flat `models` union. |
 | `archivedList` | The archived (Done) cards, newest first. |
 | `openInZed` | Open a card's worktree in Zed, with a branch-vs-base multi-file diff. |
-| `openNotes` | Open a card's project `notes/` folder as an **Obsidian vault** — the same `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes` Claude command runs (seed a default config, register the vault, launch Obsidian). Targets the *canonical* project vault (`Task.repo/notes`), not the per-card worktree copy, so notes don't fragment across worktrees. `Launcher.openNotes` path-gates the target through the resolver before running the script. Backs the inspector's [**Open notes** button](07-app-ui.md#the-inspector). |
+| `openNotes` | Open a card's **worktree** as an **Obsidian vault** — the same `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes` Claude command runs (seed a default config, register the vault, launch Obsidian). Seeds one Obsidian tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk since git can't see ignored files) plus any other markdown the branch changed, capped. `OrchestraService.openNotes` passes the card's worktree (`Task.cwd`); `Launcher.openNotes` path-gates it through the resolver before running the script. Backs the inspector's [**Open notes** button](07-app-ui.md#the-inspector). |
 | `report` | The internal endpoint the agent's `_report` helper POSTs `StatusReport`s to. |
 | `diffText` | Render a card's worktree diff as an ANSI string for the inspector's [Diff view](07-app-ui.md#the-inspector) (`{ref, base?}` → String, `base` one of `working`/`branch`/`parent`, default `branch`). **App-only** (axis 7): the `openInZed`-shape internal endpoint, deliberately **not** a registry command, so it never surfaces as an MCP/CLI tool — an agent reads a diff by running `git diff` in its own cwd. Non-`.worktree` cards return `""`; a huge render is capped (256 KB) with an "open in Zed" sentinel. |
 | `diffStat` | Recompute + return a card's footer diffstat (`{ref, base?}` → `{filesChanged, insertions, deletions}` or null). The on-selection refresh; the same **app-only** internal endpoint (also refreshed event-driven off the report funnel — see [chapter 9](09-design-decisions.md#shipped-feature-history)). |

@@ -3,7 +3,7 @@ import Testing
 @testable import OrchestraKit
 
 /// P1.4 — the single "my Mac over Tailscale" connection factory. Reuses the existing `.remote` kind
-/// (see notes/designs/ios-real-device-transport/02-contract.md).
+/// (see docs/02-architecture.md § "The client transport seam and reconnect" — the remote-daemon transport).
 @Suite("Connection.mac")
 struct ConnectionMacTests {
     @Test("mac() builds a .remote connection carrying the tailnet target + default daemon socket")

@@ -200,8 +200,10 @@ The full verb list lives in the [Command reference](docs/05-command-reference.md
 | [Roadmap](docs/10-roadmap.md) | The nine extensibility axes and open design questions |
 | [Doc automation](docs/11-doc-automation.md) | How this README + manual stay in sync with `main` |
 
-The full layered design vault lives under [`notes/designs/`](notes/designs/) and the shipped-PR plans
-under [`notes/plans/`](notes/plans/); the manual links into them throughout.
+The design rationale behind every decision lives in the reference manual itself — chapter
+[9, Design decisions](docs/09-design-decisions.md) for the shipped history and
+[10, Roadmap](docs/10-roadmap.md) for what's ahead — and in the commit history the manual is
+regenerated from. The manual is the single source of truth, kept in sync with `main` automatically.
 
 ## Keeping the docs current
 
