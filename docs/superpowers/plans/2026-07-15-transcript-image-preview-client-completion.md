@@ -475,7 +475,7 @@ Expected: PASS. The xcodebuild is compile-only: it must not install, launch, att
 - Consumes the completed foundation, BoardStore fetch, iPhone viewer, and macOS popover.
 - Produces a review-ready branch and an explicit manual-acceptance boundary.
 
-- [ ] **Step 1: Run all automated suites**
+- [x] **Step 1: Run all automated suites**
 
 Run:
 
@@ -488,7 +488,7 @@ Run:
 
 Expected: PASS. The contract suite uses a unique tmux -L test server and never names or attaches to the live Orchestra socket.
 
-- [ ] **Step 2: Inspect the final worktree**
+- [x] **Step 2: Inspect the final worktree**
 
 Run:
 
@@ -497,6 +497,8 @@ Run:
 
 Expected: only intended tracked commits are present. The rejected shelf markdown and notes/images/ stay untracked and unstaged.
 
-- [ ] **Step 3: Record the manual acceptance boundary**
+- [x] **Step 3: Record the manual acceptance boundary**
 
 Do not automatically launch the app, attach a terminal, send bytes, resize tmux, or touch a phone. After explicit user approval, use one disposable card per supported agent: generate a small PNG, invoke orchestra publish-image in that card, scroll back to the marker, and prove both the OSC 8 link and its visible fallback behavior survive the real provider renderer. On desktop, Command-click it and verify the correct native preview, Copy/Open, scroll-close, and expiry after relaunch/archive. On phone, verify both the capture fallback and a live-terminal link route to the same full-screen preview, pinch/drag without moving the terminal, and use Share. Confirm that neither hover nor the preview sends a mouse action to the provider TUI.
+
+Manual acceptance was intentionally not run: no app launch, provider session, live terminal, tmux resize, or phone interaction occurred during this implementation pass.

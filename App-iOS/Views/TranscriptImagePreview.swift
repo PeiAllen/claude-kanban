@@ -109,7 +109,7 @@ struct MobileTranscriptImagePreview: View {
 
             Spacer()
 
-            if let image {
+            if image != nil {
                 VStack(spacing: 10) {
                     if !caption.isEmpty {
                         Text(caption)
