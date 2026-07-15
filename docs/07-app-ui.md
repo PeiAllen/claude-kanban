@@ -105,11 +105,12 @@ The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
 (`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
-**Open notes** opens the project's `notes/` folder as an **Obsidian vault** — the same
+**Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
 `~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
-plumbing. It deliberately targets the *canonical* project vault (`Task.repo/notes`), not the per-card
-worktree copy, so notes don't fragment across worktrees. It is also bound to the bare
+plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
+since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a
+large card doesn't flood Obsidian. It is also bound to the bare
 [`o` keyboard shortcut](#keyboard-navigation) on the selected card. The per-card **Inbox** button
 (`tray.full`, hidden for a `dead` card) is now the sole live-delivery card action — the earlier
 Send/Handoff/Fork buttons were removed in favor of it plus the natural-language → MCP delegation path
@@ -126,8 +127,7 @@ Send/Handoff/Fork buttons were removed in favor of it plus the natural-language 
 the agent (which calls the `handoff` / `spawn` / `batch-spawn` MCP tools), where an exploratory fork now
 defaults to a lightweight read-only freeform card in the same directory
 (`Sources/OrchestraCore/Resources/delegation-{skill,agents}.md`). This is the *agent-buttons
-simplification* — see [chapter 9](09-design-decisions.md#shipped-feature-history) and its
-[design note](../notes/designs/2026-07-01-agent-buttons-simplification-design.md).
+simplification* — see [chapter 9](09-design-decisions.md#shipped-feature-history).
 
 ### The in-app diff view
 
@@ -189,11 +189,10 @@ foreign shell (the other surface's) as a listed, owner-tagged tab it can see and
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
 selection, spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f` link-hints, a `:`
 command palette, and standard `⌘` accelerators — designed so it never fights the live agent terminals the
-inspector embeds. The full rationale (the
-precedent survey and the "focus *is* the mode" model that resolves the terminal-vs-navigation key
-collision) is in the
-[design note](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md); the build is the
-[implementation plan](../notes/plans/2026-07-02-keyboard-shortcuts.md).
+inspector embeds. Everything below flows from resolving one tension — the inspector embeds live SwiftTerm
+terminals, so vim's `hjkl` collide head-on with terminal input, where every keystroke must reach the
+agent/shell untouched — through three design rules: *focus is the mode*, *edge-aware pane interception*,
+and *`Esc` is sacred to the terminal*.
 
 **Focus is the mode.** There is no global NORMAL/INSERT toggle to track — the active **context** is
 derived on every keystroke from the window's first responder + model state, one of four: **Board** (a card
@@ -201,7 +200,18 @@ has focus — bare keys navigate and act), **Terminal** (a SwiftTerm view has fo
 agent/shell untouched), **Field** (a text input has focus — you type; only `⌃j`/`⌃k` move a form/dropdown),
 and **Overlay** (a sheet/popover is up — `Esc` closes it). A small **context chip** in the toolbar
 (`ContextChip`: `BOARD` / `INSPECTOR` / `TERMINAL` / `SHELL`, with an amber dot when a terminal owns the
-keyboard) answers "am I about to type into the agent?" at a glance.
+keyboard) answers "am I about to type into the agent?" at a glance. This is rock-solid where tmux's
+`ps`-guessing seamless-nav plugins are fragile, because Orchestra *owns* the focus state — it knows
+exactly when a SwiftTerm view holds the keyboard, so it never has to guess what's running in a pane.
+
+**Edge-aware pane interception, and `Esc` stays the terminal's.** `⌃h`/`⌃j`/`⌃k`/`⌃l` are intercepted for
+pane movement **only when a real neighbor pane exists in that direction**; otherwise the literal control
+code passes straight through to the pty. So a focused terminal keeps `⌃l` (clear-screen, nothing to its
+right), `⌃k` (kill-line, it's the topmost sub-pane), and `⌃j` (newline, bottom-most) — the **only**
+control key it genuinely gives up is `⌃h`, since the board is always to its left (and shells receive real
+Backspace as `0x7f`, not `⌃h`). That spatial eject is deliberate, because **`Esc` is sacred to the
+terminal**: it is never the ejector — it always reaches the agent, which vim, fzf, and Claude Code all
+need — so ejection is spatial (`⌃h`, "the board is to the left"), never `Esc`.
 
 **Architecture.** The decision logic is **pure and unit-tested** in `OrchestraCore/Keyboard/`:
 `KeyChord` / `KeyContext` / `KeyIntent` value types, `KeyMap.intent(for:in:awaitingGoTo:)` (the chord →
@@ -253,7 +263,7 @@ The shipped bindings:
 
 The verbs act on the **selected** card, so `a`/`o`/`O`/`d`/`I` archive, open its notes, view its changes,
 toggle, or edit the inbox of the card you've navigated to. (`o` → notes and `O` → Zed were swapped from the
-first cut once `n`/`N` were claimed by search — see [design note](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md).) Beyond `?`, the search bar, command palette, and help overlay all count as an
+first cut once `n`/`N` were claimed by search.) Beyond `?`, the search bar, command palette, and help overlay all count as an
 `Overlay` context (so `Esc` / click-away closes them through `BoardModel.closeFrontmost()`); the `f` hint
 overlay is a transient capture handled directly by the controller.
 
@@ -303,6 +313,39 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   selected (opening the live inspector), and the popover closes. (There is no "Zed" action on an archived
   row — archiving removed the worktree, so there are no changes to open until it is reopened.)
 
+### Notifications
+
+Orchestra raises a macOS notification only when an agent needs *your* attention, on a **three-trigger
+attention model** — each trigger independently configured, surfaced as a pane in **Settings** (the
+General tab's Notifications section) and backed by `NotificationPrefs` + `AgentNotifier`:
+
+| Trigger | Raised on | Default scope | Default sound |
+|---|---|---|---|
+| 🔐 **Permission** | the agent is blocked on tool approval | **Always** — you're blocking it | Hero |
+| 🙋 **Needs you** | the agent genuinely ended its turn and is waiting on you | **Background only** — most frequent, so don't nag while you're watching | Submarine |
+| 💀 **Died** | the card's session died | **Always** — rare but important | Basso |
+
+Each trigger carries a **scope dial** ({`off` · `background` · `always`}) and a per-trigger **system
+sound** (Default / None / one of the 14 built-in macOS sounds), the sound set directly on the
+notification's `content.sound` so there is no separate audio player. The firing rule is
+`fire = scope == .always || (scope == .background && !isActive)` — so `.off` never fires, and
+`.background` stays quiet while Orchestra is foregrounded. A `willPresent` handler returns
+`[.banner, .sound]` so an `Always` alert still surfaces (with its configured sound, or silently when the
+sound pref is None) in the foreground, which macOS would otherwise suppress.
+
+The load-bearing subtlety is **background-wait suppression.** A card flips to `.waiting` — and would thus
+alert — every time the agent ends a turn, *including* when it merely yielded to await auto-resuming
+background work (a `run_in_background` shell, a background subagent, a `/loop` wake); the user isn't
+needed there, so an alert would be pure noise. The Claude adapter suppresses it: a `Stop` hook whose
+payload carries a **non-empty `background_tasks` or `session_crons` array** means the agent paused on work
+that will auto-resume it, so the adapter returns `nil` and the card **stays `.running`** — no `.waiting`
+flip, no false "Needs you" alert. When the background work finishes and the agent's next genuine `Stop`
+arrives with both arrays empty, the card flips to `.waiting` + *Needs you* as normal. This suppression is
+Claude-adapter behavior (see [chapter 4](04-cards-worktrees-sessions.md#agent-adapters)). **Codex**
+degrades gracefully: it only ever reaches *Needs you* / *Died* (it has no permission hook and no
+background-task introspection), and its *Needs you* needs no suppression, since a Codex turn resolves its
+background shells and subagents within the turn itself.
+
 ## The iPhone companion
 
 ![The board on iPhone](images/ios-board.png)
@@ -312,6 +355,19 @@ separate system: it speaks the identical JSON-RPC control plane (reaching a remo
 in development, the Mac's socket directly), so the cards, columns, and telemetry are the same state the
 desktop shows. The screenshot above is the iPhone app driven against the very same isolated daemon that
 produced the other images in this chapter.
+
+**Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
+client its own current-window *selection* but never an independent per-window *size* — so a narrow phone
+and a wide desktop can't both attach to the agent window without one thrashing the other's size-sensitive
+TUI. That constraint forces the phone's terminal UX. Casual use never attaches: the Agent tab reads via a
+non-attaching `capture-pane` render, and the Terminal tab is a one-shot **block REPL** (type a command,
+get a copyable output block, no PTY and no sizing concern at all). *Live* control is instead an explicit,
+exclusive **Take Over Agent Terminal** action — it acquires a short-lived daemon-authoritative ownership
+lease, the desktop unmounts its agent terminal and shows a "Taken over by phone" placeholder, and only
+then does the phone attach to the real TUI (reflowing to phone size is intentional, because only one
+surface owns the one window at a time); **Return to Desktop** or the desktop's **Retake** flips ownership
+back. An opt-in live phone shell runs in its **own** phone-owned `shell-` window whose size is independent
+of the desktop's windows, so it never disturbs them.
 
 ## Theme
 

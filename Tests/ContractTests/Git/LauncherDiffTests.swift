@@ -194,29 +194,31 @@ struct LauncherDiffTests {
     }
 
     /// A repo whose worktree is a CHILD branch stacked on a `parent` branch: main(base) →
-    /// parent(+notes/parent.md) → child=worktree(+notes/child.md). With a parent ref the diff/notes
+    /// parent(+docs/parent.md) → child=worktree(+docs/child.md). With a parent ref the diff/notes
     /// baseline against the parent (child's own work only); with nil they baseline against main (both).
+    /// Uses tracked `docs/` markdown — baseline honoring is a git concept, whereas notes/ is gitignored
+    /// scratch enumerated off disk (baseline-agnostic), covered separately below.
     private func makeStackedWorktree() throws -> (worktree: String, launcher: Launcher) {
         let root = IntegrationSupport.tempDir("lst")
         let repo = root + "/repo"
         let fm = FileManager.default
-        try fm.createDirectory(atPath: repo + "/notes", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: repo + "/docs", withIntermediateDirectories: true)
         try git(repo, "init", "-q", "-b", "main")
         try git(repo, "config", "user.email", "t@t.t")
         try git(repo, "config", "user.name", "T")
         try "base\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
         try git(repo, "add", ".")
         try git(repo, "commit", "-q", "-m", "base")
-        // Parent branch with its OWN note.
+        // Parent branch with its OWN doc.
         try git(repo, "checkout", "-q", "-b", "parent")
-        try "# parent\n".write(toFile: repo + "/notes/parent.md", atomically: true, encoding: .utf8)
+        try "# parent\n".write(toFile: repo + "/docs/parent.md", atomically: true, encoding: .utf8)
         try git(repo, "add", ".")
         try git(repo, "commit", "-q", "-m", "parent note")
         try git(repo, "checkout", "-q", "main")   // leave `parent` as a bare local branch for the worktree
-        // Child worktree forked from parent, with its OWN note.
+        // Child worktree forked from parent, with its OWN doc.
         let wt = root + "/wt"
         try git(repo, "worktree", "add", "-q", "-b", "child", wt, "parent")
-        try "# child\n".write(toFile: wt + "/notes/child.md", atomically: true, encoding: .utf8)
+        try "# child\n".write(toFile: wt + "/docs/child.md", atomically: true, encoding: .utf8)
         try git(wt, "add", ".")
         try git(wt, "commit", "-q", "-m", "child note")
 
@@ -231,17 +233,67 @@ struct LauncherDiffTests {
     func parentBaselineExcludesParentWork() throws {
         let (wt, launcher) = try makeStackedWorktree()
 
-        // Parent baseline: only the child's own note.
-        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: "parent")) == ["notes/child.md"])
-        // Default (nil) baseline vs main: the parent's note is included too.
+        // Parent baseline: only the child's own doc.
+        #expect(Set(launcher.changedNotes(worktree: wt, parentRef: "parent")) == ["docs/child.md"])
+        // Default (nil) baseline vs main: the parent's doc is included too.
         #expect(Set(launcher.changedNotes(worktree: wt, parentRef: nil))
-                == ["notes/parent.md", "notes/child.md"])
+                == ["docs/parent.md", "docs/child.md"])
 
         // Zed "View changes": the parent-baselined multi-diff carries only the child's file.
         let dirs = try #require(try launcher.branchDiffDirs(worktree: wt, parentRef: "parent"))
         let fm = FileManager.default
-        #expect(fm.fileExists(atPath: dirs.new + "/notes/child.md"))
-        #expect(!fm.fileExists(atPath: dirs.new + "/notes/parent.md"))   // parent's work excluded
+        #expect(fm.fileExists(atPath: dirs.new + "/docs/child.md"))
+        #expect(!fm.fileExists(atPath: dirs.new + "/docs/parent.md"))   // parent's work excluded
+    }
+
+    /// A worktree whose gitignored `notes/` vault holds plans + a nested design vault — the production
+    /// setup after notes/ was untracked. git's diff/ls-files never report ignored paths, so Open-notes /
+    /// the phone must scan them off disk; a tracked `.md` change alongside confirms the git set still works.
+    @Test("changedNotes surfaces gitignored notes/ files (incl. nested) that git's diff never reports")
+    func gitignoredNotesScannedOffDisk() throws {
+        let root = IntegrationSupport.tempDir("lgn")
+        let repo = root + "/repo"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try git(repo, "init", "-q", "-b", "main")
+        try git(repo, "config", "user.email", "t@t.t")
+        try git(repo, "config", "user.name", "T")
+        try "/notes/\n".write(toFile: repo + "/.gitignore", atomically: true, encoding: .utf8)
+        try "x\n".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        try git(repo, "add", ".")
+        try git(repo, "commit", "-q", "-m", "base")
+
+        let wt = root + "/wt"
+        try git(repo, "worktree", "add", "-q", "-b", "feature", wt)
+        // A card writes plans + a nested design vault into its gitignored notes/ — git sees none of it.
+        try fm.createDirectory(atPath: wt + "/notes/plans", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: wt + "/notes/designs/slug", withIntermediateDirectories: true)
+        try "p\n".write(toFile: wt + "/notes/plans/p1.md", atomically: true, encoding: .utf8)
+        try "d\n".write(toFile: wt + "/notes/designs/slug/01-design.md", atomically: true, encoding: .utf8)
+        // A dotdir under notes/ (e.g. Obsidian's own) must be skipped, not opened as a note.
+        try fm.createDirectory(atPath: wt + "/notes/.obsidian", withIntermediateDirectories: true)
+        try "{}\n".write(toFile: wt + "/notes/.obsidian/app.md", atomically: true, encoding: .utf8)
+        // A tracked doc change, to confirm the git set still works alongside the disk scan.
+        try "spec\n".write(toFile: wt + "/spec.md", atomically: true, encoding: .utf8)
+
+        let config = Config(reposRoot: PathResolver.canonical(root),
+                            worktreesRoot: PathResolver.canonical(root),
+                            scratchRoot: PathResolver.canonical(root) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(root) + "/state")
+        let launcher = Launcher(resolver: PathResolver(config: config))
+        let cwt = PathResolver.canonical(wt)
+
+        let notes = Set(launcher.changedNotes(worktree: cwt, parentRef: nil))
+        #expect(notes.contains("notes/plans/p1.md"))                    // gitignored plan, found off disk
+        #expect(notes.contains("notes/designs/slug/01-design.md"))      // nested vault file, found
+        #expect(notes.contains("spec.md"))                              // tracked git change still included
+        #expect(!notes.contains("notes/.obsidian/app.md"))              // dot component skipped
+
+        // The phone's content path sees the gitignored notes too (read off the daemon host's disk).
+        let byPath = Dictionary(uniqueKeysWithValues:
+            launcher.changedNoteFiles(worktree: cwt, parentRef: nil).map { ($0.path, $0) })
+        #expect(byPath["notes/plans/p1.md"]?.status == .added)
+        #expect(byPath["notes/plans/p1.md"]?.content == "p\n")
     }
 
     @Test("seedWorkspaceTabs writes a valid Obsidian layout: one leaf tab per note, in order")

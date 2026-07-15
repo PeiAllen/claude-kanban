@@ -2,7 +2,7 @@ import Foundation
 
 /// Code review on the board (axis 7): the card footer diffstat + the inspector's rendered diff. All
 /// read-only. Everything guards on `Task.origin` — a non-`.worktree` card (`.scratch`/`.borrowed`,
-/// possibly no git baseline) has no diff. See `notes/designs/code-review-on-board`.
+/// possibly no git baseline) has no diff. See `docs/09-design-decisions.md` (§ code review on the board — axis 7).
 extension OrchestraService {
 
     /// Max bytes of rendered diff handed to the app; a bigger diff is truncated with a sentinel line

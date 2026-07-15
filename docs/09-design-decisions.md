@@ -1,9 +1,8 @@
 # 9. Design decisions
 
 This chapter records the *why* behind Orchestra — the cross-cutting principles that shape the system,
-and the history of the shipped feature PRs. The authoritative source is the layered design vault under
-[`notes/designs/`](../notes/designs/) (each topic has `index.md` + 01-design → 04-tests layers) and the
-shipped-PR plans under [`notes/plans/`](../notes/plans/); this chapter summarizes and links into them.
+and the history of the shipped feature PRs. It is the durable record of those decisions; the mechanisms
+they produced are detailed across [chapter 2](02-architecture.md) through [chapter 7](07-app-ui.md).
 
 ## Cross-cutting principles
 
@@ -12,8 +11,7 @@ shipped-PR plans under [`notes/plans/`](../notes/plans/); this chapter summarize
 The daemon runs the one `CommandRegistry` and the `OrchestraService` actor; the app, CLI, and MCP
 bridge each serialize calls independently and converge at the server. Commands go in, events come out.
 There are no distributed state machines and no per-client truth — a spawn from the CLI updates the app's
-board because both subscribe to the same event stream. (`notes/designs/kanban-board/index.md`, "Control-
-plane data flow — one coordinator, but federated truth".)
+board because both subscribe to the same event stream (see the [control-plane data flow](02-architecture.md)).
 
 ### Federated ground truth, not in-memory state
 
@@ -25,9 +23,9 @@ rather than losing track of running agents.
 ### The phase funnel: one writer, epochs, and capability-gated readiness
 
 A card's lifecycle is **one persisted variable** — `Task.phase` — with **one writer**, the
-`transition()` funnel. This is the *lifecycle-convergence* redesign (Stage 2 of an in-progress multi-stage
-build; the full spec is the [design vault](../notes/designs/lifecycle-convergence/index.md)), and it
-replaces the ad-hoc `status`/`waitReason`/`dead` triple that three code paths used to write independently.
+`transition()` funnel. This is the *lifecycle-convergence* redesign (Stage 2 of a multi-stage build; the
+funnel and phase model are detailed in [the Convergence model](02-architecture.md#the-convergence-model)),
+and it replaces the ad-hoc `status`/`waitReason`/`dead` triple that three code paths used to write independently.
 The decisions that shape it:
 
 - **One writer, one concluder.** Every mover routes its phase change through `transition()`
@@ -55,8 +53,8 @@ The decisions that shape it:
   (time-scoped to the launch), and a `codex resume` — which writes no rollout — is caught by a **universal
   N=3 liveness-tick fallback** that keeps the relaunch on the readiness gate rather than landing it live
   immediately. `relaunchLiveness` treats a successful `ensure` as the confirmation for an agent that emits
-  no marker at all. No `if agentId ==` anywhere. This is recorded as a **spec amendment** in the vault's
-  [Decisions tables](../notes/designs/lifecycle-convergence/03-implementation.md).
+  no marker at all. No `if agentId ==` anywhere. This generalizes the spec's launch-only
+  `resumeConfirmation` as a deliberate **spec amendment**.
 
 **Stage 2 kept spawn/resume/restart/reopen synchronous** (they walked the phases inline) so the phase
 enum + funnel + epochs landed correctly first; the reconciler, the four phase-steppers, and non-blocking
@@ -118,8 +116,7 @@ Live card fields (`ctxPct`, `desc`, run-state, session id, title) are **pushed b
 managed Claude Code `--settings` file (statusLine + hooks → `orchestra _report`), not scraped from the
 pane. The channel is bounded (a stalled daemon can't freeze the agent's status bar) and seq-guarded (a
 stale `ctxPct` can't overwrite a fresh one); pane capture is a fallback only. The same channel is the
-backbone for the planned Orchestra → agent context injection. (`kanban-board/index.md`, "The Orchestra
-hook protocol".)
+backbone for the planned Orchestra → agent context injection.
 
 ### Ownership: Orchestra deletes only what it made
 
@@ -133,8 +130,7 @@ Cleanup is decided by `origin`:
   `origin == .scratch` check *and* a runtime prefix check under the scratch root).
 - **`borrowed`** — *you* created it; archive never touches it.
 
-This clean rule removes any ambiguity about which cleanup is safe. (`notes/designs/freeform-and-
-borrowed-cards/index.md`.)
+This clean rule removes any ambiguity about which cleanup is safe.
 
 ### Trust boundaries: allowlist for worktrees, sandbox for the rest
 
@@ -171,9 +167,7 @@ sandbox layer's settings are **deep-merged onto the managed hooks base into one 
 last-file-wins (full replacement, not deep-merge), so a second file would silently strip the statusLine +
 telemetry hooks — which is exactly the regression befad61 fixed for agent-created (MCP/CLI-spawned)
 read-only cards. `settingsOverlays(_:)` is the single seam any future per-card setting appends to, keeping
-the one-file invariant automatic. (See
-[the read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier);
-`notes/plans/pr1-readonly-inspect-button.md`.)
+the one-file invariant automatic. (See [the read-only barrier](04-cards-worktrees-sessions.md#the-read-only-barrier).)
 
 ### authMode: advise on fan-out, never cap
 
@@ -196,20 +190,21 @@ rather than a knob:
   so an API-key adapter (or a future subscription agent) is classified by its descriptor, never by an
   `if agentId == "claude-code"` branch.
 
-(Agent-provider forest PR **E2**; `notes/plans/e2-authmode-softwarn.md`,
-`notes/designs/agent-provider-interface/03-implementation.md` D12 / §9 / q4.)
+(Agent-provider forest PR **E2**.)
 
 ### 1:1 worktree ↔ card ownership
 
-The target model is **one card owns one branch's worktree** — enforced, not shared. Git forbids the
-same branch in two worktrees, so every N:1 case is two writers on one branch (a footgun with no safe
-use). Stacked branches want *distinct* trees (still 1:1). This retires the old refcount guard + shared-
-worktree badge machinery; the safe co-location patterns (read-only inspect, freeform cards) don't need
-worktree sharing. (`notes/designs/stacked-branches-and-guardian-handoff.md`.)
+Main runs **N:1** — several cards may co-locate in one worktree, and cleanup is refcount-gated on live
+siblings (see [the WorktreeRegistry](#the-worktreeregistry-materialized-markers-on-demand-siblings-persisted-borrows)
+removal policy). An **enforced-1:1** model was explored — one card owns one branch's worktree, retiring
+the refcount guard + shared-worktree badge — and then **reverted**: git already forbids the same *branch*
+in two worktrees, so the genuinely dangerous N:1 case (two writers on one branch) can't arise regardless,
+while the safe co-location patterns (read-only inspect, freeform cards, a stacked child reading its
+parent's tree) actually want sharing. So the refcount + badge machinery stays, scoped to worktree cards.
 
 ### The WorktreeRegistry: materialized markers, on-demand siblings, persisted borrows
 
-The `WorktreeRegistry` actor (PR3b, `notes/designs/lifecycle-convergence/index.md`) is the sole owner of
+The `WorktreeRegistry` actor (PR3b) is the sole owner of
 worktree + borrow lifecycle — the concrete `WorktreeManager` git-shell struct is `fileprivate` inside the
 same file, a compile-time guarantee that nothing else can call a git worktree op (see
 [Worktrees](04-cards-worktrees-sessions.md#worktrees) for the mechanics). Its decisions:
@@ -266,15 +261,26 @@ a missing tree as an idempotent success rather than an error.
 
 Handoff, fork, fan-out, and (Claude) subagents are **one primitive** — a fresh session seeded with
 authored context — at four topologies. The keystone is an `additionalContext` seed on the spawn/restart
-path. The decision rule: *return to the thread?* → fork or subagent; *replace the thread?* → handoff;
-*split into many?* → fan-out. Merge-back must be a **durable persisted inbox keyed on card lineage**, not
+path. The decision rule an agent applies to pick among them:
+
+| You want to… | Reach for |
+|---|---|
+| **return to the thread**, and rejoin interactively | **fork** (a board card) or a **native subagent** |
+| **return a summary you fold back immediately** | a **native subagent** (Claude's `Task` tool) — ephemeral, in-context |
+| durable · parallel · cross-agent · isolated · its own PR branch | a **card** (fork/fan-out) — reach for it *in addition to*, never *instead of*, subagents |
+| **replace the thread** | **handoff** (same-card resume) |
+| **split into many** | **fan-out** |
+
+Cards and native subagents are complementary, not alternatives: a card for work that outlives your turn
+and can land a PR, a subagent for read/search fan-out you fold back at once. Merge-back must be a
+**durable persisted inbox keyed on card lineage**, not
 a `send`-to-tmux (which throws if the session died), and orphaned forks are promoted to standalone cards
 rather than cascade-killed. The guiding maxim: **handoff carries intent, artifacts carry facts** — the
 seed is for navigation and next steps, while committed code, plan files, and the card description carry
 the durable record, so successive handoffs don't degrade into a telephone game. The **live-delivery
-substrate** these topologies compose from is specified as three functions — **F1** resume-in-card,
-**F2** wake an idle card, **F3** the durable per-card **inbox** (merge-back drains at the next turn-end) —
-in the [agent-provider interface](../notes/designs/agent-provider-interface/index.md) L3 design. **F3 has
+substrate** these topologies compose from is three functions — **F1** resume-in-card,
+**F2** wake an idle card, **F3** the durable per-card **inbox** (merge-back drains at the next turn-end).
+**F3 has
 now landed** (PR C1, below): `send` routes through a durable [inbox store](03-data-model.md#the-inbox-store-f3),
 and the Claude Stop hook drains it into the agent at its turn-end. `send`-to-tmux is retired exactly as the
 maxim demanded — a queued conclusion no longer throws if the session died, and coalesces with other returns
@@ -297,14 +303,12 @@ and **that last wire has since landed** (**skill-injection**, below): each adapt
 auto-materializes the per-agent variant into the location its agent discovers (Claude a project skill, Codex
 its isolated `CODEX_HOME` `AGENTS.md`), so the guidance reaches every launched card with no `~/.claude`
 install and no launch-argv change.
-(`notes/designs/context-passing-topologies.md`, `stacked-branches-and-guardian-handoff.md`.)
 
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
-recovery + activity feed + sessions debug handles) is documented in the
-[`kanban-board/`](../notes/designs/kanban-board/) design vault. On top of it, four feature PRs shipped
-(plans in [`notes/plans/`](../notes/plans/)):
+recovery + activity feed + sessions debug handles) is documented in
+[chapters 2–7](02-architecture.md). On top of it, four feature PRs shipped:
 
 | PR | Delivered | Key decision |
 |----|-----------|--------------|
@@ -314,7 +318,7 @@ recovery + activity feed + sessions debug handles) is documented in the
 | **PR4** — scratch cards | A scratch spawn mode (board, CLI `--scratch`, MCP) that makes a fresh `~/.orchestra/scratch/<id>` dir and `rm -rf`s it on archive; startup sweep of orphaned scratch dirs; auto-trusts the dir so the autonomous agent never blocks on Claude's trust dialog. | Double-gated delete (origin check + path-under-scratch-root check); no dirty-guard (the user moves out anything worth keeping first). Trust is *granted* (not mirrored) because Orchestra owns the dir — there's no source repo to mirror from — while borrowed dirs are left to Claude's own prompt. |
 
 Beyond those four feature PRs, the first **foundational** PR of the agent-provider forest has also landed —
-**A1, the seam-contract freeze** (`notes/plans/2026-07-01-a1-seam-contract-freeze.md`). It froze the
+**A1, the seam-contract freeze**. It froze the
 complete **`AgentCapabilities`** descriptor (seven enum-typed flags, *every* variant spelling — including
 cases no adapter exercises yet — locked now so later PRs can't drift the shape) and the defaulted
 **`AdapterContext.seed`** carrier, and moved core to gate session-seeding and resumability on the
@@ -325,8 +329,8 @@ shape the Codex adapter, telemetry seam, and live-delivery PRs will build behind
 shipping, this is plumbing, not a feature — so it stays here as history rather than migrating a roadmap
 row.
 
-A second forest PR has since landed on top of A1 — **E2, the authMode soft-warn**
-(`notes/plans/e2-authmode-softwarn.md`). It adds a pure `AuthRateMonitor` value type and an `AuthWarning`
+A second forest PR has since landed on top of A1 — **E2, the authMode soft-warn**.
+It adds a pure `AuthRateMonitor` value type and an `AuthWarning`
 result that watch for heavy parallel fan-out on a single subscription seat and emit an advisory
 `ActivityKind.warning` past a threshold — **advising, never capping** (see
 [authMode: advise on fan-out, never cap](#authmode-advise-on-fan-out-never-cap) above for the decision and
@@ -334,8 +338,8 @@ its rationale). Like A1 it is a single forest PR rather than a whole axis, so it
 and leaves the roadmap row for the model-providers/agent-integration axes in place until the full seam
 ships.
 
-A third forest PR has landed on top of A1 — **A2, the telemetry-source seam**
-(`notes/plans/2026-07-01-a2-telemetry-source-seam.md`). It draws the **transport/parse boundary** the
+A third forest PR has landed on top of A1 — **A2, the telemetry-source seam**.
+It draws the **transport/parse boundary** the
 agent-provider design (D3) calls for: the daemon-side **transport** obtains only *raw* bytes, while the
 raw→`StatusReport` **parse** is the **adapter's** own, because that conversion is agent-dependent. A2
 relocated the parse out of the `orchestra` CLI target (the former `ReportHelper.map`/`toolDesc`) into a new
@@ -349,11 +353,10 @@ push transport — calls `ClaudeCodeAdapter().parse(.hooksPush(...))` instead of
 is byte-identical (the pre-existing `ReportTests` stayed green unchanged). The `fileTail` parse and the
 daemon-side rollout tailer that feeds it — the same `adapter.parse` seam from a different transport — have
 since landed with the Codex adapter (PRs B1/B2, below). Like A1 and E2, this is a single forest PR of plumbing, not a whole axis,
-so it stays here as history rather than migrating a roadmap row. (As-built symbols are recorded in
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1.)
+so it stays here as history rather than migrating a roadmap row.
 
-A fourth landed PR is **C1 — the durable inbox + F3 Stop-drain**
-(`notes/plans/2026-07-01-c1-inbox-stopdrain.md`). It builds the first of the design's three live-delivery
+A fourth landed PR is **C1 — the durable inbox + F3 Stop-drain**.
+It builds the first of the design's three live-delivery
 functions (see [One seed, four topologies](#one-seed-four-topologies)): a durable per-card **`Inbox`**
 store (sibling to `TaskStore`, actor-over-JSON, FIFO-per-card, restart-durable — see
 [the inbox store](03-data-model.md#the-inbox-store-f3)), with `send` **rerouted through it** instead of
@@ -366,7 +369,7 @@ interrupting it — and because `stop_hook_active` is only *informational* on th
 its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`)
 to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
 C1 reused the shared `notify` command distinguished by `hook_event_name` and a standalone `drain` RPC;
-the [first-class-hooks](#) refactor later split `Stop` into its own `--event stop` and folded drain into
+the [first-class-hooks](06-clients-cli-mcp.md#the-hooks--_report-channel) refactor later split `Stop` into its own `--event stop` and folded drain into
 the unified `hook` channel, but the turn-end/loop-guard behaviour is byte-preserved.) Waking an *idle* card so it takes a turn to
 drain (F2) landed next (C2/C4, below), and `send` was subsequently wired to call that same `wake` right
 after it enqueues — so a message to an idle card now triggers a turn immediately (content still rides the
@@ -376,8 +379,8 @@ genuinely idle `nativeReinvoke` card with no live wait is instead woken via resu
 until the agent's next unprompted turn. Like the forest PRs above, C1 is one live-delivery function, not a whole
 axis, so it stays here as history while the roadmap's context-continuity row remains open.
 
-A fifth landed PR is **C2 — F2 wake + the merge-watch conclusion-watch**
-(`notes/plans/2026-07-01-c2-wake-mergewatch.md`). It builds the second of the three live-delivery functions
+A fifth landed PR is **C2 — F2 wake + the merge-watch conclusion-watch**.
+It builds the second of the three live-delivery functions
 and the reactive fan-out on top of C1's inbox: an orchestrator card can watch its spawned children and be
 woken as each concludes. Two symbols carry it — a `MergeWatch` actor and a `Conclusion` value
 (`{cardId, ref, kind ∈ {done, exited}}`), surfaced as the [`wait` command](05-command-reference.md#notes-on-key-commands)
@@ -410,11 +413,10 @@ Three decisions shape it:
 Like the forest PRs above, C2 is one live-delivery function, not a whole axis, so it stays here as history;
 the remaining live-delivery function — **F1** resume-in-card — has since landed too (**C3**, below), and the
 Codex send-keys wake landed after it (**C4**, below), so only the handoff/fork Commands + UI keep the
-roadmap's model-providers / context-continuity rows open. (As-built symbols are recorded in
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+roadmap's model-providers / context-continuity rows open.
 
-The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its rollout-tail telemetry**
-(`notes/plans/2026-07-01-b2-codex-rollout-tail.md`). Together they add the **second `Adapter` conformer**
+The sixth and seventh landed PRs are **B1 and B2 — the Codex adapter and its rollout-tail telemetry**.
+Together they add the **second `Adapter` conformer**
 — the first proof the provider seam is agent-agnostic — registered in the default `AgentRegistry`
 alongside Claude (`[ClaudeCodeAdapter(), CodexAdapter()]`). **B1** builds the launch/session/trust half:
 `CodexAdapter` (`id = "codex"`) launches **access-gated** like Claude — a default card uses Codex's own
@@ -437,7 +439,7 @@ telemetry live end-to-end, and its two decisions are the interesting part:
   **vendored** `Resources/codex-models.json` (`gpt-5.5` = 272 000), never the rollout's own reported
   window — keeping the app fully offline. That per-adapter **offline model table** on `Adapter.models()`
   (context window + flags from an in-repo, PR-updated JSON, no fetch at build or runtime) is its own forest
-  PR — **E1** (`notes/plans/e1-model-table.md`), a root off `main` — which B2 consumes here; it is the
+  PR — **E1**, a root off `main` — which B2 consumes here; it is the
   same offline-model-table decision the [roadmap](10-roadmap.md) records for the model-providers axis. And because the rollout schema drifts, the parse
   normalizes the line's `type` fields (lower-cased, `_`-stripped, substring-matched) so `TaskComplete` /
   `TurnComplete` both mean idle and nested/flat token fields both parse; `seq` is the line timestamp (µs)
@@ -446,11 +448,10 @@ telemetry live end-to-end, and its two decisions are the interesting part:
 Like the forest PRs above, B1/B2 are a single provider conformer, not the whole model-providers axis — the
 Codex **send-keys wake** has since landed (C4, below) and its launch is now **access-gated** like Claude
 (default permissioning, or the read-only preset per card) — but **board-routed approval telemetry** remains
-deferred, so the row stays in the roadmap as history is recorded here. (As-built symbols:
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 1 & §Area 3.)
+deferred, so the row stays in the roadmap as history is recorded here.
 
-The eighth landed PR is **C3 — F1 resume-in-card with a seed**
-(`notes/plans/2026-07-01-c3-f1-handoff-resume.md`). It builds the **third and last** of the design's three
+The eighth landed PR is **C3 — F1 resume-in-card with a seed**.
+It builds the **third and last** of the design's three
 live-delivery functions (see [One seed, four topologies](#one-seed-four-topologies)) on top of C1's inbox:
 **resume-in-card**, which reloads a card into a fresh process with clean context while **keeping its session
 id** — a *resume, not a blank restart*, so the vendor transcript carries forward and the seed only adds the
@@ -476,11 +477,10 @@ seed rides the already-frozen context field, resolving the roadmap's
 seam D1's `handoff` Command *calls* (shipped below) and the Handoff/Fork UI (D3, below) now calls too — C3 only
 wires the seed *through* resume, adding no Command or UI itself. Like the forest PRs above it is one
 live-delivery function, not a whole axis, so it stays here as history while the model-providers /
-context-continuity roadmap rows stay open for their non-forest remainders. (As-built symbols:
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+context-continuity roadmap rows stay open for their non-forest remainders.
 
-The ninth landed PR is **C4 — the Codex send-keys wake**
-(`notes/plans/2026-07-01-c4-codex-sendkeys-wake.md`). It fills the `.sendKeys` `wakeTransport` case that C2
+The ninth landed PR is **C4 — the Codex send-keys wake**.
+It fills the `.sendKeys` `wakeTransport` case that C2
 left as a no-op, so an idle **non-native** card (Codex, whose TUI has no `nativeReinvoke` push and no Stop
 hook) is actually woken by [F2 wake / merge-watch](#shipped-feature-history) — completing the reactive
 fan-out across *both* providers. Two decisions shape it, and both keep the fragile part contained:
@@ -513,8 +513,8 @@ above, C4 is one live-delivery function, not a whole axis, so it stays here as h
 model-providers / context-continuity rows keep their non-forest remainders open. (The `handoff`
 Command — D1 — and the fork/fan-out surfaces — D3 — have since landed too; see the entries below.)
 
-The tenth landed PR is **D1 — the handoff delegation tool (MCP Command + CLI verb)**
-(`notes/plans/2026-07-01-d1-mcp-delegation-tools.md`). It is the **first agent-facing surface that
+The tenth landed PR is **D1 — the handoff delegation tool (MCP Command + CLI verb)**.
+It is the **first agent-facing surface that
 *calls*** the three shipped live-delivery functions rather than adding another — a thin `handoff` Command
 on the [`CommandRegistry`](05-command-reference.md#registry-commands) that resolves a card ref and
 delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-card* (replace-the-thread)
@@ -539,11 +539,10 @@ delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-ca
 
 Like the forest PRs above, D1 is a single Command surface, not a whole axis, so it stays here as history
 while the context-continuity row keeps its remainder open; the new-card handoff/fork/fan-out **UI +
-start-actions** it left for D3 have since landed too (below). (As-built symbols:
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
+start-actions** it left for D3 have since landed too (below).
 
-The eleventh landed PR is **D2 — the delegation guidance skill + AGENTS.md**
-(`notes/plans/2026-07-01-d2-delegation-skill.md`). Where D1 shipped a delegation *tool*, D2 ships the
+The eleventh landed PR is **D2 — the delegation guidance skill + AGENTS.md**.
+Where D1 shipped a delegation *tool*, D2 ships the
 **guidance an agent reads to decide when to reach for it** — a **prose/resource PR** with no new `Command`
 and no launch-behavior change. It vendors two markdown resources under `Sources/OrchestraCore/Resources/`,
 `.copy`-bundled into `Bundle.module` exactly like the offline Codex model table: `delegation-skill.md`
@@ -581,11 +580,9 @@ Orchestra→agent context injection* — so it stays here as history while the c
 remainder open; the new-card handoff/fork/fan-out **UI + start-actions** (D3) have since landed (below),
 and auto-injecting this vendored guidance on launch — the one wire D2 left open — has since landed too
 (**skill-injection**, below).
-(`notes/designs/context-passing-topologies.md`;
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 4.)
 
-The twelfth and thirteenth landed PRs are **T1 and T2 — the trust ledger and its human-grant surfaces**
-(`notes/plans/2026-07-01-t2-trust-grant-surfaces.md`), the agent-provider forest's **permissioning**
+The twelfth and thirteenth landed PRs are **T1 and T2 — the trust ledger and its human-grant surfaces**,
+the agent-provider forest's **permissioning**
 track (design Area 3). Together they make "which directories may agents *write* in" a durable,
 provider-agnostic, **human-owned** decision — see the [Trust boundaries](#trust-boundaries-allowlist-for-worktrees-sandbox-for-the-rest)
 principle above. **T1** built the foundation: a `TrustLedger` (actor-over-JSON, sibling to `TaskStore` —
@@ -619,15 +616,11 @@ Automated coverage uses a **`StubGrantResolver`** only (approve/deny fixtures) �
 `requestElicitation` dialog is a manual, out-of-scope acceptance (design rule O7), and **T2 adds no app
 UI**: the `SpawnSheet` trust·read-only·cancel control is **D3** (which has since shipped it — below). Like
 the forest PRs above, T1/T2 are the permissioning track, not a whole axis, so they stay here as history.
-(As-built
-symbols:
-[agent-provider-interface/02-contract.md](../notes/designs/agent-provider-interface/02-contract.md) §Area 3.)
 
-The final landed PR is **D3 — the delegation UI + new-card start-actions**
-(`notes/plans/2026-07-01-d3-ui-cli-actions.md`). It is the **first surface set that *drives*** the three
+The final landed PR is **D3 — the delegation UI + new-card start-actions**.
+It is the **first surface set that *drives*** the three
 shipped live-delivery seams from the board and CLI rather than adding another, closing out the
-agent-provider forest — **all 15 PRs merged** (see
-[the overnight build result](../notes/designs/agent-provider-interface/OVERNIGHT-RESULT.md)). It maps the
+agent-provider forest — **all 15 PRs merged**. It maps the
 four [handoff/fork/fan-out topologies](#one-seed-four-topologies) to concrete actions:
 
 - **Card actions** (act on the selected card, in the [inspector](07-app-ui.md#the-inspector) header):
@@ -662,9 +655,7 @@ rule O6 and expected to fail on a headless window server). With D3 merged the **
 is shipped**; but as with every entry above it is a set of surfaces, not a whole axis — the model-providers
 axis still owes Codex board-routed approval telemetry (its launch is now access-gated like Claude, so write
 access is no longer clamped off), and agent-integration its richer sub-status — so those rows
-stay in [chapter 10](10-roadmap.md). (As-built symbols:
-[agent-provider-interface/03-implementation.md](../notes/designs/agent-provider-interface/03-implementation.md)
-"As-built (D3, shipped)".)
+stay in [chapter 10](10-roadmap.md).
 
 Landing after the forest closed is **enable-codex — making Codex startable** (commit `cf83921`, branch
 `enable-codex`). The whole Codex backend — `CodexAdapter`, its models, rollout-tail telemetry, trust, and
@@ -692,8 +683,7 @@ This change is pure **reachability wiring**, no new launch behavior:
   explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
 
 Landing after Codex became startable is **skill-injection — wiring `DelegationDocs` into the launch path**
-(commit `7490e5e`, branch `deleg/04-skill-injection`;
-`notes/plans/2026-07-01-delegation-skill-injection.md`). D2 had authored and vendored the delegation
+(commit `7490e5e`, branch `deleg/04-skill-injection`). D2 had authored and vendored the delegation
 guidance but left it inert — a loader bound to **no** launch path (the one open wire flagged repeatedly
 above). This change binds it: every newly-launched card now receives its per-agent guidance. The decisions
 that keep it safe:
@@ -721,15 +711,14 @@ that keep it safe:
   that Claude gets the skill variant and Codex the `AGENTS.md` variant, that Codex never writes into the
   worktree cwd, that it coexists with the trust `config.toml` write, and that argv/env are unchanged.
 
-With this the [context-continuity](../notes/designs/context-passing-topologies.md) / agent-integration
+With this the context-continuity / agent-integration
 delegation stack is fully wired end-to-end: the tools (D1), the surfaces that drive them (D3), the guidance
 that says *when* to reach for them (D2), and now its automatic delivery on every launch. As with the entries
 above it deepens axis 3's *richer Orchestra→agent context injection* rather than closing a whole axis, so
 that row keeps its structured-sub-status remainder open ([chapter 10](10-roadmap.md)).
 
-Landing after the forest is the **agent-buttons simplification + inbox editor**
-(`notes/plans/2026-07-01-agent-buttons-simplification.md`;
-[design](../notes/designs/2026-07-01-agent-buttons-simplification-design.md)). D3 had shipped a board
+Landing after the forest is the **agent-buttons simplification + inbox editor**.
+D3 had shipped a board
 **Fan-out** button and per-card **Send / Handoff / Fork** buttons; this change prunes that surface back to
 what the user actually reaches for, on the principle that the natural-language → MCP path already covers
 the delegation moves and the board chrome should stay minimal. Three moves:
@@ -760,8 +749,8 @@ up/down **chevrons**, not drag-and-drop (more robust inside a themed popover; th
 is gesture-agnostic, so drag can be added later with no server change). Like the entries above this is a
 UI/surface change, not a whole axis, so it stays here as history.
 
-Landing after the forest is **axis 7 — code review on the board** (commit `bf1c7c1`;
-`notes/designs/code-review-on-board/`), the **first whole extensibility axis built end to end** rather
+Landing after the forest is **axis 7 — code review on the board** (commit `bf1c7c1`),
+the **first whole extensibility axis built end to end** rather
 than a forest sub-PR — so its [roadmap row](10-roadmap.md) migrates here. It surfaces an agent's changes
 *inside* Orchestra — a diffstat on the card footer and a read-only rendered diff in the inspector — so a
 glance or quick review no longer requires "View changes → Zed". The build is deliberately **lean** (refined
@@ -780,16 +769,19 @@ weight. Its decisions:
 - **App-only endpoints, not registry commands.** `diffText`/`diffStat` are **server-only built-in
   `ControlServer` methods** (the `openInZed` shape) — the inspector is the only consumer, so they are
   deliberately **not** `CommandRegistry` commands and therefore never surface as MCP or CLI tools (see
-  [server-only methods](05-command-reference.md#server-only-built-in-methods)). Everything guards on the
+  [server-only methods](05-command-reference.md#server-only-built-in-methods)). The same app-only
+  `ControlServer` dispatch — never a registry command, so never an MCP/CLI tool — is what carries the
+  terminal ownership/takeover RPCs, precisely because an agent must never be able to seize a terminal.
+  Everything guards on the
   shipped `Task.origin`: a non-`.worktree` card (`.scratch`/`.borrowed`, which may have no git baseline)
   degrades cleanly to no stat and an empty Diff view — never a fabricated stat. `diffText` caps a huge
   render (256 KB) with an "open in Zed" sentinel so the pane stays responsive.
-- **Baseline toggle; parent-relative is a thin stub.** The diff is taken against one of `DiffBase` —
+- **Baseline toggle; parent-relative diffs.** The diff is taken against one of `DiffBase` —
   `.working` (vs `HEAD`), `.branch` (vs the default-branch merge-base — the PR diff, and the default), or
-  `.parent` (vs the card's parent branch, for a stacked card). `parentBranch` ships as a **nil-default
-  stub** on `Task` — `.parent` falls back to `.branch` until
-  [stacked branches](../notes/designs/stacked-branches-and-guardian-handoff.md) populates it — and the
-  inspector only offers the **Parent** segment once a card carries one. This makes axis 7 the seam
+  `.parent` (vs the card's parent branch, for a stacked card). Axis 7 shipped `Task.parentBranch` as a
+  nil-default field; the **branch tree** (below) now populates it, so `.parent` shows a stacked child's own
+  delta against its parent and falls back to `.branch` only for a card with no parent — and the inspector
+  only offers the **Parent** segment once a card carries one. This makes axis 7 the seam
   [axis 5](10-roadmap.md) (the automated PR-review phase) reviews through.
 - **Event-driven refresh off the normalized funnel — adapter-agnostic.** The footer diffstat recomputes on
   real per-card activity, not a timer: `OrchestraService.report()` — the one normalized funnel every adapter
@@ -805,9 +797,7 @@ The app side adds the **Agent | Diff** toggle to the [inspector header](07-app-u
 read-only diff + "Open in Zed"), and the [card-footer diffstat](07-app-ui.md#cards) (`Nf +N −M`, green/red,
 replacing the model name when a stat exists). Editing stays Zed's job (an explicit non-goal), and **inline
 review comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
-[chapter 3](03-data-model.md#the-task-card). Layered design:
-[`notes/designs/code-review-on-board/`](../notes/designs/code-review-on-board/index.md) (L1 design → L2
-contract → L3 implementation + L3 tests).
+[chapter 3](03-data-model.md#the-task-card).
 
 Landing after the forest is **reopen — un-finishing a Done card**
 (commit `c13e718`, branch `reopen-done-cards`). Archived cards were **terminal and read-only** — the only
@@ -872,8 +862,8 @@ unrelated future turn. This closes that gap without adding a fourth mechanism:
 `SendWakeTests` pins the resume-seed happy path plus the running / live-watcher / unresumable defers. This
 remains a **stopgap on both transports** — Codex's `sendKeys` leans on a fragile TUI pane-scraper and
 Claude's no-wait wake on a heavy relaunch; the agent-agnostic target is a real `controlChannel` `turn/start`
-RPC (the already-frozen enum variant) that retires both, tracked in
-[agent-provider-interface.md §8](../notes/designs/agent-provider-interface.md). Like the entries above, this
+RPC (the already-frozen enum variant) that would retire both — delivering a turn without tearing the
+session down. Like the entries above, this
 is one live-delivery refinement, not a whole axis, so it stays here as history.
 
 Also landing after the forest is the **column-aware SessionStart orientation + self-move guidance**
@@ -901,7 +891,8 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
   hooks file: each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
   `_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json` — but
   **never clobbers a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the destination
-  is absent or already Orchestra's, keyed on the `_report --event session` sentinel). Codex's `parse` returns
+  is absent or already Orchestra's, keyed on the broadened `_report --event` sentinel — any Orchestra event,
+  so a stranded retired install is still recognized as ours and replaced rather than left behind). Codex's `parse` returns
   `nil` for this push, so the event is **orientation-only** — it yields the brief and sends **no**
   telemetry, so Codex telemetry stays the [daemon-side rollout tail](#shipped-feature-history)
   (B2) rather than gaining a second, conflicting source. Same brief, byte-identical envelope, both agents.
@@ -920,9 +911,7 @@ foreshadows [axis 1's configurable columns](10-roadmap.md) and [axis 5's automat
 once agents route on their own column, a phase-driven column becomes actionable.)
 
 Also landing after the forest is **vim-style keyboard navigation — a fully keyboard-driven board**
-(commit `1c9daed`, branch `shortcuts`;
-[design](../notes/designs/2026-07-02-keyboard-shortcuts-vim-navigation-design.md),
-[plan](../notes/plans/2026-07-02-keyboard-shortcuts.md)). It makes the app
+(commit `1c9daed`, branch `shortcuts`). It makes the app
 [completely navigable by keyboard](07-app-ui.md#keyboard-navigation) with a scheme built for a vim user —
 bare `hjkl` selection, `⌃hjkl` spatial pane focus, `g`-go-to, single-key verbs, `?` help, and the standard
 `⌘N`/`⌘T`/`⌘W` accelerators. The central tension it resolves is that the inspector embeds **live agent
@@ -963,7 +952,7 @@ later pass. Like the entries above, this is an app-UX feature, not a whole exten
 here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
 Also landing after the forest is the **inbox provenance header + batching + send cap** (commit `4264575`,
-branch `inbox-stop-hook`; on the C1 [plan](../notes/plans/2026-07-01-c1-inbox-stopdrain.md)). It hardens how
+branch `inbox-stop-hook`), on the C1 inbox. It hardens how
 the durable [inbox](03-data-model.md#the-inbox-store-f3) *reads to the model* on the live-delivery channels
 the two agents distrust. The problem was verified empirically: a queued `send` reaches Claude as the
 Stop-hook `reason` framed "Stop hook feedback:" and Codex as a resume seed — framing an agent can mistake for
@@ -996,9 +985,7 @@ Like the entries above, this refines the already-shipped [C1](#shipped-feature-h
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
 
 Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
-Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`;
-[plan](../notes/plans/2026-07-02-remote-daemon-connections.md),
-[design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)). This builds the **reusable
+Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`). This builds the **reusable
 client connection spine** the [phone client (axis 9)](10-roadmap.md#the-nine-axes) needs, proven on its
 own driving case: the Mac renders the board while the daemon — and therefore every agent, tmux session,
 git worktree, and repo — runs on a remote Linux box reached over SSH. The load-bearing constraint is that
@@ -1068,7 +1055,7 @@ Linux port — not the whole [phone-client axis](10-roadmap.md#the-nine-axes), w
 itself (it inherits this spine); so axis 9's row stays in [chapter 10](10-roadmap.md) as history is
 recorded here.
 
-**The `--model` re-seat** (`notes/plans/restart-handoff-model.md`) adds an optional `model` to `restart`,
+**The `--model` re-seat** adds an optional `model` to `restart`,
 `handoff`, and `resume` — declared in the [command catalog](05-command-reference.md#registry-commands), so
 it reaches both the CLI and MCP. It **re-seats a card onto another model in place** (same card, same
 worktree, same session lineage): `handoff --model` carries the context across, which is how an agent that
@@ -1096,6 +1083,78 @@ affected, and are equally fixed) and a plan card lost `--permission-mode auto` (
 `startIn` flags at all). The third: a **dated** vendor model id (`claude-haiku-4-5-20251001`) fell out of the
 catalog into a bare `AgentModel`, dropping the model's catalog metadata — display name, `contextWindow`,
 flags — and pinning every later launch to the dated id.
+
+Landing after all of the above is the **branch tree — parent card / branch linking** (shipped to `main`).
+A card's branch no longer has to sit on `main`: it can be **based on any other branch** — another card's,
+a bare local branch, or a remote GitHub PR — and the card's whole lifecycle (diff, sync, ship, redirect,
+notify) runs relative to that **parent** instead of `main`. Cards form a family tree; each card sees, syncs
+with, and ships into its parent, and the tree self-repairs when any parent lands. It surfaces as a set of
+commands (`spawn --base`, `set-parent`, `tree`, `synced`, `shipped`, `merge-request`, `borrow`, `release`)
+plus two decode-with-default `Task` fields (`parentBranch`, `treeStat`) and the board affordances (base
+picker, `⤴ parent` chip, `↓N`/restack/merge-requested badges, same-column tree indentation, parent-relative
+diffs by default). The load-bearing choices, and what each discarded:
+
+| Decision | Why | Discarded alternative |
+|---|---|---|
+| Parent = a **branch ref**; the parent *card* is always **derived by lookup** | no stale pointers; covers main / bare branch / remote PR uniformly; survives card churn | a stored `parentCardId` (lifecycle-repair burden); an enforced parent card (board clutter, inverts the remote case) |
+| Lineage lives in **repo git config** (`branch.<child>.orchestra-parent` + anchor OID) | survives card/daemon churn; migrates on `git branch -m`, deletes on `-D`; plain-git debuggable; git-town/Graphite precedent | a Task-only field (dies with the card); a `refs/notes` metadata blob (overkill, opaque) |
+| **Tree, not DAG** (single parent, many children) | merge-base diffs, `rebase --onto` redirect, and ship semantics all stay well-defined; unanimous prior art | a true multi-parent DAG (needs jj-class conflict machinery git lacks); a one-shot "merge sibling in" covers the real need without lineage change |
+| **Merge-down sync; `rebase --onto` only at re-parent; squash at ship** | no rewrites, no force-push, no cascades between concurrent agents; the recorded **base OID** makes squash-redirects phantom-conflict-free | routine rebase-restack (Graphite's human-attended default); merge-commit ship (criss-cross merge-bases); ff-only (too restrictive) |
+| **The owning agent performs all branch mutations; the daemon only records + nudges** | git forbids cross-worktree branch updates, and this avoids Graphite's 1.8.4-era data loss — the daemon provably never touches a ref | a daemon-side central restacker / first-class daemon merges |
+| A **trust-but-verify choreography** | agent prose compliance is the weakest hop, so one-line git checks (`merge-base`, tip-advanced) put an integrity floor under `synced`/`shipped` | trusting the agent's reports verbatim (review found silent corruption paths) |
+| One **canonical→resolvable seam** on the link (`ParentLink.resolvableRef`) | every git verb resolves the parent the same way (`refs/heads/` for local, a private `refs/orch/parents/…` ref for remote), so no consumer can get it wrong individually | per-consumer resolution helpers (the original shape — half the consumers missed a case) |
+
+Because the daemon never touches a ref, the whole flow rides the shipped F3 durable inbox: a parent tip
+moving past a child's recorded base fires **one** stale nudge (edge-triggered, `inSync → stale`); a child
+shipping under a live parent enqueues a **merge-request** into the parent card; a `shipped` notifies the
+child and the parent card, retargets grandchildren onto the grandparent, and clears the request. The
+owning agent then does the actual `git merge` / `rebase --onto` / squash in its own worktree and reports
+back with `synced` / `shipped`, which the daemon **verifies** (records the real `merge-base`, gates on the
+parent tip having actually advanced) rather than trusting.
+
+The **remote-parent** tier is the one place the daemon observes rather than being told, and squash merges
+are invisible to pure git, so merge detection is a **ladder that stops at the first hit**: `gh pr view`
+state (authoritative, squash-proof) → a branch-gone heuristic (the remote ref vanished) →
+`merge-base --is-ancestor` (proof-positive only). **Only the authoritative `gh` MERGED tier auto-redirects**
+(new base = the PR's `baseRefName`); the gone and ancestry tiers are **warn-only** — they raise an activity
+for the human to confirm with `set-parent`, never auto-redirecting on a guess. `gh` sits behind a
+capability probe (like Zed): absent, the whole feature degrades one tier to pure git rather than becoming a
+hard dependency. The design's chief residual risk is that the choreography rides agent compliance — the
+verification gates bound the damage but can't force action, so a non-compliant agent stalls its subtree
+visibly rather than silently.
+
+Two follow-on fixes hardened the **merge-request re-nudge** machinery, and both carry an invariant worth
+keeping. The first — **merge-request nudge backoff** — replaced the flat "re-prod the parent every 300s
+forever" loop with a geometric backoff (doubling from a 300s base, ceilinged at 12× it) and an 8-reminder
+give-up cap, after which the child lands in a visible, persisted terminal state. Two decisions outlive the
+diff. The give-up counter is persisted in `TreeStat.nudges`, **not** held in memory, because the daemon
+restarts often and re-arms every `mergeRequested` card on boot — so any in-memory cap is a cap that never
+fires; a persisted counter lets a re-armed loop resume at the right point in the backoff. And the give-up
+marker is a **boolean `mergeStalled` flag on `TreeStat`, not a fifth `TreeState` enum case** — a broadly
+applicable rule for any persisted, forward-compatible record: an older decoder **ignores** an unknown JSON
+*key* but treats an unknown enum *rawValue* as **fatal** (the record throws, and `FailableTask` drops the
+whole card). A new enum case would therefore have been the first producer of a rawValue that any revert,
+`/ship` relaunch off main, or lagging phone build couldn't decode — silently losing the card, worktree
+orphaned, no `.corrupt` backup because the top-level JSON parsed fine. A flag can't fail that way; it also
+keeps the underlying `state` tracking the parent (so a stalled child still gets "parent moved ahead"
+updates) while merely outranking it on the card face.
+
+The second — **the nudge-leak + cooperative-pool-starvation fix** — carries two non-obvious lessons the
+shipped code doesn't self-explain. The bug pattern: a timer task written `Task { [weak self] in guard let
+self else { return }; while … }` hoists the `guard let self` **above** the `while` loop, so the closure
+holds a **strong** reference for the loop's entire life and `[weak self]` buys nothing — the actor can
+never deallocate, and its `deinit` is unreachable. The fix re-acquires `self?.` per iteration, so the long
+sleep holds nothing and the next hop after deallocation yields `nil` and exits. The measured decision: the
+three git-forking actors (`BranchLineage`, `RemoteParents`, `WorktreeRegistry`) were **deliberately not**
+given custom serial executors to keep their `git` forks off the cooperative pool. Because each is a serial
+actor and production holds exactly one `OrchestraService`, at most **three** pool threads can ever be
+parked on a fork — measured peak was **1 of ~18 cores** — so starvation is two orders of magnitude away by
+construction, and the executor would defend a number that can't grow (while breaking the Linux build,
+since `DispatchSerialQueue`'s `SerialExecutor` conformance is Darwin-only). What would flip it: a ≤3-core
+deployment (a small VM or a cpuset-pinned container), or anything that creates these actors per request
+rather than one-per-daemon. `scripts/pool-probe.sh` is the reusable artifact that measures peak
+cooperative-pool starvation in any `swift test --parallel` run and stays in the repo for the day either
+trigger arrives.
 
 The roadmap of what comes next — the extensibility axes the system is being designed toward — is
 [chapter 10](10-roadmap.md).

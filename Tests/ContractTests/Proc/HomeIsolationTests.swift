@@ -18,7 +18,7 @@ import Testing
 /// constructor points `HOME` at a fresh temp dir before the first test of either runner, so *no* test
 /// — and no production code under test — can reach the real home no matter what it writes.
 ///
-/// See notes/designs/2026-07-11-test-suite-git-hermeticity.md.
+/// See docs/08-building-operations.md (§Test hermeticity).
 @Suite("HOME isolation — the test bundle never writes into the developer's real home")
 struct HomeIsolationTests {
     static var isolationDisabled: Bool {

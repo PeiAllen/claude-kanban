@@ -4,7 +4,7 @@
 # Free personal team ⇒ no paid membership ⇒ Push Notifications capability is unavailable, so this lane
 # signs with App-iOS/OrchestraiOS-nopush.entitlements (keychain-access-groups only, NO aps-environment).
 # Board + terminals + takeover need none of it (real APNs is out of scope on the free tier; alerts come via
-# the Claude/Codex apps). See notes/designs/ios-real-device-onboarding-and-transport.md §7.
+# the Claude/Codex apps). See docs/08-building-operations.md (§Building the iOS app for a real device).
 #
 # Your Apple team id stays OUT OF GIT — this script reads it from, in order:
 #   1. $ORCH_IOS_TEAM_ID                       (env var; preferred for CI / one-offs)

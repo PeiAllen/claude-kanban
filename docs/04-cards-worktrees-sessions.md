@@ -107,27 +107,19 @@ window; also kills the window's view session), `capture` (`capture-pane`, the st
 ## Agent adapters
 
 The agent provider is abstracted behind the **`Adapter`** protocol so Orchestra isn't wedded to Claude
-Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md), deepened into the
-[agent-provider interface](../notes/designs/agent-provider-interface/index.md) design — a per-agent
-**capability descriptor** the core degrades on, plus a Codex adapter as the second conformer). The
-**seam-contract root of that design has landed** — PR A1
-([plan](../notes/plans/2026-07-01-a1-seam-contract-freeze.md)) froze the complete capability descriptor
-and moved core onto it, **PR A2** ([plan](../notes/plans/2026-07-01-a2-telemetry-source-seam.md))
-added the adapter's own **`parse`** (below), and **PRs B1–B2** have since landed the **Codex adapter**
-as the second conformer — its launch/session/trust ([plan](../notes/plans/2026-07-01-b1-codex-adapter.md))
-and its rollout-tail telemetry ([plan](../notes/plans/2026-07-01-b2-codex-rollout-tail.md); see
-[the Codex adapter](#the-codex-adapter), below) — and **PR C3**
-([plan](../notes/plans/2026-07-01-c3-f1-handoff-resume.md)) has landed **F1 resume-in-card**: the `seed`
-now rides `resume` as the session's opening positional turn (see the resume argv under
-[the Claude Code adapter](#the-claude-code-adapter), below), and **PR C4**
-([plan](../notes/plans/2026-07-01-c4-codex-sendkeys-wake.md)) has landed the **Codex send-keys wake** (the
-`.sendKeys` `wakeTransport`; see [the Codex adapter](#the-codex-adapter) and
-[chapter 9](09-design-decisions.md#shipped-feature-history)); **PR D1**
-([plan](../notes/plans/2026-07-01-d1-mcp-delegation-tools.md)) has since surfaced that F1 seam as the
-[`handoff` Command](05-command-reference.md#registry-commands) (MCP tool + CLI verb), and **PR D3**
-([plan](../notes/plans/2026-07-01-d3-ui-cli-actions.md)) has since landed the new-card **Fork/Fan-out**
-board/CLI start-actions (a `spawn`/`batch-spawn` carrying a new `SpawnInput.seed`) plus the Handoff/Send
-card actions — completing the agent-provider forest. An
+Code (the multi-provider direction is [Roadmap axis 2](10-roadmap.md)) — a per-agent **capability
+descriptor** the core degrades on, plus a Codex adapter as the second conformer. The
+**seam-contract root has landed** — PR A1 froze the complete capability descriptor and moved core onto
+it, **PR A2** added the adapter's own **`parse`** (below), and **PRs B1–B2** have since landed the
+**Codex adapter** as the second conformer — its launch/session/trust and its rollout-tail telemetry (see
+[the Codex adapter](#the-codex-adapter), below) — and **PR C3** has landed **F1 resume-in-card**: the
+`seed` now rides `resume` as the session's opening positional turn (see the resume argv under
+[the Claude Code adapter](#the-claude-code-adapter), below), and **PR C4** has landed the **Codex
+send-keys wake** (the `.sendKeys` `wakeTransport`; see [the Codex adapter](#the-codex-adapter) and
+[chapter 9](09-design-decisions.md#shipped-feature-history)); **PR D1** has since surfaced that F1 seam
+as the [`handoff` Command](05-command-reference.md#registry-commands) (MCP tool + CLI verb), and **PR D3**
+has since landed the new-card **Fork/Fan-out** board/CLI start-actions (a `spawn`/`batch-spawn` carrying a
+new `SpawnInput.seed`) plus the Handoff/Send card actions — completing the agent-provider forest. An
 adapter declares its `id`,
 `name`, `icon`, `bin`, `models()`, and its `capabilities`, and builds argv for two operations:
 
@@ -287,8 +279,8 @@ raw (e.g. a `fileTail` line) returns `nil` — Claude has no tail transport. See
 ### The Codex adapter
 
 `CodexAdapter` (`id = "codex"`, `bin = "codex"`) is the **second conformer** — the first proof the seam is
-provider-agnostic — registered in the default `AgentRegistry` alongside Claude (PRs **B1–B2**;
-`notes/plans/2026-07-01-b2-codex-rollout-tail.md`). It differs from Claude on every capability axis, and
+provider-agnostic — registered in the default `AgentRegistry` alongside Claude (PRs **B1–B2**). It
+differs from Claude on every capability axis, and
 core handles the difference purely through the descriptor:
 
 - **Access-gated launch.** Like Claude, Codex honors the card's `access`: a **default (read-write)**
@@ -322,10 +314,23 @@ core handles the difference purely through the descriptor:
   **Claude-parity SessionStart hook** that injects the card's column/mode/self-id
   [orientation](06-clients-cli-mcp.md#the-hooks--_report-channel) (via `_report --event session`) — the
   inbound counterpart to Claude's SessionStart hook. It **never clobbers a foreign user `hooks.json`**
-  (`CodexHooks.installIfSafe` writes only when the file is absent or already Orchestra's, keyed on the
-  `_report --event session` sentinel), is **orientation-only** (Codex's `parse` returns `nil` for the push —
-  telemetry stays the rollout tail below), and is best-effort/argv-preserving
+  (`CodexHooks.installIfSafe` writes only when the file is absent or already Orchestra's), keyed on the
+  broadened **`_report --event`** marker — any Orchestra event, not just `session`. Matching the whole
+  `_report --event` prefix (rather than the narrow `_report --event session`) means a stranded install
+  from an earlier build — e.g. one wired to the retired `--event orient` hook — is still recognized as
+  ours and replaced by the current file, while a genuinely foreign `hooks.json` (no `_report --event` at
+  all) is left untouched. It is **orientation-only** (Codex's `parse` returns `nil` for the push —
+  telemetry stays the rollout tail below), and best-effort/argv-preserving
   (column-aware-orientation PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+- **Establish hook trust at launch — `--dangerously-bypass-hook-trust`.** The installed Codex build
+  trust-gates hooks behind a launch-time modal Orchestra can't answer, so without intervention the
+  parity hooks above never fire. `CodexAdapter` adds `--dangerously-bypass-hook-trust` to the
+  `start`/`resume` argv, which is empirically the **only** mechanism that runs untrusted hooks — the
+  config seed `-c bypass_hook_trust` was rejected as inert, and persisted trust is hash-keyed (a seed
+  would be fragile). It is safe here by construction: Orchestra authors the hooks (it owns `CODEX_HOME`),
+  and the flag touches hook trust only, not approvals/sandbox. The flag is **build-probed** via
+  `<bin> --help` and cached, so a stock `codex-rs` build (which lacks both the trust gate and the flag)
+  still launches; the change is Codex-local — Claude's argv is untouched.
 - **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (the `gpt-5.6`
   family — Sol / Terra / Luna — = 372 000-token window; `gpt-5.5` = 272 000), `.copy`-bundled
   so the app stays fully offline. This
@@ -366,8 +371,8 @@ separated (the tailer never inspects JSON; the parse never touches files):
   Codex card shows live context %, running/idle status, and model, fully offline. Claude (`hooksPush`) is
   never tailed, so its push path stays byte-identical.
 
-**Send-keys wake** (`CodexComposer` + `OrchestraService.sendKeysWake`, PR **C4**;
-`notes/plans/2026-07-01-c4-codex-sendkeys-wake.md`). Because Codex advertises `wakeTransport == .sendKeys`
+**Send-keys wake** (`CodexComposer` + `OrchestraService.sendKeysWake`, PR **C4**). Because Codex
+advertises `wakeTransport == .sendKeys`
 (no `nativeReinvoke` push, no Stop hook), [F2 wake](09-design-decisions.md#shipped-feature-history) can't
 just ride a background process exiting — an idle Codex card is instead woken by a **fixed, content-free TUI
 nudge** (`sendKeysWakeNudge`, `"Please continue."`) typed into its composer. The nudge only *starts a turn*;
@@ -468,8 +473,8 @@ worktree — except `inspect` runs *without* Orchestra hooks so it stays untrack
 composes those same read-only settings *onto* the hooks base so it keeps its statusLine + telemetry and
 is a tracked citizen of the board.
 
-This three-layer recipe is Claude-Code-specific; the [agent-provider interface](../notes/designs/agent-provider-interface/index.md)
-design (Roadmap axis 2) generalizes it into a provider-agnostic **`readOnlyEnforcement` capability**
+This three-layer recipe is Claude-Code-specific; the agent-provider interface
+(Roadmap axis 2) generalizes it into a provider-agnostic **`readOnlyEnforcement` capability**
 (`∈ {sandboxed, toolGatedOnly, orchestraSandboxed}` — the enum spelling is now frozen on the shipped seam
 contract by A1, though core doesn't yet branch on it), of which this Claude barrier is the fully-enforced
 `sandboxed` case — so Orchestra never advertises a read-only card an adapter can't actually enforce
@@ -493,8 +498,7 @@ contract by A1, though core doesn't yet branch on it), of which this Claude barr
 ## Recovery, resume, and restart
 
 The daemon makes a card's run survive crashes and reboots (`OrchestraService+Recovery.swift`). Since
-Stage 2 (the *lifecycle-convergence* work — see the
-[design vault](../notes/designs/lifecycle-convergence/index.md) and
+Stage 2 (the *lifecycle-convergence* work — see
 [design decisions](09-design-decisions.md#the-phase-funnel-one-writer-epochs-and-capability-gated-readiness))
 this all routes through **one persisted lifecycle variable** — `Task.phase` — and **one writer**.
 

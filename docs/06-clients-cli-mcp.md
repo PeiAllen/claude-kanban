@@ -210,7 +210,9 @@ Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 Each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
 `_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json`,
 **never clobbering a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the
-destination is absent or already Orchestra's, identified by the `_report --event session` sentinel).
+destination is absent or already Orchestra's, identified by the broadened `_report --event` marker — any
+Orchestra event, so a stranded install from an earlier build, e.g. the retired `--event orient` hook, is
+recognized as ours and replaced, while a genuinely foreign file is left untouched).
 Codex's `parse` returns `nil` for this push (its telemetry is the
 [daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
 **orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.
@@ -224,7 +226,7 @@ daemon-side **rollout-tail** transport for another agent — Codex — has since
 `RolloutTailer` + `OrchestraService.pollTelemetry()` call the *same* `adapter.parse` seam from a file tail
 instead of a push endpoint (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter)). See
 [the adapter's telemetry parse](04-cards-worktrees-sessions.md#the-claude-code-adapter) and the
-[agent-provider interface](../notes/designs/agent-provider-interface/02-contract.md) contract.
+agent-provider interface contract.
 
 On the daemon side, `OrchestraService+Report.swift` merges the report's **event half** (applied
 unconditionally and ordered — e.g. `SessionEnd`→`dead`, session-id rollover into `priorSessionIds`,

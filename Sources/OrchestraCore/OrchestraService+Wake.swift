@@ -174,7 +174,7 @@ extension OrchestraService {
     /// REVISIT — `controlChannel` (a real `turn/start` RPC via the Codex app-server) is the agent-agnostic
     /// target that would retire the resume-*relaunch* for wake (deliver a turn without tearing the session
     /// down). It needs the app-server run-mode (drops the TUI for a viewer); until then wake is resume-seed.
-    /// See notes/designs/agent-provider-interface.md §8 ("generalize F2 wake").
+    /// See docs/09-design-decisions.md (the send-wakes-idle-card note — `controlChannel` is the agent-agnostic target).
     func wake(_ id: UUID) async {
         guard let t = await store.get(id), let adapter = try? registry.get(t.agentId),
               !t.archived, case .live = t.phase, !relaunchClaimed.contains(id) else { return }
