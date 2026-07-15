@@ -10,9 +10,9 @@ in its terminal transcript. Activating that reference opens a temporary native p
 scrolls with tmux history; the preview is not a persistent attachment, gallery, or terminal-image
 protocol feature.
 
-The initial surface is the macOS embedded terminal and works for both Codex and Claude. It is deliberately
-agent-neutral: the contract is an Orchestra CLI command and a daemon-owned media record, not a parser for
-provider-specific tool text or file paths.
+The initial surfaces are the macOS embedded terminal and the iPhone card detail. They work for both Codex
+and Claude. The feature is deliberately agent-neutral: the contract is an Orchestra CLI command and a
+daemon-owned media record, not a parser for provider-specific tool text or file paths.
 
 ## Current constraints
 
@@ -141,6 +141,33 @@ The embedded tmux configuration advertises `hyperlinks` in addition to its curre
 keeps `allow-passthrough on`. A proof test must verify the full embedded path rather than assuming that
 either capability alone makes an agent TUI preserve OSC 8 bytes.
 
+## iOS interaction
+
+The same `media` RPC and opaque URL are the only image transport for the phone. The iPhone never receives
+a daemon filesystem path or a second image-specific endpoint.
+
+`CardDetailView` owns one `TranscriptImageReference` route and presents it with a full-screen cover. Both
+phone terminal surfaces feed that route:
+
+- The default Agent tab is a text-only `capture-pane` render, which cannot retain OSC 8 metadata. Its
+  renderer tokenizes only the exact visible `https://orchestra.invalid/media/<UUID>` fallback emitted by
+  `publish-image`; that token becomes a tappable image reference. It does not attempt to recognize
+  ordinary URLs or filesystem-looking text.
+- The opt-in live shell and full-screen agent takeover retain SwiftTerm's link callbacks. Their
+  `requestOpenLink` delegate forwards only the same validated Orchestra media URL to the card-detail
+  route. The existing empty callback becomes this narrow handler; all other links keep their current
+  terminal behavior.
+
+Tapping either reference fetches the image through the shared `media` RPC and opens `MobileImagePreview`
+full screen. It has a close control, caption, loading/error state, and a UIKit `UIScrollView` image host:
+pinch zoom and direct drag pan are native, and the image initially fits the available screen. Returning
+closes the viewer and leaves the terminal/capture at its existing position. A failed or expired reference
+shows an in-place error and never opens an arbitrary URL.
+
+The initial phone viewer intentionally does not add its own file-export/default-viewer behavior. The
+phone requirement is a fast, full-screen, pinch-and-pan inspection surface; share/save policy is separate
+from this transcript-link feature.
+
 ## Agent delivery
 
 Both adapters receive the same short standing instruction: when they create an image intended for the
@@ -175,17 +202,19 @@ Automated coverage includes:
 - the client link policy, which accepts only valid Orchestra media URLs and rejects ordinary web or file
   links;
 - temporary preview-cache naming and cleanup, plus the image-copy conversion policy for PNG and JPEG;
+- phone capture tokenization, live-terminal link forwarding, and the one shared full-screen media route;
 - existing-command compatibility and the agent-instruction document installation paths.
 
 Native SwiftTerm popover placement and the two real agent renderers remain manual acceptance coverage,
 because they depend on the actual AppKit terminal and provider TUI rather than a fake terminal buffer.
 Manual acceptance also confirms that Copy pastes pixels into another image-capable app, Open uses the
 configured default viewer, and a magnified image pans under both mouse drag and trackpad scroll.
+On iPhone it confirms a captured fallback reference and a live-terminal reference both open the same
+full-screen preview, which pinch-zooms and drag-pans without changing the terminal's position.
 
 ## Scope and non-goals
 
 This feature does not add a persistent image shelf, a rich transcript renderer, Sixel/Kitty/iTerm image
 interchange, automatic parsing of paths, direct filesystem URL handling, or passive hover activation. It
-does not alter the existing image-paste behavior. iOS receives the opaque-link resolver only after the
-macOS proof succeeds; mobile tap/hover, copy, open, and zoom semantics are intentionally a follow-up
-rather than a second unproven input path in this change.
+does not alter the existing image-paste behavior. The iOS full-screen viewer is in scope and shares the
+same RPC; iOS copy, export/default-viewer opening, and hover semantics are not.
