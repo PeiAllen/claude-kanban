@@ -49,4 +49,14 @@ struct TranscriptImageTests {
 
         #expect(segments == [.text("web https://example.com/x media "), .reference(id), .text("!")])
     }
+
+    @Test("capture tokenizer rejects a query, fragment, and extra media path")
+    func tokenizerRejectsURLContinuations() {
+        let id = UUID()
+        let base = TranscriptImageLink.url(for: id)
+
+        for invalid in ["\(base)?download=1", "\(base)#preview", "\(base)/full"] {
+            #expect(TranscriptImageTextTokenizer.tokenize(invalid) == [.text(invalid)])
+        }
+    }
 }

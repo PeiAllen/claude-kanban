@@ -19,6 +19,9 @@ struct CardDetailView: View {
     // Agent is the design-primary tab (§3); it ships as a stub in M2 but remains the honest landing tab.
     // `CardTab.initial` honors an ORCH_DEV_CARD_TAB override for deterministic headless screenshots.
     @State private var tab: CardTab = .initial
+    /// A transient route anchored to a terminal/capture marker. It is intentionally owned by the card
+    /// detail so every activation surface resolves the same card-scoped daemon media reference.
+    @State private var imageRoute: TranscriptImageRoute?
 
     /// The live card, resolved fresh each render from the board (then the Done archive).
     private var task: Task? {
@@ -42,17 +45,25 @@ struct CardDetailView: View {
         .background(theme.winBg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)   // full-screen: hide the app's bottom tab bar while in a card
+        .fullScreenCover(item: $imageRoute) { route in
+            MobileTranscriptImagePreview(route: route)
+                .environmentObject(model)
+        }
     }
 
     @ViewBuilder private func tabBody(_ task: Task) -> some View {
         switch tab {
-        case .agent:    AgentTab(task: task)
-        case .terminal: TerminalTab(task: task)
+        case .agent:    AgentTab(task: task, onOpenImage: { openImage($0, for: task) })
+        case .terminal: TerminalTab(task: task, onOpenImage: { openImage($0, for: task) })
         case .diff:     DiffTab(task: task)
         case .notes:    NotesPage(task: task)
         case .inbox:    InboxTab(task: task)
         case .info:     InfoTab(task: task)
         }
+    }
+
+    private func openImage(_ referenceID: UUID, for task: Task) {
+        imageRoute = TranscriptImageRoute(cardID: task.id, referenceID: referenceID)
     }
 
     private var closedPlaceholder: some View {

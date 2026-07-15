@@ -203,7 +203,7 @@ Expected: PASS. The only request made by the new BoardStore API is media for the
 - CardDetailView owns @State private var imageRoute: TranscriptImageRoute?; child views receive an onOpenImage closure.
 - IOSTerminalView accepts onOpenImage: ((UUID) -> Void)? and invokes it only after exact URL validation.
 
-- [ ] **Step 1: Add a pure tokenizer regression first**
+- [x] **Step 1: Add a pure tokenizer regression first**
 
 Add this to TranscriptImageTests:
 
@@ -216,7 +216,7 @@ Add this to TranscriptImageTests:
         }
     }
 
-- [ ] **Step 2: Run the tokenizer test**
+- [x] **Step 2: Run the tokenizer test**
 
 Run:
 
@@ -224,7 +224,7 @@ Run:
 
 Expected: PASS after the existing continuation guard is exercised. If it fails, fix only TranscriptImageTextTokenizer until this exact rejection behavior holds.
 
-- [ ] **Step 3: Introduce one card-detail route and capture-text activation**
+- [x] **Step 3: Introduce one card-detail route and capture-text activation**
 
 Add this route in App-iOS/Views/TranscriptImagePreview.swift:
 
@@ -265,7 +265,7 @@ Replace the capture Text with a non-editable selectable UITextView bridge. Its u
         }
     }
 
-- [ ] **Step 4: Thread exact live-terminal link handling**
+- [x] **Step 4: Thread exact live-terminal link handling**
 
 Extend the representable and coordinator:
 
@@ -281,7 +281,7 @@ Extend the representable and coordinator:
 
 Keep the closure on the coordinator and refresh it in updateUIView so a changed card cannot invoke a stale route. Add concrete IOSTerminalHost overloads for live shell and takeover that accept the closure and pass it to terminalView. TerminalTab.LiveShellView and AgentTakeoverView call those overloads only for IOSTerminalHost; the generic TerminalHost fallback preserves its existing attach behavior.
 
-- [ ] **Step 5: Implement MobileTranscriptImagePreview**
+- [x] **Step 5: Implement MobileTranscriptImagePreview**
 
 The new view loads only through the BoardStore method and validates payload metadata before it enters UIKit:
 
@@ -305,7 +305,7 @@ The new view loads only through the BoardStore method and validates payload meta
 
 Start load with `.task(id: route)`, which SwiftUI cancels when the full-screen cover closes or switches routes; check `Task.isCancelled` before assigning fetched state. Render a close control, caption, loading state, and error state. Host UIImageView in UIScrollView, start fit-to-screen, implement viewForZooming(in:), allow pinch from fit to max(8 * fitScale, nativeScale), and allow direct drag pan only while magnified. Provide compact minus, fit, and plus buttons that set zoomScale. Share presents UIActivityViewController(activityItems: [image], applicationActivities: nil). Retain the decoded UIImage until both viewer and share sheet dismiss; clear it in onDisappear. Do not use UIPasteboard, UIDocumentInteractionController, or an iOS image cache.
 
-- [ ] **Step 6: Compile and test the iPhone path**
+- [x] **Step 6: Compile and test the iPhone path**
 
 Run:
 
@@ -315,7 +315,7 @@ Run:
 
 Expected: PASS. The app target includes the UIKit viewer and SwiftTerm forwarding; OrchestraUI stays AppKit-free.
 
-- [ ] **Step 7: Commit iPhone preview support**
+- [x] **Step 7: Commit iPhone preview support**
 
     git add App-iOS/Views/TranscriptImagePreview.swift \
       App-iOS/Views/CardDetail/CardDetailView.swift \

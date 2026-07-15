@@ -18,6 +18,9 @@ import OrchestraUI
 /// Landscape is the real-terminal posture; portrait is allowed.
 struct AgentTakeoverView: View {
     let cardId: UUID
+    /// Present only when the takeover is launched from a card detail that owns an image-preview route.
+    /// Other app-level takeover entry points retain their existing behavior.
+    var onOpenImage: ((UUID) -> Void)?
     var onClose: () -> Void
 
     @EnvironmentObject private var model: BoardModel
@@ -27,8 +30,10 @@ struct AgentTakeoverView: View {
 
     private let host = IOSTerminalHost()
 
-    init(cardId: UUID, model: BoardModel, onClose: @escaping () -> Void) {
+    init(cardId: UUID, model: BoardModel, onOpenImage: ((UUID) -> Void)? = nil,
+         onClose: @escaping () -> Void) {
         self.cardId = cardId
+        self.onOpenImage = onOpenImage
         self.onClose = onClose
         _controller = StateObject(wrappedValue: TakeoverController(cardId: cardId, model: model))
     }
@@ -138,7 +143,8 @@ struct AgentTakeoverView: View {
                 // Typing is armed via the accessory bar's Start Typing toggle or by tapping the terminal.
                 // One finger scrolls while disarmed; a two-finger swipe scrolls while armed (keyboard up).
                 host.takeoverAttach(target: target, control: control,
-                                    shouldReconnect: { [weak controller] in controller?.isHolding ?? false })
+                                    shouldReconnect: { [weak controller] in controller?.isHolding ?? false },
+                                    onOpenImage: onOpenImage)
             case .acquiring:
                 overlay(icon: "arrow.triangle.2.circlepath", title: "Taking over…",
                         detail: "Acquiring the agent-terminal lease.")

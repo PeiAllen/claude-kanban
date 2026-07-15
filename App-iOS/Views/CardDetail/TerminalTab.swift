@@ -23,26 +23,28 @@ import OrchestraUI
 /// shell is still attached on the daemon. **Detach** kills the live shell; **Clear** empties the notebook.
 struct TerminalTab: View {
     let task: Task
+    let onOpenImage: (UUID) -> Void
     @EnvironmentObject private var sessions: TerminalSessionStore
 
     var body: some View {
         // Resolve (lazily creating) this card's persistent session from the app-level store, then hand it to
         // the content view. Because the session lives in the store — not in `@State` here — it survives this
         // view being torn down on a tab switch or on leaving/returning to the card.
-        TerminalTabContent(task: task, session: sessions.session(for: task.id))
+        TerminalTabContent(task: task, session: sessions.session(for: task.id), onOpenImage: onOpenImage)
     }
 }
 
 private struct TerminalTabContent: View {
     let task: Task
     @ObservedObject var session: TerminalSession
+    let onOpenImage: (UUID) -> Void
     @Environment(\.theme) private var theme: Theme
 
     var body: some View {
         Group {
             switch session.mode {
             case .blocks: BlockREPLView(task: task, session: session)
-            case .live:   LiveShellView(task: task, session: session)
+            case .live:   LiveShellView(task: task, session: session, onOpenImage: onOpenImage)
             }
         }
         .background(theme.termBg)
@@ -370,6 +372,7 @@ private struct BlockREPLView: View {
 private struct LiveShellView: View {
     let task: Task
     @ObservedObject var session: TerminalSession
+    let onOpenImage: (UUID) -> Void
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
     @Environment(\.terminalHost) private var terminalHost
@@ -546,7 +549,8 @@ private struct LiveShellView: View {
     /// paths fall back to the plain control-less attach (they never mount a real terminal anyway).
     @ViewBuilder private func liveTerminal(target: TmuxTarget) -> some View {
         if let iosHost = terminalHost as? IOSTerminalHost {
-            iosHost.attach(target: target, selectMode: session.selectMode, control: control)
+            iosHost.attach(target: target, selectMode: session.selectMode, control: control,
+                           onOpenImage: onOpenImage)
         } else {
             terminalHost.attach(target: target, selectMode: session.selectMode)
         }

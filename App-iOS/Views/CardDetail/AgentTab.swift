@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import OrchestraKit
 import OrchestraUI
 
@@ -21,6 +22,7 @@ import OrchestraUI
 /// Provider-neutral throughout: the capture render is a pane scrape (no `agent ==` branch).
 struct AgentTab: View {
     let task: Task
+    let onOpenImage: (UUID) -> Void
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
     @State private var takeover = false
@@ -36,19 +38,21 @@ struct AgentTab: View {
                 if let reason = task.waitReason {
                     WaitBanner(reason: reason, theme: theme)
                 }
-                CaptureRender(cardId: task.id)
+                CaptureRender(cardId: task.id, onOpenImage: onOpenImage)
                     // Tap-off + swipe-down dismissal for the composer keyboard. Additive container-level
                     // modifiers only — the capture ScrollView internals are left untouched.
                     .scrollDismissesKeyboard(.interactively)
                     .contentShape(Rectangle())
-                    .onTapGesture { composerFocused = false }
+                    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                 Divider().overlay(theme.hair)
                 SteerBar(cardId: task.id, composerFocused: $composerFocused)
                 takeOverButton
             }
             .background(theme.winBg)
             .fullScreenCover(isPresented: $takeover) {
-                AgentTakeoverView(cardId: task.id, model: model) { takeover = false }
+                AgentTakeoverView(cardId: task.id, model: model, onOpenImage: onOpenImage) {
+                    takeover = false
+                }
             }
         }
     }
@@ -117,6 +121,7 @@ private struct WaitBanner: View {
 /// screen through a transient RPC miss. Horizontal + vertical scroll so wide TUI lines aren't reflowed.
 private struct CaptureRender: View {
     let cardId: UUID
+    let onOpenImage: (UUID) -> Void
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
@@ -154,7 +159,7 @@ private struct CaptureRender: View {
             // — matching the Block-REPL notebook's auto-follow in TerminalTab.
             ScrollViewReader { proxy in
                 ScrollView([.vertical, .horizontal]) {
-                    CapturePaneText(text: frame.text)
+                    CapturePaneText(text: frame.text, onOpenImage: onOpenImage)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .id(tailAnchor)
@@ -205,19 +210,85 @@ private struct CaptureRender: View {
     }
 }
 
-/// Renders one captured pane frame as monospaced text. (Inline-image decoding of Sixel is out of scope
-/// for the non-attaching capture path — `capture-pane -p` never serialises Sixel back into pane text — so
-/// it will be reintroduced alongside the PR that actually forwards image bytes.)
-private struct CapturePaneText: View {
+/// Renders one captured pane frame as selectable monospaced text. The tokenizer recognizes only the
+/// opaque Orchestra fallback URL; ordinary URLs remain ordinary text-view links.
+private struct CapturePaneText: UIViewRepresentable {
     let text: String
+    let onOpenImage: (UUID) -> Void
     @Environment(\.theme) private var theme: Theme
 
-    var body: some View {
-        Text(text)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(theme.term)
-            .textSelection(.enabled)
-            .lineLimit(nil)
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOpenImage: onOpenImage)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainer.widthTracksTextView = true
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        context.coordinator.onOpenImage = onOpenImage
+        uiView.attributedText = renderedText()
+        uiView.linkTextAttributes = [
+            .foregroundColor: UIColor(theme.accent),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.bounds.width
+        guard width > 0 else { return nil }
+        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+
+    private func renderedText() -> NSAttributedString {
+        let font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let plainAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor(theme.term),
+        ]
+        let imageAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor(theme.accent),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
+        let rendered = NSMutableAttributedString()
+
+        for segment in TranscriptImageTextTokenizer.tokenize(text) {
+            switch segment {
+            case .text(let text):
+                rendered.append(NSAttributedString(string: text, attributes: plainAttributes))
+            case .reference(let id):
+                let marker = TranscriptImageLink.url(for: id)
+                var attributes = imageAttributes
+                attributes[.link] = marker
+                rendered.append(NSAttributedString(string: marker, attributes: attributes))
+            }
+        }
+        return rendered
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var onOpenImage: (UUID) -> Void
+
+        init(onOpenImage: @escaping (UUID) -> Void) {
+            self.onOpenImage = onOpenImage
+        }
+
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL,
+                      in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+            guard let id = TranscriptImageLink.referenceID(from: URL.absoluteString) else { return true }
+            onOpenImage(id)
+            return false
+        }
     }
 }
 
