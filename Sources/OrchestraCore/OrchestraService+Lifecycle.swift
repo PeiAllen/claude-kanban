@@ -89,6 +89,15 @@ extension OrchestraService {
             return .noop   // unknown card raced away between the load and the patch
         }
 
+        // Temporary media follows the same session boundary as the transition itself. Run this only after
+        // the durable state write succeeds: a failed/rejected transition must never erase a still-current
+        // reference, while a new epoch or archive intent invalidates prior data immediately.
+        if to.kind == .creatingWorktree || to.kind == .relaunching {
+            await mediaStore.removePriorEpochs(cardId: updated.id, keeping: updated.sessionEpoch)
+        } else if to.kind == .archivedPending {
+            await mediaStore.removeCard(updated.id)
+        }
+
         // 5 · Conclusions — the funnel is the sole concluder. Only the ENTRY into a terminal phase from a
         //     non-terminal one concludes; `dead → archived` (terminal → terminal) is guarded out.
         if !from.isTerminal, to.isTerminal, let c = Self.terminalConclusion(for: to) {

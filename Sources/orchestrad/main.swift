@@ -51,6 +51,7 @@ _Concurrency.Task {
     await service.sweepOrphanScratch()
     await service.stampMigratedWorktreeMarkersOnce()   // ONE-TIME (sentinel-gated) marker migration
     await service.reconcilePhasesAtBoot()  // re-drive stranded phases; revive .live cards; conservative mode
+    await service.reconcileTranscriptMediaAtBoot()  // retain only current media for non-archived cards
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
     await service.reloadWatchRegistry()    // carry #4: durable watch registry + terminal-at-reload delivery
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage

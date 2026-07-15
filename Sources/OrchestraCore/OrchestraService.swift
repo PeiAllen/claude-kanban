@@ -46,6 +46,9 @@ public actor OrchestraService {
     /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
     /// pushes; the phone populates it over the `registerDevice` RPC.
     let devices: DeviceTokenStore
+    /// Session-scoped, daemon-owned image media. It intentionally lives beside task state rather than in
+    /// an agent worktree, so no app or agent ever needs a durable filesystem path to an image.
+    let mediaStore: MediaStore
     /// The human-grant resolver (T2). Consulted by `grantTrust`; the production `SurfaceGrantResolver`
     /// only approves interactive surfaces and denies agent/daemon (autonomy-exemption + no self-grant).
     let grantResolver: any TrustGrantResolver
@@ -240,6 +243,7 @@ public actor OrchestraService {
                 trust: TrustLedger? = nil,
                 inbox: Inbox? = nil,
                 devices: DeviceTokenStore? = nil,
+                mediaStore: MediaStore? = nil,
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
@@ -263,6 +267,7 @@ public actor OrchestraService {
         self.trust = trust ?? TrustLedger()
         self.inbox = inbox ?? Inbox()
         self.devices = devices ?? DeviceTokenStore()
+        self.mediaStore = mediaStore ?? MediaStore(root: "\(config.runtimeStateDir)/media")
         self.grantResolver = grantResolver
         self.registry = registry
         self.worktrees = worktrees ?? WorktreeRegistry(config: config, resolver: r)
