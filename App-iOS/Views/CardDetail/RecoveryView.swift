@@ -39,8 +39,24 @@ struct RecoveryView: View {
         case .resumeFailed:    return "A resume attempt failed." + (task.deadDetail.map { " \($0)" } ?? "")
         case .completed:       return "The agent completed its work."
         case .spawnFailed:     return "Creating the workspace failed" + (task.deadDetail.map { " — \($0)" } ?? "") + "."
+        case .resourceExhausted:
+            // The MACHINE ran out — nothing about this card is broken. Name the resource (with its live
+            // numbers when the daemon could take a census) and what to do; the raw tmux/pane evidence goes
+            // to `rawDetail` below, small + secondary, because leading with that evidence is how this death
+            // used to read as an inscrutable Bun/ENOENT error instead of "your host is out of terminals".
+            guard let r = task.deadResource else {
+                return "The host ran out of a resource Orchestra needs to start a terminal."
+            }
+            return "\(r.headline) Orchestra can't start a terminal. \(r.resource.remedy)"
         case .none:            return "The session is no longer running."
         }
+    }
+
+    /// The raw evidence, shown small + secondary UNDER the plain-language cause — available for debugging
+    /// without being the headline. Only for deaths whose `whyLine` doesn't already inline the detail.
+    private var rawDetail: String? {
+        guard task.deadReason == .resourceExhausted else { return nil }
+        return task.deadDetail
     }
 
     private var repoName: String { (task.repo as NSString).lastPathComponent }
@@ -74,6 +90,11 @@ struct RecoveryView: View {
                 Text("Session lost").font(.title3.weight(.semibold)).foregroundStyle(theme.text)
             }
             Text(whyLine).font(.callout).foregroundStyle(theme.text2)
+            if let rawDetail {
+                Text(rawDetail)
+                    .font(.system(.caption, design: .monospaced)).foregroundStyle(theme.text3)
+                    .lineLimit(3).textSelection(.enabled)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
