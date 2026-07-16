@@ -49,6 +49,26 @@ public struct SessionManager: Sendable {
         try Proc.run(base() + args)
     }
 
+    /// Apply the embedded terminal configuration to an already-running Orchestra tmux server.
+    ///
+    /// App/daemon upgrades intentionally preserve live tmux sessions, so passing `-f` only on a later
+    /// client command is not enough: tmux reads that file when the server is born, not when a client
+    /// reconnects. Sourcing it here upgrades existing agent panes without interrupting the agents they
+    /// host. `false` means there was no server to update; the next `ensure` will start one with `-f`.
+    @discardableResult
+    public func reloadTerminalConfiguration() throws -> Bool {
+        guard let confPath else { return false }
+        let result = try Proc.run(["tmux", "-L", socket, "source-file", confPath])
+        guard result.ok else {
+            let diagnostic = result.stderr + result.stdout
+            if diagnostic.contains("no server running") || diagnostic.contains("error connecting to") {
+                return false
+            }
+            throw OrchestraError.io(diagnostic.isEmpty ? "tmux source-file failed" : diagnostic)
+        }
+        return true
+    }
+
     /// Ensure a session exists for the task, running `argv` (adapter start OR resume) in the agent
     /// window with ORCHESTRA_TASK_ID/ORCHESTRA_SOCK exported. Idempotent. Returns (name, created).
     @discardableResult

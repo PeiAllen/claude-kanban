@@ -29,6 +29,26 @@ final class SessionManagerTests {
         sm = SessionManager(socket: socket, confPath: SessionManager.bundledConf, sockEnvPath: "/tmp/fake.sock")
     }
 
+    @Test("reloadTerminalConfiguration upgrades an already-running server exactly once")
+    func reloadsTerminalConfigurationOnExistingServer() throws {
+        // The app/daemon update flow deliberately leaves agent tmux servers alive. Start a server without
+        // Orchestra's config, then prove the freshly started daemon can upgrade it in place rather than
+        // requiring every live Codex session to be torn down before it gets DECSET 2026 support.
+        let legacySocket = "orch-sync-\(UUID().uuidString.prefix(8))"
+        defer { _ = try? Proc.run(["tmux", "-L", legacySocket, "kill-server"]) }
+        _ = try Proc.run(["tmux", "-L", legacySocket, "new-session", "-d", "-s", "legacy", "sleep", "30"])
+
+        let upgraded = SessionManager(socket: legacySocket, confPath: SessionManager.bundledConf,
+                                      sockEnvPath: "/tmp/fake.sock")
+        #expect(try upgraded.reloadTerminalConfiguration())
+        #expect(try upgraded.reloadTerminalConfiguration())  // reloads must not accumulate duplicate entries
+
+        let features = try Proc.run(["tmux", "-L", legacySocket, "show-options", "-g", "terminal-features"])
+        #expect(features.ok)
+        #expect(features.stdout.contains("xterm-256color:sixel:sync"))
+        #expect(features.stdout.components(separatedBy: "xterm-256color:sixel:sync").count == 2)
+    }
+
     private func makeTask(cwd: String) -> Task {
         Task(title: "t", repo: cwd, branch: "b", cwd: cwd, model: AgentModel(id: "m"),
              startIn: .impl, column: .impl, order: 0, initialPrompt: "t")

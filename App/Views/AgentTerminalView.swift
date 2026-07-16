@@ -61,7 +61,7 @@ struct AgentTerminalView: NSViewRepresentable {
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
         term.terminalImagePaste = terminalImagePaste
-        applyColors(term)
+        applyColors(term, coordinator: context.coordinator)
         context.coordinator.attached = "\(session):\(window)"
         context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
         context.coordinator.reattach = { [weak term] in if let term { self.attach(term) } }
@@ -74,7 +74,7 @@ struct AgentTerminalView: NSViewRepresentable {
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
-        applyColors(nsView)   // re-tint when the app toggles light/dark
+        applyColors(nsView, coordinator: context.coordinator)   // re-tint when the app toggles light/dark
         // Re-install every update so the gate closure snapshots the CURRENT phase/connection (a stale
         // closure captured at makeNSView time would gate reattach on the card's state when it first
         // mounted, not its state at the moment the pane actually dies).
@@ -157,27 +157,35 @@ struct AgentTerminalView: NSViewRepresentable {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }()
 
-    private func applyColors(_ term: LocalProcessTerminalView) {
+    private func applyColors(_ term: LocalProcessTerminalView, coordinator: Coordinator) {
         let bg = NSColor(background), fg = NSColor(foreground)
-        term.nativeBackgroundColor = bg
-        term.nativeForegroundColor = fg
-        term.layer?.backgroundColor = bg.cgColor
-        // Also tell the *emulator* its colours so OSC 10/11 background/foreground queries report the live
-        // theme. SwiftTerm otherwise answers those queries with its hard-coded defaults (black bg)
-        // regardless of what we actually render, so a TUI like Claude Code — which queries OSC 11 to pick
-        // a light/dark theme — can't detect our theme. (Needs tmux `allow-passthrough on`, set in
-        // embedded.conf, so the OSC 11 reply can traverse tmux back to the program.)
-        let t = term.getTerminal()
-        if let f = Self.stColor(fg) { t.foregroundColor = f }
-        if let b = Self.stColor(bg) { t.backgroundColor = b }
+        let terminal = term.getTerminal()
+        let terminalBackground = Self.stColor(bg)
+        let terminalForeground = Self.stColor(fg)
+        if let terminalBackground, let terminalForeground {
+            let signature = TerminalThemeSignature(
+                background: .init(red: terminalBackground.red, green: terminalBackground.green, blue: terminalBackground.blue),
+                foreground: .init(red: terminalForeground.red, green: terminalForeground.green, blue: terminalForeground.blue))
+            let paletteChanged = coordinator.terminalThemeChangeGate.shouldApply(signature)
+            let nativeMatches = term.nativeBackgroundColor.isEqual(bg) && term.nativeForegroundColor.isEqual(fg)
+            let emulatorMatches = terminal.backgroundColor == terminalBackground && terminal.foregroundColor == terminalForeground
+            if !paletteChanged && nativeMatches && emulatorMatches { return }
+        }
+
+        // `native*Color` updates the emulator too, which makes OSC 10/11 foreground/background queries
+        // report the live theme. Avoid calling the emulator setters a second time: each assignment reaches
+        // SwiftTerm's delegate and invalidates its whole display cache.
+        if !term.nativeBackgroundColor.isEqual(bg) { term.nativeBackgroundColor = bg }
+        if !term.nativeForegroundColor.isEqual(fg) { term.nativeForegroundColor = fg }
+        if term.layer?.backgroundColor != bg.cgColor { term.layer?.backgroundColor = bg.cgColor }
     }
 
-    /// Convert an `NSColor` to SwiftTerm's 16-bit `Color`, via sRGB. Returns nil if the colour can't be
-    /// resolved into RGB components (so we leave the emulator's existing colour untouched rather than
-    /// crash on `redComponent` of a non-RGB colour).
+    /// Convert an `NSColor` to SwiftTerm's 16-bit `Color` using its native setter's exact device-RGB
+    /// conversion. Returns nil if the colour can't be resolved, so we leave the emulator untouched rather
+    /// than crash on `redComponent` of a non-RGB colour.
     private static func stColor(_ ns: NSColor) -> SwiftTerm.Color? {
-        guard let c = ns.usingColorSpace(.sRGB) else { return nil }
-        func chan(_ v: CGFloat) -> UInt16 { UInt16((max(0, min(1, v)) * 65535).rounded()) }
+        guard let c = ns.usingColorSpace(.deviceRGB) else { return nil }
+        func chan(_ v: CGFloat) -> UInt16 { UInt16(max(0, min(1, v)) * 65535) }
         return SwiftTerm.Color(red: chan(c.redComponent), green: chan(c.greenComponent), blue: chan(c.blueComponent))
     }
 
@@ -255,6 +263,9 @@ struct AgentTerminalView: NSViewRepresentable {
         /// inert: it never reconnects again, so a late `processTerminated` — or a backoff block that was
         /// already in flight — can't resurrect a pane whose view is gone (and leak its pty).
         private var dismantled = false
+        /// The terminal's app-controlled palette last applied to this view. Task telemetry can re-render
+        /// this representable without changing the theme; preserve SwiftTerm's display cache in that case.
+        var terminalThemeChangeGate = TerminalThemeChangeGate()
 
         func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
