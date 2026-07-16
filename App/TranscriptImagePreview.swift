@@ -176,7 +176,7 @@ private final class TranscriptImagePreviewContentController: NSViewController {
     private var image: NSImage?
     private var imageData: Data?
     private var mimeType: String?
-    private var scrollView: PreviewImageScrollView?
+    private var scrollView: NSScrollView?
     private var copyButton: NSButton?
     private var fitScale: CGFloat = 1
 
@@ -229,7 +229,9 @@ private final class TranscriptImagePreviewContentController: NSViewController {
         captionLabel.frame = NSRect(x: 16, y: 390, width: 508, height: 26)
         view.addSubview(captionLabel)
 
-        let scrollView = PreviewImageScrollView(frame: NSRect(x: 16, y: 62, width: 508, height: 316))
+        // Magnification and panning are NSScrollView's own: pinch-to-zoom and scroll/trackpad panning
+        // come free, which is what a Mac user reaches for inside a popover.
+        let scrollView = NSScrollView(frame: NSRect(x: 16, y: 62, width: 508, height: 316))
         scrollView.hasHorizontalScroller = true
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -237,11 +239,10 @@ private final class TranscriptImagePreviewContentController: NSViewController {
         scrollView.borderType = .bezelBorder
         scrollView.allowsMagnification = true
 
-        let imageView = PreviewImageView(frame: NSRect(origin: .zero, size: image.size))
+        let imageView = NSImageView(frame: NSRect(origin: .zero, size: image.size))
         imageView.image = image
         imageView.imageScaling = .scaleNone
         imageView.imageAlignment = .alignCenter
-        imageView.scrollView = scrollView
         scrollView.documentView = imageView
         view.addSubview(scrollView)
         self.scrollView = scrollView
@@ -351,35 +352,5 @@ private final class TranscriptImagePreviewContentController: NSViewController {
         button.bezelStyle = .rounded
         button.controlSize = .small
         return button
-    }
-}
-
-/// An image view receives direct drags while a magnified preview is open. At fit, it deliberately does
-/// nothing, leaving the popover visually anchored to the transcript reference rather than behaving like
-/// a movable terminal selection.
-@MainActor
-private final class PreviewImageView: NSImageView {
-    weak var scrollView: PreviewImageScrollView?
-
-    override func mouseDown(with event: NSEvent) {
-        scrollView?.pan(with: event)
-    }
-}
-
-@MainActor
-private final class PreviewImageScrollView: NSScrollView {
-    func pan(with initialEvent: NSEvent) {
-        guard magnification > minMagnification + 0.001, let window else { return }
-        let startPoint = initialEvent.locationInWindow
-        let startOrigin = contentView.bounds.origin
-
-        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            if event.type == .leftMouseUp { return }
-            let point = event.locationInWindow
-            let deltaX = (point.x - startPoint.x) / magnification
-            let deltaY = (point.y - startPoint.y) / magnification
-            contentView.scroll(to: NSPoint(x: startOrigin.x - deltaX, y: startOrigin.y - deltaY))
-            reflectScrolledClipView(contentView)
-        }
     }
 }
