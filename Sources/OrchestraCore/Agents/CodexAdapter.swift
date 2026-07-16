@@ -93,6 +93,9 @@ public struct CodexAdapter: Adapter {
 
         // Bind the discovered rollout id to this card as soon as the first metadata record is tailed.
         if any("sessionmeta") {
+            // Codex can start guardian/delegated agents in the same cwd. Their rollout metadata carries
+            // the child id, not the card's primary session, so it must never replace the card binding.
+            guard !Self.isSubagent(payload) else { return nil }
             let sid = (payload["id"] ?? payload["session_id"])?.stringValue
             guard let sid, !sid.isEmpty else { return nil }
             return StatusReport(sessionId: sid)
@@ -148,13 +151,29 @@ public struct CodexAdapter: Adapter {
     /// Monotonic seq from the line's RFC3339 `timestamp`, in microseconds since epoch. Absent/unparseable
     /// → 0 (still applies: the tailer delivers lines in file order, so a 0-seq snapshot is never stale).
     private static func rolloutSeq(_ jv: JSONValue) -> UInt64 {
-        guard let ts = jv["timestamp"]?.stringValue else { return 0 }
+        guard let d = rolloutTimestamp(jv["timestamp"]?.stringValue) else { return 0 }
+        return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
+    }
+
+    /// Codex emits ISO-8601 timestamps both on its session metadata payload and on individual rollout
+    /// records. The metadata timestamp is immutable launch identity; a file's modification date is not,
+    /// because a prior card may append to its rollout long after a later card has started in the same cwd.
+    private static func rolloutTimestamp(_ value: String?) -> Date? {
+        guard let value else { return nil }
         let withFrac = ISO8601DateFormatter()
         withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
-        guard let d = withFrac.date(from: ts) ?? plain.date(from: ts) else { return 0 }
-        return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
+        return withFrac.date(from: value) ?? plain.date(from: value)
+    }
+
+    /// Nested Codex agents write independent rollouts under the parent's cwd. Current rollouts name
+    /// them explicitly; the parent-id fallback preserves the same boundary for older metadata that did
+    /// not carry `thread_source`.
+    private static func isSubagent(_ payload: JSONValue) -> Bool {
+        let source = payload["thread_source"]?.stringValue?.lowercased()
+        if source == "subagent" { return true }
+        return source == nil && !(payload["parent_thread_id"]?.stringValue?.isEmpty ?? true)
     }
 
     // Permission posture — mirrors Claude's `accessFlags` (D8 §7): a DEFAULT (read-write) card launches
@@ -284,30 +303,31 @@ public struct CodexAdapter: Adapter {
         return sessionId(fromRollout: newest)
     }
 
-    /// Newest rollout whose first metadata record belongs to this cwd. This is the safe discovery path
-    /// for Orchestra cards before their Codex session id has been bound.
+    /// Newest primary rollout whose first metadata record belongs to this cwd. This is the safe discovery
+    /// path for Orchestra cards before their Codex session id has been bound.
     ///
-    /// `newerThan` (2.6) time-scopes the bind to rollouts written AFTER the card entered its being-born
+    /// `newerThan` (2.6) time-scopes the bind to rollouts created AFTER the card entered its being-born
     /// phase (`phaseChangedAt`): a launching Codex card must adopt ONLY the rollout its own fresh launch
-    /// just wrote, never a live sibling's actively-written rollout in the same cwd, nor — after a mass
-    /// reboot — its own STALE pre-reboot rollout. Rule: among cwd-matching rollouts, keep only those with
-    /// `mtime > newerThan`; if that leaves MORE THAN ONE the launch is ambiguous (can't tell which is
-    /// ours) → bind nothing and let the N=3 liveness-tick fallback carry readiness; exactly one → bind it;
-    /// none → bind nothing. `newerThan == nil` keeps the legacy "newest cwd match" behavior (diagnostics /
-    /// already-bound paths that don't need the gate).
+    /// created, never a live sibling's actively-written rollout in the same cwd nor its own stale
+    /// pre-reboot rollout. The first `session_meta` payload has an immutable creation timestamp; use it
+    /// rather than mutable file mtime, which a prior card can update after this launch begins. Nested
+    /// Codex-agent rollouts are excluded before the ambiguity check. If more than one primary fresh
+    /// rollout remains, binding is genuinely ambiguous and the N=3 liveness fallback carries readiness.
+    /// `newerThan == nil` chooses the newest primary cwd match (diagnostics / already-live recovery).
     func discover(cwd: String, newerThan: Date? = nil) -> String? {
         let canon = PathResolver.canonical(cwd)
         let matches = rolloutFiles()
-            .compactMap { path -> (path: String, mtime: Date)? in
-                guard let metaCwd = rolloutCwd(path),
-                      PathResolver.canonical(metaCwd) == canon else { return nil }
-                let m = mtime(path)
-                if let newerThan, m <= newerThan { return nil }   // stale / pre-launch → not ours
-                return (path, m)
+            .compactMap { path -> (path: String, startedAt: Date)? in
+                guard let metadata = rolloutMetadata(path),
+                      !metadata.isSubagent,
+                      PathResolver.canonical(metadata.cwd) == canon else { return nil }
+                let startedAt = metadata.startedAt ?? mtime(path)
+                if let newerThan, startedAt <= newerThan { return nil }   // stale / pre-launch → not ours
+                return (path, startedAt)
             }
-        guard let newest = matches.max(by: { $0.mtime < $1.mtime }) else { return nil }
-        // Time-scoped bind: a launch writes exactly one new rollout, so >1 candidate after the cutoff is
-        // ambiguous — refuse to guess (the fallback still reaches live).
+        guard let newest = matches.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
+        // Time-scoped bind: more than one PRIMARY launch after the cutoff is genuinely ambiguous, so
+        // refuse to guess (the fallback still reaches live).
         if newerThan != nil, matches.count > 1 { return nil }
         return sessionId(fromRollout: newest.path)
     }
@@ -338,11 +358,22 @@ public struct CodexAdapter: Adapter {
         return UUID(uuidString: candidate) != nil ? candidate.lowercased() : nil
     }
 
-    private func rolloutCwd(_ path: String) -> String? {
+    private struct RolloutMetadata {
+        let cwd: String
+        let startedAt: Date?
+        let isSubagent: Bool
+    }
+
+    private func rolloutMetadata(_ path: String) -> RolloutMetadata? {
         guard let line = firstLine(path),
               let jv = try? JSONValue.parse(Data(line.utf8)) else { return nil }
         let payload = jv["payload"] ?? jv
-        return payload["cwd"]?.stringValue
+        guard let cwd = payload["cwd"]?.stringValue else { return nil }
+        return RolloutMetadata(
+            cwd: cwd,
+            startedAt: Self.rolloutTimestamp(payload["timestamp"]?.stringValue)
+                ?? Self.rolloutTimestamp(jv["timestamp"]?.stringValue),
+            isSubagent: Self.isSubagent(payload))
     }
 
     private func firstLine(_ path: String) -> String? {

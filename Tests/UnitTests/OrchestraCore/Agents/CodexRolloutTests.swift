@@ -122,6 +122,12 @@ struct CodexRolloutParseTests {
         #expect(tail(#"{"type":"session_meta","payload":{"id":"x"}}"#)?.event?.sessionId == "x")
         #expect(tail(#"{"type":"unhandled","payload":{}}"#) == nil)
     }
+
+    @Test("a nested Codex session_meta never binds the card session")
+    func subagentSessionMetaDropsNil() {
+        let nested = #"{"type":"session_meta","payload":{"id":"child","thread_source":"subagent","parent_thread_id":"root"}}"#
+        #expect(tail(nested) == nil)
+    }
 }
 
 @Suite("RolloutTailer — per-card byte-offset transport")
