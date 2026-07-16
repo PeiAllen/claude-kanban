@@ -391,6 +391,40 @@ struct CodexAdapterDiscoveryTests {
         #expect(info.sessionId == launched)
     }
 
+    @Test("launch discovery ignores a parent-linked rollout with a nonstandard thread source")
+    func launchDiscoveryIgnoresParentLinkedRollout() throws {
+        let (home, adapter) = makeHome()
+        let parent = UUID().uuidString.lowercased()
+        let child = UUID().uuidString.lowercased()
+        let cutoff = date("2026-07-01T10:00:00Z")
+
+        writeRollout(home, day: "2026/07/01", sessionId: parent,
+                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user")
+        writeRollout(home, day: "2026/07/01", sessionId: child,
+                     startedAt: "2026-07-01T10:00:02Z", threadSource: "worker",
+                     parentThreadId: parent)
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
+                                                    current: nil, prior: []))
+        #expect(info.sessionId == parent)
+    }
+
+    @Test("unbound discovery refuses multiple primary rollouts in one cwd")
+    func unboundDiscoveryRefusesMultiplePrimaryRollouts() throws {
+        let (home, adapter) = makeHome()
+        let first = UUID().uuidString.lowercased()
+        let second = UUID().uuidString.lowercased()
+        writeRollout(home, day: "2026/07/01", sessionId: first,
+                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
+                     mtime: date("2026-07-01T10:00:03Z"))
+        writeRollout(home, day: "2026/07/01", sessionId: second,
+                     startedAt: "2026-07-01T10:00:02Z", threadSource: "user",
+                     mtime: date("2026-07-01T10:00:04Z"))
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
+        #expect(info.sessionId == nil)
+    }
+
     @Test("current id wins over discovery")
     func currentWins() throws {
         let (home, adapter) = makeHome()

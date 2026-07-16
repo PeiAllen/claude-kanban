@@ -168,12 +168,12 @@ public struct CodexAdapter: Adapter {
     }
 
     /// Nested Codex agents write independent rollouts under the parent's cwd. Current rollouts name
-    /// them explicitly; the parent-id fallback preserves the same boundary for older metadata that did
-    /// not carry `thread_source`.
+    /// them explicitly; a nonempty parent id independently identifies the same nested boundary even if
+    /// the source label is absent or changes.
     private static func isSubagent(_ payload: JSONValue) -> Bool {
         let source = payload["thread_source"]?.stringValue?.lowercased()
-        if source == "subagent" { return true }
-        return source == nil && !(payload["parent_thread_id"]?.stringValue?.isEmpty ?? true)
+        let parentId = payload["parent_thread_id"]?.stringValue
+        return source == "subagent" || !(parentId?.isEmpty ?? true)
     }
 
     // Permission posture — mirrors Claude's `accessFlags` (D8 §7): a DEFAULT (read-write) card launches
@@ -311,9 +311,10 @@ public struct CodexAdapter: Adapter {
     /// created, never a live sibling's actively-written rollout in the same cwd nor its own stale
     /// pre-reboot rollout. The first `session_meta` payload has an immutable creation timestamp; use it
     /// rather than mutable file mtime, which a prior card can update after this launch begins. Nested
-    /// Codex-agent rollouts are excluded before the ambiguity check. If more than one primary fresh
-    /// rollout remains, binding is genuinely ambiguous and the N=3 liveness fallback carries readiness.
-    /// `newerThan == nil` chooses the newest primary cwd match (diagnostics / already-live recovery).
+    /// Codex-agent rollouts are excluded before the ambiguity check. If more than one primary rollout
+    /// remains, binding is genuinely ambiguous and the N=3 liveness fallback carries readiness without
+    /// letting an unbound card adopt a sibling's session after it becomes live. `newerThan == nil` can
+    /// recover only an unambiguous primary cwd match.
     func discover(cwd: String, newerThan: Date? = nil) -> String? {
         let canon = PathResolver.canonical(cwd)
         let matches = rolloutFiles()
@@ -326,9 +327,10 @@ public struct CodexAdapter: Adapter {
                 return (path, startedAt)
             }
         guard let newest = matches.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
-        // Time-scoped bind: more than one PRIMARY launch after the cutoff is genuinely ambiguous, so
-        // refuse to guess (the fallback still reaches live).
-        if newerThan != nil, matches.count > 1 { return nil }
+        // More than one PRIMARY rollout is genuinely ambiguous at every lifecycle phase. In particular,
+        // an unbound card may have reached live through the readiness fallback, but must never then adopt
+        // a sibling's session through an unscoped telemetry lookup.
+        if matches.count > 1 { return nil }
         return sessionId(fromRollout: newest.path)
     }
 

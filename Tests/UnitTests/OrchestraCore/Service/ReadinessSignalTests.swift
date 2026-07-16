@@ -144,10 +144,10 @@ struct ReadinessSignalTests {
         try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
 
-        func writeRollout(_ sid: String, ts: String, mtime: Date) {
+        func writeRollout(_ sid: String, ts: String, startedAt: String, mtime: Date) {
             let path = "\(day)/rollout-\(ts)-\(sid).jsonl"
             FileManager.default.createFile(atPath: path, contents:
-                Data((#"{"timestamp":"2026-07-09T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(cwd)"}}"# + "\n").utf8))
+                Data((#"{"timestamp":"\#(startedAt)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(cwd)","timestamp":"\#(startedAt)"}}"# + "\n").utf8))
             try? FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: path)
         }
 
@@ -156,7 +156,8 @@ struct ReadinessSignalTests {
         // Stale pre-reboot rollout only (mtime < launch): a relaunching card must NOT adopt its own stale
         // rollout — the time-scoped bind refuses it (fallback carries readiness).
         let staleSid = UUID().uuidString.lowercased()
-        writeRollout(staleSid, ts: "2026-07-09T09-00-00", mtime: launchAt.addingTimeInterval(-3600))
+        writeRollout(staleSid, ts: "2026-07-09T09-00-00", startedAt: "1970-01-01T01:46:40Z",
+                     mtime: launchAt.addingTimeInterval(-3600))
         #expect(codex.discover(cwd: cwd, newerThan: launchAt) == nil)
         #expect(codex.discover(cwd: cwd, newerThan: nil) == staleSid)   // unscoped legacy path still finds it
 
@@ -164,8 +165,10 @@ struct ReadinessSignalTests {
         // are newer than launch → ambiguous → bind nothing: the launching card must not adopt the sibling's.
         let ownSid = UUID().uuidString.lowercased()
         let sibSid = UUID().uuidString.lowercased()
-        writeRollout(ownSid, ts: "2026-07-09T10-00-00", mtime: launchAt.addingTimeInterval(30))
-        writeRollout(sibSid, ts: "2026-07-09T10-05-00", mtime: launchAt.addingTimeInterval(60))
+        writeRollout(ownSid, ts: "2026-07-09T10-00-00", startedAt: "1970-01-01T02:47:10Z",
+                     mtime: launchAt.addingTimeInterval(30))
+        writeRollout(sibSid, ts: "2026-07-09T10-05-00", startedAt: "1970-01-01T02:47:40Z",
+                     mtime: launchAt.addingTimeInterval(60))
         #expect(codex.discover(cwd: cwd, newerThan: launchAt) == nil)   // ambiguous → nothing (never the sibling)
     }
 }
