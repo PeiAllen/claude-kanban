@@ -158,31 +158,21 @@ developer instructions from the same source, with no `if claude` branch (see
 ### The OS previews images, on both clients
 
 Both clients hand a published image to QuickLook — `QLPreviewPanel` on the Mac, `QLPreviewController` on
-the phone — rather than rendering it themselves.
+the phone — rather than rendering it themselves. Zoom, pan, share, Open-with, full screen and
+Esc-to-dismiss all come free, and a published image behaves like every other image on the device. The only
+thing a hand-built viewer buys is *anchoring* — a preview tethered to the reference's coordinate, which a
+shared floating panel can't be — and that isn't worth its weight, nor even desirable: a preview that dies
+when you scroll is one you can't read the transcript beside. So the Mac panel parks to the **left of the
+inspector**, clear of the agent's text, and stays up until Esc or a card switch.
 
-This replaced a bespoke macOS popover, and the reasoning that had justified it is worth recording because
-it was wrong in an instructive way. The popover was defended as *anchored*: tied to the reference's
-coordinate in the terminal, which `QLPreviewPanel` (a shared floating panel) cannot be. That is true, and
-it was not worth ~350 lines of `NSScrollView` magnification, hand-built zoom controls, a centering clip
-view, and theming — to arrive at a worse version of a viewer every Mac user already has. The honest test
-is what the custom code bought that QuickLook doesn't give: zoom, pan, share, Open-with, full screen, and
-Esc-to-dismiss all came free, and anchoring was the only thing left on the ledger.
-
-Anchoring also turned out to be the wrong goal. A preview that dies when you scroll is a popover; what a
-reader actually wants is to leave the image up and read the transcript *beside* it. So the Mac panel is
-parked to the **left of the inspector** and stays until Esc or a card switch. (QuickLook's
-`sourceFrameOnScreenFor` delegate can zoom a panel open from a link's rect, which would have restored a
-form of anchoring — measured, supplying a 16×16 source rect pinned the panel *at* 16×16 instead, and a
-zoom from a link on the right to a panel parked on the left would fight the placement anyway.)
-
-The remaining asymmetry is storage lifetime, and it is not aesthetic — it is about who else holds the
-file. QuickLook previews a *file*, so both clients stage bytes on disk. iOS deletes on dismiss, because
-QuickLook is in-process and hands off to no one, with iOS's tmp purge covering the crash case. macOS
-cannot: `Open with` gives the file to *another application* that may still be reading it, so the Mac keeps
-a write-only spool swept at launch and on card-archive. Nothing is ever read back from that spool — it is
-not a cache, which is why it needs no eviction policy, only a coarse boundary. Dismiss-time deletion is
-the one thing that would NOT have worked for the old popover: `.transient` closes exactly when the
-receiving app takes key, i.e. mid-launch.
+The asymmetry that remains is storage lifetime, and it is about who else holds the file. QuickLook
+previews a *file*, so both clients stage bytes on disk. iOS deletes on dismiss: QuickLook is in-process
+and hands off to no one, and iOS purging tmp when the app isn't running covers the crash case. macOS
+cannot, because `Open with` gives the file to *another application* that may still be reading it — so the
+Mac keeps a write-only spool in its temporary directory, swept at two coarse boundaries (the whole spool
+at launch, a card's subdirectory on archive) rather than by an eviction policy. Nothing is ever read back
+from it, so it is not a cache and has no hit rate to protect; and deleting a file another app already
+holds open is safe regardless, since unlink keeps the inode alive for its open descriptors.
 
 ### iOS in-process SSH rides Network.framework (NIOTransportServices), not POSIX sockets
 
