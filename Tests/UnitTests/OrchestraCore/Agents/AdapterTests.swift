@@ -116,33 +116,39 @@ struct AdapterTests {
     }
 }
 
-@Suite("ClaudeCodeAdapter — delegation skill materialization")
+@Suite("ClaudeCodeAdapter — shared guidance skill materialization")
 struct ClaudeDelegationTests {
     private func tmpCwd() -> String {
         let d = NSTemporaryDirectory() + "claude-deleg-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         return d
     }
-    private func skillPath(_ cwd: String) -> String {
-        "\(cwd)/.claude/skills/orchestra-delegation/SKILL.md"
+    private func skillPath(_ cwd: String, section: String) -> String {
+        "\(cwd)/.claude/skills/orchestra-\(section)/SKILL.md"
     }
 
-    @Test("prepareToLaunch writes the Claude skill variant under .claude/skills")
-    func materializesSkill() throws {
+    @Test("prepareToLaunch writes every shared Claude guidance section under .claude/skills")
+    func materializesSkills() throws {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
-        let text = try String(contentsOfFile: skillPath(cwd), encoding: .utf8)
-        #expect(text == DelegationDocs.load(.claudeSkill))       // the Claude variant, not Codex
-        #expect(text.contains("name: orchestra-delegation"))
+        let sections = AgentGuidance.sections(for: "claude-code")
+        #expect(sections.map(\.name) == ["delegation", "tree"])
+        for section in sections {
+            let text = try String(contentsOfFile: skillPath(cwd, section: section.name), encoding: .utf8)
+            #expect(text == section.content)
+        }
     }
 
-    @Test("materialization is idempotent across launches (no throw, same content)")
+    @Test("shared skill materialization is idempotent across launches")
     func idempotent() throws {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         let a = ClaudeCodeAdapter()
         try a.prepareToLaunch(AdapterContext(cwd: cwd))
         try a.prepareToLaunch(AdapterContext(cwd: cwd))
-        #expect(try String(contentsOfFile: skillPath(cwd), encoding: .utf8) == DelegationDocs.load(.claudeSkill))
+        for section in AgentGuidance.sections(for: "claude-code") {
+            #expect(try String(contentsOfFile: skillPath(cwd, section: section.name), encoding: .utf8)
+                    == section.content)
+        }
     }
 
     @Test("prepareToLaunch degrades gracefully (no throw) when cwd is unwritable")

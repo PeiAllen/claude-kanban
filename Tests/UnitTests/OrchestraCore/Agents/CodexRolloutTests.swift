@@ -203,7 +203,7 @@ struct RolloutTailerTests {
 @Suite("Codex telemetry e2e — tail → parse → report → board")
 struct CodexTelemetryE2ETests {
 
-    /// Spawn a codex card with an isolated CODEX_HOME + StubSessions, and return the pieces.
+    /// Spawn a Codex card with an injected rollout-discovery home + StubSessions, and return the pieces.
     private func makeEnv() async throws -> (svc: OrchestraService, card: Task, rollout: String) {
         let base = NSTemporaryDirectory() + "codex-tel-\(UUID().uuidString)"
         let work = base + "/work"

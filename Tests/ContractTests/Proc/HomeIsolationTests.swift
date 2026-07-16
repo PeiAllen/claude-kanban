@@ -77,7 +77,7 @@ struct HomeIsolationTests {
           .enabled(if: !isolationDisabled))
     func configPathsFollowTheTempHome() {
         let home = Config.home
-        for path in [Config.dataDir, Config.hooksPath, Config.codexHooksPath,
+        for path in [Config.dataDir, Config.hooksPath,
                      Config.defaultScratchRoot, Config.defaultWorktreesRoot, Config.defaultReposRoot] {
             #expect(path == home || path.hasPrefix(home + "/"), "escapes the temp home: \(path)")
         }

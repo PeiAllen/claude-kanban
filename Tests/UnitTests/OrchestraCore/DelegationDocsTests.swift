@@ -144,35 +144,39 @@ struct DelegationDocsTests {
         }
     }
 
-    // MARK: install() — load + materialize to a destination path (the seed-injection launch step)
+    @Test("shared guidance bundle keeps the same named delegation and tree sources for each provider")
+    func guidanceBundleUsesSharedSources() throws {
+        let codex = AgentGuidance.sections(for: "codex")
+        #expect(codex.map(\.name) == ["delegation", "tree"])
+        #expect(codex[0].content == (try #require(DelegationDocs.forAgent("codex"))))
+        #expect(codex[1].content == (try #require(TreeDocs.forAgent("codex"))))
+        let instructions = try #require(AgentGuidance.developerInstructions(for: "codex"))
+        #expect(instructions.contains(codex[0].content))
+        #expect(instructions.contains(codex[1].content))
 
-    @Test("install writes the agent's variant to the destination, creating parent dirs")
-    func installWritesVariant() throws {
-        let base = NSTemporaryDirectory() + "deleg-install-\(UUID().uuidString)"
-        let claudePath = "\(base)/.claude/skills/orchestra-delegation/SKILL.md"
-        let codexPath = "\(base)/codexhome/AGENTS.md"
-        #expect(DelegationDocs.install(agentId: "claude-code", at: claudePath) == true)
-        #expect(DelegationDocs.install(agentId: "codex", at: codexPath) == true)
-        // agentId-keyed: each destination holds its OWN variant, byte-for-byte.
-        #expect(try String(contentsOfFile: claudePath, encoding: .utf8) == DelegationDocs.load(.claudeSkill))
-        #expect(try String(contentsOfFile: codexPath, encoding: .utf8) == DelegationDocs.load(.codexAgents))
-        try? FileManager.default.removeItem(atPath: base)
+        let claude = AgentGuidance.sections(for: "claude-code")
+        #expect(claude.map(\.name) == ["delegation", "tree"])
+        #expect(claude[0].content == (try #require(DelegationDocs.forAgent("claude-code"))))
+        #expect(claude[1].content == (try #require(TreeDocs.forAgent("claude-code"))))
     }
 
-    @Test("install is idempotent — a second call rewrites the same content, still true")
-    func installIdempotent() throws {
-        let base = NSTemporaryDirectory() + "deleg-idem-\(UUID().uuidString)"
+    // MARK: provider-owned filesystem packaging
+
+    @Test("shared guidance install writes a preselected Claude section, creating parents")
+    func guidanceInstallWritesSection() throws {
+        let base = NSTemporaryDirectory() + "guidance-install-\(UUID().uuidString)"
         let path = "\(base)/.claude/skills/orchestra-delegation/SKILL.md"
-        #expect(DelegationDocs.install(agentId: "claude-code", at: path) == true)
-        #expect(DelegationDocs.install(agentId: "claude-code", at: path) == true)
-        #expect(try String(contentsOfFile: path, encoding: .utf8) == DelegationDocs.load(.claudeSkill))
+        let section = try #require(AgentGuidance.sections(for: "claude-code").first { $0.name == "delegation" })
+        #expect(AgentGuidance.install(section, at: path))
+        #expect(AgentGuidance.install(section, at: path)) // idempotent overwrite
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == section.content)
         try? FileManager.default.removeItem(atPath: base)
     }
 
-    @Test("install degrades gracefully (returns false, no throw) when the dir can't be created")
-    func installGracefulOnUnwritable() {
-        // Parent creation under a non-writable root fails → no throw, returns false.
-        #expect(DelegationDocs.install(agentId: "claude-code",
-                                       at: "/System/nonexistent-\(UUID().uuidString)/SKILL.md") == false)
+    @Test("shared guidance install degrades gracefully when the directory cannot be created")
+    func guidanceInstallGracefulOnUnwritable() throws {
+        let section = try #require(AgentGuidance.sections(for: "claude-code").first)
+        #expect(!AgentGuidance.install(section,
+                                      at: "/System/nonexistent-\(UUID().uuidString)/SKILL.md"))
     }
 }

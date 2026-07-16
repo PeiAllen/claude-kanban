@@ -249,19 +249,17 @@ native per-directory trust and **never reads the `TrustLedger`**:
   and Claude's own prompt still applies. This is a `needsGrant` borrowed dir (or a scratch dir a foreign
   repo was cloned into — `resolveTrust` demotes it once a `.git` appears); the human fills the gap
   through the [`trust` grant surfaces](05-command-reference.md#registry-commands) (PR T2), never the
-  agent. The Codex adapter applies the same `ctx.trustCwd` into its own `config.toml` `trust_level`
-  identically (see [the Codex adapter](#the-codex-adapter)).
+  agent. The Codex adapter applies the same `ctx.trustCwd` as an explicit launch-scoped
+  `projects.<cwd>.trust_level` override on every start and resume, including the untrusted case, so a
+  stale native setting cannot silently grant trust (see [the Codex adapter](#the-codex-adapter)).
 
-**Delegation guidance — materialize the skill** (`prepareToLaunch`, also): as a second best-effort side
-effect (after trust and any read-only settings), the adapter writes the vendored Claude **delegation skill**
-to `<cwd>/.claude/skills/orchestra-delegation/SKILL.md` — the per-card project-skill location Claude Code
-discovers — via `DelegationDocs.install(agentId: id, at:)`. This delivers the *when to hand off / fork /
-fan-out / wait* guidance ([PR D2](09-design-decisions.md#shipped-feature-history)) to **every** launched
-card (independent of `ctx.seed`), with **no `~/.claude` global install**; `.claude/` is gitignore-conventional
-so the tracked worktree stays clean. The step is keyed on the adapter's own `id` (so there is no `if claude`
-branch — Codex writes its own variant to a different path), **never throws** into the launch path (absent
-resource or any FS failure → no-op), and is **idempotent** — a re-launch atomically overwrites the same
-managed file. It changes no `start`/`resume` argv (skill-injection PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+**Delegation guidance — package the shared sections** (`prepareToLaunch`, also): the provider-neutral
+`AgentGuidance` bundle chooses the delegation and tree variants, in a stable order, for the adapter's id.
+Claude writes each selected section as a vendored project skill under
+`<cwd>/.claude/skills/orchestra-<section>/SKILL.md`, which keeps the tracked worktree clean and needs no
+`~/.claude` install. Codex consumes the same selected sections as one launch-scoped
+`developer_instructions` value instead of writing an `AGENTS.md`. The Claude write is best effort and
+idempotent; the Codex projection is an argv value, so neither adapter overwrites a user's global guidance.
 
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
@@ -291,44 +289,28 @@ core handles the difference purely through the descriptor:
   trailing positional turn when present (PR C3) — and because Codex has **no Stop hook**
   (`inboxDrain == .sessionSeed`), this folded seed is the *only* channel its queued inbox messages ride
   (see [the resume argv](#the-claude-code-adapter) above).
-- **Discovered session id + rollout path.** Codex can't be handed a session id, so `newSessionId()`
+- **Discovered session id + native rollout path.** Codex can't be handed a session id, so `newSessionId()`
   returns `nil` (`.discovered`, not Claude's `.seeded --session-id`); `sessionInfo`/`discover()` instead
-  read the id back by finding the newest `$CODEX_HOME/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is
-  the filename tail). That rollout file is both the session identity and the telemetry source below.
-- **`CODEX_HOME` isolation + trust.** The home is pinned via the adapter's `env["CODEX_HOME"]` (B1 also
-  wired `Adapter.env` into the tmux launch — one `-e KEY=VALUE` per entry; Claude stays byte-identical);
-  `prepareToLaunch` creates it and then applies the core's trust decision by appending
-  `[projects."<cwd>"].trust_level = "trusted"` to `config.toml` (idempotent, non-clobbering). Like Claude,
-  the adapter **applies** `ctx.trustCwd` and never reads the `TrustLedger` itself.
-- **Delegation guidance — materialize `AGENTS.md`.** As a third best-effort step, `prepareToLaunch` writes
-  the vendored Codex **delegation `AGENTS.md`** variant to `<CODEX_HOME>/AGENTS.md` via the same
-  `DelegationDocs.install(agentId: id, at:)` the Claude adapter uses (keyed on `id`, so no `if codex`
-  branch). Because the isolated `CODEX_HOME` is the **global (top) level** of Codex's `AGENTS.md`
-  precedence — merged *above* any project `AGENTS.md` — and Orchestra owns it, this delivers the guidance
-  to every Codex card **without clobbering the user's own project `AGENTS.md`** (one file per directory) and
-  **without touching the worktree** cwd. Best-effort (never throws), idempotent, and argv/`env`-preserving
-  (skill-injection PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
-- **SessionStart orientation — render + install the parity hooks file.** As a fourth best-effort step,
-  `prepareToLaunch` renders the Codex hooks file (`HooksRenderer.renderCodex`, baking `--agent codex`) and
-  installs it into `<CODEX_HOME>/hooks.json` via `CodexHooks.install(to:)`, giving a Codex card a
-  **Claude-parity SessionStart hook** that injects the card's column/mode/self-id
-  [orientation](06-clients-cli-mcp.md#the-hooks--_report-channel) (via `_report --event session`) — the
-  inbound counterpart to Claude's SessionStart hook. It **never clobbers a foreign user `hooks.json`**
-  (`CodexHooks.installIfSafe` writes only when the file is absent or already Orchestra's), keyed on the
-  broadened **`_report --event`** marker — any Orchestra event, not just `session`. Matching the whole
-  `_report --event` prefix (rather than the narrow `_report --event session`) means a stranded install
-  from an earlier build — e.g. one wired to the retired `--event orient` hook — is still recognized as
-  ours and replaced by the current file, while a genuinely foreign `hooks.json` (no `_report --event` at
-  all) is left untouched. It is **orientation-only** (Codex's `parse` returns `nil` for the push —
-  telemetry stays the rollout tail below), and best-effort/argv-preserving
-  (column-aware-orientation PR; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+  read the id back from Codex's normal state location, normally
+  `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is the filename tail). Orchestra does **not**
+  export `CODEX_HOME`: Codex keeps its native authentication, plugins, configuration, and session state.
+  The adapter retains an injectable home resolver only for hermetic rollout-discovery tests.
+- **Launch-scoped hooks, trust, and guidance.** `start` and `resume` each pass repeated Codex `-c` TOML
+  overrides. The rendered `codex-hooks.json` template is converted in memory into `hooks.<event>` values,
+  which supply the SessionStart, PermissionRequest, and Stop handlers; SessionStart remains the
+  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel), while telemetry
+  remains the rollout tail below. Every launch also passes
+  `projects."<cwd>".trust_level` as either `trusted` or `untrusted`, plus one `developer_instructions`
+  value built from the shared `AgentGuidance` delegation/tree sections. CLI overrides win over stale global
+  values, so Orchestra writes no new global `config.toml`, `AGENTS.md`, or `hooks.json` content and never
+  reads the `TrustLedger` itself.
 - **Establish hook trust at launch — `--dangerously-bypass-hook-trust`.** The installed Codex build
   trust-gates hooks behind a launch-time modal Orchestra can't answer, so without intervention the
-  parity hooks above never fire. `CodexAdapter` adds `--dangerously-bypass-hook-trust` to the
+  scoped hooks above never fire. `CodexAdapter` adds `--dangerously-bypass-hook-trust` to the
   `start`/`resume` argv, which is empirically the **only** mechanism that runs untrusted hooks — the
   config seed `-c bypass_hook_trust` was rejected as inert, and persisted trust is hash-keyed (a seed
-  would be fragile). It is safe here by construction: Orchestra authors the hooks (it owns `CODEX_HOME`),
-  and the flag touches hook trust only, not approvals/sandbox. The flag is **build-probed** via
+  would be fragile). The flag is a hook-trust choice for that Codex process, not an approvals or sandbox
+  setting. It is **build-probed** via
   `<bin> --help` and cached, so a stock `codex-rs` build (which lacks both the trust gate and the flag)
   still launches; the change is Codex-local — Claude's argv is untouched.
 - **Offline model table.** `models()` loads a **vendored** `Resources/codex-models.json` (the `gpt-5.6`

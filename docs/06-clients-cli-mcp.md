@@ -135,11 +135,12 @@ the daemon); each adapter owns only the *format* at the edge (`parse` telemetry 
 out, `sessionSource` normalize, and render its own hook file). The organizing rule is **convert at the
 edge, dispatch in core** — raw agent JSON never crosses the wire.
 
-**Rendering (per launch, by the adapter).** Each adapter renders its own hook file in `prepareToLaunch`
-(the daemon renders nothing) from a bundled template — `claude-hooks.json` for Claude's managed
-`--settings` file, `codex-hooks.json` for Codex's `$CODEX_HOME/hooks.json` — substituting
-`__ORCHESTRA_BIN__` for the live `orchestra` path and `__AGENT_ID__` for the card's agent id. The command
-carries a baked `--agent <id>` so the client can resolve its adapter with no env var:
+**Rendering (per launch, by the adapter).** Each adapter supplies its hook configuration from a bundled
+template — `claude-hooks.json` becomes Claude's managed `--settings` file, while `codex-hooks.json` is
+substituted in memory and passed as launch-scoped `-c hooks.<event>=...` TOML values. The daemon renders
+nothing, and Codex never receives an Orchestra-owned `CODEX_HOME` or a global `hooks.json` write.
+`__ORCHESTRA_BIN__` is replaced with the live `orchestra` path and `__AGENT_ID__` with the card's agent id;
+the command carries a baked `--agent <id>` so the client can resolve its adapter with no env var:
 
 ```jsonc
 {
@@ -205,14 +206,10 @@ process-wide `signal(SIGPIPE, SIG_IGN)` in `main.swift` (set before any I/O, so 
 a *separate* bug: that one is the daemon's reply write to a dead peer, this one is the helper's own stdout.
 Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 
-**Codex gets a parity SessionStart hook.** Codex ships a Claude-parity SessionStart hook whose stdout
-`additionalContext` is folded into the session, so the same orientation (step 5) reaches a Codex card too.
-Each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
-`_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json`,
-**never clobbering a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the
-destination is absent or already Orchestra's, identified by the broadened `_report --event` marker — any
-Orchestra event, so a stranded install from an earlier build, e.g. the retired `--event orient` hook, is
-recognized as ours and replaced, while a genuinely foreign file is left untouched).
+**Codex gets a parity SessionStart hook.** Codex receives the rendered SessionStart handler as one of its
+per-launch `-c` hook overrides, so its stdout `additionalContext` is folded into the session and the same
+orientation (step 5) reaches a Codex card too. This adapter's hook contribution is entirely in the launch
+argv; it has no Codex-specific persistent setup step.
 Codex's `parse` returns `nil` for this push (its telemetry is the
 [daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
 **orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.

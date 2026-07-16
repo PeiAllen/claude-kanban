@@ -45,7 +45,7 @@ that lets an orchestrator card block until a watched child concludes (read from 
 Codex adapter + its rollout-tail telemetry**,
 have now landed too: the **second `Adapter` conformer** (registered alongside Claude), launching
 access-gated (default permissioning, or the read-only preset for a read-only card) with a discovered
-session id and an isolated `CODEX_HOME`, its live context %/status
+session id in Codex's native state, its live context %/status
 derived by the daemon **tailing the rollout JSONL** and the adapter parsing each line — offline, off a
 vendored model table (see [the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) and
 [chapter 9](09-design-decisions.md#shipped-feature-history)). These are single forest PRs, not whole axes,
@@ -65,15 +65,14 @@ delegation tool**: a thin registry `Command`
 wiring the F1 *same-card* handoff topology into a callable tool (see
 [chapter 9](09-design-decisions.md#shipped-feature-history)). The delegation **guidance** itself has since
 been authored too — **PR D2**: two vendored
-resources (a Claude **skill** + a Codex **AGENTS.md** — same heuristics, different packaging) plus a
-`DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off / fork / fan-out /
-wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in addition to*,
-never *instead of*). D2 shipped content + an unwired loader, but **that last wire has since landed too —
-skill-injection**: each adapter's
-`prepareToLaunch` now auto-materializes the per-agent variant into its native discovery location (Claude a
-`.claude/skills/orchestra-delegation/SKILL.md` project skill, Codex an `AGENTS.md` in its isolated
-`CODEX_HOME`) — best-effort, idempotent, argv byte-identical — so the guidance reaches every launched card
-(see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
+resources (a Claude **skill** + a Codex **developer-instructions** body — same heuristics, different
+packaging) plus a `DelegationDocs` loader that maps an agent to its variant, teaching *when* to hand off /
+fork / fan-out / wait and, crucially, to keep native subagents for ephemeral in-context fan-out (a card *in
+addition to*, never *instead of*). The shared guidance wire has since landed: `AgentGuidance` assembles the
+sections once, then each adapter packages them through its native surface — Claude as
+`.claude/skills/orchestra-<section>/SKILL.md` project skills and Codex as launch-scoped `-c`
+`developer_instructions` — so the guidance reaches every launched card without an Orchestra global Codex
+file (see [chapter 9](09-design-decisions.md#shipped-feature-history)). The forest's **permissioning track has also
 landed — PRs T1 and T2**: **T1** made
 "which directories may agents write in" a durable, provider-agnostic decision — a
 [trust ledger](03-data-model.md#the-trust-ledger-t1) + `OrchestraService.resolveTrust` (origin →
@@ -105,7 +104,7 @@ The principle is to design every change *toward* these axes, never away from the
 |---|------|------|---------------|
 | 1 | **Configurable columns** | `configurable-columns` | Turn the fixed `plan/impl/review` enum into a daemon-owned, ordered, configurable list of columns (data, not an enum). |
 | 2 | **Multiple model providers** | `model-providers` | Make adding a coding agent beyond Claude Code a matter of writing one `Adapter` — the **Codex adapter has now shipped** access-gated (default permissioning, read-only preset per card), with live rollout-tail telemetry (B1/B2, ch. 9) and its send-keys wake (C4, ch. 9), and is now **startable from the UI/CLI** (agent picker + model→adapter routing, `enable-codex`, ch. 9); board-routed approval telemetry is the live remainder. |
-| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads (a Claude skill + a Codex AGENTS.md) has **shipped** as vendored resources + a `DelegationDocs` loader (D2, ch. 9) and is now **auto-materialized on every launch** via each adapter's `prepareToLaunch` (skill-injection, ch. 9), and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
+| 3 | **Deeper agent integration** | `agent-integration` | More agent-facing commands, structured sub-status (an in-card progress tree), and richer Orchestra→agent context injection — the delegation **guidance** an agent reads has **shipped** as vendored resources + a shared `AgentGuidance` assembler (D2, ch. 9), packaged on every launch as Claude project skills or Codex `developer_instructions` overrides, and a **column-aware SessionStart orientation** (each agent learns its live column/mode/self-id and is nudged to self-move) has **shipped** on the same hook channel for both agents (ch. 9); structured sub-status + more agent commands remain. |
 | 4 | **Non-git cards + search** | `non-git-cards-search` | First-class non-git cards (the `cwd`/`origin`/`access` substrate + freeform/borrowed/scratch cards have **shipped** — ch. 9) plus text search/discovery over cards (the unbuilt remainder). |
 | 5 | **Automated PR-review phase** | `pr-review-phase` | A board column that, on entry, runs an agent to address PR review comments + failing checks and loop until clean or escalate. |
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |

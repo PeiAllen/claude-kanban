@@ -402,10 +402,10 @@ swift -e 'import CoreGraphics; import ApplicationServices; print("SR:", CGPrefli
   POSIX `read`/`write` that swallow `EPIPE`, so the best-effort helper always exits 0. Regression test:
   `Tests/IntegrationTests/ReportHelperPipeTests.swift`. (See [the report channel](06-clients-cli-mcp.md#the-hooks--_report-channel).)
 - **"module compiled with a different SDK" during the app typecheck.** The ambient toolchain (Xcode)
-  and the CLT SDK that `typecheck-app.sh` targets produce incompatible `OrchestraCore` modules; if
+  and the CLT SDK that `typecheck-app.sh` targets produce incompatible `OrchestraCore`/`OrchestraUI` modules; if
   `.build` holds an Xcode-SDK module, the CLT `swiftc -sdk .../CommandLineTools/...` refuses to import
   it. `scripts/typecheck-app.sh` sources `scripts/toolchain.sh`, which pins `DEVELOPER_DIR` to CLT and
-  rebuilds the module under the matching SDK, so the mismatch can't arise. (Before the pin, the only
+  rebuilds the app dependencies under the matching SDK, so the mismatch can't arise. (Before the pin, the only
   recovery was clearing a global SwiftPM module cache under `~/Library` — outside the sandbox-writable
   set, so it triggered a human-approval prompt that broke unattended runs.)
 - **Garbled glyphs in the terminal.** Caused by a missing UTF-8 locale (tmux and Claude Code's

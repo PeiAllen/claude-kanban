@@ -399,9 +399,11 @@ and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads
 
 ## The report channel
 
-The fourth participant is the **agent itself**. Each adapter renders its own hook file in
-`prepareToLaunch` (Claude a managed `--settings` file, Codex `$CODEX_HOME/hooks.json`) that wires the
-agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind> --agent <id>`.
+The fourth participant is the **agent itself**. Each adapter supplies its native hook configuration at
+launch — Claude through a managed `--settings` file and Codex through launch-scoped `-c` TOML overrides —
+that wires the agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind>
+--agent <id>`. Codex therefore keeps its normal native home, authentication, plugins, and state instead of
+receiving an Orchestra-owned `CODEX_HOME`.
 The helper resolves the card's adapter, parses at the edge, and sends one typed `hook` RPC to the daemon's
 adapter-free `handleHook` over the same control socket — which applies the `StatusReport` (and returns
 orientation/inbox-drain content to print):
