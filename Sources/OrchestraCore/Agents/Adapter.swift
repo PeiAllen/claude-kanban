@@ -10,8 +10,10 @@ public struct AdapterContext: Sendable {
     public let prompt: String?      // initial prompt (launch positional arg); nil on restart/resume
     public let name: String?        // card title -> `claude --name`
     public let orchestraBin: String // absolute path of the `orchestra` binary the agent's hooks call (agent-agnostic)
+    public let orchestraMCPBin: String // absolute path of the bundled `orchestra-mcp` server
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags
     public let trustCwd: Bool       // Orchestra owns cwd (e.g. a scratch dir it made) → pre-trust it outright
+    public let autoInstallMCPGlobally: Bool // opt-in add-only global MCP setup during launch preparation
     public let seed: String?        // authored system-level context (handoff / fork / additionalContext).
                                     // Frozen defaulted in A1; F1 (C3) reads ctx.seed. nil = no seed.
     public let since: Date?         // time-scope for discovered-session binding: bind only a rollout newer
@@ -20,10 +22,13 @@ public struct AdapterContext: Sendable {
     public init(cwd: String, repo: String? = nil, model: String? = nil, startIn: StartIn? = nil,
                 sessionId: String? = nil, prompt: String? = nil, name: String? = nil,
                 orchestraBin: String = siblingBinary("orchestra"), access: CardAccess = .readWrite,
-                trustCwd: Bool = false, seed: String? = nil, since: Date? = nil) {
+                trustCwd: Bool = false, seed: String? = nil, since: Date? = nil,
+                orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
+                autoInstallMCPGlobally: Bool = false) {
         self.cwd = cwd; self.repo = repo; self.model = model; self.startIn = startIn
         self.sessionId = sessionId; self.prompt = prompt; self.name = name; self.orchestraBin = orchestraBin
-        self.access = access; self.trustCwd = trustCwd; self.seed = seed; self.since = since
+        self.orchestraMCPBin = orchestraMCPBin; self.access = access; self.trustCwd = trustCwd
+        self.autoInstallMCPGlobally = autoInstallMCPGlobally; self.seed = seed; self.since = since
     }
 }
 
