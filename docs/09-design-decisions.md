@@ -110,6 +110,54 @@ The control plane carries commands, state, and events — never PTY bytes. Swift
 `shell`/`inspect` attach to **tmux directly**. This keeps the daemon simple and the terminals fully
 interactive and real-time.
 
+### Transcript images are published, opaque, and session-scoped
+
+Images are the deliberate exception to the rule above: an agent's screenshot or plot has to reach a human
+looking at a phone, and PTY bytes can't carry it. The shape of that exception is the decision.
+
+**Publishing is an explicit agent action, never a parser.** The tempting design is to watch terminal output
+for anything path-shaped and offer to preview it. That would make every string an agent prints a
+potential read primitive against the agent's filesystem, aimed at whatever the *agent* chose — so the
+feature is an [explicit verb](05-command-reference.md#registry-commands), `publish-image`, and the daemon
+re-reads and re-validates the bytes itself (magic-number sniff, regular files only, bounded per-image and
+per-session). The agent's path is consumed at publish time and never crosses back to a client.
+
+**The reference is opaque.** What lands in the transcript is an OSC 8 hyperlink carrying a bare UUID; the
+client resolves it through the app-only [`media`](05-command-reference.md#server-only-built-in-methods)
+call. No filesystem location crosses the boundary in either direction, so activating a link can't open an
+arbitrary path and a leaked reference is worthless off-box. `media` is app-only for the same reason
+`diffText` is — an agent that wants an image already has it on disk.
+
+**Lifetime follows the session, not the file.** Published media is scoped to the card's current
+[session epoch](04-cards-worktrees-sessions.md#recovery-resume-and-restart) and dropped by the phase
+funnel: a new epoch clears prior epochs, an archive intent clears the card. Media therefore can't outlive
+the transcript that references it, and a stale reference degrades to "expired" rather than to someone
+else's image.
+
+**Guidance rides the shared bundle, not the adapters.** The instructions that teach an agent to publish are
+one `AgentGuidance` section, so Claude receives them as a project skill and Codex as launch-scoped
+developer instructions from the same source, with no `if claude` branch (see
+[the adapter capability descriptor](04-cards-worktrees-sessions.md#agent-adapters)).
+
+### Native image viewers where the anchor allows, bespoke where it doesn't
+
+The two clients preview the same reference differently, and the split is about *anchoring*, not taste.
+
+The Mac's preview is an `NSPopover` tied to the reference's coordinate in the terminal, and QuickLook's
+`QLPreviewPanel` is a shared floating window that cannot be tied to one — so the popover is bespoke, and
+pays for it with an `NSScrollView` and a small export cache. The phone has no anchor to honor: the
+reference opens full-screen either way, so it uses **`QLPreviewController`** and inherits pinch-zoom, pan,
+and the export popup (copy, share, save to Files, AirDrop) instead of hand-rolling a `UIScrollView`
+viewer and an activity sheet. A published image then behaves like every other image on the phone, which
+no amount of custom code buys.
+
+That choice sets each side's storage. QuickLook previews a *file*, so the phone stages bytes in its
+temporary directory and deletes them on dismiss — nothing outlives the preview, because QuickLook is
+in-process and hands off to no one; iOS purging tmp when the app isn't running covers the crash case that
+dismiss can't. The Mac's **Open** button is the opposite: it hands the file to *another application* that
+may still be decoding after the popover closes, so that export must outlive its preview, which is exactly
+why it needs a bounded cache (`TranscriptImageCachePolicy`) and the phone does not.
+
 ### iOS in-process SSH rides Network.framework (NIOTransportServices), not POSIX sockets
 
 The iPhone can't fork/exec the system `ssh`, so its SSH client is in-process (swift-nio-ssh). The

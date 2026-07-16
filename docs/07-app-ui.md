@@ -184,6 +184,33 @@ view session, so PTY sizes stay independent and the two never fight one shell's 
 from the window name (`ShellOwner`); a surface live-attaches only the shells it owns and shows a
 foreign shell (the other surface's) as a listed, owner-tagged tab it can see and close but not drive.
 
+### Transcript image previews
+
+When an agent runs [`publish-image`](05-command-reference.md#registry-commands), the reference it prints
+into the transcript is an **OSC 8 hyperlink** carrying nothing but a UUID. The embedded tmux config
+advertises `hyperlinks` in `terminal-features` so the escape survives tmux and reaches the client intact;
+the client resolves that UUID through the app-only [`media`](05-command-reference.md#server-only-built-in-methods)
+call. Because the link is opaque, activating it can never open an arbitrary agent path — the worst a
+stale reference can do is fail to resolve, which surfaces as "Image preview expired".
+
+**On the Mac**, the link opens a transient `NSPopover` anchored to the reference in the terminal, which is
+why this is a bespoke view rather than QuickLook's `QLPreviewPanel` — a shared floating panel can't stay
+tied to a terminal coordinate. Inside it, zoom and pan are `NSScrollView`'s own (`allowsMagnification`),
+alongside explicit −/Fit/+ buttons and **Copy** and **Open**. Scrolling the terminal dismisses it, since
+the anchor would otherwise drift from its reference. **Open** exports to a pruned cache under Application
+Support rather than a temp file, because it hands the image to *another application* that may still be
+decoding after the popover closes — the file has to outlive the preview. That cache is bounded by a
+shared, hermetically-testable policy (`TranscriptImageCachePolicy` in OrchestraKit: 7 days, 256 MB,
+oldest evicted first).
+
+**On the phone**, the same reference opens a full-screen **`QLPreviewController`**, so pinch-zoom, pan,
+and the export popup (copy, share, save to Files, AirDrop) are the system's rather than ours, and a
+published image behaves like every other image on the device. QuickLook previews a *file*, so the phone
+stages the bytes in its **temporary directory** and deletes them on dismiss. Unlike the Mac's export there
+is no handoff to another app to outlive — QuickLook is in-process — so the staged file needs no eviction
+policy of its own: iOS may purge tmp whenever the app isn't running, which covers the crash case that
+dismiss can't.
+
 ## Keyboard navigation
 
 ![Keyboard navigation: selection movement, link-hints, search, and the command palette](images/keyboard.gif)
