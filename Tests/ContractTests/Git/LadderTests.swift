@@ -16,15 +16,30 @@ import TestSupport
 @Suite("Detection ladder — remote merge decision with FakeGh (no network, no gh)")
 struct LadderTests {
 
+    /// The auto-started remote watch runs one merge-detection tick before its first sleep. Its probe is
+    /// synchronous, so use a lock-backed flag and await it with `pollUntil` rather than blocking a test
+    /// executor thread.
+    private final class WatchSleepLatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tripped = false
+
+        func signal() { lock.withLock { tripped = true } }
+        var isTripped: Bool { lock.withLock { tripped } }
+    }
+
     /// A spawned remote-parent card over a real bare origin, watch enabled. Returns (svc, repo, card).
     static func remoteChild() async throws -> (svc: OrchestraService, repo: String, card: Task) {
         let (svc, _, _, base) = TestEnv.makeReal()
         let repo = base + "/repos/app"
         _ = try RemoteParentTests.makeOriginWithPR(repoDir: repo)
+        let watchParked = WatchSleepLatch()
+        await svc._setRemoteWatchSleepProbeForTest { watchParked.signal() }
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "childP", base: "pr#7"))
-        // A remote-base spawn auto-starts the watch loop; stop it so these tests can drive
-        // `remoteMergeStep` DIRECTLY and deterministically (the background loop would otherwise race the
-        // explicit call and consume a `moved` transition). The loop itself is covered by RemoteWatchLoopTests.
+        // A remote-base spawn auto-starts the watch loop. It performs `remoteMergeStep` BEFORE its first
+        // sleep, and cancellation does not pre-empt a tick already in flight. Wait until that first tick is
+        // safely parked, then cancel it; otherwise a late tick can consume the ref movement a test intends
+        // to exercise directly, leaving the explicit call with the correct-but-unhelpful `.none` result.
+        try await pollUntil("the auto-started remote watch reaches its first sleep") { watchParked.isTripped }
         await svc.stopRemoteWatch(card.id)
         return (svc, repo, card)
     }
@@ -110,16 +125,16 @@ struct LadderTests {
         let (svc, repo, card) = try await Self.remoteChild()
         await svc.setGh(FakeGh(available: false))
         // Child commits its OWN work → its branch advances past the recorded base.
-        func git(_ a: String...) throws { #expect(try Proc.run(["git", "-C", card.cwd] + a).ok) }
+        func git(_ a: String...) throws { _ = try Proc.checked(["git", "-C", card.cwd] + a) }
         try "child\n".write(toFile: card.cwd + "/c.txt", atomically: true, encoding: .utf8)
         try git("add", "-A"); try git("commit", "-q", "-m", "child work")
-        let childTip = try Proc.run(["git", "-C", card.cwd, "rev-parse", "HEAD"]).stdout
+        let childTip = try Proc.checked(["git", "-C", card.cwd, "rev-parse", "HEAD"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Land the child's object in the bare, then advance the PR head to CONTAIN it (a merge landing).
         try git("push", "-q", "-f", "origin", "HEAD:refs/heads/pr-src")
-        let url = try Proc.run(["git", "-C", repo, "remote", "get-url", "origin"]).stdout
+        let url = try Proc.checked(["git", "-C", repo, "remote", "get-url", "origin"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "file://", with: "")
-        try Proc.run(["git", "-C", url, "update-ref", "refs/pull/7/head", childTip])
+        _ = try Proc.checked(["git", "-C", url, "update-ref", "refs/pull/7/head", childTip])
         let outcome = await svc.remoteMergeStep(cardId: card.id)
         #expect(outcome == .warnedAncestry)   // proof-positive ancestry, but no gh to name the base
     }
