@@ -3,6 +3,7 @@ import UIKit
 @testable import OrchestraiOS   // internal access to the app target's conformers
 import OrchestraUI
 import OrchestraKit
+import MarkdownUI
 
 @MainActor
 final class IOSAppTests: XCTestCase {
@@ -77,6 +78,22 @@ final class IOSAppTests: XCTestCase {
     }
 
     // MARK: - Card detail (M2)
+
+    func testMarkdownLinkRetainsItsDestination() {
+        let html = MarkdownContent("[Docs](https://example.com/docs)").renderHTML()
+        XCTAssertTrue(html.contains("href=\"https://example.com/docs\""))
+    }
+
+    func testMarkdownGFMTableAndStrikethroughRender() {
+        let html = MarkdownContent("""
+        | Feature | Status |
+        | :--- | ---: |
+        | Tables | ~~broken~~ fixed |
+        """).renderHTML()
+        XCTAssertTrue(html.contains("<table>"))
+        XCTAssertTrue(html.contains("Feature"))
+        XCTAssertTrue(html.contains("<del>broken</del>"))
+    }
 
     func testCardTabOrderMatchesDesign() {
         // §3: the tab bar order is Agent · Terminal · Diff · Notes · Inbox · Info. Notes (M6) is promoted
@@ -248,4 +265,3 @@ final class IOSAppTests: XCTestCase {
         XCTAssertFalse(s.active.isLocal)
     }
 }
-

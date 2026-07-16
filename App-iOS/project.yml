@@ -29,6 +29,12 @@ packages:
   SwiftCrypto:
     url: https://github.com/apple/swift-crypto
     from: 3.0.0
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath.git
+    exactVersion: 1.7.1
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui.git
+    exactVersion: 2.4.1
 
 targets:
   OrchestraiOS:
@@ -64,6 +70,10 @@ targets:
         product: NIOPosix
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftMath
+        product: SwiftMath
+      - package: MarkdownUI
+        product: MarkdownUI
     # Device signing (FREE personal team). CODE_SIGN_STYLE is in `settings.base` below (committed, visible).
     # DEVELOPMENT_TEAM stays OUT of git — it comes from the optional include in DeviceSigning.xcconfig
     # (a gitignored DeviceSigning.local.xcconfig) for GUI builds; build-ios-device.sh passes it on the CLI.
@@ -105,6 +115,8 @@ targets:
       - target: OrchestraiOS
       - package: Orchestra
         product: OrchestraKit
+      - package: MarkdownUI
+        product: MarkdownUI
     settings:
       base:
         SWIFT_VERSION: "6.0"
