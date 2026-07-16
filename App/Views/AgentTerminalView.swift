@@ -81,9 +81,8 @@ struct AgentTerminalView: NSViewRepresentable {
         term.onBecameFirstResponder = onFocused
         term.terminalImagePaste = terminalImagePaste
         term.terminalPointerInput = terminalPointerInput
-        term.configureImageLinkHandler { [weak coordinator = context.coordinator, weak term] referenceID in
-            guard let coordinator, let term else { return }
-            coordinator.openTranscriptImage(referenceID, from: term)
+        term.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
+            coordinator?.openTranscriptImage(referenceID)
         }
         applyColors(term, coordinator: context.coordinator)
         context.coordinator.attached = "\(session):\(window)"
@@ -116,9 +115,8 @@ struct AgentTerminalView: NSViewRepresentable {
             terminal.onBecameFirstResponder = onFocused
             terminal.terminalImagePaste = terminalImagePaste
             terminal.terminalPointerInput = terminalPointerInput
-            terminal.configureImageLinkHandler { [weak coordinator = context.coordinator, weak terminal] referenceID in
-                guard let coordinator, let terminal else { return }
-                coordinator.openTranscriptImage(referenceID, from: terminal)
+            terminal.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
+                coordinator?.openTranscriptImage(referenceID)
             }
         }
         let isLive = context.coordinator.attachWhileLive()
@@ -311,10 +309,9 @@ struct AgentTerminalView: NSViewRepresentable {
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
-        func openTranscriptImage(_ referenceID: UUID, from terminal: ScrollableTerminalView) {
+        func openTranscriptImage(_ referenceID: UUID) {
             guard let loadTranscriptImage else { return }
-            transcriptImagePreview.show(referenceID: referenceID, from: terminal,
-                                        load: loadTranscriptImage)
+            transcriptImagePreview.show(referenceID: referenceID, load: loadTranscriptImage)
         }
 
         func dismissTranscriptImage() {

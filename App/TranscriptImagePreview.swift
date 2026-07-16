@@ -14,6 +14,9 @@ import OrchestraKit
 /// archived (the same boundary the daemon applies to its own copy). Both sit far from the only window
 /// that matters, between staging and the receiving app reading the URL; and deleting a file another app
 /// already holds open is safe regardless, since unlink keeps the inode alive for open descriptors.
+///
+/// Deleting on dismiss would be wrong for the same reason: the user can close the panel the instant they
+/// hit `Open with`, while the receiving app is still launching.
 enum TranscriptImagePreviewSpool {
     private static var root: URL {
         FileManager.default.temporaryDirectory
@@ -74,22 +77,25 @@ private enum TranscriptImagePreviewError: Error {
 ///
 /// The panel is deliberately NOT dismissed when the terminal scrolls: it is a viewer you can leave up
 /// and read the transcript alongside, not a popover tethered to one line.
+///
+/// Where it opens is QuickLook's business. There is no API for a preview panel's resting position —
+/// `sourceFrameOnScreenFor` is the zoom-animation ORIGIN, not a placement — and `setFrame` is overwritten
+/// by QuickLook's own layout as the panel opens. Fighting that bought a jump-on-open and nothing else;
+/// QuickLook remembers where the user drags it, which is a better answer than any guess we could make.
 @MainActor
 final class TranscriptImagePreviewPresenter: NSObject {
     fileprivate var previewItem: TranscriptPreviewItem?
     private var loadTask: _Concurrency.Task<Void, Never>?
     private var requestID: UUID?
-    private weak var anchorView: NSView?
 
     /// Reports a reference that can no longer be resolved. QuickLook has no notion of "expired" and an
     /// empty panel would read as a broken app, so the failure surfaces the way every other failure in
     /// this app does — a red toast — rather than as an unexplained beep.
     var onUnavailable: ((String) -> Void)?
 
-    func show(referenceID: UUID, from terminal: NSView,
+    func show(referenceID: UUID,
               load: @escaping (UUID) async throws -> TranscriptImagePayload) {
         loadTask?.cancel()
-        anchorView = terminal
 
         let requestID = UUID()
         self.requestID = requestID
@@ -134,29 +140,6 @@ final class TranscriptImagePreviewPresenter: NSObject {
         panel.delegate = self
         panel.reloadData()
         panel.makeKeyAndOrderFront(nil)
-        // After QuickLook has sized itself to the image, move it clear of the inspector so the agent's
-        // transcript stays readable beside it. Deferred because the panel picks its own frame as it
-        // opens; setting it first would just be overwritten.
-        DispatchQueue.main.async { [weak self] in self?.moveClearOfInspector(panel) }
-    }
-
-    /// Park the panel to the LEFT of the inspector it was opened from, rather than centred over the text
-    /// that referenced it. The anchor view is the agent terminal, which lives in the inspector, so its
-    /// left edge is the boundary to clear.
-    private func moveClearOfInspector(_ panel: QLPreviewPanel) {
-        guard let anchorView, let window = anchorView.window else { return }
-        let terminalOnScreen = window.convertToScreen(anchorView.convert(anchorView.bounds, to: nil))
-        var frame = panel.frame
-        let gap: CGFloat = 12
-        let targetMaxX = terminalOnScreen.minX - gap
-        // Never push it off the left of the screen: if the inspector is wide enough that the panel cannot
-        // fit beside it, leave QuickLook's own placement alone rather than shoving it out of reach.
-        guard let screen = window.screen ?? NSScreen.main,
-              targetMaxX - frame.width >= screen.visibleFrame.minX
-        else { return }
-        frame.origin.x = targetMaxX - frame.width
-        frame.origin.y = terminalOnScreen.midY - frame.height / 2
-        panel.setFrame(frame, display: true, animate: false)
     }
 
     private static func stagedFile(from payload: TranscriptImagePayload,

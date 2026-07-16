@@ -198,10 +198,11 @@ stale reference can do is fail to resolve, which surfaces as "Image preview expi
 
 **Both clients hand the image to QuickLook** — `QLPreviewPanel` on the Mac, `QLPreviewController` on the
 phone — so zoom, pan, share, Open-with, full screen, and Esc-to-dismiss are the system's rather than ours,
-and a published image behaves like every other image on the device. The Mac panel is parked to the **left
-of the inspector** so the agent's transcript stays readable beside it, and it deliberately stays up while
-you scroll: it's a viewer to read alongside, not a popover tethered to one line. It closes on Esc, or when
-you switch cards.
+and a published image behaves like every other image on the device. The Mac panel deliberately stays up
+while you scroll — it's a viewer to read the transcript alongside, not a popover tethered to one line —
+and closes on Esc or when you switch cards. Where it opens is QuickLook's own business: a preview panel
+has no placement API (`sourceFrameOnScreenFor` is a zoom-animation origin, not a position, and `setFrame`
+is overwritten by QuickLook's layout as it opens), and QuickLook remembers where you drag it.
 
 QuickLook previews a *file*, so both clients stage the daemon's bytes on disk — and the staged file is
 named from the reference's **caption**, which is why the caption is a validated slug: the human sees that

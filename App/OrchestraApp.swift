@@ -17,9 +17,9 @@ struct OrchestraApp: App {
         // The "Vim keyboard" setting defaults to on; register it so the plain-object
         // KeyboardController reads `true` before the user ever visits Settings.
         UserDefaults.standard.register(defaults: ["orch_vim_keys": true])
-        // Preview exports outlive the transient popover so an external image app can finish opening
-        // them — but never outlive the app session that made them. Wipe the spool once at launch,
-        // before any terminal can resolve a reference.
+        // Staged previews outlive their panel so `Open with` can hand the file to another app — but they
+        // never outlive the app session that made them. Wipe the spool once at launch, before any terminal
+        // can resolve a reference.
         TranscriptImagePreviewSpool.wipeAtLaunch()
     }
 
@@ -277,22 +277,13 @@ private struct DebugLaunchHook: ViewModifier {
                 mimeType: "image/png",
                 filename: "\(referenceID.uuidString.lowercased()).png"),
             dataBase64: sampleImagePNG().base64EncodedString())
-        // The inspector's terminal has to exist before the popover can anchor to it.
+        // Let the board render first so the preview opens over a real app, as it would in use.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            guard let terminal = NSApp.windows.compactMap({ findTerminal($0.contentView) }).first else { return }
-            imagePresenter.show(referenceID: referenceID, from: terminal) { _ in payload }
+            imagePresenter.show(referenceID: referenceID) { _ in payload }
         }
     }
 
     private static let imagePresenter = TranscriptImagePreviewPresenter()
-
-    /// The agent terminal is the anchor the real activation uses; find it by the tag the view sets.
-    private static func findTerminal(_ view: NSView?) -> NSView? {
-        guard let view else { return nil }
-        if let term = view as? ScrollableTerminalView, term.termWindow == "agent" { return term }
-        for sub in view.subviews { if let hit = findTerminal(sub) { return hit } }
-        return nil
-    }
 
     /// Colour bands + a label: enough structure to show fit-scale and the image surface's chrome.
     private static func sampleImagePNG() -> Data {

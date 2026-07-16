@@ -162,8 +162,10 @@ the phone — rather than rendering it themselves. Zoom, pan, share, Open-with, 
 Esc-to-dismiss all come free, and a published image behaves like every other image on the device. The only
 thing a hand-built viewer buys is *anchoring* — a preview tethered to the reference's coordinate, which a
 shared floating panel can't be — and that isn't worth its weight, nor even desirable: a preview that dies
-when you scroll is one you can't read the transcript beside. So the Mac panel parks to the **left of the
-inspector**, clear of the agent's text, and stays up until Esc or a card switch.
+when you scroll is one you can't read the transcript beside. So the Mac panel stays up until Esc or a card
+switch. Its placement is QuickLook's: a preview panel exposes no resting-position API
+(`sourceFrameOnScreenFor` is the zoom-animation origin, not a placement) and overwrites `setFrame` during
+its own open layout, so the app doesn't fight it — QuickLook remembers where the user drags it.
 
 The asymmetry that remains is storage lifetime, and it is about who else holds the file. QuickLook
 previews a *file*, so both clients stage bytes on disk. iOS deletes on dismiss: QuickLook is in-process
