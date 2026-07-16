@@ -137,8 +137,11 @@ edge, dispatch in core** — raw agent JSON never crosses the wire.
 
 **Rendering (per launch, by the adapter).** Each adapter supplies its hook configuration from a bundled
 template — `claude-hooks.json` becomes Claude's managed `--settings` file, while `codex-hooks.json` is
-substituted in memory and passed as launch-scoped `-c hooks.<event>=...` TOML values. The daemon renders
-nothing, and Codex never receives an Orchestra-owned `CODEX_HOME` or a global `hooks.json` write.
+substituted in memory and written as `hooks.<event>` values into a per-launch Codex profile file
+(`$CODEX_HOME/orch-<hash>.config.toml`, selected with `-p`; see
+[the Codex adapter](04-cards-worktrees-sessions.md#the-codex-adapter) for why a file rather than inline
+`-c` — the argv would exceed tmux's command-length cap). The daemon renders nothing, and Codex never
+receives an Orchestra-owned `CODEX_HOME` or a global `hooks.json` write.
 `__ORCHESTRA_BIN__` is replaced with the live `orchestra` path and `__AGENT_ID__` with the card's agent id;
 the command carries a baked `--agent <id>` so the client can resolve its adapter with no env var:
 
@@ -206,10 +209,10 @@ process-wide `signal(SIGPIPE, SIG_IGN)` in `main.swift` (set before any I/O, so 
 a *separate* bug: that one is the daemon's reply write to a dead peer, this one is the helper's own stdout.
 Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 
-**Codex gets a parity SessionStart hook.** Codex receives the rendered SessionStart handler as one of its
-per-launch `-c` hook overrides, so its stdout `additionalContext` is folded into the session and the same
-orientation (step 5) reaches a Codex card too. This adapter's hook contribution is entirely in the launch
-argv; it has no Codex-specific persistent setup step.
+**Codex gets a parity SessionStart hook.** Codex receives the rendered SessionStart handler as one of the
+`hooks.<event>` entries in its per-launch profile file, so its stdout `additionalContext` is folded into the
+session and the same orientation (step 5) reaches a Codex card too. This adapter's hook contribution lives in
+the profile file that `prepareToLaunch` writes; it has no Codex-specific *global* persistent setup step.
 Codex's `parse` returns `nil` for this push (its telemetry is the
 [daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
 **orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.
