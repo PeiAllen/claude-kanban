@@ -396,19 +396,19 @@ public actor OrchestraService {
     /// Driven by the daemon's 2s poll loop, alongside the `reconcile()` tick (which folds liveness).
     public func pollTelemetry() async {
         let tasks = await store.all()
-        for t in tasks where !t.archived && t.phase.kind != .dead {
+        for t in tasks where !t.archived && t.phase.kind != .dead && t.phase.kind != .creatingWorktree {
             guard let adapter = try? registry.get(t.agentId),
                   adapter.capabilities.telemetry == .fileTail else { continue }
-            // Resolve the rollout path from the adapter (uses the tracked id, else DISCOVERS it). The
-            // discovery is time-scoped ONLY while the card is being born (`.launching`/`.relaunching`): a
-            // not-yet-bound launch must adopt only its OWN fresh rollout (mtime > `phaseChangedAt`), never a
-            // live sibling's actively-written rollout in the same cwd nor its own stale pre-reboot one. Once
-            // the card is live and stably tailing, discovery is unrestricted (newest cwd match) — the risky
-            // moment is the launch bind, not steady state.
+            // Resolve the rollout path from the adapter (uses the tracked id, else discovers it). An
+            // unbound discovered-session card keeps its launch cutoff through an N=3 fallback, so delayed
+            // metadata can bind its own rollout while stale cwd history stays excluded. Multiple primary
+            // matches remain ambiguous at every phase and are never guessed.
             let beingBorn = t.phase.kind == .launching || t.phase.kind == .relaunching
             let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                      name: t.title, access: t.access,
-                                     since: beingBorn ? t.phaseChangedAt : nil)
+                                     since: t.agentSessionId == nil
+                                        ? (t.sessionDiscoverySince ?? (beingBorn ? t.phaseChangedAt : nil))
+                                        : nil)
             let a = adapter
             let sessionId = t.agentSessionId
             let priorSessionIds = t.priorSessionIds
@@ -943,7 +943,8 @@ public actor OrchestraService {
                 // binds) MUST serve the SAME fallback `AgentSessionInfo` `sessions(_:)` builds below, or
                 // the hit branch is skipped and an early-life card live-shells every snapshot.
                 let ctx = AdapterContext(cwd: card.cwd, model: card.model.id, sessionId: card.agentSessionId,
-                                         name: card.title, orchestraBin: orchestraBin)
+                                         name: card.title, orchestraBin: orchestraBin,
+                                         since: card.agentSessionId == nil ? card.sessionDiscoverySince : nil)
                 let a = try? registry.get(card.agentId)
                 let agent = (try? await offActor { a?.sessionInfo(ctx, current: card.agentSessionId, prior: card.priorSessionIds) }) ?? nil
                     ?? AgentSessionInfo(agentId: card.agentId, sessionId: card.agentSessionId, transcriptPath: nil,
@@ -968,7 +969,8 @@ public actor OrchestraService {
         let targets = (try? sessions.windows(name)) ?? []
         let running = !targets.isEmpty
         let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
-                                 name: t.title, orchestraBin: orchestraBin)
+                                 name: t.title, orchestraBin: orchestraBin,
+                                 since: t.agentSessionId == nil ? t.sessionDiscoverySince : nil)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)

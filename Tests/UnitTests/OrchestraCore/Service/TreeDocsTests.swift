@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-@Suite("Tree docs — vendored skill + sectioned AGENTS.md composer")
+@Suite("Tree docs — vendored skills")
 struct TreeDocsTests {
 
     // MARK: loader parity with DelegationDocs
@@ -66,77 +66,4 @@ struct TreeDocsTests {
         }
     }
 
-    // MARK: Claude install — its own skill dir
-
-    @Test("Claude install writes the skill under .claude/skills/orchestra-tree/, creating parents")
-    func claudeInstall() throws {
-        let base = NSTemporaryDirectory() + "tree-install-\(UUID().uuidString)"
-        let path = "\(base)/.claude/skills/orchestra-tree/SKILL.md"
-        #expect(TreeDocs.install(agentId: "claude-code", at: path) == true)
-        #expect(try String(contentsOfFile: path, encoding: .utf8) == TreeDocs.load(.claudeSkill))
-        #expect(TreeDocs.install(agentId: "claude-code", at: path) == true)   // idempotent
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    // MARK: Codex sectioned AGENTS.md — delegation + tree coexist across reinstall
-
-    @Test("composer keeps BOTH delegation and tree sections across a reinstall (idempotent)")
-    func sectionedIdempotence() throws {
-        let base = NSTemporaryDirectory() + "agents-compose-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        let deleg = try #require(DelegationDocs.forAgent("codex"))
-        let tree = try #require(TreeDocs.forAgent("codex"))
-
-        for _ in 0..<2 {   // install twice — must not duplicate
-            #expect(AgentsFileComposer.upsert(section: "delegation", content: deleg, at: path) == true)
-            #expect(AgentsFileComposer.upsert(section: "tree", content: tree, at: path) == true)
-        }
-
-        let text = try String(contentsOfFile: path, encoding: .utf8)
-        // exactly one of each marker pair
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("tree")).count == 2)
-        #expect(text.components(separatedBy: AgentsFileComposer.endMarker("tree")).count == 2)
-        // both bodies present
-        #expect(text.contains(deleg))
-        #expect(text.contains(tree))
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @Test("composing over a legacy markerless AGENTS.md resets it (no duplicate delegation block)")
-    func legacyMarkerlessReset() throws {
-        let base = NSTemporaryDirectory() + "agents-legacy-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        // Simulate the pre-BT5 installer: a full overwrite with the bare delegation doc (NO markers).
-        let deleg = try #require(DelegationDocs.forAgent("codex"))
-        let tree = try #require(TreeDocs.forAgent("codex"))
-        try deleg.write(toFile: path, atomically: true, encoding: .utf8)
-
-        // Now compose (as CodexAdapter.prepareToLaunch does).
-        AgentsFileComposer.upsert(section: "delegation", content: deleg, at: path)
-        AgentsFileComposer.upsert(section: "tree", content: tree, at: path)
-
-        let text = try String(contentsOfFile: path, encoding: .utf8)
-        // The delegation body appears EXACTLY once (legacy bare copy discarded), inside its markers.
-        #expect(text.components(separatedBy: deleg).count == 2)
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
-        #expect(text.contains(tree))
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @Test("upsert replaces a section's body in place without touching its neighbor")
-    func upsertReplacesInPlace() throws {
-        let base = NSTemporaryDirectory() + "agents-replace-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        AgentsFileComposer.upsert(section: "delegation", content: "OLD-DELEG", at: path)
-        AgentsFileComposer.upsert(section: "tree", content: "TREE-BODY", at: path)
-        AgentsFileComposer.upsert(section: "delegation", content: "NEW-DELEG", at: path)  // replace
-        let text = try String(contentsOfFile: path, encoding: .utf8)
-        #expect(text.contains("NEW-DELEG"))
-        #expect(!text.contains("OLD-DELEG"))
-        #expect(text.contains("TREE-BODY"))   // neighbor untouched
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
-        try? FileManager.default.removeItem(atPath: base)
-    }
 }

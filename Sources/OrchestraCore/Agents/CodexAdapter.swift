@@ -1,12 +1,9 @@
 import Foundation
 
-/// The built-in Codex adapter. Mirrors `ClaudeCodeAdapter` for the second agent: it builds read-only
-/// launch/resume argv (`-s read-only -a never`), pins `CODEX_HOME` (via `env`), discovers the session
-/// id from the rollout dir post-launch (Codex is `.discovered`, not seeded), and mirrors the CORE's
-/// trust decision (`ctx.trustCwd`) into Codex's native per-project `trust_level` — never reading the
-/// `TrustLedger`. Permission posture honors `ctx.access` like Claude: a default (read-write) card
-/// launches with Codex's OWN default permissioning, and only a read-only card clamps to Codex's
-/// OS-sandboxed read-only preset (`-s read-only -a never`).
+/// The built-in Codex adapter. It keeps Codex's native home/state untouched, discovers rollouts from the
+/// normal home (or an injected test path), and translates shared Orchestra content into Codex's per-launch
+/// TOML overrides. Permission posture still mirrors Claude: a default card keeps Codex's own permissioning
+/// and a read-only card receives the OS-sandboxed read-only preset.
 public struct CodexAdapter: Adapter {
     public let id = "codex"
     public let name = "Codex"
@@ -19,7 +16,8 @@ public struct CodexAdapter: Adapter {
     /// resume-seed wake (`.relaunch`) + Stop-hook drain (`.stopHook`).
     public var capabilities: AgentCapabilities { .codex }
 
-    /// Test injection (fake binary / isolated home) — never spawns real Codex.
+    /// Test injection for a fake binary and an isolated rollout directory. The home override is never
+    /// exported to a production Codex process; it only keeps rollout-discovery fixtures hermetic.
     let binOverride: String?
     let codexHomeOverride: String?
     /// Test injection for the hook-trust build-probe. `nil` ⇒ probe the real binary once (cached);
@@ -34,14 +32,13 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    /// Orchestra pins CODEX_HOME so Codex's config + session rollouts live in a known location the
-    /// daemon controls (config trust write here; rollout tail in B2). Defaults to `$HOME/.codex`; an
-    /// isolated daemon already redirects `$HOME`, so this is isolated along with it.
+    /// Codex's normal default state location, retained only for rollout discovery.
+    /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
 
-    /// The pinned CODEX_HOME is delivered to the process as an environment variable (wired into the
-    /// tmux launch via `SessionManaging.ensure(env:)`). Claude leaves this empty (default).
-    public var env: [String: String] { ["CODEX_HOME": codexHome] }
+    /// Codex selects its own native state root. The adapter's test-only resolver is intentionally not an
+    /// environment override, unlike the former isolated-home implementation.
+    public var env: [String: String] { [:] }
 
     /// Codex's selectable models, from the vendored `Resources/codex-models.json` offline table
     /// (mirrors Codex's own model catalog). The hardcoded list is a safety net if that resource is
@@ -64,22 +61,25 @@ public struct CodexAdapter: Adapter {
 
     // MARK: telemetry parse (fileTail) — the daemon tails the rollout JSONL; THIS converts one line.
 
-    /// Codex telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one rollout JSONL line at a
-    /// time; this converts it to a normalized `StatusReport`. AGENT-DEPENDENT (D3) — the mapping lives
-    /// here, never in core. Rename-tolerant (Codex's rollout schema drifts: `TaskComplete`→`TurnComplete`,
-    /// nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE model table as the denominator
-    /// (E1), never the rollout's own window. `seq` is the line timestamp (µs) so out-of-order/duplicate
-    /// lines lose to the freshest via `report()`'s seq-gate. Any unrecognized line → nil (dropped).
+    /// Codex status/detail/context telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one
+    /// rollout JSONL line at a time; this converts it to a normalized `StatusReport`. Its SessionStart hook
+    /// additionally supplies the definitive card-owned session id before discovery. AGENT-DEPENDENT (D3) —
+    /// the mapping lives here, never in core. Rename-tolerant (Codex's rollout schema drifts:
+    /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE
+    /// model table as the denominator (E1), never the rollout's own window. `seq` is the line timestamp
+    /// (µs) so out-of-order/duplicate lines lose to the freshest via `report()`'s seq-gate. Any unrecognized
+    /// line → nil (dropped).
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
-        // C1 · permission gate (hooksPush). Codex's `PermissionRequest` hook fires `_report --event
-        // permission`, which arrives here as a hooksPush. Classify it into the SAME neutral
-        // `waitReason == .permission` Claude reaches via its Notification/permission_prompt — so a
-        // blocked Codex card surfaces as a Needs-You 🔐 row (M3 renders it provider-neutrally). This is
-        // the adapter/capability seam: the Codex-specific mapping lives HERE, never as `if agent==` in
-        // core. Codex's OTHER hooks (SessionStart/Stop) carry no StatusReport — the daemon dispatches
-        // them (orientation, inbox drain) via the typed HookEvent — so they fall through to nil, and
-        // telemetry stays the rollout fileTail below.
-        if case let .hooksPush(kind, _) = raw {
+        // SessionStart runs under the launching tmux session, whose environment carries this card's
+        // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
+        // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
+        // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
+        // fallback if the hook is unavailable. PermissionRequest remains the provider-neutral wait gate.
+        if case let .hooksPush(kind, payload) = raw {
+            if kind == HookEvent.sessionStart.rawValue,
+               let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
+                return StatusReport(sessionId: sid)
+            }
             return kind == HookEvent.permission.rawValue
                 ? StatusReport(run: .waiting(.permission))
                 : nil
@@ -96,6 +96,9 @@ public struct CodexAdapter: Adapter {
 
         // Bind the discovered rollout id to this card as soon as the first metadata record is tailed.
         if any("sessionmeta") {
+            // Codex can start guardian/delegated agents in the same cwd. Their rollout metadata carries
+            // the child id, not the card's primary session, so it must never replace the card binding.
+            guard !Self.isSubagent(payload) else { return nil }
             let sid = (payload["id"] ?? payload["session_id"])?.stringValue
             guard let sid, !sid.isEmpty else { return nil }
             return StatusReport(sessionId: sid)
@@ -151,13 +154,29 @@ public struct CodexAdapter: Adapter {
     /// Monotonic seq from the line's RFC3339 `timestamp`, in microseconds since epoch. Absent/unparseable
     /// → 0 (still applies: the tailer delivers lines in file order, so a 0-seq snapshot is never stale).
     private static func rolloutSeq(_ jv: JSONValue) -> UInt64 {
-        guard let ts = jv["timestamp"]?.stringValue else { return 0 }
+        guard let d = rolloutTimestamp(jv["timestamp"]?.stringValue) else { return 0 }
+        return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
+    }
+
+    /// Codex emits ISO-8601 timestamps both on its session metadata payload and on individual rollout
+    /// records. The metadata timestamp is immutable launch identity; a file's modification date is not,
+    /// because a prior card may append to its rollout long after a later card has started in the same cwd.
+    private static func rolloutTimestamp(_ value: String?) -> Date? {
+        guard let value else { return nil }
         let withFrac = ISO8601DateFormatter()
         withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
-        guard let d = withFrac.date(from: ts) ?? plain.date(from: ts) else { return 0 }
-        return UInt64(max(0, d.timeIntervalSince1970 * 1_000_000))
+        return withFrac.date(from: value) ?? plain.date(from: value)
+    }
+
+    /// Nested Codex agents write independent rollouts under the parent's cwd. Current rollouts name
+    /// them explicitly; a nonempty parent id independently identifies the same nested boundary even if
+    /// the source label is absent or changes.
+    private static func isSubagent(_ payload: JSONValue) -> Bool {
+        let source = payload["thread_source"]?.stringValue?.lowercased()
+        let parentId = payload["parent_thread_id"]?.stringValue
+        return source == "subagent" || !(parentId?.isEmpty ?? true)
     }
 
     // Permission posture — mirrors Claude's `accessFlags` (D8 §7): a DEFAULT (read-write) card launches
@@ -170,13 +189,9 @@ public struct CodexAdapter: Adapter {
         access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
     }
 
-    // Defect 2 · Codex hook-trust. This customized Codex build TRUST-GATES hooks behind a launch-time
-    // modal ("Hooks need review") Orchestra can't answer — so without intervention the Stop hook never
-    // runs and the durable inbox never drains ("Codex won't wake"). `--dangerously-bypass-hook-trust`
-    // establishes trust by construction: Orchestra AUTHORS the hooks (it owns CODEX_HOME + writes
-    // hooks.json), so trusting them is correct. Empirically it is the ONLY mechanism that runs untrusted
-    // hooks (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a config-seed
-    // is fragile). It is DANGEROUS only re: hook trust — it does NOT touch approvals/sandbox.
+    // Defect 2 · Codex hook-trust. This installed Codex build gates launch-scoped hooks behind a modal
+    // Orchestra cannot answer, so the injected Stop handler would otherwise never drain the inbox. The
+    // build-probed flag applies only to hook trust; it does not change approval or sandbox policy.
     private var hookTrustFlags: [String] {
         bypassHookTrustSupported ? ["--dangerously-bypass-hook-trust"] : []
     }
@@ -225,8 +240,27 @@ public struct CodexAdapter: Adapter {
         return ["-m", m]
     }
 
+    private func launchConfigurationFlags(_ ctx: AdapterContext) -> [String] {
+        CodexLaunchConfiguration.flags(cwd: ctx.cwd)
+    }
+
+    /// Write this launch's profile file BEFORE `start`/`resume` reference it via `-p`. The profile carries
+    /// the hooks, per-project trust, and (~16KB) developer instructions off the tmux command line — see
+    /// [[CodexLaunchConfiguration]] for why inlining them via `-c` killed every card at spawn. Mirrors the
+    /// Claude adapter's `prepareToLaunch`, which writes its own per-card `--settings` file the same way.
+    /// The write is load-bearing (a missing profile makes `-p` fail), so unlike a best-effort trust nudge
+    /// it surfaces its error rather than swallowing it.
+    public func prepareToLaunch(_ ctx: AdapterContext) throws {
+        let path = CodexLaunchConfiguration.profilePath(cwd: ctx.cwd, codexHome: codexHome)
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
+            .write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
     public func start(_ ctx: AdapterContext) -> [String] {
         var argv = [binary]
+        argv += launchConfigurationFlags(ctx)
         argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
@@ -237,6 +271,7 @@ public struct CodexAdapter: Adapter {
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
         var argv = [binary, "resume", sid]
+        argv += launchConfigurationFlags(ctx)
         argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
@@ -256,36 +291,6 @@ public struct CodexAdapter: Adapter {
         return nil
     }
 
-    /// Prep runs isolation FIRST (ensure the pinned CODEX_HOME exists), THEN mirrors the core's trust
-    /// decision into it. The adapter applies `ctx.trustCwd` only — it never reads the `TrustLedger`.
-    public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        try? FileManager.default.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
-        CodexTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd, codexHome: codexHome)
-        // Standing delegation guidance for EVERY Codex card (independent of ctx.seed): deliver the
-        // AGENTS.md variant to the ISOLATED CODEX_HOME — the global (top) level of Codex's AGENTS.md
-        // precedence, merged ABOVE any project AGENTS.md. Orchestra owns CODEX_HOME, so this never
-        // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
-        // content keyed via forAgent(id), so there's no `if codex` here.
-        // Codex reads ONE AGENTS.md per scope, so delegation and tree guidance must COMPOSE into it, not
-        // overwrite each other. Upsert each as a named, marker-delimited section (rewrite-idempotent): a
-        // relaunch/recovery refreshes both in place without duplication. Best-effort; content keyed via
-        // forAgent(id), so no `if codex` here.
-        let agentsPath = "\(codexHome)/AGENTS.md"
-        if let deleg = DelegationDocs.forAgent(id) {
-            AgentsFileComposer.upsert(section: "delegation", content: deleg, at: agentsPath)
-        }
-        if let tree = TreeDocs.forAgent(id) {
-            AgentsFileComposer.upsert(section: "tree", content: tree, at: agentsPath)
-        }
-        // Render + install the managed Codex hooks file (per-launch; the daemon renders nothing), pointing
-        // at the live orchestra binary with `--agent codex` baked in. Two hooks: SessionStart→`session`
-        // (column/mode/self-id orientation) and Stop→`stop` (drain the durable inbox at turn-end, parity
-        // with Claude — F3). Installed into the pinned CODEX_HOME, never clobbering a foreign user
-        // hooks.json. Best-effort.
-        _ = try? HooksRenderer.renderCodex(orchestraBin: ctx.orchestraBin, agentId: id)
-        CodexHooks.install(to: "\(codexHome)/hooks.json")
-    }
-
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
         let sid = current ?? discover(cwd: ctx.cwd, newerThan: ctx.since)
         guard let sid else {
@@ -303,7 +308,7 @@ public struct CodexAdapter: Adapter {
             resumeCmd: resume(resumeCtx))
     }
 
-    // MARK: rollout discovery — $CODEX_HOME/sessions/**/rollout-<timestamp>-<uuid>.jsonl
+    // MARK: rollout discovery — normal Codex state / sessions / rollout-<timestamp>-<uuid>.jsonl
 
     var sessionsDir: String { "\(codexHome)/sessions" }
 
@@ -315,31 +320,34 @@ public struct CodexAdapter: Adapter {
         return sessionId(fromRollout: newest)
     }
 
-    /// Newest rollout whose first metadata record belongs to this cwd. This is the safe discovery path
-    /// for Orchestra cards before their Codex session id has been bound.
+    /// Newest primary rollout whose first metadata record belongs to this cwd. This is the safe discovery
+    /// path for Orchestra cards before their Codex session id has been bound.
     ///
-    /// `newerThan` (2.6) time-scopes the bind to rollouts written AFTER the card entered its being-born
+    /// `newerThan` (2.6) time-scopes the bind to rollouts created AFTER the card entered its being-born
     /// phase (`phaseChangedAt`): a launching Codex card must adopt ONLY the rollout its own fresh launch
-    /// just wrote, never a live sibling's actively-written rollout in the same cwd, nor — after a mass
-    /// reboot — its own STALE pre-reboot rollout. Rule: among cwd-matching rollouts, keep only those with
-    /// `mtime > newerThan`; if that leaves MORE THAN ONE the launch is ambiguous (can't tell which is
-    /// ours) → bind nothing and let the N=3 liveness-tick fallback carry readiness; exactly one → bind it;
-    /// none → bind nothing. `newerThan == nil` keeps the legacy "newest cwd match" behavior (diagnostics /
-    /// already-bound paths that don't need the gate).
+    /// created, never a live sibling's actively-written rollout in the same cwd nor its own stale
+    /// pre-reboot rollout. The first `session_meta` payload has an immutable creation timestamp; use it
+    /// rather than mutable file mtime, which a prior card can update after this launch begins. Nested
+    /// Codex-agent rollouts are excluded before the ambiguity check. If more than one primary rollout
+    /// remains, binding is genuinely ambiguous and the N=3 liveness fallback carries readiness without
+    /// letting an unbound card adopt a sibling's session after it becomes live. `newerThan == nil` can
+    /// recover only an unambiguous primary cwd match.
     func discover(cwd: String, newerThan: Date? = nil) -> String? {
         let canon = PathResolver.canonical(cwd)
         let matches = rolloutFiles()
-            .compactMap { path -> (path: String, mtime: Date)? in
-                guard let metaCwd = rolloutCwd(path),
-                      PathResolver.canonical(metaCwd) == canon else { return nil }
-                let m = mtime(path)
-                if let newerThan, m <= newerThan { return nil }   // stale / pre-launch → not ours
-                return (path, m)
+            .compactMap { path -> (path: String, startedAt: Date)? in
+                guard let metadata = rolloutMetadata(path),
+                      !metadata.isSubagent,
+                      PathResolver.canonical(metadata.cwd) == canon else { return nil }
+                let startedAt = metadata.startedAt ?? mtime(path)
+                if let newerThan, startedAt <= newerThan { return nil }   // stale / pre-launch → not ours
+                return (path, startedAt)
             }
-        guard let newest = matches.max(by: { $0.mtime < $1.mtime }) else { return nil }
-        // Time-scoped bind: a launch writes exactly one new rollout, so >1 candidate after the cutoff is
-        // ambiguous — refuse to guess (the fallback still reaches live).
-        if newerThan != nil, matches.count > 1 { return nil }
+        guard let newest = matches.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
+        // More than one PRIMARY rollout is genuinely ambiguous at every lifecycle phase. In particular,
+        // an unbound card may have reached live through the readiness fallback, but must never then adopt
+        // a sibling's session through an unscoped telemetry lookup.
+        if matches.count > 1 { return nil }
         return sessionId(fromRollout: newest.path)
     }
 
@@ -369,11 +377,22 @@ public struct CodexAdapter: Adapter {
         return UUID(uuidString: candidate) != nil ? candidate.lowercased() : nil
     }
 
-    private func rolloutCwd(_ path: String) -> String? {
+    private struct RolloutMetadata {
+        let cwd: String
+        let startedAt: Date?
+        let isSubagent: Bool
+    }
+
+    private func rolloutMetadata(_ path: String) -> RolloutMetadata? {
         guard let line = firstLine(path),
               let jv = try? JSONValue.parse(Data(line.utf8)) else { return nil }
         let payload = jv["payload"] ?? jv
-        return payload["cwd"]?.stringValue
+        guard let cwd = payload["cwd"]?.stringValue else { return nil }
+        return RolloutMetadata(
+            cwd: cwd,
+            startedAt: Self.rolloutTimestamp(payload["timestamp"]?.stringValue)
+                ?? Self.rolloutTimestamp(jv["timestamp"]?.stringValue),
+            isSubagent: Self.isSubagent(payload))
     }
 
     private func firstLine(_ path: String) -> String? {
@@ -414,6 +433,7 @@ public extension AgentCapabilities {
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
+        terminalPointerInput: .nativeSelection,
         // A fresh Codex launch writes a rollout whose FIRST line is a `session_meta` record — the daemon's
         // rollout tail observes it and resolves the launch's readiness (D1 `.rolloutMeta`). A `codex resume`
         // writes NO rollout at resume time, so a relaunch has no marker; the universal N=3 liveness-tick
@@ -426,36 +446,4 @@ public extension AgentCapabilities {
         // wired, replace these with an empty chord so the gate routes through that channel, not keystrokes.
         approveChord: [.named(.enter)],
         denyChord: [.named(.esc)])
-}
-
-/// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).
-/// The adapter only ever *applies* the core's already-resolved decision (`ctx.trustCwd`) — it never
-/// reads the Orchestra `TrustLedger` (core owns resolution; see `OrchestraService.resolveTrust`). The
-/// Codex analogue of `ClaudeTrust`.
-enum CodexTrust {
-    /// Apply the core's trust decision to Codex's native per-project trust. Writes `trust_level` for
-    /// `cwd` iff `trusted`; otherwise a no-op (Codex will prompt / the card clamps).
-    static func apply(trusted: Bool, cwd: String, codexHome: String) {
-        guard trusted else { return }
-        record(cwd, codexHome: codexHome)
-    }
-
-    /// Mark `cwd` trusted by appending a `[projects."<cwd>"]` table with `trust_level = "trusted"`.
-    /// Idempotent + non-clobbering: if the section header already exists we leave the file untouched
-    /// (mirrors `ClaudeTrust.grant` bailing when already trusted / unparseable), so we never corrupt a
-    /// user's existing config.toml.
-    static func record(_ cwd: String, codexHome: String) {
-        let path = "\(codexHome)/config.toml"
-        let header = "[projects.\"\(tomlEscape(cwd))\"]"
-        var text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        if text.contains(header) { return }                       // already managed → no clobber
-        if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
-        text += "\n\(header)\ntrust_level = \"trusted\"\n"
-        try? FileManager.default.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
-        try? text.write(toFile: path, atomically: true, encoding: .utf8)
-    }
-
-    private static func tomlEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }

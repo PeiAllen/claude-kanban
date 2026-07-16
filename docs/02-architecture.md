@@ -304,9 +304,8 @@ forwards the remote daemon's unix socket to a local path, and the terminals ride
 connection (`ssh -tt … tmux attach`), so no PTY bytes cross the JSON-RPC plane and you authenticate
 once. Because reachability is pure forwarding, the daemon's attack surface stays what it always was:
 a `0600` unix socket. See [Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the
-app chapter, [deploying to a Linux box](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
-for the static-musl cross-build, and the
-[remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md).
+app chapter and [deploying to a Linux box](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+for the static-musl cross-build.
 
 Two more resilience details round out the transport seam:
 
@@ -399,9 +398,11 @@ and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads
 
 ## The report channel
 
-The fourth participant is the **agent itself**. Each adapter renders its own hook file in
-`prepareToLaunch` (Claude a managed `--settings` file, Codex `$CODEX_HOME/hooks.json`) that wires the
-agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind> --agent <id>`.
+The fourth participant is the **agent itself**. Each adapter supplies its native hook configuration at
+launch — Claude through a managed `--settings` file and Codex through a per-launch profile file (`-p`) —
+that wires the agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind>
+--agent <id>`. Codex therefore keeps its normal native home, authentication, plugins, and state instead of
+receiving an Orchestra-owned `CODEX_HOME`.
 The helper resolves the card's adapter, parses at the edge, and sends one typed `hook` RPC to the daemon's
 adapter-free `handleHook` over the same control socket — which applies the `StatusReport` (and returns
 orientation/inbox-drain content to print):

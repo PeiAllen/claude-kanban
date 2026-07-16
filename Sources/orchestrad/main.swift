@@ -8,7 +8,17 @@ func log(_ msg: String) {
 }
 
 let config = ConfigStore.load()
-let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath),
+let terminalSessions = SessionManager()
+do {
+    if try terminalSessions.reloadTerminalConfiguration() {
+        log("reloaded terminal configuration for the existing tmux server")
+    }
+} catch {
+    // An invalid config must be visible to operators, but it must not prevent the daemon from starting:
+    // new sessions can still report their launch failure through the normal lifecycle path.
+    log("warning: unable to reload terminal configuration: \(error)")
+}
+let service = OrchestraService(config: config, store: TaskStore(path: Config.tasksPath), sessions: terminalSessions,
                                proc: RealProc(), gitRemotesProbe: OrchestraService.defaultGitRemotesProbe)
 
 // The daemon renders NO hook files — each adapter renders its own in `prepareToLaunch`, per launch,

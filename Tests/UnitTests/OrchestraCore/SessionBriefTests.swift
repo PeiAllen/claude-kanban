@@ -110,64 +110,17 @@ struct SessionBriefTests {
     }
 }
 
-@Suite("Codex SessionStart hook install (CodexHooks)")
-struct CodexHooksTests {
-    private func tmp() -> String { NSTemporaryDirectory() + "cxhooks-\(UUID().uuidString)" }
-    private let rendered = #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event session --agent codex"}]}]}}"#
-
-    @Test("installs into an absent hooks.json")
-    func writesWhenAbsent() throws {
-        let dest = tmp() + "/.codex/hooks.json"
-        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == true)
-        let got = try String(contentsOfFile: dest, encoding: .utf8)
-        #expect(got.contains(CodexHooks.sentinel))
-    }
-
-    @Test("idempotent: overwrites our own file")
-    func idempotentForOurs() throws {
-        let dest = tmp() + "/hooks.json"
-        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == true)
-        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == true)   // still ours → rewrite
-    }
-
-    @Test("never clobbers a foreign user hooks.json")
-    func skipsForeign() throws {
-        let dest = tmp() + "/hooks.json"
-        let mine = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-own-script"}]}]}}"#
-        try FileManager.default.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try mine.write(toFile: dest, atomically: true, encoding: .utf8)
-        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == false)
-        #expect(try String(contentsOfFile: dest, encoding: .utf8) == mine)   // untouched
-    }
-
-    // Defect 1: a pre-change Orchestra install wired the RETIRED `_report --event orient` hook, which
-    // lacks the old narrow `_report --event session` sentinel — so it was mistaken for a foreign file and
-    // NEVER replaced, structurally preventing the current 3-hook file (incl. Stop) from installing. The
-    // broadened `_report --event` marker recognizes it as ours and replaces it.
-    @Test("a stale Orchestra file wired to the retired --event orient hook IS overwritten")
-    func overwritesRetiredOrient() throws {
-        let dest = tmp() + "/hooks.json"
-        let stale = #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event orient --agent codex"}]}]}}"#
-        try FileManager.default.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try stale.write(toFile: dest, atomically: true, encoding: .utf8)
-        #expect(CodexHooks.installIfSafe(content: rendered, to: dest) == true)   // recognized as ours → replaced
-        let got = try String(contentsOfFile: dest, encoding: .utf8)
-        #expect(got.contains("_report --event session"))   // now the current file
-        #expect(!got.contains("--event orient"))            // stale hook gone
-    }
-
-    @Test("renderCodex substitutes the orchestra bin + agent id and emits the session command")
-    func renderCodexSubstitutes() throws {
-        let dest = tmp() + "/codex-hooks.json"
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: dest)
-        let got = try String(contentsOfFile: dest, encoding: .utf8)
+@Suite("Codex hook rendering")
+struct CodexHookRenderingTests {
+    @Test("rendered Codex JSON substitutes the orchestra bin + agent id and emits the session command")
+    func renderedCodexJSONSubstitutes() throws {
+        let got = HooksRenderer.renderedCodexJSON(orchestraBin: "/abs/orchestra", agentId: "codex")
         #expect(!got.contains("__ORCHESTRA_BIN__"))
         #expect(!got.contains("__AGENT_ID__"))
         #expect(!got.contains(#""matcher""#))
         // Assert on the parsed command value — the render emits canonical JSON, so a raw-substring match
         // on the path is format-coupled (JSON escapes `/` as `\/`); decode it instead.
-        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
-        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let obj = try #require(try JSONSerialization.jsonObject(with: Data(got.utf8)) as? [String: Any])
         let hooks = try #require(obj["hooks"] as? [String: Any])
         let sessionStart = try #require(hooks["SessionStart"] as? [[String: Any]])
         let inner = try #require(sessionStart.first?["hooks"] as? [[String: Any]])
@@ -180,11 +133,9 @@ struct CodexHooksTests {
     // because SettingsComposer strips `_comment`; the Codex render path must strip it too. Pin: the
     // rendered file parses as JSON, carries NO `_comment`, and keeps BOTH SessionStart and Stop.
     @Test("rendered Codex hooks parse cleanly (no _comment) and keep both SessionStart + Stop")
-    func renderCodexIsCodexValid() throws {
-        let dest = tmp() + "/codex-hooks.json"
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: dest)
-        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
-        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    func renderedCodexJSONIsCodexValid() throws {
+        let rendered = HooksRenderer.renderedCodexJSON(orchestraBin: "/abs/orchestra", agentId: "codex")
+        let obj = try #require(try JSONSerialization.jsonObject(with: Data(rendered.utf8)) as? [String: Any])
         #expect(obj["_comment"] == nil)   // Codex rejects any top-level key other than description/hooks
         let hooks = try #require(obj["hooks"] as? [String: Any])
         #expect(hooks["SessionStart"] != nil)
@@ -208,18 +159,9 @@ struct CodexHooksTests {
         #expect(HooksRenderer.strippingComment("[1,2,3]") == "[1,2,3]")
     }
 
-    // End-to-end: what actually lands in $CODEX_HOME/hooks.json (render → install) must be Codex-valid.
-    @Test("installed Codex hooks.json (render→install) carries no _comment and both hooks")
-    func installedFileIsCodexValid() throws {
-        let home = tmp()
-        let renderedPath = home + "/codex-hooks.json"
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/abs/orchestra", agentId: "codex", to: renderedPath)
-        let dest = home + "/.codex/hooks.json"
-        #expect(CodexHooks.install(fromRendered: renderedPath, to: dest) == true)
-        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
-        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(obj["_comment"] == nil)
-        let hooks = try #require(obj["hooks"] as? [String: Any])
+    @Test("in-memory Codex hook render contains the complete comment-free hook object")
+    func inMemoryHooksAreCodexValid() throws {
+        let hooks = try #require(HooksRenderer.codexHooks(orchestraBin: "/abs/orchestra", agentId: "codex"))
         #expect(hooks["SessionStart"] != nil)
         #expect(hooks["Stop"] != nil)
         #expect(hooks["PermissionRequest"] != nil)

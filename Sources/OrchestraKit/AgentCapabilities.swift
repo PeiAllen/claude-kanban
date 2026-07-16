@@ -86,6 +86,17 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         }
     }
 
+    /// How the host routes pointer presses and drags while this agent has enabled terminal mouse
+    /// tracking. Application reporting preserves the long-standing terminal behavior; native selection
+    /// leaves press-and-drag with SwiftTerm so streamed output cannot clear a host text selection.
+    public enum TerminalPointerInput: String, Sendable, Equatable, Codable, CaseIterable {
+        case applicationMouseReporting, nativeSelection
+
+        public var allowsApplicationMouseReporting: Bool {
+            self == .applicationMouseReporting
+        }
+    }
+
     public let sessionId: SessionId
     public let telemetry: Telemetry
     public let contextUsage: ContextUsage
@@ -94,6 +105,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
+    public let terminalPointerInput: TerminalPointerInput
     public let readinessConfirmation: ReadinessConfirmation
 
     /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
@@ -110,6 +122,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
+                terminalPointerInput: TerminalPointerInput = .applicationMouseReporting,
                 readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
                 approveChord: [KeyToken] = [.named(.enter)],
                 denyChord: [KeyToken] = [.named(.esc)]) {
@@ -121,27 +134,35 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
+        self.terminalPointerInput = terminalPointerInput
         self.readinessConfirmation = readinessConfirmation
         self.approveChord = approveChord
         self.denyChord = denyChord
     }
-}
 
-public extension AgentCapabilities {
-    /// The Claude Code adapter's shipped capabilities. Also the default for the test `StubAdapter` and
-    /// the shared `BoardModel`'s capability fallback, so existing suites and the client see Claude-shaped
-    /// behavior unless they opt out. Lives in OrchestraKit (moved from the Core adapter in F2) so the
-    /// shared, client-side `BoardModel` can use it on iOS.
-    static let claudeCode = AgentCapabilities(
-        sessionId: .seeded,
-        telemetry: .hooksPush,
-        contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed,
-        authMode: .subscription,
-        terminalImagePaste: .controlV,
-        // Claude fires SessionStart(startup) on a fresh launch and SessionStart(resume) on a relaunch, both
-        // via hooksPush — one hook capability confirms BOTH being-born phases.
-        readinessConfirmation: .sessionStartHook)
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, telemetry, contextUsage, wakeTransport, inboxDrain, readOnlyEnforcement, authMode
+        case terminalImagePaste, terminalPointerInput, readinessConfirmation, approveChord, denyChord
+    }
+
+    /// Capability payloads cross the daemon/client boundary. Decode additive fields with their historical
+    /// defaults so a newly installed client can still talk to an older daemon.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try c.decode(SessionId.self, forKey: .sessionId)
+        telemetry = try c.decode(Telemetry.self, forKey: .telemetry)
+        contextUsage = try c.decode(ContextUsage.self, forKey: .contextUsage)
+        wakeTransport = try c.decode(WakeTransport.self, forKey: .wakeTransport)
+        inboxDrain = try c.decode(InboxDrain.self, forKey: .inboxDrain)
+        readOnlyEnforcement = try c.decode(ReadOnlyEnforcement.self, forKey: .readOnlyEnforcement)
+        authMode = try c.decode(AuthMode.self, forKey: .authMode)
+        terminalImagePaste = try c.decodeIfPresent(TerminalImagePaste.self, forKey: .terminalImagePaste)
+            ?? .direct
+        terminalPointerInput = try c.decodeIfPresent(TerminalPointerInput.self, forKey: .terminalPointerInput)
+            ?? .applicationMouseReporting
+        readinessConfirmation = try c.decodeIfPresent(ReadinessConfirmation.self, forKey: .readinessConfirmation)
+            ?? .sessionStartHook
+        approveChord = try c.decodeIfPresent([KeyToken].self, forKey: .approveChord) ?? [.named(.enter)]
+        denyChord = try c.decodeIfPresent([KeyToken].self, forKey: .denyChord) ?? [.named(.esc)]
+    }
 }

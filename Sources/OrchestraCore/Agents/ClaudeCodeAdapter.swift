@@ -145,16 +145,13 @@ public struct ClaudeCodeAdapter: Adapter {
             try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
             try? json.write(toFile: cardSettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
         }
-        // Standing delegation guidance for EVERY card (independent of ctx.seed): deliver the Claude skill
-        // variant to the per-card project-skill location Claude Code discovers (`.claude/skills/<name>/`).
-        // `.claude/` is gitignore-conventional, so this doesn't dirty the tracked worktree — and it needs
-        // no global ~/.claude install. Best-effort (never throws); content is keyed via forAgent(id), so
-        // there's no `if claude` here.
-        DelegationDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-delegation/SKILL.md")
-        // Branch-tree guidance (sync / restack / tree-aware ship) as a SECOND, independent project skill —
-        // its own dir, so it composes with (never clobbers) the delegation skill. Best-effort, keyed via
-        // forAgent(id) — no `if claude` here. Installed on every spawn + recovery (this runs from both).
-        TreeDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-tree/SKILL.md")
+        // The provider-neutral bundle owns which Orchestra sections exist and their ordering. Claude's
+        // adapter owns only this packaging: two project skills, one directory each, leaving Codex free to
+        // project the identical content into its own launch-scoped config instead of a filesystem write.
+        for section in AgentGuidance.sections(for: id) {
+            _ = AgentGuidance.install(section,
+                                      at: "\(ctx.cwd)/.claude/skills/orchestra-\(section.name)/SKILL.md")
+        }
     }
 
     private func modelFlag(_ model: String?) -> [String] {
@@ -294,8 +291,24 @@ public struct ClaudeCodeAdapter: Adapter {
     }
 }
 
-// `AgentCapabilities.claudeCode` moved to OrchestraKit (the shared BoardModel's capability fallback
-// needs it on iOS); the adapter and all Core consumers still see it via Core's re-export of Kit.
+public extension AgentCapabilities {
+    /// Claude Code's shipped capabilities. This tuple stays beside its adapter: capability vocabulary is
+    /// shared in OrchestraKit, while each agent owns the concrete behavior it advertises.
+    static let claudeCode = AgentCapabilities(
+        sessionId: .seeded,
+        telemetry: .hooksPush,
+        contextUsage: .percent,
+        wakeTransport: .nativeReinvoke,
+        inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed,
+        authMode: .subscription,
+        terminalImagePaste: .controlV,
+        // Claude's interactive terminal controls rely on its existing mouse reporting behavior.
+        terminalPointerInput: .applicationMouseReporting,
+        // Claude fires SessionStart(startup) on a fresh launch and SessionStart(resume) on a relaunch, both
+        // via hooksPush — one hook capability confirms BOTH being-born phases.
+        readinessConfirmation: .sessionStartHook)
+}
 
 /// Manages Claude Code's per-directory trust state in `~/.claude.json` (keyed by absolute path under
 /// `projects.<path>`, flagged via `hasTrustDialogAccepted`). The adapter only ever *applies* the core's
