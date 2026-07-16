@@ -272,10 +272,10 @@ as its own Orchestra agent card.
 
 Two committed scripts set up the daemon on a remote Linux machine, so the Mac can run only the board UI
 while `orchestrad` — and therefore every agent, tmux session, git worktree, and repo — runs on the work
-box, reached over SSH. This is the **Mac app ↔ remote Linux daemon** topology of the
-[remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md) (a
-generalization of the [phone-client axis](10-roadmap.md#the-nine-axes) onto one shared connection spine):
-the wire protocol is **unchanged** (UDS + newline-delimited JSON-RPC), reachability is pure SSH
+box, reached over SSH. This is the **Mac app ↔ remote Linux daemon** topology — a generalization of the
+[phone-client axis](10-roadmap.md#the-nine-axes) onto one shared connection spine, built once so the
+phone client inherits it: the wire protocol is **unchanged** (UDS + newline-delimited JSON-RPC),
+reachability is pure SSH
 forwarding, and the daemon grows **no** network listener.
 
 - **`scripts/build-linux-daemon.sh [--arch x86_64|aarch64] [--out DIR]`** — cross-compiles

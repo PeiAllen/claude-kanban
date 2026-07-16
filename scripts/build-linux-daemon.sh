@@ -18,9 +18,9 @@
 # (Grab the URL + checksum matching YOUR `swift --version` from https://www.swift.org/download/ →
 # "Static Linux SDK". This script checks for an installed SDK and points you here if it's missing.)
 #
-# NOTE: produces a working binary only AFTER the Linux socket port lands (workstream A of
-# docs/superpowers/specs/2026-07-02-remote-daemon-connections-design.md). Until then `swift build`
-# for Linux fails on the Darwin-only socket code in UDSSocket.swift.
+# NOTE: the Linux socket port has shipped (UDSSocket.swift is Glibc/musl-ported with a MSG_NOSIGNAL
+# send-flag under #if os(Linux)), so this cross-build produces a working static binary. See
+# docs/08-building-operations.md ("Deploying orchestrad to a remote Linux box") for the full setup.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

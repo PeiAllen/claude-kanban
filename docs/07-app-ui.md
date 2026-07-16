@@ -70,9 +70,11 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
 - **Initial prompt** — an optional multiline field; if non-empty it becomes the card title, otherwise
   the card spawns nameless and the first prompt names it.
 - **Worktree mode** — a **repository** combo box (fuzzy-searchable, populated by scanning `reposRoot`
-  for `.git` dirs), a **branch** combo box (existing branches sorted by recency, or type a new name to
-  create one), a read-only **worktree path preview**, and a **Start-in** segmented control (Plan /
-  Implementation).
+  for `.git` dirs, ordered by newest local commit so the repo list matches the branch list's recency —
+  `RepoScanner.orderByMostRecentCommit`, the one discovery seam both the macOS sheet and the iOS picker
+  share; repos with no readable commit sort last by name), a **branch** combo box (existing branches
+  sorted by recency, or type a new name to create one), a read-only **worktree path preview**, and a
+  **Start-in** segmented control (Plan / Implementation).
 - **Freeform mode** — an `NSOpenPanel` directory picker plus a **read-only** toggle. On every directory
   change the sheet queries the [`trustState`](05-command-reference.md#registry-commands) command (PR D3);
   when the chosen dir is **untrusted** it **forces the read-only toggle on and shows an amber notice**
