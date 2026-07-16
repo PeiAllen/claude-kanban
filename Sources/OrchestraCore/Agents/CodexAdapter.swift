@@ -254,6 +254,10 @@ public struct CodexAdapter: Adapter {
         let path = CodexLaunchConfiguration.profilePath(cwd: ctx.cwd, codexHome: codexHome)
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ctx.autoInstallMCPGlobally {
+            _ = MCPConfiguration.installCodexGlobally(command: ctx.orchestraMCPBin,
+                                                       at: codexHome + "/config.toml")
+        }
         try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
             .write(toFile: path, atomically: true, encoding: .utf8)
     }
@@ -298,7 +302,8 @@ public struct CodexAdapter: Adapter {
                                     priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
-                                       name: ctx.name, access: ctx.access)
+                                       name: ctx.name, access: ctx.access,
+                                       orchestraMCPBin: ctx.orchestraMCPBin)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

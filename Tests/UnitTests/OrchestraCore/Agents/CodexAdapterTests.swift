@@ -140,7 +140,8 @@ struct CodexAdapterArgvTests {
     func launchScopedConfigIsSharedByStartAndResume() throws {
         let cwd = "/wt/with \"quote\" and \\ slash"
         let ctx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: "sess-9", prompt: "go",
-                                 orchestraBin: "/abs/orchestra", trustCwd: false)
+                                 orchestraBin: "/abs/orchestra", trustCwd: false,
+                                 orchestraMCPBin: "/abs/orchestra-mcp")
         let start = try profile(ctx)
         let resume = try profile(ctx, resume: true)
 
@@ -155,6 +156,8 @@ struct CodexAdapterArgvTests {
         #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
         #expect(lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") && $0.contains("_report --event permission --agent codex") })
         #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
+        #expect(lines.contains("[mcp_servers.orchestra]"))
+        #expect(lines.contains("command = \"/abs/orchestra-mcp\""))
         let instructions = try #require(lines.first { $0.hasPrefix("developer_instructions = ") })
         #expect(instructions.contains("Orchestra delegation"))
         #expect(instructions.contains("Working in a branch tree"))
@@ -617,15 +620,35 @@ struct CodexGuidanceTests {
     func guidanceIsLaunchScoped() throws {
         let home = NSTemporaryDirectory() + "codexcfg-\(UUID().uuidString)"
         let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
-        let ctx = AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra")
+        let ctx = AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra",
+                                 orchestraMCPBin: "/abs/orchestra-mcp")
         try adapter.prepareToLaunch(ctx)
         let toml = try String(contentsOfFile: CodexLaunchConfiguration.profilePath(cwd: "/wt", codexHome: home),
                               encoding: .utf8)
         #expect(toml.contains("developer_instructions = "))
         #expect(toml.contains("Orchestra delegation"))
         #expect(toml.contains("Working in a branch tree"))
+        #expect(toml.contains("[mcp_servers.orchestra]"))
+        #expect(toml.contains("command = \"/abs/orchestra-mcp\""))
         // The instructions never ride the argv (that is the bug this fixes).
         #expect(!adapter.start(ctx).contains("-c"))
+    }
+
+    @Test("global MCP installation is opt-in and uses the Codex home")
+    func globalMCPInstallIsOptIn() throws {
+        let home = NSTemporaryDirectory() + "codex-mcp-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        let path = home + "/config.toml"
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraMCPBin: "/abs/orchestra-mcp"))
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraMCPBin: "/abs/orchestra-mcp",
+                                                   autoInstallMCPGlobally: true))
+        let config = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(config.contains("[mcp_servers.orchestra]"))
+        #expect(config.contains("command = \"/abs/orchestra-mcp\""))
     }
 
     @Test("prepareToLaunch is load-bearing: no profile file → `-p` would resolve nothing")
