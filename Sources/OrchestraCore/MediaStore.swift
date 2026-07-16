@@ -248,11 +248,16 @@ public actor MediaStore {
         return nil
     }
 
+    /// The store's own re-check of an already-validated caption, mirroring how `readValidatedSource`
+    /// re-sniffs bytes it was handed a path to: this actor writes to disk, so it does not take a caller's
+    /// word that agent-authored text is a legal filename stem. A caption that reaches here malformed is a
+    /// caller bug (the `publish-image` handler rejects first), so this drops the label rather than
+    /// inventing one — an unlabeled image is honest; a silently-rewritten one is not.
+    ///
+    /// The empty string means "no caption", and every client falls back to its own generic name.
     private func safeCaption(_ caption: String?) -> String {
-        let raw: String = caption ?? ""
-        let withoutControls = raw.unicodeScalars.filter { $0.properties.generalCategory != .control }
-        let text = String(String.UnicodeScalarView(withoutControls)).trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(text.prefix(120)).isEmpty ? "image" : String(text.prefix(120))
+        guard let caption, TranscriptImageCaption.isValid(caption) else { return "" }
+        return caption
     }
 
     private func isRegular(_ status: stat) -> Bool {

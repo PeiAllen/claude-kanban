@@ -17,9 +17,10 @@ struct OrchestraApp: App {
         // The "Vim keyboard" setting defaults to on; register it so the plain-object
         // KeyboardController reads `true` before the user ever visits Settings.
         UserDefaults.standard.register(defaults: ["orch_vim_keys": true])
-        // Preview exports may outlive the transient popover so an external image app can finish opening
-        // them. Bound those app-owned copies once at launch, before any terminal can resolve a reference.
-        TranscriptImagePreviewCache.pruneAtLaunch()
+        // Preview exports outlive the transient popover so an external image app can finish opening
+        // them — but never outlive the app session that made them. Wipe the spool once at launch,
+        // before any terminal can resolve a reference.
+        TranscriptImagePreviewSpool.wipeAtLaunch()
     }
 
     var body: some Scene {
@@ -41,6 +42,14 @@ struct OrchestraApp: App {
                 .onOpenURL { url in model.select(ref: url.absoluteString) }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { _Concurrency.Task { await model.reconcileIfConnected() } }
+                }
+                // A card's staged images die with the card, mirroring the daemon dropping its own copy on
+                // an archive intent. Keyed on ids rather than the array so a diffstat/telemetry churn on an
+                // archived card doesn't re-fire. Sweeping EVERY archived card (not just newly-arrived ones)
+                // is deliberate: it is idempotent, costs a no-op removeItem, and self-heals a wipe missed
+                // while the app was closed.
+                .onChange(of: model.archived.map(\.id)) { _, ids in
+                    for id in ids { TranscriptImagePreviewSpool.removeExports(cardId: id) }
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -252,6 +261,61 @@ private struct DebugLaunchHook: ViewModifier {
     /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
     /// `ORCH_SHELL_HEIGHT` overrides the persisted shell-panel height so resize wiring is screenshot-
     /// able at different sizes.
+    /// `ORCH_SHOW=image`: pop the transcript image preview over a mock card's inspector with a synthetic
+    /// payload, so the popover's chrome can be screenshotted headlessly (no daemon, no published image).
+    /// The loader is the only fake — the popover, its theming, and its zoom are the real ones.
+    @MainActor
+    static func showTranscriptImage(model: BoardModel) {
+        showShells(model: model)
+        let referenceID = UUID()
+        let cardId = model.tasks.first?.id ?? UUID()
+        let payload = TranscriptImagePayload(
+            reference: TranscriptImageReference(
+                id: referenceID, cardId: cardId, sessionEpoch: 1,
+                caption: ProcessInfo.processInfo.environment["ORCH_IMAGE_CAPTION"]
+                    ?? "throughput-after-the-cache-fix",
+                mimeType: "image/png",
+                filename: "\(referenceID.uuidString.lowercased()).png"),
+            dataBase64: sampleImagePNG().base64EncodedString())
+        // The inspector's terminal has to exist before the popover can anchor to it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard let terminal = NSApp.windows.compactMap({ findTerminal($0.contentView) }).first else { return }
+            imagePresenter.show(referenceID: referenceID, from: terminal) { _ in payload }
+        }
+    }
+
+    private static let imagePresenter = TranscriptImagePreviewPresenter()
+
+    /// The agent terminal is the anchor the real activation uses; find it by the tag the view sets.
+    private static func findTerminal(_ view: NSView?) -> NSView? {
+        guard let view else { return nil }
+        if let term = view as? ScrollableTerminalView, term.termWindow == "agent" { return term }
+        for sub in view.subviews { if let hit = findTerminal(sub) { return hit } }
+        return nil
+    }
+
+    /// Colour bands + a label: enough structure to show fit-scale and the image surface's chrome.
+    private static func sampleImagePNG() -> Data {
+        let size = NSSize(width: 1400, height: 900)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let colors: [NSColor] = [.systemRed, .systemOrange, .systemGreen, .systemBlue, .systemPurple]
+        for (i, color) in colors.enumerated() {
+            color.setFill()
+            NSRect(x: CGFloat(i) * size.width / 5, y: 0, width: size.width / 5, height: size.height).fill()
+        }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        "ORCHESTRA".draw(in: NSRect(x: 0, y: 390, width: size.width, height: 130), withAttributes: [
+            .font: NSFont.boldSystemFont(ofSize: 96), .foregroundColor: NSColor.white,
+            .paragraphStyle: style,
+        ])
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:])
+        else { return Data() }
+        return png
+    }
+
     static func showShells(model: BoardModel) {
         let env = ProcessInfo.processInfo.environment
         let n = Int(env["ORCH_SHELLS_N"] ?? "") ?? 2
@@ -632,6 +696,7 @@ private struct DebugLaunchHook: ViewModifier {
                 model.archived = DebugLaunchHook.mockArchived
                 model.showDone = true
             case "shells": DebugLaunchHook.showShells(model: model)
+            case "image": DebugLaunchHook.showTranscriptImage(model: model)
             case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
             default: break

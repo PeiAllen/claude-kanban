@@ -288,7 +288,16 @@ public enum CommandCatalog {
                       params: schema([
                           "ref": refProp(),
                           "path": strProp("Absolute PNG or JPEG source path to copy into temporary daemon media"),
-                          "caption": strProp("Optional short label shown beside the transcript reference"),
+                          // pattern/maxLength come from the shared TranscriptImageCaption so the schema an
+                          // MCP client validates against IS the rule the daemon enforces. The caption
+                          // doubles as the filename each app gives the copy it stages for the human, which
+                          // is why it is a slug rather than free text.
+                          "caption": patternProp(
+                              "Optional short label shown beside the transcript reference, and the "
+                                  + "filename the human sees when they save or copy it — "
+                                  + TranscriptImageCaption.rule,
+                              pattern: TranscriptImageCaption.pattern,
+                              maxLength: TranscriptImageCaption.maxLength),
                       ], required: ["ref", "path"]),
                       exposure: .terminalOnly, kind: .mutation, phaseGate: gLiveDead),
 
@@ -345,6 +354,16 @@ public enum CommandCatalog {
     // Required-ness is driven by the `required:` array in `schema(...)`, so these just describe shape.
     public static func strProp(_ desc: String) -> JSONValue {
         .object(["type": .string("string"), "description": .string(desc)])
+    }
+    /// A string param that additionally advertises its shape. The registry dispatches on `phaseGate` and
+    /// never validates params against a schema, so this does not enforce anything server-side — its job is
+    /// to let an MCP client reject a malformed value before the call. The verb's handler must enforce the
+    /// same rule; both sides read it from one shared definition so they cannot drift.
+    public static func patternProp(_ desc: String, pattern: String, maxLength: Int) -> JSONValue {
+        .object([
+            "type": .string("string"), "description": .string(desc),
+            "pattern": .string(pattern), "maxLength": .int(maxLength),
+        ])
     }
     public static func intProp(_ desc: String) -> JSONValue {
         .object(["type": .string("integer"), "description": .string(desc)])

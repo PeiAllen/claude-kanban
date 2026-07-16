@@ -196,23 +196,28 @@ the client resolves that UUID through the app-only [`media`](05-command-referenc
 call. Because the link is opaque, activating it can never open an arbitrary agent path — the worst a
 stale reference can do is fail to resolve, which surfaces as "Image preview expired".
 
-**On the Mac**, the link opens a transient `NSPopover` anchored to the reference in the terminal, which is
-why this is a bespoke view rather than QuickLook's `QLPreviewPanel` — a shared floating panel can't stay
-tied to a terminal coordinate. Inside it, zoom and pan are `NSScrollView`'s own (`allowsMagnification`),
-alongside explicit −/Fit/+ buttons and **Copy** and **Open**. Scrolling the terminal dismisses it, since
-the anchor would otherwise drift from its reference. **Open** exports to a pruned cache under Application
-Support rather than a temp file, because it hands the image to *another application* that may still be
-decoding after the popover closes — the file has to outlive the preview. That cache is bounded by a
-shared, hermetically-testable policy (`TranscriptImageCachePolicy` in OrchestraKit: 7 days, 256 MB,
-oldest evicted first).
+**Both clients hand the image to QuickLook** — `QLPreviewPanel` on the Mac, `QLPreviewController` on the
+phone — so zoom, pan, share, Open-with, full screen, and Esc-to-dismiss are the system's rather than ours,
+and a published image behaves like every other image on the device. The Mac panel is parked to the **left
+of the inspector** so the agent's transcript stays readable beside it, and it deliberately stays up while
+you scroll: it's a viewer to read alongside, not a popover tethered to one line. It closes on Esc, or when
+you switch cards.
 
-**On the phone**, the same reference opens a full-screen **`QLPreviewController`**, so pinch-zoom, pan,
-and the export popup (copy, share, save to Files, AirDrop) are the system's rather than ours, and a
-published image behaves like every other image on the device. QuickLook previews a *file*, so the phone
-stages the bytes in its **temporary directory** and deletes them on dismiss. Unlike the Mac's export there
-is no handoff to another app to outlive — QuickLook is in-process — so the staged file needs no eviction
-policy of its own: iOS may purge tmp whenever the app isn't running, which covers the crash case that
-dismiss can't.
+QuickLook previews a *file*, so both clients stage the daemon's bytes on disk — and the staged file is
+named from the reference's **caption**, which is why the caption is a validated slug: the human sees that
+name in QuickLook's title bar, the Save dialog, and (on iOS, verified) the `suggestedName` that rides
+along on the pasteboard when they Copy. Uniqueness comes from a UUID *directory* rather than a UUID
+filename, so two images sharing a caption can't collide while the visible name stays real.
+
+The two differ only in how long a staged file must live, and the difference is entirely about who else
+might hold it. **iOS** deletes on dismiss: QuickLook is in-process and hands off to no one, so nothing has
+to outlive the preview — and iOS purging tmp when the app isn't running covers the crash case dismiss
+can't. **macOS** can't do that, because `Open with` (and a drag out of the panel) gives the file to
+*another application* that may still be reading it. So the Mac keeps a write-only spool in its temporary
+directory, swept at two coarse boundaries — the whole spool at launch, a card's subdirectory when that
+card is archived — rather than by an eviction policy. Nothing is ever read back from it, so there is no
+cache to preserve; and deleting a file another app already has open is safe regardless, since unlink keeps
+the inode alive for its open descriptors.
 
 ## Keyboard navigation
 

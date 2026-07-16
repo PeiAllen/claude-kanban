@@ -26,21 +26,33 @@ private enum TranscriptImagePreviewError: Error {
 /// running, so a file orphaned by a crash cannot accumulate, and the preview deletes its own file on
 /// dismiss. That combination is why this side needs no age/size prune of its own.
 enum TranscriptImagePreviewFile {
-    static func write(data: Data, mimeType: String) throws -> URL {
+    /// The caption becomes the filename, because `TranscriptImageCaption` constrained it to a legal one
+    /// at the `publish-image` boundary — no sanitizing here, and none is safe to add here either: this is
+    /// a client, and the daemon is where that contract is enforced.
+    ///
+    /// It is worth the trouble because this name is what the human actually sees: QuickLook's share sheet
+    /// header, the Save-to-Files dialog, and — verified — the `suggestedName` that rides along on the
+    /// pasteboard when they Copy. Uniqueness comes from a UUID *directory*, so two images sharing a
+    /// caption can't collide while the visible name stays real.
+    static func write(data: Data, mimeType: String, caption: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("TranscriptImagePreviews", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // The extension is what QuickLook types the file by; the caller validates MIME before staging.
+        let stem = TranscriptImageCaption.isValid(caption) ? caption : "image"
         let url = directory
-            .appendingPathComponent(UUID().uuidString.lowercased())
+            .appendingPathComponent(stem)
             .appendingPathExtension(mimeType == "image/jpeg" ? "jpg" : "png")
         try data.write(to: url, options: .atomic)
         return url
     }
 
+    /// Removes the staged file's whole UUID directory, not just the file — the directory is the unit of
+    /// uniqueness, so leaving it behind would leak an empty dir per preview.
     static func remove(_ url: URL?) {
         guard let url else { return }
-        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }
 }
 
@@ -70,8 +82,11 @@ struct MobileTranscriptImagePreview: View {
         }
         .preferredColorScheme(.dark)
         .task(id: route) { await load(route) }
-        // The staged file exists only as long as the preview that owns it. QuickLook presents its share
-        // sheet as a child of the live preview, so an export in flight still has its file.
+        // The staged file exists only as long as the preview that owns it, and that is safe even for an
+        // export the user already performed: QuickLook's share sheet is a child of the live preview, so
+        // an activity always resolves the item while the file is still there, and it takes the BYTES —
+        // Copy then dismiss leaves a full-resolution image on UIPasteboard with the file long gone, not
+        // a lazy provider pointing at it. So nothing downstream outlives the file it came from.
         .onDisappear {
             TranscriptImagePreviewFile.remove(fileURL)
             fileURL = nil
@@ -137,7 +152,8 @@ struct MobileTranscriptImagePreview: View {
                 throw TranscriptImagePreviewError.invalidPayload
             }
             let staged = try TranscriptImagePreviewFile.write(data: data,
-                                                              mimeType: payload.reference.mimeType)
+                                                              mimeType: payload.reference.mimeType,
+                                                              caption: payload.reference.caption)
             guard !_Concurrency.Task.isCancelled else {
                 TranscriptImagePreviewFile.remove(staged)
                 return

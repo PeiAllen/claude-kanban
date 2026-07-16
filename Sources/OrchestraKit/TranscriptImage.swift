@@ -1,5 +1,56 @@
 import Foundation
 
+/// The one definition of a legal transcript image caption, shared so the advertised contract and the
+/// enforced contract cannot drift: `CommandCatalog` publishes `pattern`/`maxLength` from here into the
+/// `publish-image` tool schema (so an MCP client rejects a bad caption before the call), and the daemon
+/// handler validates with `validate` (so every client path — CLI, MCP, anything later — is covered, since
+/// the registry dispatches on `phaseGate` alone and never validates params against a schema).
+///
+/// A caption is deliberately a slug, not free text, because it is ALSO the filename every client gives
+/// the copy it stages for the user. Constraining the input at the boundary is what lets every consumer
+/// downstream skip sanitizing: the daemon, the macOS export, and the iOS staged file can each use the
+/// caption verbatim as a filename stem, and no path can be built out of agent text that was never legal.
+///
+/// The rule is the hostname-label shape — alphanumeric ends, dashes only inside:
+///   * dashes only INSIDE, so a caption can never produce `-foo.png`, which every Unix tool reads as
+///     flags and which invites a CLI arg parser to eat the value as an option;
+///   * ASCII only, which bans `/` and `:` (path separators), leading dots (`..`), and — the subtle one —
+///     Unicode *format* characters like U+202E RIGHT-TO-LEFT OVERRIDE, which are NOT control characters
+///     and would otherwise survive a control-stripping filter to spoof a filename's visible extension;
+///   * ASCII also makes the length cap byte-exact, so `maxBytes` cannot be overrun by multi-byte
+///     characters the way a Character-counted cap can (120 emoji = ~480 bytes > NAME_MAX).
+public enum TranscriptImageCaption {
+    /// Bytes == characters here, since every legal character is ASCII. Comfortably inside NAME_MAX (255)
+    /// with room for an extension and the enclosing directory.
+    public static let maxLength = 80
+
+    /// Hostname-label shape. A single character must still be alphanumeric, hence the optional tail.
+    public static let pattern = "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$"
+
+    /// The human-facing rule, one sentence — reused verbatim by the tool schema, the CLI help, and the
+    /// agent-facing guidance so an agent reads the same contract wherever it looks.
+    public static let rule =
+        "letters, digits and dashes only, starting and ending alphanumeric, \(maxLength) characters max"
+
+    public static func isValid(_ caption: String) -> Bool {
+        guard !caption.isEmpty, caption.utf8.count <= maxLength else { return false }
+        return caption.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// A nil/omitted caption is legal and means "no label" — only a PRESENT caption must be well-formed.
+    /// Rejecting rather than munging is the point: a silently-rewritten caption would desync the label the
+    /// agent believes it published from the filename the human sees.
+    public static func validated(_ caption: String?) throws -> String? {
+        guard let caption else { return nil }
+        guard isValid(caption) else { throw TranscriptImageCaptionError.malformed }
+        return caption
+    }
+}
+
+public enum TranscriptImageCaptionError: Error, Equatable {
+    case malformed
+}
+
 /// An opaque, daemon-issued reference to a temporary image attached to one card session.
 public struct TranscriptImageReference: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
@@ -124,47 +175,5 @@ public enum TranscriptImageTextTokenizer {
                 false
             }
         }
-    }
-}
-
-/// Metadata used by the macOS preview export cache. It stays platform-neutral so eviction ordering is
-/// hermetically testable without AppKit or filesystem access.
-public struct TranscriptImageCacheEntry: Sendable, Equatable {
-    public let url: URL
-    public let byteCount: Int
-    public let modifiedAt: Date
-
-    public init(url: URL, byteCount: Int, modifiedAt: Date) {
-        self.url = url
-        self.byteCount = byteCount
-        self.modifiedAt = modifiedAt
-    }
-}
-
-/// Deterministic removal policy for temporary desktop exports: expire old files first, then evict the
-/// least-recently-modified survivors until their total size fits within the configured bound.
-public enum TranscriptImageCachePolicy {
-    public static func filesToRemove(entries: [TranscriptImageCacheEntry], now: Date,
-                                     maxAge: TimeInterval, maxBytes: Int) -> [URL] {
-        let stale = entries.filter { now.timeIntervalSince($0.modifiedAt) > maxAge }
-        var retained = entries.filter { !stale.contains($0) }.sorted(by: isNewer)
-        var total = retained.reduce(0) { $0 + $1.byteCount }
-        var removed = stale.sorted(by: isOlder).map(\.url)
-
-        while total > maxBytes, let oldest = retained.popLast() {
-            total -= oldest.byteCount
-            removed.append(oldest.url)
-        }
-        return removed
-    }
-
-    private static func isNewer(_ lhs: TranscriptImageCacheEntry, _ rhs: TranscriptImageCacheEntry) -> Bool {
-        if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt > rhs.modifiedAt }
-        return lhs.url.path > rhs.url.path
-    }
-
-    private static func isOlder(_ lhs: TranscriptImageCacheEntry, _ rhs: TranscriptImageCacheEntry) -> Bool {
-        if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt < rhs.modifiedAt }
-        return lhs.url.path < rhs.url.path
     }
 }

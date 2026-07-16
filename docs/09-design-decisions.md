@@ -122,6 +122,22 @@ feature is an [explicit verb](05-command-reference.md#registry-commands), `publi
 re-reads and re-validates the bytes itself (magic-number sniff, regular files only, bounded per-image and
 per-session). The agent's path is consumed at publish time and never crosses back to a client.
 
+**The caption is constrained at the boundary, so nothing downstream has to sanitize.** The caption doubles
+as the filename each client stages, which makes agent-authored text into a path — the classic place to
+grow three subtly-different sanitizers (daemon, macOS, iOS) and audit them forever. Instead
+`TranscriptImageCaption` makes the bad input unrepresentable: letters, digits and dashes, alphanumeric
+ends, 80 bytes. Everything downstream then uses `reference.caption` verbatim. The specific choices are
+each load-bearing: **dashes only inside**, because a leading dash yields `-foo.png`, which every Unix tool
+reads as flags; **ASCII only**, which bans `/`, `:` and leading dots, and — the subtle one — Unicode
+*format* characters like `U+202E RIGHT-TO-LEFT OVERRIDE`, which are category `Cf`, not `Cc`, so a
+control-stripping filter passes them through to spoof a filename's visible extension; and ASCII also makes
+the length cap **byte-exact**, closing the gap where a Character-counted cap (120 emoji ≈ 480 bytes)
+overruns `NAME_MAX`. A malformed caption is **rejected, not rewritten**, because a silently-cleaned
+caption would desync the label the agent believes it published from the filename the human saves. The rule
+is advertised as `pattern`/`maxLength` on the MCP tool schema *and* enforced in the handler, from one
+shared definition — the registry dispatches on `phaseGate` and validates params against no schema, so the
+advertised contract would otherwise be unenforced.
+
 **The reference is opaque.** What lands in the transcript is an OSC 8 hyperlink carrying a bare UUID; the
 client resolves it through the app-only [`media`](05-command-reference.md#server-only-built-in-methods)
 call. No filesystem location crosses the boundary in either direction, so activating a link can't open an
@@ -139,24 +155,34 @@ one `AgentGuidance` section, so Claude receives them as a project skill and Code
 developer instructions from the same source, with no `if claude` branch (see
 [the adapter capability descriptor](04-cards-worktrees-sessions.md#agent-adapters)).
 
-### Native image viewers where the anchor allows, bespoke where it doesn't
+### The OS previews images, on both clients
 
-The two clients preview the same reference differently, and the split is about *anchoring*, not taste.
+Both clients hand a published image to QuickLook — `QLPreviewPanel` on the Mac, `QLPreviewController` on
+the phone — rather than rendering it themselves.
 
-The Mac's preview is an `NSPopover` tied to the reference's coordinate in the terminal, and QuickLook's
-`QLPreviewPanel` is a shared floating window that cannot be tied to one — so the popover is bespoke, and
-pays for it with an `NSScrollView` and a small export cache. The phone has no anchor to honor: the
-reference opens full-screen either way, so it uses **`QLPreviewController`** and inherits pinch-zoom, pan,
-and the export popup (copy, share, save to Files, AirDrop) instead of hand-rolling a `UIScrollView`
-viewer and an activity sheet. A published image then behaves like every other image on the phone, which
-no amount of custom code buys.
+This replaced a bespoke macOS popover, and the reasoning that had justified it is worth recording because
+it was wrong in an instructive way. The popover was defended as *anchored*: tied to the reference's
+coordinate in the terminal, which `QLPreviewPanel` (a shared floating panel) cannot be. That is true, and
+it was not worth ~350 lines of `NSScrollView` magnification, hand-built zoom controls, a centering clip
+view, and theming — to arrive at a worse version of a viewer every Mac user already has. The honest test
+is what the custom code bought that QuickLook doesn't give: zoom, pan, share, Open-with, full screen, and
+Esc-to-dismiss all came free, and anchoring was the only thing left on the ledger.
 
-That choice sets each side's storage. QuickLook previews a *file*, so the phone stages bytes in its
-temporary directory and deletes them on dismiss — nothing outlives the preview, because QuickLook is
-in-process and hands off to no one; iOS purging tmp when the app isn't running covers the crash case that
-dismiss can't. The Mac's **Open** button is the opposite: it hands the file to *another application* that
-may still be decoding after the popover closes, so that export must outlive its preview, which is exactly
-why it needs a bounded cache (`TranscriptImageCachePolicy`) and the phone does not.
+Anchoring also turned out to be the wrong goal. A preview that dies when you scroll is a popover; what a
+reader actually wants is to leave the image up and read the transcript *beside* it. So the Mac panel is
+parked to the **left of the inspector** and stays until Esc or a card switch. (QuickLook's
+`sourceFrameOnScreenFor` delegate can zoom a panel open from a link's rect, which would have restored a
+form of anchoring — measured, supplying a 16×16 source rect pinned the panel *at* 16×16 instead, and a
+zoom from a link on the right to a panel parked on the left would fight the placement anyway.)
+
+The remaining asymmetry is storage lifetime, and it is not aesthetic — it is about who else holds the
+file. QuickLook previews a *file*, so both clients stage bytes on disk. iOS deletes on dismiss, because
+QuickLook is in-process and hands off to no one, with iOS's tmp purge covering the crash case. macOS
+cannot: `Open with` gives the file to *another application* that may still be reading it, so the Mac keeps
+a write-only spool swept at launch and on card-archive. Nothing is ever read back from that spool — it is
+not a cache, which is why it needs no eviction policy, only a coarse boundary. Dismiss-time deletion is
+the one thing that would NOT have worked for the old popover: `.transient` closes exactly when the
+receiving app takes key, i.e. mid-launch.
 
 ### iOS in-process SSH rides Network.framework (NIOTransportServices), not POSIX sockets
 

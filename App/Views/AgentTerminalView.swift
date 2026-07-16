@@ -80,9 +80,6 @@ struct AgentTerminalView: NSViewRepresentable {
             guard let coordinator, let term else { return }
             coordinator.openTranscriptImage(referenceID, from: term)
         }
-        term.onTerminalScroll = { [weak coordinator = context.coordinator] in
-            coordinator?.dismissTranscriptImage()
-        }
         applyColors(term, coordinator: context.coordinator)
         context.coordinator.attached = "\(session):\(window)"
         context.coordinator.loadTranscriptImage = loadTranscriptImage
@@ -115,9 +112,6 @@ struct AgentTerminalView: NSViewRepresentable {
             terminal.configureImageLinkHandler { [weak coordinator = context.coordinator, weak terminal] referenceID in
                 guard let coordinator, let terminal else { return }
                 coordinator.openTranscriptImage(referenceID, from: terminal)
-            }
-            terminal.onTerminalScroll = { [weak coordinator = context.coordinator] in
-                coordinator?.dismissTranscriptImage()
             }
         }
         let isLive = context.coordinator.attachWhileLive()
@@ -313,7 +307,7 @@ struct AgentTerminalView: NSViewRepresentable {
         func openTranscriptImage(_ referenceID: UUID, from terminal: ScrollableTerminalView) {
             guard let loadTranscriptImage else { return }
             transcriptImagePreview.show(referenceID: referenceID, from: terminal,
-                                        anchor: terminal.lastActivationPoint, load: loadTranscriptImage)
+                                        load: loadTranscriptImage)
         }
 
         func dismissTranscriptImage() {
@@ -427,10 +421,6 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// The terminal-local point of the most recent deliberate mouse activation. SwiftTerm reports an
     /// OSC 8 link on mouse-up, so retaining mouse-down's converted point gives the preview a stable
     /// anchor without sending an extra event through to tmux.
-    var lastActivationPoint: NSPoint = .zero
-    /// Dismisses a preview whenever its transcript starts moving, whether the wheel becomes tmux mouse
-    /// input or SwiftTerm-native scrollback.
-    var onTerminalScroll: (() -> Void)?
     private var linkDelegateProxy: TerminalImageLinkDelegateProxy?
 
     /// Which tmux window this terminal is attached to ("agent" / "shell-N"). Read by FocusBridge (via
@@ -515,7 +505,6 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
                 if let term = cur as? ScrollableTerminalView {
                     switch event.type {
                     case .scrollWheel:
-                        term.onTerminalScroll?()
                         return term.handleScroll(event) ? nil : event   // nil = consumed (forwarded to tmux)
                     case .mouseMoved:
                         return nil                                       // swallow hover motion (see above)
@@ -525,7 +514,6 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
                         // the click reach SwiftTerm normally. A Command-click on a link is the sole
                         // exception: keep both its down/up out of tmux so a preview never becomes a
                         // provider-TUI click.
-                        term.lastActivationPoint = term.convert(event.locationInWindow, from: nil)
                         term.onBecameFirstResponder?()
                         return term.hasCommandLink(at: event) ? nil : event
                     case .leftMouseUp:

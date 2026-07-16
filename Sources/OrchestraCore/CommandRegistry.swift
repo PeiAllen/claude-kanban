@@ -307,8 +307,18 @@ public struct CommandRegistry: Sendable {
                 guard (path as NSString).isAbsolutePath else {
                     throw OrchestraError.invalidParams("image path must be absolute")
                 }
+                // Enforce the caption shape the schema advertises: the registry validates params against
+                // no schema, so this is the only place every client path converges. Reject, never munge —
+                // a rewritten caption would desync the label the agent thinks it published from the
+                // filename the human ends up saving.
+                let caption: String?
+                do { caption = try TranscriptImageCaption.validated(p.optString("caption")) } catch {
+                    throw OrchestraError.invalidParams(
+                        "image caption must be \(TranscriptImageCaption.rule) — it is also the filename "
+                            + "shown when a human saves or copies the image")
+                }
                 return try JSONValue(encodable: try await svc.publishImage(
-                    t.id, sourcePath: path, caption: p.optString("caption")))
+                    t.id, sourcePath: path, caption: caption))
             },
 
             "send-keys": { svc, p, src in
