@@ -304,9 +304,8 @@ forwards the remote daemon's unix socket to a local path, and the terminals ride
 connection (`ssh -tt … tmux attach`), so no PTY bytes cross the JSON-RPC plane and you authenticate
 once. Because reachability is pure forwarding, the daemon's attack surface stays what it always was:
 a `0600` unix socket. See [Connections](07-app-ui.md#onboarding-settings-recovery-and-popovers) in the
-app chapter, [deploying to a Linux box](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
-for the static-musl cross-build, and the
-[remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md).
+app chapter and [deploying to a Linux box](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
+for the static-musl cross-build.
 
 Two more resilience details round out the transport seam:
 

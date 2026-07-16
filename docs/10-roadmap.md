@@ -110,7 +110,7 @@ The principle is to design every change *toward* these axes, never away from the
 | 6 | **Context-clearing continuity** | `context-continuity` | When context fills, the agent saves a handoff and Orchestra launches a fresh agent seeded with it. |
 | 7 | **View/review code on the board** ✅ **shipped** | `code-review-on-board` | A diffstat on the card and a read-only in-inspector diff, instead of only "View changes → Zed" — **shipped** (see [chapter 9](09-design-decisions.md#shipped-feature-history)). Inline review comments/approvals remain axis 5. |
 | 8 | **Outside-source intake** | `external-intake` | Let external sources (a todo app, webhooks, email) create cards — just another control-plane client calling `spawn`. |
-| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. Its **connection spine has now shipped** — a `Transport` seam + reconnect/backoff, a persisted `Connection`/`ConnectionStore` model + a Connections settings pane, the Linux daemon port, and the app-managed SSH tunnel — built once via the [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md)'s driving case, a **Mac app ↔ remote Linux `orchestrad`** over SSH ([deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box) live; see [chapter 9](09-design-decisions.md#shipped-feature-history)). The iOS app itself is the remaining work, and it inherits that spine. |
+| 9 | **Phone client** | `phone-client` | An iOS client over SSH-forwarded UDS (Tailscale), reusing the shared core/board-model/theme. Its **connection spine has now shipped** — a `Transport` seam + reconnect/backoff, a persisted `Connection`/`ConnectionStore` model + a Connections settings pane, the Linux daemon port, and the app-managed SSH tunnel — built once via its driving case, a **Mac app ↔ remote Linux `orchestrad`** over SSH ([deploy scripts](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box) live; see [chapter 9](09-design-decisions.md#shipped-feature-history)). The iOS app itself is the remaining work, and it inherits that spine. |
 
 ## Axis designs
 
@@ -258,7 +258,7 @@ Sequencing guidance from the design gates:
    Making the registry the one true source unblocks axes 3, 5, and 8.
 2. **Near-term standalone fix — ✅ shipped:** **`ControlClient` auto-reconnect** (pulled ahead from
    axis 9) hardens the desktop app today — landed as workstream **B** of the
-   [remote-daemon connections design](superpowers/specs/2026-07-02-remote-daemon-connections-design.md),
+   [remote-daemon connections work](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box),
    which specified the reconnect/backoff/re-subscribe + `Transport` seam **once**, now shared by the
    phone client *and* the [Mac↔remote-Linux-daemon connection](08-building-operations.md#deploying-orchestrad-to-a-remote-linux-box)
    (SSH-tunnel blips need it either way); see [chapter 9](09-design-decisions.md#shipped-feature-history).
