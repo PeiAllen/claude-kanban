@@ -273,13 +273,18 @@ public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
     public let name: String          // human label
     public let icon: String          // SF Symbol name
     public let models: [AgentModel]  // this agent's selectable models
-    public let capabilities: AgentCapabilities
+    /// Optional because a client can hold an `AgentInfo` it built ITSELF, before the daemon has
+    /// answered — and only the daemon knows what an adapter actually advertises. The presets are adapter
+    /// extensions living in OrchestraCore, which client-safe Kit cannot reference, so a client has no
+    /// honest value to put here: nil means "not told yet", not "no capabilities".
+    /// Readers already treat absence as a safe default — see `BoardStore.capabilities(for:)`.
+    public let capabilities: AgentCapabilities?
 
-    // No default for `capabilities`: the `.claudeCode` preset is an adapter extension that lives in
-    // OrchestraCore (client-safe Kit cannot reference it). Every call site passes the adapter's own
-    // `capabilities` explicitly, so this is behavior-neutral.
+    // Deliberately NOT defaulted: a daemon-side call site builds this FROM an adapter and must pass that
+    // adapter's own capabilities, so every site states its intent rather than defaulting to nil by
+    // omission.
     public init(id: String, name: String, icon: String, models: [AgentModel],
-                capabilities: AgentCapabilities) {
+                capabilities: AgentCapabilities?) {
         self.id = id; self.name = name; self.icon = icon; self.models = models
         self.capabilities = capabilities
     }

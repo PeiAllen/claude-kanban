@@ -84,6 +84,10 @@ struct SpawnSheet: View {
     /// The Claude Code fallback, built from OrchestraKit types only (iOS doesn't link OrchestraCore, so
     /// it can't construct `ClaudeCodeAdapter()` like the desktop sheet). Used only until `model.agents`
     /// arrives — never invents providers the daemon hasn't wired up.
+    ///
+    /// `capabilities: nil` for the same reason: this sheet only needs an agent's name/icon/models to
+    /// draw its pickers, and what the daemon's adapter advertises is not ours to guess. The real profile
+    /// arrives with `model.agents`.
     private static let claudeFallback = AgentInfo(
         id: "claude-code", name: "Claude Code", icon: "sparkle",
         models: [
@@ -92,7 +96,7 @@ struct SpawnSheet: View {
             AgentModel(id: "claude-sonnet-5", displayName: "Sonnet 5", family: "claude"),
             AgentModel(id: "claude-haiku-4-5", displayName: "Haiku 4.5", family: "claude"),
         ],
-        capabilities: .claudeCode)
+        capabilities: nil)
 
     private var agentOptions: [AgentInfo] { model.agents.isEmpty ? [Self.claudeFallback] : model.agents }
     private var selectedAgent: AgentInfo? { agentOptions.first { $0.id == agentSel } ?? agentOptions.first }

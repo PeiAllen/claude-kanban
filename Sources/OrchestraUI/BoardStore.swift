@@ -101,8 +101,10 @@ public class BoardStore: ObservableObject {
     /// An unknown agent has no capability profile. In particular, it must not inherit Claude's terminal
     /// keys or transport semantics just because the registry has not delivered that agent yet; callers
     /// treat a missing profile as a safe no-op until the advertised capabilities arrive.
+    /// `flatMap`, not `?.`: the agent may be absent AND a present agent may carry no profile (a
+    /// client-built placeholder awaiting the daemon). Both collapse to the same "not told yet".
     public func capabilities(for agentId: String) -> AgentCapabilities? {
-        agents.first { $0.id == agentId }?.capabilities
+        agents.first { $0.id == agentId }.flatMap { $0.capabilities }
     }
 
     /// The normal terminal paste path is safe until an advertised agent says it has a different policy.
