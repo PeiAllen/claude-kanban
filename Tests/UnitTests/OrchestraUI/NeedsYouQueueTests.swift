@@ -18,6 +18,18 @@ final class NeedsYouQueueTests: XCTestCase {
              initialPrompt: title, archived: archived, updatedAt: updatedAt)
     }
 
+    /// A generic advertised agent for exercising UI routing. The UI target deliberately does not import
+    /// OrchestraCore, so it never reaches into a concrete adapter's shipped capability tuple.
+    private let standardGateCapabilities = AgentCapabilities(
+        sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
+        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
+        authMode: .subscription, approveChord: [.named(.enter)], denyChord: [.named(.esc)])
+
+    private var standardGateAgent: AgentInfo {
+        AgentInfo(id: "claude-code", name: "Claude", icon: "sparkle",
+                  models: [AgentModel(id: "m")], capabilities: standardGateCapabilities)
+    }
+
     // MARK: reason derivation
 
     func testReasonMapsEachDaemonSignal() {
@@ -83,17 +95,48 @@ final class NeedsYouQueueTests: XCTestCase {
     // MARK: gate chords — now agent-capability facts, not neutral-layer constants (#4)
 
     func testGateChordsLiveOnAgentCapabilities() {
-        // The Claude TUI layout: Enter accepts the pre-highlighted "Yes", Esc cancels. These moved OFF
-        // the provider-neutral NeedsYouQueue ONTO the capability so each adapter states its own gate keys.
-        XCTAssertEqual(AgentCapabilities.claudeCode.approveChord, [.named(.enter)])
-        XCTAssertEqual(AgentCapabilities.claudeCode.denyChord, [.named(.esc)])
+        // The UI only consumes advertised chords. Each adapter owns the concrete tuple that supplies them.
+        XCTAssertEqual(standardGateCapabilities.approveChord, [.named(.enter)])
+        XCTAssertEqual(standardGateCapabilities.denyChord, [.named(.esc)])
     }
 
     @MainActor
-    func testUnknownAgentCapabilityFallbackKeepsApplicationMouseReporting() {
+    func testUnknownAgentHasNoCapabilityProfile() {
         let m = modelWith([])
-        XCTAssertEqual(m.capabilities(for: "future-agent").terminalPointerInput,
-                       .applicationMouseReporting)
+        XCTAssertNil(m.capabilities(for: "future-agent"))
+    }
+
+    @MainActor
+    func testUnknownAgentUsesSafeTerminalDefaults() {
+        let m = modelWith([])
+
+        XCTAssertEqual(m.terminalImagePaste(for: "future-agent"), .direct)
+        XCTAssertEqual(m.terminalPointerInput(for: "future-agent"), .applicationMouseReporting)
+    }
+
+    @MainActor
+    func testAdvertisedAgentControlsTerminalPolicy() {
+        let capabilities = AgentCapabilities(
+            sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
+            wakeTransport: .relaunch, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
+            authMode: .subscription, terminalImagePaste: .controlV,
+            terminalPointerInput: .nativeSelection)
+        let agent = AgentInfo(id: "other-agent", name: "Other", icon: "sparkle",
+                              models: [AgentModel(id: "m")], capabilities: capabilities)
+        let m = modelWith([], agents: [agent])
+
+        XCTAssertEqual(m.terminalImagePaste(for: "other-agent"), .controlV)
+        XCTAssertEqual(m.terminalPointerInput(for: "other-agent"), .nativeSelection)
+    }
+
+    @MainActor
+    func testUnknownAgentCannotBorrowClaudePermissionKeys() {
+        var unknown = card("permission", phase: .live(.waiting(.permission)))
+        unknown.agentId = "future-agent"
+        let m = modelWith([unknown])
+
+        XCTAssertNil(m.permissionGateChord(unknown.id, \.approveChord))
+        XCTAssertNil(m.permissionGateChord(unknown.id, \.denyChord))
     }
 
     // MARK: permission gate — state guard + per-adapter chord routing (#4)
@@ -114,7 +157,7 @@ final class NeedsYouQueueTests: XCTestCase {
         let humanTurn = card("human", phase: .live(.waiting(.humanTurn)))
         let running = card("run", phase: .live(.running))
         let dead = card("dead", phase: .dead(.agentExited))
-        let m = modelWith([perm, humanTurn, running, dead])
+        let m = modelWith([perm, humanTurn, running, dead], agents: [standardGateAgent])
 
         XCTAssertEqual(m.permissionGateChord(perm.id, \.approveChord), [.named(.enter)])
         XCTAssertEqual(m.permissionGateChord(perm.id, \.denyChord), [.named(.esc)])

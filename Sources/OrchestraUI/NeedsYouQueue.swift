@@ -118,8 +118,9 @@ public extension BoardStore {
     func permissionGateChord(_ id: UUID,
                              _ key: KeyPath<AgentCapabilities, [KeyToken]>) -> [KeyToken]? {
         guard let t = tasks.first(where: { $0.id == id }),
-              t.waitReason == .permission else { return nil }
-        let chord = capabilities(for: t.agentId)[keyPath: key]
+              t.waitReason == .permission,
+              let capabilities = capabilities(for: t.agentId) else { return nil }
+        let chord = capabilities[keyPath: key]
         return chord.isEmpty ? nil : chord
     }
 

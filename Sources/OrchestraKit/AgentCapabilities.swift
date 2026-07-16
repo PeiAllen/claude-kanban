@@ -166,24 +166,3 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         denyChord = try c.decodeIfPresent([KeyToken].self, forKey: .denyChord) ?? [.named(.esc)]
     }
 }
-
-public extension AgentCapabilities {
-    /// The Claude Code adapter's shipped capabilities. Also the default for the test `StubAdapter` and
-    /// the shared `BoardModel`'s capability fallback, so existing suites and the client see Claude-shaped
-    /// behavior unless they opt out. Lives in OrchestraKit (moved from the Core adapter in F2) so the
-    /// shared, client-side `BoardModel` can use it on iOS.
-    static let claudeCode = AgentCapabilities(
-        sessionId: .seeded,
-        telemetry: .hooksPush,
-        contextUsage: .percent,
-        wakeTransport: .nativeReinvoke,
-        inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed,
-        authMode: .subscription,
-        terminalImagePaste: .controlV,
-        // Claude's interactive terminal controls rely on its existing mouse reporting behavior.
-        terminalPointerInput: .applicationMouseReporting,
-        // Claude fires SessionStart(startup) on a fresh launch and SessionStart(resume) on a relaunch, both
-        // via hooksPush — one hook capability confirms BOTH being-born phases.
-        readinessConfirmation: .sessionStartHook)
-}

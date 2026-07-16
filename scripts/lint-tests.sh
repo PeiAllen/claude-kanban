@@ -50,4 +50,11 @@ if grep -rnE '\bConfig\(\)' Tests/UnitTests --include='*.swift' \
      | grep -vE 'Support/TestEnv.swift|OrchestraKit/ConfigTimeoutTests.swift'; then
   say "bare Config() in a unit test — its scratchRoot defaults to the real ~/.orchestra fence; use a temp-rooted Config or TestEnv"
 fi
+# 6. OrchestraKit is the client-safe capability vocabulary, never the catalog of shipped agents. Concrete
+#    profiles belong beside their adapters in OrchestraCore; otherwise a UI fallback silently becomes
+#    Claude-shaped and every future agent inherits the wrong terminal and interaction settings.
+if grep -nE '^[[:space:]]*((public[[:space:]]+)?extension[[:space:]]+AgentCapabilities([[:space:]]|\{)|(public[[:space:]]+)?static[[:space:]]+(let|var)[[:space:]])' \
+     Sources/OrchestraKit/AgentCapabilities.swift; then
+  say "concrete AgentCapabilities profile in OrchestraKit — keep schema in Kit and shipped profiles beside adapters"
+fi
 exit $fail
