@@ -24,7 +24,13 @@ struct HyperlinkTransportTests {
 
         let features = try Proc.run(["tmux", "-L", socket, "show-options", "-g", "terminal-features"])
         #expect(features.ok)
-        #expect(features.stdout.contains("xterm-256color:sixel:hyperlinks"))
+        // Assert only what this suite owns — that the tmux client's TERM advertises hyperlinks — rather
+        // than pinning the whole ordered feature string, which breaks every time an unrelated feature
+        // joins the list (`sync` for Codex render batching already did).
+        let ours = try #require(features.stdout
+            .split(separator: "\n")
+            .first { $0.contains("xterm-256color:") })
+        #expect(ours.contains(":hyperlinks"))
 
         var captured = try Proc.run(["tmux", "-L", socket, "capture-pane", "-e", "-p", "-t", "\(session):0"])
         for _ in 0..<20 where !captured.stdout.contains(visible) {
