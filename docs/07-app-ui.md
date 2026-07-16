@@ -321,7 +321,8 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   is down sees an offline banner offering a one-click restart instead.
 - **Settings** — a two-tab `TabView`: **General** (`SettingsView`) and **Connections**
   (`ConnectionsSettingsView`). **General** has three sections, auto-saved (debounced 500 ms): **Paths**
-  (repos root, worktrees root), **Agent** (default model, an allowlist text area for extra directories),
+  (repos root, worktrees root), **Agent** (default model, an allowlist text area for extra directories,
+  and an opt-in toggle to install missing Orchestra MCP entries in global Claude/Codex config),
   and **Status line** (mode: passthrough / Orchestra default / custom, with a command field for custom).
 - **Connections** (`ConnectionsSettingsView`) — pick which daemon the board runs against: the built-in
   **This Mac** (local) connection plus any saved **remote** Linux boxes. Each row has a radio to make it

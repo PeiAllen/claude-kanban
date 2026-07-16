@@ -120,8 +120,22 @@ driving it. The delivery machinery underneath is
   *trigger* the grant; a human answers). This is the MCP surface of the [`trust`
   command](05-command-reference.md#notes-on-key-commands); every other tool is a plain relay.
 
-Register it with your MCP host (e.g. Claude Code) as a stdio server running the `orchestra-mcp` binary;
-it logs readiness (and the socket path) to stderr.
+Cards launched by Orchestra configure this automatically. Claude receives an inline `--mcp-config`
+entry and Codex receives a per-launch profile entry, both named `orchestra`; the local entry takes
+precedence over a same-name global entry for that launch, while unrelated user MCP servers remain
+available. Claude's generated config is deliberately non-strict so the card keeps its normal global
+servers too.
+
+For an MCP host outside an Orchestra-launched card, register it manually as a stdio server running the
+`orchestra-mcp` binary; it logs readiness (and the socket path) to stderr.
+
+### Optional global installation
+
+The Settings → Agent → **Auto-install Orchestra MCP globally** toggle is off by default. When enabled,
+the next card launch adds a missing `orchestra` entry to `~/.claude.json` and `~/.codex/config.toml`.
+Existing same-name entries are left untouched, and disabling the toggle does not remove an entry that
+was already installed. The app and Linux deployment bundle ship `orchestrad`, `orchestra`, and
+`orchestra-mcp` together, so normal card setup does not require a separate CLI or MCP installation.
 
 > Today, the server-only built-ins (`models`, `agents`, `archivedList`, `openInZed`, `getConfig`, …) are *not*
 > in the registry, so they aren't exposed as MCP tools yet. Folding the CLI and these built-ins onto the

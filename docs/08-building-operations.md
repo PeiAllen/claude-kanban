@@ -316,6 +316,8 @@ Settings, or via `setConfig` over RPC). The keys and defaults are in
 - **`defaultModel` / `defaultAgentId`** — the default agent and model for new cards.
 - **`statusLineMode`** — passthrough your global Claude status line, a custom command, or the minimal
   Orchestra default.
+- **`autoInstallMCPGlobally`** — when enabled, the next card launch adds missing `orchestra` entries
+  to `~/.claude.json` and `~/.codex/config.toml`; it never replaces an existing same-name entry.
 
 All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
 use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →
