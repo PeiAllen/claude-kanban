@@ -88,11 +88,16 @@ struct CodexAdapterArgvTests {
         #expect(r == StatusReport(run: .waiting(.permission)))
     }
 
-    // The OTHER Codex hooks (SessionStart/Stop) carry NO StatusReport — the daemon dispatches them
-    // (orientation, inbox drain) via the typed HookEvent, and telemetry stays the rollout fileTail.
-    // Only PermissionRequest produces a report from a hooksPush, so those must remain nil (no churn).
-    @Test("parse(session/stop hooksPush) stays nil — only PermissionRequest reports from a push")
-    func parseNonPermissionHooksNil() {
+    // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
+    // the definitive card ↔ rollout correlation. Do not discard it and fall back to cwd/time discovery.
+    @Test("parse(SessionStart hooksPush) binds Codex's direct session id; Stop stays telemetry-free")
+    func parseSessionStartHook() {
+        let payload: JSONValue = .object([
+            "session_id": .string("codex-session"),
+            "source": .string("startup"),
+            "cwd": .string("/same/freeform/cwd"),
+        ])
+        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload)) == StatusReport(sessionId: "codex-session"))
         #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
         #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
     }
@@ -339,15 +344,27 @@ struct CodexAdapterDiscoveryTests {
         return (home, CodexAdapter(codexHome: home))
     }
     private func writeRollout(_ home: String, day: String, sessionId: String,
-                              cwd: String = "/wt", mtime: Date? = nil) {
+                              cwd: String = "/wt", startedAt: String? = nil,
+                              threadSource: String? = nil, parentThreadId: String? = nil,
+                              mtime: Date? = nil) {
         let dir = "\(home)/sessions/\(day)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/rollout-2026-07-01T10-00-00-\(sessionId).jsonl"
-        try? #"{"type":"session_meta","payload":{"id":"\#(sessionId)","cwd":"\#(cwd)"}}"#
-            .write(toFile: path, atomically: true, encoding: .utf8)
+        var fields = ["\"id\":\"\(sessionId)\"", "\"cwd\":\"\(cwd)\""]
+        if let startedAt { fields.append("\"timestamp\":\"\(startedAt)\"") }
+        if let threadSource { fields.append("\"thread_source\":\"\(threadSource)\"") }
+        if let parentThreadId { fields.append("\"parent_thread_id\":\"\(parentThreadId)\"") }
+        let line = "{\"type\":\"session_meta\",\"payload\":{\(fields.joined(separator: ","))}}\n"
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
         if let m = mtime {
             try? FileManager.default.setAttributes([.modificationDate: m], ofItemAtPath: path)
         }
+    }
+
+    private func date(_ timestamp: String) -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp)!
     }
 
     @Test("sessionInfo discovers the session id from the newest rollout file")
@@ -386,6 +403,63 @@ struct CodexAdapterDiscoveryTests {
                                                     current: nil, prior: []))
         #expect(info.sessionId == target)
         #expect(info.transcriptPath?.hasSuffix("-\(target).jsonl") == true)
+    }
+
+    @Test("launch discovery uses rollout creation time and ignores same-cwd subagents")
+    func launchDiscoveryUsesCreationTimeAndIgnoresSubagents() throws {
+        let (home, adapter) = makeHome()
+        let stale = UUID().uuidString.lowercased()
+        let launched = UUID().uuidString.lowercased()
+        let subagent = UUID().uuidString.lowercased()
+        let cutoff = date("2026-07-01T10:00:00Z")
+
+        // An older card can still append after a new card starts, so its file mtime is not its launch time.
+        writeRollout(home, day: "2026/07/01", sessionId: stale,
+                     startedAt: "2026-07-01T09:59:00Z", mtime: date("2026-07-01T10:00:03Z"))
+        writeRollout(home, day: "2026/07/01", sessionId: launched,
+                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
+                     mtime: date("2026-07-01T10:00:01Z"))
+        writeRollout(home, day: "2026/07/01", sessionId: subagent,
+                     startedAt: "2026-07-01T10:00:02Z", threadSource: "subagent",
+                     parentThreadId: launched, mtime: date("2026-07-01T10:00:02Z"))
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
+                                                    current: nil, prior: []))
+        #expect(info.sessionId == launched)
+    }
+
+    @Test("launch discovery ignores a parent-linked rollout with a nonstandard thread source")
+    func launchDiscoveryIgnoresParentLinkedRollout() throws {
+        let (home, adapter) = makeHome()
+        let parent = UUID().uuidString.lowercased()
+        let child = UUID().uuidString.lowercased()
+        let cutoff = date("2026-07-01T10:00:00Z")
+
+        writeRollout(home, day: "2026/07/01", sessionId: parent,
+                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user")
+        writeRollout(home, day: "2026/07/01", sessionId: child,
+                     startedAt: "2026-07-01T10:00:02Z", threadSource: "worker",
+                     parentThreadId: parent)
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt", since: cutoff),
+                                                    current: nil, prior: []))
+        #expect(info.sessionId == parent)
+    }
+
+    @Test("unbound discovery refuses multiple primary rollouts in one cwd")
+    func unboundDiscoveryRefusesMultiplePrimaryRollouts() throws {
+        let (home, adapter) = makeHome()
+        let first = UUID().uuidString.lowercased()
+        let second = UUID().uuidString.lowercased()
+        writeRollout(home, day: "2026/07/01", sessionId: first,
+                     startedAt: "2026-07-01T10:00:01Z", threadSource: "user",
+                     mtime: date("2026-07-01T10:00:03Z"))
+        writeRollout(home, day: "2026/07/01", sessionId: second,
+                     startedAt: "2026-07-01T10:00:02Z", threadSource: "user",
+                     mtime: date("2026-07-01T10:00:04Z"))
+
+        let info = try #require(adapter.sessionInfo(AdapterContext(cwd: "/wt"), current: nil, prior: []))
+        #expect(info.sessionId == nil)
     }
 
     @Test("current id wins over discovery")

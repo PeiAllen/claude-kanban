@@ -443,6 +443,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var sessionEpoch: Int
     /// When `phase` last changed — drives phase-relative timers (bump/nudge) + terminal dwell checks.
     public var phaseChangedAt: Date
+    /// Immutable cutoff for discovering an unseeded agent session. Stamped when a fresh launch begins and
+    /// retained if the N=3 fallback reaches live before metadata arrives, so stale cwd rollouts cannot be
+    /// mistaken for the delayed session. Cleared when a session id binds. Encoded as fractional Unix seconds
+    /// rather than the store's whole-second ISO-8601 dates, because rounding down would widen the bind window.
+    public var sessionDiscoverySince: Date?
     /// Fork/fan-out/handoff seed staged for the NEXT (re)launch, delivered once then cleared. nil ⇒ none.
     public var pendingSeed: String?
     /// A `--model` re-seat staged for the NEXT (re)launch (restart/handoff/resume), delivered once then
@@ -489,6 +494,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         phase: Phase = .live(.running),
         sessionEpoch: Int = 0,
         phaseChangedAt: Date = Date(),
+        sessionDiscoverySince: Date? = nil,
         pendingSeed: String? = nil,
         pendingModel: String? = nil,
         spawnBase: String? = nil,
@@ -523,6 +529,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.phase = phase
         self.sessionEpoch = sessionEpoch
         self.phaseChangedAt = phaseChangedAt
+        self.sessionDiscoverySince = sessionDiscoverySince
         self.pendingSeed = pendingSeed
         self.pendingModel = pendingModel
         self.spawnBase = spawnBase
@@ -550,7 +557,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
-        case phase, sessionEpoch, phaseChangedAt, pendingSeed, pendingModel, spawnBase
+        case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
@@ -599,6 +606,14 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.sessionEpoch = try c.decodeIfPresent(Int.self, forKey: .sessionEpoch) ?? 0
         self.phaseChangedAt = try c.decodeIfPresent(Date.self, forKey: .phaseChangedAt)
             ?? (try c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
+        // This field was introduced after the board's original date shape. A fractional Unix timestamp
+        // preserves the exact launch boundary; accept an ISO-8601 string too so an intermediate build that
+        // wrote it through the default Date encoder remains recoverable.
+        if let seconds = try? c.decode(Double.self, forKey: .sessionDiscoverySince) {
+            self.sessionDiscoverySince = Date(timeIntervalSince1970: seconds)
+        } else {
+            self.sessionDiscoverySince = try? c.decode(Date.self, forKey: .sessionDiscoverySince)
+        }
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
         self.pendingModel = try c.decodeIfPresent(String.self, forKey: .pendingModel)
         self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
@@ -659,6 +674,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(phase, forKey: .phase)
         try c.encode(sessionEpoch, forKey: .sessionEpoch)
         try c.encode(phaseChangedAt, forKey: .phaseChangedAt)
+        try c.encodeIfPresent(sessionDiscoverySince?.timeIntervalSince1970, forKey: .sessionDiscoverySince)
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
         try c.encodeIfPresent(pendingModel, forKey: .pendingModel)
         try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
@@ -693,8 +709,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// funnel is the sole writer of those (Stage 2 convergence); `report()` routes the phase change
     /// through it separately, so a whole-object overlay must never clobber a concurrent funnel write.
     public mutating func applyReportFields(from s: Task) {
+        let sessionIdChanged = agentSessionId != s.agentSessionId
         agentSessionId = s.agentSessionId
         priorSessionIds = s.priorSessionIds
+        // The cutoff belongs to lifecycle transitions, not ordinary telemetry. A report clears it only
+        // when it actually binds or rolls the session id; otherwise a stale telemetry snapshot could erase
+        // a cutoff a concurrent relaunch just recorded.
+        if sessionIdChanged, agentSessionId != nil { sessionDiscoverySince = nil }
         desc = s.desc
         titleProvisional = s.titleProvisional
         title = s.title

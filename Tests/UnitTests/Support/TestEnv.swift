@@ -287,9 +287,8 @@ enum TestEnv {
 
     /// Drive being-born cards to `.live` via the reconciler: repeatedly run `reconcile()` (steps
     /// Materialize → Launch, N=3 liveness fallback) until at least `count` cards are live. Used by Codex
-    /// (`.rolloutMeta`) spawn setups whose fixture rollout can't bind DURING launch (its mtime predates the
-    /// card's `phaseChangedAt`, so the time-scoped launch bind refuses it) — the fallback reaches live, then
-    /// post-live discovery (unrestricted) binds the rollout for telemetry.
+    /// (`.rolloutMeta`) spawn setups whose fixture rollout cannot bind during launch. A fallback card keeps
+    /// its durable launch cutoff until discovery binds one unambiguous, post-cutoff rollout for telemetry.
     static func reconcileUntilLive(_ svc: OrchestraService, count: Int) async throws {
         try await pollUntil {
             await svc.reconcile()
