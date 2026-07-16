@@ -371,6 +371,9 @@ private struct AgentChrome: View {
                                       loadTranscriptImage: { referenceID in
                                           try await model.transcriptImage(task.id, referenceID: referenceID)
                                       },
+                                      onTranscriptImageUnavailable: { hint in
+                                          model.toast("Image preview expired", sub: hint, color: .red)
+                                      },
                                       // A mouse click into the terminal also counts as descending: keep the
                                       // zone (and the focus ring / chip) honest.
                                       onFocused: { if model.focusZone != .terminal { model.focusZone = .terminal } },

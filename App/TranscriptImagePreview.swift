@@ -81,6 +81,11 @@ final class TranscriptImagePreviewPresenter: NSObject {
     private var requestID: UUID?
     private weak var anchorView: NSView?
 
+    /// Reports a reference that can no longer be resolved. QuickLook has no notion of "expired" and an
+    /// empty panel would read as a broken app, so the failure surfaces the way every other failure in
+    /// this app does — a red toast — rather than as an unexplained beep.
+    var onUnavailable: ((String) -> Void)?
+
     func show(referenceID: UUID, from terminal: NSView,
               load: @escaping (UUID) async throws -> TranscriptImagePayload) {
         loadTask?.cancel()
@@ -99,10 +104,9 @@ final class TranscriptImagePreviewPresenter: NSObject {
                 // Replacing a pending preview cancels the fetch without terminal feedback.
             } catch {
                 guard let self, self.requestID == requestID, !_Concurrency.Task.isCancelled else { return }
-                // The reference outlived its session. QuickLook has no notion of "expired", and an empty
-                // panel would read as a broken app, so say it where the click happened.
-                NSSound.beep()
+                // The reference outlived its session (a new epoch or an archive dropped the media).
                 self.dismiss()
+                self.onUnavailable?("Ask the agent to publish it again.")
             }
         }
     }
@@ -133,9 +137,7 @@ final class TranscriptImagePreviewPresenter: NSObject {
         // After QuickLook has sized itself to the image, move it clear of the inspector so the agent's
         // transcript stays readable beside it. Deferred because the panel picks its own frame as it
         // opens; setting it first would just be overwritten.
-        if ProcessInfo.processInfo.environment["ORCH_NO_REPOSITION"] == nil {
-            DispatchQueue.main.async { [weak self] in self?.moveClearOfInspector(panel) }
-        }
+        DispatchQueue.main.async { [weak self] in self?.moveClearOfInspector(panel) }
     }
 
     /// Park the panel to the LEFT of the inspector it was opened from, rather than centred over the text

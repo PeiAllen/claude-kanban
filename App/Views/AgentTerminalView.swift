@@ -29,6 +29,9 @@ struct AgentTerminalView: NSViewRepresentable {
     /// Fetches a daemon-owned image payload for a deliberate opaque transcript-link activation. The
     /// terminal never receives a source path or a general URL handler.
     var loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil
+    /// Surfaces a reference that no longer resolves. The terminal can't render this itself — QuickLook
+    /// owns the window — so the owner reports it in the app's own vocabulary.
+    var onTranscriptImageUnavailable: ((String) -> Void)? = nil
     /// Called whenever this terminal *becomes* the window's first responder — by keyboard descent OR a
     /// mouse click into it. Lets the owner keep `focusZone` (and thus the inspector focus ring + chip)
     /// honest without polling the responder chain.
@@ -43,6 +46,7 @@ struct AgentTerminalView: NSViewRepresentable {
          terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
          terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting,
          loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil,
+         onTranscriptImageUnavailable: ((String) -> Void)? = nil,
          onFocused: (() -> Void)? = nil,
          attachWhileLiveGate: (() -> Bool)? = nil) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
@@ -51,6 +55,7 @@ struct AgentTerminalView: NSViewRepresentable {
         self.terminalImagePaste = terminalImagePaste
         self.terminalPointerInput = terminalPointerInput
         self.loadTranscriptImage = loadTranscriptImage
+        self.onTranscriptImageUnavailable = onTranscriptImageUnavailable
         self.onFocused = onFocused
         self.attachWhileLiveGate = attachWhileLiveGate
     }
@@ -83,6 +88,7 @@ struct AgentTerminalView: NSViewRepresentable {
         applyColors(term, coordinator: context.coordinator)
         context.coordinator.attached = "\(session):\(window)"
         context.coordinator.loadTranscriptImage = loadTranscriptImage
+        context.coordinator.transcriptImagePreview.onUnavailable = onTranscriptImageUnavailable
         context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
         context.coordinator.reattach = { [weak term] in if let term { self.attach(term) } }
         attach(term)
@@ -96,6 +102,7 @@ struct AgentTerminalView: NSViewRepresentable {
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
         applyColors(nsView, coordinator: context.coordinator)   // re-tint when the app toggles light/dark
         context.coordinator.loadTranscriptImage = loadTranscriptImage
+        context.coordinator.transcriptImagePreview.onUnavailable = onTranscriptImageUnavailable
         // Re-install every update so the gate closure snapshots the CURRENT phase/connection (a stale
         // closure captured at makeNSView time would gate reattach on the card's state when it first
         // mounted, not its state at the moment the pane actually dies).
@@ -269,7 +276,7 @@ struct AgentTerminalView: NSViewRepresentable {
         /// The caller refreshes this on every SwiftUI update, so a reused terminal always resolves an
         /// opaque reference against its current card rather than the card that first mounted the view.
         var loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)?
-        private let transcriptImagePreview = TranscriptImagePreviewPresenter()
+        let transcriptImagePreview = TranscriptImagePreviewPresenter()
         private let reconnectPolicy = TerminalReconnectPolicy()
         private var reconnects = 0
         private var reconnectPending = false
