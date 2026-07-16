@@ -433,6 +433,7 @@ public extension AgentCapabilities {
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
+        terminalPointerInput: .nativeSelection,
         // A fresh Codex launch writes a rollout whose FIRST line is a `session_meta` record — the daemon's
         // rollout tail observes it and resolves the launch's readiness (D1 `.rolloutMeta`). A `codex resume`
         // writes NO rollout at resume time, so a relaunch has no marker; the universal N=3 liveness-tick
