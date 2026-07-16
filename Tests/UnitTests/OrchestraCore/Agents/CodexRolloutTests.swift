@@ -300,6 +300,12 @@ struct CodexTelemetryE2ETests {
         fh.seekToEndOfFile(); fh.write(Data((line + "\n").utf8)); try? fh.close()
     }
 
+    private func rolloutSessionId(_ path: String) throws -> String {
+        let contents = try String(contentsOfFile: path, encoding: .utf8)
+        let firstLine = try #require(contents.split(whereSeparator: \.isNewline).first.map(String.init))
+        return try #require(CodexAdapter().parse(.fileTail(line: firstLine))?.event?.sessionId)
+    }
+
     @Test("pollTelemetry tails a Codex rollout and updates the card's ctxPct + status")
     func tailUpdatesBoard() async throws {
         let (svc, card, rollout) = try await makeEnv()
@@ -367,6 +373,35 @@ struct CodexTelemetryE2ETests {
         let after = await svc.list()
         #expect(after.first { $0.id == cardA.id }?.agentSessionId == nil)
         #expect(after.first { $0.id == cardB.id }?.agentSessionId == nil)
+    }
+
+    @Test("same-cwd Codex SessionStart hooks bind their owning cards without discovery")
+    func sameCwdSessionStartHooksBindDirectly() async throws {
+        let (svc, cardA, rolloutA, cardB, rolloutB) = try await makeMultiEnv(sameCwd: true)
+        let adapter = CodexAdapter()
+        let sidA = try rolloutSessionId(rolloutA)
+        let sidB = try rolloutSessionId(rolloutB)
+        let reportA = try #require(adapter.parse(.hooksPush(kind: "session", payload: .object([
+            "session_id": .string(sidA), "source": .string("startup"),
+        ]))))
+        let reportB = try #require(adapter.parse(.hooksPush(kind: "session", payload: .object([
+            "session_id": .string(sidB), "source": .string("startup"),
+        ]))))
+
+        _ = await svc.handleHook(cardA.id.uuidString, event: .sessionStart, report: reportA, source: .startup)
+        _ = await svc.handleHook(cardB.id.uuidString, event: .sessionStart, report: reportB, source: .startup)
+
+        let bound = await svc.list()
+        #expect(bound.first { $0.id == cardA.id }?.agentSessionId == sidA)
+        #expect(bound.first { $0.id == cardB.id }?.agentSessionId == sidB)
+
+        append(rolloutA, #"{"timestamp":"2026-07-01T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"card_a"}}"#)
+        append(rolloutB, #"{"timestamp":"2026-07-01T10:01:03.000Z","type":"response_item","payload":{"type":"function_call","name":"card_b"}}"#)
+        await svc.pollTelemetry()
+
+        let after = await svc.list()
+        #expect(after.first { $0.id == cardA.id }?.desc == "Running card_a")
+        #expect(after.first { $0.id == cardB.id }?.desc == "Running card_b")
     }
 
     @Test("a Claude (hooksPush) card is NOT tailed by pollTelemetry")

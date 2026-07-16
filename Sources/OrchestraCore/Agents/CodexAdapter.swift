@@ -61,22 +61,25 @@ public struct CodexAdapter: Adapter {
 
     // MARK: telemetry parse (fileTail) — the daemon tails the rollout JSONL; THIS converts one line.
 
-    /// Codex telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one rollout JSONL line at a
-    /// time; this converts it to a normalized `StatusReport`. AGENT-DEPENDENT (D3) — the mapping lives
-    /// here, never in core. Rename-tolerant (Codex's rollout schema drifts: `TaskComplete`→`TurnComplete`,
-    /// nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE model table as the denominator
-    /// (E1), never the rollout's own window. `seq` is the line timestamp (µs) so out-of-order/duplicate
-    /// lines lose to the freshest via `report()`'s seq-gate. Any unrecognized line → nil (dropped).
+    /// Codex status/detail/context telemetry is `fileTail`: the daemon-side `RolloutTailer` hands one
+    /// rollout JSONL line at a time; this converts it to a normalized `StatusReport`. Its SessionStart hook
+    /// additionally supplies the definitive card-owned session id before discovery. AGENT-DEPENDENT (D3) —
+    /// the mapping lives here, never in core. Rename-tolerant (Codex's rollout schema drifts:
+    /// `TaskComplete`→`TurnComplete`, nested vs flat token totals). `ctxPct` uses THIS adapter's OFFLINE
+    /// model table as the denominator (E1), never the rollout's own window. `seq` is the line timestamp
+    /// (µs) so out-of-order/duplicate lines lose to the freshest via `report()`'s seq-gate. Any unrecognized
+    /// line → nil (dropped).
     public func parse(_ raw: RawTelemetry) -> StatusReport? {
-        // C1 · permission gate (hooksPush). Codex's `PermissionRequest` hook fires `_report --event
-        // permission`, which arrives here as a hooksPush. Classify it into the SAME neutral
-        // `waitReason == .permission` Claude reaches via its Notification/permission_prompt — so a
-        // blocked Codex card surfaces as a Needs-You 🔐 row (M3 renders it provider-neutrally). This is
-        // the adapter/capability seam: the Codex-specific mapping lives HERE, never as `if agent==` in
-        // core. Codex's OTHER hooks (SessionStart/Stop) carry no StatusReport — the daemon dispatches
-        // them (orientation, inbox drain) via the typed HookEvent — so they fall through to nil, and
-        // telemetry stays the rollout fileTail below.
-        if case let .hooksPush(kind, _) = raw {
+        // SessionStart runs under the launching tmux session, whose environment carries this card's
+        // `ORCHESTRA_TASK_ID`. Codex provides its generated `session_id` on the hook's stdin, so this is a
+        // direct card ↔ session correlation even when multiple primary rollouts share one cwd. Binding it
+        // here avoids relying on rollout discovery for the normal launch path; discovery remains a safe
+        // fallback if the hook is unavailable. PermissionRequest remains the provider-neutral wait gate.
+        if case let .hooksPush(kind, payload) = raw {
+            if kind == HookEvent.sessionStart.rawValue,
+               let sid = payload["session_id"]?.stringValue, !sid.isEmpty {
+                return StatusReport(sessionId: sid)
+            }
             return kind == HookEvent.permission.rawValue
                 ? StatusReport(run: .waiting(.permission))
                 : nil

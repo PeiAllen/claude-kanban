@@ -75,11 +75,16 @@ struct CodexAdapterArgvTests {
         #expect(r == StatusReport(run: .waiting(.permission)))
     }
 
-    // The OTHER Codex hooks (SessionStart/Stop) carry NO StatusReport — the daemon dispatches them
-    // (orientation, inbox drain) via the typed HookEvent, and telemetry stays the rollout fileTail.
-    // Only PermissionRequest produces a report from a hooksPush, so those must remain nil (no churn).
-    @Test("parse(session/stop hooksPush) stays nil — only PermissionRequest reports from a push")
-    func parseNonPermissionHooksNil() {
+    // SessionStart runs in the card's tmux environment, so its payload's Codex-generated session id is
+    // the definitive card ↔ rollout correlation. Do not discard it and fall back to cwd/time discovery.
+    @Test("parse(SessionStart hooksPush) binds Codex's direct session id; Stop stays telemetry-free")
+    func parseSessionStartHook() {
+        let payload: JSONValue = .object([
+            "session_id": .string("codex-session"),
+            "source": .string("startup"),
+            "cwd": .string("/same/freeform/cwd"),
+        ])
+        #expect(adapter.parse(.hooksPush(kind: "session", payload: payload)) == StatusReport(sessionId: "codex-session"))
         #expect(adapter.parse(.hooksPush(kind: "session", payload: .object([:]))) == nil)
         #expect(adapter.parse(.hooksPush(kind: "stop", payload: .object([:]))) == nil)
     }
