@@ -219,8 +219,6 @@ struct CodexTelemetryE2ETests {
         try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
         let sid = UUID().uuidString.lowercased()
         let rollout = "\(day)/rollout-2026-07-01T10-00-00-\(sid).jsonl"
-        FileManager.default.createFile(atPath: rollout, contents: nil)
-        append(rollout, #"{"timestamp":"2026-07-01T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(PathResolver.canonical(work))"}}"#)
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
@@ -235,40 +233,36 @@ struct CodexTelemetryE2ETests {
                                    sessions: StubSessions(),
                                    trust: TrustLedger(path: base + "/trust.json"),
                                    proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
-        // 2.6: a Codex spawn (`.rolloutMeta`) inline-awaits its launch-ready signal. The fixture rollout
-        // above predates the launch, so the time-scoped launch bind won't adopt it — drive the card to
-        // live via the N=3 liveness fallback, then the test's own `pollTelemetry` binds + tails it.
+        // A Codex spawn awaits rollout metadata. Let the N=3 fallback land first, then write the fresh
+        // metadata as the real agent would when it becomes available after the fallback.
         async let spawned = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
                                                  agentId: "codex",
                                                  cwd: PathResolver.canonical(work)))
         try await TestEnv.reconcileUntilLive(svc, count: 1)
         let card = try await spawned
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = formatter.string(from: Date())
+        FileManager.default.createFile(atPath: rollout, contents: nil)
+        append(rollout, #"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(PathResolver.canonical(work))","timestamp":"\#(timestamp)"}}"#)
         return (svc, card, rollout)
     }
 
-    private func makeMultiEnv() async throws -> (svc: OrchestraService, cardA: Task, rolloutA: String,
-                                                 cardB: Task, rolloutB: String) {
+    private func makeMultiEnv(sameCwd: Bool = false) async throws -> (svc: OrchestraService, cardA: Task, rolloutA: String,
+                                                                       cardB: Task, rolloutB: String) {
         let base = NSTemporaryDirectory() + "codex-tel-\(UUID().uuidString)"
         let workA = PathResolver.canonical(base + "/work-a")
-        let workB = PathResolver.canonical(base + "/work-b")
+        let workB = sameCwd ? workA : PathResolver.canonical(base + "/work-b")
         let codexHome = base + "/codexhome"
         let day = codexHome + "/sessions/2026/07/01"
         try FileManager.default.createDirectory(atPath: workA, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(atPath: workB, withIntermediateDirectories: true)
+        if !sameCwd { try FileManager.default.createDirectory(atPath: workB, withIntermediateDirectories: true) }
         try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
 
         let sidA = UUID().uuidString.lowercased()
         let sidB = UUID().uuidString.lowercased()
         let rolloutA = "\(day)/rollout-2026-07-01T10-00-00-\(sidA).jsonl"
         let rolloutB = "\(day)/rollout-2026-07-01T10-01-00-\(sidB).jsonl"
-        FileManager.default.createFile(atPath: rolloutA, contents: nil)
-        FileManager.default.createFile(atPath: rolloutB, contents: nil)
-        append(rolloutA, #"{"timestamp":"2026-07-01T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sidA)","cwd":"\#(workA)"}}"#)
-        append(rolloutB, #"{"timestamp":"2026-07-01T10:01:00.000Z","type":"session_meta","payload":{"id":"\#(sidB)","cwd":"\#(workB)"}}"#)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1000)],
-                                              ofItemAtPath: rolloutA)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2000)],
-                                              ofItemAtPath: rolloutB)
 
         let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
                             worktreesRoot: PathResolver.canonical(base) + "/worktrees",
@@ -287,9 +281,17 @@ struct CodexTelemetryE2ETests {
                                             agentId: "codex", cwd: workA))
         async let sb = TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "look b", model: "gpt-5.5",
                                             agentId: "codex", cwd: workB))
-        try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback (fixture rollouts predate launch)
+        try await TestEnv.reconcileUntilLive(svc, count: 2)   // N=3 fallback: no metadata yet
         let cardA = try await sa
         let cardB = try await sb
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestampA = formatter.string(from: Date())
+        let timestampB = formatter.string(from: Date().addingTimeInterval(0.001))
+        FileManager.default.createFile(atPath: rolloutA, contents: nil)
+        FileManager.default.createFile(atPath: rolloutB, contents: nil)
+        append(rolloutA, #"{"timestamp":"\#(timestampA)","type":"session_meta","payload":{"id":"\#(sidA)","cwd":"\#(workA)","timestamp":"\#(timestampA)","thread_source":"user"}}"#)
+        append(rolloutB, #"{"timestamp":"\#(timestampB)","type":"session_meta","payload":{"id":"\#(sidB)","cwd":"\#(workB)","timestamp":"\#(timestampB)","thread_source":"user"}}"#)
         return (svc, cardA, rolloutA, cardB, rolloutB)
     }
 
@@ -355,6 +357,16 @@ struct CodexTelemetryE2ETests {
         #expect(afterA.agentSessionId != afterB.agentSessionId)
         #expect(afterA.desc == "Running older_tool")
         #expect(afterB.desc == "Running newer_tool")
+    }
+
+    @Test("two same-cwd Codex fallbacks stay unbound with two fresh primary rollouts")
+    func sameCwdFallbackDoesNotCrossBind() async throws {
+        let (svc, cardA, _, cardB, _) = try await makeMultiEnv(sameCwd: true)
+        await svc.pollTelemetry()
+
+        let after = await svc.list()
+        #expect(after.first { $0.id == cardA.id }?.agentSessionId == nil)
+        #expect(after.first { $0.id == cardB.id }?.agentSessionId == nil)
     }
 
     @Test("a Claude (hooksPush) card is NOT tailed by pollTelemetry")

@@ -76,14 +76,25 @@ extension OrchestraService {
         let updated: Task, rev: Int
         do {
             (updated, rev) = try await store.update(id) { t in
+                let transitionAt = Date()
                 t.phase = to
-                t.phaseChangedAt = Date()
+                t.phaseChangedAt = transitionAt
                 // Bump the generation on every (re)launch entry — spawn's `creatingWorktree`, reopen's
                 // `creatingWorktree`, and every `relaunching` entry INCLUDING the supersede self-edge.
                 // `launching` is intentionally omitted (the machine only enters it from the already-bumped
                 // `creatingWorktree`); revisit this predicate if a direct-entry-to-`launching` edge is added.
                 if to.kind == .creatingWorktree || to.kind == .relaunching { t.sessionEpoch += 1 }
                 mutate(&t)
+                // A discovered agent can reach `.live` through N=3 before its rollout metadata appears.
+                // Keep the launch boundary until an id binds so a later telemetry tick can reject stale cwd
+                // history while still accepting its own delayed rollout.
+                if to.kind == .creatingWorktree {
+                    t.sessionDiscoverySince = nil
+                } else if to.kind == .launching || to.kind == .relaunching {
+                    t.sessionDiscoverySince = t.agentSessionId == nil ? transitionAt : nil
+                } else if to.kind == .live, t.agentSessionId != nil {
+                    t.sessionDiscoverySince = nil
+                }
             }
         } catch {
             return .noop   // unknown card raced away between the load and the patch

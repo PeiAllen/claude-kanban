@@ -64,6 +64,7 @@ extension OrchestraService {
                let newId = ev.sessionId, !newId.isEmpty, newId != task.agentSessionId {
                 if let old = task.agentSessionId, !old.isEmpty { task.priorSessionIds.append(old) }
                 task.agentSessionId = newId
+                task.sessionDiscoverySince = nil
                 // Codex `.rolloutMeta` readiness: binding a discovered id while the card is still LAUNCHING
                 // means the rollout tail just observed the fresh session's `session_meta` line — that IS the
                 // launch's readiness signal, so resolve the spawn/reopen's inline waiter. Capability-neutral:

@@ -89,7 +89,7 @@ struct ModelCodableTests {
         // model types still referenced it.
     }
 
-    @Test("Task round-trips the four new phase fields")
+    @Test("Task round-trips the phase lifecycle fields")
     func test_taskCarriesPhaseFields() throws {
         let epochDate = Date(timeIntervalSince1970: 1_700_000_000)
         var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
@@ -98,12 +98,24 @@ struct ModelCodableTests {
         t.phase = .live(.waiting(.permission))
         t.sessionEpoch = 3
         t.phaseChangedAt = epochDate
+        let cutoff = epochDate.addingTimeInterval(60.123_456)
+        t.sessionDiscoverySince = cutoff
         t.pendingSeed = "carried context"
 
-        let back = try OrchestraJSON.decoder.decode(Task.self, from: OrchestraJSON.wire.encode(t))
+        let data = try OrchestraJSON.wire.encode(t)
+        let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
         #expect(back.phase == .live(.waiting(.permission)))
         #expect(back.sessionEpoch == 3)
         #expect(back.phaseChangedAt == epochDate)
+        let restoredCutoff = try #require(back.sessionDiscoverySince)
+        #expect(abs(restoredCutoff.timeIntervalSince(cutoff)) < 0.000_001)
+        let shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(shape["sessionDiscoverySince"] is NSNumber)   // fractional Unix seconds, not rounded ISO-8601
+        var intermediateShape = shape
+        intermediateShape["sessionDiscoverySince"] = "2023-11-14T22:13:20Z"
+        let intermediate = try OrchestraJSON.decoder.decode(
+            Task.self, from: JSONSerialization.data(withJSONObject: intermediateShape))
+        #expect(intermediate.sessionDiscoverySince == epochDate)   // accepts the intermediate ISO-8601 shape
         #expect(back.pendingSeed == "carried context")
     }
 }

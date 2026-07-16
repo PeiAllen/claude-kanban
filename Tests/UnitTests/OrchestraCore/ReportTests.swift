@@ -314,4 +314,25 @@ struct ReportTests {
         #expect(current.ctxPct == 42)      // owned field applied
         #expect(current.column == .impl)   // unowned field PRESERVED — not clobbered
     }
+
+    @Test("a status-only report preserves a concurrent launch cutoff, while session binding clears it")
+    func test_reportPreservesDiscoveryCutoffUntilSessionBinds() {
+        let cutoff = Date(timeIntervalSince1970: 1_700_000_000)
+        var current = sample()
+        current.sessionDiscoverySince = cutoff
+
+        // This snapshot began before a relaunch recorded the cutoff, so ordinary telemetry must not erase it.
+        var statusOnly = current
+        statusOnly.sessionDiscoverySince = nil
+        statusOnly.desc = "Running"
+        current.applyReportFields(from: statusOnly)
+        #expect(current.sessionDiscoverySince == cutoff)
+
+        var binding = current
+        binding.agentSessionId = "fresh-session"
+        binding.sessionDiscoverySince = nil
+        current.applyReportFields(from: binding)
+        #expect(current.agentSessionId == "fresh-session")
+        #expect(current.sessionDiscoverySince == nil)
+    }
 }
