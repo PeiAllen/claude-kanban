@@ -59,8 +59,8 @@ public struct SessionManager: Sendable {
         var args = ["new-session", "-d", "-s", name, "-n", "agent", "-c", task.cwd,
                     "-e", "ORCHESTRA_TASK_ID=\(task.id.uuidString.lowercased())",
                     "-e", "ORCHESTRA_SOCK=\(sockEnvPath)"]
-        // Per-agent environment (e.g. Codex's pinned CODEX_HOME). Sorted for deterministic argv;
-        // Claude passes none, so its launch command stays byte-identical.
+        // Per-agent environment when an adapter needs one. Sorted for deterministic argv; current built-in
+        // adapters leave Codex's native state root untouched rather than exporting a custom home.
         for (k, v) in env.sorted(by: { $0.key < $1.key }) { args += ["-e", "\(k)=\(v)"] }
         args.append("--")
         args += argv

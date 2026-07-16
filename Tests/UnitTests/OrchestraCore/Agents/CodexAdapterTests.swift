@@ -12,6 +12,15 @@ struct CodexAdapterArgvTests {
         return argv[i + 1] == value
     }
 
+    /// Extract the TOML expressions passed through repeated `-c` pairs without coupling tests to the
+    /// placement of the provider's other launch flags.
+    private func configOverrides(_ argv: [String]) -> [String] {
+        argv.indices.compactMap { i in
+            guard argv[i] == "-c", i + 1 < argv.count else { return nil }
+            return argv[i + 1]
+        }
+    }
+
     @Test("registry resolves agentId=codex")
     func registryResolvesCodex() throws {
         let reg = AgentRegistry()
@@ -51,10 +60,7 @@ struct CodexAdapterArgvTests {
     // The rendered Codex hooks file must wire the Stop event, or the drain above never fires.
     @Test("rendered Codex hooks wire the Stop event to `_report --event stop --agent codex`")
     func rendersStopHook() throws {
-        let dest = NSTemporaryDirectory() + "codex-hooks-\(UUID().uuidString).json"
-        defer { try? FileManager.default.removeItem(atPath: dest) }
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex", to: dest)
-        let json = try String(contentsOfFile: dest, encoding: .utf8)
+        let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
         #expect(json.contains("\"Stop\""))
         #expect(json.contains("_report --event stop --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
@@ -90,10 +96,7 @@ struct CodexAdapterArgvTests {
     // The rendered Codex hooks file must wire the PermissionRequest event, or the gate never fires.
     @Test("rendered Codex hooks wire PermissionRequest → `_report --event permission --agent codex`")
     func rendersPermissionHook() throws {
-        let dest = NSTemporaryDirectory() + "codex-hooks-\(UUID().uuidString).json"
-        defer { try? FileManager.default.removeItem(atPath: dest) }
-        _ = try HooksRenderer.renderCodex(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex", to: dest)
-        let json = try String(contentsOfFile: dest, encoding: .utf8)
+        let json = HooksRenderer.renderedCodexJSON(orchestraBin: "/usr/local/bin/orchestra", agentId: "codex")
         #expect(json.contains("\"PermissionRequest\""))
         #expect(json.contains("_report --event permission --agent codex"))
         #expect(!json.contains("__AGENT_ID__"))   // fully substituted
@@ -112,6 +115,50 @@ struct CodexAdapterArgvTests {
         #expect(!argv.contains("never"))
         #expect(adjacent(argv, "-m", "gpt-5.5"))
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
+    }
+
+    @Test("start and resume inject the same scoped hooks, trust, and shared Orchestra instructions")
+    func launchScopedConfigIsSharedByStartAndResume() throws {
+        let cwd = "/wt/with \"quote\" and \\ slash"
+        let ctx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: "sess-9", prompt: "go",
+                                 orchestraBin: "/abs/orchestra", trustCwd: false)
+        let start = configOverrides(adapter.start(ctx))
+        let resume = configOverrides(try #require(adapter.resume(ctx)))
+
+        #expect(start == resume)
+        #expect(start.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level=\"untrusted\""))
+        #expect(start.contains { $0.hasPrefix("hooks.SessionStart=") && $0.contains("_report --event session --agent codex") })
+        #expect(start.contains { $0.hasPrefix("hooks.PermissionRequest=") && $0.contains("_report --event permission --agent codex") })
+        #expect(start.contains { $0.hasPrefix("hooks.Stop=") && $0.contains("_report --event stop --agent codex") })
+        let instructions = try #require(start.first { $0.hasPrefix("developer_instructions=") })
+        #expect(instructions.contains("Orchestra delegation"))
+        #expect(instructions.contains("Working in a branch tree"))
+    }
+
+    @Test("trust is explicitly trusted or untrusted for every Codex launch")
+    func trustOverrideAlwaysReflectsContext() throws {
+        let trusted = configOverrides(adapter.start(AdapterContext(cwd: "/wt", trustCwd: true)))
+        let untrusted = configOverrides(try #require(adapter.resume(AdapterContext(cwd: "/wt", sessionId: "s", trustCwd: false))))
+        #expect(trusted.contains("projects.\"/wt\".trust_level=\"trusted\""))
+        #expect(untrusted.contains("projects.\"/wt\".trust_level=\"untrusted\""))
+    }
+
+    @Test("TOML launch overrides escape strings and render nested hook values deterministically")
+    func tomlOverrideEncoding() {
+        #expect(TOMLOverride.string("quote \" slash \\ newline\n tab\t") ==
+                "\"quote \\\" slash \\\\ newline\\n tab\\t\"")
+        #expect(TOMLOverride.quotedKey("/wt/\"quoted\"") == "\"/wt/\\\"quoted\\\"\"")
+        let hook: JSONValue = .object([
+            "hooks": .array([
+                .object([
+                    "type": .string("command"),
+                    "command": .string("/bin/orchestra _report --event stop"),
+                ]),
+            ]),
+        ])
+        #expect(TOMLOverride.value(hook) ==
+                "{hooks = [{command = \"/bin/orchestra _report --event stop\", type = \"command\"}]}")
+        #expect(TOMLOverride.value(.null) == nil)
     }
 
     @Test("start honors ctx.access: default launches unclamped, read-only applies the RO preset")
@@ -157,15 +204,16 @@ struct CodexAdapterArgvTests {
         #expect(adapter.resume(AdapterContext(cwd: "/wt", sessionId: nil)) == nil)
     }
 
-    @Test("env pins CODEX_HOME")
-    func envPinsCodexHome() {
+    @Test("env leaves CODEX_HOME native while the injected home still resolves rollouts")
+    func envLeavesCodexHomeNative() {
         let a = CodexAdapter(codexHome: "/tmp/ch")
-        #expect(a.env["CODEX_HOME"] == "/tmp/ch")
+        #expect(a.env.isEmpty)
+        #expect(a.sessionsDir == "/tmp/ch/sessions")
     }
 
     // Defect 2 · hook-trust. This customized Codex build TRUST-GATES hooks behind a launch modal Orchestra
     // can't answer → the Stop hook never runs → the inbox never drains. `--dangerously-bypass-hook-trust`
-    // establishes trust by construction (Orchestra AUTHORS the hooks). It is the ONLY empirically-verified
+    // enables the launch-scoped Orchestra hooks. It is the ONLY empirically-verified
     // mechanism (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a
     // config-seed is fragile). Build-gated so a stock codex-rs build (no gate, no flag) still launches;
     // `hookTrustBypass:` injects the probe result for hermetic tests.
@@ -253,7 +301,7 @@ struct CodexHookTrustProbeTests {
 
 @Suite("CodexAdapter — rollout session-id discovery")
 struct CodexAdapterDiscoveryTests {
-    /// Make an isolated CODEX_HOME + adapter.
+    /// Make an injected rollout-discovery home + adapter.
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
         let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
@@ -336,10 +384,10 @@ struct CodexAdapterDiscoveryTests {
     }
 }
 
-@Suite("CodexAdapter — spawn wires CODEX_HOME + access-gated argv")
+@Suite("CodexAdapter — spawn keeps native home + access-gated argv")
 struct CodexSpawnWiringTests {
-    @Test("spawn(agentId: codex, access: readOnly) passes CODEX_HOME env + the read-only preset to the session")
-    func spawnWiresHomeAndArgv() async throws {
+    @Test("spawn(agentId: codex, access: readOnly) passes no CODEX_HOME env and keeps the read-only preset")
+    func spawnKeepsNativeHomeAndArgv() async throws {
         let base = NSTemporaryDirectory() + "codex-spawn-\(UUID().uuidString)"
         let work = base + "/work"
         let codexHome = base + "/codexhome"
@@ -366,51 +414,43 @@ struct CodexSpawnWiringTests {
         #expect(argv.first == "fake-codex")
         #expect(argv.contains("read-only"))
         #expect(argv.contains("never"))
-        // env wiring: the pinned CODEX_HOME reaches the launch.
-        #expect(sessions.ensureEnv[name]?["CODEX_HOME"] == codexHome)
+        // The service still stamps its own launch epoch, but Codex chooses its own native home.
+        #expect(sessions.ensureEnv[name]?["ORCH_EPOCH"] != nil)
+        #expect(sessions.ensureEnv[name]?["CODEX_HOME"] == nil)
     }
 }
 
-@Suite("CodexAdapter — trust mirror + isolation")
-struct CodexAdapterTrustTests {
+@Suite("CodexAdapter — legacy global cleanup")
+struct CodexAdapterLegacyCleanupTests {
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
         let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
     }
-    private func configText(_ home: String) -> String {
-        (try? String(contentsOfFile: "\(home)/config.toml", encoding: .utf8)) ?? ""
-    }
 
-    @Test("test_adapter_applies_ctx_trust: trustCwd=true writes trust_level from ctx, into the isolated home")
-    func appliesCtxTrust() throws {
+    @Test("prepare removes only Orchestra AGENTS sections and does not write config.toml")
+    func removesManagedAgentsWithoutConfigWrite() throws {
         let (home, adapter) = makeHome()
-        let ctx = AdapterContext(cwd: "/Users/x/wt/app/feat", trustCwd: true)
-        try adapter.prepareToLaunch(ctx)
-        // Isolation: the pinned CODEX_HOME was created (ordering: home exists before trust write).
-        #expect(FileManager.default.fileExists(atPath: home))
-        let toml = configText(home)
-        #expect(toml.contains("[projects.\"/Users/x/wt/app/feat\"]"))
-        #expect(toml.contains("trust_level = \"trusted\""))
-    }
-
-    @Test("trustCwd=false does NOT write trust (mirrors, never grants what core didn't)")
-    func untrustedNoWrite() throws {
-        let (home, adapter) = makeHome()
-        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: false))
-        #expect(!configText(home).contains("trust_level"))
-    }
-
-    @Test("mirror is idempotent + non-clobbering: existing config content survives")
-    func idempotentNonClobbering() throws {
-        let (home, adapter) = makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        let agents = [
+            "USER GLOBAL GUIDANCE",
+            AgentsFileComposer.startMarker("delegation"),
+            "old delegation",
+            AgentsFileComposer.endMarker("delegation"),
+            AgentsFileComposer.startMarker("tree"),
+            "old tree",
+            AgentsFileComposer.endMarker("tree"),
+        ].joined(separator: "\n") + "\n"
+        try agents.write(toFile: "\(home)/AGENTS.md", atomically: true, encoding: .utf8)
         try "model = \"gpt-5\"\n".write(toFile: "\(home)/config.toml", atomically: true, encoding: .utf8)
-        let ctx = AdapterContext(cwd: "/wt", trustCwd: true)
-        try adapter.prepareToLaunch(ctx)
-        try adapter.prepareToLaunch(ctx)   // second apply must not duplicate the section
-        let toml = configText(home)
-        #expect(toml.contains("model = \"gpt-5\""))                  // user content preserved
-        #expect(toml.components(separatedBy: "[projects.\"/wt\"]").count == 2)  // exactly one section
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: true))
+
+        let surviving = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
+        #expect(surviving.contains("USER GLOBAL GUIDANCE"))
+        #expect(!surviving.contains(AgentsFileComposer.startMarker("delegation")))
+        #expect(!surviving.contains(AgentsFileComposer.startMarker("tree")))
+        #expect(try String(contentsOfFile: "\(home)/config.toml", encoding: .utf8) == "model = \"gpt-5\"\n")
     }
 }
 
@@ -440,8 +480,8 @@ struct CodexModelRoutingTests {
     }
 
     /// A registry with a side-effect-free default agent (a Stub keyed "claude-code", so the real
-    /// ClaudeTrust write to ~/.claude.json never fires) alongside an ISOLATED Codex (fake bin + a
-    /// CODEX_HOME under the scratch base). Distinct model catalogs (m1/m2 vs gpt-*) so routing is
+    /// ClaudeTrust write to ~/.claude.json never fires) alongside Codex with a fake bin and injected
+    /// rollout-discovery home under the scratch base. Distinct model catalogs (m1/m2 vs gpt-*) keep routing
     /// unambiguous.
     private func isolatedRegistry(_ base: String) -> AgentRegistry {
         let stub = StubAdapter(transcriptDir: base + "/tx", id: "claude-code", name: "Stub")
@@ -498,26 +538,26 @@ struct CodexModelRoutingTests {
     }
 }
 
-@Suite("CodexAdapter — delegation AGENTS.md materialization")
-struct CodexDelegationTests {
+@Suite("CodexAdapter — launch-scoped guidance")
+struct CodexGuidanceTests {
     private func makeHome() -> (home: String, adapter: CodexAdapter) {
         let home = NSTemporaryDirectory() + "codexhome-deleg-\(UUID().uuidString)"
         return (home, CodexAdapter(codexHome: home))
     }
 
-    @Test("prepareToLaunch composes the delegation + tree sections into the isolated CODEX_HOME AGENTS.md")
-    func materializesAgents() throws {
+    @Test("guidance is carried by launch configuration, not a global AGENTS.md write")
+    func guidanceIsLaunchScoped() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: false))
-        let text = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
-        #expect(text.contains(try #require(DelegationDocs.forAgent("codex"))))   // delegation section body
-        #expect(text.contains(try #require(TreeDocs.forAgent("codex"))))         // tree section body
-        #expect(text.contains(AgentsFileComposer.startMarker("delegation")))
-        #expect(text.contains(AgentsFileComposer.startMarker("tree")))
-        #expect(!text.hasPrefix("---\n"))                        // plain AGENTS.md, no frontmatter
+        #expect(!FileManager.default.fileExists(atPath: "\(home)/AGENTS.md"))
+        let argv = adapter.start(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra"))
+        let configs = argv.indices.compactMap { i in argv[i] == "-c" && i + 1 < argv.count ? argv[i + 1] : nil }
+        let instructions = try #require(configs.first { $0.hasPrefix("developer_instructions=") })
+        #expect(instructions.contains("Orchestra delegation"))
+        #expect(instructions.contains("Working in a branch tree"))
     }
 
-    @Test("materialization does not touch the worktree cwd (no leakage / no clobber)")
+    @Test("launch-scoped Codex setup does not touch the worktree cwd")
     func noWorktreeWrite() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         let cwd = NSTemporaryDirectory() + "cwd-\(UUID().uuidString)"
@@ -527,28 +567,23 @@ struct CodexDelegationTests {
         #expect(!FileManager.default.fileExists(atPath: "\(cwd)/AGENTS.md"))   // never in the worktree
     }
 
-    @Test("idempotent + coexists with the trust config write")
-    func idempotentWithTrust() throws {
+    @Test("prepare is idempotent and never creates global config or AGENTS files")
+    func idempotentWithoutGlobalWrites() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         let ctx = AdapterContext(cwd: "/wt", trustCwd: true)
         try adapter.prepareToLaunch(ctx)
-        try adapter.prepareToLaunch(ctx)   // second apply must not duplicate either section
-        let text = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
-        #expect(text.contains(try #require(DelegationDocs.forAgent("codex"))))
-        #expect(text.contains(try #require(TreeDocs.forAgent("codex"))))
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("delegation")).count == 2)
-        #expect(text.components(separatedBy: AgentsFileComposer.startMarker("tree")).count == 2)
-        // the trust write (config.toml) is unaffected by the AGENTS.md materialization
-        #expect((try? String(contentsOfFile: "\(home)/config.toml", encoding: .utf8))?.contains("trust_level = \"trusted\"") == true)
+        try adapter.prepareToLaunch(ctx)
+        #expect(!FileManager.default.fileExists(atPath: "\(home)/AGENTS.md"))
+        #expect(!FileManager.default.fileExists(atPath: "\(home)/config.toml"))
     }
 
-    @Test("start argv + env are unchanged by the added materialization")
+    @Test("legacy cleanup does not mutate the scoped launch argv or native environment")
     func argvEnvUnchanged() throws {
         let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
         let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go")
         let before = adapter.start(ctx)
         try adapter.prepareToLaunch(ctx)
         #expect(adapter.start(ctx) == before)                    // byte-identical argv
-        #expect(adapter.env["CODEX_HOME"] == home)               // env unchanged (still just CODEX_HOME)
+        #expect(adapter.env.isEmpty)                              // Codex keeps its native home
     }
 }

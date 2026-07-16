@@ -299,10 +299,9 @@ Handoff/Fork/Fan-out buttons were removed in favor of the natural-language → M
 Send button became a full **inbox editor** (the *agent-buttons simplification*, in the
 [shipped history](#shipped-feature-history) below). The **guidance** an agent reads to *choose* among these topologies — delegate vs.
 continue, and card vs. native subagent (keep both) — has been authored and vendored too (**D2**, below);
-and **that last wire has since landed** (**skill-injection**, below): each adapter's `prepareToLaunch` now
-auto-materializes the per-agent variant into the location its agent discovers (Claude a project skill, Codex
-its isolated `CODEX_HOME` `AGENTS.md`), so the guidance reaches every launched card with no `~/.claude`
-install and no launch-argv change.
+and that wire now uses a shared `AgentGuidance` bundle: Claude materializes project skills, while Codex
+passes the same selected sections as launch-scoped `developer_instructions`. Codex keeps its native home
+and global `AGENTS.md`, and the required launch argv is the provider-specific adapter seam.
 
 ## Shipped feature history
 
@@ -421,10 +420,11 @@ Together they add the **second `Adapter` conformer**
 alongside Claude (`[ClaudeCodeAdapter(), CodexAdapter()]`). **B1** builds the launch/session/trust half:
 `CodexAdapter` (`id = "codex"`) launches **access-gated** like Claude — a default card uses Codex's own
 default permissioning, a read-only card gets the `-s read-only -a never` preset (`accessFlags`) — uses a
-**discovered** session id (it can't be seeded, so `sessionInfo` reads the newest
-`$CODEX_HOME/sessions/**/rollout-*.jsonl` back), isolates its home via `env["CODEX_HOME"]` (B1 also wired
-`Adapter.env` into the tmux launch — Claude byte-identical), and mirrors the core's trust decision into
-`config.toml`'s `[projects."<cwd>"].trust_level` (never reading the `TrustLedger`). **B2** makes its
+**discovered** session id (it can't be seeded, so `sessionInfo` reads the newest native Codex
+`~/.codex/sessions/**/rollout-*.jsonl` back). B1 originally isolated its home with `env["CODEX_HOME"]` and
+wrote trust into `config.toml`; that global-file approach was later superseded by launch-scoped `-c`
+overrides, which preserve Codex's native home and explicitly apply both trusted and untrusted states without
+reading the `TrustLedger`. **B2** makes its
 telemetry live end-to-end, and its two decisions are the interesting part:
 
 - **The daemon owns the transport; the adapter owns the parse.** Codex's TUI pushes no hook events but
@@ -682,40 +682,33 @@ This change is pure **reachability wiring**, no new launch behavior:
   the union `models()`, `agents()`, a model-only spawn landing on Codex, the default preserved, and an
   explicit `agentId` winning. (As-built: see [Agent adapters](04-cards-worktrees-sessions.md#agent-adapters).)
 
-Landing after Codex became startable is **skill-injection — wiring `DelegationDocs` into the launch path**
-(commit `7490e5e`, branch `deleg/04-skill-injection`). D2 had authored and vendored the delegation
-guidance but left it inert — a loader bound to **no** launch path (the one open wire flagged repeatedly
-above). This change binds it: every newly-launched card now receives its per-agent guidance. The decisions
-that keep it safe:
+Landing after Codex became startable was **skill-injection — wiring `DelegationDocs` into the launch path**
+(commit `7490e5e`, branch `deleg/04-skill-injection`). The original Codex implementation wrote an
+Orchestra-owned `AGENTS.md` under an isolated `CODEX_HOME`; it was later superseded by **launch-scoped
+Codex configuration**, which keeps the same standing guidance but no longer changes Codex's native home or
+global files. The current design keeps the provider boundary explicit:
 
-- **`prepareToLaunch`, not the seed — a standing side effect keyed on the agent.** The materialization is a
-  best-effort step each adapter adds to its existing `prepareToLaunch` (already the home of trust + Claude's
-  read-only settings), *independent of `ctx.seed`* — so it reaches **every** card, not just handoff/fork
-  ones. Content is chosen by `DelegationDocs.forAgent(id)` (keyed on the adapter's **own** `id`), so there is
-  **no `if claude` / `if codex` branch in core**; the destination path is each adapter's own packaging
-  knowledge, exactly as `ClaudeTrust` vs `CodexTrust` split. A shared
-  `DelegationDocs.install(agentId:at:)` DRYs the load-and-write.
-- **Each agent's native discovery location — no global install, no clobber, no dirty worktree.** Claude
-  writes the **skill** to `<cwd>/.claude/skills/orchestra-delegation/SKILL.md` — the per-card project-skill
-  location Claude Code discovers, under the gitignore-conventional `.claude/`, so the tracked worktree stays
-  clean and **no `~/.claude` global install** is needed. Codex writes the **`AGENTS.md`** to the Orchestra-owned
-  isolated `CODEX_HOME` — the **global (top) level** of Codex's `AGENTS.md` precedence, merged *above* any
-  project `AGENTS.md` — so it never clobbers the user's own project `AGENTS.md` (one file per directory) nor
-  touches the worktree.
-- **Additive and behavior-preserving.** The delegation step **never throws** into the launch path
-  (`install` mirrors the loader's nil/error tolerance: absent resource or any FS failure → no-op, returns
-  `false`), and it is **idempotent** — a re-launch atomically overwrites Orchestra's own managed file with
-  the same bytes. Crucially, `start`/`resume` argv and `env` stay **byte-identical**; the only new effect is
-  the written file. Tests pin all of it: `DelegationDocsTests` covers `install` (writes the right variant,
-  creates parent dirs, idempotent, graceful on an unwritable path); `AdapterTests`/`CodexAdapterTests` pin
-  that Claude gets the skill variant and Codex the `AGENTS.md` variant, that Codex never writes into the
-  worktree cwd, that it coexists with the trust `config.toml` write, and that argv/env are unchanged.
+- **Shared content, provider-owned packaging.** `AgentGuidance` assembles the named delegation and tree
+  sections, in a stable order, through the existing per-agent resource loaders. Claude materializes each
+  section as a project skill under `.claude/skills/orchestra-<section>/SKILL.md`; Codex joins those same
+  sections into one `developer_instructions` TOML override. Core never branches on a provider, and adapters
+  choose only their native packaging surface.
+- **Codex is entirely launch scoped.** Both `start` and `resume` pass repeated `-c` pairs for rendered hook
+  events, the explicit trusted/untrusted project value, and shared developer instructions. CLI precedence
+  defeats stale native values without touching `config.toml`, `AGENTS.md`, or `hooks.json`, and Codex retains
+  its normal authentication, plugin, and session state. The default state path is still used for rollout
+  discovery; its injectable resolver exists only for tests.
+- **Migration is subtractive and narrow.** `prepareToLaunch` removes only named Orchestra marker blocks
+  from the old global `AGENTS.md` and only hook command handlers containing the `_report --event` sentinel.
+  Foreign text, mixed foreign handlers, malformed files, and existing trust configuration remain intact.
+  Removing a now-empty pure-Orchestra hooks file prevents Codex's merged hook layers from delivering a Stop
+  drain twice.
 
-With this the context-continuity / agent-integration
-delegation stack is fully wired end-to-end: the tools (D1), the surfaces that drive them (D3), the guidance
-that says *when* to reach for them (D2), and now its automatic delivery on every launch. As with the entries
-above it deepens axis 3's *richer Orchestra→agent context injection* rather than closing a whole axis, so
-that row keeps its structured-sub-status remainder open ([chapter 10](10-roadmap.md)).
+With this the context-continuity / agent-integration delegation stack remains fully wired end-to-end: the
+tools (D1), the surfaces that drive them (D3), and the guidance that says *when* to reach for them (D2) now
+reach every launch through a provider-native configuration surface. It deepens axis 3's richer
+Orchestra→agent context injection rather than closing that row's structured-sub-status remainder
+([chapter 10](10-roadmap.md)).
 
 Landing after the forest is the **agent-buttons simplification + inbox editor**.
 D3 had shipped a board
@@ -887,21 +880,19 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
   additionally prints the brief as `hookSpecificOutput.additionalContext`, additively — the session→waiting
   report is byte-for-byte unchanged. A mid-turn `compact` is skipped (the agent already has its bearings).
   This is the open-time counterpart to the F3 Stop-drain's turn-end inbox inject.
-- **Codex reaches it through a Claude-parity hook, orientation-only.** Codex now gets its own managed
-  hooks file: each Codex card's `prepareToLaunch` renders the bundled `codex-hooks.json` (SessionStart →
-  `_report --event session --agent codex`) and installs it into the pinned `$CODEX_HOME/hooks.json` — but
-  **never clobbers a foreign user `hooks.json`** (`CodexHooks.installIfSafe` writes only when the destination
-  is absent or already Orchestra's, keyed on the broadened `_report --event` sentinel — any Orchestra event,
-  so a stranded retired install is still recognized as ours and replaced rather than left behind). Codex's `parse` returns
-  `nil` for this push, so the event is **orientation-only** — it yields the brief and sends **no**
-  telemetry, so Codex telemetry stays the [daemon-side rollout tail](#shipped-feature-history)
-  (B2) rather than gaining a second, conflicting source. Same brief, byte-identical envelope, both agents.
+- **Codex reaches it through a Claude-parity hook, orientation-only.** Each Codex launch renders the
+  bundled `codex-hooks.json` in memory and passes SessionStart (alongside PermissionRequest and Stop) as
+  a launch-scoped `-c hooks.<event>` override. Codex's `parse` returns `nil` for SessionStart, so the event
+  yields the brief and sends **no** telemetry; Codex telemetry stays the
+  [daemon-side rollout tail](#shipped-feature-history) (B2) rather than gaining a second, conflicting
+  source. The legacy global hooks migration strips only Orchestra handlers before launch, avoiding duplicate
+  delivery while preserving user hooks. Same brief, byte-identical envelope, both agents.
 - **A nudge, not a leash.** The sentence tells the agent to begin on its column's footing and to **keep its
   column honest** by moving itself (`move <thisCard> --col plan|impl|review`) as work crosses a real phase
   boundary — a *suggestion*, since a stale column misleads whoever is supervising, but never a constraint.
-  The delegation [skill + AGENTS.md](04-cards-worktrees-sessions.md#the-codex-adapter) gain a matching
-  "your column is your phase — start on it, and keep it honest" section, so the auto-injected guidance
-  (skill-injection, above) and the SessionStart orientation reinforce the same behavior.
+  The shared delegation/tree guidance gains a matching "your column is your phase — start on it, and keep it
+  honest" section, so the provider-packaged instructions and the SessionStart orientation reinforce the
+  same behavior.
 
 `SessionBriefTests` pin the brief's column/mode wording and the Claude `additionalContext` envelope, and a
 control round-trip test pins the `hook` RPC's `session` event. Verified end-to-end against an isolated daemon. Like the

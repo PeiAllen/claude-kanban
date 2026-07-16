@@ -1,42 +1,91 @@
 import Foundation
 
-/// Installs Orchestra's managed Codex hooks file into the pinned `$CODEX_HOME/hooks.json`. Two hooks (both
-/// Claude-parity): **SessionStart** (`_report --event session`) folds the card's column/mode/self-id
-/// orientation ([[SessionBrief]]) into the session via `hookSpecificOutput.additionalContext`, and **Stop**
-/// (`_report --event stop`) drains the durable inbox at turn-end (F3). Neither sends telemetry — Codex
-/// telemetry stays the daemon-side rollout tail (its `adapter.parse` returns nil for these pushes).
-///
-/// Ownership: Orchestra owns the pinned CODEX_HOME's global level (it already writes `AGENTS.md` there),
-/// but a hooks file is executable config, so this is deliberately conservative — it **never clobbers a
-/// FOREIGN user hooks.json**. It writes only when the destination is absent or already Orchestra's
-/// (identified by the [[sentinel]] command). Best-effort: never throws into a launch path.
+/// Retires only the hook commands written by the former global Codex integration. New Orchestra hooks
+/// travel in a launch-scoped configuration override, while Codex merges hook sources, so leaving the old
+/// commands would invoke the same Stop drain twice. This cleaner deliberately does not install anything.
 public enum CodexHooks {
-    /// Marker identifying an Orchestra-rendered hooks file: the `_report --event` command no other tool
-    /// emits. Matches ANY Orchestra event — `session`, `stop`, the retired `orient`, and any future one —
-    /// so a stale pre-change install (e.g. the retired `--event orient`) is recognized as OURS and
-    /// replaced by the current file, while a genuinely foreign hooks.json (no `_report --event` at all)
-    /// is still left untouched.
+    /// A command fragment unique to Orchestra's edge helper. It recognizes all former Orchestra events,
+    /// including retired spellings, without matching unrelated hook descriptions or metadata.
     public static let sentinel = "_report --event"
 
-    /// Install `content` (the rendered hooks JSON) at `dest`, unless `dest` already exists and is a
-    /// foreign (non-Orchestra) hooks file. Returns `true` iff it wrote. Idempotent for our own file.
+    /// Remove Orchestra command handlers from a legacy hooks file. Foreign commands in the same handler
+    /// group survive, empty groups/events disappear, and a pure Orchestra file is deleted. A malformed
+    /// document is intentionally untouched because guessing at executable user configuration is unsafe.
     @discardableResult
-    public static func installIfSafe(content: String, to dest: String) -> Bool {
-        if let existing = try? String(contentsOfFile: dest, encoding: .utf8),
-           !existing.contains(sentinel) {
-            return false   // a user's own hooks.json — leave it; the card just misses orientation + drain
+    public static func retireLegacy(at path: String) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              var events = root["hooks"] as? [String: Any]
+        else { return false }
+
+        var changed = false
+        for event in events.keys.sorted() {
+            guard let groups = events[event] as? [Any] else { continue }
+            var retainedGroups: [Any] = []
+            var eventChanged = false
+
+            for rawGroup in groups {
+                guard var group = rawGroup as? [String: Any],
+                      let handlers = group["hooks"] as? [Any]
+                else {
+                    retainedGroups.append(rawGroup)
+                    continue
+                }
+
+                let retainedHandlers = handlers.filter { !isOrchestraHandler($0) }
+                guard retainedHandlers.count != handlers.count else {
+                    retainedGroups.append(rawGroup)
+                    continue
+                }
+                changed = true
+                eventChanged = true
+                guard !retainedHandlers.isEmpty else { continue }
+                group["hooks"] = retainedHandlers
+                retainedGroups.append(group)
+            }
+
+            guard eventChanged else { continue }
+            if retainedGroups.isEmpty {
+                events.removeValue(forKey: event)
+            } else {
+                events[event] = retainedGroups
+            }
         }
-        let dir = (dest as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        do { try content.write(toFile: dest, atomically: true, encoding: .utf8); return true }
-        catch { return false }
+        guard changed else { return false }
+
+        if events.isEmpty {
+            root.removeValue(forKey: "hooks")
+        } else {
+            root["hooks"] = events
+        }
+        if let comment = root["_comment"] as? String, comment.contains("Orchestra-managed") {
+            root.removeValue(forKey: "_comment")
+        }
+
+        if root.isEmpty {
+            do {
+                try FileManager.default.removeItem(atPath: path)
+                return true
+            } catch {
+                return false
+            }
+        }
+        guard let rewritten = try? JSONSerialization.data(withJSONObject: root,
+                                                           options: [.sortedKeys, .prettyPrinted]) else {
+            return false
+        }
+        do {
+            try rewritten.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
-    /// Convenience: read the daemon-rendered hooks file at `src` (default `Config.codexHooksPath`) and
-    /// install it at `dest`. No-op (returns false) if the rendered source is missing.
-    @discardableResult
-    public static func install(fromRendered src: String = Config.codexHooksPath, to dest: String) -> Bool {
-        guard let content = try? String(contentsOfFile: src, encoding: .utf8) else { return false }
-        return installIfSafe(content: content, to: dest)
+    private static func isOrchestraHandler(_ raw: Any) -> Bool {
+        guard let handler = raw as? [String: Any],
+              let command = handler["command"] as? String
+        else { return false }
+        return command.contains(sentinel)
     }
 }
