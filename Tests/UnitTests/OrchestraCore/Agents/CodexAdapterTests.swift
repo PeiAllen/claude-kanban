@@ -12,13 +12,26 @@ struct CodexAdapterArgvTests {
         return argv[i + 1] == value
     }
 
-    /// Extract the TOML expressions passed through repeated `-c` pairs without coupling tests to the
-    /// placement of the provider's other launch flags.
-    private func configOverrides(_ argv: [String]) -> [String] {
-        argv.indices.compactMap { i in
-            guard argv[i] == "-c", i + 1 < argv.count else { return nil }
-            return argv[i + 1]
-        }
+    // The value immediately following `flag` in argv (e.g. the `-p` profile name), or nil.
+    private func value(after flag: String, in argv: [String]) -> String? {
+        guard let i = argv.firstIndex(of: flag), i + 1 < argv.count else { return nil }
+        return argv[i + 1]
+    }
+
+    /// Run the REAL launch prep into an isolated Codex home and return the profile file's TOML lines
+    /// alongside the argv. This asserts on the SAME hooks/trust/instructions the branch used to inline
+    /// via `-c`, now delivered through the file `prepareToLaunch` writes and `-p` selects — the
+    /// indirection that keeps a ~16KB payload off tmux's ~16KB command line. `hookTrustBypass:` is forced
+    /// so the helper never forks a real `codex --help` probe.
+    private func profile(_ ctx: AdapterContext, resume: Bool = false) throws
+        -> (name: String, lines: [String], argv: [String]) {
+        let home = NSTemporaryDirectory() + "codexcfg-\(UUID().uuidString)"
+        let a = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        try a.prepareToLaunch(ctx)
+        let argv = resume ? try #require(a.resume(ctx)) : a.start(ctx)
+        let name = try #require(value(after: "-p", in: argv))
+        let body = try String(contentsOfFile: "\(home)/\(name).config.toml", encoding: .utf8)
+        return (name, body.split(separator: "\n").map(String.init), argv)
     }
 
     @Test("registry resolves agentId=codex")
@@ -117,30 +130,49 @@ struct CodexAdapterArgvTests {
         #expect(argv.last == "Add OAuth login\nwith Google")   // launch positional prompt
     }
 
-    @Test("start and resume inject the same scoped hooks, trust, and shared Orchestra instructions")
+    @Test("start and resume select the same profile file carrying the scoped hooks, trust, and instructions")
     func launchScopedConfigIsSharedByStartAndResume() throws {
         let cwd = "/wt/with \"quote\" and \\ slash"
         let ctx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: "sess-9", prompt: "go",
                                  orchestraBin: "/abs/orchestra", trustCwd: false)
-        let start = configOverrides(adapter.start(ctx))
-        let resume = configOverrides(try #require(adapter.resume(ctx)))
+        let start = try profile(ctx)
+        let resume = try profile(ctx, resume: true)
 
-        #expect(start == resume)
-        #expect(start.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level=\"untrusted\""))
-        #expect(start.contains { $0.hasPrefix("hooks.SessionStart=") && $0.contains("_report --event session --agent codex") })
-        #expect(start.contains { $0.hasPrefix("hooks.PermissionRequest=") && $0.contains("_report --event permission --agent codex") })
-        #expect(start.contains { $0.hasPrefix("hooks.Stop=") && $0.contains("_report --event stop --agent codex") })
-        let instructions = try #require(start.first { $0.hasPrefix("developer_instructions=") })
+        // Both launches select the SAME per-cwd profile, and neither inlines the 16KB payload via `-c`.
+        #expect(start.name == resume.name)
+        #expect(start.lines == resume.lines)
+        #expect(!start.argv.contains("-c"))
+        #expect(!resume.argv.contains("-c"))
+
+        let lines = start.lines
+        #expect(lines.contains("projects.\"/wt/with \\\"quote\\\" and \\\\ slash\".trust_level = \"untrusted\""))
+        #expect(lines.contains { $0.hasPrefix("hooks.SessionStart = ") && $0.contains("_report --event session --agent codex") })
+        #expect(lines.contains { $0.hasPrefix("hooks.PermissionRequest = ") && $0.contains("_report --event permission --agent codex") })
+        #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
+        let instructions = try #require(lines.first { $0.hasPrefix("developer_instructions = ") })
         #expect(instructions.contains("Orchestra delegation"))
         #expect(instructions.contains("Working in a branch tree"))
     }
 
-    @Test("trust is explicitly trusted or untrusted for every Codex launch")
+    @Test("trust is explicitly trusted or untrusted in every Codex launch's profile")
     func trustOverrideAlwaysReflectsContext() throws {
-        let trusted = configOverrides(adapter.start(AdapterContext(cwd: "/wt", trustCwd: true)))
-        let untrusted = configOverrides(try #require(adapter.resume(AdapterContext(cwd: "/wt", sessionId: "s", trustCwd: false))))
-        #expect(trusted.contains("projects.\"/wt\".trust_level=\"trusted\""))
-        #expect(untrusted.contains("projects.\"/wt\".trust_level=\"untrusted\""))
+        let trusted = try profile(AdapterContext(cwd: "/wt", trustCwd: true))
+        let untrusted = try profile(AdapterContext(cwd: "/wt", sessionId: "s", trustCwd: false), resume: true)
+        #expect(trusted.lines.contains("projects.\"/wt\".trust_level = \"trusted\""))
+        #expect(untrusted.lines.contains("projects.\"/wt\".trust_level = \"untrusted\""))
+    }
+
+    @Test("the launch selects a per-cwd `-p` profile, deterministic and free of the 16KB inline payload")
+    func profileFlagIsDeterministicPerCwd() throws {
+        let a = try profile(AdapterContext(cwd: "/wt/alpha"))
+        let again = try profile(AdapterContext(cwd: "/wt/alpha"))
+        let other = try profile(AdapterContext(cwd: "/wt/beta"))
+        #expect(a.name == again.name)                 // deterministic per worktree
+        #expect(a.name != other.name)                 // distinct worktrees → distinct profiles
+        #expect(a.name.hasPrefix("orch-"))            // namespaced so it can't collide with a user profile
+        #expect(adjacent(a.argv, "-p", a.name))       // argv actually selects it
+        // The whole point: the argv stays tiny — the 16KB developer instructions live in the file, not here.
+        #expect(a.argv.joined(separator: " ").count < 200)
     }
 
     @Test("TOML launch overrides escape strings and render nested hook values deterministically")
@@ -506,13 +538,29 @@ struct CodexModelRoutingTests {
 
 @Suite("CodexAdapter — launch-scoped guidance")
 struct CodexGuidanceTests {
-    @Test("guidance is carried by launch configuration")
+    @Test("guidance is carried by the launch profile file, not the command line")
     func guidanceIsLaunchScoped() throws {
-        let adapter = CodexAdapter()
-        let argv = adapter.start(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra"))
-        let configs = argv.indices.compactMap { i in argv[i] == "-c" && i + 1 < argv.count ? argv[i + 1] : nil }
-        let instructions = try #require(configs.first { $0.hasPrefix("developer_instructions=") })
-        #expect(instructions.contains("Orchestra delegation"))
-        #expect(instructions.contains("Working in a branch tree"))
+        let home = NSTemporaryDirectory() + "codexcfg-\(UUID().uuidString)"
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        let ctx = AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra")
+        try adapter.prepareToLaunch(ctx)
+        let toml = try String(contentsOfFile: CodexLaunchConfiguration.profilePath(cwd: "/wt", codexHome: home),
+                              encoding: .utf8)
+        #expect(toml.contains("developer_instructions = "))
+        #expect(toml.contains("Orchestra delegation"))
+        #expect(toml.contains("Working in a branch tree"))
+        // The instructions never ride the argv (that is the bug this fixes).
+        #expect(!adapter.start(ctx).contains("-c"))
+    }
+
+    @Test("prepareToLaunch is load-bearing: no profile file → `-p` would resolve nothing")
+    func profileFileIsActuallyWritten() throws {
+        let home = NSTemporaryDirectory() + "codexcfg-\(UUID().uuidString)"
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        let ctx = AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra")
+        let path = CodexLaunchConfiguration.profilePath(cwd: "/wt", codexHome: home)
+        #expect(!FileManager.default.fileExists(atPath: path))   // nothing until prep runs
+        try adapter.prepareToLaunch(ctx)
+        #expect(FileManager.default.fileExists(atPath: path))    // prep wrote the profile `-p` selects
     }
 }

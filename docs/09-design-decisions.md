@@ -445,8 +445,8 @@ alongside Claude (`[ClaudeCodeAdapter(), CodexAdapter()]`). **B1** builds the la
 default permissioning, a read-only card gets the `-s read-only -a never` preset (`accessFlags`) — uses a
 **discovered** session id (it can't be seeded, so `sessionInfo` reads the newest native Codex
 `~/.codex/sessions/**/rollout-*.jsonl` back). B1 originally isolated its home with `env["CODEX_HOME"]` and
-wrote trust into `config.toml`; that global-file approach was later superseded by launch-scoped `-c`
-overrides, which preserve Codex's native home and explicitly apply both trusted and untrusted states without
+wrote trust into `config.toml`; that global-file approach was later superseded by a per-launch profile file
+(`-p`), which preserves Codex's native home and explicitly applies both trusted and untrusted states without
 reading the `TrustLedger`. **B2** makes its
 telemetry live end-to-end, and its two decisions are the interesting part:
 
@@ -714,13 +714,23 @@ global files. The current design keeps the provider boundary explicit:
 - **Shared content, provider-owned packaging.** `AgentGuidance` assembles the named delegation and tree
   sections, in a stable order, through the existing per-agent resource loaders. Claude materializes each
   section as a project skill under `.claude/skills/orchestra-<section>/SKILL.md`; Codex joins those same
-  sections into one `developer_instructions` TOML override. Core never branches on a provider, and adapters
+  sections into one `developer_instructions` value. Core never branches on a provider, and adapters
   choose only their native packaging surface.
-- **Codex is entirely launch scoped.** Both `start` and `resume` pass repeated `-c` pairs for rendered hook
-  events, the explicit trusted/untrusted project value, and shared developer instructions. CLI precedence
-  defeats stale native values without touching `config.toml`, `AGENTS.md`, or `hooks.json`, and Codex retains
-  its normal authentication, plugin, and session state. The default state path is still used for rollout
-  discovery; its injectable resolver exists only for tests.
+- **Codex is launch scoped through a per-launch profile FILE, not inline `-c`.** The first cut passed the
+  hooks, the trusted/untrusted project value, and the shared developer instructions as repeated `-c`
+  overrides on the launch argv. That regressed every Codex card to a **`.spawnFailed` — "command too long"**
+  death before it reached waiting: the developer instructions alone are ~16KB, and a session is created via
+  `tmux new-session … -- codex …`, which packs the whole argv into a fixed ~16KB client→server buffer and
+  aborts anything larger. So the same content is now written to a per-launch profile file
+  (`$CODEX_HOME/<name>.config.toml`, selected with `-p <name>`) by the adapter's `prepareToLaunch` — the
+  Codex analogue of Claude's per-card `--settings` file — and both `start` and `resume` carry only the tiny
+  `-p <name>`. Codex layers that profile **on top of** the user's native config, so authentication,
+  `config.toml`, MCP servers, and session state stay untouched; the profile is `orch-…`-namespaced (hashed
+  per cwd) so it never collides with a user profile. The default state path is still used for rollout
+  discovery; its injectable resolver exists only for tests. Verified end-to-end on a real isolated Codex
+  launch: the card reaches `live/waiting`, directory trust is honored with no prompt, the SessionStart hook
+  fires (bypassing hook-trust), the delegation guidance reaches the session, and a resume-seed `send` is
+  delivered into the resumed turn.
 With this the context-continuity / agent-integration delegation stack remains fully wired end-to-end: the
 tools (D1), the surfaces that drive them (D3), and the guidance that says *when* to reach for them (D2) now
 reach every launch through a provider-native configuration surface. It deepens axis 3's richer

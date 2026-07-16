@@ -399,7 +399,7 @@ and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads
 ## The report channel
 
 The fourth participant is the **agent itself**. Each adapter supplies its native hook configuration at
-launch — Claude through a managed `--settings` file and Codex through launch-scoped `-c` TOML overrides —
+launch — Claude through a managed `--settings` file and Codex through a per-launch profile file (`-p`) —
 that wires the agent's **statusLine** and **hooks** to a thin edge helper: `orchestra _report --event <kind>
 --agent <id>`. Codex therefore keeps its normal native home, authentication, plugins, and state instead of
 receiving an Orchestra-owned `CODEX_HOME`.

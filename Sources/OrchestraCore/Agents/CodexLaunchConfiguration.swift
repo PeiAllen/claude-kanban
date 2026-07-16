@@ -2,27 +2,61 @@ import Foundation
 
 /// Projects shared Orchestra content onto Codex's native per-invocation configuration surface. Claude
 /// packages the same guidance and its own hooks through a managed settings file; this type owns only the
-/// Codex TOML override spelling and keeps it out of adapter control flow.
+/// Codex TOML spelling and keeps it out of adapter control flow.
+///
+/// The content is delivered through a per-launch **profile file** (`$CODEX_HOME/<name>.config.toml`,
+/// selected with `-p <name>`), NOT inline `-c` overrides. That indirection is load-bearing: the developer
+/// instructions alone are ~16KB, and tmux caps a whole `new-session … -- argv` command at ~16KB (it packs
+/// the argv into a fixed client→server buffer and aborts overlong ones with "command too long"). Inlining
+/// them via `-c` therefore killed every Codex card at spawn. A profile file carries the same content off
+/// the command line — codex layers it on top of the user's native config, so auth / `config.toml` / MCP
+/// servers stay untouched — while argv shrinks to just `-p <name>`.
 enum CodexLaunchConfiguration {
-    static func flags(context: AdapterContext, agentId: String) -> [String] {
-        var flags: [String] = []
+    /// Argv that selects this launch's profile file. `prepareToLaunch` must have written the matching
+    /// `profilePath` first; codex resolves `-p <name>` to `$CODEX_HOME/<name>.config.toml`.
+    static func flags(cwd: String) -> [String] {
+        ["-p", profileName(cwd: cwd)]
+    }
+
+    /// Deterministic codex profile name for this worktree, so `prepareToLaunch` writes the exact file
+    /// `-p` later resolves. Hashed (not the raw cwd) to stay a short, filename-safe profile id, and
+    /// `orch-` namespaced so it can never collide with a profile the user authored.
+    static func profileName(cwd: String) -> String {
+        var h: UInt64 = 5381
+        for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
+        return "orch-\(String(h, radix: 16))"
+    }
+
+    /// Absolute path of the profile file in the (native) Codex home. Codex only discovers profiles under
+    /// `$CODEX_HOME`, so it must live there — clearly namespaced (`orch-…`) and separate from the user's
+    /// own `config.toml`/auth, which it never touches.
+    static func profilePath(cwd: String, codexHome: String) -> String {
+        "\(codexHome)/\(profileName(cwd: cwd)).config.toml"
+    }
+
+    /// The profile body as TOML: the SAME hooks, per-project trust, and developer instructions the launch
+    /// used to inline via `-c`, now written to a file. Each former `-c key=value` becomes one `key = value`
+    /// line — dotted keys are valid TOML and the RHS is already TOML from `TOMLOverride`. Always non-empty
+    /// (trust is always set), so a written profile is never a no-op file `-p` would fail to layer.
+    static func profileTOML(context: AdapterContext, agentId: String) -> String {
+        var lines: [String] = []
 
         if let hooks = HooksRenderer.codexHooks(orchestraBin: context.orchestraBin, agentId: agentId) {
             for event in hooks.keys.sorted() {
                 guard let hooksForEvent = hooks[event],
                       let encoded = TOMLOverride.value(hooksForEvent)
                 else { continue }
-                flags += ["-c", "hooks.\(TOMLOverride.key(event))=\(encoded)"]
+                lines.append("hooks.\(TOMLOverride.key(event)) = \(encoded)")
             }
         }
 
         let trust = context.trustCwd ? "trusted" : "untrusted"
-        flags += ["-c", "projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level=\(TOMLOverride.string(trust))"]
+        lines.append("projects.\(TOMLOverride.quotedKey(context.cwd)).trust_level = \(TOMLOverride.string(trust))")
 
         if let instructions = AgentGuidance.developerInstructions(for: agentId) {
-            flags += ["-c", "developer_instructions=\(TOMLOverride.string(instructions))"]
+            lines.append("developer_instructions = \(TOMLOverride.string(instructions))")
         }
-        return flags
+        return lines.joined(separator: "\n") + "\n"
     }
 }
 

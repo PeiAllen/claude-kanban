@@ -249,17 +249,20 @@ native per-directory trust and **never reads the `TrustLedger`**:
   and Claude's own prompt still applies. This is a `needsGrant` borrowed dir (or a scratch dir a foreign
   repo was cloned into — `resolveTrust` demotes it once a `.git` appears); the human fills the gap
   through the [`trust` grant surfaces](05-command-reference.md#registry-commands) (PR T2), never the
-  agent. The Codex adapter applies the same `ctx.trustCwd` as an explicit launch-scoped
-  `projects.<cwd>.trust_level` override on every start and resume, including the untrusted case, so a
-  stale native setting cannot silently grant trust (see [the Codex adapter](#the-codex-adapter)).
+  agent. The Codex adapter applies the same `ctx.trustCwd` as an explicit
+  `projects.<cwd>.trust_level` value in the launch profile file on every start and resume, including the
+  untrusted case, so a stale native setting cannot silently grant trust (see
+  [the Codex adapter](#the-codex-adapter)).
 
 **Delegation guidance — package the shared sections** (`prepareToLaunch`, also): the provider-neutral
 `AgentGuidance` bundle chooses the delegation and tree variants, in a stable order, for the adapter's id.
 Claude writes each selected section as a vendored project skill under
 `<cwd>/.claude/skills/orchestra-<section>/SKILL.md`, which keeps the tracked worktree clean and needs no
-`~/.claude` install. Codex consumes the same selected sections as one launch-scoped
-`developer_instructions` value instead of writing an `AGENTS.md`. The Claude write is best effort and
-idempotent; the Codex projection is an argv value, so neither adapter overwrites a user's global guidance.
+`~/.claude` install. Codex consumes the same selected sections as one
+`developer_instructions` value in its launch profile file (see [the Codex adapter](#the-codex-adapter))
+instead of writing an `AGENTS.md`. The Claude write is best effort and idempotent; the Codex projection is a
+per-launch `orch-…` profile layered on the native config, so neither adapter overwrites a user's global
+guidance.
 
 **Transcript discovery**: Claude stores transcripts at `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`
 (slug = the absolute cwd with `/` → `-`). Orchestra computes this path directly for tracked sessions,
@@ -295,15 +298,19 @@ core handles the difference purely through the descriptor:
   `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is the filename tail). Orchestra does **not**
   export `CODEX_HOME`: Codex keeps its native authentication, plugins, configuration, and session state.
   The adapter retains an injectable home resolver only for hermetic rollout-discovery tests.
-- **Launch-scoped hooks, trust, and guidance.** `start` and `resume` each pass repeated Codex `-c` TOML
-  overrides. The rendered `codex-hooks.json` template is converted in memory into `hooks.<event>` values,
-  which supply the SessionStart, PermissionRequest, and Stop handlers; SessionStart remains the
-  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel), while telemetry
-  remains the rollout tail below. Every launch also passes
-  `projects."<cwd>".trust_level` as either `trusted` or `untrusted`, plus one `developer_instructions`
-  value built from the shared `AgentGuidance` delegation/tree sections. CLI overrides win over stale global
-  values, so Orchestra writes no new global `config.toml`, `AGENTS.md`, or `hooks.json` content and never
-  reads the `TrustLedger` itself.
+- **Launch-scoped hooks, trust, and guidance — via a per-launch profile file.** `prepareToLaunch` writes a
+  per-cwd Codex profile (`$CODEX_HOME/orch-<hash>.config.toml`), and `start`/`resume` select it with a tiny
+  `-p <name>`. The profile carries the same three things the first cut inlined as `-c` overrides: the
+  rendered `codex-hooks.json` handlers as `hooks.<event>` (SessionStart — the
+  [Claude-parity orientation channel](06-clients-cli-mcp.md#the-hooks--_report-channel) — PermissionRequest,
+  and Stop; telemetry remains the rollout tail below), the explicit `projects."<cwd>".trust_level`
+  (`trusted`/`untrusted`, so a stale native setting can't silently grant trust), and one
+  `developer_instructions` value from the shared `AgentGuidance` delegation/tree sections. The move off inline
+  `-c` is **load-bearing, not cosmetic**: the developer instructions alone are ~16KB, and a session is
+  launched through `tmux new-session … --`, whose argv is capped at ~16KB (overlong → `.spawnFailed` /
+  "command too long"), so the payload has to travel through a file. Codex layers the profile on top of its
+  native config, so Orchestra writes no global `config.toml`, `AGENTS.md`, or `hooks.json` content, keeps
+  Codex's authentication / plugins / session state intact, and never reads the `TrustLedger` itself.
 - **Establish hook trust at launch — `--dangerously-bypass-hook-trust`.** The installed Codex build
   trust-gates hooks behind a launch-time modal Orchestra can't answer, so without intervention the
   scoped hooks above never fire. `CodexAdapter` adds `--dangerously-bypass-hook-trust` to the

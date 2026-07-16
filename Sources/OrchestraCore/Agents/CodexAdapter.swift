@@ -219,7 +219,21 @@ public struct CodexAdapter: Adapter {
     }
 
     private func launchConfigurationFlags(_ ctx: AdapterContext) -> [String] {
-        CodexLaunchConfiguration.flags(context: ctx, agentId: id)
+        CodexLaunchConfiguration.flags(cwd: ctx.cwd)
+    }
+
+    /// Write this launch's profile file BEFORE `start`/`resume` reference it via `-p`. The profile carries
+    /// the hooks, per-project trust, and (~16KB) developer instructions off the tmux command line — see
+    /// [[CodexLaunchConfiguration]] for why inlining them via `-c` killed every card at spawn. Mirrors the
+    /// Claude adapter's `prepareToLaunch`, which writes its own per-card `--settings` file the same way.
+    /// The write is load-bearing (a missing profile makes `-p` fail), so unlike a best-effort trust nudge
+    /// it surfaces its error rather than swallowing it.
+    public func prepareToLaunch(_ ctx: AdapterContext) throws {
+        let path = CodexLaunchConfiguration.profilePath(cwd: ctx.cwd, codexHome: codexHome)
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
+            .write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     public func start(_ ctx: AdapterContext) -> [String] {
