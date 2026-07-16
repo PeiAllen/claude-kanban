@@ -1,6 +1,6 @@
 import Foundation
 @preconcurrency import NIOCore
-@preconcurrency import NIOPosix
+@preconcurrency import NIOTransportServices
 @preconcurrency import NIOSSH
 import OrchestraKit
 
@@ -89,7 +89,14 @@ final class IOSSSHSession: @unchecked Sendable {
         }
 
         let key = privateKey, endpoint = self.endpoint
-        let bootstrap = ClientBootstrap(group: group).channelInitializer { channel in
+        // Network.framework-backed bootstrap (NIOTransportServices), NOT NIO's POSIX `ClientBootstrap`.
+        // On iOS a raw BSD socket never brings up / selects the cellular data interface — Apple routes
+        // cellular (and is VPN/Tailscale-aware) only through `NWConnection`, so a POSIX dial goes
+        // dead-silent on cellular (zero SYNs) while working on WiFi. NIOTS's default `NWParameters` allow
+        // cellular; we deliberately impose no interface restriction. NIOSSH runs identically over either
+        // channel, so only the socket layer changes — the tailnet guard above and the pipeline below are
+        // untouched.
+        let bootstrap = NIOTSConnectionBootstrap(group: group).channelInitializer { channel in
             let config = SSHClientConfiguration(
                 userAuthDelegate: PubkeyAuthDelegate(username: endpoint.user, privateKey: key),
                 serverAuthDelegate: AcceptAnyHostKeyDelegate())
