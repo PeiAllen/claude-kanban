@@ -71,11 +71,16 @@ struct SpawnSheet: View {
     /// The agents the daemon actually supports (each with its own model catalog). Falls back to the
     /// Claude Code adapter alone when the daemon hasn't answered yet — never invents providers that
     /// aren't wired up.
+    ///
+    /// `capabilities: nil` even though this side CAN reach the adapter: the local adapter is this app
+    /// build's opinion, not the running daemon's answer, and the sheet reads only name/icon/models to
+    /// draw its pickers. Claiming a profile we were never told is the drift b81c090 set out to remove —
+    /// and it keeps both spawn sheets saying the same honest "not told yet".
     private var agentOptions: [AgentInfo] {
         if !model.agents.isEmpty { return model.agents }
         let a = ClaudeCodeAdapter()
         return [AgentInfo(id: a.id, name: a.name, icon: a.icon,
-                          models: a.models(), capabilities: a.capabilities)]
+                          models: a.models(), capabilities: nil)]
     }
 
     /// The currently-selected agent (falls back to the first available).
