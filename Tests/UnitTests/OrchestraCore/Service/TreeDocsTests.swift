@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
-@Suite("Tree docs — vendored skills + legacy AGENTS cleanup")
+@Suite("Tree docs — vendored skills")
 struct TreeDocsTests {
 
     // MARK: loader parity with DelegationDocs
@@ -66,58 +66,4 @@ struct TreeDocsTests {
         }
     }
 
-    @Test("removing Orchestra sections preserves markerless user AGENTS content")
-    func removePreservesUserContent() throws {
-        let base = NSTemporaryDirectory() + "agents-remove-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        let user = "USER GUIDANCE\\n"
-        let managed = """
-        \(AgentsFileComposer.startMarker("delegation"))
-        DELEG
-        \(AgentsFileComposer.endMarker("delegation"))
-        \(AgentsFileComposer.startMarker("tree"))
-        TREE
-        \(AgentsFileComposer.endMarker("tree"))
-        """
-        try (user + managed).write(toFile: path, atomically: true, encoding: .utf8)
-
-        #expect(AgentsFileComposer.remove(sections: ["delegation", "tree"], at: path))
-        let surviving = try String(contentsOfFile: path, encoding: .utf8)
-        #expect(surviving.contains(user))
-        #expect(!surviving.contains("DELEG"))
-        #expect(!surviving.contains("TREE"))
-        #expect(!surviving.contains("<!-- orchestra:section:"))
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @Test("removing a pure managed AGENTS file deletes the empty legacy artifact")
-    func removeDeletesEmptyManagedFile() throws {
-        let base = NSTemporaryDirectory() + "agents-empty-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        let managed = """
-        \(AgentsFileComposer.startMarker("delegation"))
-        DELEG
-        \(AgentsFileComposer.endMarker("delegation"))
-        """
-        try managed.write(toFile: path, atomically: true, encoding: .utf8)
-
-        #expect(AgentsFileComposer.remove(sections: ["delegation", "tree"], at: path))
-        #expect(!FileManager.default.fileExists(atPath: path))
-        try? FileManager.default.removeItem(atPath: base)
-    }
-
-    @Test("removing named sections never resets markerless user AGENTS content")
-    func removeLeavesMarkerlessUserContentAlone() throws {
-        let base = NSTemporaryDirectory() + "agents-markerless-\(UUID().uuidString)"
-        let path = "\(base)/AGENTS.md"
-        let user = "MY EXISTING AGENTS FILE\\n"
-        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        try user.write(toFile: path, atomically: true, encoding: .utf8)
-
-        #expect(!AgentsFileComposer.remove(sections: ["delegation", "tree"], at: path))
-        #expect(try String(contentsOfFile: path, encoding: .utf8) == user)
-        try? FileManager.default.removeItem(atPath: base)
-    }
 }

@@ -294,7 +294,7 @@ core handles the difference purely through the descriptor:
   read the id back from Codex's normal state location, normally
   `~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl` (the uuid is the filename tail). Orchestra does **not**
   export `CODEX_HOME`: Codex keeps its native authentication, plugins, configuration, and session state.
-  The adapter retains an injectable home resolver only for hermetic rollout-discovery and migration tests.
+  The adapter retains an injectable home resolver only for hermetic rollout-discovery tests.
 - **Launch-scoped hooks, trust, and guidance.** `start` and `resume` each pass repeated Codex `-c` TOML
   overrides. The rendered `codex-hooks.json` template is converted in memory into `hooks.<event>` values,
   which supply the SessionStart, PermissionRequest, and Stop handlers; SessionStart remains the
@@ -304,12 +304,6 @@ core handles the difference purely through the descriptor:
   value built from the shared `AgentGuidance` delegation/tree sections. CLI overrides win over stale global
   values, so Orchestra writes no new global `config.toml`, `AGENTS.md`, or `hooks.json` content and never
   reads the `TrustLedger` itself.
-- **Safe retirement of the old installation.** `prepareToLaunch` only cleans artifacts written by older
-  Orchestra versions: it removes the named Orchestra marker blocks from a legacy global `AGENTS.md` and
-  strips command handlers containing the Orchestra `_report --event` sentinel from a legacy `hooks.json`.
-  Markerless guidance, foreign hook groups, mixed foreign handlers, malformed files, and ambiguous existing
-  trust records are left alone. Empty pure-Orchestra hook files are removed, which prevents merged hook
-  sources from firing Stop drains twice.
 - **Establish hook trust at launch — `--dangerously-bypass-hook-trust`.** The installed Codex build
   trust-gates hooks behind a launch-time modal Orchestra can't answer, so without intervention the
   scoped hooks above never fire. `CodexAdapter` adds `--dangerously-bypass-hook-trust` to the

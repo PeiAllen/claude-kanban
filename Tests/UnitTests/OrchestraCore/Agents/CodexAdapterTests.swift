@@ -420,40 +420,6 @@ struct CodexSpawnWiringTests {
     }
 }
 
-@Suite("CodexAdapter — legacy global cleanup")
-struct CodexAdapterLegacyCleanupTests {
-    private func makeHome() -> (home: String, adapter: CodexAdapter) {
-        let home = NSTemporaryDirectory() + "codexhome-\(UUID().uuidString)"
-        return (home, CodexAdapter(codexHome: home))
-    }
-
-    @Test("prepare removes only Orchestra AGENTS sections and does not write config.toml")
-    func removesManagedAgentsWithoutConfigWrite() throws {
-        let (home, adapter) = makeHome()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
-        let agents = [
-            "USER GLOBAL GUIDANCE",
-            AgentsFileComposer.startMarker("delegation"),
-            "old delegation",
-            AgentsFileComposer.endMarker("delegation"),
-            AgentsFileComposer.startMarker("tree"),
-            "old tree",
-            AgentsFileComposer.endMarker("tree"),
-        ].joined(separator: "\n") + "\n"
-        try agents.write(toFile: "\(home)/AGENTS.md", atomically: true, encoding: .utf8)
-        try "model = \"gpt-5\"\n".write(toFile: "\(home)/config.toml", atomically: true, encoding: .utf8)
-
-        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: true))
-
-        let surviving = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
-        #expect(surviving.contains("USER GLOBAL GUIDANCE"))
-        #expect(!surviving.contains(AgentsFileComposer.startMarker("delegation")))
-        #expect(!surviving.contains(AgentsFileComposer.startMarker("tree")))
-        #expect(try String(contentsOfFile: "\(home)/config.toml", encoding: .utf8) == "model = \"gpt-5\"\n")
-    }
-}
-
 /// The model→agent ROUTING that makes Codex startable from the app's flat "Model" picker: the daemon
 /// unions every enabled adapter's models into one list, and a spawn that names only a model resolves to
 /// the adapter that owns it (no explicit agentId needed).
@@ -540,50 +506,13 @@ struct CodexModelRoutingTests {
 
 @Suite("CodexAdapter — launch-scoped guidance")
 struct CodexGuidanceTests {
-    private func makeHome() -> (home: String, adapter: CodexAdapter) {
-        let home = NSTemporaryDirectory() + "codexhome-deleg-\(UUID().uuidString)"
-        return (home, CodexAdapter(codexHome: home))
-    }
-
-    @Test("guidance is carried by launch configuration, not a global AGENTS.md write")
+    @Test("guidance is carried by launch configuration")
     func guidanceIsLaunchScoped() throws {
-        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", trustCwd: false))
-        #expect(!FileManager.default.fileExists(atPath: "\(home)/AGENTS.md"))
+        let adapter = CodexAdapter()
         let argv = adapter.start(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra"))
         let configs = argv.indices.compactMap { i in argv[i] == "-c" && i + 1 < argv.count ? argv[i + 1] : nil }
         let instructions = try #require(configs.first { $0.hasPrefix("developer_instructions=") })
         #expect(instructions.contains("Orchestra delegation"))
         #expect(instructions.contains("Working in a branch tree"))
-    }
-
-    @Test("launch-scoped Codex setup does not touch the worktree cwd")
-    func noWorktreeWrite() throws {
-        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        let cwd = NSTemporaryDirectory() + "cwd-\(UUID().uuidString)"
-        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: cwd) }
-        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, trustCwd: false))
-        #expect(!FileManager.default.fileExists(atPath: "\(cwd)/AGENTS.md"))   // never in the worktree
-    }
-
-    @Test("prepare is idempotent and never creates global config or AGENTS files")
-    func idempotentWithoutGlobalWrites() throws {
-        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        let ctx = AdapterContext(cwd: "/wt", trustCwd: true)
-        try adapter.prepareToLaunch(ctx)
-        try adapter.prepareToLaunch(ctx)
-        #expect(!FileManager.default.fileExists(atPath: "\(home)/AGENTS.md"))
-        #expect(!FileManager.default.fileExists(atPath: "\(home)/config.toml"))
-    }
-
-    @Test("legacy cleanup does not mutate the scoped launch argv or native environment")
-    func argvEnvUnchanged() throws {
-        let (home, adapter) = makeHome(); defer { try? FileManager.default.removeItem(atPath: home) }
-        let ctx = AdapterContext(cwd: "/wt", model: "gpt-5.5", prompt: "go")
-        let before = adapter.start(ctx)
-        try adapter.prepareToLaunch(ctx)
-        #expect(adapter.start(ctx) == before)                    // byte-identical argv
-        #expect(adapter.env.isEmpty)                              // Codex keeps its native home
     }
 }

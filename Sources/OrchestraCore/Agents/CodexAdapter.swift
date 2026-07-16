@@ -17,7 +17,7 @@ public struct CodexAdapter: Adapter {
     public var capabilities: AgentCapabilities { .codex }
 
     /// Test injection for a fake binary and an isolated rollout directory. The home override is never
-    /// exported to a production Codex process; it only keeps discovery and legacy-cleanup fixtures hermetic.
+    /// exported to a production Codex process; it only keeps rollout-discovery fixtures hermetic.
     let binOverride: String?
     let codexHomeOverride: String?
     /// Test injection for the hook-trust build-probe. `nil` ⇒ probe the real binary once (cached);
@@ -32,7 +32,7 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    /// Codex's normal default state location, retained only for rollout discovery and legacy cleanup.
+    /// Codex's normal default state location, retained only for rollout discovery.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
 
@@ -253,13 +253,6 @@ public struct CodexAdapter: Adapter {
         if let c = r.additionalContext { return HookEnvelope.additionalContext(c) }
         if let cont = r.continuation   { return HookEnvelope.block(cont) }
         return nil
-    }
-
-    /// Retire only the artifacts written by older Orchestra versions. New hooks, trust, and guidance ride
-    /// the launch argv, so this method neither creates Codex's home nor writes user configuration.
-    public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        _ = AgentsFileComposer.remove(sections: ["delegation", "tree"], at: "\(codexHome)/AGENTS.md")
-        _ = CodexHooks.retireLegacy(at: "\(codexHome)/hooks.json")
     }
 
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {

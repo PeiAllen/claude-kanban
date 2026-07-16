@@ -110,57 +110,8 @@ struct SessionBriefTests {
     }
 }
 
-@Suite("Codex legacy hook cleanup (CodexHooks)")
-struct CodexHooksTests {
-    private func tmp() -> String { NSTemporaryDirectory() + "cxhooks-\(UUID().uuidString)" }
-
-    @Test("removes a pure legacy Orchestra hooks file")
-    func removesPureLegacyFile() throws {
-        let dest = tmp() + "/hooks.json"
-        let stale = #"{"_comment":"Orchestra-managed Codex hooks file","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event orient --agent codex"}]}]}}"#
-        try FileManager.default.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try stale.write(toFile: dest, atomically: true, encoding: .utf8)
-        #expect(CodexHooks.retireLegacy(at: dest))
-        #expect(!FileManager.default.fileExists(atPath: dest))
-    }
-
-    @Test("strips only Orchestra handlers from a mixed legacy hooks file")
-    func stripsOnlyOrchestraHandlers() throws {
-        let dest = tmp() + "/hooks.json"
-        let mixed = #"{"_comment":"Orchestra-managed Codex hooks file","description":"my hooks","hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-own-script"},{"type":"command","command":"/bin/orchestra _report --event stop --agent codex"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"/bin/orchestra _report --event session --agent codex"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"other-script"}]}]}}"#
-        try FileManager.default.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try mixed.write(toFile: dest, atomically: true, encoding: .utf8)
-
-        #expect(CodexHooks.retireLegacy(at: dest))
-        let data = try Data(contentsOf: URL(fileURLWithPath: dest))
-        let root = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(root["_comment"] == nil)
-        #expect(root["description"] as? String == "my hooks")
-        let hooks = try #require(root["hooks"] as? [String: Any])
-        #expect(hooks["SessionStart"] == nil)
-        let stop = try #require(hooks["Stop"] as? [[String: Any]])
-        let stopHandlers = try #require(stop.first?["hooks"] as? [[String: Any]])
-        #expect(stopHandlers.map { $0["command"] as? String } == ["my-own-script"])
-        #expect(hooks["PreToolUse"] != nil)
-    }
-
-    @Test("leaves foreign and malformed hook files untouched")
-    func preservesForeignAndMalformedFiles() throws {
-        let foreign = tmp() + "/foreign.json"
-        let foreignText = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-own-script"}]}]}}"#
-        try FileManager.default.createDirectory(atPath: (foreign as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try foreignText.write(toFile: foreign, atomically: true, encoding: .utf8)
-        #expect(!CodexHooks.retireLegacy(at: foreign))
-        #expect(try String(contentsOfFile: foreign, encoding: .utf8) == foreignText)
-
-        let malformed = tmp() + "/malformed.json"
-        let malformedText = #"{ "hooks": "# + CodexHooks.sentinel
-        try FileManager.default.createDirectory(atPath: (malformed as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try malformedText.write(toFile: malformed, atomically: true, encoding: .utf8)
-        #expect(!CodexHooks.retireLegacy(at: malformed))
-        #expect(try String(contentsOfFile: malformed, encoding: .utf8) == malformedText)
-    }
-
+@Suite("Codex hook rendering")
+struct CodexHookRenderingTests {
     @Test("rendered Codex JSON substitutes the orchestra bin + agent id and emits the session command")
     func renderedCodexJSONSubstitutes() throws {
         let got = HooksRenderer.renderedCodexJSON(orchestraBin: "/abs/orchestra", agentId: "codex")

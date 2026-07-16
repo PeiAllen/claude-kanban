@@ -208,11 +208,8 @@ Regression test: `Tests/IntegrationTests/ReportHelperPipeTests.swift`.
 
 **Codex gets a parity SessionStart hook.** Codex receives the rendered SessionStart handler as one of its
 per-launch `-c` hook overrides, so its stdout `additionalContext` is folded into the session and the same
-orientation (step 5) reaches a Codex card too. `prepareToLaunch` performs only a safe migration: it removes
-named Orchestra blocks from legacy `AGENTS.md` content and strips only legacy handlers carrying the
-`_report --event` sentinel from `hooks.json`; foreign content, mixed foreign handlers, and malformed files
-remain untouched. Removing an empty pure-Orchestra legacy file also avoids duplicate Stop drains, because
-Codex merges hook sources.
+orientation (step 5) reaches a Codex card too. This adapter's hook contribution is entirely in the launch
+argv; it has no Codex-specific persistent setup step.
 Codex's `parse` returns `nil` for this push (its telemetry is the
 [daemon-side rollout tail](04-cards-worktrees-sessions.md#the-codex-adapter)), so the `session` event is
 **orientation-only** — the daemon returns the same brief, and the edge encodes it identically to Claude.

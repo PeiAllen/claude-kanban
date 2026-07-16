@@ -698,12 +698,6 @@ global files. The current design keeps the provider boundary explicit:
   defeats stale native values without touching `config.toml`, `AGENTS.md`, or `hooks.json`, and Codex retains
   its normal authentication, plugin, and session state. The default state path is still used for rollout
   discovery; its injectable resolver exists only for tests.
-- **Migration is subtractive and narrow.** `prepareToLaunch` removes only named Orchestra marker blocks
-  from the old global `AGENTS.md` and only hook command handlers containing the `_report --event` sentinel.
-  Foreign text, mixed foreign handlers, malformed files, and existing trust configuration remain intact.
-  Removing a now-empty pure-Orchestra hooks file prevents Codex's merged hook layers from delivering a Stop
-  drain twice.
-
 With this the context-continuity / agent-integration delegation stack remains fully wired end-to-end: the
 tools (D1), the surfaces that drive them (D3), and the guidance that says *when* to reach for them (D2) now
 reach every launch through a provider-native configuration surface. It deepens axis 3's richer
@@ -885,8 +879,7 @@ existing hook channel, and its decisions keep it agent-agnostic and non-coercive
   a launch-scoped `-c hooks.<event>` override. Codex's `parse` returns `nil` for SessionStart, so the event
   yields the brief and sends **no** telemetry; Codex telemetry stays the
   [daemon-side rollout tail](#shipped-feature-history) (B2) rather than gaining a second, conflicting
-  source. The legacy global hooks migration strips only Orchestra handlers before launch, avoiding duplicate
-  delivery while preserving user hooks. Same brief, byte-identical envelope, both agents.
+  source. Same brief, byte-identical envelope, both agents.
 - **A nudge, not a leash.** The sentence tells the agent to begin on its column's footing and to **keep its
   column honest** by moving itself (`move <thisCard> --col plan|impl|review`) as work crosses a real phase
   boundary — a *suggestion*, since a stale column misleads whoever is supervising, but never a constraint.
