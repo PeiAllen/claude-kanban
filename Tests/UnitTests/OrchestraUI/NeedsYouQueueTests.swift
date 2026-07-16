@@ -89,6 +89,13 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertEqual(AgentCapabilities.claudeCode.denyChord, [.named(.esc)])
     }
 
+    @MainActor
+    func testUnknownAgentCapabilityFallbackKeepsApplicationMouseReporting() {
+        let m = modelWith([])
+        XCTAssertEqual(m.capabilities(for: "future-agent").terminalPointerInput,
+                       .applicationMouseReporting)
+    }
+
     // MARK: permission gate — state guard + per-adapter chord routing (#4)
 
     @MainActor

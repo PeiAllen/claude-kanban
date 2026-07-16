@@ -24,6 +24,7 @@ struct AgentTerminalView: NSViewRepresentable {
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste
+    var terminalPointerInput: AgentCapabilities.TerminalPointerInput
     /// Called whenever this terminal *becomes* the window's first responder — by keyboard descent OR a
     /// mouse click into it. Lets the owner keep `focusZone` (and thus the inspector focus ring + chip)
     /// honest without polling the responder chain.
@@ -36,12 +37,14 @@ struct AgentTerminalView: NSViewRepresentable {
          host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
          terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
+         terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting,
          onFocused: (() -> Void)? = nil,
          attachWhileLiveGate: (() -> Bool)? = nil) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
         self.terminalImagePaste = terminalImagePaste
+        self.terminalPointerInput = terminalPointerInput
         self.onFocused = onFocused
         self.attachWhileLiveGate = attachWhileLiveGate
     }
@@ -61,6 +64,7 @@ struct AgentTerminalView: NSViewRepresentable {
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
         term.terminalImagePaste = terminalImagePaste
+        term.terminalPointerInput = terminalPointerInput
         applyColors(term, coordinator: context.coordinator)
         context.coordinator.attached = "\(session):\(window)"
         context.coordinator.attachWhileLive = { [attachWhileLiveGate] in attachWhileLiveGate?() ?? false }
@@ -86,6 +90,7 @@ struct AgentTerminalView: NSViewRepresentable {
         (nsView as? ScrollableTerminalView)?.termWindow = window
         (nsView as? ScrollableTerminalView)?.onBecameFirstResponder = onFocused
         (nsView as? ScrollableTerminalView)?.terminalImagePaste = terminalImagePaste
+        (nsView as? ScrollableTerminalView)?.terminalPointerInput = terminalPointerInput
         let isLive = context.coordinator.attachWhileLive()
         if context.coordinator.attached != target {
             context.coordinator.attached = target
@@ -368,8 +373,8 @@ struct AgentTerminalView: NSViewRepresentable {
 /// protocol is a *left-button release* (`m` = release, low bits = button 0) — not the no-button motion
 /// `CSI<35;…M` that xterm/Terminal.app send. A TUI like Claude Code therefore reads every hover as a
 /// click and opens the item under the cursor (flashing its preview box). Dropping hover motion makes
-/// expansion happen on a real click only; button drags (text selection) and clicks still reach SwiftTerm
-/// normally, so nothing else regresses.
+/// expansion happen on a real click only. Pointer press-and-drag routing is adapter-specific; clicks
+/// still reach SwiftTerm normally to establish focus.
 final class ScrollableTerminalView: LocalProcessTerminalView {
     private static var monitorInstalled = false
 
@@ -389,6 +394,9 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
+    var terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting {
+        didSet { allowMouseReporting = terminalPointerInput.allowsApplicationMouseReporting }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -462,8 +470,10 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// the event (alternate buffer with mouse reporting on), `false` to let SwiftTerm scroll natively.
     func handleScroll(_ event: NSEvent) -> Bool {
         guard event.deltaY != 0 else { return false }
-        guard terminal != nil, terminal.isCurrentBufferAlternate,
-              allowMouseReporting, terminal.mouseMode != .off else { return false }
+        guard terminal != nil,
+              TerminalMouseInteractionPolicy.shouldForwardWheelToTerminal(
+                  isAlternateBuffer: terminal.isCurrentBufferAlternate,
+                  mouseReportingActive: terminal.mouseMode != .off) else { return false }
         // Wheel up = button 4, wheel down = button 5 (xterm convention).
         let flags = terminal.encodeButton(button: event.deltaY > 0 ? 4 : 5,
                                           release: false, shift: false, meta: false, control: false)

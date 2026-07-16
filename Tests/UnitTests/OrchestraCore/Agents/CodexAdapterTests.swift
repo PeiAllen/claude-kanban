@@ -54,6 +54,7 @@ struct CodexAdapterArgvTests {
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
+        #expect(c.terminalPointerInput == .nativeSelection)
     }
 
     @Test("discovered agents do not mint a session id")
