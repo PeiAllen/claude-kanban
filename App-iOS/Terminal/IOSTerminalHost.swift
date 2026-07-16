@@ -1,13 +1,18 @@
 import SwiftUI
 import OrchestraKit
 import OrchestraUI
-import NIOPosix
+import NIOTransportServices
 import NIOCore
 
 /// App-wide NIO runtime for terminal SSH sessions. One shared event-loop group so each terminal
 /// doesn't spin up its own threads; terminals are few and short-lived, so a single loop is plenty.
+///
+/// This is a **NIOTransportServices** group (Network.framework-backed), not a POSIX
+/// `MultiThreadedEventLoopGroup`: on iOS only `NWConnection` brings up / selects the cellular data path
+/// (and is VPN/Tailscale-aware), so the whole SSH transport must ride NIOTS or it goes dead-silent on
+/// cellular. The dial itself is `NIOTSConnectionBootstrap` in `IOSSSHSession.connect()`.
 enum TerminalRuntime {
-    static let group: EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    static let group: EventLoopGroup = NIOTSEventLoopGroup(loopCount: 1)
 }
 
 /// The iOS `TerminalHost`: mounts a live SwiftTerm terminal driven over an SSH PTY that runs the tmux

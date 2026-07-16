@@ -110,6 +110,29 @@ The control plane carries commands, state, and events — never PTY bytes. Swift
 `shell`/`inspect` attach to **tmux directly**. This keeps the daemon simple and the terminals fully
 interactive and real-time.
 
+### iOS in-process SSH rides Network.framework (NIOTransportServices), not POSIX sockets
+
+The iPhone can't fork/exec the system `ssh`, so its SSH client is in-process (swift-nio-ssh). The
+connection is dialed by a single chokepoint — `IOSSSHSession.connect()`, which both the board's control
+channel and every terminal PTY multiplex over — so the socket layer is chosen in exactly one place. That
+place uses **NIOTransportServices** (`NIOTSEventLoopGroup` + `NIOTSConnectionBootstrap`, backed by
+`NWConnection`), **not** NIO's POSIX/BSD-socket stack (`MultiThreadedEventLoopGroup` + `ClientBootstrap`).
+
+The reason is cellular. On iOS a raw BSD socket does not bring up or select the **cellular** data
+interface — Apple routes cellular (and is VPN/Tailscale-aware) only through Network.framework. A POSIX
+dial therefore goes **dead-silent on cellular** (it emits zero SYNs and hangs on "Connecting…") while
+working instantly on WiFi; the symptom looked like flakiness but was WiFi-vs-cellular all along. NIOTS's
+default `NWParameters` allow cellular, and we deliberately impose no interface restriction, so the same
+session now dials over whatever path is up. NIOSSH runs identically over either channel, so **only the
+socket layer changed** — the tailnet-shape guard (blind host-key acceptance is safe only because the
+target must be a `100.64.0.0/10`/`*.ts.net` tailnet address), the pubkey/accept-any-host-key delegates,
+the error-close tail handler, and the connect-once/dedup (`connectGen`) logic are all untouched.
+
+The whole iOS app target uses NIOTS **unconditionally** — no `#if canImport(Network)` fallback and no
+universal-bootstrap indirection — because App-iOS is iOS/iPadOS-only (no Catalyst) and both device and
+Simulator always have Network.framework, so a POSIX branch would be permanently dead code. The macOS
+desktop is unaffected: it shells out to `/usr/bin/ssh` via `SSHMaster`, a separate path.
+
 ### State is pushed through a two-way hook channel
 
 Live card fields (`ctxPct`, `desc`, run-state, session id, title) are **pushed by the agent** via a

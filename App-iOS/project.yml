@@ -18,14 +18,21 @@ packages:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: 1.2.0
   # SSH-PTY terminal transport (T1). iOS can't fork/exec the system `ssh`, so the SSH client is
-  # in-process: Apple's first-party swift-nio-ssh (provider-neutral). NIOCore/NIOPosix come from
-  # swift-nio; Curve25519 keys from swift-crypto. First build needs network to resolve these.
+  # in-process: Apple's first-party swift-nio-ssh (provider-neutral). NIOCore comes from swift-nio;
+  # Curve25519 keys from swift-crypto. First build needs network to resolve these.
+  #
+  # The socket layer is NIOTransportServices (Network.framework-backed), NOT NIO's POSIX sockets: on iOS
+  # only `NWConnection` brings up / selects the CELLULAR data path (and is VPN/Tailscale-aware), so a
+  # POSIX-socket dial goes dead-silent on cellular while working on WiFi. See `IOSSSHSession.connect()`.
   SwiftNIO:
     url: https://github.com/apple/swift-nio
     from: 2.65.0
   SwiftNIOSSH:
     url: https://github.com/apple/swift-nio-ssh
     from: 0.9.0
+  SwiftNIOTransportServices:
+    url: https://github.com/apple/swift-nio-transport-services
+    from: 1.20.0
   SwiftCrypto:
     url: https://github.com/apple/swift-crypto
     from: 3.0.0
@@ -60,8 +67,8 @@ targets:
         product: NIOSSH
       - package: SwiftNIO
         product: NIOCore
-      - package: SwiftNIO
-        product: NIOPosix
+      - package: SwiftNIOTransportServices
+        product: NIOTransportServices
       - package: SwiftCrypto
         product: Crypto
     # Device signing (FREE personal team). CODE_SIGN_STYLE is in `settings.base` below (committed, visible).
