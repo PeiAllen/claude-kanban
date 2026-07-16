@@ -50,7 +50,7 @@ struct ReadinessSignalTests {
 
     // MARK: - Codex (.rolloutMeta)
 
-    @Test("test_launchingToLive_onReady[codex]: rollout session_meta (mtime > phaseChangedAt) drives launch to live")
+    @Test("test_launchingToLive_onReady[codex]: rollout metadata newer than phaseChangedAt drives launch to live")
     func test_launchingToLive_onReady_codex() async throws {
         let base = NSTemporaryDirectory() + "rdy-codex-\(UUID().uuidString)"
         let work = PathResolver.canonical(base + "/work")
@@ -75,25 +75,83 @@ struct ReadinessSignalTests {
                                                      agentId: "codex", cwd: work))
         // Non-blocking spawn: drive the reconciler ONLY until the card is `.launching` (its readiness waiter
         // registers), then STOP reconciling so the N=3 fallback can't fire — the rollout's session_meta is the
-        // resolver we want to exercise. Its mtime "now" > `phaseChangedAt`, so the launch bind adopts exactly
-        // this rollout (never a stale/foreign one).
+        // resolver we want to exercise. Its immutable metadata birth time is after `phaseChangedAt`, so the
+        // launch bind adopts exactly this rollout (never a stale/foreign one).
         try await pollUntil {
             await svc.reconcile()
             return await svc.list().first { $0.id == created.id }?.phase.kind == .launching
         }
-        // the LaunchStepper registers its readiness waiter on an off-actor hop — wait for the
-        // registration itself (actor state, @testable) rather than a fixed sleep
-        try await pollUntil("readiness waiter registered") { await svc.readinessWaiters[created.id] != nil }
+        // The MaterializeStepper can publish `.launching` just before its own in-flight claim is released,
+        // so keep reconciling until the subsequent LaunchStepper has registered its waiter. Stop immediately
+        // once it does; this still leaves the metadata signal, rather than N=3, as the resolver under test.
+        try await pollUntil("readiness waiter registered") {
+            await svc.reconcile()
+            return await svc.hasReadinessWaiter(created.id)
+        }
         let sid = UUID().uuidString.lowercased()
         let rollout = "\(day)/rollout-2026-07-09T10-00-00-\(sid).jsonl"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = formatter.string(from: Date().addingTimeInterval(1))
         FileManager.default.createFile(atPath: rollout, contents:
-            Data((#"{"timestamp":"2026-07-09T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(work)"}}"# + "\n").utf8))
+            Data((#"{"timestamp":"\#(timestamp)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(work)","timestamp":"\#(timestamp)"}}"# + "\n").utf8))
 
         await svc.pollTelemetry()   // tails session_meta → report(sessionId) → launching → resolveReadiness → live
         try await pollUntil { await svc.list().first { $0.id == created.id }?.phase.kind == .live }   // no reconcile → no N=3
         let live = try #require(await svc.list().first { $0.id == created.id })
         #expect(live.phase.kind == .live)
         #expect(live.agentSessionId == sid)   // bound from the rollout the launch just wrote
+    }
+
+    @Test("test_codexFallbackKeepsLaunchCutoff: delayed fresh rollout binds without adopting stale history")
+    func test_codexFallbackKeepsLaunchCutoff() async throws {
+        let base = NSTemporaryDirectory() + "rdy-codex-delayed-\(UUID().uuidString)"
+        let work = PathResolver.canonical(base + "/work")
+        let codexHome = base + "/codexhome"
+        let day = codexHome + "/sessions/2026/07/09"
+        try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+        let config = Config(reposRoot: PathResolver.canonical(base) + "/repos",
+                            worktreesRoot: PathResolver.canonical(base) + "/worktrees",
+                            allowlist: [PathResolver.canonical(base)], revivalGraceSeconds: 30, sessionLaunchTimeout: 3600,
+                            scratchRoot: PathResolver.canonical(base) + "/scratch",
+                            runtimeStateDir: PathResolver.canonical(base) + "/state")
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
+        let svc = OrchestraService(config: config, store: TaskStore(path: base + "/tasks.json"),
+                                   registry: AgentRegistry(adapters: [codex]),
+                                   worktrees: TestEnv.registry(StubWorktrees(root: config.worktreesRoot), base: base, config: config),
+                                   sessions: StubSessions(),
+                                   trust: TrustLedger(path: base + "/trust.json"),
+                                   proc: TestEnv.defaultFakeProc(), gitRemotesProbe: { _ in [] })
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func writeRollout(_ sid: String, timestamp: Date) {
+            let startedAt = formatter.string(from: timestamp)
+            let path = "\(day)/rollout-\(startedAt)-\(sid).jsonl"
+            FileManager.default.createFile(atPath: path, contents:
+                Data((#"{"timestamp":"\#(startedAt)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(work)","timestamp":"\#(startedAt)"}}"# + "\n").utf8))
+        }
+
+        // This old rollout can still be written after the launch starts, so its metadata birth time, not
+        // its file mtime, must keep it out of the new card's discovery set.
+        writeRollout(UUID().uuidString.lowercased(), timestamp: Date(timeIntervalSince1970: 1))
+        let created = try await svc.spawn(SpawnInput(id: UUID(), prompt: "look", model: "gpt-5.5",
+                                                     agentId: "codex", cwd: work))
+        try await TestEnv.reconcileUntilLive(svc, count: 1)   // N=3 fallback: no fresh metadata yet
+        let afterFallback = try #require(await svc.list().first { $0.id == created.id })
+        #expect(afterFallback.agentSessionId == nil)
+        let cutoff = try #require(afterFallback.sessionDiscoverySince)
+        let restored = try #require(await TaskStore(path: base + "/tasks.json").load().first { $0.id == created.id })
+        let persistedCutoff = try #require(restored.sessionDiscoverySince)
+        #expect(abs(persistedCutoff.timeIntervalSince(cutoff)) < 0.000_001)   // durable across a daemon restart
+
+        let fresh = UUID().uuidString.lowercased()
+        writeRollout(fresh, timestamp: cutoff.addingTimeInterval(60))
+        await svc.pollTelemetry()
+
+        let bound = try #require(await svc.list().first { $0.id == created.id })
+        #expect(bound.agentSessionId == fresh)
+        #expect(bound.sessionDiscoverySince == nil)
     }
 
     @Test("test_relaunchingToLive_fallback[codex]: resume writes no rollout → N=3 liveness fallback drives it live")
@@ -144,19 +202,18 @@ struct ReadinessSignalTests {
         try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
 
-        func writeRollout(_ sid: String, ts: String, mtime: Date) {
+        func writeRollout(_ sid: String, ts: String, startedAt: String) {
             let path = "\(day)/rollout-\(ts)-\(sid).jsonl"
             FileManager.default.createFile(atPath: path, contents:
-                Data((#"{"timestamp":"2026-07-09T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(cwd)"}}"# + "\n").utf8))
-            try? FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: path)
+                Data((#"{"timestamp":"\#(startedAt)","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(cwd)","timestamp":"\#(startedAt)"}}"# + "\n").utf8))
         }
 
         let launchAt = Date(timeIntervalSince1970: 10_000)
 
-        // Stale pre-reboot rollout only (mtime < launch): a relaunching card must NOT adopt its own stale
-        // rollout — the time-scoped bind refuses it (fallback carries readiness).
+        // Stale pre-reboot rollout only (metadata birth before launch): a relaunching card must NOT adopt
+        // its own stale rollout — the time-scoped bind refuses it (fallback carries readiness).
         let staleSid = UUID().uuidString.lowercased()
-        writeRollout(staleSid, ts: "2026-07-09T09-00-00", mtime: launchAt.addingTimeInterval(-3600))
+        writeRollout(staleSid, ts: "2026-07-09T09-00-00", startedAt: "1970-01-01T01:46:40Z")
         #expect(codex.discover(cwd: cwd, newerThan: launchAt) == nil)
         #expect(codex.discover(cwd: cwd, newerThan: nil) == staleSid)   // unscoped legacy path still finds it
 
@@ -164,8 +221,8 @@ struct ReadinessSignalTests {
         // are newer than launch → ambiguous → bind nothing: the launching card must not adopt the sibling's.
         let ownSid = UUID().uuidString.lowercased()
         let sibSid = UUID().uuidString.lowercased()
-        writeRollout(ownSid, ts: "2026-07-09T10-00-00", mtime: launchAt.addingTimeInterval(30))
-        writeRollout(sibSid, ts: "2026-07-09T10-05-00", mtime: launchAt.addingTimeInterval(60))
+        writeRollout(ownSid, ts: "2026-07-09T10-00-00", startedAt: "1970-01-01T02:47:10Z")
+        writeRollout(sibSid, ts: "2026-07-09T10-05-00", startedAt: "1970-01-01T02:47:40Z")
         #expect(codex.discover(cwd: cwd, newerThan: launchAt) == nil)   // ambiguous → nothing (never the sibling)
     }
 }

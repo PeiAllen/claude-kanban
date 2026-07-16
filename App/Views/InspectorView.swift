@@ -366,7 +366,8 @@ private struct AgentChrome: View {
                                       // hjkl-ing between cards would remount this view and steal focus, so the
                                       // next nav key would type into the agent instead of moving the selection.
                                       autofocus: model.focusZone == .terminal,
-                                      terminalImagePaste: model.capabilities(for: task.agentId).terminalImagePaste,
+                                      terminalImagePaste: model.terminalImagePaste(for: task.agentId),
+                                      terminalPointerInput: model.terminalPointerInput(for: task.agentId),
                                       loadTranscriptImage: { referenceID in
                                           try await model.transcriptImage(task.id, referenceID: referenceID)
                                       },

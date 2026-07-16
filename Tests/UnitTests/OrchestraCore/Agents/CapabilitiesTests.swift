@@ -22,6 +22,8 @@ struct CapabilitiesTests {
                 == ["sandboxed", "toolGatedOnly", "orchestraSandboxed"])
         #expect(AgentCapabilities.AuthMode.allCases.map(\.rawValue) == ["subscription", "apiKey"])
         #expect(AgentCapabilities.TerminalImagePaste.allCases.map(\.rawValue) == ["direct", "controlV"])
+        #expect(AgentCapabilities.TerminalPointerInput.allCases.map(\.rawValue)
+                == ["applicationMouseReporting", "nativeSelection"])
         #expect(AgentCapabilities.ReadinessConfirmation.allCases.map(\.rawValue)
                 == ["sessionStartHook", "rolloutMeta", "relaunchLiveness"])
     }
@@ -37,6 +39,7 @@ struct CapabilitiesTests {
         #expect(c.readOnlyEnforcement == .sandboxed)
         #expect(c.authMode == .subscription)
         #expect(c.terminalImagePaste == .controlV)
+        #expect(c.terminalPointerInput == .applicationMouseReporting)
         #expect(c.readinessConfirmation == .sessionStartHook)   // Claude confirms via its SessionStart hook
     }
 
@@ -53,6 +56,7 @@ struct CapabilitiesTests {
     func codexReadinessConfirmation() {
         #expect(AgentCapabilities.codex.readinessConfirmation == .rolloutMeta)
         #expect(AgentCapabilities.codex.telemetry == .fileTail)
+        #expect(AgentCapabilities.codex.terminalPointerInput == .nativeSelection)
         #expect(CodexAdapter().capabilities == .codex)
     }
 
@@ -64,6 +68,7 @@ struct CapabilitiesTests {
             readOnlyEnforcement: .toolGatedOnly, authMode: .apiKey)
         #expect(custom.terminalImagePaste == .direct)
         #expect(custom.terminalImagePaste.canPasteImages)
+        #expect(custom.terminalPointerInput == .applicationMouseReporting)
         let stub = StubAdapter(transcriptDir: NSTemporaryDirectory(), capabilities: custom)
         #expect(stub.capabilities == custom)
         // Default is Claude-shaped EXCEPT `.relaunchLiveness` readiness, so setup spawns/resumes land
@@ -75,6 +80,26 @@ struct CapabilitiesTests {
     func terminalImagePasteSemantics() {
         #expect(AgentCapabilities.TerminalImagePaste.direct.canPasteImages)
         #expect(AgentCapabilities.TerminalImagePaste.controlV.canPasteImages)
+    }
+
+    @Test("pointer input preserves mouse-reporting unless an adapter explicitly opts into native selection")
+    func terminalPointerInputSemantics() {
+        #expect(AgentCapabilities.TerminalPointerInput.applicationMouseReporting
+                    .allowsApplicationMouseReporting)
+        #expect(!AgentCapabilities.TerminalPointerInput.nativeSelection
+                    .allowsApplicationMouseReporting)
+    }
+
+    @Test("an older capability payload defaults pointer input to application mouse reporting")
+    func legacyCapabilitiesDefaultPointerInput() throws {
+        let encoded = try OrchestraJSON.wire.encode(AgentCapabilities.claudeCode)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "terminalPointerInput")
+
+        let legacyPayload = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try OrchestraJSON.decoder.decode(AgentCapabilities.self, from: legacyPayload)
+
+        #expect(decoded.terminalPointerInput == .applicationMouseReporting)
     }
 
     @Test("AdapterContext.seed defaults to nil and round-trips when set")

@@ -98,8 +98,23 @@ public class BoardStore: ObservableObject {
     /// terminals directly), so this is inert there.
     @Published public var phoneTakeoverRequest: PhoneTakeoverRequest?
 
-    public func capabilities(for agentId: String) -> AgentCapabilities {
-        agents.first { $0.id == agentId }?.capabilities ?? .claudeCode
+    /// An unknown agent has no capability profile. In particular, it must not inherit Claude's terminal
+    /// keys or transport semantics just because the registry has not delivered that agent yet; callers
+    /// treat a missing profile as a safe no-op until the advertised capabilities arrive.
+    public func capabilities(for agentId: String) -> AgentCapabilities? {
+        agents.first { $0.id == agentId }?.capabilities
+    }
+
+    /// The normal terminal paste path is safe until an advertised agent says it has a different policy.
+    /// This deliberately defaults one presentation behavior rather than inventing a whole agent profile.
+    public func terminalImagePaste(for agentId: String) -> AgentCapabilities.TerminalImagePaste {
+        capabilities(for: agentId)?.terminalImagePaste ?? .direct
+    }
+
+    /// Preserve host text selection until an advertised agent explicitly opts into terminal mouse
+    /// reporting. This is the safe presentation fallback for a just-arrived or future agent.
+    public func terminalPointerInput(for agentId: String) -> AgentCapabilities.TerminalPointerInput {
+        capabilities(for: agentId)?.terminalPointerInput ?? .applicationMouseReporting
     }
 
     /// Non-nil while the archive-confirm dialog is up (keyboard `a` path only). Holds the card id

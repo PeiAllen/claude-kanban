@@ -33,7 +33,11 @@ extension OrchestraService {
     func seedPhase(_ id: UUID, _ phase: Phase, sessionEpoch: Int? = nil, phaseChangedAt: Date? = nil) async {
         _ = try? await store.update(id) { t in
             t.phase = phase
-            if let at = phaseChangedAt { t.phaseChangedAt = at } else { t.phaseChangedAt = Date() }
+            let at = phaseChangedAt ?? Date()
+            t.phaseChangedAt = at
+            if (phase.kind == .launching || phase.kind == .relaunching), t.agentSessionId == nil {
+                t.sessionDiscoverySince = at
+            }
             if let e = sessionEpoch { t.sessionEpoch = e }
         }
     }
