@@ -135,10 +135,10 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   Handoff/Fork/Fan-out **buttons have since been removed** — those moves stay reachable via the
   natural-language → MCP path — and the per-card Send button became an
   [inbox editor](07-app-ui.md#the-inspector) (the *agent-buttons simplification*, ch. 9). The *when-to-use* guidance for `spawn`/`handoff`/`wait`
-  across all four topologies — and the card-vs-native-subagent line — is vendored as a per-agent
-  delegation skill / AGENTS.md (PR D2) and now **auto-materialized into every launched card** by each
-  adapter's `prepareToLaunch` (skill-injection; Claude a `.claude/skills` project skill, Codex an
-  `AGENTS.md` in its isolated `CODEX_HOME`), see [chapter 9](09-design-decisions.md#shipped-feature-history).
+  across all four topologies — and the card-vs-native-subagent line — is vendored as shared per-agent
+  guidance (PR D2). Each launch packages it through the provider-native surface: Claude as
+  `.claude/skills` project skills and Codex as launch-scoped `developer_instructions`, so Codex leaves its
+  global `AGENTS.md` alone; see [chapter 9](09-design-decisions.md#shipped-feature-history).
 - **`trust` is human-only — an agent can never self-grant.** As of T2, `trust` records a *human* grant
   into the [trust ledger](03-data-model.md#the-trust-ledger-t1), filling the `needsGrant` gap the core's
   `resolveTrust` (T1) leaves for a borrowed dir the user hasn't approved (see

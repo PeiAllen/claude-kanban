@@ -15,29 +15,30 @@ public enum HooksRenderer {
         Bundle.module.path(forResource: "codex-hooks", ofType: "json")
     }
 
-    /// Render the Codex hooks template into `dest` (default `Config.codexHooksPath`), substituting the
-    /// orchestra binary path — mirrors `render` for the second agent. CodexAdapter later installs this
-    /// rendered file into the pinned `$CODEX_HOME/hooks.json`.
-    @discardableResult
-    public static func renderCodex(orchestraBin: String, agentId: String, to dest: String = Config.codexHooksPath) throws -> String {
-        let template: String
-        if let p = codexTemplatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
-            template = s
-        } else {
-            template = codexFallbackTemplate
-        }
-        let substituted = template
+    /// Render Codex's provider-specific hooks in memory for launch-scoped configuration. Keeping this in
+    /// the shared renderer makes the bundled template the sole hook definition during migration.
+    static func codexHooks(orchestraBin: String, agentId: String) -> [String: JSONValue]? {
+        guard let root = try? JSONValue.parse(Data(renderedCodexJSON(orchestraBin: orchestraBin,
+                                                                       agentId: agentId).utf8)),
+              case let .object(object) = root,
+              case let .object(hooks)? = object["hooks"]
+        else { return nil }
+        return hooks
+    }
+
+    /// Substitute the live edge-helper path and remove the developer-only top-level comment.
+    static func renderedCodexJSON(orchestraBin: String, agentId: String) -> String {
+        let substituted = codexTemplate()
             .replacingOccurrences(of: "__ORCHESTRA_BIN__", with: orchestraBin)
             .replacingOccurrences(of: "__AGENT_ID__", with: agentId)
-        // Codex's hooks schema accepts only `description`/`hooks` at the top level: a stray `_comment`
-        // (a JSON-comment convention we keep in the template for developers) makes Codex REJECT the whole
-        // file, so none of the hooks — including the Stop turn-end inbox drain — register. Strip it here,
-        // mirroring the Claude path's `SettingsComposer` (which drops `_comment` for the same reason).
-        let rendered = strippingComment(substituted)
-        let dir = (dest as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try rendered.write(toFile: dest, atomically: true, encoding: .utf8)
-        return dest
+        return strippingComment(substituted)
+    }
+
+    private static func codexTemplate() -> String {
+        if let p = codexTemplatePath, let s = try? String(contentsOfFile: p, encoding: .utf8) {
+            return s
+        }
+        return codexFallbackTemplate
     }
 
     /// Remove the top-level `_comment` key from a rendered hooks JSON string. Defensive: if the string

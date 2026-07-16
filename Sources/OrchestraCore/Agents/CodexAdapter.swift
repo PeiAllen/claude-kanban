@@ -1,12 +1,9 @@
 import Foundation
 
-/// The built-in Codex adapter. Mirrors `ClaudeCodeAdapter` for the second agent: it builds read-only
-/// launch/resume argv (`-s read-only -a never`), pins `CODEX_HOME` (via `env`), discovers the session
-/// id from the rollout dir post-launch (Codex is `.discovered`, not seeded), and mirrors the CORE's
-/// trust decision (`ctx.trustCwd`) into Codex's native per-project `trust_level` — never reading the
-/// `TrustLedger`. Permission posture honors `ctx.access` like Claude: a default (read-write) card
-/// launches with Codex's OWN default permissioning, and only a read-only card clamps to Codex's
-/// OS-sandboxed read-only preset (`-s read-only -a never`).
+/// The built-in Codex adapter. It keeps Codex's native home/state untouched, discovers rollouts from the
+/// normal home (or an injected test path), and translates shared Orchestra content into Codex's per-launch
+/// TOML overrides. Permission posture still mirrors Claude: a default card keeps Codex's own permissioning
+/// and a read-only card receives the OS-sandboxed read-only preset.
 public struct CodexAdapter: Adapter {
     public let id = "codex"
     public let name = "Codex"
@@ -19,7 +16,8 @@ public struct CodexAdapter: Adapter {
     /// resume-seed wake (`.relaunch`) + Stop-hook drain (`.stopHook`).
     public var capabilities: AgentCapabilities { .codex }
 
-    /// Test injection (fake binary / isolated home) — never spawns real Codex.
+    /// Test injection for a fake binary and an isolated rollout directory. The home override is never
+    /// exported to a production Codex process; it only keeps rollout-discovery fixtures hermetic.
     let binOverride: String?
     let codexHomeOverride: String?
     /// Test injection for the hook-trust build-probe. `nil` ⇒ probe the real binary once (cached);
@@ -34,14 +32,13 @@ public struct CodexAdapter: Adapter {
 
     private var binary: String { binOverride ?? bin }
 
-    /// Orchestra pins CODEX_HOME so Codex's config + session rollouts live in a known location the
-    /// daemon controls (config trust write here; rollout tail in B2). Defaults to `$HOME/.codex`; an
-    /// isolated daemon already redirects `$HOME`, so this is isolated along with it.
+    /// Codex's normal default state location, retained only for rollout discovery.
+    /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
 
-    /// The pinned CODEX_HOME is delivered to the process as an environment variable (wired into the
-    /// tmux launch via `SessionManaging.ensure(env:)`). Claude leaves this empty (default).
-    public var env: [String: String] { ["CODEX_HOME": codexHome] }
+    /// Codex selects its own native state root. The adapter's test-only resolver is intentionally not an
+    /// environment override, unlike the former isolated-home implementation.
+    public var env: [String: String] { [:] }
 
     /// Codex's selectable models, from the vendored `Resources/codex-models.json` offline table
     /// (mirrors Codex's own model catalog). The hardcoded list is a safety net if that resource is
@@ -170,13 +167,9 @@ public struct CodexAdapter: Adapter {
         access == .readOnly ? ["-s", "read-only", "-a", "never"] : []
     }
 
-    // Defect 2 · Codex hook-trust. This customized Codex build TRUST-GATES hooks behind a launch-time
-    // modal ("Hooks need review") Orchestra can't answer — so without intervention the Stop hook never
-    // runs and the durable inbox never drains ("Codex won't wake"). `--dangerously-bypass-hook-trust`
-    // establishes trust by construction: Orchestra AUTHORS the hooks (it owns CODEX_HOME + writes
-    // hooks.json), so trusting them is correct. Empirically it is the ONLY mechanism that runs untrusted
-    // hooks (the `-c bypass_hook_trust` override is inert; persisted trust is hash-keyed → a config-seed
-    // is fragile). It is DANGEROUS only re: hook trust — it does NOT touch approvals/sandbox.
+    // Defect 2 · Codex hook-trust. This installed Codex build gates launch-scoped hooks behind a modal
+    // Orchestra cannot answer, so the injected Stop handler would otherwise never drain the inbox. The
+    // build-probed flag applies only to hook trust; it does not change approval or sandbox policy.
     private var hookTrustFlags: [String] {
         bypassHookTrustSupported ? ["--dangerously-bypass-hook-trust"] : []
     }
@@ -225,8 +218,27 @@ public struct CodexAdapter: Adapter {
         return ["-m", m]
     }
 
+    private func launchConfigurationFlags(_ ctx: AdapterContext) -> [String] {
+        CodexLaunchConfiguration.flags(cwd: ctx.cwd)
+    }
+
+    /// Write this launch's profile file BEFORE `start`/`resume` reference it via `-p`. The profile carries
+    /// the hooks, per-project trust, and (~16KB) developer instructions off the tmux command line — see
+    /// [[CodexLaunchConfiguration]] for why inlining them via `-c` killed every card at spawn. Mirrors the
+    /// Claude adapter's `prepareToLaunch`, which writes its own per-card `--settings` file the same way.
+    /// The write is load-bearing (a missing profile makes `-p` fail), so unlike a best-effort trust nudge
+    /// it surfaces its error rather than swallowing it.
+    public func prepareToLaunch(_ ctx: AdapterContext) throws {
+        let path = CodexLaunchConfiguration.profilePath(cwd: ctx.cwd, codexHome: codexHome)
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
+            .write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
     public func start(_ ctx: AdapterContext) -> [String] {
         var argv = [binary]
+        argv += launchConfigurationFlags(ctx)
         argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
@@ -237,6 +249,7 @@ public struct CodexAdapter: Adapter {
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
         var argv = [binary, "resume", sid]
+        argv += launchConfigurationFlags(ctx)
         argv += hookTrustFlags
         argv += accessFlags(ctx.access)
         argv += modelFlag(ctx.model)
@@ -256,39 +269,6 @@ public struct CodexAdapter: Adapter {
         return nil
     }
 
-    /// Prep runs isolation FIRST (ensure the pinned CODEX_HOME exists), THEN mirrors the core's trust
-    /// decision into it. The adapter applies `ctx.trustCwd` only — it never reads the `TrustLedger`.
-    public func prepareToLaunch(_ ctx: AdapterContext) throws {
-        try? FileManager.default.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
-        CodexTrust.apply(trusted: ctx.trustCwd, cwd: ctx.cwd, codexHome: codexHome)
-        // Standing delegation guidance for EVERY Codex card (independent of ctx.seed): deliver the
-        // AGENTS.md variant to the ISOLATED CODEX_HOME — the global (top) level of Codex's AGENTS.md
-        // precedence, merged ABOVE any project AGENTS.md. Orchestra owns CODEX_HOME, so this never
-        // clobbers the user's own project AGENTS.md nor dirties the worktree. Best-effort (never throws);
-        // content keyed via forAgent(id), so there's no `if codex` here.
-        // Codex reads ONE AGENTS.md per scope, so delegation and tree guidance must COMPOSE into it, not
-        // overwrite each other. Upsert each as a named, marker-delimited section (rewrite-idempotent): a
-        // relaunch/recovery refreshes both in place without duplication. Best-effort; content keyed via
-        // forAgent(id), so no `if codex` here.
-        let agentsPath = "\(codexHome)/AGENTS.md"
-        if let deleg = DelegationDocs.forAgent(id) {
-            AgentsFileComposer.upsert(section: "delegation", content: deleg, at: agentsPath)
-        }
-        if let tree = TreeDocs.forAgent(id) {
-            AgentsFileComposer.upsert(section: "tree", content: tree, at: agentsPath)
-        }
-        if let images = ImageDocs.forAgent(id) {
-            AgentsFileComposer.upsert(section: "image-publishing", content: images, at: agentsPath)
-        }
-        // Render + install the managed Codex hooks file (per-launch; the daemon renders nothing), pointing
-        // at the live orchestra binary with `--agent codex` baked in. Two hooks: SessionStart→`session`
-        // (column/mode/self-id orientation) and Stop→`stop` (drain the durable inbox at turn-end, parity
-        // with Claude — F3). Installed into the pinned CODEX_HOME, never clobbering a foreign user
-        // hooks.json. Best-effort.
-        _ = try? HooksRenderer.renderCodex(orchestraBin: ctx.orchestraBin, agentId: id)
-        CodexHooks.install(to: "\(codexHome)/hooks.json")
-    }
-
     public func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
         let sid = current ?? discover(cwd: ctx.cwd, newerThan: ctx.since)
         guard let sid else {
@@ -306,7 +286,7 @@ public struct CodexAdapter: Adapter {
             resumeCmd: resume(resumeCtx))
     }
 
-    // MARK: rollout discovery — $CODEX_HOME/sessions/**/rollout-<timestamp>-<uuid>.jsonl
+    // MARK: rollout discovery — normal Codex state / sessions / rollout-<timestamp>-<uuid>.jsonl
 
     var sessionsDir: String { "\(codexHome)/sessions" }
 
@@ -429,36 +409,4 @@ public extension AgentCapabilities {
         // wired, replace these with an empty chord so the gate routes through that channel, not keystrokes.
         approveChord: [.named(.enter)],
         denyChord: [.named(.esc)])
-}
-
-/// Manages Codex's per-project trust in `$CODEX_HOME/config.toml` (`[projects."<path>"].trust_level`).
-/// The adapter only ever *applies* the core's already-resolved decision (`ctx.trustCwd`) — it never
-/// reads the Orchestra `TrustLedger` (core owns resolution; see `OrchestraService.resolveTrust`). The
-/// Codex analogue of `ClaudeTrust`.
-enum CodexTrust {
-    /// Apply the core's trust decision to Codex's native per-project trust. Writes `trust_level` for
-    /// `cwd` iff `trusted`; otherwise a no-op (Codex will prompt / the card clamps).
-    static func apply(trusted: Bool, cwd: String, codexHome: String) {
-        guard trusted else { return }
-        record(cwd, codexHome: codexHome)
-    }
-
-    /// Mark `cwd` trusted by appending a `[projects."<cwd>"]` table with `trust_level = "trusted"`.
-    /// Idempotent + non-clobbering: if the section header already exists we leave the file untouched
-    /// (mirrors `ClaudeTrust.grant` bailing when already trusted / unparseable), so we never corrupt a
-    /// user's existing config.toml.
-    static func record(_ cwd: String, codexHome: String) {
-        let path = "\(codexHome)/config.toml"
-        let header = "[projects.\"\(tomlEscape(cwd))\"]"
-        var text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        if text.contains(header) { return }                       // already managed → no clobber
-        if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
-        text += "\n\(header)\ntrust_level = \"trusted\"\n"
-        try? FileManager.default.createDirectory(atPath: codexHome, withIntermediateDirectories: true)
-        try? text.write(toFile: path, atomically: true, encoding: .utf8)
-    }
-
-    private static func tomlEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }

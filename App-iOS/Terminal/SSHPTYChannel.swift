@@ -2,7 +2,6 @@ import Foundation
 import Dispatch
 import Crypto
 @preconcurrency import NIOCore
-@preconcurrency import NIOPosix
 @preconcurrency import NIOSSH
 
 // The real iOS terminal transport: a SwiftTerm view ⇄ an SSH **exec channel with a PTY** that runs the

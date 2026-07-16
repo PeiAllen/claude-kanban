@@ -18,6 +18,13 @@
 # never a deeper notes/ dir, nor the ContractTests synthetic-repo `notes/*.md` fixtures.
 /notes/
 
+# Backstop for the same reason: the superpowers brainstorming/writing-plans skills default to
+# committing specs/plans under docs/superpowers/, but docs/ is the curated as-built SSOT — raw
+# planning artifacts don't belong in it (their durable "why" is promoted into a docs/ chapter +
+# the commit body). Root-anchored so it only blocks THIS repo's docs/superpowers/ tree, never the
+# ContractTests synthetic-repo `docs/superpowers/*.md` fixtures (those live in temp dirs).
+/docs/superpowers/
+
 # Swift / SwiftPM
 .build/
 .swiftpm/

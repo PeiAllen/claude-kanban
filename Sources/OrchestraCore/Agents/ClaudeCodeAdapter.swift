@@ -145,19 +145,13 @@ public struct ClaudeCodeAdapter: Adapter {
             try? FileManager.default.createDirectory(atPath: Config.dataDir, withIntermediateDirectories: true)
             try? json.write(toFile: cardSettingsPath(ctx.cwd), atomically: true, encoding: .utf8)
         }
-        // Standing delegation guidance for EVERY card (independent of ctx.seed): deliver the Claude skill
-        // variant to the per-card project-skill location Claude Code discovers (`.claude/skills/<name>/`).
-        // `.claude/` is gitignore-conventional, so this doesn't dirty the tracked worktree — and it needs
-        // no global ~/.claude install. Best-effort (never throws); content is keyed via forAgent(id), so
-        // there's no `if claude` here.
-        DelegationDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-delegation/SKILL.md")
-        // Branch-tree guidance (sync / restack / tree-aware ship) as a SECOND, independent project skill —
-        // its own dir, so it composes with (never clobbers) the delegation skill. Best-effort, keyed via
-        // forAgent(id) — no `if claude` here. Installed on every spawn + recovery (this runs from both).
-        TreeDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-tree/SKILL.md")
-        // Image publishing is an explicit agent action, rather than a parser over arbitrary terminal paths.
-        // Deliver the neutral instructions as an independent Claude project skill on every launch.
-        ImageDocs.install(agentId: id, at: "\(ctx.cwd)/.claude/skills/orchestra-image-publishing/SKILL.md")
+        // The provider-neutral bundle owns which Orchestra sections exist and their ordering. Claude's
+        // adapter owns only this packaging: two project skills, one directory each, leaving Codex free to
+        // project the identical content into its own launch-scoped config instead of a filesystem write.
+        for section in AgentGuidance.sections(for: id) {
+            _ = AgentGuidance.install(section,
+                                      at: "\(ctx.cwd)/.claude/skills/orchestra-\(section.name)/SKILL.md")
+        }
     }
 
     private func modelFlag(_ model: String?) -> [String] {

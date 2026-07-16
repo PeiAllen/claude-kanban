@@ -20,24 +20,17 @@ struct ImageDocsTests {
         }
     }
 
-    @Test("Claude and Codex materialize their own image publishing guidance")
-    func adaptersInstallTheirPackagedGuidance() throws {
-        let cwd = NSTemporaryDirectory() + "image-docs-cwd-\(UUID().uuidString)"
-        let home = NSTemporaryDirectory() + "image-docs-home-\(UUID().uuidString)"
-        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(atPath: cwd)
-            try? FileManager.default.removeItem(atPath: home)
+    @Test("image publishing reaches both providers through the shared guidance bundle")
+    func bothProvidersReceiveImageGuidance() throws {
+        // The bundle is the seam: registering the section once is what gets it to Claude (a project
+        // skill) and Codex (launch-scoped developer instructions), with no per-adapter branch.
+        for agentId in ["claude-code", "codex"] {
+            let section = try #require(AgentGuidance.sections(for: agentId)
+                .first { $0.name == "image-publishing" })
+            #expect(section.content == (try #require(ImageDocs.forAgent(agentId))))
         }
 
-        try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
-        let claudePath = "\(cwd)/.claude/skills/orchestra-image-publishing/SKILL.md"
-        #expect(try String(contentsOfFile: claudePath, encoding: .utf8) == ImageDocs.load(.claudeSkill))
-
-        let codex = CodexAdapter(codexHome: home, hookTrustBypass: false)
-        try codex.prepareToLaunch(AdapterContext(cwd: cwd, trustCwd: false))
-        let agents = try String(contentsOfFile: "\(home)/AGENTS.md", encoding: .utf8)
-        #expect(agents.contains(try #require(ImageDocs.forAgent("codex"))))
-        #expect(agents.components(separatedBy: AgentsFileComposer.startMarker("image-publishing")).count == 2)
+        let codexInstructions = try #require(AgentGuidance.developerInstructions(for: "codex"))
+        #expect(codexInstructions.contains(try #require(ImageDocs.forAgent("codex"))))
     }
 }
