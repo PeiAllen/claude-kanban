@@ -38,10 +38,10 @@ final class CommandRegistryCatalogTests: XCTestCase {
         XCTAssertNotNil(CommandRegistry().command("inspect"))
     }
 
-    func testPublishImageIsTerminalOnlyNotMCPExposed() {
+    func testPublishImageIsAllAndMCPExposed() {
         let command = try! XCTUnwrap(CommandRegistry().command("publish-image"))
-        XCTAssertEqual(command.schema.exposure, .terminalOnly)
-        XCTAssertFalse(CommandCatalog.mcpExposed.map(\.name).contains("publish-image"))
+        XCTAssertEqual(command.schema.exposure, .all)
+        XCTAssertTrue(CommandCatalog.mcpExposed.map(\.name).contains("publish-image"))
     }
 
     // The canonical set is complete (guards an accidental drop during the move).
