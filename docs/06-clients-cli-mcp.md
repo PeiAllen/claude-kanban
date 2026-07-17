@@ -120,8 +120,34 @@ driving it. The delivery machinery underneath is
   *trigger* the grant; a human answers). This is the MCP surface of the [`trust`
   command](05-command-reference.md#notes-on-key-commands); every other tool is a plain relay.
 
-Register it with your MCP host (e.g. Claude Code) as a stdio server running the `orchestra-mcp` binary;
-it logs readiness (and the socket path) to stderr.
+Cards launched by Orchestra configure this automatically. Claude receives an inline `--mcp-config`
+entry and Codex receives a per-launch profile entry, both named `orchestra`; the local entry takes
+precedence over a same-name global entry for that launch, while unrelated user MCP servers remain
+available. Claude's generated config is deliberately non-strict so the card keeps its normal global
+servers too.
+
+For an MCP host outside an Orchestra-launched card, register it manually as a stdio server running the
+`orchestra-mcp` binary; it logs readiness (and the socket path) to stderr.
+
+### Optional global installation
+
+The Settings → Agent → **Install Orchestra MCP and CLI globally** toggle is off by default. “Globally”
+means every card for this user, while installation remains user-scoped: on the next card launch it adds
+missing `orchestra` entries to `~/.claude.json` and `~/.codex/config.toml`, creates
+`~/.local/bin/orchestra` and `~/.local/bin/orchestra-mcp` symlinks to the resolved Orchestra binaries,
+and appends an idempotent PATH block to the user's shell profile. The daemon-launched agent environment
+already includes `~/.local/bin`, so cards started by the app see the commands even before a new shell
+loads the profile.
+
+Existing same-name MCP entries, files, or symlinks are left untouched, and disabling the toggle does not
+remove anything it previously installed. Global MCP config uses the resolved bundled `orchestra-mcp`
+path directly, so a conflicting user-local shim cannot change which bridge a configured host launches.
+The app and Linux deployment bundle ship `orchestrad`, `orchestra`, and `orchestra-mcp` together, so
+normal card setup does not require a separate CLI or MCP download.
+
+The CLI and MCP bridge are clients of `orchestrad`; `orchestra-mcp` does not start or host the daemon.
+Local onboarding and the LaunchAgent keep the macOS daemon running, while remote Linux deployment uses
+the service manager for the daemon lifecycle.
 
 > Today, the server-only built-ins (`models`, `agents`, `archivedList`, `openInZed`, `getConfig`, …) are *not*
 > in the registry, so they aren't exposed as MCP tools yet. Folding the CLI and these built-ins onto the

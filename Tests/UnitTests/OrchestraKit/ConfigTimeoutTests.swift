@@ -11,11 +11,14 @@ struct ConfigTimeoutTests {
         #expect(d.worktreeAddTimeout == 600)
         #expect(d.sessionLaunchTimeout == 30)
         #expect(d.controlTimeout == 15)
+        #expect(d.autoInstallMCPGlobally == false)
 
-        let custom = Config(worktreeAddTimeout: 5, sessionLaunchTimeout: 6, controlTimeout: 7)
+        let custom = Config(worktreeAddTimeout: 5, sessionLaunchTimeout: 6, controlTimeout: 7,
+                            autoInstallMCPGlobally: true)
         #expect(custom.worktreeAddTimeout == 5)
         #expect(custom.sessionLaunchTimeout == 6)
         #expect(custom.controlTimeout == 7)
+        #expect(custom.autoInstallMCPGlobally)
 
         // round-trips through Codable
         let data = try JSONEncoder().encode(custom)
@@ -41,6 +44,7 @@ struct ConfigTimeoutTests {
         #expect(c.worktreeAddTimeout == 600)
         #expect(c.sessionLaunchTimeout == 30)
         #expect(c.controlTimeout == 15)
+        #expect(c.autoInstallMCPGlobally == false)
         // existing fields survived
         #expect(c.reposRoot == "/r")
         #expect(c.worktreesRoot == "/w")

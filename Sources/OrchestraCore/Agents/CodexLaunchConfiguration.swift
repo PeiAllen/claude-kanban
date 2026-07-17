@@ -9,8 +9,9 @@ import Foundation
 /// instructions alone are ~16KB, and tmux caps a whole `new-session … -- argv` command at ~16KB (it packs
 /// the argv into a fixed client→server buffer and aborts overlong ones with "command too long"). Inlining
 /// them via `-c` therefore killed every Codex card at spawn. A profile file carries the same content off
-/// the command line — codex layers it on top of the user's native config, so auth / `config.toml` / MCP
-/// servers stay untouched — while argv shrinks to just `-p <name>`.
+/// the command line — codex layers it on top of the user's native config, so auth / `config.toml` /
+/// unrelated MCP servers stay untouched while the launch-local `orchestra` server uses the profile's
+/// normal same-name precedence — and argv shrinks to just `-p <name>`.
 enum CodexLaunchConfiguration {
     /// Argv that selects this launch's profile file. `prepareToLaunch` must have written the matching
     /// `profilePath` first; codex resolves `-p <name>` to `$CODEX_HOME/<name>.config.toml`.
@@ -56,6 +57,9 @@ enum CodexLaunchConfiguration {
         if let instructions = AgentGuidance.developerInstructions(for: agentId) {
             lines.append("developer_instructions = \(TOMLOverride.string(instructions))")
         }
+        lines.append(contentsOf: MCPConfiguration.codexTOML(command: context.orchestraMCPBin)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init))
         return lines.joined(separator: "\n") + "\n"
     }
 }

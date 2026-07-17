@@ -15,12 +15,16 @@ public struct ClaudeCodeAdapter: Adapter {
 
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
     let binOverride: String?
+    /// Test-only home injection for the opt-in global MCP installer; production reads the user's HOME.
+    let claudeHomeOverride: String?
 
-    public init(binOverride: String? = nil) {
+    public init(binOverride: String? = nil, claudeHome: String? = nil) {
         self.binOverride = binOverride
+        self.claudeHomeOverride = claudeHome
     }
 
     private var binary: String { binOverride ?? bin }
+    private var claudeHome: String { claudeHomeOverride ?? Config.home }
 
     /// Claude Code's selectable models + their OFFLINE context windows / capability flags, from the
     /// vendored `Resources/claude-code-models.json` (PR-updated, no network). The hardcoded list is a
@@ -129,6 +133,13 @@ public struct ClaudeCodeAdapter: Adapter {
         // FIRST — the overlay merge below reads it. Per-launch render keeps the bin path + statusLine
         // config fresh; the daemon no longer renders anything. Best-effort (never blocks a launch).
         _ = try? HooksRenderer.render(orchestraBin: ctx.orchestraBin, agentId: id)
+        if ctx.autoInstallMCPGlobally {
+            _ = MCPConfiguration.installUserCommands(orchestra: ctx.orchestraBin,
+                                                      orchestraMCP: ctx.orchestraMCPBin,
+                                                      home: claudeHome)
+            _ = MCPConfiguration.installClaudeGlobally(command: ctx.orchestraMCPBin,
+                                                        at: claudeHome + "/.claude.json")
+        }
         // Apply the CORE's trust decision (resolved into ctx.trustCwd by OrchestraService.resolveTrust).
         // The adapter only *mirrors* that decision into Claude's native per-directory trust — it never
         // reads the TrustLedger itself. When untrusted, leave Claude to prompt / the card to clamp.
@@ -187,6 +198,12 @@ public struct ClaudeCodeAdapter: Adapter {
         ["--settings", settingsOverlays(ctx).isEmpty ? Config.hooksPath : cardSettingsPath(ctx.cwd)]
     }
 
+    /// The inline launch-local MCP config keeps Claude's same-name `orchestra` server scoped to this
+    /// card while its normal non-strict loading still includes unrelated user/project servers.
+    private func mcpFlags(_ ctx: AdapterContext) -> [String] {
+        ["--mcp-config", MCPConfiguration.claudeJSON(command: ctx.orchestraMCPBin)]
+    }
+
     /// Deterministic per-cwd path for the merged per-card settings file, so `prepareToLaunch` writes the
     /// same file `start`/`resume` reference. Hashed (not the raw cwd-slug) to stay under the 255-char
     /// filename cap for deeply-nested directories.
@@ -210,6 +227,7 @@ public struct ClaudeCodeAdapter: Adapter {
         argv += accessFlags(ctx.access)
         if let sid = ctx.sessionId { argv += ["--session-id", sid] }
         argv += settingsFlags(ctx)
+        argv += mcpFlags(ctx)
         let nameValue = ctx.name ?? (ctx.prompt.map { titleSeed(from: $0) } ?? "")
         if !nameValue.isEmpty { argv += ["--name", nameValue] }
         if let p = ctx.prompt, !p.isEmpty { argv.append(p) }   // launch positional prompt
@@ -218,7 +236,7 @@ public struct ClaudeCodeAdapter: Adapter {
 
     public func resume(_ ctx: AdapterContext) -> [String]? {
         guard let sid = ctx.sessionId else { return nil }
-        var argv = [binary, "--resume", sid] + settingsFlags(ctx)
+        var argv = [binary, "--resume", sid] + settingsFlags(ctx) + mcpFlags(ctx)
         if let n = ctx.name, !n.isEmpty { argv += ["--name", n] }
         argv += modelFlag(ctx.model)
         // A plan-column card gets `--permission-mode auto` on START; without it here it silently LOST that
@@ -240,7 +258,8 @@ public struct ClaudeCodeAdapter: Adapter {
                                     resumeCmd: nil)
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
-                                       name: ctx.name, access: ctx.access)
+                                       name: ctx.name, access: ctx.access,
+                                       orchestraMCPBin: ctx.orchestraMCPBin)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

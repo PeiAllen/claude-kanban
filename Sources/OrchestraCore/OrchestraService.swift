@@ -21,6 +21,9 @@ public actor OrchestraService {
     /// Absolute path of the `orchestra` binary the agents' hooks call. Injected once (defaulted to the
     /// daemon's sibling binary) and threaded into every launch `AdapterContext`.
     let orchestraBin: String
+    /// Absolute path of the bundled MCP server, injected alongside the hook binary for deterministic
+    /// launch configuration and tests.
+    let orchestraMCPBin: String
     var worktrees: WorktreeRegistry
     var sessions: any SessionManaging
     let launcher: Launcher
@@ -247,6 +250,7 @@ public actor OrchestraService {
                 grantResolver: any TrustGrantResolver = SurfaceGrantResolver(),
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 orchestraBin: String = siblingBinary("orchestra"),
+                orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
                 clock: any Clock<Duration> = ContinuousClock(),
                 // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
                 // RemoteParents): a defaulted RealProc lets a unit test fork real git invisibly to
@@ -260,6 +264,7 @@ public actor OrchestraService {
         self.lineage = BranchLineage(proc: proc)
         self.remoteParents = RemoteParents(proc: proc)
         self.orchestraBin = orchestraBin
+        self.orchestraMCPBin = orchestraMCPBin
         self.watchStore = watchStore
         let r = resolver ?? PathResolver(config: config)
         self.resolver = r
@@ -949,7 +954,8 @@ public actor OrchestraService {
                 // the hit branch is skipped and an early-life card live-shells every snapshot.
                 let ctx = AdapterContext(cwd: card.cwd, model: card.model.id, sessionId: card.agentSessionId,
                                          name: card.title, orchestraBin: orchestraBin,
-                                         since: card.agentSessionId == nil ? card.sessionDiscoverySince : nil)
+                                         since: card.agentSessionId == nil ? card.sessionDiscoverySince : nil,
+                                         orchestraMCPBin: orchestraMCPBin)
                 let a = try? registry.get(card.agentId)
                 let agent = (try? await offActor { a?.sessionInfo(ctx, current: card.agentSessionId, prior: card.priorSessionIds) }) ?? nil
                     ?? AgentSessionInfo(agentId: card.agentId, sessionId: card.agentSessionId, transcriptPath: nil,
@@ -975,7 +981,8 @@ public actor OrchestraService {
         let running = !targets.isEmpty
         let ctx = AdapterContext(cwd: t.cwd, model: t.model.id, sessionId: t.agentSessionId,
                                  name: t.title, orchestraBin: orchestraBin,
-                                 since: t.agentSessionId == nil ? t.sessionDiscoverySince : nil)
+                                 since: t.agentSessionId == nil ? t.sessionDiscoverySince : nil,
+                                 orchestraMCPBin: orchestraMCPBin)
         let info = adapter.sessionInfo(ctx, current: t.agentSessionId, prior: t.priorSessionIds)
             ?? AgentSessionInfo(agentId: t.agentId, sessionId: t.agentSessionId, transcriptPath: nil,
                                 priorSessionIds: t.priorSessionIds, priorTranscripts: [], resumeCmd: nil)
