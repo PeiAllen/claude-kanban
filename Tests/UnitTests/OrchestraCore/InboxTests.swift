@@ -512,18 +512,18 @@ struct InboxEditorLeaseTests {
         #expect(await inbox.peek(card).count == 1)              // …so it cannot remove m2
     }
 
-    @Test("update force-releases the lease so the stale rendered payload can't confirm the new text")
+    @Test("update force-releases the WHOLE batch — a sibling can't be confirmed against stale text")
     func updateForceReleasesLease() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let card = UUID()
-        try await inbox.enqueue(card, "typo")
+        try await inbox.enqueue(card, "typo"); try await inbox.enqueue(card, "keep")
         let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
-                                                   render: Self.fit, now: Self.t0))
-        let m = try #require(await inbox.peek(card).first)
-        try await inbox.update(m.id, text: "fixed")
-        #expect(await inbox.peek(card).first?.lease == nil)
-        try await inbox.confirm(token: b.token)
-        #expect(await inbox.peek(card).map(\.text) == ["fixed"])  // survives to be re-delivered
+                                                   render: Self.fit, now: Self.t0))   // leases BOTH under one token
+        let m1 = try #require(await inbox.peek(card).first)
+        try await inbox.update(m1.id, text: "fixed")
+        #expect(await inbox.peek(card).allSatisfy { $0.lease == nil })   // sibling released too
+        try await inbox.confirm(token: b.token)                          // stale ack now inert
+        #expect(await inbox.peek(card).map(\.text) == ["fixed", "keep"]) // sibling NOT removed
     }
 
     @Test("reorder permutes the full set INCLUDING leased rows, preserving their leases")
