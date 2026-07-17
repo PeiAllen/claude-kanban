@@ -176,15 +176,21 @@ struct ClaudeDelegationTests {
         let path = home + "/.claude.json"
         let adapter = ClaudeCodeAdapter(claudeHome: home)
 
-        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraMCPBin: "/abs/orchestra-mcp"))
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
         #expect(!FileManager.default.fileExists(atPath: path))
 
-        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraMCPBin: "/abs/orchestra-mcp",
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp",
                                                    autoInstallMCPGlobally: true))
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let servers = try #require(root["mcpServers"] as? [String: Any])
         #expect((servers["orchestra"] as? [String: Any])?["command"] as? String == "/abs/orchestra-mcp")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra") == "/abs/orchestra")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
+        #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
+            .contains("Orchestra user-local command path"))
     }
 
     @Test("start(ctx) argv + env are unchanged by the added materialization")

@@ -134,6 +134,9 @@ public struct ClaudeCodeAdapter: Adapter {
         // config fresh; the daemon no longer renders anything. Best-effort (never blocks a launch).
         _ = try? HooksRenderer.render(orchestraBin: ctx.orchestraBin, agentId: id)
         if ctx.autoInstallMCPGlobally {
+            _ = MCPConfiguration.installUserCommands(orchestra: ctx.orchestraBin,
+                                                      orchestraMCP: ctx.orchestraMCPBin,
+                                                      home: claudeHome)
             _ = MCPConfiguration.installClaudeGlobally(command: ctx.orchestraMCPBin,
                                                         at: claudeHome + "/.claude.json")
         }

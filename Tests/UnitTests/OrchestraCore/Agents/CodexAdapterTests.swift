@@ -638,17 +638,23 @@ struct CodexGuidanceTests {
     func globalMCPInstallIsOptIn() throws {
         let home = NSTemporaryDirectory() + "codex-mcp-" + UUID().uuidString
         defer { try? FileManager.default.removeItem(atPath: home) }
-        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false)
+        let adapter = CodexAdapter(codexHome: home, hookTrustBypass: false, userHome: home)
         let path = home + "/config.toml"
 
-        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraMCPBin: "/abs/orchestra-mcp"))
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
         #expect(!FileManager.default.fileExists(atPath: path))
 
-        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraMCPBin: "/abs/orchestra-mcp",
+        try adapter.prepareToLaunch(AdapterContext(cwd: "/wt", orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp",
                                                    autoInstallMCPGlobally: true))
         let config = try String(contentsOfFile: path, encoding: .utf8)
         #expect(config.contains("[mcp_servers.orchestra]"))
         #expect(config.contains("command = \"/abs/orchestra-mcp\""))
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra") == "/abs/orchestra")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
+        #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
+            .contains("Orchestra user-local command path"))
     }
 
     @Test("prepareToLaunch is load-bearing: no profile file → `-p` would resolve nothing")

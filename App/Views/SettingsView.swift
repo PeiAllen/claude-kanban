@@ -68,8 +68,8 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, 13).padding(.vertical, 11)
                     rowDivider
-                    toggleRow("Auto-install Orchestra MCP globally",
-                              "Add missing Orchestra MCP entries to Claude and Codex global config; existing entries are left unchanged.",
+                    toggleRow("Install Orchestra MCP and CLI globally",
+                              "Add missing MCP entries and user-local orchestra commands; existing files are left unchanged.",
                               isOn: $autoInstallMCPGlobally)
                 }
 
