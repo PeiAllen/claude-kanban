@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import TestSupport
 @testable import OrchestraCore
+import OrchestraKit
 
 /// One repo + one in-process daemon (real git + real tmux + the fake-agent adapter) over a temp socket,
 /// built ONCE for the whole suite and shared by every test. Setup used to run in `init()` — i.e. per
@@ -225,6 +226,52 @@ struct E2EBinaryTests {
         #expect(callResp?["result"]?["content"] != nil)
         let list = try cli(["list"], ctlSock: fx.ctlSock)
         #expect(list.stdout.contains("From MCP"))
+    }
+
+    @Test("MCP: publish-image returns the same transcript marker as the CLI")
+    func mcpPublishImageReturnsTranscriptMarker() async throws {
+        let fx = try await E2EFixture.shared.get()
+        let mcp = binary("orchestra-mcp")
+        try #expect(Bool(FileManager.default.fileExists(atPath: mcp)))
+
+        let imagePath = fx.repo + "/mcp-image.png"
+        let minimalPNG = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        try minimalPNG.write(to: URL(fileURLWithPath: imagePath))
+
+        let branch = "mcp-image-\(UUID().uuidString.lowercased())"
+        let spawn = try cli(["spawn", "--prompt", "MCP image marker", "--repo", fx.repo,
+                             "--branch", branch], ctlSock: fx.ctlSock)
+        #expect(spawn.exitCode == 0,
+                "spawn failed (rc=\(spawn.exitCode)) stderr=\(spawn.stderr) stdout=\(spawn.stdout)")
+        let ref = spawn.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(ref.hasPrefix("orchestra://task/"))
+
+        try await pollUntil("MCP image card reaches .live(.running)", timeout: .seconds(60)) {
+            let listed = try? cli(["list"], ctlSock: fx.ctlSock)
+            let output = listed?.stdout ?? ""
+            return output.contains("MCP image marker") && output.lowercased().contains("running")
+        }
+
+        let requests = [
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"publish-image","arguments":{"ref":"\#(ref)","path":"\#(imagePath)","caption":"diagram"}}}"#,
+        ].joined(separator: "\n") + "\n"
+
+        let out = try await runMCP(mcp, stdin: requests, ctlSock: fx.ctlSock)
+        let lines = out.split(whereSeparator: \.isNewline)
+            .compactMap { try? JSONValue.parse(Data($0.utf8)) }
+        let callResp = lines.first { $0["id"]?.intValue == 3 }
+        let marker = callResp?["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        #expect(marker != nil)
+
+        let markerURL = marker?.split(separator: " ").last.map(String.init)
+        let referenceID = markerURL.flatMap(TranscriptImageLink.referenceID(from:))
+        #expect(referenceID != nil)
+        if let marker, let referenceID {
+            #expect(marker == TranscriptImageMarker.render(referenceID: referenceID, caption: "diagram"))
+        }
     }
 
     /// Run the MCP binary, feed stdin, and collect stdout. The SDK server handles requests in async
