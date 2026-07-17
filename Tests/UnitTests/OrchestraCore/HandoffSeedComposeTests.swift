@@ -60,6 +60,8 @@ struct HandoffSeedComposeTests {
         #expect(out.consumed == 0)
         #expect(out.payload.count <= 100)
         #expect(!out.payload.isEmpty)
+        #expect(out.payload.hasPrefix("[…truncated]"))   // marker present, mirroring fold
+        #expect(out.payload.contains("H"))               // the actual handoff content, truncated
     }
 
     @Test("a handoff leaving too little room NEVER reports a truncated message as consumed")
@@ -73,6 +75,7 @@ struct HandoffSeedComposeTests {
         #expect(out.consumed == 0)                       // the message stays pending, whole
         #expect(out.payload.count <= 10_000)             // and the seed never blows its budget
         #expect(!out.payload.contains("mmmm"))           // no partial render rode along
+        #expect(out.payload == handoff)                  // the handoff context is NOT silently dropped
     }
 
     @Test("compose never exceeds its budget — including sub-marker-floor budgets")
