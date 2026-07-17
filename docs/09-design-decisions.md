@@ -392,6 +392,43 @@ and that wire now uses a shared `AgentGuidance` bundle: Claude materializes proj
 passes the same selected sections as launch-scoped `developer_instructions`. Codex keeps its native home
 and global `AGENTS.md`, and the required launch argv is the provider-specific adapter seam.
 
+### The durable inbox is the delivery SSOT: claim, then confirm
+
+Delivery used to mean removal: `drain` took messages out of `inbox.json` and *then* handed them to a
+session. Every path removed before receipt, so a crash, a lost hook reply, or a dead session between
+those two steps lost the message silently — the queue was already empty and nothing retried.
+
+The inbox now stays the source of truth until receipt is proven. A delivery path **claims** a FIFO batch —
+select + whole-message fit + lease + a fresh token, in ONE `Inbox.claim` actor call — and messages leave
+only through `confirm(token:)` on a route-specific receipt proof. One call, because a select/lease split
+races: two routes could claim the same message, and a render truncated after the select could confirm
+messages it never delivered. The route's `render` runs *inside* the claim and reports what it consumed, so
+exactly the rendered prefix is leased.
+
+Confirms are token-scoped, not id-scoped: re-leasing mints a fresh token, so a late ack from a superseded
+attempt is an idempotent no-op instead of removing a re-claimed message. A batch becomes re-claimable when
+its lease ages past `deliveryLeaseTimeout` (60s, config) or when its epoch falls below the claiming epoch —
+the funnel's epoch bump *proves* the leased session is gone, so a restart re-claims immediately rather than
+waiting out the timeout. A `relaunchSeed` claim additionally re-owns its own prior `relaunchSeed` lease, so
+a retried relaunch never comes up seedless. The result is at-least-once: duplicates over loss, and every
+failure ends in re-delivery or durable retention, never silence.
+
+Leases live on `InboxMessage` inside `inbox.json` rather than in a sidecar file — two files can't be
+written atomically, which is the class of bug this design removes. For the same reason `confirm` writes the
+removal and the confirmed-ids ring in a single persist: a crash leaves both or neither.
+
+`inbox.json` moved from a bare `[InboxMessage]` array to a `{messages, confirmedIds}` envelope, and the
+loader decodes **tolerantly** — a legacy array becomes `messages` with an empty ring. An envelope-only
+decoder would have `.bak`'d every existing inbox on upgrade and dropped every pending send; only
+top-level-unparseable JSON still `.bak`s. The ring is a bounded (256) FIFO tombstone of delivered ids:
+`confirm` removes the row, so `send`'s idempotency needs it to no-op a retry whose response was lost after
+delivery.
+
+Editor verbs win over a live lease: `inbox-remove`/`inbox-edit` force-release the in-flight batch, which
+returns to pending and re-delivers. An already-rendered payload may still arrive once — benign, and
+preferable to letting a stale token confirm text the human has rewritten. `inbox-reorder` permutes the full
+set including leased rows; order is metadata for future renders and never disturbs a live claim.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
