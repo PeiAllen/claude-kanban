@@ -165,6 +165,129 @@ struct InboxClaimTests {
     }
 }
 
+@Suite("B1 · Inbox confirm / release / ring")
+struct InboxConfirmTests {
+    static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
+    static let t0 = Date(timeIntervalSince1970: 10_000)
+    // @Sendable is REQUIRED: Package.swift is tools-6.0 with no language-mode override, so a static let
+    // of a bare function type is "not concurrency-safe" (#MutableGlobalVariable) and won't compile.
+    static let fit: @Sendable ([InboxMessage], Int) -> (payload: String, consumed: Int)? = { StopDrain.fit($0, budget: $1) }
+
+    @Test("confirm removes the batch and records its ids in the ring — one atomic write")
+    func confirmRemovesAndRings() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        try await inbox.confirm(token: b.token)
+        #expect(await inbox.peek(card).isEmpty)
+        // Crash-equivalence: a fresh actor reads BOTH halves off disk (removal + ring), never one.
+        let reborn = Inbox(path: path)
+        #expect(await reborn.peek(card).isEmpty)
+        #expect(await reborn.wasConfirmed(b.ids[0]))
+    }
+
+    @Test("a stale or unknown token confirms/releases nothing — idempotent no-ops")
+    func staleTokenNoops() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        let stale = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                       render: Self.fit, now: Self.t0))
+        // The batch is re-claimed (expiry) — the old token is now dead.
+        let fresh = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                       render: Self.fit, now: Self.t0.addingTimeInterval(61)))
+        try await inbox.confirm(token: stale.token)          // a late ack from the superseded attempt…
+        #expect(await inbox.peek(card).count == 1)           // …must NOT remove the re-claimed message
+        try await inbox.release(token: stale.token)
+        #expect(await inbox.peek(card).first?.lease?.token == fresh.token)   // fresh lease intact
+        try await inbox.confirm(token: UUID())               // unknown token
+        #expect(await inbox.peek(card).count == 1)
+        try await inbox.confirm(token: fresh.token)
+        try await inbox.confirm(token: fresh.token)          // confirm is idempotent
+        #expect(await inbox.peek(card).isEmpty)
+    }
+
+    @Test("release returns the batch to pending; releaseAll clears every lease for a card")
+    func releaseSemantics() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID(); let other = UUID()
+        try await inbox.enqueue(card, "m1"); try await inbox.enqueue(other, "o1")
+        let b = try #require(try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        try await inbox.release(token: b.token)
+        #expect(await inbox.peek(card).first?.lease == nil)
+        #expect(await inbox.peek(card).count == 1)                       // released, NOT removed
+        _ = try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        _ = try await inbox.claim(other, route: .channelPush, epoch: 1, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        try await inbox.releaseAll(card)
+        #expect(await inbox.peek(card).first?.lease == nil)
+        #expect(await inbox.peek(other).first?.lease != nil)             // other card untouched
+    }
+
+    @Test("the confirmed-ids ring evicts FIFO at its cap")
+    func ringBounded() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        var firstId: UUID?; var secondId: UUID?; var lastId: UUID?
+        for i in 0...Inbox.confirmedRingCap {                            // cap + 1 confirms
+            try await inbox.enqueue(card, "m\(i)")
+            let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                       render: Self.fit, now: Self.t0))
+            if firstId == nil { firstId = b.ids[0] } else if secondId == nil { secondId = b.ids[0] }
+            lastId = b.ids[0]
+            try await inbox.confirm(token: b.token)
+        }
+        let reborn = Inbox(path: path)
+        #expect(await reborn.wasConfirmed(firstId!) == false)            // the ONE oldest evicted…
+        #expect(await reborn.wasConfirmed(secondId!))                    // …and everything newer RETAINED —
+        #expect(await reborn.wasConfirmed(lastId!))                      //    proves FIFO-of-256, not a clear
+    }
+
+    @Test("hasClaimable ignores a held same-epoch lease but sees expiry and stale epochs")
+    func hasClaimableSemantics() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        #expect(await inbox.hasClaimable(card, epoch: 1, now: Self.t0) == false)   // empty
+        try await inbox.enqueue(card, "m")
+        #expect(await inbox.hasClaimable(card, epoch: 1, now: Self.t0))            // pending
+        _ = try await inbox.claim(card, route: .relaunchSeed, epoch: 1, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        // A held same-epoch lease must NOT re-wake the card on the live edge.
+        #expect(await inbox.hasClaimable(card, epoch: 1, now: Self.t0.addingTimeInterval(5)) == false)
+        #expect(await inbox.hasClaimable(card, epoch: 1, now: Self.t0.addingTimeInterval(61)))  // expired
+        #expect(await inbox.hasClaimable(card, epoch: 2, now: Self.t0.addingTimeInterval(5)))   // stale epoch
+    }
+
+    @Test("confirmHeldRelaunch confirms only the relaunchSeed lease at exactly that epoch")
+    func confirmHeldRelaunchScoped() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        _ = try await inbox.claim(card, route: .relaunchSeed, epoch: 7, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        try await inbox.confirmHeldRelaunch(card, epoch: 6)          // wrong epoch → no-op
+        #expect(await inbox.peek(card).count == 1)
+        try await inbox.confirmHeldRelaunch(card, epoch: 7)
+        #expect(await inbox.peek(card).isEmpty)
+        try await inbox.confirmHeldRelaunch(card, epoch: 7)          // idempotent
+    }
+
+    @Test("confirmHeldRelaunch ignores a non-relaunchSeed lease at the same epoch")
+    func confirmHeldRelaunchIgnoresOtherRoutes() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        _ = try await inbox.claim(card, route: .channelPush, epoch: 7, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        try await inbox.confirmHeldRelaunch(card, epoch: 7)
+        #expect(await inbox.peek(card).count == 1)                   // a channel batch is not a held seed
+    }
+}
+
 @Suite("B1 · Inbox envelope migration")
 struct InboxEnvelopeTests {
     static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }

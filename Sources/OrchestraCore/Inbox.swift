@@ -242,6 +242,43 @@ public actor Inbox {
         try persist()
     }
 
+    /// Return a batch to pending (its route abandoned). Stale/unknown token → no-op.
+    public func release(token: UUID) throws {
+        ensureLoaded()
+        guard messages.contains(where: { $0.lease?.token == token }) else { return }
+        unlease { $0.lease?.token == token }
+        try persist()
+    }
+
+    /// Lifecycle teardown: drop every lease for a card. The messages stay durable — a reopen's relaunch
+    /// delivers them.
+    public func releaseAll(_ cardId: UUID) throws {
+        ensureLoaded()
+        guard messages.contains(where: { $0.cardId == cardId && $0.lease != nil }) else { return }
+        unlease { $0.cardId == cardId }
+        try persist()
+    }
+
+    /// Is anything deliverable for this card right now? Route-agnostic on purpose: a message riding a
+    /// held same-epoch lease is NOT claimable, so a card mid-delivery is never re-woken (B4's
+    /// `wakeIfPending` gate).
+    public func hasClaimable(_ cardId: UUID, epoch: Int, now: Date) -> Bool {
+        ensureLoaded()
+        return messages.contains {
+            $0.cardId == cardId && isClaimable($0, route: .channelPush, epoch: epoch, now: now)
+        }
+    }
+
+    /// Confirm a HELD `relaunchSeed` lease at exactly `epoch` — one atomic find-and-confirm, so B3's
+    /// first-signal confirm can't drift from the lease it means. No-op when absent.
+    public func confirmHeldRelaunch(_ cardId: UUID, epoch: Int) throws {
+        ensureLoaded()
+        guard let token = messages.first(where: {
+            $0.cardId == cardId && $0.lease?.route == .relaunchSeed && $0.lease?.epoch == epoch
+        })?.lease?.token else { return }
+        try confirm(token: token)
+    }
+
     private func persist() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
