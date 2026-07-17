@@ -49,11 +49,16 @@ struct InboxClaimTests {
         let second = try #require(try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
                                                         render: Self.fit, now: Self.t0.addingTimeInterval(1)))
         #expect(second.payload.contains("b"))
-        // NOT plain `!contains("a")`: the provenance header itself contains the letter "a" ("Orchestra",
-        // "message", "instructions", "agent", "act", …), so that check can never pass regardless of
-        // correctness. `renderMessages` always places a lone message's text immediately after "\n\n"
-        // with nothing else following, so this checks the message SLOT specifically.
-        #expect(!second.payload.contains("\n\na"))
+        // NOT a substring check on "a" vs "b": the provenance header itself contains the letter "a"
+        // ("Orchestra", "message", "instructions", "agent", "act", …), so a plain `!contains("a")` can
+        // never pass. A "\n\na" slot check is ALSO non-discriminating: in the buggy case (fresh
+        // cross-route lease wrongly claimable) the pool is [a,b] and `fit` renders the NUMBERED
+        // multi-message form (`header + "\n\n[1/2] a\n\n[2/2] b"`), where every "\n\n" is followed by
+        // "[", never bare "a" — so that check would still pass even on the bug. Assert on the leased SET
+        // instead, which is unambiguous across both render forms.
+        #expect(second.ids.count == 1)                       // buggy case would lease BOTH → 2
+        let aRow = try #require(await inbox.peek(card).first(where: { $0.text == "a" }))
+        #expect(aRow.lease?.token == first.token)            // a's original stopDrain lease untouched, not re-stolen
         #expect(second.token != first.token)
     }
 
