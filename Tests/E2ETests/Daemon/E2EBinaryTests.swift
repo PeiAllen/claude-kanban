@@ -228,13 +228,13 @@ struct E2EBinaryTests {
         #expect(list.stdout.contains("From MCP"))
     }
 
-    @Test("MCP: publish-image returns the same transcript marker as the CLI")
+    @Test("MCP: publish-image renders the shared transcript marker, not raw JSON")
     func mcpPublishImageReturnsTranscriptMarker() async throws {
         let fx = try await E2EFixture.shared.get()
         let mcp = binary("orchestra-mcp")
         try #expect(Bool(FileManager.default.fileExists(atPath: mcp)))
 
-        let imagePath = fx.repo + "/mcp-image.png"
+        let imagePath = fx.base + "/mcp-image.png"
         let minimalPNG = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
         try minimalPNG.write(to: URL(fileURLWithPath: imagePath))
 
@@ -270,6 +270,10 @@ struct E2EBinaryTests {
         let referenceID = markerURL.flatMap(TranscriptImageLink.referenceID(from:))
         #expect(referenceID != nil)
         if let marker, let referenceID {
+            let card = try await fx.service.resolveRef(ref)
+            let payload = try await fx.service.transcriptImage(card.id, referenceID: referenceID)
+            #expect(payload.reference.id == referenceID)
+            #expect(payload.reference.caption == "diagram")
             #expect(marker == TranscriptImageMarker.render(referenceID: referenceID, caption: "diagram"))
         }
     }

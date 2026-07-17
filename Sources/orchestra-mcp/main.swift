@@ -97,9 +97,15 @@ _ = await server.withMethodHandler(CallTool.self) { params in
     do {
         let result = try await client.call(params.name, args)
         let text: String
-        if params.name == "publish-image",
-           let reference = try? result.decode(TranscriptImageReference.self) {
-            text = TranscriptImageMarker.render(referenceID: reference.id, caption: reference.caption)
+        if params.name == "publish-image" {
+            if let reference = try? result.decode(TranscriptImageReference.self) {
+                text = TranscriptImageMarker.render(referenceID: reference.id, caption: reference.caption)
+            } else {
+                // Preserve the bridge's existing fail-open response while making a wire-contract drift
+                // visible to the daemon operator instead of silently regressing to raw JSON.
+                logErr("publish-image result did not match TranscriptImageReference; returning raw JSON")
+                text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
+            }
         } else {
             text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
         }
