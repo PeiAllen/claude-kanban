@@ -61,4 +61,17 @@ struct ConfigTimeoutTests {
         #expect(c2.controlTimeout == 3)
         #expect(c2.worktreeAddTimeout == 600)   // the unset ones still default
     }
+
+    @Test("deliveryLeaseTimeout defaults to 60 and a pre-upgrade config still decodes")
+    func deliveryKnobDefaults() throws {
+        #expect(Config().deliveryLeaseTimeout == 60)
+        // A config.json written before this PR lacks the key entirely — it must decode, not throw.
+        // (Multi-line raw literal: a single-line #"..."# cannot span lines.)
+        let old = #"""
+        {"reposRoot":"/r","worktreesRoot":"/w","defaultAgentId":"claude-code","allowlist":[],
+         "maxConcurrentRevivals":4,"revivalGraceSeconds":15,"statusLineMode":"custom"}
+        """#
+        let cfg = try OrchestraJSON.decoder.decode(Config.self, from: Data(old.utf8))
+        #expect(cfg.deliveryLeaseTimeout == 60)
+    }
 }

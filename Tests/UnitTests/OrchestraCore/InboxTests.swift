@@ -124,6 +124,16 @@ struct InboxStoreTests {
         #expect(await inbox.peek(b).map(\.text) == ["b1"])          // b untouched
     }
 
+    @Test("enqueue stamps createdAt from the injected clock, not the wall clock")
+    func enqueueUsesInjectedNow() async throws {
+        let path = InboxEnvelopeTests.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let fixed = Date(timeIntervalSince1970: 1_000)
+        let inbox = Inbox(path: path, now: { fixed })
+        let card = UUID()
+        try await inbox.enqueue(card, "m")
+        #expect(await inbox.peek(card).first?.createdAt == fixed)
+    }
+
     @Test("messages survive a daemon restart (new Inbox instance, same path)")
     func durableAcrossRestart() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }

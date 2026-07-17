@@ -38,7 +38,17 @@ public actor Inbox {
         init(from decoder: Decoder) throws { self.message = try? InboxMessage(from: decoder) }
     }
 
-    public init(path: String = Config.inboxPath) { self.path = path }
+    private let leaseTimeout: TimeInterval
+    /// `now()` stamps PERSISTED timestamps only (`createdAt`), never scheduling — the TaskStore pattern.
+    /// Lease expiry math takes `now` as an explicit argument instead (see `claim`), so the caller's
+    /// instant governs both the expiry decision and the `leasedAt` it writes.
+    private let now: @Sendable () -> Date
+
+    public init(path: String = Config.inboxPath,
+                leaseTimeout: TimeInterval = 60,
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.path = path; self.leaseTimeout = leaseTimeout; self.now = now
+    }
 
     @discardableResult
     public func load() -> [InboxMessage] {
@@ -90,7 +100,7 @@ public actor Inbox {
            messages.contains(where: { $0.cardId == cardId && $0.dedupKey == dedupKey }) {
             return   // already queued for this card under the same key — dedup
         }
-        messages.append(InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey))
+        messages.append(InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey, createdAt: now()))
         try persist()
     }
 

@@ -270,7 +270,8 @@ public actor OrchestraService {
         self.resolver = r
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
-        self.inbox = inbox ?? Inbox()
+        // The Inbox holds no Config — the lease timeout is injected here, at its one build site.
+        self.inbox = inbox ?? Inbox(leaseTimeout: TimeInterval(config.deliveryLeaseTimeout))
         self.devices = devices ?? DeviceTokenStore()
         self.mediaStore = mediaStore ?? MediaStore(root: "\(config.runtimeStateDir)/media")
         self.grantResolver = grantResolver

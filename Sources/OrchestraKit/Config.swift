@@ -35,6 +35,12 @@ public struct Config: Codable, Sendable, Equatable {
     /// (`worktree list/remove/prune`, `rev-parse`, `status --porcelain`).
     public var controlTimeout: Int
 
+    /// How long a delivery lease stays live before the batch is re-claimable (seconds). The failure
+    /// bound for a lost receipt: a lost hook reply / dead bridge / failed relaunch leaves the token to
+    /// expire and the arm re-claims. Read by the `Inbox` actor, which holds no Config — injected at its
+    /// construction site (first-reference rule: the claimable set is what reads it).
+    public var deliveryLeaseTimeout: Int
+
     /// Root for ephemeral scratch-card dirs. INSTANCE state, deliberately NON-Codable: every
     /// OrchestraService sweeps and rm -rf's under ITS config's root, so tests give each service a
     /// private root and concurrent daemons/tests can never delete each other's scratch dirs.
@@ -63,6 +69,7 @@ public struct Config: Codable, Sendable, Equatable {
         worktreeAddTimeout: Int = 600,
         sessionLaunchTimeout: Int = 30,
         controlTimeout: Int = 15,
+        deliveryLeaseTimeout: Int = 60,
         autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
         runtimeStateDir: String = Config.dataDir
@@ -80,6 +87,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.worktreeAddTimeout = worktreeAddTimeout
         self.sessionLaunchTimeout = sessionLaunchTimeout
         self.controlTimeout = controlTimeout
+        self.deliveryLeaseTimeout = deliveryLeaseTimeout
         self.scratchRoot = scratchRoot
         self.runtimeStateDir = runtimeStateDir
     }
@@ -88,7 +96,7 @@ public struct Config: Codable, Sendable, Equatable {
         case reposRoot, worktreesRoot, defaultModel, defaultAgentId, allowlist,
              maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
              autoInstallMCPGlobally,
-             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout
+             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout, deliveryLeaseTimeout
     }
 
     /// Custom decode so a pre-upgrade `config.json` lacking the new timeout keys still decodes,
@@ -112,6 +120,7 @@ public struct Config: Codable, Sendable, Equatable {
         worktreeAddTimeout = try c.decodeIfPresent(Int.self, forKey: .worktreeAddTimeout) ?? 600
         sessionLaunchTimeout = try c.decodeIfPresent(Int.self, forKey: .sessionLaunchTimeout) ?? 30
         controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
+        deliveryLeaseTimeout = try c.decodeIfPresent(Int.self, forKey: .deliveryLeaseTimeout) ?? 60
     }
 
     // MARK: Defaults
