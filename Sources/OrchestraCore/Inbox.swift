@@ -164,6 +164,84 @@ public actor Inbox {
         try persist()
     }
 
+    /// Clear the lease on every message matching `where` (in place, preserving all other fields).
+    /// Introduced HERE (not with release/releaseAll in Task 6) because `claim` is its first reference.
+    private func unlease(where match: (InboxMessage) -> Bool) {
+        for (idx, msg) in messages.enumerated() where match(msg) && msg.lease != nil {
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: nil)
+        }
+    }
+
+    /// Is this message claimable by `route` at `epoch`, as of `now`? The claimable set (L2):
+    /// unleased ∪ leases older than `leaseTimeout` ∪ leases from a lower epoch (their session is
+    /// provably gone — the funnel's epoch bump is the invalidation boundary) ∪ — for a `relaunchSeed`
+    /// claim — the card's own prior `relaunchSeed` lease at ANY epoch, so a retried relaunch re-owns its
+    /// in-flight batch instead of coming up seedless.
+    private func isClaimable(_ msg: InboxMessage, route: DeliveryRoute, epoch: Int, now: Date) -> Bool {
+        guard let lease = msg.lease else { return true }
+        if now.timeIntervalSince(lease.leasedAt) >= leaseTimeout { return true }
+        if lease.epoch < epoch { return true }
+        return route == .relaunchSeed && lease.route == .relaunchSeed
+    }
+
+    /// Atomically select + fit + lease a FIFO batch for `cardId` — ONE actor call, so the select/lease
+    /// split races (cross-route double-claim, truncated-render over-confirm) are unrepresentable.
+    ///
+    /// `render` runs INSIDE the claim and reports how many whole messages its payload actually consumed;
+    /// exactly that prefix is leased and the overflow stays pending. No route renders outside a claim, so
+    /// a truncated render can never confirm unrendered messages. Re-leasing mints a fresh token, which
+    /// invalidates the old one. `nil` when the render has nothing to deliver.
+    public func claim(_ cardId: UUID, route: DeliveryRoute, epoch: Int, budget: Int,
+                      render: ([InboxMessage], Int) -> (payload: String, consumed: Int)?,
+                      now: Date) throws -> ClaimedBatch? {
+        ensureLoaded()
+        let pool = messages.filter { $0.cardId == cardId && isClaimable($0, route: route, epoch: epoch, now: now) }
+        guard let (payload, consumed) = render(pool, budget), !payload.isEmpty else { return nil }
+        let token = UUID()
+        let taken = Array(pool.prefix(max(0, consumed)))
+        let takenIds = Set(taken.map(\.id))
+        let lease = DeliveryLease(token: token, route: route, epoch: epoch, leasedAt: now)
+        for (idx, msg) in messages.enumerated() where takenIds.contains(msg.id) {
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: lease)
+        }
+        // Kill the DEAD leases on the claimable-but-unconsumed tail. A message that entered the pool did
+        // so because its lease was expired/stale-epoch/re-ownable — i.e. already invalid. Leaving that old
+        // token on an untaken message keeps it live, and `confirm` matches on token alone: a late ack from
+        // the provably-gone prior-epoch session would then remove a message that was never re-delivered.
+        // "Re-leasing mints a fresh token and invalidates the old one" has to cover the whole pool, not
+        // just the prefix we took.
+        let staleTail = pool.filter { !takenIds.contains($0.id) && $0.lease != nil }
+        if !staleTail.isEmpty {
+            let staleIds = Set(staleTail.map(\.id))
+            unlease { staleIds.contains($0.id) }
+        }
+        // A handoff-only batch (consumed == 0) leases nothing; persist only if something actually changed.
+        if !taken.isEmpty || !staleTail.isEmpty { try persist() }
+        return ClaimedBatch(token: token, ids: taken.map(\.id), payload: payload)
+    }
+
+    /// Remove a confirmed batch — **the ONLY removal on a delivery path** — and tombstone its ids in the
+    /// ring, in ONE persist (a crash leaves both halves or neither). A stale/unknown token is an
+    /// idempotent no-op: a late ack from a superseded attempt can never remove a re-claimed message.
+    ///
+    /// Landed here in Task 4 (not with `release`/`releaseAll`/`hasClaimable`/`confirmHeldRelaunch` in
+    /// Task 6) because `InboxClaimTests.partialReclaimKillsStaleTailToken` needs it to verify the
+    /// stale-tail-unlease invariant: a late confirm from a provably-superseded lease must not delete an
+    /// undelivered message. Task 6 adds the rest of the confirm/release surface + the ring-eviction test.
+    public func confirm(token: UUID) throws {
+        ensureLoaded()
+        let hit = messages.filter { $0.lease?.token == token }
+        guard !hit.isEmpty else { return }
+        messages.removeAll { $0.lease?.token == token }
+        confirmedIds.append(contentsOf: hit.map(\.id))
+        if confirmedIds.count > Self.confirmedRingCap {
+            confirmedIds.removeFirst(confirmedIds.count - Self.confirmedRingCap)   // FIFO evict
+        }
+        try persist()
+    }
+
     private func persist() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

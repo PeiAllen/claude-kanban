@@ -9,6 +9,157 @@ func writeEnvelope(path: String, messages: [InboxMessage], confirmedIds: [UUID])
         .write(to: URL(fileURLWithPath: path))
 }
 
+@Suite("B1 · Inbox claim")
+struct InboxClaimTests {
+    static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
+    static let t0 = Date(timeIntervalSince1970: 10_000)
+    /// The stop-drain render: whole-message FIFO fit under the budget.
+    // @Sendable is REQUIRED: Package.swift is tools-6.0 with no language-mode override, so a static let
+    // of a bare function type is "not concurrency-safe" (#MutableGlobalVariable) and won't compile.
+    static let fit: @Sendable ([InboxMessage], Int) -> (payload: String, consumed: Int)? = { StopDrain.fit($0, budget: $1) }
+
+    @Test("claim leases EXACTLY the consumed prefix — the over-budget tail stays pending")
+    func claimLeasesExactConsumedPrefix() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        // A budget that fits the header + exactly one of these two messages.
+        for t in ["first", "second"] { try await inbox.enqueue(card, t) }
+        let oneFits = StopDrain.renderMessages([InboxMessage(cardId: card, text: "first")]).count + 10
+        let batch = try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: oneFits,
+                                          render: Self.fit, now: Self.t0)
+        let b = try #require(batch)
+        #expect(b.ids.count == 1)
+        #expect(b.payload.contains("first"))
+        #expect(!b.payload.contains("second"))                    // never rendered…
+        let rows = await inbox.peek(card)
+        #expect(rows.first(where: { $0.text == "first" })?.lease?.token == b.token)
+        #expect(rows.first(where: { $0.text == "second" })?.lease == nil)  // …so never leased
+    }
+
+    @Test("a fresh lease is not claimable by another route, and blocks nothing behind it")
+    func freshLeaseNotClaimableByOtherRoute() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        for t in ["a", "b"] { try await inbox.enqueue(card, t) }
+        let first = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                       render: { ms, bud in StopDrain.fit(Array(ms.prefix(1)), budget: bud) },
+                                                       now: Self.t0))
+        #expect(first.ids.count == 1)
+        // A channelPush claim 1s later skips the freshly-leased "a" and takes "b".
+        let second = try #require(try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
+                                                        render: Self.fit, now: Self.t0.addingTimeInterval(1)))
+        #expect(second.payload.contains("b"))
+        // NOT plain `!contains("a")`: the provenance header itself contains the letter "a" ("Orchestra",
+        // "message", "instructions", "agent", "act", …), so that check can never pass regardless of
+        // correctness. `renderMessages` always places a lone message's text immediately after "\n\n"
+        // with nothing else following, so this checks the message SLOT specifically.
+        #expect(!second.payload.contains("\n\na"))
+        #expect(second.token != first.token)
+    }
+
+    @Test("a lease older than the timeout is re-claimable, minting a fresh token")
+    func expiredLeaseReclaimableWithFreshToken() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path, leaseTimeout: 60); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        let a = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        // 59s: still leased, not claimable.
+        #expect(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                      render: Self.fit, now: Self.t0.addingTimeInterval(59)) == nil)
+        // 61s: expired → re-claimable, fresh token invalidating the old one.
+        let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0.addingTimeInterval(61)))
+        #expect(b.token != a.token)
+        #expect(b.ids == a.ids)
+    }
+
+    @Test("a lease from an older epoch is re-claimable IMMEDIATELY — no waiting out the timeout")
+    func staleEpochLeaseReclaimableImmediately() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        _ = try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        // Epoch 2's claim one second later: the epoch-1 session is provably gone.
+        let b = try await inbox.claim(card, route: .relaunchSeed, epoch: 2, budget: 10_000,
+                                      render: Self.fit, now: Self.t0.addingTimeInterval(1))
+        #expect(b?.ids.count == 1)
+    }
+
+    @Test("a relaunchSeed claim re-owns its OWN prior relaunchSeed lease at any epoch")
+    func relaunchSeedReownsOwnLease() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        let a = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 5, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        // The relaunch timed out; the retry re-steps at the SAME epoch, well inside the timeout.
+        // Without re-own it would come up seedless.
+        let b = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 5, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0.addingTimeInterval(2)))
+        #expect(b.ids == a.ids)
+        #expect(b.token != a.token)
+        // …but another route may NOT steal that fresh lease.
+        #expect(try await inbox.claim(card, route: .stopDrain, epoch: 5, budget: 10_000,
+                                      render: Self.fit, now: Self.t0.addingTimeInterval(3)) == nil)
+    }
+
+    @Test("claim is FIFO across cards and takes whole messages only")
+    func claimFifoWholeMessages() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let a = UUID(); let b = UUID()
+        try await inbox.enqueue(a, "a1"); try await inbox.enqueue(b, "b1"); try await inbox.enqueue(a, "a2")
+        let batch = try #require(try await inbox.claim(a, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                       render: Self.fit, now: Self.t0))
+        let aIds = await inbox.peek(a).map(\.id)
+        #expect(batch.ids == aIds)                                // both of a's, in order
+        #expect(await inbox.peek(b).first?.lease == nil)          // b untouched
+    }
+
+    @Test("a partial re-claim kills the old token on the unconsumed tail")
+    func partialReclaimKillsStaleTailToken() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        for t in ["a", "b"] { try await inbox.enqueue(card, t) }
+        // Epoch 1 leases BOTH under T0.
+        let t0 = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                    render: Self.fit, now: Self.t0))
+        #expect(t0.ids.count == 2)
+        // The session dies; epoch bumps. The retry's budget only fits "a", so "b" is left behind — and
+        // must NOT keep riding the now-dead T0.
+        let t1 = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 2, budget: 10_000,
+                                                    render: { ms, bud in StopDrain.fit(Array(ms.prefix(1)), budget: bud) },
+                                                    now: Self.t0.addingTimeInterval(1)))
+        #expect(t1.ids.count == 1)
+        let tail = try #require(await inbox.peek(card).first(where: { $0.text == "b" }))
+        #expect(tail.lease == nil)                        // dead token cleared, not left live
+        // A late ack from the provably-gone epoch-1 session must not delete an undelivered message.
+        try await inbox.confirm(token: t0.token)
+        #expect(await inbox.peek(card).contains(where: { $0.text == "b" }))
+    }
+
+    @Test("a handoff-only relaunch claim returns a batch with zero ids; nil only when nothing to seed")
+    func relaunchClaimNonNilOnHandoffOnly() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        // Empty inbox + a pending handoff → the handoff's context must NOT be silently dropped.
+        let seed: ([InboxMessage], Int) -> (payload: String, consumed: Int)? = { ms, bud in
+            HandoffSeed.compose(handoff: "carry this context", messages: ms, budget: bud)
+        }
+        let b = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 1, budget: 10_000,
+                                                   render: seed, now: Self.t0))
+        #expect(b.ids.isEmpty)
+        #expect(b.payload.contains("carry this context"))
+        // No handoff AND no message → genuinely nothing to seed.
+        let none: ([InboxMessage], Int) -> (payload: String, consumed: Int)? = { ms, bud in
+            HandoffSeed.compose(handoff: nil, messages: ms, budget: bud)
+        }
+        #expect(try await inbox.claim(card, route: .relaunchSeed, epoch: 1, budget: 10_000,
+                                      render: none, now: Self.t0) == nil)
+    }
+}
+
 @Suite("B1 · Inbox envelope migration")
 struct InboxEnvelopeTests {
     static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
