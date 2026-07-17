@@ -489,6 +489,61 @@ struct InboxEditTests {
     }
 }
 
+@Suite("B1 · Inbox editor force-release")
+struct InboxEditorLeaseTests {
+    static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
+    static let t0 = Date(timeIntervalSince1970: 10_000)
+    // @Sendable is REQUIRED: Package.swift is tools-6.0 with no language-mode override, so a static let
+    // of a bare function type is "not concurrency-safe" (#MutableGlobalVariable) and won't compile.
+    static let fit: @Sendable ([InboxMessage], Int) -> (payload: String, consumed: Int)? = { StopDrain.fit($0, budget: $1) }
+
+    @Test("remove force-releases the whole in-flight batch — the human always wins")
+    func removeForceReleasesLease() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m1"); try await inbox.enqueue(card, "m2")
+        let b = try #require(try await inbox.claim(card, route: .channelPush, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        let victim = try #require(await inbox.peek(card).first)
+        try await inbox.remove(victim.id)
+        #expect(await inbox.peek(card).map(\.text) == ["m2"])
+        #expect(await inbox.peek(card).first?.lease == nil)     // sibling released, not left in flight
+        try await inbox.confirm(token: b.token)                 // the in-flight ack is now inert…
+        #expect(await inbox.peek(card).count == 1)              // …so it cannot remove m2
+    }
+
+    @Test("update force-releases the lease so the stale rendered payload can't confirm the new text")
+    func updateForceReleasesLease() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "typo")
+        let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                   render: Self.fit, now: Self.t0))
+        let m = try #require(await inbox.peek(card).first)
+        try await inbox.update(m.id, text: "fixed")
+        #expect(await inbox.peek(card).first?.lease == nil)
+        try await inbox.confirm(token: b.token)
+        #expect(await inbox.peek(card).map(\.text) == ["fixed"])  // survives to be re-delivered
+    }
+
+    @Test("reorder permutes the full set INCLUDING leased rows, preserving their leases")
+    func reorderPermutesFullSetIncludingLeased() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m1"); try await inbox.enqueue(card, "m2")
+        let b = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                                   render: { ms, bud in StopDrain.fit(Array(ms.prefix(1)), budget: bud) },
+                                                   now: Self.t0))
+        let ids = await inbox.peek(card).map(\.id)
+        try await inbox.reorder(card, orderedIds: Array(ids.reversed()))   // reorder takes [UUID]
+        #expect(await inbox.peek(card).map(\.text) == ["m2", "m1"])
+        // Order is metadata for FUTURE renders — the live claim is unaffected.
+        #expect(await inbox.peek(card).first(where: { $0.text == "m1" })?.lease?.token == b.token)
+        try await inbox.confirm(token: b.token)
+        #expect(await inbox.peek(card).map(\.text) == ["m2"])
+    }
+}
+
 @Suite("C1 · StopDrain payload")
 struct StopDrainTests {
     func msg(_ t: String) -> InboxMessage { InboxMessage(cardId: UUID(), text: t) }

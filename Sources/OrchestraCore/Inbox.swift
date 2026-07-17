@@ -131,20 +131,31 @@ public actor Inbox {
     }
 
     /// Remove one message by id (no-op if absent). Used by the inbox editor.
+    ///
+    /// FORCE-RELEASES the message's in-flight batch (the human always wins): the rendered payload no
+    /// longer matches the queue, so the batch returns to pending and re-delivers as a fresh claim. The
+    /// already-rendered payload may still arrive once — benign and disclosed.
     public func remove(_ id: UUID) throws {
         ensureLoaded()
+        if let token = messages.first(where: { $0.id == id })?.lease?.token {
+            unlease { $0.lease?.token == token }
+        }
         messages.removeAll { $0.id == id }
         try persist()
     }
 
-    /// Replace a message's text in place; id / cardId / createdAt are preserved.
+    /// Replace a message's text in place; id / cardId / createdAt are preserved. Force-releases the
+    /// batch for the same reason `remove` does — an in-flight token must never confirm text the human
+    /// has since rewritten.
     public func update(_ id: UUID, text: String) throws {
         ensureLoaded()
         guard let idx = messages.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.invalidParams("no inbox message with id \(id)")
         }
+        if let token = messages[idx].lease?.token { unlease { $0.lease?.token == token } }
         let old = messages[idx]
-        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text, createdAt: old.createdAt)
+        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text,
+                                     dedupKey: old.dedupKey, createdAt: old.createdAt)
         try persist()
     }
 
