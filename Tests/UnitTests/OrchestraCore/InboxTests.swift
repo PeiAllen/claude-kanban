@@ -2,6 +2,107 @@ import Foundation
 import Testing
 @testable import OrchestraCore
 
+/// Write an on-disk inbox envelope directly — the fixture seam for migration/claimable tests.
+func writeEnvelope(path: String, messages: [InboxMessage], confirmedIds: [UUID]) throws {
+    struct Envelope: Encodable { let messages: [InboxMessage]; let confirmedIds: [UUID] }
+    try OrchestraJSON.pretty.encode(Envelope(messages: messages, confirmedIds: confirmedIds))
+        .write(to: URL(fileURLWithPath: path))
+}
+
+@Suite("B1 · Inbox envelope migration")
+struct InboxEnvelopeTests {
+    static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
+
+    @Test("a legacy bare array migrates to messages + an empty ring — never .bak")
+    func legacyInboxArrayMigrates() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let card = UUID()
+        let legacy = [InboxMessage(cardId: card, text: "pending send")]
+        try OrchestraJSON.pretty.encode(legacy).write(to: URL(fileURLWithPath: path))
+
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["pending send"])          // NOT dropped
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))          // NOT sidelined
+        #expect(await inbox.wasConfirmed(UUID()) == false)                       // empty ring
+    }
+
+    @Test("a legacy array is rewritten as an envelope on the next persist")
+    func legacyRewritesAsEnvelope() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let card = UUID()
+        try OrchestraJSON.pretty.encode([InboxMessage(cardId: card, text: "old")])
+            .write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        try await inbox.enqueue(card, "new")
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path)))
+        #expect(json is [String: Any])                                            // envelope, not array
+        #expect(await Inbox(path: path).peek(card).map(\.text) == ["old", "new"]) // both survive
+    }
+
+    @Test("an envelope with leased and lease-less rows decodes")
+    func envelopeWithLeasedRowsDecodes() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let card = UUID()
+        let leased = InboxMessage(cardId: card, text: "leased",
+                                  lease: DeliveryLease(route: .stopDrain, epoch: 1, leasedAt: Date()))
+        try writeEnvelope(path: path, messages: [leased, InboxMessage(cardId: card, text: "free")],
+                          confirmedIds: [])
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["leased", "free"])
+        #expect(await inbox.peek(card).first?.lease?.route == .stopDrain)
+    }
+
+    @Test("one malformed row is dropped element-wise — the valid pending sends survive, no .bak")
+    func malformedRowDroppedNotBaked() async throws {
+        let path = Self.tmp()
+        defer { try? FileManager.default.removeItem(atPath: path)
+                try? FileManager.default.removeItem(atPath: path + ".bak") }
+        let card = UUID()
+        // A syntactically valid envelope whose middle row is missing `id` (the unrecoverable case).
+        let json = """
+        {"confirmedIds":[],"messages":[
+          {"id":"\(UUID().uuidString)","cardId":"\(card.uuidString)","text":"good one","createdAt":"2020-01-01T00:00:00Z"},
+          {"cardId":"\(card.uuidString)","text":"malformed — no id","createdAt":"2020-01-01T00:00:00Z"},
+          {"id":"\(UUID().uuidString)","cardId":"\(card.uuidString)","text":"good two","createdAt":"2020-01-01T00:00:00Z"}
+        ]}
+        """
+        try Data(json.utf8).write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["good one", "good two"])   // valid sends kept
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))           // whole file NOT stranded
+    }
+
+    @Test("a malformed confirmed-id is dropped — the ring tolerates it, messages survive, no .bak")
+    func malformedRingEntryDroppedNotBaked() async throws {
+        let path = Self.tmp()
+        defer { try? FileManager.default.removeItem(atPath: path)
+                try? FileManager.default.removeItem(atPath: path + ".bak") }
+        let card = UUID(); let goodId = UUID()
+        // A structurally valid envelope whose ring holds one un-parseable id beside a good one.
+        let json = """
+        {"confirmedIds":["\(goodId.uuidString)","not-a-uuid"],"messages":[
+          {"id":"\(UUID().uuidString)","cardId":"\(card.uuidString)","text":"pending","createdAt":"2020-01-01T00:00:00Z"}
+        ]}
+        """
+        try Data(json.utf8).write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["pending"])       // the valid send is NOT lost
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))  // a bad ring entry doesn't strand the file
+        #expect(await inbox.wasConfirmed(goodId))                        // the parseable tombstone is kept
+    }
+
+    @Test("only top-level-unparseable JSON still .bak's")
+    func corruptInboxStillBaks() async throws {
+        let path = Self.tmp()
+        defer { try? FileManager.default.removeItem(atPath: path)
+                try? FileManager.default.removeItem(atPath: path + ".bak") }
+        try Data("{not json".utf8).write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(UUID()).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: path + ".bak"))
+    }
+}
+
 @Suite("C1 · Inbox durable store")
 struct InboxStoreTests {
     static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }

@@ -11,23 +11,67 @@ public actor Inbox {
     private var messages: [InboxMessage] = []
     private var loaded = false
 
+    /// The confirmed-ids ring: a bounded FIFO tombstone of delivered message ids. `confirm` removes the
+    /// row, so `send`'s idempotency (B5a) needs this to no-op a retry whose response was lost AFTER the
+    /// message was delivered and removed. Bounded so the file can't grow without limit.
+    private var confirmedIds: [UUID] = []
+    static let confirmedRingCap = 256
+
+    /// The on-disk envelope we WRITE, encoding real `[InboxMessage]`.
+    private struct InboxEnvelope: Encodable { let messages: [InboxMessage]; let confirmedIds: [UUID] }
+
+    /// The envelope we READ — rows AND ring entries decode element-wise so one bad record can't strand
+    /// the file. `confirmedIds` is `[String]?` (not `[UUID]?`) deliberately: a single malformed id string
+    /// (`"not-a-uuid"`) in an otherwise-valid envelope would make a strict `[UUID]` decode throw, fall
+    /// through to the legacy-array attempt, fail that too, and `.bak` every valid pending send beside it —
+    /// the exact top-level-only-`.bak` boundary this loader promises. We map to `UUID` in `load`, dropping
+    /// any unparseable entry (a lost tombstone at worst re-delivers a message once — never drops a send).
+    private struct StoredInbox: Decodable { let messages: [FailableInboxMessage]; let confirmedIds: [String]? }
+
+    /// A row wrapper whose decode NEVER throws: a malformed record becomes nil and is dropped, instead
+    /// of failing the whole array decode and sending every pending send to `.bak`. Mirrors
+    /// `TaskStore.FailableTask` — the precedent that earns the "only top-level-unparseable .bak's"
+    /// boundary. B1 grows this row schema (`lease`) and B3 grows it again (watermark/path), which is
+    /// exactly when element-wise fragility starts to bite.
+    private struct FailableInboxMessage: Decodable {
+        let message: InboxMessage?
+        init(from decoder: Decoder) throws { self.message = try? InboxMessage(from: decoder) }
+    }
+
     public init(path: String = Config.inboxPath) { self.path = path }
 
     @discardableResult
     public func load() -> [InboxMessage] {
         let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: path) else { messages = []; loaded = true; return messages }
+        guard FileManager.default.fileExists(atPath: path) else {
+            messages = []; confirmedIds = []; loaded = true; return messages
+        }
         do {
-            messages = try OrchestraJSON.decoder.decode([InboxMessage].self, from: Data(contentsOf: url))
+            let data = try Data(contentsOf: url)
+            if let env = try? OrchestraJSON.decoder.decode(StoredInbox.self, from: data) {
+                messages = env.messages.compactMap(\.message)                   // post-upgrade envelope
+                confirmedIds = (env.confirmedIds ?? []).compactMap(UUID.init(uuidString:))  // drop bad ids
+            } else {
+                // Pre-upgrade bare array → messages + an empty ring. TOLERANT BY CONSTRUCTION: an
+                // envelope-only decoder would .bak every existing inbox on upgrade and drop every
+                // pending send (round-4 gate CRITICAL). Mirrors TaskStore's {rev,tasks} precedent.
+                messages = try OrchestraJSON.decoder
+                    .decode([FailableInboxMessage].self, from: data).compactMap(\.message)
+                confirmedIds = []
+            }
         } catch {
+            // Top-level unparseable ONLY — a single malformed row is dropped element-wise above.
             let bak = path + ".bak"
             try? FileManager.default.removeItem(atPath: bak)
             try? FileManager.default.moveItem(atPath: path, toPath: bak)
-            messages = []
+            messages = []; confirmedIds = []
         }
         loaded = true
         return messages
     }
+
+    /// Has this message id already been confirmed (delivered + removed)? Backs B5a's send dedup.
+    public func wasConfirmed(_ id: UUID) -> Bool { ensureLoaded(); return confirmedIds.contains(id) }
 
     private func ensureLoaded() { if !loaded { _ = load() } }
 
@@ -113,7 +157,8 @@ public actor Inbox {
     private func persist() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let data = try OrchestraJSON.pretty.encode(messages)
+        let data = try OrchestraJSON.pretty.encode(InboxEnvelope(messages: messages,
+                                                                 confirmedIds: confirmedIds))
         let url = URL(fileURLWithPath: path)
         let tmp = URL(fileURLWithPath: path + ".tmp.\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)
