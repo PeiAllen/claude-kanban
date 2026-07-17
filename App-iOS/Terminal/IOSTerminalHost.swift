@@ -49,9 +49,10 @@ struct IOSTerminalHost: TerminalHost {
     /// mirroring the takeover's disarm without the takeover's arming chrome. `control` also observes the
     /// tap-to-type focus (via `onUserArmed`) so the tab knows when to show the button. Scroll stays
     /// one-finger regardless of arm state — `forwardScroll` keeps mouse reporting off (see `IOSTerminalView`).
-    func attach(target: TmuxTarget, selectMode: Bool, control: TerminalControl) -> AnyView {
+    func attach(target: TmuxTarget, selectMode: Bool, control: TerminalControl,
+                onOpenImage: ((UUID) -> Void)? = nil) -> AnyView {
         terminalView(target: target, takeover: false, control: control, selectMode: selectMode,
-                     forwardScroll: true)
+                     forwardScroll: true, onOpenImage: onOpenImage)
     }
 
     /// **Exclusive takeover attach** (PR T4). Runs the `takeover` recipe (`detach-client` first) so the
@@ -64,14 +65,16 @@ struct IOSTerminalHost: TerminalHost {
     /// retake flips ownership away, re-running the exclusive `detach-client` recipe would kick the desktop
     /// that just took control — so a lease-blind reconnect must not happen.
     func takeoverAttach(target: TmuxTarget, control: TerminalControl,
-                        shouldReconnect: @escaping () -> Bool = { true }) -> AnyView {
+                        shouldReconnect: @escaping () -> Bool = { true },
+                        onOpenImage: ((UUID) -> Void)? = nil) -> AnyView {
         terminalView(target: target, takeover: true, control: control, selectMode: false,
-                     shouldReconnect: shouldReconnect)
+                     shouldReconnect: shouldReconnect, onOpenImage: onOpenImage)
     }
 
     private func terminalView(target: TmuxTarget, takeover: Bool, control: TerminalControl?, selectMode: Bool,
                               forwardScroll: Bool = false,
-                              shouldReconnect: @escaping () -> Bool = { true }) -> AnyView {
+                              shouldReconnect: @escaping () -> Bool = { true },
+                              onOpenImage: ((UUID) -> Void)? = nil) -> AnyView {
         // No Mac connection configured → render a live terminal that explains setup instead of hanging on
         // a black rectangle. Set it in Settings → Connection; `resolve` also honors ORCH_SSH_TARGET for the
         // dev/Simulator path.
@@ -80,7 +83,7 @@ struct IOSTerminalHost: TerminalHost {
             return AnyView(
                 IOSTerminalView(makeChannel: { LoopbackChannel(banner: banner) }, control: control,
                                 selectMode: selectMode, forwardScroll: forwardScroll,
-                                shouldReconnect: shouldReconnect)
+                                shouldReconnect: shouldReconnect, onOpenImage: onOpenImage)
                     .id("unconfigured:\(target.session):\(target.window)"))
         }
 
@@ -97,7 +100,7 @@ struct IOSTerminalHost: TerminalHost {
                 SSHPTYChannel(endpoint: endpoint, command: command, group: group,
                               sharedSession: sessionProvider)
             }, control: control, selectMode: selectMode, forwardScroll: forwardScroll,
-            shouldReconnect: shouldReconnect)
+            shouldReconnect: shouldReconnect, onOpenImage: onOpenImage)
             // Stable identity per attach target so SwiftUI keeps ONE Coordinator (and one SSH session)
             // across re-renders — the client half of reconnect idempotency. `takeover` is part of the id so
             // switching modes rebuilds the session with the right recipe.

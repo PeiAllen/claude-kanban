@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var worktreesRoot = ""
     @State private var defaultModel = ""
     @State private var allowlistText = ""
+    @State private var autoInstallMCPGlobally = false
     @State private var statusLineMode: StatusLineMode = .passthroughGlobal
     @State private var customStatusLine = ""
 
@@ -66,6 +67,10 @@ struct SettingsView: View {
                         editor($allowlistText, focus: .allowlist)
                     }
                     .padding(.horizontal, 13).padding(.vertical, 11)
+                    rowDivider
+                    toggleRow("Install Orchestra MCP and CLI globally",
+                              "Add missing MCP entries and user-local orchestra commands; existing files are left unchanged.",
+                              isOn: $autoInstallMCPGlobally)
                 }
 
                 section("Status line") {
@@ -103,7 +108,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(theme.winBg)
-        .frame(width: 480, height: 470)
+        .frame(width: 480, height: 540)
         .onAppear(perform: load)
         .task {
             // Defeat AppKit auto-focusing (and select-all-ing) the first text field when the
@@ -115,6 +120,7 @@ struct SettingsView: View {
         .onChange(of: worktreesRoot) { scheduleSave() }
         .onChange(of: defaultModel) { scheduleSave() }
         .onChange(of: allowlistText) { scheduleSave() }
+        .onChange(of: autoInstallMCPGlobally) { scheduleSave() }
         .onChange(of: statusLineMode) { scheduleSave() }
         .onChange(of: customStatusLine) { scheduleSave() }
     }
@@ -280,6 +286,7 @@ struct SettingsView: View {
         worktreesRoot = c.worktreesRoot
         defaultModel = c.defaultModel ?? ""
         allowlistText = c.allowlist.joined(separator: "\n")
+        autoInstallMCPGlobally = c.autoInstallMCPGlobally
         statusLineMode = c.statusLineMode
         customStatusLine = c.customStatusLine ?? ""
         loaded = true
@@ -304,6 +311,7 @@ struct SettingsView: View {
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        cfg.autoInstallMCPGlobally = autoInstallMCPGlobally
         cfg.statusLineMode = statusLineMode
         cfg.customStatusLine = customStatusLine.isEmpty ? nil : customStatusLine
         await model.saveConfig(cfg)

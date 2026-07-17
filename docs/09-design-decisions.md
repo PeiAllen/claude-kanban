@@ -110,6 +110,72 @@ The control plane carries commands, state, and events — never PTY bytes. Swift
 `shell`/`inspect` attach to **tmux directly**. This keeps the daemon simple and the terminals fully
 interactive and real-time.
 
+### Transcript images are published, opaque, and session-scoped
+
+Images are the deliberate exception to the rule above: an agent's screenshot or plot has to reach a human
+looking at a phone, and PTY bytes can't carry it. The shape of that exception is the decision.
+
+**Publishing is an explicit agent action, never a parser.** The tempting design is to watch terminal output
+for anything path-shaped and offer to preview it. That would make every string an agent prints a
+potential read primitive against the agent's filesystem, aimed at whatever the *agent* chose — so the
+feature is an [explicit verb](05-command-reference.md#registry-commands), `publish-image`, and the daemon
+re-reads and re-validates the bytes itself (magic-number sniff, regular files only, bounded per-image and
+per-session). The agent's path is consumed at publish time and never crosses back to a client.
+
+**The caption is constrained at the boundary, so nothing downstream has to sanitize.** The caption doubles
+as the filename each client stages, which makes agent-authored text into a path — the classic place to
+grow three subtly-different sanitizers (daemon, macOS, iOS) and audit them forever. Instead
+`TranscriptImageCaption` makes the bad input unrepresentable: letters, digits and dashes, alphanumeric
+ends, 80 bytes. Everything downstream then uses `reference.caption` verbatim. The specific choices are
+each load-bearing: **dashes only inside**, because a leading dash yields `-foo.png`, which every Unix tool
+reads as flags; **ASCII only**, which bans `/`, `:` and leading dots, and — the subtle one — Unicode
+*format* characters like `U+202E RIGHT-TO-LEFT OVERRIDE`, which are category `Cf`, not `Cc`, so a
+control-stripping filter passes them through to spoof a filename's visible extension; and ASCII also makes
+the length cap **byte-exact**, closing the gap where a Character-counted cap (120 emoji ≈ 480 bytes)
+overruns `NAME_MAX`. A malformed caption is **rejected, not rewritten**, because a silently-cleaned
+caption would desync the label the agent believes it published from the filename the human saves. The rule
+is advertised as `pattern`/`maxLength` on the MCP tool schema *and* enforced in the handler, from one
+shared definition — the registry dispatches on `phaseGate` and validates params against no schema, so the
+advertised contract would otherwise be unenforced.
+
+**The reference is opaque.** What lands in the transcript is an OSC 8 hyperlink carrying a bare UUID; the
+client resolves it through the app-only [`media`](05-command-reference.md#server-only-built-in-methods)
+call. No filesystem location crosses the boundary in either direction, so activating a link can't open an
+arbitrary path and a leaked reference is worthless off-box. `media` is app-only for the same reason
+`diffText` is — an agent that wants an image already has it on disk.
+
+**Lifetime follows the session, not the file.** Published media is scoped to the card's current
+[session epoch](04-cards-worktrees-sessions.md#recovery-resume-and-restart) and dropped by the phase
+funnel: a new epoch clears prior epochs, an archive intent clears the card. Media therefore can't outlive
+the transcript that references it, and a stale reference degrades to "expired" rather than to someone
+else's image.
+
+**Guidance rides the shared bundle, not the adapters.** The instructions that teach an agent to publish are
+one `AgentGuidance` section, so Claude receives them as a project skill and Codex as launch-scoped
+developer instructions from the same source, with no `if claude` branch (see
+[the adapter capability descriptor](04-cards-worktrees-sessions.md#agent-adapters)).
+
+### The OS previews images, on both clients
+
+Both clients hand a published image to QuickLook — `QLPreviewPanel` on the Mac, `QLPreviewController` on
+the phone — rather than rendering it themselves. Zoom, pan, share, Open-with, full screen and
+Esc-to-dismiss all come free, and a published image behaves like every other image on the device. The only
+thing a hand-built viewer buys is *anchoring* — a preview tethered to the reference's coordinate, which a
+shared floating panel can't be — and that isn't worth its weight, nor even desirable: a preview that dies
+when you scroll is one you can't read the transcript beside. So the Mac panel stays up until Esc or a card
+switch. Its placement is QuickLook's: a preview panel exposes no resting-position API
+(`sourceFrameOnScreenFor` is the zoom-animation origin, not a placement) and overwrites `setFrame` during
+its own open layout, so the app doesn't fight it — QuickLook remembers where the user drags it.
+
+The asymmetry that remains is storage lifetime, and it is about who else holds the file. QuickLook
+previews a *file*, so both clients stage bytes on disk. iOS deletes on dismiss: QuickLook is in-process
+and hands off to no one, and iOS purging tmp when the app isn't running covers the crash case. macOS
+cannot, because `Open with` gives the file to *another application* that may still be reading it — so the
+Mac keeps a write-only spool in its temporary directory, swept at two coarse boundaries (the whole spool
+at launch, a card's subdirectory on archive) rather than by an eviction policy. Nothing is ever read back
+from it, so it is not a cache and has no hit rate to protect; and deleting a file another app already
+holds open is safe regardless, since unlink keeps the inode alive for its open descriptors.
+
 ### iOS in-process SSH rides Network.framework (NIOTransportServices), not POSIX sockets
 
 The iPhone can't fork/exec the system `ssh`, so its SSH client is in-process (swift-nio-ssh). The

@@ -317,6 +317,14 @@ public final class ControlClient: @unchecked Sendable {
                        as: CaptureResult.self)
     }
 
+    /// Resolve a temporary transcript image through the app-only control-plane path. The reference is
+    /// scoped by the daemon to `ref`'s current session; no filesystem location crosses this boundary.
+    public func media(ref: String, referenceID: UUID) async throws -> TranscriptImagePayload {
+        try await call("media", .object([
+            "ref": .string(ref), "id": .string(referenceID.uuidString),
+        ]), as: TranscriptImagePayload.self)
+    }
+
     /// Typed convenience over the `changedNotes` verb — the markdown notes a card's branch changed/added,
     /// each with content, for the phone's Notes page (M6). Empty for a non-worktree card.
     public func changedNotes(_ ref: String) async throws -> [NoteFile] {

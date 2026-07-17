@@ -911,6 +911,12 @@ public class BoardStore: ObservableObject {
         try? await client.capture(id.uuidString, window: window)
     }
 
+    /// Resolve a temporary image marker from this card's current agent transcript. The app receives
+    /// only the daemon-validated payload; an agent-owned filesystem path never crosses this boundary.
+    public func transcriptImage(_ cardID: UUID, referenceID: UUID) async throws -> TranscriptImagePayload {
+        try await client.media(ref: cardID.uuidString, referenceID: referenceID)
+    }
+
     /// Send a constrained key chord to a card's agent window (the Agent tab's steer-bar key affordances,
     /// D2). Live keystrokes with no implicit Enter — distinct from `send`, which *queues* a message to the
     /// inbox drained at turn-end. Best-effort (swallows RPC errors): a dropped keystroke on a flaky link

@@ -210,6 +210,19 @@ enum CLIRunner {
                 ]))
                 print("sent-keys")
 
+            case "publish-image":
+                guard let ref = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !ref.isEmpty else {
+                    die("publish-image must run inside an Orchestra card session (ORCHESTRA_TASK_ID is missing)")
+                }
+                guard let path = flags.positional(0), (path as NSString).isAbsolutePath else {
+                    die("publish-image needs an absolute PNG or JPEG path")
+                }
+                let reference = try await client.call("publish-image", .object([
+                    "ref": .string(ref), "path": .string(path),
+                ].merging(optional("caption", flags.value("caption"))) { current, _ in current }),
+                                                       as: TranscriptImageReference.self)
+                print(TranscriptImageMarker.render(referenceID: reference.id, caption: reference.caption))
+
             case "sessions":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let r = try await client.call("sessions", .object(["ref": .string(ref)]))

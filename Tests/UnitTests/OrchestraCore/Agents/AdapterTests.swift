@@ -27,10 +27,10 @@ struct AdapterTests {
     }
 
     @Test("start(ctx) is [String] carrying model, plan flag, --session-id, --settings, --name, and the prompt")
-    func startArgv() {
+    func startArgv() throws {
         let ctx = AdapterContext(cwd: "/wt", model: "claude-sonnet-5", startIn: .plan,
                                  sessionId: "the-id", prompt: "Add OAuth login\nwith Google",
-                                 name: nil)
+                                 name: nil, orchestraMCPBin: "/abs/orchestra-mcp")
         let argv = adapter.start(ctx)
         #expect(argv.first == "claude")
         #expect(argv.contains("--model"))
@@ -38,6 +38,9 @@ struct AdapterTests {
         #expect(adjacent(argv, "--permission-mode", "auto"))   // plan column → auto mode
         #expect(adjacent(argv, "--session-id", "the-id"))
         #expect(adjacent(argv, "--settings", Config.hooksPath))
+        #expect(adjacent(argv, "--mcp-config",
+                         MCPConfiguration.claudeJSON(command: "/abs/orchestra-mcp")))
+        #expect(!argv.contains("--strict-mcp-config"))
         // --name defaults to the prompt's first line (== Task.title seed)
         #expect(adjacent(argv, "--name", "Add OAuth login"))
         // the prompt is the launch positional arg (last element, full text)
@@ -58,10 +61,14 @@ struct AdapterTests {
     @Test("resume(ctx) is --resume <id> --settings --name, NO --session-id, NO prompt")
     func resumeArgv() throws {
         let ctx = AdapterContext(cwd: "/wt", model: "claude-opus-4-8", sessionId: "sess-9",
-                                 prompt: "should be ignored", name: "Title")
+                                 prompt: "should be ignored", name: "Title",
+                                 orchestraMCPBin: "/abs/orchestra-mcp")
         let argv = try #require(adapter.resume(ctx))
         #expect(adjacent(argv, "--resume", "sess-9"))
         #expect(adjacent(argv, "--settings", Config.hooksPath))
+        #expect(adjacent(argv, "--mcp-config",
+                         MCPConfiguration.claudeJSON(command: "/abs/orchestra-mcp")))
+        #expect(!argv.contains("--strict-mcp-config"))
         #expect(adjacent(argv, "--name", "Title"))
         #expect(adjacent(argv, "--model", "claude-opus-4-8"))
         #expect(!argv.contains("--session-id"))
@@ -132,7 +139,7 @@ struct ClaudeDelegationTests {
         let cwd = tmpCwd(); defer { try? FileManager.default.removeItem(atPath: cwd) }
         try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: cwd))
         let sections = AgentGuidance.sections(for: "claude-code")
-        #expect(sections.map(\.name) == ["delegation", "tree"])
+        #expect(sections.map(\.name) == ["delegation", "tree", "image-publishing"])
         for section in sections {
             let text = try String(contentsOfFile: skillPath(cwd, section: section.name), encoding: .utf8)
             #expect(text == section.content)
@@ -156,6 +163,34 @@ struct ClaudeDelegationTests {
         #expect(throws: Never.self) {
             try ClaudeCodeAdapter().prepareToLaunch(AdapterContext(cwd: "/System/nope-\(UUID().uuidString)"))
         }
+    }
+
+    @Test("global MCP installation is opt-in and add-only")
+    func globalMCPInstallIsOptIn() throws {
+        let home = tmpCwd()
+        let cwd = tmpCwd()
+        defer {
+            try? FileManager.default.removeItem(atPath: home)
+            try? FileManager.default.removeItem(atPath: cwd)
+        }
+        let path = home + "/.claude.json"
+        let adapter = ClaudeCodeAdapter(claudeHome: home)
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp"))
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        try adapter.prepareToLaunch(AdapterContext(cwd: cwd, orchestraBin: "/abs/orchestra",
+                                                   orchestraMCPBin: "/abs/orchestra-mcp",
+                                                   autoInstallMCPGlobally: true))
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(root["mcpServers"] as? [String: Any])
+        #expect((servers["orchestra"] as? [String: Any])?["command"] as? String == "/abs/orchestra-mcp")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra") == "/abs/orchestra")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.local/bin/orchestra-mcp") == "/abs/orchestra-mcp")
+        #expect(try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
+            .contains("Orchestra user-local command path"))
     }
 
     @Test("start(ctx) argv + env are unchanged by the added materialization")

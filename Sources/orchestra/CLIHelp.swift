@@ -40,6 +40,10 @@ enum CLIHelp {
       open-notes [ref]                           Open the card's worktree as an Obsidian vault, on its changed notes
       exec <ref> <cmd...>                        Run a one-shot command in the worktree
       sessions <ref> [--json]                    Debug handles (tmux targets + session id)
+      publish-image <absolute-path> [--caption <slug>]
+                                                 Publish a temporary PNG/JPEG reference in this card's transcript
+                                                 (caption: letters/digits/dashes, alphanumeric ends, 80 max —
+                                                  it becomes the filename the human saves)
       batch-spawn --repo <r> --branch <b>        Spawn many (stdin: JSON array or one prompt/line)
       daemon [install|start|stop|status|uninstall]
       ping | version

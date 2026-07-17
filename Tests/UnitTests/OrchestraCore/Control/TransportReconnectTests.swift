@@ -108,7 +108,7 @@ struct TransportReconnectTests {
         // Collapse the reconnect backoff to a near-zero wait so the reader thread re-opens immediately —
         // no real wall-clock backoff to sleep through, no fixed-window timing fragility.
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app, reconnectBackoff: { _ in 0.001 })
-        client.onState = { s in _Concurrency.Task { await states.add(s) } }
+        client.onState = { states.add($0) }
         try client.connect()
         _ = client.subscribe()                                     // sends subscribe #1 (detached task)
         try await pollUntil("subscribe #1 written") { box.subscribeCount == 1 }
@@ -116,11 +116,11 @@ struct TransportReconnectTests {
         box.dropCurrent()                                          // drop mid-stream
         try await pollUntil {
             guard box.opens >= 2, box.subscribeCount == 2 else { return false }
-            return await states.values.last == .live
+            return states.values.last == .live
         }
         #expect(box.opens >= 2)                                    // reconnected with a fresh transport
         #expect(box.subscribeCount == 2)                           // re-subscribed on the new transport
-        let seen = await states.values
+        let seen = states.values
         #expect(seen.contains(.retrying))
         #expect(seen.last == .live)
         client.close()
@@ -131,18 +131,18 @@ struct TransportReconnectTests {
         let box = FakeBox()
         let states = StateBox()
         let client = ControlClient(transport: { FakeTransport(box) }, source: .app)
-        client.onState = { s in _Concurrency.Task { await states.add(s) } }
+        client.onState = { states.add($0) }
         try client.connect()
-        try await pollUntil("first connect published .live") { await states.values.contains(.live) }
+        try await pollUntil("first connect published .live") { states.values.contains(.live) }
         client.close()
         // A wrongful post-close reconnect would emit `.retrying` from the reader thread MICROSECONDS
         // after the EOF (the `stopping` check precedes the backoff sleep), and only then re-open after
         // the ~250ms backoff. Wait for the terminal .down, settle, and assert neither trace exists.
-        try await pollUntil("close published .down") { await states.values.last == .down }
+        try await pollUntil("close published .down") { states.values.last == .down }
         await yieldBriefly(2000)
         #expect(box.opens == 1)                                    // never reconnected after an intentional close
-        #expect(!(await states.values.contains(.retrying)))        // the reader honored `stopping` before retrying
-        #expect(await states.values.last == .down)
+        #expect(!states.values.contains(.retrying))                // the reader honored `stopping` before retrying
+        #expect(states.values.last == .down)
     }
     @Test("clientId is stamped on requests and preserved across a reconnect")
     func clientIdAcrossReconnect() async throws {
@@ -221,9 +221,15 @@ struct TransportReconnectTests {
     // already-accepted client connections, so the link never actually drops.
 }
 
-actor StateBox {
-    private(set) var values: [ConnectionState] = []
-    func add(_ s: ConnectionState) { values.append(s) }
+/// `onState` is synchronous on the client's reader thread. Capture it synchronously too: putting each
+/// callback in an independent task lets an actor observe `.connecting` after the later `.live` callback,
+/// which tests scheduler order instead of the client's transition order.
+final class StateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [ConnectionState] = []
+
+    func add(_ state: ConnectionState) { lock.withLock { stored.append(state) } }
+    var values: [ConnectionState] { lock.withLock { stored } }
 }
 
 actor Counter {

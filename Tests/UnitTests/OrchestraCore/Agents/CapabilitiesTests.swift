@@ -108,6 +108,15 @@ struct CapabilitiesTests {
         #expect(AdapterContext(cwd: "/wt", seed: "handoff summary").seed == "handoff summary")
     }
 
+    @Test("AdapterContext carries the MCP executable and global-install setting")
+    func mcpLaunchFields() {
+        let context = AdapterContext(cwd: "/wt", orchestraMCPBin: "/bin/orchestra-mcp",
+                                      autoInstallMCPGlobally: true)
+        #expect(context.orchestraMCPBin == "/bin/orchestra-mcp")
+        #expect(context.autoInstallMCPGlobally)
+        #expect(AdapterContext(cwd: "/wt").autoInstallMCPGlobally == false)
+    }
+
     @Test("spawn seeds a session id for a .seeded adapter (Claude behavior preserved)")
     func spawnSeedsWhenSeeded() async throws {
         let env = TestEnv.make()   // default .claudeCode → .seeded

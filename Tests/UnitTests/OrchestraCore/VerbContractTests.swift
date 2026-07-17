@@ -24,6 +24,7 @@ struct VerbContractTests {
         "merge-request": (.mutation, liveDead), "borrow": (.mutation, liveDead), "release": (.mutation, liveDead),
         "shell": (.mutation, liveDead), "inspect": (.mutation, liveDead), "closeShell": (.mutation, liveDead),
         "exec": (.mutation, liveDead), "send-keys": (.mutation, liveDead),
+        "publish-image": (.mutation, liveDead),
         "spawn": (.convergence, allKinds), "batch-spawn": (.convergence, allKinds),
         "archive": (.convergence, allKinds),   // idempotency deviation: re-archive must no-op, not error
         "reopen": (.convergence, [.archivedPending, .archivedComplete]),

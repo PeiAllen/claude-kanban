@@ -187,6 +187,39 @@ view session, so PTY sizes stay independent and the two never fight one shell's 
 from the window name (`ShellOwner`); a surface live-attaches only the shells it owns and shows a
 foreign shell (the other surface's) as a listed, owner-tagged tab it can see and close but not drive.
 
+### Transcript image previews
+
+When an agent runs [`publish-image`](05-command-reference.md#registry-commands), the reference it prints
+into the transcript is an **OSC 8 hyperlink** carrying nothing but a UUID. The embedded tmux config
+advertises `hyperlinks` in `terminal-features` so the escape survives tmux and reaches the client intact;
+the client resolves that UUID through the app-only [`media`](05-command-reference.md#server-only-built-in-methods)
+call. Because the link is opaque, activating it can never open an arbitrary agent path — the worst a
+stale reference can do is fail to resolve, which surfaces as "Image preview expired".
+
+**Both clients hand the image to QuickLook** — `QLPreviewPanel` on the Mac, `QLPreviewController` on the
+phone — so zoom, pan, share, Open-with, full screen, and Esc-to-dismiss are the system's rather than ours,
+and a published image behaves like every other image on the device. The Mac panel deliberately stays up
+while you scroll — it's a viewer to read the transcript alongside, not a popover tethered to one line —
+and closes on Esc or when you switch cards. Where it opens is QuickLook's own business: a preview panel
+has no placement API (`sourceFrameOnScreenFor` is a zoom-animation origin, not a position, and `setFrame`
+is overwritten by QuickLook's layout as it opens), and QuickLook remembers where you drag it.
+
+QuickLook previews a *file*, so both clients stage the daemon's bytes on disk — and the staged file is
+named from the reference's **caption**, which is why the caption is a validated slug: the human sees that
+name in QuickLook's title bar, the Save dialog, and (on iOS, verified) the `suggestedName` that rides
+along on the pasteboard when they Copy. Uniqueness comes from a UUID *directory* rather than a UUID
+filename, so two images sharing a caption can't collide while the visible name stays real.
+
+The two differ only in how long a staged file must live, and the difference is entirely about who else
+might hold it. **iOS** deletes on dismiss: QuickLook is in-process and hands off to no one, so nothing has
+to outlive the preview — and iOS purging tmp when the app isn't running covers the crash case dismiss
+can't. **macOS** can't do that, because `Open with` (and a drag out of the panel) gives the file to
+*another application* that may still be reading it. So the Mac keeps a write-only spool in its temporary
+directory, swept at two coarse boundaries — the whole spool at launch, a card's subdirectory when that
+card is archived — rather than by an eviction policy. Nothing is ever read back from it, so there is no
+cache to preserve; and deleting a file another app already has open is safe regardless, since unlink keeps
+the inode alive for its open descriptors.
+
 ## Keyboard navigation
 
 ![Keyboard navigation: selection movement, link-hints, search, and the command palette](images/keyboard.gif)
@@ -288,7 +321,8 @@ popup after a paused `g` / `:`. User-remappable bindings remain an open question
   is down sees an offline banner offering a one-click restart instead.
 - **Settings** — a two-tab `TabView`: **General** (`SettingsView`) and **Connections**
   (`ConnectionsSettingsView`). **General** has three sections, auto-saved (debounced 500 ms): **Paths**
-  (repos root, worktrees root), **Agent** (default model, an allowlist text area for extra directories),
+  (repos root, worktrees root), **Agent** (default model, an allowlist text area for extra directories,
+  and an opt-in toggle to install missing Orchestra MCP entries plus user-scoped CLI/MCP command shims),
   and **Status line** (mode: passthrough / Orchestra default / custom, with a command field for custom).
 - **Connections** (`ConnectionsSettingsView`) — pick which daemon the board runs against: the built-in
   **This Mac** (local) connection plus any saved **remote** Linux boxes. Each row has a radio to make it

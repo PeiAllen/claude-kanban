@@ -147,17 +147,20 @@ struct DelegationDocsTests {
     @Test("shared guidance bundle keeps the same named delegation and tree sources for each provider")
     func guidanceBundleUsesSharedSources() throws {
         let codex = AgentGuidance.sections(for: "codex")
-        #expect(codex.map(\.name) == ["delegation", "tree"])
+        #expect(codex.map(\.name) == ["delegation", "tree", "image-publishing"])
         #expect(codex[0].content == (try #require(DelegationDocs.forAgent("codex"))))
         #expect(codex[1].content == (try #require(TreeDocs.forAgent("codex"))))
+        #expect(codex[2].content == (try #require(ImageDocs.forAgent("codex"))))
         let instructions = try #require(AgentGuidance.developerInstructions(for: "codex"))
         #expect(instructions.contains(codex[0].content))
         #expect(instructions.contains(codex[1].content))
+        #expect(instructions.contains(codex[2].content))
 
         let claude = AgentGuidance.sections(for: "claude-code")
-        #expect(claude.map(\.name) == ["delegation", "tree"])
+        #expect(claude.map(\.name) == ["delegation", "tree", "image-publishing"])
         #expect(claude[0].content == (try #require(DelegationDocs.forAgent("claude-code"))))
         #expect(claude[1].content == (try #require(TreeDocs.forAgent("claude-code"))))
+        #expect(claude[2].content == (try #require(ImageDocs.forAgent("claude-code"))))
     }
 
     // MARK: provider-owned filesystem packaging

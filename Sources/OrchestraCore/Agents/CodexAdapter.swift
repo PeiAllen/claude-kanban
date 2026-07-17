@@ -20,14 +20,17 @@ public struct CodexAdapter: Adapter {
     /// exported to a production Codex process; it only keeps rollout-discovery fixtures hermetic.
     let binOverride: String?
     let codexHomeOverride: String?
+    let userHomeOverride: String?
     /// Test injection for the hook-trust build-probe. `nil` ⇒ probe the real binary once (cached);
     /// `true`/`false` ⇒ force the result (hermetic tests, no subprocess).
     let hookTrustBypassOverride: Bool?
 
-    public init(binOverride: String? = nil, codexHome: String? = nil, hookTrustBypass: Bool? = nil) {
+    public init(binOverride: String? = nil, codexHome: String? = nil, hookTrustBypass: Bool? = nil,
+                userHome: String? = nil) {
         self.binOverride = binOverride
         self.codexHomeOverride = codexHome
         self.hookTrustBypassOverride = hookTrustBypass
+        self.userHomeOverride = userHome
     }
 
     private var binary: String { binOverride ?? bin }
@@ -35,6 +38,7 @@ public struct CodexAdapter: Adapter {
     /// Codex's normal default state location, retained only for rollout discovery.
     /// Production launch deliberately does not export CODEX_HOME, so auth, plugins, and state stay native.
     var codexHome: String { codexHomeOverride ?? "\(Config.home)/.codex" }
+    private var userHome: String { userHomeOverride ?? Config.home }
 
     /// Codex selects its own native state root. The adapter's test-only resolver is intentionally not an
     /// environment override, unlike the former isolated-home implementation.
@@ -254,6 +258,13 @@ public struct CodexAdapter: Adapter {
         let path = CodexLaunchConfiguration.profilePath(cwd: ctx.cwd, codexHome: codexHome)
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ctx.autoInstallMCPGlobally {
+            _ = MCPConfiguration.installUserCommands(orchestra: ctx.orchestraBin,
+                                                      orchestraMCP: ctx.orchestraMCPBin,
+                                                      home: userHome)
+            _ = MCPConfiguration.installCodexGlobally(command: ctx.orchestraMCPBin,
+                                                       at: codexHome + "/config.toml")
+        }
         try CodexLaunchConfiguration.profileTOML(context: ctx, agentId: id)
             .write(toFile: path, atomically: true, encoding: .utf8)
     }
@@ -298,7 +309,8 @@ public struct CodexAdapter: Adapter {
                                     priorSessionIds: prior, priorTranscripts: [], resumeCmd: nil)
         }
         let resumeCtx = AdapterContext(cwd: ctx.cwd, model: ctx.model, sessionId: sid,
-                                       name: ctx.name, access: ctx.access)
+                                       name: ctx.name, access: ctx.access,
+                                       orchestraMCPBin: ctx.orchestraMCPBin)
         return AgentSessionInfo(
             agentId: id,
             sessionId: sid,

@@ -197,6 +197,15 @@ public final class ControlServer: @unchecked Sendable {
             }
             let task = try await service.resolveRef(ref)
             return try JSONValue(encodable: try await service.changedNotes(task.id))
+        case "media":
+            // App-only transcript image retrieval. The caller supplies an opaque id, never a filesystem
+            // path, and the service scopes it to the card's current session epoch.
+            guard let p = req.params, let ref = p.optString("ref"),
+                  let rawID = p.optString("id"), let id = UUID(uuidString: rawID) else {
+                throw OrchestraError.invalidParams("media needs ref and an image UUID id")
+            }
+            let task = try await service.resolveRef(ref)
+            return try JSONValue(encodable: try await service.transcriptImage(task.id, referenceID: id))
         case "spawnRepos":
             // The phone's Spawn sheet (repo/dir autofill): git repos under reposRoot + freeform dir
             // candidates. Internal + app-only — NOT a registry Command, so it never becomes an MCP tool

@@ -6,12 +6,11 @@ import Foundation
 /// command *shape* (the execution half lives in `OrchestraCore/CommandRegistry.swift`).
 /// Who a command is exposed to. `.all` = the daemon dispatches it AND the MCP bridge advertises it as a
 /// tool to agents. `.appOnly` = the daemon still dispatches it (the app uses it), but the MCP bridge does
-/// NOT advertise it — an agent's normal tool-use can't reach it. Used for the human-only primitives that
-/// must not be agent-drivable: `send-keys` (an agent could Enter-approve its own permission gate),
-/// `capture`, and `inspect` (opens an interactive read-only claude on the card — a human affordance, not
-/// something an agent should trigger on a peer) — the same boundary the app-only `listDir`/takeover methods
-/// keep by not being catalog commands.
-public enum CommandExposure: Sendable, Equatable { case all, appOnly }
+/// NOT advertise it — an agent's normal tool-use can't reach it. `.terminalOnly` is available to the
+/// Orchestra CLI inside an agent terminal but is likewise withheld from MCP. It is reserved for commands
+/// intentionally limited to terminal access; human-only app affordances use `.appOnly` or remain outside
+/// the catalog, such as `send-keys`, `capture`, and `inspect`.
+public enum CommandExposure: Sendable, Equatable { case all, appOnly, terminalOnly }
 
 /// The three verb kinds (spec §6). Query: read-only, retry-free, never changes `phase`. Mutation:
 /// completes inline, idempotent, may hop off-actor, never changes `phase`. Convergence: the sync part
@@ -37,9 +36,8 @@ public struct CommandSchema: Sendable, Equatable {
 }
 
 public enum CommandCatalog {
-    /// The commands the MCP bridge advertises as tools to agents — the `.appOnly` primitives (`send-keys`,
-    /// `capture`, `inspect`) are withheld so an agent's tool-use can't drive the human-only gates. See
-    /// `CommandExposure`.
+    /// The commands the MCP bridge advertises as tools to agents. `.appOnly` and `.terminalOnly` commands
+    /// remain withheld from tool enumeration. See `CommandExposure`.
     public static var mcpExposed: [CommandSchema] { all.filter { $0.exposure == .all } }
 
     // Gate allow-sets over Phase.Kind (spec §6 default gate policy). Deny-by-default: a kind absent from
@@ -283,6 +281,24 @@ public enum CommandCatalog {
                                      required: ["ref"]),
                       exposure: .appOnly, kind: .query, phaseGate: gAll),
 
+        CommandSchema(name: "publish-image",
+                      summary: "Publish a temporary PNG or JPEG reference for this agent's transcript.",
+                      params: schema([
+                          "ref": refProp(),
+                          "path": strProp("Absolute PNG or JPEG source path to copy into temporary daemon media"),
+                          // pattern/maxLength come from the shared TranscriptImageCaption so the schema an
+                          // MCP client validates against IS the rule the daemon enforces. The caption
+                          // doubles as the filename each app gives the copy it stages for the human, which
+                          // is why it is a slug rather than free text.
+                          "caption": patternProp(
+                              "Optional short label shown beside the transcript reference, and the "
+                                  + "filename the human sees when they save or copy it — "
+                                  + TranscriptImageCaption.rule,
+                              pattern: TranscriptImageCaption.pattern,
+                              maxLength: TranscriptImageCaption.maxLength),
+                      ], required: ["ref", "path"]),
+                      exposure: .all, kind: .mutation, phaseGate: gLiveDead),
+
         CommandSchema(name: "send-keys",
                       summary: "Send live keystrokes to a card's tmux window — an ordered chord of named "
                           + "keys (Esc, Up/Down/Left/Right, Tab, Enter, C-c, PgUp/PgDn, Home/End) and/or "
@@ -336,6 +352,16 @@ public enum CommandCatalog {
     // Required-ness is driven by the `required:` array in `schema(...)`, so these just describe shape.
     public static func strProp(_ desc: String) -> JSONValue {
         .object(["type": .string("string"), "description": .string(desc)])
+    }
+    /// A string param that additionally advertises its shape. The registry dispatches on `phaseGate` and
+    /// never validates params against a schema, so this does not enforce anything server-side — its job is
+    /// to let an MCP client reject a malformed value before the call. The verb's handler must enforce the
+    /// same rule; both sides read it from one shared definition so they cannot drift.
+    public static func patternProp(_ desc: String, pattern: String, maxLength: Int) -> JSONValue {
+        .object([
+            "type": .string("string"), "description": .string(desc),
+            "pattern": .string(pattern), "maxLength": .int(maxLength),
+        ])
     }
     public static func intProp(_ desc: String) -> JSONValue {
         .object(["type": .string("integer"), "description": .string(desc)])

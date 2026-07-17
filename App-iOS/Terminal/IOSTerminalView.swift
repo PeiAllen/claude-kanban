@@ -40,8 +40,13 @@ struct IOSTerminalView: UIViewRepresentable {
     /// the non-exclusive attaches (read-only / T2 shell), which have no lease to respect.
     var shouldReconnect: () -> Bool = { true }
 
+    /// Receives only an exact opaque Orchestra media reference after SwiftTerm activates an OSC 8 link.
+    /// Kept optional so the existing debug/read-only terminal uses remain ordinary terminal links.
+    var onOpenImage: ((UUID) -> Void)? = nil
+
     func makeCoordinator() -> Coordinator {
-        let c = Coordinator(makeChannel: makeChannel, shouldReconnect: shouldReconnect)
+        let c = Coordinator(makeChannel: makeChannel, shouldReconnect: shouldReconnect,
+                            onOpenImage: onOpenImage)
         control?.attach(coordinator: c)
         return c
     }
@@ -95,6 +100,9 @@ struct IOSTerminalView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: TerminalView, context: Context) {
+        // The same terminal coordinator survives SwiftUI re-renders, while the selected card can change.
+        // Refresh this closure rather than capturing the first route and fetching an image for a stale card.
+        context.coordinator.onOpenImage = onOpenImage
         // Takeover chrome (T4) drives font + Select through the `control` handle; the Terminal-tab live
         // shell (T2) has no control and passes `selectMode` directly. Reflect whichever is active.
         if let control {
@@ -166,6 +174,7 @@ struct IOSTerminalView: UIViewRepresentable {
                              @preconcurrency UIGestureRecognizerDelegate {
         private let makeChannel: () -> TerminalByteChannel
         private let shouldReconnect: () -> Bool
+        var onOpenImage: ((UUID) -> Void)?
         weak var terminal: TerminalView?
         private var channel: TerminalByteChannel?
         private var started = false
@@ -181,9 +190,11 @@ struct IOSTerminalView: UIViewRepresentable {
         private var ctrlLocked = false
 
         init(makeChannel: @escaping () -> TerminalByteChannel,
-             shouldReconnect: @escaping () -> Bool = { true }) {
+             shouldReconnect: @escaping () -> Bool = { true },
+             onOpenImage: ((UUID) -> Void)? = nil) {
             self.makeChannel = makeChannel
             self.shouldReconnect = shouldReconnect
+            self.onOpenImage = onOpenImage
         }
 
         func teardown() {
@@ -405,7 +416,10 @@ struct IOSTerminalView: UIViewRepresentable {
         func clipboardCopy(source: TerminalView, content: Data) {
             if let s = String(data: content, encoding: .utf8) { UIPasteboard.general.string = s }
         }
-        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+            guard let id = TranscriptImageLink.referenceID(from: link) else { return }
+            onOpenImage?(id)
+        }
         func bell(source: TerminalView) {}
         func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
     }

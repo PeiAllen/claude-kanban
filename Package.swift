@@ -66,6 +66,8 @@ let package = Package(
                 .copy("Resources/delegation-agents.md"),
                 .copy("Resources/tree-skill.md"),
                 .copy("Resources/tree-agents.md"),
+                .copy("Resources/image-publishing-skill.md"),
+                .copy("Resources/image-publishing-agents.md"),
             ]
         ),
         .executableTarget(name: "orchestrad", dependencies: ["OrchestraCore"]),

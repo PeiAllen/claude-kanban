@@ -16,6 +16,7 @@ enum AgentGuidance {
         [
             ("delegation", DelegationDocs.forAgent(agentId)),
             ("tree", TreeDocs.forAgent(agentId)),
+            ("image-publishing", ImageDocs.forAgent(agentId)),
         ].compactMap { name, content in
             guard let content, !content.isEmpty else { return nil }
             return AgentGuidanceSection(name: name, content: content)

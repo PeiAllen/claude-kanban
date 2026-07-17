@@ -38,6 +38,12 @@ final class CommandRegistryCatalogTests: XCTestCase {
         XCTAssertNotNil(CommandRegistry().command("inspect"))
     }
 
+    func testPublishImageIsAllAndMCPExposed() {
+        let command = try! XCTUnwrap(CommandRegistry().command("publish-image"))
+        XCTAssertEqual(command.schema.exposure, .all)
+        XCTAssertTrue(CommandCatalog.mcpExposed.map(\.name).contains("publish-image"))
+    }
+
     // The canonical set is complete (guards an accidental drop during the move).
     func testCatalogHasAllCommands() {
         XCTAssertEqual(Set(CommandCatalog.all.map(\.name)), [
@@ -45,7 +51,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
             "inbox-reorder", "wait", "handoff", "status", "archive", "reopen", "restart",
             "resume", "shell", "inspect", "closeShell", "exec", "sessions", "capture", "send-keys",
             "trustState", "batch-spawn", "trust", "set-parent", "tree", "synced", "shipped",
-            "borrow", "release", "merge-request",
+            "borrow", "release", "merge-request", "publish-image",
         ])
     }
 }

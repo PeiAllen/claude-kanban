@@ -22,6 +22,9 @@ public struct Config: Codable, Sendable, Equatable {
     public var revivalGraceSeconds: Int
     public var statusLineMode: StatusLineMode
     public var customStatusLine: String?
+    /// When enabled, the next card launch adds Orchestra's MCP server to missing global Claude and
+    /// Codex entries. Existing same-name entries are never replaced.
+    public var autoInstallMCPGlobally: Bool
 
     /// Wall-clock bound (seconds) for a `git worktree add` checkout — generous because a cold
     /// large-repo checkout can take several seconds (worst known ≈9s). Enforced via `Proc.run(timeout:)`.
@@ -60,6 +63,7 @@ public struct Config: Codable, Sendable, Equatable {
         worktreeAddTimeout: Int = 600,
         sessionLaunchTimeout: Int = 30,
         controlTimeout: Int = 15,
+        autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
         runtimeStateDir: String = Config.dataDir
     ) {
@@ -72,6 +76,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.revivalGraceSeconds = revivalGraceSeconds
         self.statusLineMode = statusLineMode
         self.customStatusLine = customStatusLine
+        self.autoInstallMCPGlobally = autoInstallMCPGlobally
         self.worktreeAddTimeout = worktreeAddTimeout
         self.sessionLaunchTimeout = sessionLaunchTimeout
         self.controlTimeout = controlTimeout
@@ -82,6 +87,7 @@ public struct Config: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case reposRoot, worktreesRoot, defaultModel, defaultAgentId, allowlist,
              maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
+             autoInstallMCPGlobally,
              worktreeAddTimeout, sessionLaunchTimeout, controlTimeout
     }
 
@@ -102,6 +108,7 @@ public struct Config: Codable, Sendable, Equatable {
         revivalGraceSeconds = try c.decode(Int.self, forKey: .revivalGraceSeconds)
         statusLineMode = try c.decode(StatusLineMode.self, forKey: .statusLineMode)
         customStatusLine = try c.decodeIfPresent(String.self, forKey: .customStatusLine)
+        autoInstallMCPGlobally = try c.decodeIfPresent(Bool.self, forKey: .autoInstallMCPGlobally) ?? false
         worktreeAddTimeout = try c.decodeIfPresent(Int.self, forKey: .worktreeAddTimeout) ?? 600
         sessionLaunchTimeout = try c.decodeIfPresent(Int.self, forKey: .sessionLaunchTimeout) ?? 30
         controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
