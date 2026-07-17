@@ -16,9 +16,13 @@ public struct InboxMessage: Codable, Sendable, Equatable {
     /// absent on legacy records ⇒ nil ⇒ never dedups.
     public let dedupKey: String?
     public let createdAt: Date
+    /// In-flight delivery lease, or nil when the message is pending. Additive-optional Codable: legacy
+    /// rows decode leaseless. Set only by `Inbox.claim`, cleared by `release`; the message is REMOVED
+    /// (never merely unleased) by `confirm`.
+    public let lease: DeliveryLease?
     public init(id: UUID = UUID(), cardId: UUID, text: String, dedupKey: String? = nil,
-                createdAt: Date = Date()) {
+                createdAt: Date = Date(), lease: DeliveryLease? = nil) {
         self.id = id; self.cardId = cardId; self.text = text
-        self.dedupKey = dedupKey; self.createdAt = createdAt
+        self.dedupKey = dedupKey; self.createdAt = createdAt; self.lease = lease
     }
 }
