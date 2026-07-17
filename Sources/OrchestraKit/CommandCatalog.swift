@@ -7,11 +7,9 @@ import Foundation
 /// Who a command is exposed to. `.all` = the daemon dispatches it AND the MCP bridge advertises it as a
 /// tool to agents. `.appOnly` = the daemon still dispatches it (the app uses it), but the MCP bridge does
 /// NOT advertise it — an agent's normal tool-use can't reach it. `.terminalOnly` is available to the
-/// Orchestra CLI inside an agent terminal but is likewise withheld from MCP. Used for the human-only primitives that
-/// must not be agent-drivable: `send-keys` (an agent could Enter-approve its own permission gate),
-/// `capture`, and `inspect` (opens an interactive read-only claude on the card — a human affordance, not
-/// something an agent should trigger on a peer) — the same boundary the app-only `listDir`/takeover methods
-/// keep by not being catalog commands.
+/// Orchestra CLI inside an agent terminal but is likewise withheld from MCP. It is reserved for commands
+/// intentionally limited to terminal access; human-only app affordances use `.appOnly` or remain outside
+/// the catalog, such as `send-keys`, `capture`, and `inspect`.
 public enum CommandExposure: Sendable, Equatable { case all, appOnly, terminalOnly }
 
 /// The three verb kinds (spec §6). Query: read-only, retry-free, never changes `phase`. Mutation:
@@ -38,8 +36,8 @@ public struct CommandSchema: Sendable, Equatable {
 }
 
 public enum CommandCatalog {
-    /// The commands the MCP bridge advertises as tools to agents. Both `.appOnly` human affordances and
-    /// `.terminalOnly` transcript publishing remain withheld from tool enumeration. See `CommandExposure`.
+    /// The commands the MCP bridge advertises as tools to agents. `.appOnly` and `.terminalOnly` commands
+    /// remain withheld from tool enumeration. See `CommandExposure`.
     public static var mcpExposed: [CommandSchema] { all.filter { $0.exposure == .all } }
 
     // Gate allow-sets over Phase.Kind (spec §6 default gate policy). Deny-by-default: a kind absent from
@@ -284,7 +282,7 @@ public enum CommandCatalog {
                       exposure: .appOnly, kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "publish-image",
-                      summary: "Publish a temporary PNG or JPEG reference into this agent terminal transcript.",
+                      summary: "Publish a temporary PNG or JPEG reference for this agent's transcript.",
                       params: schema([
                           "ref": refProp(),
                           "path": strProp("Absolute PNG or JPEG source path to copy into temporary daemon media"),
@@ -299,7 +297,7 @@ public enum CommandCatalog {
                               pattern: TranscriptImageCaption.pattern,
                               maxLength: TranscriptImageCaption.maxLength),
                       ], required: ["ref", "path"]),
-                      exposure: .terminalOnly, kind: .mutation, phaseGate: gLiveDead),
+                      exposure: .all, kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "send-keys",
                       summary: "Send live keystrokes to a card's tmux window — an ordered chord of named "

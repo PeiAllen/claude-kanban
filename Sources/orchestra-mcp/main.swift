@@ -34,7 +34,8 @@ _ = await server.withMethodHandler(ListTools.self) { _ in
     return ListTools.Result(tools: tools)
 }
 
-// tools/call — relay to the daemon and return the result as text content.
+// tools/call — relay to the daemon and return the result as text content. The image command gets
+// the same human-facing marker that the CLI prints; other commands retain their structured JSON text.
 _ = await server.withMethodHandler(CallTool.self) { params in
     let client = ControlClient(socketPath: socketPath, source: .mcp)
     do { try client.connect() } catch {
@@ -95,7 +96,19 @@ _ = await server.withMethodHandler(CallTool.self) { params in
     }
     do {
         let result = try await client.call(params.name, args)
-        let text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
+        let text: String
+        if params.name == "publish-image" {
+            if let reference = try? result.decode(TranscriptImageReference.self) {
+                text = TranscriptImageMarker.render(referenceID: reference.id, caption: reference.caption)
+            } else {
+                // Preserve the bridge's existing fail-open response while making a wire-contract drift
+                // visible to the daemon operator instead of silently regressing to raw JSON.
+                logErr("publish-image result did not match TranscriptImageReference; returning raw JSON")
+                text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
+            }
+        } else {
+            text = String(decoding: (try? result.rawData()) ?? Data(), as: UTF8.self)
+        }
         return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
     } catch let e as RPCError {
         return CallTool.Result(content: [.text(text: e.message, annotations: nil, _meta: nil)], isError: true)
