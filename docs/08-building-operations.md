@@ -317,7 +317,9 @@ Settings, or via `setConfig` over RPC). The keys and defaults are in
 - **`statusLineMode`** — passthrough your global Claude status line, a custom command, or the minimal
   Orchestra default.
 - **`autoInstallMCPGlobally`** — when enabled, the next card launch adds missing `orchestra` entries
-  to `~/.claude.json` and `~/.codex/config.toml`; it never replaces an existing same-name entry.
+  to `~/.claude.json` and `~/.codex/config.toml`, creates user-scoped `orchestra` and `orchestra-mcp`
+  shims in `~/.local/bin`, and adds an idempotent PATH block to a shell profile. It never replaces an
+  existing same-name config entry or file, and the bridge still requires the separately managed daemon.
 
 All daemon/app state is keyed off `$HOME`, not the bundle location, so it follows the user. To wipe it,
 use `scripts/reset-state.sh`. (On a Linux daemon the data dir is instead `$XDG_DATA_HOME/orchestra` →

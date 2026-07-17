@@ -78,4 +78,4 @@ swiftc -typecheck \
 | `Views/ShellTabsView.swift` | shell-window tab ribbon + resizable panel |
 | `Views/SpawnSheet.swift` | prompt-only Spawn sheet + repo/branch/model/start-in + CLI-equivalent preview |
 | `Views/DonePopover.swift` · `ActivityPopover.swift` | archive list · Live/CLI activity feed |
-| `Views/SettingsView.swift` | daemon Config (roots/model/allowlist/MCP/statusLine) + appearance prefs |
+| `Views/SettingsView.swift` | daemon Config (roots/model/allowlist/MCP/CLI/statusLine) + appearance prefs |
