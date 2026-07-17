@@ -5,6 +5,14 @@ import Foundation
 /// opt-in and add-only so an existing user choice remains authoritative when the name is already used.
 enum MCPConfiguration {
     static let serverName = "orchestra"
+    private static let userPathMarker = "# Orchestra user-local command path"
+    private static let userPathBlock = """
+    # Orchestra user-local command path
+    case ":${PATH:-}:" in
+      *":$HOME/.local/bin:"*) ;;
+      *) PATH="${PATH:+$PATH:}$HOME/.local/bin"; export PATH ;;
+    esac
+    """
 
     /// JSON accepted by Claude Code's `--mcp-config` argument. It is passed inline as one argv value,
     /// which avoids a shared per-card file and lets Claude apply its normal local-over-user precedence.
@@ -83,6 +91,49 @@ enum MCPConfiguration {
         return write(text: updated, to: URL(fileURLWithPath: path))
     }
 
+    /// Add user-local command shims and a shell PATH block. Existing files and links are preserved;
+    /// this is a convenience step, so conflicts or write failures never throw into a card launch.
+    @discardableResult
+    static func installUserCommands(orchestra: String, orchestraMCP: String, home: String) -> Bool {
+        let binDirectory = (home as NSString).appendingPathComponent(".local/bin")
+        let candidates = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"]
+            .map { (home as NSString).appendingPathComponent($0) }
+        let existing = candidates.filter { FileManager.default.fileExists(atPath: $0) }
+        let profiles: [String]
+        if !existing.isEmpty {
+            profiles = existing
+        } else {
+            #if os(macOS)
+            profiles = [(home as NSString).appendingPathComponent(".zprofile")]
+            #else
+            profiles = [(home as NSString).appendingPathComponent(".profile")]
+            #endif
+        }
+        return installUserCommands(orchestra: orchestra, orchestraMCP: orchestraMCP,
+                                   binDirectory: binDirectory, profilePaths: profiles)
+    }
+
+    /// Test seam for the user-local installer. `true` means at least one file changed; an idempotent
+    /// call, a conflict, or an optional setup failure returns `false`.
+    @discardableResult
+    static func installUserCommands(orchestra: String, orchestraMCP: String,
+                                    binDirectory: String, profilePaths: [String]) -> Bool {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(atPath: binDirectory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
+        var changed = false
+        changed = installSymlink(named: "orchestra", target: orchestra, in: binDirectory) || changed
+        changed = installSymlink(named: "orchestra-mcp", target: orchestraMCP, in: binDirectory) || changed
+        for profile in profilePaths {
+            changed = installPathBlock(at: profile, binDirectory: binDirectory) || changed
+        }
+        return changed
+    }
+
     private static func claudeServer(command: String) -> [String: Any] {
         ["type": "stdio", "command": command, "args": []]
     }
@@ -107,6 +158,48 @@ enum MCPConfiguration {
             }
         }
         return false
+    }
+
+    private static func installSymlink(named name: String, target: String, in directory: String) -> Bool {
+        let path = (directory as NSString).appendingPathComponent(name)
+        let fm = FileManager.default
+        if let _ = try? fm.destinationOfSymbolicLink(atPath: path) { return false }
+        guard !fm.fileExists(atPath: path) else { return false }
+        do {
+            try fm.createSymbolicLink(atPath: path, withDestinationPath: target)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func installPathBlock(at path: String, binDirectory: String) -> Bool {
+        let fm = FileManager.default
+        let existing: String
+        if fm.fileExists(atPath: path) {
+            guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+            existing = contents
+        } else {
+            existing = ""
+        }
+
+        let absoluteBin = URL(fileURLWithPath: binDirectory).standardizedFileURL.path
+        guard !existing.contains(userPathMarker),
+              !existing.contains("$HOME/.local/bin"),
+              !existing.contains(absoluteBin)
+        else { return false }
+
+        var updated = existing
+        if !updated.isEmpty && !updated.hasSuffix("\n") { updated.append("\n") }
+        updated.append(userPathBlock)
+        do {
+            try fm.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try updated.write(to: URL(fileURLWithPath: path), atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func codexHeader(_ line: String) -> String? {

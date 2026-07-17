@@ -108,4 +108,51 @@ struct MCPConfigurationTests {
         #expect(MCPConfiguration.installCodexGlobally(command: "/other", at: path) == false)
         #expect(try String(contentsOfFile: path, encoding: .utf8) == existing)
     }
+
+    @Test("user command install creates both shims and an idempotent PATH block")
+    func installUserCommandsCreatesShimsAndPath() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let bin = home + "/.local/bin"
+        let profile = home + "/.zprofile"
+        try "export EDITOR=vim\n".write(toFile: profile, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.installUserCommands(orchestra: "/bin/orchestra",
+                                                      orchestraMCP: "/bin/orchestra-mcp",
+                                                      binDirectory: bin,
+                                                      profilePaths: [profile]))
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: bin + "/orchestra") == "/bin/orchestra")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: bin + "/orchestra-mcp") == "/bin/orchestra-mcp")
+
+        let once = try String(contentsOfFile: profile, encoding: .utf8)
+        #expect(once.hasPrefix("export EDITOR=vim\n"))
+        #expect(once.components(separatedBy: "Orchestra user-local command path").count == 2)
+        #expect(once.contains("$HOME/.local/bin"))
+        #expect(MCPConfiguration.installUserCommands(orchestra: "/other/orchestra",
+                                                      orchestraMCP: "/other/orchestra-mcp",
+                                                      binDirectory: bin,
+                                                      profilePaths: [profile]) == false)
+        #expect(try String(contentsOfFile: profile, encoding: .utf8) == once)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: bin + "/orchestra") == "/bin/orchestra")
+    }
+
+    @Test("user command install preserves conflicting files and symlinks")
+    func installUserCommandsPreservesConflicts() throws {
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let bin = home + "/.local/bin"
+        let profile = home + "/.profile"
+        try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        try "user orchestra\n".write(toFile: bin + "/orchestra", atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: bin + "/orchestra-mcp", withDestinationPath: "/other/mcp")
+        try "# Orchestra user-local command path\n".write(toFile: profile, atomically: true, encoding: .utf8)
+
+        #expect(MCPConfiguration.installUserCommands(orchestra: "/bin/orchestra",
+                                                      orchestraMCP: "/bin/orchestra-mcp",
+                                                      binDirectory: bin,
+                                                      profilePaths: [profile]) == false)
+        #expect(try String(contentsOfFile: bin + "/orchestra", encoding: .utf8) == "user orchestra\n")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: bin + "/orchestra-mcp") == "/other/mcp")
+        #expect(try String(contentsOfFile: profile, encoding: .utf8) == "# Orchestra user-local command path\n")
+    }
 }
