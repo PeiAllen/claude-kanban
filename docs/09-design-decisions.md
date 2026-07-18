@@ -398,7 +398,7 @@ Delivery used to mean removal: `drain` took messages out of `inbox.json` and *th
 session. Every path removed before receipt, so a crash, a lost hook reply, or a dead session between
 those two steps lost the message silently — the queue was already empty and nothing retried.
 
-The inbox now stays the source of truth until receipt is proven. A delivery path **claims** a FIFO batch —
+B1 lands the primitive for a new delivery model; the routes that carry it — the Stop-hook drain, the idle channel push, the relaunch seed — convert from remove-before-receipt to it across the PRs that follow, so this section describes the model, not yet the wired-through behavior. Under it, the inbox stays the source of truth until receipt is proven: a delivery path **claims** a FIFO batch —
 select + whole-message fit + lease + a fresh token, in ONE `Inbox.claim` actor call — and messages leave
 only through `confirm(token:)` on a route-specific receipt proof. One call, because a select/lease split
 races: two routes could claim the same message, and a render truncated after the select could confirm
@@ -410,7 +410,7 @@ attempt is an idempotent no-op instead of removing a re-claimed message. A batch
 its lease ages past `deliveryLeaseTimeout` (60s, config) or when its epoch falls below the claiming epoch —
 the funnel's epoch bump *proves* the leased session is gone, so a restart re-claims immediately rather than
 waiting out the timeout. A `relaunchSeed` claim additionally re-owns its own prior `relaunchSeed` lease, so
-a retried relaunch never comes up seedless. The result is at-least-once: duplicates over loss, and every
+a retried relaunch never comes up seedless. Once a route delivers through the primitive, the result is at-least-once: duplicates over loss, and every
 failure ends in re-delivery or durable retention, never silence.
 
 Leases live on `InboxMessage` inside `inbox.json` rather than in a sidecar file — two files can't be

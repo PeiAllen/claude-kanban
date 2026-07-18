@@ -370,6 +370,42 @@ struct InboxEnvelopeTests {
         #expect(await inbox.wasConfirmed(goodId))                        // the parseable tombstone is kept
     }
 
+    @Test("a non-STRING ring element (a number) is dropped — messages survive, no .bak")
+    func nonStringRingElementDroppedNotBaked() async throws {
+        let path = Self.tmp()
+        defer { try? FileManager.default.removeItem(atPath: path)
+                try? FileManager.default.removeItem(atPath: path + ".bak") }
+        let card = UUID(); let goodId = UUID()
+        let json = """
+        {"confirmedIds":["\(goodId.uuidString)",5],"messages":[
+          {"id":"\(UUID().uuidString)","cardId":"\(card.uuidString)","text":"pending","createdAt":"2020-01-01T00:00:00Z"}
+        ]}
+        """
+        try Data(json.utf8).write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["pending"])       // valid send NOT stranded
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
+        #expect(await inbox.wasConfirmed(goodId))                        // the good tombstone kept
+    }
+
+    @Test("a non-ARRAY confirmedIds degrades to an empty ring — messages survive, no .bak")
+    func nonArrayConfirmedIdsDegradesToEmptyRing() async throws {
+        let path = Self.tmp()
+        defer { try? FileManager.default.removeItem(atPath: path)
+                try? FileManager.default.removeItem(atPath: path + ".bak") }
+        let card = UUID()
+        let json = """
+        {"confirmedIds":5,"messages":[
+          {"id":"\(UUID().uuidString)","cardId":"\(card.uuidString)","text":"pending","createdAt":"2020-01-01T00:00:00Z"}
+        ]}
+        """
+        try Data(json.utf8).write(to: URL(fileURLWithPath: path))
+        let inbox = Inbox(path: path)
+        #expect(await inbox.peek(card).map(\.text) == ["pending"])       // valid send NOT stranded
+        #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
+        #expect(await inbox.wasConfirmed(UUID()) == false)              // empty ring
+    }
+
     @Test("only top-level-unparseable JSON still .bak's")
     func corruptInboxStillBaks() async throws {
         let path = Self.tmp()

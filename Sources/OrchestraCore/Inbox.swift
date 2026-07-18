@@ -20,13 +20,29 @@ public actor Inbox {
     /// The on-disk envelope we WRITE, encoding real `[InboxMessage]`.
     private struct InboxEnvelope: Encodable { let messages: [InboxMessage]; let confirmedIds: [UUID] }
 
-    /// The envelope we READ — rows AND ring entries decode element-wise so one bad record can't strand
-    /// the file. `confirmedIds` is `[String]?` (not `[UUID]?`) deliberately: a single malformed id string
-    /// (`"not-a-uuid"`) in an otherwise-valid envelope would make a strict `[UUID]` decode throw, fall
-    /// through to the legacy-array attempt, fail that too, and `.bak` every valid pending send beside it —
-    /// the exact top-level-only-`.bak` boundary this loader promises. We map to `UUID` in `load`, dropping
-    /// any unparseable entry (a lost tombstone at worst re-delivers a message once — never drops a send).
-    private struct StoredInbox: Decodable { let messages: [FailableInboxMessage]; let confirmedIds: [String]? }
+    /// The envelope we READ — messages AND ring entries decode element-wise, and a malformed-or-non-array
+    /// `confirmedIds` degrades to an empty ring, so nothing but top-level-unparseable JSON can `.bak` the
+    /// file. A lost tombstone at worst re-delivers a message once; it never drops a pending send.
+    private struct StoredInbox: Decodable {
+        let messages: [FailableInboxMessage]
+        let confirmedIds: [FailableString]
+        private enum CodingKeys: String, CodingKey { case messages, confirmedIds }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            messages = try c.decode([FailableInboxMessage].self, forKey: .messages)
+            // A non-array `confirmedIds` (`5`, `{}`) or an absent/null one becomes an empty ring rather
+            // than throwing the whole envelope into the `.bak` path; malformed ELEMENTS drop individually
+            // via FailableString.
+            confirmedIds = ((try? c.decodeIfPresent([FailableString].self, forKey: .confirmedIds)) ?? nil) ?? []
+        }
+    }
+
+    /// A string wrapper whose decode NEVER throws: a non-string ring element (`5`) becomes nil and drops,
+    /// instead of failing the whole ring decode.
+    private struct FailableString: Decodable {
+        let value: String?
+        init(from decoder: Decoder) throws { self.value = try? String(from: decoder) }
+    }
 
     /// A row wrapper whose decode NEVER throws: a malformed record becomes nil and is dropped, instead
     /// of failing the whole array decode and sending every pending send to `.bak`. Mirrors
@@ -60,7 +76,7 @@ public actor Inbox {
             let data = try Data(contentsOf: url)
             if let env = try? OrchestraJSON.decoder.decode(StoredInbox.self, from: data) {
                 messages = env.messages.compactMap(\.message)                   // post-upgrade envelope
-                confirmedIds = (env.confirmedIds ?? []).compactMap(UUID.init(uuidString:))  // drop bad ids
+                confirmedIds = env.confirmedIds.compactMap(\.value).compactMap(UUID.init(uuidString:))  // drop bad ids
             } else {
                 // Pre-upgrade bare array → messages + an empty ring. TOLERANT BY CONSTRUCTION: an
                 // envelope-only decoder would .bak every existing inbox on upgrade and drop every
@@ -202,7 +218,10 @@ public actor Inbox {
     /// `render` runs INSIDE the claim and reports how many whole messages its payload actually consumed;
     /// exactly that prefix is leased and the overflow stays pending. No route renders outside a claim, so
     /// a truncated render can never confirm unrendered messages. Re-leasing mints a fresh token, which
-    /// invalidates the old one. `nil` when the render has nothing to deliver.
+    /// invalidates the old one. `nil` when the render has nothing to deliver. The `render` MUST consume
+    /// a **prefix** of the passed pool — `claim` leases exactly `pool.prefix(consumed)`; a render that
+    /// consumed a non-prefix subset would lease the wrong messages (all current renders — `StopDrain.fit`,
+    /// `HandoffSeed.compose` — honor this).
     public func claim(_ cardId: UUID, route: DeliveryRoute, epoch: Int, budget: Int,
                       render: ([InboxMessage], Int) -> (payload: String, consumed: Int)?,
                       now: Date) throws -> ClaimedBatch? {
