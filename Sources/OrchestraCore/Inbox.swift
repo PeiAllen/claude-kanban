@@ -224,8 +224,14 @@ public actor Inbox {
     /// `HandoffSeed.compose` — honor this).
     public func claim(_ cardId: UUID, route: DeliveryRoute, epoch: Int, budget: Int,
                       render: ([InboxMessage], Int) -> (payload: String, consumed: Int)?,
-                      now: Date) throws -> ClaimedBatch? {
+                      now: Date, blockIfLiveLease: Bool = false) throws -> ClaimedBatch? {
         ensureLoaded()
+        // `blockIfLiveLease` refuses a claim while any UNEXPIRED same-epoch lease is outstanding — checked
+        // HERE, inside the single atomic actor call, not by a caller's separate `hasLiveLease` await (two
+        // awaits let concurrent same-epoch Stops both pass the check and lease different batches, resurrecting
+        // the two-leases `.first`-confirm loss the guard exists to kill). The stop path passes it; other
+        // routes may coexist, so it is opt-in.
+        if blockIfLiveLease && liveLeaseExists(cardId, epoch: epoch, now: now) { return nil }
         let pool = messages.filter { $0.cardId == cardId && isClaimable($0, route: route, epoch: epoch, now: now) }
         guard let (payload, consumed) = render(pool, budget), !payload.isEmpty else { return nil }
         let token = UUID()
@@ -260,16 +266,21 @@ public actor Inbox {
     /// Task 6) because `InboxClaimTests.partialReclaimKillsStaleTailToken` needs it to verify the
     /// stale-tail-unlease invariant: a late confirm from a provably-superseded lease must not delete an
     /// undelivered message. Task 6 adds the rest of the confirm/release surface + the ring-eviction test.
-    public func confirm(token: UUID) throws {
+    /// Returns whether it actually removed a batch — `false` for a stale/unknown token. The
+    /// service funnel (`confirmDelivery`) needs this to reset delivery state ONLY on a real
+    /// confirmation: a late ack from a superseded attempt must not re-arm the retry budget.
+    @discardableResult
+    public func confirm(token: UUID) throws -> Bool {
         ensureLoaded()
         let hit = messages.filter { $0.lease?.token == token }
-        guard !hit.isEmpty else { return }
+        guard !hit.isEmpty else { return false }
         messages.removeAll { $0.lease?.token == token }
         confirmedIds.append(contentsOf: hit.map(\.id))
         if confirmedIds.count > Self.confirmedRingCap {
             confirmedIds.removeFirst(confirmedIds.count - Self.confirmedRingCap)   // FIFO evict
         }
         try persist()
+        return true
     }
 
     /// Return a batch to pending (its route abandoned). Stale/unknown token → no-op.
@@ -299,14 +310,37 @@ public actor Inbox {
         }
     }
 
+    /// Is any UNEXPIRED lease outstanding at exactly `epoch` on this card? Route-agnostic — a delivery is
+    /// mid-flight. The stop path uses it to refuse a SECOND stopDrain claim while a prior batch is still
+    /// live: two same-epoch leases would let a later `stopHookActive` Stop confirm the WRONG (older,
+    /// lost-reply) batch. B4's wake `unexpiredLeaseOutstanding` reuses this (first-reference here). An
+    /// EXPIRED lease is not "live" — it is re-claimable, so it does not block.
+    public func hasLiveLease(_ cardId: UUID, epoch: Int, now: Date) -> Bool {
+        ensureLoaded()
+        return liveLeaseExists(cardId, epoch: epoch, now: now)
+    }
+
+    /// Same predicate, callable from other already-on-actor methods (`claim`'s `blockIfLiveLease`) without a
+    /// re-`ensureLoaded`. An EXPIRED lease is not live — it is re-claimable, so it does not count.
+    private func liveLeaseExists(_ cardId: UUID, epoch: Int, now: Date) -> Bool {
+        messages.contains {
+            $0.cardId == cardId && $0.lease?.epoch == epoch
+            && $0.lease.map { now.timeIntervalSince($0.leasedAt) < leaseTimeout } == true
+        }
+    }
+
     /// Confirm a HELD `relaunchSeed` lease at exactly `epoch` — one atomic find-and-confirm, so B3's
     /// first-signal confirm can't drift from the lease it means. No-op when absent.
-    public func confirmHeldRelaunch(_ cardId: UUID, epoch: Int) throws {
+    /// Returns the confirmed token (or `nil` when there was no matching held lease), so B3's report-path
+    /// held-relaunch confirm can funnel the same completion bookkeeping the token-based path does.
+    @discardableResult
+    public func confirmHeldRelaunch(_ cardId: UUID, epoch: Int) throws -> UUID? {
         ensureLoaded()
         guard let token = messages.first(where: {
             $0.cardId == cardId && $0.lease?.route == .relaunchSeed && $0.lease?.epoch == epoch
-        })?.lease?.token else { return }
+        })?.lease?.token else { return nil }
         try confirm(token: token)
+        return token
     }
 
     private func persist() throws {

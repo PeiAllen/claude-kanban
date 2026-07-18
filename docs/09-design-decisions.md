@@ -429,6 +429,51 @@ returns to pending and re-delivers. An already-rendered payload may still arrive
 preferable to letting a stale token confirm text the human has rewritten. `inbox-reorder` permutes the full
 set including leased rows; order is metadata for future renders and never disturbs a live claim.
 
+### The Stop-hook drain is the first route wired to claim-then-confirm
+
+B2 converts the busy path — a live agent's turn-end Stop hook — from `drainForStop` (remove-then-inject)
+to `payloadForStop` (claim-then-confirm), the first route to carry B1's primitive. The order is
+load-bearing. **The epoch fence runs first:** a confirm or claim requires the Stop's `observedEpoch` to
+equal the card's current `sessionEpoch`, and a mismatched *or nil* epoch (a pre-upgrade session with no
+`ORCH_EPOCH`, or a superseded one) returns nil with no confirm and no claim — so a dead session's Stop can
+never lease fresh messages into a pane nobody is reading, and the messages stay durable for the arm's idle
+routes. Because the fence reads `sessionEpoch`, `payloadForStop` now needs the card in the store, dropping
+`drainForStop`'s "safe without a task" property; that's sound because a real Stop hook always fires for a
+live card.
+
+**The receipt proof is `stop_hook_active`, and it rides as a sibling hook-RPC field, not through
+`Adapter.parse`.** Both agents set that top-level boolean on a `decision:block` continuation Stop (their own
+loop guard), so the *next* same-epoch Stop with `stop_hook_active == true` proves the prior continuation
+actually ran — and only then does its batch confirm. Nothing else confirms: not a human turn (Opus emits a
+plain Stop), not a lagged rollout line. It has to be a sibling field because `parse` can't carry it —
+Codex's Stop reports nothing to parse, and Claude drops the hook during a background-work hold — so it is
+read straight off the raw payload at the `_report` edge and rides even when the typed report is nil, which
+is exactly what lets a background-yielding continuation still confirm. `HookRPC` holds the extractor, the
+params builder, and one shared key referenced by both the builder and the `ControlServer` decode, so a key
+typo fails a unit test instead of silently breaking every continuation. B2 trusts the contract's claim that
+both agents emit the flag; D2 re-probes it empirically before the channels path depends on it.
+
+**A live-lease guard keeps at most one stopDrain batch in flight, atomically.** The claim refuses to lease
+while an unexpired same-epoch lease is already outstanding — and that check lives *inside* `Inbox.claim`
+(its `blockIfLiveLease` flag), in the same atomic actor call as the lease, not as a separate
+`hasLiveLease` await before it. That matters under concurrency: two same-epoch Stop RPCs reenter
+`payloadForStop` on the service actor, and a separate check-then-claim would let both pass the check and
+then lease *different* overflow batches — two same-epoch leases. A later `stop_hook_active` Stop finds the
+lease by scanning, so it would confirm the older (lost-reply) batch and silently drop it. Folding the check
+into the claim makes a second live lease impossible to *create*, not merely detectable after the fact; one
+outstanding lease makes the scan unambiguous. (`hasLiveLease` remains as the standalone predicate the wake
+path reuses.)
+
+The delivery-tracking state the confirm touches is **declared here even though the reconciler arm reads it
+later**, by the first-reference rule: `Task.deliveryStuckSince` (persisted, UI-less), the service's
+`deliveryAttempts` and `outstandingTokens`, and the single `confirmDelivery` funnel every route confirms
+through — so the archive guard and the attempt/stuck resets can't be forgotten at one call site. The funnel
+resets that state *only* on a genuine confirmation: `Inbox.confirm` returns whether it actually removed a
+batch, so a stale-token no-op or an archive release prunes the outstanding token but never re-arms the retry
+budget or clears the stuck flag. Archive-versus-confirm is deliberately a two-part design — the funnel's
+fresh archived-read plus teardown's lease release — because the actor model can't linearize a cross-actor
+store-read and inbox-write into one atomic step.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
@@ -490,9 +535,9 @@ payload. The delivery rides the Claude Stop hook: on the `stop` event the daemon
 and returns a `HookResponse.continuation`, which the edge encodes as a `{"decision":"block","reason":…}`
 continuation so the model reads the queued messages and keeps working. Two decisions shape it: the
 merge-back is **turn-end, never mid-turn** — a queued `send` waits for the agent's natural stop rather than
-interrupting it — and because `stop_hook_active` is only *informational* on the agent, Orchestra enforces
-its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`)
-to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
+interrupting it — and because `stop_hook_active` is only a *loop-guard* signal on the agent, Orchestra
+enforces its **own consecutive-inject loop guard** (`payloadForStop`, cap 25, reset by a genuine
+`UserPromptSubmit`) to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
 C1 reused the shared `notify` command distinguished by `hook_event_name` and a standalone `drain` RPC;
 the [first-class-hooks](06-clients-cli-mcp.md#the-hooks--_report-channel) refactor later split `Stop` into its own `--event stop` and folded drain into
 the unified `hook` channel, but the turn-end/loop-guard behaviour is byte-preserved.) Waking an *idle* card so it takes a turn to
@@ -1091,9 +1136,9 @@ decisions:
   documented mitigation for the "curse of instructions" compliance drop when instructions share a turn. A lone
   message gets no index.
 - **Whole-messages-to-fit drain.** `StopDrain.fit` packs as many *whole* messages (FIFO) as fit the
-  10 000-char budget and reports how many it consumed; `drainForStop` then drains exactly that many via the new
-  [`Inbox.drainFirst(_:count:)`](03-data-model.md#the-inbox-store-f3), leaving the overflow durable for the next
-  turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
+  10 000-char budget and reports how many it consumed; `payloadForStop` then `claim`s exactly that many via
+  [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
+  for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
 - **A send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) now rejects a message
   over `StopDrain.maxMessageChars` (the payload budget minus a lone-message header) with `invalidParams` — *put

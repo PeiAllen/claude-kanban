@@ -66,6 +66,9 @@ public struct ConvergeContext: Sendable {
     public let teardownActorDuties: @Sendable (_ id: UUID) async -> Void
     /// Emit an activity feed entry (re-materialized / spawn-failed / backoff), closed over the actor.
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
+    /// Funnel a delivery receipt (a claimed token's confirm) back to the service actor's `confirmDelivery`
+    /// — B3's stepper signal-readiness confirm reaches the archive guard + attempt/stuck resets through here.
+    public let confirmDelivery: @Sendable (_ token: UUID, _ cardId: UUID) async -> Void
 
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
                 adapters: AgentRegistry, inbox: Inbox, scratchRoot: String,
@@ -73,12 +76,14 @@ public struct ConvergeContext: Sendable {
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
-                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
+                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void,
+                confirmDelivery: @escaping @Sendable (UUID, UUID) async -> Void) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
         self.adapters = adapters; self.inbox = inbox; self.scratchRoot = scratchRoot
         self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
+        self.confirmDelivery = confirmDelivery
     }
 }
 

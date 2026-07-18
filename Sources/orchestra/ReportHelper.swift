@@ -40,14 +40,18 @@ enum ReportHelper {
 
         let report = adapter.parse(.hooksPush(kind: kind, payload: payload))   // raw → typed; raw dies here
         let source = event == .sessionStart ? adapter.sessionSource(payload) : nil
-        var fields: [String: JSONValue] = ["ref": .string(taskId), "event": .string(kind)]
-        if let report { fields["report"] = (try? JSONValue(encodable: report)) ?? .null }
-        if let source { fields["source"] = .string(source.rawValue) }
-        // Echo the session's launch generation (`$ORCH_EPOCH`, stamped into the tmux env at launch) so the
-        // daemon can fence a stale/late liveness signal against the card's current epoch. Absent on a
-        // pre-upgrade session → the daemon falls back to a real-liveness probe for kill-class signals.
-        if let epoch = env["ORCH_EPOCH"], let n = Int(epoch) { fields["epoch"] = .int(n) }
-        let params = JSONValue.object(fields)
+        let reportJSON: JSONValue? = report.map { (try? JSONValue(encodable: $0)) ?? .null }
+        // Sibling fields ride the RPC alongside `ref`/`event`, built by the SHARED `HookRPC.hookFields` so
+        // the daemon decode reads the same keys (no drift):
+        //  - `epoch` = the session's launch generation (`$ORCH_EPOCH`, stamped into the tmux env at launch),
+        //    so the daemon can fence a stale/late liveness signal against the card's current epoch (absent
+        //    on a pre-upgrade session → real-liveness fallback for kill-class signals);
+        //  - `stopHookActive` = the raw Stop hook's `stop_hook_active` loop-guard flag, read straight off
+        //    the payload (NOT via `parse`), so it rides even when `report` is nil (Codex report-less Stop /
+        //    Claude bg-hold) and a background-yielding continuation still confirms its prior stop-drain lease.
+        let params = JSONValue.object(HookRPC.hookFields(
+            ref: taskId, event: kind, report: reportJSON, source: source?.rawValue,
+            epoch: env["ORCH_EPOCH"].flatMap(Int.init), stopHookActive: HookRPC.stopHookActive(payload)))
 
         // statusLine never yields a response → pure fire-and-forget send (~50ms; snapshot self-heals).
         // Every other event awaits a possible HookResponse (~2s; the agent waits) and encodes it to stdout.

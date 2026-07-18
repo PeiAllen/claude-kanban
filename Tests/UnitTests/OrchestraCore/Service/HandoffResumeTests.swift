@@ -152,7 +152,8 @@ struct ResumeInCardTests {
 
         // The inbox is drained + folded at INTENT time (into pendingSeed); the RelaunchStepper delivers it.
         _ = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
-        #expect(await env.svc.drainForStop(t.id) == nil)   // already drained — nothing to double-deliver
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
+        #expect(await env.svc.payloadForStop(t.id, observedEpoch: epoch, stopHookActive: false) == nil)   // already drained — nothing to double-deliver
         _ = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])

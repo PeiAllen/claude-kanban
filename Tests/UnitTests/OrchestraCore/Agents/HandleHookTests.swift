@@ -21,9 +21,10 @@ import Foundation
     func stop() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
+        let epoch = try #require(await svc.store.get(card.id)).sessionEpoch   // the fence reads sessionEpoch
         try await svc.send(card.id, "queued message")
 
-        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil)
+        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil, observedEpoch: epoch)
         #expect(r?.continuation?.contains("queued message") == true)
         #expect(r?.additionalContext == nil)
     }
@@ -32,8 +33,9 @@ import Foundation
     func stopEmpty() async throws {
         let (svc, _, _, _, _, base) = TestEnv.make()
         let card = try await TestEnv.spawnAndAwaitLive(svc, SpawnInput(id: UUID(), prompt: "Task", repo: TestEnv.repo(base), branch: "b"))
-        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil)
-        #expect(r == nil)
+        let epoch = try #require(await svc.store.get(card.id)).sessionEpoch
+        let r = await svc.handleHook(card.id.uuidString, event: .stop, report: nil, source: nil, observedEpoch: epoch)
+        #expect(r == nil)   // nil from an empty inbox (matching epoch), not from the fence
     }
 
     @Test("a telemetry event applies its report to the store and returns no response")

@@ -52,7 +52,8 @@ struct CodexWakeTests {
         let argv = try #require(env.sessions.ensureArgv[name])
         #expect(argv.contains("--resume"))                    // a resume relaunch, never a fresh start
         #expect(try #require(argv.last).contains("PING-CODEX"))   // the message rides the opening turn
-        #expect(await env.svc.drainForStop(card.id) == nil)   // drained into the seed — no double-delivery
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch   // current post-relaunch epoch
+        #expect(await env.svc.payloadForStop(card.id, observedEpoch: epoch, stopHookActive: false) == nil)   // drained into the seed — no double-delivery
     }
 
     // The divergence from Claude: a WATCHING Codex card still resumes — there is no `orchestra wait`

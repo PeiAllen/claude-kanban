@@ -202,10 +202,10 @@ struct InboxConfirmTests {
         #expect(await inbox.peek(card).count == 1)           // …must NOT remove the re-claimed message
         try await inbox.release(token: stale.token)
         #expect(await inbox.peek(card).first?.lease?.token == fresh.token)   // fresh lease intact
-        try await inbox.confirm(token: UUID())               // unknown token
+        #expect(try await inbox.confirm(token: UUID()) == false)     // unknown token → no-op outcome
         #expect(await inbox.peek(card).count == 1)
-        try await inbox.confirm(token: fresh.token)
-        try await inbox.confirm(token: fresh.token)          // confirm is idempotent
+        #expect(try await inbox.confirm(token: fresh.token) == true) // a real removal
+        #expect(try await inbox.confirm(token: fresh.token) == false)  // idempotent second confirm → no-op
         #expect(await inbox.peek(card).isEmpty)
     }
 
@@ -262,18 +262,52 @@ struct InboxConfirmTests {
         #expect(await inbox.hasClaimable(card, epoch: 2, now: Self.t0.addingTimeInterval(5)))   // stale epoch
     }
 
+    @Test("hasLiveLease sees an unexpired same-epoch lease; expired / stale-epoch / unleased → false")
+    func hasLiveLeaseSemantics() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        #expect(await inbox.hasLiveLease(card, epoch: 1, now: Self.t0) == false)   // unleased → no live lease
+        _ = try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                  render: Self.fit, now: Self.t0)
+        #expect(await inbox.hasLiveLease(card, epoch: 1, now: Self.t0.addingTimeInterval(5)))       // live
+        #expect(await inbox.hasLiveLease(card, epoch: 1, now: Self.t0.addingTimeInterval(61)) == false)  // expired
+        #expect(await inbox.hasLiveLease(card, epoch: 2, now: Self.t0.addingTimeInterval(5)) == false)   // other epoch
+    }
+
+    @Test("claim(blockIfLiveLease:) refuses a claim while an unexpired same-epoch lease is live — atomically")
+    func claimBlockedByLiveLease() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        let big = String(repeating: "q", count: 6_000)     // two of these can't co-fit one 10k budget
+        try await inbox.enqueue(card, "1-" + big)
+        try await inbox.enqueue(card, "2-" + big)
+        // A first claim leases message 1 (only one fits the budget) — a live lease.
+        _ = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000,
+                                               render: Self.fit, now: Self.t0))
+        // The check + lease are ONE atomic actor call, so a second claim is REFUSED while that lease is live
+        // — even though message 2 is claimable. Deterministic: no scheduler timing needed. This is the
+        // invariant that stops two same-epoch stopDrain leases from coexisting (which would let a later
+        // `.first` confirm remove the wrong batch); the concurrent-Stop test exercises the same path live.
+        #expect(try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000, render: Self.fit,
+                                      now: Self.t0.addingTimeInterval(1), blockIfLiveLease: true) == nil)
+        // WITHOUT the flag, that same second claim WOULD lease message 2 — proving the flag is what blocks.
+        #expect((try await inbox.claim(card, route: .stopDrain, epoch: 1, budget: 10_000, render: Self.fit,
+                                       now: Self.t0.addingTimeInterval(1), blockIfLiveLease: false)) != nil)
+    }
+
     @Test("confirmHeldRelaunch confirms only the relaunchSeed lease at exactly that epoch")
     func confirmHeldRelaunchScoped() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let card = UUID()
         try await inbox.enqueue(card, "m")
-        _ = try await inbox.claim(card, route: .relaunchSeed, epoch: 7, budget: 10_000,
-                                  render: Self.fit, now: Self.t0)
-        try await inbox.confirmHeldRelaunch(card, epoch: 6)          // wrong epoch → no-op
+        let batch = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 7, budget: 10_000,
+                                                       render: Self.fit, now: Self.t0))
+        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 6) == nil)          // wrong epoch → no-op
         #expect(await inbox.peek(card).count == 1)
-        try await inbox.confirmHeldRelaunch(card, epoch: 7)
+        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 7) == batch.token)  // returns the confirmed token
         #expect(await inbox.peek(card).isEmpty)
-        try await inbox.confirmHeldRelaunch(card, epoch: 7)          // idempotent
+        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 7) == nil)          // idempotent → nothing held
     }
 
     @Test("confirmHeldRelaunch ignores a non-relaunchSeed lease at the same epoch")
@@ -655,59 +689,10 @@ struct StopDrainTests {
     }
 }
 
-@Suite("C1 · drainForStop loop guard")
-struct DrainForStopTests {
-    @Test("caps consecutive auto-injects and preserves the pending message when tripped")
-    func injectCap() async throws {
-        let env = TestEnv.make()
-        let inbox = await env.svc.inbox      // the SAME instance the service drains — no cache fight
-        let card = UUID()
-        let cap = await env.svc.maxConsecutiveInjects
-
-        // Each stop re-fills the inbox, so the counter climbs (never natural-resets).
-        for i in 0..<cap {
-            try await inbox.enqueue(card, "msg\(i)")
-            let payload = await env.svc.drainForStop(card)
-            #expect(payload != nil)                      // injected each time up to the cap
-        }
-        try await inbox.enqueue(card, "over the cap")
-        let capped = await env.svc.drainForStop(card)
-        #expect(capped == nil)                           // loop guard tripped → no inject
-        #expect(await inbox.peek(card).map(\.text) == ["over the cap"])  // message NOT lost
-
-        // A genuine user prompt resets the guard → injects again.
-        await env.svc.resetInjectCount(card)
-        let after = await env.svc.drainForStop(card)
-        #expect(after?.contains("over the cap") == true)
-    }
-
-    @Test("empty inbox resets the counter and returns nil")
-    func emptyResets() async throws {
-        let env = TestEnv.make()
-        let card = UUID()
-        #expect(await env.svc.drainForStop(card) == nil)  // nothing pending
-    }
-
-    @Test("drains whole-messages-to-fit under the 10k bound and leaves the overflow for the next turn")
-    func drainToFit() async throws {
-        let env = TestEnv.make()
-        let inbox = await env.svc.inbox
-        let card = UUID()
-        let big = String(repeating: "x", count: 4_000)          // 3×4k + header overflows one 10k payload
-        for i in 0..<3 { try await inbox.enqueue(card, "\(i)-" + big) }
-
-        let first = await env.svc.drainForStop(card)
-        #expect(first != nil)
-        #expect(first!.count <= StopDrain.maxPayloadChars)       // bounded
-        let remaining = await inbox.peek(card)
-        #expect(!remaining.isEmpty)                              // overflow deferred, not lost
-        #expect(remaining.allSatisfy { $0.text.count == big.count + 2 })  // whole messages, never sliced
-
-        let second = await env.svc.drainForStop(card)
-        #expect(second != nil)
-        #expect(await inbox.peek(card).isEmpty)                  // remainder delivered on the next turn-end
-    }
-}
+// The C1 `drainForStop` loop-guard suite retired with the method: `payloadForStop` replaces it
+// (claim-then-confirm, epoch-fenced, so it needs a real store card — the old bare-UUID tests can't
+// satisfy the fence). Its loop-guard / empty-reset / drain-to-fit coverage moved to
+// `Service/PayloadForStopTests.swift`.
 
 @Suite("C1 · send routes through the inbox")
 struct SendRoutingTests {
@@ -739,10 +724,11 @@ struct SendRoutingTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
         let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
 
         try await env.svc.send(task.id, atLimit)
-        let payload = try #require(await env.svc.drainForStop(task.id))
+        let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
         #expect(payload.count <= StopDrain.maxPayloadChars)
         #expect(payload.contains(atLimit))                 // whole message present
         #expect(payload.hasSuffix("[…truncated]") == false)  // not clipped

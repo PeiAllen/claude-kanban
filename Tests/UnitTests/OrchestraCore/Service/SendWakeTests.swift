@@ -42,7 +42,8 @@ struct SendWakeTests {
         let seed = try #require(argv.last)
         #expect(seed.contains("PING-IDLE"))                  // the message rides the opening turn
         // Drained into the seed → nothing left to double-deliver on the resumed session's Stop.
-        #expect(await env.svc.drainForStop(card.id) == nil)
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch   // current post-relaunch epoch
+        #expect(await env.svc.payloadForStop(card.id, observedEpoch: epoch, stopHookActive: false) == nil)
     }
 
     @Test("send does NOT resume-seed a RUNNING card (its natural Stop-drain delivers it)")
