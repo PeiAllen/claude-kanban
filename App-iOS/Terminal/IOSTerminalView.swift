@@ -96,6 +96,24 @@ struct IOSTerminalView: UIViewRepresentable {
             // rubber-band the whole terminal while the wheel-pan forwards. Kill the bounce.
             term.bounces = false
         }
+
+        // Transcript-image links: a tap on the "▣ Image: … · preview" marker must open the full-screen
+        // preview, not raise the keyboard. SwiftTerm's own tap can't deliver this on a touchscreen — its
+        // first tap only becomes first responder (raising the keyboard, never checking the link), and even
+        // once focused its link gate needs a hover/⌘ a phone never has — so we hit-test the tap ourselves
+        // against the tapped cell's OSC 8 payload and route to `onOpenImage`. Installed only when a handler
+        // is wired (the live shell + the agent takeover). `.always` also underlines explicit links as a
+        // "this is tappable" affordance AND is defense-in-depth: if the overlay ever declines a tap, it
+        // makes SwiftTerm's own link path reachable so a focused second tap can still fire requestOpenLink.
+        if onOpenImage != nil {
+            term.linkHighlightMode = .always
+            let linkTap = UITapGestureRecognizer(target: context.coordinator,
+                                                 action: #selector(Coordinator.handleLinkTap))
+            linkTap.delegate = context.coordinator
+            linkTap.cancelsTouchesInView = false
+            term.addGestureRecognizer(linkTap)
+            context.coordinator.linkTap = linkTap
+        }
         return term
     }
 
@@ -219,6 +237,37 @@ struct IOSTerminalView: UIViewRepresentable {
         var onUserArmed: (() -> Void)?
         @objc func handleArmTap() { onUserArmed?() }
 
+        // MARK: transcript-image link taps
+
+        /// The overlay tap recogniser that hit-tests a tap against an image link (installed in `makeUIView`
+        /// only when `onOpenImage` is wired). Held so the delegate methods can identify it among siblings.
+        weak var linkTap: UITapGestureRecognizer?
+
+        /// A tap that landed on a transcript-image link — open its preview instead of arming/keyboard/mouse.
+        /// Re-hit-tests at the lift point (the recogniser only *received* the touch because it began on a
+        /// link); a tap that drifted off the label in the meantime simply does nothing.
+        @objc func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended, let term = terminal,
+                  let id = transcriptImageID(at: gesture.location(in: term)) else { return }
+            onOpenImage?(id)
+        }
+
+        /// The transcript-image reference under a point in the terminal's content coordinate space, or nil
+        /// if that cell carries no Orchestra media link. Uses only SwiftTerm's public surface: map the point
+        /// to a visible cell, read that cell's OSC 8 payload, and hold its URL to the fixed media grammar.
+        private func transcriptImageID(at contentPoint: CGPoint) -> UUID? {
+            guard let term = terminal else { return nil }
+            let t = term.getTerminal()
+            guard let cell = TerminalGridGeometry.screenCell(
+                contentX: Double(contentPoint.x), contentY: Double(contentPoint.y),
+                scrollOffsetX: Double(term.contentOffset.x), scrollOffsetY: Double(term.contentOffset.y),
+                viewportWidth: Double(term.bounds.width), viewportHeight: Double(term.bounds.height),
+                cols: t.cols, rows: t.rows) else { return nil }
+            guard let charData = t.getCharData(col: cell.col, row: cell.row), charData.hasPayload,
+                  let payload = charData.getPayload() as? String else { return nil }
+            return TranscriptImageLink.referenceID(fromHyperlinkPayload: payload)
+        }
+
         // MARK: two-finger wheel forwarding (alternate screen)
 
         /// The scroll-forward pan installed in `makeUIView`. Held so `updateUIView` can set its finger count
@@ -284,6 +333,30 @@ struct IOSTerminalView: UIViewRepresentable {
         nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
+        }
+
+        /// The link-tap recogniser is the only selective one: it accepts a touch ONLY when that touch lands
+        /// on a transcript-image link, so a tap anywhere else falls straight through to SwiftTerm as before.
+        /// Every other recogniser (arm-tap, wheel-pan) keeps accepting all touches.
+        nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                           shouldReceive touch: UITouch) -> Bool {
+            MainActor.assumeIsolated {
+                guard gestureRecognizer === linkTap, let term = terminal else { return true }
+                return transcriptImageID(at: touch.location(in: term)) != nil
+            }
+        }
+
+        /// A tap on an image link must open it, not fall through to SwiftTerm's own tap (becomeFirstResponder
+        /// / send-mouse — the latter fires in the armed takeover where `allowMouseReporting` is on) or to the
+        /// arm-tap. Make sibling TAP recognisers defer to the link-tap: if it recognises (a link was hit)
+        /// they're pre-empted; if it fails (`shouldReceive` declined, i.e. no link) they proceed unchanged.
+        /// Scoped to taps so scroll/selection PANs keep their immediate, un-delayed start.
+        nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                           shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            MainActor.assumeIsolated {
+                guard gestureRecognizer === linkTap, other is UITapGestureRecognizer else { return false }
+                return true
+            }
         }
 
         func setPendingCtrl(_ on: Bool, locked: Bool) {

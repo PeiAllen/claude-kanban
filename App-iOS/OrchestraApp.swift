@@ -81,6 +81,8 @@ private struct RootView: View {
         // Land on the DEBUG Terminal harness for either the T1 auto-attach or the T4 auto-takeover, so a
         // headless simctl screenshot reaches the surface without UI driving (that tab hosts both).
         if env["ORCH_T1_AUTOATTACH"] == "1" || env["ORCH_T4_AUTOTAKEOVER"] == "1" { return .terminal }
+        // Image-tap repro harness (fix/ios-terminal-image-tap) lives on the DEBUG Terminal tab too.
+        if env["ORCH_IMGTAP_DEMO"] == "1" { return .terminal }
         #endif
         switch (env["ORCH_INITIAL_TAB"] ?? env["ORCH_DEV_TAB"] ?? "").lowercased() {
         case "needs", "needsyou", "needs-you": return .needsYou
@@ -95,7 +97,7 @@ private struct RootView: View {
         let env = ProcessInfo.processInfo.environment
         let harnessKeys = ["ORCH_SSH_TARGET", "ORCH_DEV_SOCKET", "ORCH_INITIAL_TAB", "ORCH_DEV_TAB",
                            "ORCH_T1_AUTOATTACH", "ORCH_T4_AUTOTAKEOVER", "ORCH_SPAWN_AUTOSUBMIT",
-                           "ORCH_SPAWN_BROWSE"]
+                           "ORCH_SPAWN_BROWSE", "ORCH_IMGTAP_DEMO"]
         return !harnessKeys.contains { env[$0] != nil }
     }
 
