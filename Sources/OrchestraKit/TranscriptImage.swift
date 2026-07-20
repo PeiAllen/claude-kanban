@@ -102,6 +102,20 @@ public enum TranscriptImageLink {
         else { return nil }
         return id
     }
+
+    /// Recover the media reference from the OSC 8 body a terminal emulator stores per cell.
+    ///
+    /// A hyperlink cell keeps the sequence's body verbatim — the bytes between `ESC ] 8 ;` and the
+    /// string terminator — which for this marker is `id=orchestra-<uuid>;<url>` (params, then URL). This
+    /// mirrors SwiftTerm's own `parseHyperlinkPayload`: split ONCE on `;` and treat the tail as the URL,
+    /// then hold that URL to the same fixed grammar as every other entry point. It exists so a mobile tap
+    /// handler can hit-test a cell's payload without re-deriving the marker grammar or forking the vendored
+    /// terminal — the URL half is authority, the `id=` params are ignored.
+    public static func referenceID(fromHyperlinkPayload payload: String) -> UUID? {
+        let parts = payload.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count > 1 else { return nil }
+        return referenceID(from: String(parts[1]))
+    }
 }
 
 /// Renders the agent-visible terminal marker. The readable fallback is intentional: renderers that

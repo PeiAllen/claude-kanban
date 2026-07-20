@@ -60,6 +60,86 @@ struct TranscriptImageTests {
         }
     }
 
+    // MARK: - Hyperlink payload (the SwiftTerm-stored OSC 8 body)
+
+    @Test("the OSC 8 body SwiftTerm stores per cell round-trips to the reference")
+    func hyperlinkPayloadResolves() {
+        let id = UUID()
+        // SwiftTerm keeps the OSC 8 params-and-URL body verbatim — exactly the bytes the marker's opener
+        // emits between `ESC ] 8 ;` and the string terminator: "id=orchestra-<uuid>;<url>".
+        let payload = "id=orchestra-\(id.uuidString.lowercased());\(TranscriptImageLink.url(for: id))"
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: payload) == id)
+    }
+
+    @Test("a payload without the params/URL separator is not a media link")
+    func hyperlinkPayloadRequiresSeparator() {
+        let id = UUID()
+        // A bare URL with no leading `params;` is not the shape SwiftTerm stores for an OSC 8 link.
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: TranscriptImageLink.url(for: id)) == nil)
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: "") == nil)
+    }
+
+    @Test("only the exact opaque media URL in the payload resolves")
+    func hyperlinkPayloadRejectsForeignURLs() {
+        let id = UUID()
+        // The URL half is held to the same fixed grammar as every other entry point.
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: "id=x;https://example.com/media/\(id.uuidString)") == nil)
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: "id=x;\(TranscriptImageLink.url(for: id))?x=1") == nil)
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: "id=x;file:///tmp/a.png") == nil)
+        // A URL that itself contains a ';' still resolves — the split is one-shot, params then URL.
+        #expect(TranscriptImageLink.referenceID(fromHyperlinkPayload: ";\(TranscriptImageLink.url(for: id))") == id)
+    }
+
+}
+
+@Suite("Terminal grid hit geometry")
+struct TerminalGridGeometryTests {
+
+    // An 80×24 grid drawn in a viewport that fits it exactly: 8pt-wide, 16pt-tall cells.
+    private let viewport = (width: 640.0, height: 384.0)
+
+    @Test("a tap in the middle of a cell maps to that cell")
+    func mapsPointToCell() {
+        // Column 10 spans x∈[80,88); row 5 spans y∈[80,96). A point mid-cell lands on (10, 5).
+        let hit = TerminalGridGeometry.screenCell(
+            contentX: 84, contentY: 88, scrollOffsetX: 0, scrollOffsetY: 0,
+            viewportWidth: viewport.width, viewportHeight: viewport.height, cols: 80, rows: 24)
+        #expect(hit?.col == 10)
+        #expect(hit?.row == 5)
+    }
+
+    @Test("the scroll offset is subtracted, so content-space maps to the visible screen row")
+    func subtractsScrollOffset() {
+        // A finger physically on the top visible row (screen row 0) reports a content-space y that
+        // includes how far the buffer is scrolled. Subtracting the offset recovers screen row 0.
+        let hit = TerminalGridGeometry.screenCell(
+            contentX: 4, contentY: 320 + 8, scrollOffsetX: 0, scrollOffsetY: 320,
+            viewportWidth: viewport.width, viewportHeight: viewport.height, cols: 80, rows: 24)
+        #expect(hit?.row == 0)
+        #expect(hit?.col == 0)
+    }
+
+    @Test("a tap outside the visible grid returns nil")
+    func rejectsOutOfBounds() {
+        // Below the last visible row.
+        #expect(TerminalGridGeometry.screenCell(
+            contentX: 4, contentY: 10_000, scrollOffsetX: 0, scrollOffsetY: 0,
+            viewportWidth: viewport.width, viewportHeight: viewport.height, cols: 80, rows: 24) == nil)
+        // Above the top (a point that scrolled above the visible origin).
+        #expect(TerminalGridGeometry.screenCell(
+            contentX: 4, contentY: 8, scrollOffsetX: 0, scrollOffsetY: 320,
+            viewportWidth: viewport.width, viewportHeight: viewport.height, cols: 80, rows: 24) == nil)
+    }
+
+    @Test("a degenerate viewport or grid is rejected rather than dividing by zero")
+    func rejectsDegenerateGeometry() {
+        #expect(TerminalGridGeometry.screenCell(
+            contentX: 1, contentY: 1, scrollOffsetX: 0, scrollOffsetY: 0,
+            viewportWidth: 0, viewportHeight: 384, cols: 80, rows: 24) == nil)
+        #expect(TerminalGridGeometry.screenCell(
+            contentX: 1, contentY: 1, scrollOffsetX: 0, scrollOffsetY: 0,
+            viewportWidth: 640, viewportHeight: 384, cols: 0, rows: 24) == nil)
+    }
 }
 
 /// The caption is the ONE place agent text becomes a filename, on the daemon and on both clients. These

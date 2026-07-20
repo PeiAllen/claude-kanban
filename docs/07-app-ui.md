@@ -196,6 +196,20 @@ the client resolves that UUID through the app-only [`media`](05-command-referenc
 call. Because the link is opaque, activating it can never open an arbitrary agent path — the worst a
 stale reference can do is fail to resolve, which surfaces as "Image preview expired".
 
+**Activating the link differs by input model.** On the Mac it is a ⌘-click (with a visible-URL fallback),
+which is what SwiftTerm's `.alwaysWithModifier` highlight mode expects. A touchscreen has neither a hover
+nor a modifier key, and SwiftTerm's own iOS tap can't bridge the gap: its first tap on an unfocused
+terminal only raises the keyboard (the link is never checked), and even once focused its link gate needs
+the hover-highlight a finger can't produce. So the iOS terminal installs its **own** tap recogniser that
+hit-tests the tapped cell's stored OSC 8 payload and, when it is an Orchestra media link, routes straight
+to the preview — pre-empting SwiftTerm's tap (and, in the armed takeover, its mouse-event forwarding) so
+the tap opens the image instead of typing into the agent. A tap anywhere else falls through untouched, so
+keyboard focus, scrolling, and TUI mouse still behave exactly as before. The cell-and-payload math lives
+in `OrchestraKit` (`TerminalGridGeometry`, `TranscriptImageLink.referenceID(fromHyperlinkPayload:)`) so it
+is covered by the fast unit tier rather than only on a simulator, and the whole path stays app-side — the
+vendored SwiftTerm is an upstream pin, not a fork. The terminal also switches to `.always` highlighting so
+the marker is visibly underlined as a "this is tappable" affordance.
+
 **Both clients hand the image to QuickLook** — `QLPreviewPanel` on the Mac, `QLPreviewController` on the
 phone — so zoom, pan, share, Open-with, full screen, and Esc-to-dismiss are the system's rather than ours,
 and a published image behaves like every other image on the device. The Mac panel deliberately stays up
