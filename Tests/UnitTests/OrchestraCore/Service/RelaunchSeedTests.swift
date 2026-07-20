@@ -221,4 +221,19 @@ struct RelaunchSeedTests {
         try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/OTHER.jsonl", 9999))
         #expect(try await env.svc.inboxPeek(held.id).count == 1)   // rotated rollout → retained (dup-not-loss)
     }
+
+    @Test("test_staleEpochTailLineNeverConfirms: a post-watermark line from a LATER generation never confirms a stale-epoch held lease")
+    func test_staleEpochTailLineNeverConfirms() async throws {
+        let env = TestEnv.make(grace: 5, capabilities: Self.codexStub)
+        let held = try await Self.liveWithHeldLease(env)
+        try await env.svc.inbox.setTailWatermark(cardId: held.id, epoch: held.epoch, watermark: 100, path: "/roll.jsonl")
+        // The epoch bumps WITHOUT a relaunchSeed re-own — the LaunchStepper path (reopen /
+        // creatingWorktree), which never calls `claimSeed`, so the prior-epoch held lease survives.
+        _ = try await env.svc.store.update(held.id) { $0.sessionEpoch += 1 }
+        // A line from the NEW generation, on the SAME transcript (a resume keeps `agentSessionId` and
+        // appends), past the OLD lease's watermark. It proves the NEW session is alive — it proves
+        // NOTHING about the stale lease's messages, which that session never received.
+        try await env.svc.report(held.id, StatusReport(run: .running), tail: ("/roll.jsonl", 150))
+        #expect(try await env.svc.inboxPeek(held.id).count == 1)   // stale generation → retained
+    }
 }

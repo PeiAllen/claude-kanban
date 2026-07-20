@@ -316,8 +316,18 @@ extension OrchestraService {
         // or a daemon-restart replay never confirms: a fileTail line qualifies only on the SAME rollout path
         // AND at/after the persisted post-kill watermark; a hook qualifies only when its `observedEpoch`
         // matches the lease's epoch. Routed through `confirmDelivery` so the archive guard is never bypassed.
+        //
+        // The lease must ALSO belong to the card's CURRENT generation. The watermark alone fences only
+        // within one launch: it proves the predecessor can't append past it, but NOT that a LATER
+        // generation's line is unrelated. A held lease survives an epoch bump whenever the bump skips
+        // `claimSeed`'s relaunchSeed re-own — the `LaunchStepper` path (reopen / creatingWorktree) never
+        // claims — and a resume keeps `agentSessionId`, so the next session APPENDS to the same transcript
+        // past the old watermark. Without this fence that line would confirm a stale lease, deleting
+        // messages the new session never received (loss, not duplication). Stale ⇒ no confirm ⇒ the lease
+        // expires and the arm re-delivers.
         if case .live = before.phase,
-           let lease = (await inbox.peek(id)).first(where: { $0.lease?.route == .relaunchSeed })?.lease {
+           let lease = (await inbox.peek(id)).first(where: {
+               $0.lease?.route == .relaunchSeed && $0.lease?.epoch == before.sessionEpoch })?.lease {
             let proven: Bool
             if let tail {
                 proven = tail.path == lease.tailPath
