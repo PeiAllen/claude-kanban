@@ -154,7 +154,7 @@ struct WorktreeRegistryTests {
         let (reg, stub, _) = makeRegistry()
         let a = UUID(), b = UUID()
         let w = try await reg.ensure(repo: "app", branch: "shared", cardId: a)   // materialized (marker present)
-        var deadSibling = card(b, cwd: w.path); deadSibling.phase = .dead(.completed)   // dead still holds
+        var deadSibling = card(b, cwd: w.path); deadSibling.phase = .dead(.agentExited)   // dead still holds
         try await reg.release(cardId: a, cards: [card(a, cwd: w.path), deadSibling], force: false)
         #expect(!stub.removed.contains(w.path))   // kept — a dead sibling references it
     }

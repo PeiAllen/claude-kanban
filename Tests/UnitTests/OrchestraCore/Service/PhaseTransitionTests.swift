@@ -62,8 +62,8 @@ struct PhaseTransitionTests {
 
         // Explicit brief asserts.
         #expect(OrchestraService.isLegalEdge(from: .relaunching, to: .relaunching, viaSignal: false) == true)
-        #expect(OrchestraService.isLegalEdge(from: .dead(.completed), to: .live(.running), viaSignal: true) == true)
-        #expect(OrchestraService.isLegalEdge(from: .dead(.completed), to: .live(.running), viaSignal: false) == false)
+        #expect(OrchestraService.isLegalEdge(from: .dead(.agentExited), to: .live(.running), viaSignal: true) == true)
+        #expect(OrchestraService.isLegalEdge(from: .dead(.agentExited), to: .live(.running), viaSignal: false) == false)
         #expect(OrchestraService.isLegalEdge(from: .archived(teardownComplete: false),
                                              to: .archived(teardownComplete: true), viaSignal: false) == true)
         #expect(OrchestraService.isLegalEdge(from: .archived(teardownComplete: true),
@@ -80,13 +80,13 @@ struct PhaseTransitionTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
-        _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.completed) }
+        _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.agentExited) }
 
         // Verb-path (observedEpoch: nil) revival is illegal — only a signal may drive dead→live.
         let r = await env.svc.transition(card.id, to: .live(.running))
-        #expect(r == .rejected(from: .dead(.completed), to: .live(.running)))
+        #expect(r == .rejected(from: .dead(.agentExited), to: .live(.running)))
         let after = try #require(await env.svc.store.get(card.id))
-        #expect(after.phase == .dead(.completed))   // unchanged
+        #expect(after.phase == .dead(.agentExited))   // unchanged
     }
 
     @Test("transition to the same phase is an idempotent noop (no persist / event / conclusion)")

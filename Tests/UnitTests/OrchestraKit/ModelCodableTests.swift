@@ -63,7 +63,7 @@ struct ModelCodableTests {
         #expect(Phase.launching.kind == .launching)
         #expect(Phase.live(.running).kind == .live)
         #expect(Phase.relaunching.kind == .relaunching)
-        #expect(Phase.dead(.completed).kind == .dead)
+        #expect(Phase.dead(.agentExited).kind == .dead)
         #expect(Phase.archived(teardownComplete: false).kind == .archivedPending)
         #expect(Phase.archived(teardownComplete: true).kind == .archivedComplete)
 

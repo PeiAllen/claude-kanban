@@ -297,12 +297,11 @@ extension OrchestraService {
     }
 
     /// The coarse activity word for a phase — the transition vocabulary the Activity feed used to read
-    /// off `status`. `.dead(.completed)` maps to nil (a done conclusion is not a "died" activity).
+    /// off `status`.
     private static func activityWord(_ phase: Phase) -> String? {
         switch phase {
         case .live(.running):   return "running"
         case .live(.waiting):   return "waiting"
-        case .dead(.completed): return nil
         case .dead:             return "died"
         default:                return nil   // creatingWorktree / launching / relaunching / archived
         }

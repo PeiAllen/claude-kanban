@@ -28,7 +28,6 @@ public enum DeadReason: String, Codable, Sendable {
                                  // vanish; the dying pane's final output is captured into `deadDetail`.
     case rebootUnrevived   // reboot sweep couldn't auto-revive (no id / transcript gone / resume failed at boot)
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
-    case completed         // the agent finished its work and the card was retired to Done
     case spawnFailed       // the initial spawn never came up (worktree/launch failure before first life)
     case resourceExhausted // the HOST ran out of a launch resource (PTYs / processes / fds) — nothing could
                            // start a terminal, so this is about the machine, not the card. TRANSIENT: the
@@ -170,7 +169,6 @@ extension Phase {
         case .live(.running):              return .running
         case .live(.waiting(.permission)): return .needsPermission
         case .live(.waiting(.humanTurn)):  return .idle
-        case .dead(.completed):            return .done
         case .archived:                    return .done
         case .dead:                        return .dead
         }
@@ -189,8 +187,8 @@ public enum PhaseDisplayKey: String, Sendable, Equatable, CaseIterable {
     case running         // .live(.running)
     case idle            // .live(.waiting(.humanTurn)) — finished its turn, waiting on the human
     case needsPermission // .live(.waiting(.permission)) — blocked on tool approval
-    case dead            // .dead(non-completed) — needs recovery
-    case done            // .dead(.completed) / .archived — finished + retired
+    case dead            // .dead — needs recovery
+    case done            // .archived — finished + retired
 }
 
 extension PhaseDisplayKey {

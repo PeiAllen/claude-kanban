@@ -315,12 +315,12 @@ struct MissedReadinessConclusionTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
 
         // Child concludes (persisted-terminal) BEFORE any watch is registered — no notice is owed yet.
-        await env.svc.markDead(child.id, reason: .completed, detail: nil, source: .daemon)   // dead(.completed) ⇒ .done
-        #expect(try #require(await env.svc.list(includeArchived: true).first { $0.id == child.id }).phase == .dead(.completed))
+        await env.svc.markDead(child.id, reason: .agentExited, detail: nil, source: .daemon)   // dead(.agentExited) ⇒ .exited
+        #expect(try #require(await env.svc.list(includeArchived: true).first { $0.id == child.id }).phase == .dead(.agentExited))
 
         // The inline conclusion: `wait` reads REAL card state, returns immediately, and unregisters.
         let conc = await env.svc.wait(watcher: watcher.id, refs: [child.id])
-        #expect(conc?.kind == .done)                                        // short-circuit conclusion
+        #expect(conc?.kind == .exited)                                      // short-circuit conclusion
         #expect(await env.svc.watchRegistry[watcher.id] == nil)             // watch entry unregistered (in-memory)
         let persisted = WatchRegistryStore(path: env.base + "/watch-registry.json").load()
         #expect(persisted.map[watcher.id] == nil)                           // …and the removal PERSISTED (write-through)

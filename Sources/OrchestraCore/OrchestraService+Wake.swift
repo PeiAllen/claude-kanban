@@ -103,9 +103,9 @@ extension OrchestraService {
     }
 
     /// The terminal `DeadReason` a settled card carries on its conclusion — the raw reason for an
-    /// `.exited`, nil for a `.done` (archived / `.dead(.completed)`). Kept in step with `isConcluded`.
+    /// `.exited`, nil for `.archived` (a `.done`). Kept in step with `isConcluded`.
     static func concludedReason(_ t: Task) -> DeadReason? {
-        if case .dead(let r) = t.phase, r != .completed { return r }
+        if case .dead(let r) = t.phase { return r }
         return nil
     }
 
@@ -225,13 +225,13 @@ extension OrchestraService {
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.
-    /// ANY `.dead` reason is terminal for conclusion purposes: `.completed` → `.done`; every other dead reason
-    /// (incl. `sessionVanished`/`rebootUnrevived`/`resumeFailed`) → `.exited`, so a suspended `wait` resolves on
-    /// crash death rather than hanging. `.archived` (and the `archived` Bool bridge) → `.done`.
+    /// Every `.dead` reason (incl. `sessionVanished`/`rebootUnrevived`/`resumeFailed`) → `.exited`, so a
+    /// suspended `wait` resolves on crash death rather than hanging. `.archived` (and the `archived` Bool
+    /// bridge) → `.done`.
     func isConcluded(_ t: Task) -> Conclusion.Kind? {
         if case .archived = t.phase { return .done }
         if t.archived { return .done }                 // archive-verb funnel routing is Stage 4; keep the Bool bridge
-        if case .dead(let r) = t.phase { return r == .completed ? .done : .exited }
+        if case .dead = t.phase { return .exited }
         return nil
     }
 
