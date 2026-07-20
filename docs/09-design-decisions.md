@@ -104,6 +104,28 @@ fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-ti
 This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
 never nuke on-disk state.
 
+### "Done" is not observable — success is agent-signalled, not inferred
+
+A card's "done" state used to be produced by one inference: a read-only, non-worktree card that
+completed a turn was set to `.dead(.completed)`. That inference is unsound. The only signal the daemon
+has is `turnCompleted` — "a turn ended, idle" — which is identical for "finished the whole assignment"
+and "paused between turns". So "done" is not daemon-observable, and inferring it retired live reviewers
+that were merely waiting for their next instruction.
+
+The inference is removed. A finished read-only reviewer now idles `.live(.waiting(.humanTurn))` exactly
+like a worktree card. **Success is agent-signalled**: the delegate `send`s its result back, and the
+orchestrator `archive`s the card when it consumes that result. **Death stays observable** and unchanged
+(any `.dead` reason concludes `.exited`); **archive stays the only `.done`**. `orchestra wait` therefore
+resolves only on a real conclusion (merge/archive/death), never on a delegate finishing its work — the
+delegation guidance mandates `send`-back for results.
+
+`DeadReason.completed` is removed entirely (an on-disk-format break, accepted). A one-time on-decode
+migration in `Phase.init` maps a stored legacy `"completed"` detail to `.archived(teardownComplete:true)`
+so no live-board card is dropped when the case disappears (the phase field is decoded with an unguarded
+`try`, so an un-migrated throw would drop the whole record). The `wait`/`watch` subsystem stays in place
+but dormant — a death-only watchdog nobody registers against on success anymore; excising it is a
+separate, deferred change.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's

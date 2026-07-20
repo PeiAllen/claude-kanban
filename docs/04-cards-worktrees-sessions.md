@@ -511,11 +511,11 @@ Nothing else writes `phase`. The funnel, in order:
    reason/detail, spawn-fail writes `deadDetail`). This is the **same-patch hook**.
 5. **Conclusions.** The funnel is the **sole concluder**: only the entry into a terminal phase *from a
    non-terminal one* fires `concludeCard`; `dead → archived` (terminal → terminal) is guarded out, so a
-   card never double-concludes. The wire `Conclusion` carries `{kind, deadReason?}` — `.done` (archived /
-   `.dead(.completed)`) carries no reason; any other dead reason concludes `.exited` and carries the
+   card never double-concludes. The wire `Conclusion` carries `{kind, deadReason?}` — `.done` is
+   **archived-only** and carries no reason; **any** `.dead` reason concludes `.exited` and carries the
    reason, so a suspended `wait` resolves on **every** terminal death (crash/reboot/resume-fail), not only
    a clean exit (the bug-#2 fix). `isConcluded(_:)` is exactly "phase is terminal" (archived, or any
-   `.dead`; `.dead(.completed)`/archived → `.done`, else `.exited`), kept in step with `concludedReason`.
+   `.dead`; archived → `.done`, any `.dead` reason → `.exited`), kept in step with `concludedReason`.
 6. **Wake-on-live.** Entering `.live` runs `wakeIfPending` — the single structural release point for a
    message parked (via `send`/inbox) while the card was being born. It no-ops unless the card is now
    `.live(.waiting)` with a non-empty inbox.
@@ -624,8 +624,10 @@ of being marked dead.
   the retry. Why the intent gets its own field, rather than just writing `model`:
   [report() vs the launch intent](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence).
 - **`reopen(id)` — un-finish a Done card.** Walks the legal path `archived → creatingWorktree → launching →
-  live`: it first normalizes the still-Bool-bridged archived phase (an archived card's `phase` is
-  `.dead(.completed)`) to `.archived(complete)`, then enters `.creatingWorktree` (bumping the generation)
+  live`: an archived card's `phase` is already `.archived(teardownComplete: true)` (a legacy stored
+  `.dead(.completed)` is normalized to it on decode by the one-time `Phase.init` migration — see
+  [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)),
+  then enters `.creatingWorktree` (bumping the generation)
   clearing the archived Bool + dead metadata, **recreates the run dir the archive reclaimed** (`worktrees.ensure`
   for `.worktree`, `mkdir` for `.scratch`, nothing for `.borrowed`), and brings the agent up via the shared
   **`launchAndConfirm`** step (`.resume` flavor when `isResumable`, else `.blank`). It does **not** call

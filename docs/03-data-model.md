@@ -50,9 +50,9 @@ A `Task` is the single persisted record behind every card. Its fields:
   patch) and returns, and the reconciler's `TeardownStepper` drives `.archivedPending → .archivedComplete`
   (kill the session, release a borrow/worktree, reclaim the run dir, cancel debounces/watches, nudge
   children). The `archived` Bool mirror is retained alongside `phase` for display/filtering. A read-only
-  freeform/scratch delegated card
-  can also conclude to `.dead(.completed)` without being archived when its agent reports task completion
-  (for example Codex `task_complete` / `turn_complete` or Claude `TaskCompleted`, not Claude `Stop`).
+  freeform/scratch delegated card idles `.live(.waiting(.humanTurn))` when its turn ends — exactly like a
+  worktree card — rather than being inferred done; success is agent-signalled (the delegate `send`s its
+  result, and the orchestrator `archive`s the card once it consumes that result).
   [`reopen`](05-command-reference.md#registry-commands)
   reverses it — `archived` back to `false`, phase walked back onto the board via the funnel,
   `deadReason`/`deadDetail` cleared — while keeping the card's stored `col`, so it returns to the column
@@ -84,7 +84,6 @@ A `Task` is the single persisted record behind every card. Its fields:
   - `sessionVanished` — the tmux session is gone with no `SessionEnd` (crash or external kill),
   - `rebootUnrevived` — the startup sweep couldn't auto-revive it,
   - `resumeFailed` — a resume attempt failed (see `deadDetail`),
-  - `completed` — the agent finished its work and the card was retired to Done,
   - `spawnFailed` — the initial spawn never came up (worktree/launch failure before first life).
 - **`CardOrigin`** — `worktree`, `scratch`, `borrowed`.
 - **`CardAccess`** — `readWrite`, `readOnly`.
@@ -149,7 +148,7 @@ through this single migrating init. Its contract:
   | `archived == true` | `.archived(teardownComplete: true)` |
   | `status == "running"` | `.live(.running)` |
   | `status == "waiting"` | `.live(.waiting(waitReason ?? .humanTurn))` — a nil/unknown wait reason (common for idle cards) maps to `.humanTurn`, never a fake permission wait |
-  | `status == "done"` | `.dead(.completed)` |
+  | `status == "done"` | `.archived(teardownComplete: true)` |
   | `status == "dead"` | `.dead(deadReason ?? .agentExited)` — the preserved terminal reason |
   | nil / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe terminal, never a throw |
 
