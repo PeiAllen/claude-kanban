@@ -66,11 +66,14 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   ignored.
 - **`send <ref> <message>`** — enqueue a message into a card's durable inbox (F3); it drains at the card's
   next turn-end, waking it if idle.
-- **`wait <ref…>`** — subscribe to **any** watched card's conclusion (merged / done / exited) so you are
-  reminded/woken when it finishes. In a managed/sandboxed harness, use MCP `wait`; it records the durable
-  watch and returns immediately. In a terminal-native Claude environment, CLI wait may instead run as a
-  native Claude Code background task (Bash with `run_in_background: true`, or Monitor if available), so
-  Claude is re-invoked when that background process prints/exits.
+- **`wait <ref…>`** — subscribe to a watched card's **real conclusion** — a merge/archive (done) or a
+  death (exited) — so you are woken when it fires. A delegate that merely **ends its turn does NOT conclude**
+  (a read-only reviewer/fork idles `.live(.waiting)` and `wait` will hang on it forever); get its result via
+  **`send`** (above) and `archive` it yourself, and reserve `wait` for cards that conclude on their own (a
+  worktree PR card that merges, or any card that dies). In a managed/sandboxed harness, use MCP `wait`; it
+  records the durable watch and returns immediately. In a terminal-native Claude environment, CLI wait may
+  instead run as a native Claude Code background task (Bash with `run_in_background: true`, or Monitor if
+  available), so Claude is re-invoked when that background process prints/exits.
 
 ## Delegate, or just continue?
 
