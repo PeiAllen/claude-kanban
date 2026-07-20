@@ -394,7 +394,7 @@ That includes `.openNotes`: opening a card's notes is **not** a local file op bu
 so it is gated inside the live link like every other action and additionally requires a materialized
 worktree cwd (a being-born or spawn-failed card has none).
 `dead(.spawnFailed)` — like every other dead reason — maps through `Phase.displayKey` to the `.dead` key
-and renders **Dead**, never a stale "Creating…"; only `dead(.completed)` reads as `.done` ("Done").
+and renders **Dead**, never a stale "Creating…"; only `.archived` reads as `.done` ("Done").
 
 ## The report channel
 

@@ -102,7 +102,7 @@ private func batteryArchiveAndTeardown(_ e: BEnv, _ id: UUID) async throws {
 /// `agent × boundary` (2 × 7 = 14 named cells). Per-cell oracle (only 4 kinds have a stepper):
 ///  • the 4 transitional kinds assert `PhaseSteppers.byKind[kind].verify == true`;
 ///  • `live` → adopted at the matching epoch (no relaunch, no duplicate session/card);
-///  • `dead` → stays `dead`; a `dead(.completed)` session is NOT swept (revival stays possible);
+///  • `dead` → stays `dead`; a `dead(.agentExited)` session is NOT swept (revival stays possible);
 ///  • `archivedComplete` → terminal; no re-drive, no duplicate teardown.
 @Suite("PR4b Task 5 · Test B — stepper crash-convergence matrix")
 struct StepperCrashMatrixTests {
@@ -126,7 +126,10 @@ struct StepperCrashMatrixTests {
         case .relaunching:
             e.adapter.writeTranscript(for: live.agentSessionId!)        // resumable so the relaunch resumes
             await e.svc.seedPhase(live.id, .relaunching)
-        case .dead:              await e.svc.markDead(live.id, reason: .completed, detail: nil, source: .daemon)
+        // Use a DeadReason that survives a crash-reload unchanged, so this cell keeps testing what it's
+        // meant to — a dead session isn't swept. (`.dead(.completed)` is gone: `DeadReason.completed` was
+        // removed as a clean break, so a persisted such record would no longer decode at all.)
+        case .dead:              await e.svc.markDead(live.id, reason: .agentExited, detail: nil, source: .daemon)
         case .archivedPending:   await e.svc.seedPhase(live.id, .archived(teardownComplete: false))
         case .archivedComplete:  try await batteryArchiveAndTeardown(e, live.id)
         }
@@ -134,7 +137,7 @@ struct StepperCrashMatrixTests {
         // The crash: a fresh service over the same on-disk store (steppers re-derive from disk).
         let e2 = batteryRemake(base: e.base, caps: agent.caps, id: agent.id)
         // Seed the session state a real crash would leave for the ADOPTION boundaries: a daemon-only
-        // crash leaves the tmux session alive at the matching epoch; a `dead(.completed)` session lingers.
+        // crash leaves the tmux session alive at the matching epoch; a `dead(.agentExited)` session lingers.
         switch boundary {
         case .live, .dead: e2.sessions.setStampedEpoch(live.id, epoch)
         default: break
@@ -171,8 +174,8 @@ struct StepperCrashMatrixTests {
             #expect(e2.sessions.ensureArgv[name] == nil)                // no duplicate session
             #expect(await e2.svc.list(includeArchived: true).filter { $0.id == live.id }.count == 1)  // no duplicate card
         case .dead:
-            #expect(final.phase == .dead(.completed))                   // stays dead
-            #expect(e2.sessions.isAliveTest(live.id))                   // dead(.completed) session NOT swept
+            #expect(final.phase == .dead(.agentExited))                 // stays dead
+            #expect(e2.sessions.isAliveTest(live.id))                   // dead(.agentExited) session NOT swept
             #expect(!e2.sessions.killed.contains(name))
         case .archivedComplete:
             #expect(final.phase.kind == .archivedComplete)              // terminal
@@ -312,12 +315,12 @@ struct MissedReadinessConclusionTests {
         let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
 
         // Child concludes (persisted-terminal) BEFORE any watch is registered — no notice is owed yet.
-        await env.svc.markDead(child.id, reason: .completed, detail: nil, source: .daemon)   // dead(.completed) ⇒ .done
-        #expect(try #require(await env.svc.list(includeArchived: true).first { $0.id == child.id }).phase == .dead(.completed))
+        await env.svc.markDead(child.id, reason: .agentExited, detail: nil, source: .daemon)   // dead(.agentExited) ⇒ .exited
+        #expect(try #require(await env.svc.list(includeArchived: true).first { $0.id == child.id }).phase == .dead(.agentExited))
 
         // The inline conclusion: `wait` reads REAL card state, returns immediately, and unregisters.
         let conc = await env.svc.wait(watcher: watcher.id, refs: [child.id])
-        #expect(conc?.kind == .done)                                        // short-circuit conclusion
+        #expect(conc?.kind == .exited)                                      // short-circuit conclusion
         #expect(await env.svc.watchRegistry[watcher.id] == nil)             // watch entry unregistered (in-memory)
         let persisted = WatchRegistryStore(path: env.base + "/watch-registry.json").load()
         #expect(persisted.map[watcher.id] == nil)                           // …and the removal PERSISTED (write-through)

@@ -50,9 +50,9 @@ A `Task` is the single persisted record behind every card. Its fields:
   patch) and returns, and the reconciler's `TeardownStepper` drives `.archivedPending → .archivedComplete`
   (kill the session, release a borrow/worktree, reclaim the run dir, cancel debounces/watches, nudge
   children). The `archived` Bool mirror is retained alongside `phase` for display/filtering. A read-only
-  freeform/scratch delegated card
-  can also conclude to `.dead(.completed)` without being archived when its agent reports task completion
-  (for example Codex `task_complete` / `turn_complete` or Claude `TaskCompleted`, not Claude `Stop`).
+  freeform/scratch delegated card idles `.live(.waiting(.humanTurn))` when its turn ends — exactly like a
+  worktree card — rather than being inferred done; success is agent-signalled (the delegate `send`s its
+  result, and the orchestrator `archive`s the card once it consumes that result).
   [`reopen`](05-command-reference.md#registry-commands)
   reverses it — `archived` back to `false`, phase walked back onto the board via the funnel,
   `deadReason`/`deadDetail` cleared — while keeping the card's stored `col`, so it returns to the column
@@ -84,7 +84,6 @@ A `Task` is the single persisted record behind every card. Its fields:
   - `sessionVanished` — the tmux session is gone with no `SessionEnd` (crash or external kill),
   - `rebootUnrevived` — the startup sweep couldn't auto-revive it,
   - `resumeFailed` — a resume attempt failed (see `deadDetail`),
-  - `completed` — the agent finished its work and the card was retired to Done,
   - `spawnFailed` — the initial spawn never came up (worktree/launch failure before first life).
 - **`CardOrigin`** — `worktree`, `scratch`, `borrowed`.
 - **`CardAccess`** — `readWrite`, `readOnly`.
@@ -132,9 +131,13 @@ structural pass (superseding the plan's approach, because Task 2.1 had already g
 `init(from:)`). Every record — whether it arrived via the `{rev, tasks}` envelope or a bare array — routes
 through this single migrating init. Its contract:
 
-- **`id` is the only required field.** An id-less record is genuinely unrecoverable and is the *sole* drop
-  case (it throws, and `FailableTask` drops just that record). Every other field is `decodeIfPresent` with a
-  safe default, so a partial/garbage record is **kept** as a safe card rather than stranding the whole board.
+- **`id` is required; the `phase` field is the one non-tolerant field.** A record throws (and `FailableTask`
+  drops just that record) when `id` is absent OR when `phase` carries an unknown value — `phase` is decoded
+  with an unguarded `try`, unlike every other field. The one current unknown-`phase` case is a legacy
+  `.dead(.completed)` record: `DeadReason.completed` was removed as a clean on-disk break (no migration), so
+  such a record no longer decodes and self-drops (accepted — see [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)).
+  Every field other than `id`/`phase` is `decodeIfPresent` with a safe default, so a partial/garbage record
+  is **kept** as a safe card rather than stranding the whole board.
 - **Garbage enum fields default, never throw.** Tolerant enum/decodable fields (`origin`, `access`, `model`,
   `startIn`, `column`, `deadReason`) are `try?`-guarded so a present-but-renamed/removed rawValue falls back
   to the same safe default the memberwise init uses (`.worktree`, `.readWrite`, `unknown` model, `.impl`,
@@ -149,9 +152,8 @@ through this single migrating init. Its contract:
   | `archived == true` | `.archived(teardownComplete: true)` |
   | `status == "running"` | `.live(.running)` |
   | `status == "waiting"` | `.live(.waiting(waitReason ?? .humanTurn))` — a nil/unknown wait reason (common for idle cards) maps to `.humanTurn`, never a fake permission wait |
-  | `status == "done"` | `.dead(.completed)` |
   | `status == "dead"` | `.dead(deadReason ?? .agentExited)` — the preserved terminal reason |
-  | nil / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe terminal, never a throw |
+  | nil / legacy `"done"` / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe recoverable terminal, never a throw (a genuinely retired card carries `archived == true`, handled by the first row) |
 
 - **Envelope `rev` preserved.** The `{rev, tasks}` envelope's `rev` loads as-is; a bare-array file loads at
   `rev = 0`. Encode is custom (the decode-only legacy keys make Codable synthesis impossible) and writes

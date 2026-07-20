@@ -118,7 +118,7 @@ struct ReconcilerTests {
 
     // MARK: - orphan-session sweep + fresh probe + epoch-identity adoption
 
-    @Test("orphan session (archived / nonexistent card) is swept; a dead(.completed) card's session is kept")
+    @Test("orphan session (archived / nonexistent card) is swept; a dead(non-archived) card's session is kept")
     func orphanSessionSwept() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
@@ -128,9 +128,9 @@ struct ReconcilerTests {
         await env.svc.seedPhase(x.id, .archived(teardownComplete: true))
         env.sessions.setAlive(x.id, true)
 
-        // Y: a dead(.completed) card (NOT archived) with an alive session → kept (revival possible).
+        // Y: a dead card (NOT archived) with an alive session → kept (revival possible).
         let y = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "y", repo: repo, branch: "y"))
-        await env.svc.markDead(y.id, reason: .completed, detail: nil, source: .daemon)
+        await env.svc.markDead(y.id, reason: .agentExited, detail: nil, source: .daemon)
         env.sessions.setAlive(y.id, true)
 
         // Z: a live session with NO card at all → swept.
@@ -140,7 +140,7 @@ struct ReconcilerTests {
         await env.svc.reconcile()
 
         #expect(env.sessions.killed.contains(env.sessions.sessionName(x.id)))    // archived → swept
-        #expect(!env.sessions.killed.contains(env.sessions.sessionName(y.id)))   // dead(.completed) → kept
+        #expect(!env.sessions.killed.contains(env.sessions.sessionName(y.id)))   // dead (non-archived) → kept
         #expect(env.sessions.killed.contains(env.sessions.sessionName(zid)))     // orphan (no card) → swept
     }
 

@@ -55,24 +55,25 @@ public actor TaskStore {
     }
 
     /// On-disk payload shape (post-upgrade). Pre-upgrade files are a bare `[Task]` array.
-    /// Decoded ELEMENT-WISE via `FailableTask` so one throwing record (only an id-less one now) drops just
-    /// itself, never the whole board.
+    /// Decoded ELEMENT-WISE via `FailableTask` so one throwing record drops just itself, never the whole board.
     private struct StoredBoard: Decodable { let rev: Int; let tasks: [FailableTask] }
 
     /// The on-disk envelope we WRITE — same `{rev, tasks}` shape, encoding real `[Task]`.
     private struct BoardEnvelope: Encodable { let rev: Int; let tasks: [Task] }
 
-    /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` — which,
-    /// after the tolerant-field fix, happens ONLY when `id` is absent — becomes `nil` and is dropped,
-    /// instead of failing the array decode and stranding the entire board to `.bak`.
+    /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` becomes
+    /// `nil` and is dropped, instead of failing the array decode and stranding the entire board to `.bak`.
+    /// `Task.init` throws only when `id` is absent or `phase` holds an unknown value (`phase` is the one
+    /// field decoded with an unguarded `try`) — currently a legacy `.dead(.completed)`, whose case was
+    /// removed as a clean break, so it self-drops on load (accepted; see docs/09).
     private struct FailableTask: Decodable {
         let task: Task?
         init(from decoder: Decoder) throws { self.task = try? Task(from: decoder) }
     }
 
     /// Read + decode. `[]` if absent. The board reaches `.bak` ONLY when the top-level JSON is itself
-    /// unparseable — a single corrupt record is dropped element-wise, never `.bak`'d. An id-less record
-    /// (the sole unrecoverable case) is logged and dropped; every other record is kept (fields defaulted).
+    /// unparseable — a single throwing record (id-less, or a legacy `.dead(.completed)` that no longer
+    /// decodes) is logged and dropped element-wise; every other record is kept (fields defaulted).
     @discardableResult
     public func load() -> [Task] {
         let url = URL(fileURLWithPath: path)

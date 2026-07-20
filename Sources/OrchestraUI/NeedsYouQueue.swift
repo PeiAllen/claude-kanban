@@ -63,7 +63,7 @@ public enum NeedsYouQueue {
     public static func reason(for t: Task,
                               contextThreshold: Double = contextNearFullThreshold) -> AttentionReason? {
         if t.waitReason == .permission { return .permission }
-        if t.phase.kind == .dead, t.phase != .dead(.completed) { return .died }
+        if t.phase.kind == .dead { return .died }
         if t.waitReason == .humanTurn { return .humanTurn }
         if case .live = t.phase, t.ctxPct >= contextThreshold { return .contextFull }
         return nil

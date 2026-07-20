@@ -62,8 +62,8 @@ struct PhaseTransitionTests {
 
         // Explicit brief asserts.
         #expect(OrchestraService.isLegalEdge(from: .relaunching, to: .relaunching, viaSignal: false) == true)
-        #expect(OrchestraService.isLegalEdge(from: .dead(.completed), to: .live(.running), viaSignal: true) == true)
-        #expect(OrchestraService.isLegalEdge(from: .dead(.completed), to: .live(.running), viaSignal: false) == false)
+        #expect(OrchestraService.isLegalEdge(from: .dead(.agentExited), to: .live(.running), viaSignal: true) == true)
+        #expect(OrchestraService.isLegalEdge(from: .dead(.agentExited), to: .live(.running), viaSignal: false) == false)
         #expect(OrchestraService.isLegalEdge(from: .archived(teardownComplete: false),
                                              to: .archived(teardownComplete: true), viaSignal: false) == true)
         #expect(OrchestraService.isLegalEdge(from: .archived(teardownComplete: true),
@@ -80,13 +80,13 @@ struct PhaseTransitionTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let card = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "c"))
-        _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.completed) }
+        _ = try await env.svc.store.update(card.id) { $0.phase = .dead(.agentExited) }
 
         // Verb-path (observedEpoch: nil) revival is illegal — only a signal may drive dead→live.
         let r = await env.svc.transition(card.id, to: .live(.running))
-        #expect(r == .rejected(from: .dead(.completed), to: .live(.running)))
+        #expect(r == .rejected(from: .dead(.agentExited), to: .live(.running)))
         let after = try #require(await env.svc.store.get(card.id))
-        #expect(after.phase == .dead(.completed))   // unchanged
+        #expect(after.phase == .dead(.agentExited))   // unchanged
     }
 
     @Test("transition to the same phase is an idempotent noop (no persist / event / conclusion)")
@@ -226,11 +226,14 @@ struct PhaseTransitionTests {
 struct EpochGuardReportFunnelTests {
 
     // A read-only borrowed card (origin != .worktree, access == .readOnly) — the durable-card form of a
-    // one-shot delegation, so `shouldConcludeOnTurnCompletion` is true for it.
+    // one-shot delegation. A completed turn no longer concludes it; it idles like any other card.
     private func readOnlyCard(_ env: (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String), _ name: String) async throws -> Task {
         let dir = env.base + "/borrow-\(name)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "work", cwd: dir, access: .readOnly))
+        // Must be driven to `.live` first: `spawn` alone leaves the card at `.creatingWorktree`, and
+        // `.creatingWorktree → .live` is not a legal funnel edge (only `.creatingWorktree → .launching →
+        // .live`), so a `turnCompleted` report landing `.live` right after a raw `spawn` would be rejected.
+        return try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", cwd: dir, access: .readOnly))
     }
 
     // MARK: - epoch fence on the SessionEnd (kill-class) signal
@@ -304,21 +307,22 @@ struct EpochGuardReportFunnelTests {
         #expect(upserts.last?.phase == .live(.waiting(.humanTurn)))
     }
 
-    @Test("turn completion concludes a read-only card once; a worktree card just goes idle")
-    func test_turnCompletionConcludesReadOnlyOnly() async throws {
+    @Test("turn completion leaves a read-only card idle (never concludes); a worktree card also just goes idle")
+    func test_turnCompletionIdlesReadOnlyAndWorktreeAlike() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let inbox = await env.svc.inbox
 
-        // Read-only card: a completed turn is terminal (.dead(.completed)) and concludes exactly once.
+        // Read-only card: a completed turn is NOT terminal — it idles `.live(.waiting(.humanTurn))` and
+        // concludes nothing (success is agent-signalled via `send`, not inferred from turn-end).
         let watcherA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wA", repo: repo, branch: "wa"))
         let readOnly = try await readOnlyCard(env, "ro")
         await env.svc.registerWatch(watcherA.id, [readOnly.id])
         try await env.svc.report(readOnly.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
         let ro = try #require(await env.svc.store.get(readOnly.id))
-        #expect(ro.phase == .dead(.completed))
-        try await pollUntil { await inbox.peek(watcherA.id).count == 1 }
-        #expect(await inbox.peek(watcherA.id).count == 1)     // EXACTLY one conclusion
+        #expect(ro.phase == .live(.waiting(.humanTurn)))
+        await yieldBriefly()
+        #expect(await inbox.peek(watcherA.id).count == 0)     // no conclusion enqueued
 
         // Worktree card: a completed turn stays long-lived (.live(.waiting(.humanTurn))), never concludes.
         let watcherB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "wB", repo: repo, branch: "wb"))
