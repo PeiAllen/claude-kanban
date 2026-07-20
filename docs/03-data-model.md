@@ -148,9 +148,8 @@ through this single migrating init. Its contract:
   | `archived == true` | `.archived(teardownComplete: true)` |
   | `status == "running"` | `.live(.running)` |
   | `status == "waiting"` | `.live(.waiting(waitReason ?? .humanTurn))` — a nil/unknown wait reason (common for idle cards) maps to `.humanTurn`, never a fake permission wait |
-  | `status == "done"` | `.archived(teardownComplete: true)` |
   | `status == "dead"` | `.dead(deadReason ?? .agentExited)` — the preserved terminal reason |
-  | nil / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe terminal, never a throw |
+  | nil / legacy `"done"` / unrecognized `status` | `.dead(.rebootUnrevived)` — the safe recoverable terminal, never a throw (a genuinely retired card carries `archived == true`, handled by the first row) |
 
 - **Envelope `rev` preserved.** The `{rev, tasks}` envelope's `rev` loads as-is; a bare-array file loads at
   `rev = 0`. Encode is custom (the decode-only legacy keys make Codable synthesis impossible) and writes

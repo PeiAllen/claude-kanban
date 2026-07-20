@@ -119,12 +119,13 @@ orchestrator `archive`s the card when it consumes that result. **Death stays obs
 resolves only on a real conclusion (merge/archive/death), never on a delegate finishing its work — the
 delegation guidance mandates `send`-back for results.
 
-`DeadReason.completed` is removed entirely (an on-disk-format break, accepted). A one-time on-decode
-migration in `Phase.init` maps a stored legacy `"completed"` detail to `.archived(teardownComplete:true)`
-so no live-board card is dropped when the case disappears (the phase field is decoded with an unguarded
-`try`, so an un-migrated throw would drop the whole record). The `wait`/`watch` subsystem stays in place
-but dormant — a death-only watchdog nobody registers against on success anymore; excising it is a
-separate, deferred change.
+`DeadReason.completed` is removed entirely — a clean on-disk-format break, no migration. There were no
+stored `.dead(.completed)` records to carry forward, so the case is simply deleted rather than converted:
+a hypothetical stored `{"phase":{"name":"dead","detail":"completed"}}` record fails to decode (the phase
+field is read with an unguarded `try`) and is dropped by the store's element-wise `FailableTask` load
+rather than stranding the board — an accepted loss for a state that only ever meant "a finished reviewer
+we were going to archive anyway". The `wait`/`watch` subsystem stays in place but dormant — a death-only
+watchdog nobody registers against on success anymore; excising it is a separate, deferred change.
 
 ### Terminal bytes bypass the daemon
 
