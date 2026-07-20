@@ -22,6 +22,12 @@ shipped roadmap axes → chapter 9; feature narrative → the numbered chapter; 
 chapter 10). The doc-sync run reads those commit messages to keep chapters 9 and 10 accurate; a
 decision explained only in a local, untracked file is invisible to it.
 
+The chapters state the **current** design, not a changelog. When a change *removes or reverses* a
+decision, update or delete the affected description so the chapter matches the system as it is now —
+never append a "we added this, then removed it" entry. If the removed thing was never documented in
+`docs/` (it lived only in a resource, a comment, or config), nothing gets added to `docs/`; the
+removal's *why* still lands in the commit/PR body, and git holds the before-state.
+
 ## Install it
 
 ```sh
