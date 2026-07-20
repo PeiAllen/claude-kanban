@@ -14,7 +14,6 @@ struct ModelCodableTests {
             .live(.waiting(.permission)),
             .live(.waiting(.humanTurn)),
             .relaunching,
-            .dead(.completed),
             .dead(.spawnFailed),
             .dead(.agentExited),
             .archived(teardownComplete: false),
@@ -49,9 +48,9 @@ struct ModelCodableTests {
         #expect(run?["name"] as? String == "waiting")
         #expect(run?["detail"] as? String == "permission")
         // DeadReason stays a raw String in `detail`.
-        let dead = try obj(.dead(.completed))
+        let dead = try obj(.dead(.agentExited))
         #expect(dead["name"] as? String == "dead")
-        #expect(dead["detail"] as? String == "completed")
+        #expect(dead["detail"] as? String == "agentExited")
         // archived carries its Bool directly as `detail`.
         let arch = try obj(.archived(teardownComplete: true))
         #expect(arch["name"] as? String == "archived")

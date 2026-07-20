@@ -136,7 +136,21 @@ public enum Phase: Codable, Equatable, Sendable {
         case "launching":        self = .launching
         case "relaunching":      self = .relaunching
         case "live":             self = .live(try c.decode(RunState.self, forKey: .detail))
-        case "dead":             self = .dead(try c.decode(DeadReason.self, forKey: .detail))
+        case "dead":
+            // Migration: `.dead(.completed)` was the retired turn-completion "done" inference. Its
+            // `DeadReason` case is gone, so a stored `"completed"` detail would throw here — and because
+            // `Task.init` decodes `phase` with an UNGUARDED `try`, a throw drops the whole card. Map the
+            // legacy detail to the real archived terminal (a finished read-only reviewer's correct home)
+            // instead. This is a one-time legacy-value mapping; a genuinely unknown detail still throws.
+            let detail = try c.decode(String.self, forKey: .detail)
+            if detail == "completed" {
+                self = .archived(teardownComplete: true)
+            } else if let reason = DeadReason(rawValue: detail) {
+                self = .dead(reason)
+            } else {
+                throw DecodingError.dataCorruptedError(forKey: .detail, in: c,
+                    debugDescription: "unknown DeadReason \"\(detail)\"")
+            }
         case "archived":         self = .archived(teardownComplete: try c.decode(Bool.self, forKey: .detail))
         default:
             throw DecodingError.dataCorruptedError(forKey: .name, in: c,
@@ -626,17 +640,22 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
             self.phase = phase
-            // Legacy Bool-bridge `archive()` (PR2/PR3/PR4a) wrote `.dead(.completed)` + `archived == true`.
-            // Post-PR4b that decodes as `.dead`, which `reopen`'s gate ({archivedPending, archivedComplete})
-            // rejects — the card could never be reopened. Normalize it to the real `.archived` terminal, matching
-            // the no-`phase`-key `migratedPhase` path (which already maps archived → `.archived(true)`).
-            if archived, case .dead(.completed) = self.phase { self.phase = .archived(teardownComplete: true) }
         } else {
             self.phase = Task.migratedPhase(
                 status: try? c.decodeIfPresent(String.self, forKey: .status),
                 waitReason: try? c.decodeIfPresent(String.self, forKey: .waitReason),
                 deadReason: deadReason, archived: archived)
         }
+        // Keep the `archived` Bool in step with an archived PHASE. The legacy `"completed"`/`"done"`
+        // migrations (Phase.init above + `migratedPhase`) can land `.archived` on a record whose stored
+        // `archived` Bool is still false (a finished-but-not-yet-retired reviewer, which report() left as a
+        // non-archived `.dead(.completed)`). Every live path assumes
+        // `phase.kind ∈ {archivedPending, archivedComplete} ⟺ archived == true` — the archive verb writes both
+        // together (OrchestraService.archive → `transition(to: .archived(false), mutate: { $0.archived = true })`).
+        // Without this sync such a card is a DEAD END: `reopen` no-ops on `guard t.archived`
+        // (+Recovery.swift), restart/archive are illegal edges (+Lifecycle.isLegalEdge), and the orphan sweep
+        // reaps its live session (+Reconcile.isOrphanSession) — visible on the board, recoverable by nothing.
+        if case .archived = self.phase, !self.archived { self.archived = true }
     }
 
     /// Seed `phase` from a pre-Stage-2 record's legacy fields. Precedence top-to-bottom; a nil/unknown
@@ -648,7 +667,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         switch status {
         case "running": return .live(.running)
         case "waiting": return .live(.waiting(WaitReason(rawValue: waitReason ?? "") ?? .humanTurn))
-        case "done":    return .dead(.completed)
+        case "done":    return .archived(teardownComplete: true)
         case "dead":    return .dead(deadReason ?? .agentExited)
         default:        return .dead(.rebootUnrevived)   // nil or an unrecognized legacy status
         }

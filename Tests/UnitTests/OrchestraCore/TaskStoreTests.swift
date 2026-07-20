@@ -150,13 +150,17 @@ struct TaskStoreTests {
 
     private func assertMigratedPhases(_ tasks: [Task]) {
         func phase(_ title: String) -> Phase? { tasks.first { $0.title == title }?.phase }
+        func flag(_ title: String) -> Bool? { tasks.first { $0.title == title }?.archived }
         #expect(tasks.count == 6, "no card dropped")
         #expect(phase("running") == .live(.running))
         #expect(phase("wait-nil") == .live(.waiting(.humanTurn)))         // nil waitReason → humanTurn, never unknown
         #expect(phase("wait-perm") == .live(.waiting(.permission)))
-        #expect(phase("done") == .dead(.completed))
+        #expect(phase("done") == .archived(teardownComplete: true))   // legacy done → real archived terminal
+        #expect(flag("done") == true)                                  // …and the archived Bool is synced (MAJOR fix)
         #expect(phase("dead") == .dead(.resumeFailed))                    // dead preserves its reason
         #expect(phase("arch") == .archived(teardownComplete: true))
+        #expect(flag("arch") == true)
+        #expect(flag("running") == false)                              // a live card's Bool is untouched
     }
 
     @Test("migrates a legacy bare [Task] array — every status → phase, rev 0")

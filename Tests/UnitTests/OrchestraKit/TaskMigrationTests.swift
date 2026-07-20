@@ -19,7 +19,8 @@ struct TaskMigrationTests {
     /// IMPORTANT regression: the legacy Bool-bridge `archive()` (PR2/PR3/PR4a) persisted a record WITH a
     /// `phase` key as `.dead(.completed)` + `archived == true`. Post-PR4b that decodes as `.dead`, whose
     /// gate rejects `reopen` (and `.dead → .creatingWorktree` is an illegal edge) — the card could never be
-    /// reopened. Decode must normalize it to the real `.archived` terminal.
+    /// reopened. `Phase.init` now maps the legacy `"completed"` detail directly to the real `.archived`
+    /// terminal (rather than via the archived-Bool normalize), so decode never produces `.dead(.completed)`.
     @Test("a legacy .dead(.completed)+archived record with a phase key decodes as .archived")
     func legacyArchivedDeadCompletedNormalizesToArchived() throws {
         let id = UUID()
@@ -31,16 +32,23 @@ struct TaskMigrationTests {
         #expect(decoded.archived == true)
     }
 
-    /// The complement: a genuinely `.dead(.completed)` record that is NOT archived stays `.dead` (a
-    /// completed-but-not-yet-retired card must not be silently archived by the normalization).
-    @Test("a .dead(.completed) record that is NOT archived stays .dead")
-    func deadCompletedNotArchivedStaysDead() throws {
+    /// The data-loss guardrail: a legacy non-archived `.dead(.completed)` record (a finished read-only
+    /// reviewer that was never retired) must NOT throw on decode now that `DeadReason.completed` is gone —
+    /// `Phase.init` maps the legacy `"completed"` detail to `.archived(teardownComplete:true)` so the card
+    /// is kept, not dropped by FailableTask.
+    @Test("a legacy non-archived .dead(.completed) record decodes to .archived and is not dropped")
+    func legacyCompletedNotArchivedDecodesToArchived() throws {
         let id = UUID()
         let json = """
         {"id":"\(id.uuidString)","phase":{"name":"dead","detail":"completed"},"archived":false}
         """
         let decoded = try OrchestraJSON.decoder.decode(Task.self, from: Data(json.utf8))
-        #expect(decoded.phase == .dead(.completed))
+        #expect(decoded.phase == .archived(teardownComplete: true))
+        #expect(decoded.archived == true)   // the Bool must be synced (see Step 6) — else the card is a dead end
+        // …and the synced card is admitted by the reopen gate (mirrors normalizedLegacyArchivedCardIsReopenable):
+        let kind = CommandRegistry.gatedKind(of: decoded)
+        let reopen = try #require(CommandCatalog.all.first { $0.name == "reopen" })
+        #expect(reopen.phaseGate.contains(kind))
     }
 
     /// End-to-end: the normalized card is REOPENABLE — the `reopen` gate ({archivedPending, archivedComplete})
