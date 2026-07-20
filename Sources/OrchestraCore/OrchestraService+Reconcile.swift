@@ -260,8 +260,8 @@ extension OrchestraService {
     private func tickLaunchReadyPublic(_ id: UUID) {
         guard readinessWaiters[id] != nil else { launchReadyTicks[id] = nil; return }
         let n = (launchReadyTicks[id] ?? 0) + 1
-        if n >= launchReadyTickThreshold { launchReadyTicks[id] = nil; resolveReadiness(id, true) }
-        else { launchReadyTicks[id] = n }
+        if n >= launchReadyTickThreshold { launchReadyTicks[id] = nil; resolveReadiness(id, true, via: .ticks) }
+        else { launchReadyTicks[id] = n }   // liveness fallback → HOLD the seed lease (B3; production tick path)
     }
 
     // MARK: - orphan-session sweep (fresh off-actor probe, fail-safe)

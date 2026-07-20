@@ -14,11 +14,20 @@ public struct LaunchFailure: Sendable, Equatable {
     }
 }
 
+/// HOW a bring-up's readiness was confirmed — the provenance B3's cold delivery turns on. `.signal` is a
+/// positive session signal proving the NEW generation booted (a current-epoch SessionStart hook / a fresh
+/// launch's rollout `session_meta`), so a `relaunchSeed` seed can be confirmed immediately. `.ticks` is the
+/// N=3 liveness fallback (a `codex resume` emits no signal) or a signal we can't attribute to the current
+/// generation — it proves only that SOMETHING is alive, so the stepper HOLDS the seed lease and lets
+/// `report()`'s provenance-fenced held-confirm remove it on the first proven current-gen line/hook.
+public enum ReadinessVia: Sendable, Equatable { case signal, ticks }
+
 /// The outcome of awaiting a relaunch's inline readiness confirmation. `.superseded` is distinct from
 /// `.timedOut` so a relaunch displaced by a newer relaunch for the same card exits quietly (the survivor
 /// owns the card) instead of being treated as a failure and marked dead.
 public enum ReadinessOutcome: Sendable, Equatable {
-    case confirmed, timedOut, superseded
+    case confirmed(via: ReadinessVia)
+    case timedOut, superseded
     case launchFailed(LaunchFailure)
 }
 
@@ -132,34 +141,21 @@ extension OrchestraService {
         return updated
     }
 
-    /// F1 (C3) — resume THIS card into a fresh process with CLEAN context, seeded with the handoff/fork
-    /// context AND its pending inbox (folded into one seed delivered as the resumed session's opening
-    /// turn). This is **resume, not a blank restart**: `agentSessionId` is KEPT, so the vendor transcript
-    /// carries forward and the seed adds new context to a continued session. The inbox "folds into the
-    /// seed" (design §8 F1) — drained BEFORE resume so the queued messages ride the opening turn, and are
-    /// not double-delivered by a later Stop-drain. This is F1 (handoff) AND the idle-wake path for a
-    /// `.relaunch` agent (`resumeSeedWake`). Backs D1's `handoff` Command.
+    /// F1 (C3) — resume THIS card into a fresh process with CLEAN context, carrying the handoff/fork
+    /// context as the resumed session's opening seed. This is **resume, not a blank restart**:
+    /// `agentSessionId` is KEPT, so the vendor transcript carries forward. This is F1 (handoff) AND the
+    /// idle-wake path for a `.relaunch` agent (`resumeSeedWake`). Backs D1's `handoff` Command.
+    ///
+    /// B3 — NO inbox drain. The pending inbox is no longer eaten here and folded into the seed; it stays
+    /// DURABLE and is delivered by the RelaunchStepper's `relaunchSeed` claim (which composes this handoff
+    /// with the still-queued messages at claim time under one budget). That closes the L1 drain→persist
+    /// crash window — a crash between here and the launch loses nothing, because nothing was removed. This
+    /// body is now exactly `resume(seed:)`; `resume` validates the model before its first mutation, so no
+    /// pre-validation is needed (there is no destructive drain left to protect).
     @discardableResult
     public func resumeInCard(_ id: UUID, seed: String? = nil, graceSeconds: Int? = nil,
                              model: String? = nil, source: ActivitySource = .daemon) async throws -> Task {
-        // Validate the re-seat BEFORE the drain. `inbox.drain` is DESTRUCTIVE (Inbox.swift:55-62 removes the
-        // messages and persists), so letting an invalid model reach `resume`'s validation would throw only
-        // AFTER the card's durable queue had been eaten — the messages are folded into a seed that is then
-        // thrown away with the error. Reject first; the queue survives a rejected `handoff --model`.
-        let task = try await require(id)
-        _ = try resolveModelOverride(model, for: task)
-        let drained = (try? await inbox.drain(id)) ?? []
-        let folded = HandoffSeed.fold(handoff: seed, inbox: drained)
-        let updated = try await resume(id, graceSeconds: graceSeconds, seed: folded, model: model, source: source)
-        // The drain is DESTRUCTIVE and the resume below it can still be REFUSED: `drain` suspends the actor,
-        // so an `archive` can interleave and the funnel will then reject the `→ .relaunching` intent. The
-        // folded seed — carrying these messages — is discarded with it, so put them back rather than let a
-        // lost race silently eat the card's durable queue. (Validation already runs before the drain; this
-        // covers the window the validation cannot.)
-        if updated.phase.kind != .relaunching, !drained.isEmpty {
-            for m in drained { try? await inbox.enqueue(id, m.text) }
-        }
-        return updated
+        try await resume(id, graceSeconds: graceSeconds, seed: seed, model: model, source: source)
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
@@ -272,10 +268,15 @@ extension OrchestraService {
     /// fallback resolves it within the grace — either way it stays ON the readiness gate (never immediate,
     /// which would leave no waiter and bypass the gate). `.relaunchLiveness` takes the successful `ensure`
     /// as the confirmation because the agent emits no marker at all, so it must NOT wait for one.
-    func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int) async -> ReadinessOutcome {
+    func confirmReadiness(_ id: UUID, adapter: any Adapter, graceSeconds: Int,
+                          expectedEpoch: Int) async -> ReadinessOutcome {
         switch adapter.capabilities.readinessConfirmation {
-        case .sessionStartHook, .rolloutMeta: return await awaitReadiness(id, graceSeconds: graceSeconds)
-        case .relaunchLiveness:                return .confirmed
+        case .sessionStartHook, .rolloutMeta:
+            return await awaitReadiness(id, graceSeconds: graceSeconds, expectedEpoch: expectedEpoch)
+        case .relaunchLiveness:
+            // No marker at all — the successful `ensure` IS the confirmation, but it's a liveness proof,
+            // not a signal that the seed booted, so it holds the seed lease like the tick fallback.
+            return .confirmed(via: .ticks)
         }
     }
 
@@ -547,7 +548,7 @@ extension OrchestraService {
         let n = (launchReadyTicks[id] ?? 0) + 1
         if n >= launchReadyTickThreshold {
             launchReadyTicks[id] = nil
-            resolveReadiness(id, true)
+            resolveReadiness(id, true, via: .ticks)   // liveness fallback → HOLD the seed lease (B3)
         } else {
             launchReadyTicks[id] = n
         }
@@ -581,8 +582,14 @@ extension OrchestraService {
     /// gate, so this is a no-op unless there is a genuinely stranded message, and it self-terminates: the
     /// resumed turn drains the inbox.
     func wakeIfPending(_ id: UUID) async {
+        // B3 D5: gate on `hasClaimable`, NOT `!peek.isEmpty`. The funnel fires this on EVERY `.live`
+        // landing (+Lifecycle wake-on-live), and `peek` returns leased messages too — so a card that just
+        // landed `.live(.waiting)` HOLDING a `.ticks`-readiness relaunchSeed lease has a non-empty peek and
+        // would be re-woken → a fresh resume → epoch bump → the held lease re-claimed → the just-live
+        // session killed and re-delivered, in a loop. A held same-epoch lease is NOT claimable, so
+        // `hasClaimable` correctly leaves it alone until its held-confirm (or the lease expires).
         guard let t = await store.get(id), case .live(.waiting) = t.phase, !t.archived,
-              !(await inbox.peek(id)).isEmpty else { return }
+              await inbox.hasClaimable(id, epoch: t.sessionEpoch, now: Date()) else { return }
         await wake(id)
     }
 
@@ -619,13 +626,18 @@ extension OrchestraService {
         await offActorValue { [sessions] in sessions.hostResourceFault(evidence: evidence) }
     }
 
-    private func awaitReadiness(_ id: UUID, graceSeconds: Int) async -> ReadinessOutcome {
+    private func awaitReadiness(_ id: UUID, graceSeconds: Int, expectedEpoch: Int) async -> ReadinessOutcome {
         // The confirmation may already have landed while we were relaunching off-actor (see
         // `pendingReadiness`). Consume it synchronously — before registering a waiter — so an early callback
         // confirms instantly instead of waiting out (or timing out) the grace. This block and the
         // registration below run without an intervening `await`, so no callback can slip between the check
-        // and the registration on this serialized actor.
-        if pendingReadiness.remove(id) != nil { return .confirmed }
+        // and the registration on this serialized actor. The early signal is EPOCH-CHECKED (B3 D6): a stale
+        // predecessor signal that landed in the register window can't confirm the new generation.
+        if let early = pendingReadiness.removeValue(forKey: id) {
+            if early == expectedEpoch { return .confirmed(via: .signal) }   // proven current-gen signal
+            if early == nil { return .confirmed(via: .ticks) }              // unattributable → hold
+            // else: a stale mismatched-epoch signal — dropped; register a fresh waiter below.
+        }
         readinessTokenSeq &+= 1
         let token = readinessTokenSeq
         return await withCheckedContinuation { (cont: CheckedContinuation<ReadinessOutcome, Never>) in
@@ -634,7 +646,7 @@ extension OrchestraService {
             // `readinessWaiters[id] = …` would drop the old continuation unresumed → that relaunch hangs
             // forever → the idle card can never be woken again.
             if let old = readinessWaiters[id] { old.cont.resume(returning: .superseded) }
-            readinessWaiters[id] = (token, cont)
+            readinessWaiters[id] = (token, expectedEpoch, cont)
             let grace = max(0, graceSeconds)
             _Concurrency.Task { [weak self, clock] in
                 try? await clock.sleep(for: .seconds(grace))
@@ -643,13 +655,35 @@ extension OrchestraService {
         }
     }
 
-    func resolveReadiness(_ id: UUID, _ ok: Bool) {
-        if let w = readinessWaiters.removeValue(forKey: id) {
-            w.cont.resume(returning: ok ? .confirmed : .timedOut)
+    /// Resolve a being-born card's readiness waiter. A `.signal` (positive session signal) confirms the
+    /// waiter ONLY when `observedEpoch` matches the generation the waiter was armed for — a stale predecessor
+    /// signal (or one from a superseded relaunch) is IGNORED, leaving the waiter for a genuine current-gen
+    /// signal / the tick fallback / the grace timeout (B3 D6). A `.ticks` resolution (the N=3 liveness
+    /// fallback) and an unattributable nil-epoch signal resolve as `.ticks` (hold the seed). `ok == false`
+    /// times the waiter out as before.
+    func resolveReadiness(_ id: UUID, _ ok: Bool, observedEpoch: Int? = nil, via: ReadinessVia = .signal) {
+        if let w = readinessWaiters[id] {
+            guard ok else {
+                readinessWaiters.removeValue(forKey: id)
+                w.cont.resume(returning: .timedOut)
+                return
+            }
+            let resolvedVia: ReadinessVia
+            if via == .ticks {
+                resolvedVia = .ticks
+            } else if let observedEpoch {
+                guard observedEpoch == w.expectedEpoch else { return }   // stale-gen signal → ignore, keep waiting
+                resolvedVia = .signal
+            } else {
+                resolvedVia = .ticks   // a signal we can't attribute to the current generation → hold, fail-safe
+            }
+            readinessWaiters.removeValue(forKey: id)
+            w.cont.resume(returning: .confirmed(via: resolvedVia))
         } else if ok {
             // No waiter yet: `awaitReadiness` hasn't registered (the relaunch is still bringing the session
-            // up off-actor). Remember this confirmation so the waiter picks it up rather than losing it.
-            pendingReadiness.insert(id)
+            // up off-actor). Remember this confirmation — WITH its epoch — so the waiter epoch-checks it on
+            // consume. Ticks never reach here (the tick resolvers only fire while a waiter is registered).
+            pendingReadiness[id] = observedEpoch
         }
     }
 

@@ -162,15 +162,17 @@ public actor OrchestraService {
     // relaunches for the same id must never silently clobber (and thus LEAK) the earlier continuation —
     // the displaced waiter is resolved `.superseded`, and a stale timeout is ignored unless its token
     // still owns the slot. See `awaitReadiness`/`resolveReadiness`.
-    var readinessWaiters: [UUID: (token: UInt64, cont: CheckedContinuation<ReadinessOutcome, Never>)] = [:]
+    var readinessWaiters: [UUID: (token: UInt64, expectedEpoch: Int, cont: CheckedContinuation<ReadinessOutcome, Never>)] = [:]
     // Monotonic tag minted per awaitReadiness so a timeout only fires for the waiter it was scheduled for.
     var readinessTokenSeq: UInt64 = 0
     // A readiness signal can arrive BEFORE `awaitReadiness` registers its waiter, because a relaunch's
     // off-actor session bring-up frees this reentrant actor to service `report()` mid-revival. We remember
     // such early confirmations here so the waiter consumes them instead of losing the wakeup and timing
     // out. Cleared at the start of each relaunch attempt so a late callback from a prior, already-failed
-    // attempt can't spuriously confirm a future one.
-    var pendingReadiness: Set<UUID> = []
+    // attempt can't spuriously confirm a future one. The stored value is the signal's `observedEpoch`
+    // (nil for an unstamped signal), so `awaitReadiness` epoch-checks an early signal on consume — a
+    // stale predecessor signal that lands in the register window can't confirm the new generation (B3 D6).
+    var pendingReadiness: [UUID: Int?] = [:]
     // Universal N=3 readiness fallback (2.6). Per-card count of consecutive liveness ticks a being-born
     // card (`.launching`/`.relaunching`) has had a LIVE session AND a still-pending inline readiness waiter.
     // At `launchReadyTickThreshold` we `resolveReadiness` the waiter — a safety net WITHIN the grace window
@@ -442,9 +444,9 @@ public actor OrchestraService {
                 return (p, FileManager.default.fileExists(atPath: p))
             }
             guard let resolved, resolved.exists else { continue }
-            for line in await tailer.newLines(cardId: t.id, path: resolved.path) {
-                if let patch = adapter.parse(.fileTail(line: line)) {
-                    try? await report(t.id, patch)
+            for tl in await tailer.newLines(cardId: t.id, path: resolved.path) {
+                if let patch = adapter.parse(.fileTail(line: tl.line)) {
+                    try? await report(t.id, patch, tail: (tl.path, tl.startOffset))
                 }
             }
         }
@@ -745,6 +747,10 @@ public actor OrchestraService {
         outstandingTokens[cardId, default: []].insert(token)
     }
 
+    /// Test-only: how many delivery tokens are outstanding for a card (the arm's expiry-charge set). Used to
+    /// pin that a handoff-only (0-message) batch leaves NO phantom token behind.
+    func outstandingTokenCountForTest(_ cardId: UUID) -> Int { outstandingTokens[cardId]?.count ?? 0 }
+
     /// The token-based confirm chokepoint — every delivery path (Stop confirm, channel ack, stepper
     /// signal-readiness) funnels a receipt through here, so the archive guard and the attempt/stuck resets
     /// can't be forgotten at one site. A message leaves the durable inbox ONLY here.
@@ -764,10 +770,11 @@ public actor OrchestraService {
         await deliveryConfirmed(cardId: cardId, token: token, didConfirm: didConfirm)
     }
 
-    /// Completion-only delivery bookkeeping. B3's report-path held-relaunch confirm funnels here too, passing
-    /// the token `confirmHeldRelaunch` returned. The token is pruned from the outstanding set on EITHER a
-    /// confirm or a release (it is no longer in flight); but a stale-token no-op / archive release must NOT
-    /// reset the retry budget or clear the stuck flag — that happens only on a genuine confirmation.
+    /// Completion-only delivery bookkeeping. B3's report-path held-relaunch confirm funnels here too, via
+    /// `confirmDelivery` (peek the held lease token → `confirmDelivery`, which calls this) so the archive
+    /// guard is never bypassed. The token is pruned from the outstanding set on EITHER a confirm or a
+    /// release (it is no longer in flight); but a stale-token no-op / archive release must NOT reset the
+    /// retry budget or clear the stuck flag — that happens only on a genuine confirmation.
     func deliveryConfirmed(cardId: UUID, token: UUID, didConfirm: Bool) async {
         outstandingTokens[cardId]?.remove(token)
         if outstandingTokens[cardId]?.isEmpty == true { outstandingTokens[cardId] = nil }
@@ -782,6 +789,23 @@ public actor OrchestraService {
            let (saved, rev) = try? await store.update(cardId, { $0.deliveryStuckSince = nil }) {
             emit(.taskUpserted(saved), rev: rev)
         }
+    }
+
+    /// Claim the cold-delivery `relaunchSeed` batch for a relaunch (the RelaunchStepper's `ctx.claimSeed`):
+    /// the card's `pendingSeed` (handoff) composed with its pending inbox under ONE budget, leased at
+    /// `epoch`. `nil` when there is nothing to seed (no handoff AND no claimable message). `markDispatched`
+    /// is recorded ONLY for a MESSAGE-BEARING batch (`ids` non-empty): a handoff-only 0-id batch persists no
+    /// lease, so tracking its token would leak a phantom outstanding token and mischarge the arm (B3 — the
+    /// handoff-only case is a fire-and-forget re-seat, per the contract, with no durable receipt).
+    func claimSeed(_ cardId: UUID, epoch: Int) async -> ClaimedBatch? {
+        guard let card = await store.get(cardId) else { return nil }
+        let handoff = card.pendingSeed
+        guard let batch = try? await inbox.claim(
+            cardId, route: .relaunchSeed, epoch: epoch, budget: StopDrain.maxPayloadChars,
+            render: { HandoffSeed.compose(handoff: handoff, messages: $0, budget: $1) }, now: Date())
+        else { return nil }
+        if !batch.ids.isEmpty { markDispatched(cardId, token: batch.token) }
+        return batch
     }
 
     // MARK: - inbox / F3 (Stop-drain)
@@ -1347,7 +1371,8 @@ public actor OrchestraService {
                 let task = await store.get(id)
                 await emitActivity(kind, task, .daemon, text)
             },
-            confirmDelivery: { [self] token, id in await confirmDelivery(token: token, cardId: id) })
+            confirmDelivery: { [self] token, id in await confirmDelivery(token: token, cardId: id) },
+            claimSeed: { [self] id, epoch in await claimSeed(id, epoch: epoch) })
     }
 
     // (column display names live on `Column.displayName`)

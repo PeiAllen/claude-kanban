@@ -13,6 +13,19 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Claude Code's shipped seam behavior, frozen as the descriptor (A1).
     public var capabilities: AgentCapabilities { .claudeCode }
 
+    /// B3 — cold-path resume-modal suppression (5866ea). A machine-driven `claude --resume` on an old
+    /// (> ~70min) AND large (> ~100k tokens) session opens a "Resume from summary/full" modal INSTEAD of
+    /// running the seed argv; with no human to answer it, the resume deadlocks and swallows the seed (two
+    /// live cards were observed parked at it). Set both thresholds impossibly high so the modal never
+    /// triggers. FAIL-SOFT by construction: these are undocumented internals a differing build ignores
+    /// harmlessly, and if the modal still appears the readiness await times out → the lease survives →
+    /// the arm retries / stuck-flags (never a silent swallow). Agent-agnostic: this is the `Adapter.env`
+    /// seam (Codex uses it for `CODEX_HOME`); other adapters return nothing.
+    public var env: [String: String] {
+        ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES": "1000000",
+         "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD": "1000000"]
+    }
+
     /// Allow tests to inject a fake binary (the fake-agent fixture) without spawning real Claude.
     let binOverride: String?
     /// Test-only home injection for the opt-in global MCP installer; production reads the user's HOME.

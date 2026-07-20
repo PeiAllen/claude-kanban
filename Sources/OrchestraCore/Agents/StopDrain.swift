@@ -13,7 +13,7 @@ public enum StopDrain {
 
     /// The **channel-neutral provenance header** prepended to inbox messages on *every* delivery path,
     /// so the framing is identical whichever agent drains them: Claude via the Stop hook (`compose`, this
-    /// file) and Codex via the resume seed (`HandoffSeed.fold`). Deliberately says nothing about *how* the
+    /// file) and Codex via the resume seed (`HandoffSeed.compose`). Deliberately says nothing about *how* the
     /// messages arrive ("turn-end", "hook", "seed") — only *what* they are.
     ///
     /// Why it exists: inbox messages reach the model on channels it may distrust — Claude receives the
@@ -41,7 +41,7 @@ public enum StopDrain {
     /// distinct actionable items rather than one run-on blob — the documented mitigation for the
     /// "curse of instructions" compliance drop when several instructions share a turn. A lone message
     /// needs no index. Shared by both delivery paths (Stop-hook `fit`/`compose` and the Codex resume
-    /// seed's `HandoffSeed.fold`) so the framing is byte-identical whichever agent drains.
+    /// seed's `HandoffSeed.compose`) so the framing is byte-identical whichever agent drains.
     public static func renderMessages(_ messages: [InboxMessage]) -> String {
         let header = inboxHeader(messages.count)
         guard messages.count > 1 else { return header + "\n\n" + (messages.first?.text ?? "") }

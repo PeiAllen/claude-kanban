@@ -474,6 +474,103 @@ budget or clears the stuck flag. Archive-versus-confirm is deliberately a two-pa
 fresh archived-read plus teardown's lease release — because the actor model can't linearize a cross-actor
 store-read and inbox-write into one atomic step.
 
+### The cold path flips to claim-then-confirm, fenced by a persisted tail watermark
+
+B3 converts the **cold** routes — idle-wake, send-to-a-dead-card, and handoff — from the destructive
+drain to the claim. The pivot is removing `resumeInCard`'s `inbox.drain`: it now carries only the
+handoff context (it *is* `resume(seed:)`), and the pending inbox stays durable, delivered by the
+RelaunchStepper's `relaunchSeed` claim, which composes the handoff and the inbox under one budget with
+`HandoffSeed.compose`. Removing the drain is what closes the L1 crash window — there is no drained-then-
+folded-then-lost seed to lose, because nothing is removed until a receipt is proven. `HandoffSeed.fold`
+retires with its last caller; `compose` runs *inside* the claim, so the claim's consumed-prefix guarantee
+covers the final argv bytes and a truncating fold can never leave a leased-but-unrendered message to be
+confirmed.
+
+**Readiness now carries provenance, because the confirm depends on it.** `ReadinessOutcome.confirmed`
+gains a `via: {.signal, .ticks}`. A `.signal` is a positive session signal proving the new generation
+booted with the seed — a current-epoch SessionStart hook, or a fresh launch's rollout `session_meta` — so
+the stepper confirms the batch immediately. A `.ticks` is the N=3 liveness fallback (a `codex resume`
+emits no rollout) or a signal that can't be attributed to the current generation; it proves only that
+something is alive, so the stepper **holds** the lease and lets `report()` confirm it later. That the
+signal is *current-generation* is load-bearing and enforced two ways. The readiness waiter records the
+epoch it was armed for, and `resolveReadiness` yields `.signal` only when the delivering signal's
+`observedEpoch` matches — a stale predecessor resume hook that lands in the relaunch's readiness window is
+ignored (a nil-epoch signal degrades to `.ticks`, never a premature confirm). This matters because
+`resolveReadiness` is not otherwise epoch-fenced the way the phase write is; without it a delayed
+predecessor hook would confirm the new batch with no proof the new session ever received it. There are two
+tick resolvers — a test-only one and the production `tickLaunchReadyPublic` in the reconciler — and *both*
+must mark `.ticks`; the production one is easy to miss (it compiles either way) and missing it would make
+Codex idle-wake confirm every seed unfenced, turning the whole watermark machinery into dead code.
+
+**A held lease is confirmed by a provenance-fenced line, so a crash or a replay can't false-confirm.** A
+`report()` for a card holding a `relaunchSeed` lease confirms it only on a signal proven to post-date the
+relaunch: a fileTail line qualifies only when it is on the same rollout path *and* at or past a **persisted
+tail watermark**, and a hook qualifies only when its epoch matches the lease's. The watermark is the
+rollout's EOF byte offset captured inside `finishLaunch`'s one off-actor hop — after the predecessor is
+killed (so it cannot append past the fence) and before the new session launches (so the new session has
+not written yet) — and stored on the lease together with the path. `RolloutTailer.eofOffset` is a
+stateless stat precisely so it can run in that hop without a third suspension between kill and launch, and
+`RolloutTailer.newLines` now returns each line's byte offset and path (`TailedLine`) so `pollTelemetry` can
+thread the provenance through. Because the watermark and path are persisted on the lease, a daemon restart
+that re-reads the rollout from offset zero replays only pre-watermark lines, which fail the offset test and
+never confirm — the fence is crash-proof by construction, not by arrival-order luck. The confirm itself
+routes through B2's `confirmDelivery` (not a self-confirming inbox helper, which is why B1's
+`confirmHeldRelaunch` is retired), so the archive guard is never bypassed.
+
+One route is deliberately left at **lease-expiry** rather than a proven confirm: a *provisional* (never-
+prompted, transcript-less) fileTail card blank-launches rather than resuming, and a blank launch mints a
+fresh session whose rollout does not exist yet — so there is no EOF to capture before launch and no path to
+fence on. Its held lease therefore carries no watermark and `report()` can never confirm it (a fileTail
+agent has no epoch-stamped hook to take the other branch either). The payload is still delivered — it rides
+the launch as the opening positional — so nothing is lost; the lease simply lingers until it expires and is
+re-claimed, which re-delivers once. That is the contract's at-least-once posture (duplicates over loss)
+applied to the one case where post-kill provenance is unobtainable, and it is narrow in practice: it needs a
+send to a dead, never-prompted Codex card. Read the cold path as exactly-once *only* where a watermark or an
+epoch-matched hook exists; this case is at-least-once by construction.
+
+A second, narrower residual has the same shape. The watermark is *captured* inside the kill→ensure hop but
+*stamped* on the lease a few actor hops later, and `pollTelemetry` keeps tailing a card while it is
+`.relaunching` — so a rollout line emitted by the new session in that gap is consumed (the tailer cursor
+advances) at a moment when the lease carries no watermark yet and the card has not landed `.live`, and it
+therefore cannot confirm. If that were the session's *only* line, the lease would sit held until it expired
+and re-delivered. It is left as a residual rather than restructured: closing it means splitting the hop so
+the stamp precedes the launch, which trades a verified-atomic post-kill capture for a window where the card
+has no session at all, to convert a within-contract duplicate into a slightly earlier confirm. Codex emits
+many lines per turn, so "the only line lands in that gap" is vanishingly rare, and the outcome is a
+duplicate, never a loss.
+
+Both residuals share one root: a confirm needs *proof* the current generation received the seed, and where
+that proof is unobtainable the design holds the message rather than guessing. The delivery arm (B4) is what
+turns an expired held lease back into a prompt re-delivery; until it lands, an expired lease waits for the
+next wake rather than being re-driven on a timer — the message stays durable throughout, which is why the
+B-spine deliberately sequences the arm after both confirm paths exist.
+
+Four fences make the flip **independently correct**, not merely correct once B4 lands, and each is here
+rather than deferred because B3 is where the held lease is *born*. `wakeIfPending` now gates on
+`hasClaimable`, not a non-empty peek: the funnel fires wake-on-live on every `.live` landing, and a held
+same-epoch lease still shows in `peek`, so the old gate would re-wake the just-live card into an infinite
+relaunch loop — a held lease is deliberately not claimable, so `hasClaimable` leaves it alone. The
+`report()` being-born landing fence drops its `owesLaunch` term (`!(beingBorn && observedEpoch !=
+sessionEpoch)`): the de-drain means a cold relaunch carries neither `pendingSeed` nor `pendingModel`, so
+the old gate no longer covered it, and an unstamped file-tail snapshot from the dying predecessor could
+land the card `.live` before the stepper ever claimed its seed. The RelaunchStepper re-reads the card after
+the worktree ensure and claims at the *current* epoch, so a relaunch that supersedes it during the ensure
+can't let a stale step re-own the lease at the wrong generation. And `TeardownStepper` releases the card's
+leases before the terminal flip, so the narrow archive-versus-confirm window B2 left to B4 is backstopped
+in-PR for B3's new held leases (the broker `detachAll` half stays B4). A handoff-only claim — non-empty
+payload, zero consumed messages — leases nothing, so it is neither dispatch-tracked nor signal-confirmed;
+tracking its token would leak a phantom outstanding token and mischarge the arm, and per the contract a
+handoff's context is a fire-and-forget re-seat with no durable receipt.
+
+Finally, the cold path suppresses Claude's **resume modal**. A machine-driven `claude --resume` on an old,
+large session opens a "Resume from summary/full" dialog instead of running the seed, and with no human to
+answer it the resume deadlocks and swallows the seed (two live cards were observed parked at it).
+`ClaudeCodeAdapter.env` sets `CLAUDE_CODE_RESUME_THRESHOLD_MINUTES` and `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD`
+impossibly high through the same `Adapter.env` seam Codex uses for `CODEX_HOME`. It is fail-soft — a build
+that doesn't know the vars ignores them, and a modal that still appears degrades to a readiness timeout, so
+the lease survives and the arm retries rather than the seed being silently lost — and agent-agnostic, since
+other adapters return nothing.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session

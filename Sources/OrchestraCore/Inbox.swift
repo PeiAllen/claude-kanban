@@ -262,7 +262,7 @@ public actor Inbox {
     /// ring, in ONE persist (a crash leaves both halves or neither). A stale/unknown token is an
     /// idempotent no-op: a late ack from a superseded attempt can never remove a re-claimed message.
     ///
-    /// Landed here in Task 4 (not with `release`/`releaseAll`/`hasClaimable`/`confirmHeldRelaunch` in
+    /// Landed here in Task 4 (not with `release`/`releaseAll`/`hasClaimable`/`setTailWatermark` in
     /// Task 6) because `InboxClaimTests.partialReclaimKillsStaleTailToken` needs it to verify the
     /// stale-tail-unlease invariant: a late confirm from a provably-superseded lease must not delete an
     /// undelivered message. Task 6 adds the rest of the confirm/release surface + the ring-eviction test.
@@ -329,18 +329,28 @@ public actor Inbox {
         }
     }
 
-    /// Confirm a HELD `relaunchSeed` lease at exactly `epoch` — one atomic find-and-confirm, so B3's
-    /// first-signal confirm can't drift from the lease it means. No-op when absent.
-    /// Returns the confirmed token (or `nil` when there was no matching held lease), so B3's report-path
-    /// held-relaunch confirm can funnel the same completion bookkeeping the token-based path does.
-    @discardableResult
-    public func confirmHeldRelaunch(_ cardId: UUID, epoch: Int) throws -> UUID? {
+    /// Stamp the held `relaunchSeed` lease at exactly `epoch` with the post-kill tail watermark + the
+    /// rollout path it was captured from (B3's `finishLaunch` duty). One atomic lease UPDATE that keeps
+    /// the token/route/epoch/leasedAt intact, so `report()`'s fileTail held-confirm can later fence a
+    /// line by `path == lease.tailPath && startOffset >= lease.tailWatermark`. No-op when there is no
+    /// such held lease (a fresh spawn, a handoff-only 0-message batch, or a non-fileTail agent).
+    ///
+    /// The held-relaunch CONFIRM itself is NOT here: B3 routes it through the service `confirmDelivery`
+    /// funnel (peek the lease token → `confirmDelivery`), so the archive guard + attempt/stuck resets
+    /// can't be bypassed — an atomic self-confirming Inbox helper would skip them.
+    public func setTailWatermark(cardId: UUID, epoch: Int, watermark: Int64, path: String) throws {
         ensureLoaded()
-        guard let token = messages.first(where: {
-            $0.cardId == cardId && $0.lease?.route == .relaunchSeed && $0.lease?.epoch == epoch
-        })?.lease?.token else { return nil }
-        try confirm(token: token)
-        return token
+        var changed = false
+        for (idx, msg) in messages.enumerated()
+        where msg.cardId == cardId && msg.lease?.route == .relaunchSeed && msg.lease?.epoch == epoch {
+            guard let lease = msg.lease else { continue }
+            let stamped = DeliveryLease(token: lease.token, route: lease.route, epoch: lease.epoch,
+                                        leasedAt: lease.leasedAt, tailWatermark: watermark, tailPath: path)
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+                                         dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: stamped)
+            changed = true
+        }
+        if changed { try persist() }
     }
 
     private func persist() throws {

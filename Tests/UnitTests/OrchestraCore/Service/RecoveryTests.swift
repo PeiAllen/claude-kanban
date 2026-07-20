@@ -272,22 +272,26 @@ struct RecoveryTests {
         let ensureAfterA = env.sessions.ensureCount
 
         // send B lands mid-relaunch (card `.relaunching`, readiness pending) → wake defers, B stranded.
+        // B3: A is not drained — it rides a HELD relaunchSeed lease (delivered in the seed, awaiting its
+        // confirm), so both messages are still durable; A is leased, B is the stranded (claimable) one.
         try await env.svc.send(card.id, "B")
         await yieldBriefly()   // negative: a wrongful second resume's detached task gets its chance to run
         #expect(env.sessions.ensureCount == ensureAfterA)                          // deferred: not resumed yet
-        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["B"])         // stranded (A rode the seed)
+        #expect(Set(try await env.svc.inboxPeek(card.id).map(\.text)) == ["A", "B"])   // A held on the seed, B stranded
 
-        // Confirm resume #1 → `.live` → the funnel's wake-on-live re-drives wake → resume #2 (B folded).
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))
+        // Confirm resume #1 with the CURRENT generation stamped (a real SessionStart(resume) carries
+        // ORCH_EPOCH) → `.signal` readiness → the stepper confirms A (removes it) and lands `.live`; the
+        // funnel's wake-on-live then re-drives wake → resume #2, whose claim delivers B.
+        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"), observedEpoch: relaunchingA.sessionEpoch)
         try await steppingA
         try await pollUntil { await env.svc.store.get(card.id)?.phase.kind == .relaunching }   // B's resume-seed
         let relaunchingB = try #require(await env.svc.store.get(card.id))
         async let steppingB: Void = RelaunchStepper().step(relaunchingB, ctx)
         try await pollUntil { env.sessions.ensureCount > ensureAfterA }
-        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"))   // confirm resume #2
+        try await env.svc.report(card.id, StatusReport(sessionSource: "resume"), observedEpoch: relaunchingB.sessionEpoch)   // confirm resume #2
         try await steppingB
         #expect(try #require(env.sessions.ensureArgv[name]).last?.contains("B") == true)   // B rode the seed
-        #expect(try await env.svc.inboxPeek(card.id).isEmpty)                      // drained
+        #expect(try await env.svc.inboxPeek(card.id).isEmpty)                      // both confirmed + removed
     }
 
     @Test("wakeIfPending leaves a RUNNING card alone (its Stop-drain owns delivery)")

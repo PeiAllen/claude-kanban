@@ -213,8 +213,12 @@ enum TestEnv {
             // finishLaunch's "start clean" pendingReadiness.remove, and under parallel-suite load the
             // off-actor step can lag the phase write — the race behind the reopen/relaunch flakes.
             if inject, await svc.hasReadinessWaiter(id), let k = card?.phase.kind {
-                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume")) }
-                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup")) }
+                // Stamp the CURRENT generation like a real SessionStart hook (ORCH_EPOCH) so B3's readiness
+                // epoch-fence resolves it as `.signal` (a proven current-gen boot), not the unattributable
+                // `.ticks` degrade a nil-epoch signal would take.
+                let e = card?.sessionEpoch
+                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume"), observedEpoch: e) }
+                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup"), observedEpoch: e) }
             }
             return card?.phase.kind == .live
         }
@@ -275,7 +279,8 @@ enum TestEnv {
             // Deliver on WAITER-REGISTERED, not phase kind (see reconcileToLive): avoids the
             // pendingReadiness-clear race that flakes under parallel-suite contention.
             if await svc.hasReadinessWaiter(created.id) {
-                try? await svc.report(created.id, StatusReport(sessionSource: "startup"))
+                try? await svc.report(created.id, StatusReport(sessionSource: "startup"),
+                                      observedEpoch: card?.sessionEpoch)   // epoch-stamped → .signal (B3 fence)
             }
             return card?.phase.kind == .live
         }

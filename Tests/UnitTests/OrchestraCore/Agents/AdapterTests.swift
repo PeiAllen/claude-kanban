@@ -202,6 +202,8 @@ struct ClaudeDelegationTests {
         let before = a.start(ctx)
         try a.prepareToLaunch(ctx)
         #expect(a.start(ctx) == before)                          // byte-identical argv
-        #expect(a.env.isEmpty)                                   // Claude adds no env
+        // B3: Claude env now carries the resume-modal suppression thresholds (see ResumeModalEnvTests);
+        // prepareToLaunch/start are unaffected by them (env is a separate launch-time seam).
+        #expect(a.env.keys.sorted() == ["CLAUDE_CODE_RESUME_THRESHOLD_MINUTES", "CLAUDE_CODE_RESUME_TOKEN_THRESHOLD"])
     }
 }

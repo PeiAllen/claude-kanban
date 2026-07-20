@@ -148,7 +148,7 @@ struct RolloutTailerTests {
         let path = tmpFile(); let id = UUID()
         append(path, "a\nb\nc\n")
         let t = RolloutTailer()
-        #expect(await t.newLines(cardId: id, path: path) == ["a", "b", "c"])
+        #expect(await t.newLines(cardId: id, path: path).map(\.line) == ["a", "b", "c"])
     }
 
     @Test("second read returns only newly-appended lines")
@@ -158,7 +158,7 @@ struct RolloutTailerTests {
         let t = RolloutTailer()
         _ = await t.newLines(cardId: id, path: path)
         append(path, "c\nd\n")
-        #expect(await t.newLines(cardId: id, path: path) == ["c", "d"])
+        #expect(await t.newLines(cardId: id, path: path).map(\.line) == ["c", "d"])
     }
 
     @Test("a trailing partial line is held until it is completed")
@@ -166,9 +166,9 @@ struct RolloutTailerTests {
         let path = tmpFile(); let id = UUID()
         append(path, "a\nb")                 // "b" has no newline yet
         let t = RolloutTailer()
-        #expect(await t.newLines(cardId: id, path: path) == ["a"])
+        #expect(await t.newLines(cardId: id, path: path).map(\.line) == ["a"])
         append(path, "bb\n")                 // completes -> "bbb"
-        #expect(await t.newLines(cardId: id, path: path) == ["bbb"])
+        #expect(await t.newLines(cardId: id, path: path).map(\.line) == ["bbb"])
     }
 
     @Test("no new bytes → empty")
@@ -177,13 +177,13 @@ struct RolloutTailerTests {
         append(path, "a\n")
         let t = RolloutTailer()
         _ = await t.newLines(cardId: id, path: path)
-        #expect(await t.newLines(cardId: id, path: path) == [])
+        #expect(await t.newLines(cardId: id, path: path).isEmpty)
     }
 
     @Test("missing file → empty, no crash")
     func missingFile() async {
         let t = RolloutTailer()
-        #expect(await t.newLines(cardId: UUID(), path: "/no/such/rollout.jsonl") == [])
+        #expect(await t.newLines(cardId: UUID(), path: "/no/such/rollout.jsonl").isEmpty)
     }
 
     @Test("truncation/rotation below offset resets to 0")
@@ -193,7 +193,7 @@ struct RolloutTailerTests {
         let t = RolloutTailer()
         _ = await t.newLines(cardId: id, path: path)
         try? "n\n".write(toFile: path, atomically: true, encoding: .utf8)   // shorter file
-        #expect(await t.newLines(cardId: id, path: path) == ["n"])
+        #expect(await t.newLines(cardId: id, path: path).map(\.line) == ["n"])
     }
 
     @Test("offsets are independent per card")
@@ -202,7 +202,7 @@ struct RolloutTailerTests {
         append(path, "1\n2\n")
         let t = RolloutTailer()
         _ = await t.newLines(cardId: a, path: path)
-        #expect(await t.newLines(cardId: b, path: path) == ["1", "2"])   // b starts fresh
+        #expect(await t.newLines(cardId: b, path: path).map(\.line) == ["1", "2"])   // b starts fresh
     }
 }
 
@@ -412,5 +412,44 @@ struct CodexTelemetryE2ETests {
         await env.svc.pollTelemetry()   // must be a no-op for hooksPush; no crash, no change
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.phase == t.phase)
+    }
+}
+
+/// B3 — the tail-watermark fence compares the rollout path captured in `finishLaunch` against the one
+/// `pollTelemetry` later tails. Those are two INDEPENDENT `sessionInfo(...).transcriptPath` resolutions
+/// built from differently-shaped `AdapterContext`s, so their agreement is load-bearing: if they ever
+/// diverge for the same session, every held-relaunch confirm silently degrades to lease-expiry
+/// re-delivery. The existing wrong-path test only proves the NEGATIVE; this pins the positive.
+@Suite("B3 · rollout path fidelity — capture path == poll path")
+struct RolloutPathFidelityTests {
+
+    @Test("finishLaunch's resume context and pollTelemetry's context resolve the SAME rollout path")
+    func captureAndPollResolveSamePath() throws {
+        let base = NSTemporaryDirectory() + "pathfid-\(UUID().uuidString)"
+        let codexHome = base + "/codexhome"
+        let day = codexHome + "/sessions/2026/07/19"
+        let cwd = PathResolver.canonical(base + "/work")
+        try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: day, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let sid = UUID().uuidString.lowercased()
+        let rollout = "\(day)/rollout-2026-07-19T10-00-00-\(sid).jsonl"
+        FileManager.default.createFile(atPath: rollout, contents:
+            Data((#"{"timestamp":"2026-07-19T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(sid)","cwd":"\#(cwd)","timestamp":"2026-07-19T10:00:00.000Z"}}"# + "\n").utf8))
+
+        let codex = CodexAdapter(binOverride: "fake-codex", codexHome: codexHome)
+
+        // The context finishLaunch builds for a `.resume` bring-up (seed + trust + launch flags).
+        let captureCtx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: sid, name: "Card",
+                                        trustCwd: true, seed: "SEED")
+        // The context pollTelemetry builds each tick (no seed/trust; may carry a discovery cutoff).
+        let pollCtx = AdapterContext(cwd: cwd, model: "gpt-5.5", sessionId: sid, name: "Card")
+
+        let capturePath = codex.sessionInfo(captureCtx, current: sid, prior: [])?.transcriptPath
+        let pollPath = codex.sessionInfo(pollCtx, current: sid, prior: [])?.transcriptPath
+        #expect(capturePath != nil)
+        #expect(capturePath == pollPath)      // the fence can only match if these agree
+        #expect(capturePath == rollout)
     }
 }

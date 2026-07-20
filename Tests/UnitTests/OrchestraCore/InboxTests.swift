@@ -296,29 +296,33 @@ struct InboxConfirmTests {
                                        now: Self.t0.addingTimeInterval(1), blockIfLiveLease: false)) != nil)
     }
 
-    @Test("confirmHeldRelaunch confirms only the relaunchSeed lease at exactly that epoch")
-    func confirmHeldRelaunchScoped() async throws {
+    @Test("setTailWatermark stamps the held relaunchSeed lease at that epoch, keeping its token")
+    func setTailWatermarkStampsHeldRelaunchLease() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let card = UUID()
         try await inbox.enqueue(card, "m")
         let batch = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 7, budget: 10_000,
                                                        render: Self.fit, now: Self.t0))
-        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 6) == nil)          // wrong epoch → no-op
-        #expect(await inbox.peek(card).count == 1)
-        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 7) == batch.token)  // returns the confirmed token
-        #expect(await inbox.peek(card).isEmpty)
-        #expect(try await inbox.confirmHeldRelaunch(card, epoch: 7) == nil)          // idempotent → nothing held
+        try await inbox.setTailWatermark(cardId: card, epoch: 7, watermark: 4096, path: "/roll/a.jsonl")
+        let lease = try #require(await inbox.peek(card).first?.lease)
+        #expect(lease.token == batch.token)          // watermark update preserves the token
+        #expect(lease.tailWatermark == 4096)
+        #expect(lease.tailPath == "/roll/a.jsonl")
+        #expect(lease.route == .relaunchSeed && lease.epoch == 7)
     }
 
-    @Test("confirmHeldRelaunch ignores a non-relaunchSeed lease at the same epoch")
-    func confirmHeldRelaunchIgnoresOtherRoutes() async throws {
+    @Test("setTailWatermark is a no-op when there is no relaunchSeed lease at that epoch")
+    func setTailWatermarkNoopWhenNoLease() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let card = UUID()
         try await inbox.enqueue(card, "m")
-        _ = try await inbox.claim(card, route: .channelPush, epoch: 7, budget: 10_000,
+        _ = try await inbox.claim(card, route: .relaunchSeed, epoch: 7, budget: 10_000,
                                   render: Self.fit, now: Self.t0)
-        try await inbox.confirmHeldRelaunch(card, epoch: 7)
-        #expect(await inbox.peek(card).count == 1)                   // a channel batch is not a held seed
+        // Wrong epoch and a non-relaunchSeed lease both leave the watermark unset.
+        try await inbox.setTailWatermark(cardId: card, epoch: 6, watermark: 1, path: "/x")
+        #expect(await inbox.peek(card).first?.lease?.tailWatermark == nil)
+        try await inbox.setTailWatermark(cardId: UUID(), epoch: 7, watermark: 1, path: "/x")  // other card
+        #expect(await inbox.peek(card).first?.lease?.tailWatermark == nil)
     }
 }
 

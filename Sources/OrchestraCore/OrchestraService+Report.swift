@@ -7,7 +7,8 @@ extension OrchestraService {
     /// sessionId rollover, prompt re-title, session source, end reason) applied unconditionally, and
     /// `snapshot` (ctxPct/desc/status/model/title) applied as a unit behind the per-card monotonic
     /// `seq` guard. Persists + emits only when something changed.
-    public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil) async throws {
+    public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil,
+                       tail: (path: String, startOffset: Int64)? = nil) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
         let before = task
         // Set when a re-seat is judged to have been IGNORED by the vendor; emitted after the write below, so
@@ -70,7 +71,7 @@ extension OrchestraService {
                 // launch's readiness signal, so resolve the spawn/reopen's inline waiter. Capability-neutral:
                 // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
                 // while launching), so this never fires for Claude.
-                if before.phase.kind == .launching { resolveReadiness(id, true) }
+                if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
             }
 
             // SessionStart source semantics.
@@ -83,13 +84,13 @@ extension OrchestraService {
                 case "resume":
                     if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
-                    resolveReadiness(id, true)   // confirm a pending RELAUNCH's inline readiness wait
+                    resolveReadiness(id, true, observedEpoch: observedEpoch)   // confirm a pending RELAUNCH's inline readiness wait (epoch-fenced)
                 case "startup":
                     // Claude `.sessionStartHook` readiness for a fresh LAUNCH: the agent's own
                     // SessionStart(startup) is the launch's ready marker, so resolve the spawn/reopen's
                     // inline waiter for a still-launching card. No phase write here — the launch verb owns
                     // the landing (prompt-in-flight → running, else waiting) once its await unblocks.
-                    if before.phase.kind == .launching { resolveReadiness(id, true) }
+                    if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
                 default:
                     break   // compact: no status change
                 }
@@ -196,8 +197,15 @@ extension OrchestraService {
                 // invariant explicit: only a report proven to come from the CURRENT generation may land a card
                 // that still owes a launch. The stepper (or the adopt path) lands it otherwise, consuming the
                 // intent as it goes.
-                let owesLaunch = task.pendingSeed != nil || task.pendingModel != nil
-                let mayLandBringUp = !(beingBorn && owesLaunch && observedEpoch != task.sessionEpoch)
+                // B3 D7: a being-born card is landed `.live` ONLY by a report proven to come from the
+                // CURRENT generation (a stamped, epoch-matched signal). The old gate required this only when
+                // the card `owesLaunch` (pendingSeed/pendingModel set) — but B3's de-drain means a cold
+                // idle-wake relaunch now carries NEITHER (the inbox lives in the relaunchSeed claim, not
+                // pendingSeed), so an unstamped file-tail snapshot from the dying predecessor would land the
+                // card `.live` before the stepper ever claims its seed, stranding the delivery. Dropping the
+                // `owesLaunch` term makes the invariant complete: the stepper (or the adopt path) lands a
+                // being-born card; a non-current-generation report never does.
+                let mayLandBringUp = !(beingBorn && observedEpoch != task.sessionEpoch)
                 if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
                     task.phase = .live(run)
                 }
@@ -298,6 +306,28 @@ extension OrchestraService {
             scheduleDiffStat(id)
             scheduleTreeStat(id)                                    // this card's own parent may have moved
             scheduleChildFanout(id)                                 // a moved parent stales children (debounced)
+        }
+
+        // B3 held-relaunch confirm — UNCONDITIONAL (a delivery-proving line may change no field, so it
+        // must run outside the `didChange` guard). A `.ticks`-readiness relaunch left its relaunchSeed lease
+        // HELD; the first signal proven to come from the CURRENT generation confirms it (removes the messages
+        // + rings). Read `before.phase` — the card is already `.live` from the tick landing, and report()
+        // reverts the local `task.phase` to `before.phase` above. Provenance-fenced so a stale pre-kill line
+        // or a daemon-restart replay never confirms: a fileTail line qualifies only on the SAME rollout path
+        // AND at/after the persisted post-kill watermark; a hook qualifies only when its `observedEpoch`
+        // matches the lease's epoch. Routed through `confirmDelivery` so the archive guard is never bypassed.
+        if case .live = before.phase,
+           let lease = (await inbox.peek(id)).first(where: { $0.lease?.route == .relaunchSeed })?.lease {
+            let proven: Bool
+            if let tail {
+                proven = tail.path == lease.tailPath
+                    && lease.tailWatermark.map { tail.startOffset >= $0 } == true
+            } else if let observedEpoch {
+                proven = observedEpoch == lease.epoch
+            } else {
+                proven = false
+            }
+            if proven { await confirmDelivery(token: lease.token, cardId: id) }
         }
     }
 

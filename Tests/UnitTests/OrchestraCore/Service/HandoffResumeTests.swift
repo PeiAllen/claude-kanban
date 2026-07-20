@@ -3,54 +3,9 @@ import Testing
 @testable import OrchestraCore
 import TestSupport
 
-@Suite("C3 · F1 — HandoffSeed.fold")
-struct HandoffSeedTests {
-
-    private func msg(_ card: UUID, _ text: String) -> InboxMessage { InboxMessage(cardId: card, text: text) }
-
-    @Test("fold: handoff first, then the shared numbered inbox render, joined by blank lines")
-    func order() {
-        let c = UUID()
-        let inbox = [msg(c, "one"), msg(c, "two")]
-        let s = HandoffSeed.fold(handoff: "HANDOFF", inbox: inbox)
-        // Byte-identical to the Claude Stop-drain rendering (agent-agnostic): header + [k/N] numbering.
-        #expect(s == "HANDOFF\n\n" + StopDrain.renderMessages(inbox))
-    }
-
-    @Test("fold: nil handoff falls back to the numbered inbox render")
-    func handoffNil() {
-        let c = UUID()
-        let inbox = [msg(c, "only")]
-        #expect(HandoffSeed.fold(handoff: nil, inbox: inbox) == StopDrain.renderMessages(inbox))
-    }
-
-    @Test("fold: whitespace-only handoff is dropped, leaving the numbered inbox render")
-    func handoffBlank() {
-        let c = UUID()
-        let inbox = [msg(c, "x")]
-        #expect(HandoffSeed.fold(handoff: "   \n ", inbox: inbox) == StopDrain.renderMessages(inbox))
-    }
-
-    @Test("fold: pure handoff with no inbox gets NO inbox header (header rides only the inbox portion)")
-    func handoffOnlyNoHeader() {
-        #expect(HandoffSeed.fold(handoff: "HANDOFF", inbox: []) == "HANDOFF")
-    }
-
-    @Test("fold: empty handoff + empty inbox → nil (no seed delivered)")
-    func empty() {
-        #expect(HandoffSeed.fold(handoff: nil, inbox: []) == nil)
-        #expect(HandoffSeed.fold(handoff: "", inbox: []) == nil)
-    }
-
-    @Test("fold: over-long payload is clamped with a truncation marker")
-    func clamp() {
-        let c = UUID()
-        let big = String(repeating: "z", count: StopDrain.maxPayloadChars + 500)
-        let s = try! #require(HandoffSeed.fold(handoff: big, inbox: [msg(c, "tail")]))
-        #expect(s.count <= StopDrain.maxPayloadChars)
-        #expect(s.hasPrefix("[…truncated]"))
-    }
-}
+// The `HandoffSeed.fold` battery is RETIRED with the function (B3 de-drain): the render behavior it
+// pinned now lives in `HandoffSeedComposeTests` (compose is the sole entry point, running INSIDE the
+// relaunchSeed claim so the consumed-prefix guarantee covers the final argv bytes).
 
 @Suite("C3 · F1 — adapters deliver ctx.seed on resume")
 struct SeedDeliveryTests {
@@ -134,7 +89,7 @@ struct ResumeInCardTests {
         let oldId = t.agentSessionId
 
         let intent = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
-        #expect(intent.pendingSeed == "HANDOFF")    // folded seed persisted for the RelaunchStepper
+        #expect(intent.pendingSeed == "HANDOFF")    // handoff persisted for the RelaunchStepper's claim
         let updated = try await TestEnv.reconcileToLive(env.svc, t.id)
 
         #expect(updated.agentSessionId == oldId)   // SAME session id — resume, not restart
@@ -143,19 +98,20 @@ struct ResumeInCardTests {
         #expect(argv.last == "HANDOFF")
     }
 
-    @Test("resumeInCard folds the pending inbox into the seed and drains it")
-    func inboxFoldsIntoSeed() async throws {
+    @Test("resumeInCard NO LONGER drains — the inbox stays durable and is composed into the seed at claim time")
+    func inboxStaysDurableAndComposesIntoSeed() async throws {
         let env = TestEnv.make(grace: 2)
         let t = try await makeResumable(env, branch: "b")
         try await env.svc.send(t.id, "queued-1")
         try await env.svc.send(t.id, "queued-2")
 
-        // The inbox is drained + folded at INTENT time (into pendingSeed); the RelaunchStepper delivers it.
+        // B3 de-drain: resumeInCard carries ONLY the handoff; the inbox is NOT eaten here.
         _ = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
-        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
-        #expect(await env.svc.payloadForStop(t.id, observedEpoch: epoch, stopHookActive: false) == nil)   // already drained — nothing to double-deliver
-        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
+        #expect(await env.svc.store.get(t.id)?.pendingSeed == "HANDOFF")
+        #expect(await env.svc.inbox.peek(t.id).count == 2)   // inbox untouched by the intent — no drain
 
+        // The RelaunchStepper's relaunchSeed claim composes handoff + inbox into the launch seed.
+        _ = try await TestEnv.reconcileToLive(env.svc, t.id)
         let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
         let seed = try #require(argv.last)
         #expect(seed.contains("HANDOFF"))
@@ -165,8 +121,9 @@ struct ResumeInCardTests {
 
     @Test("test_handoffSeedSurvivesCrash")
     func test_handoffSeedSurvivesCrash() async throws {
-        // handoff persists `pendingSeed` (folded HANDOFF + drained inbox) in the SAME patch as `.relaunching`,
-        // so a crash before launch keeps it on disk and the re-driven relaunch delivers it.
+        // B3 de-drain: `pendingSeed` carries ONLY the handoff; the inbox stays DURABLE (no drain), so a crash
+        // before launch loses nothing — the re-driven relaunch's claim composes handoff + the still-queued
+        // inbox into the seed. (The old fold-into-pendingSeed crash window is gone by REMOVING the drain.)
         let env = TestEnv.make(grace: 30)
         let repo = TestEnv.repo(env.base)
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
@@ -176,11 +133,11 @@ struct ResumeInCardTests {
 
         let intent = try await env.svc.resumeInCard(t.id, seed: "HANDOFF")
         #expect(intent.phase.kind == .relaunching)
-        let seed = try #require(intent.pendingSeed)
-        #expect(seed.contains("HANDOFF"))
-        #expect(seed.contains("queued-1"))   // drained inbox folded into the durable seed
+        #expect(intent.pendingSeed == "HANDOFF")             // handoff only — no inbox folded in
+        #expect(await env.svc.inbox.peek(t.id).count == 1)   // the message stays durable (never drained)
 
-        // Crash BEFORE launch: a fresh daemon re-derives from the persisted card + delivers the seed.
+        // Crash BEFORE launch: a fresh daemon re-derives from the persisted card + inbox, claims the seed,
+        // and delivers handoff + the still-queued message.
         let env2 = TestEnv.remake(base: env.base)
         _ = try await TestEnv.reconcileToLive(env2.svc, t.id)
         let argv = try #require(env2.sessions.ensureArgv[env2.sessions.sessionName(t.id)])
