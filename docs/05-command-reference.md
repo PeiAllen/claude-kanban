@@ -21,7 +21,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`createdAt` are preserved. |
 | `inbox-remove` | `ref` (required), `id` (required: message UUID) | Remove one queued message by id (`Inbox.remove`). |
 | `inbox-reorder` | `ref` (required), `ids` (required: array of message UUIDs) | Reorder a card's queued messages (`Inbox.reorder`); `ids` is the full new order and must be a permutation of the card's pending message ids. Refills exactly that card's array slots, so other cards' interleaving is preserved. |
-| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done, a read-only freeform/scratch delegated card finishes its agent turn, or a clean agent exit — and return that conclusion; the caller re-issues on the cards that remain. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
+| `wait` | `refs` (required: array of refs), `watcher?` | Block until **one** of the watched cards concludes — reaches Done/archived, or dies (any `.dead` reason: a clean exit or a crash) — and return that conclusion; the caller re-issues on the cards that remain. A delegate that merely finishes its turn does **not** conclude (it idles waiting) — get its result via `send`, not `wait`. Backs the reactive fan-out (F2 / merge-watch). If `watcher` is set, each conclusion also coalesces into that card's [inbox](03-data-model.md#the-inbox-store-f3) (F3) and wakes it. |
 | `handoff` | `ref` (required), `context` (required), `model?` | Clean-context handoff (F1): kill and resume **this** card in a fresh process, keeping the **same** session id, seeded with `context` folded ahead of the card's pending inbox. Delegates to the C3 [resume-in-card seam](09-design-decisions.md#shipped-feature-history) — a *resume, not a blank restart*. `model` additionally **re-seats** the card onto that model while the context rides across — the self-escalation path (see [the `--model` re-seat](#the---model-re-seat)). |
 | `status` | `ref` (required) | Return the card plus its derived tmux liveness. |
 | `archive` | `ref` (required) | Finish a card: record the intent (`phase = .archived(teardownComplete: false)`, `archived=true`) and return; the reconciler's Teardown stepper kills the session, cleans the run dir per origin, and flips the phase to `.archived(teardownComplete: true)`. |
@@ -107,14 +107,16 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   that is genuinely idle with no live wait it **resume-seeds** — relaunches `claude --resume` with the inbox
   folded into the opening turn. (The wake dispatcher is C2/C4, extended by `send-wakes-idle-card`.)
 - **`wait` is a conclusion-watch, read from real card state — never git.** As of C2 (F2 / merge-watch),
-  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived, a read-only
-  freeform/scratch delegated card reports task completion (Codex `task_complete` / `turn_complete`, Claude
-  `TaskCompleted` — not Claude `Stop`), or a clean agent exit — and returns
-  that `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A transient crash that is
-  later revived is deliberately **not** a conclusion, and conclusion is read from real card state, never
-  `git merge-base` (which false-positives a 0-commit branch as "merged"). `OrchestraService` is the single
-  authority that marks a card concluded (from `archive`→Done, the delegated turn-completion branch, and the clean-exit report branch); `MergeWatch`
-  is a **subscriber** it feeds — no polling, no file/git watching. `wait` is single-shot on purpose: when
+  `wait` blocks until the first of `refs` **settles terminal** — moved to Done/archived (`done`), or a real
+  agent death, i.e. any `.dead` reason incl. a clean exit or a crash (`exited`) — and returns that
+  `Conclusion` (`{cardId, ref, kind ∈ {done, exited}}`). A delegate that merely **ends its turn does NOT
+  conclude**: turn-completion is not daemon-observable "done" (see
+  [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)), so a
+  read-only reviewer/fork idles `.live(.waiting(.humanTurn))` and returns its result via `send`, not `wait`.
+  Conclusion is read from real card state, never `git merge-base` (which false-positives a 0-commit branch
+  as "merged"). `OrchestraService` is the single authority that marks a card concluded (from `archive`→Done
+  and the agent-death report branch); `MergeWatch` is a **subscriber** it feeds — no polling, no file/git
+  watching. `wait` is single-shot on purpose: when
   one child concludes it returns, and the caller (an orchestrator card) re-issues on the cards that remain,
   so several children can conclude concurrently without a barrier. With `watcher` set, each conclusion also
   routes into that card's durable inbox (coalescing at its next turn-end) and wakes it (F2). This is what

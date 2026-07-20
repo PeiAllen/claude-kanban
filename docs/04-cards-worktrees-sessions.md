@@ -624,9 +624,10 @@ of being marked dead.
   the retry. Why the intent gets its own field, rather than just writing `model`:
   [report() vs the launch intent](09-design-decisions.md#report-vs-the-launch-intent-pendingmodel-and-the-epoch-fence).
 - **`reopen(id)` — un-finish a Done card.** Walks the legal path `archived → creatingWorktree → launching →
-  live`: an archived card's `phase` is already `.archived(teardownComplete: true)` (a legacy stored
-  `.dead(.completed)` is normalized to it on decode by the one-time `Phase.init` migration — see
-  [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)),
+  live`: an archived card's `phase` is already `.archived(teardownComplete: true)` (the archive verb writes
+  the phase and the `archived` Bool together; `DeadReason.completed` is gone, so a legacy stored
+  `.dead(.completed)` record no longer decodes at all — it self-drops on load rather than being normalized,
+  see [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)),
   then enters `.creatingWorktree` (bumping the generation)
   clearing the archived Bool + dead metadata, **recreates the run dir the archive reclaimed** (`worktrees.ensure`
   for `.worktree`, `mkdir` for `.scratch`, nothing for `.borrowed`), and brings the agent up via the shared

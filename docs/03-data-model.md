@@ -131,9 +131,13 @@ structural pass (superseding the plan's approach, because Task 2.1 had already g
 `init(from:)`). Every record — whether it arrived via the `{rev, tasks}` envelope or a bare array — routes
 through this single migrating init. Its contract:
 
-- **`id` is the only required field.** An id-less record is genuinely unrecoverable and is the *sole* drop
-  case (it throws, and `FailableTask` drops just that record). Every other field is `decodeIfPresent` with a
-  safe default, so a partial/garbage record is **kept** as a safe card rather than stranding the whole board.
+- **`id` is required; the `phase` field is the one non-tolerant field.** A record throws (and `FailableTask`
+  drops just that record) when `id` is absent OR when `phase` carries an unknown value — `phase` is decoded
+  with an unguarded `try`, unlike every other field. The one current unknown-`phase` case is a legacy
+  `.dead(.completed)` record: `DeadReason.completed` was removed as a clean on-disk break (no migration), so
+  such a record no longer decodes and self-drops (accepted — see [chapter 9](09-design-decisions.md#done-is-not-observable--success-is-agent-signalled-not-inferred)).
+  Every field other than `id`/`phase` is `decodeIfPresent` with a safe default, so a partial/garbage record
+  is **kept** as a safe card rather than stranding the whole board.
 - **Garbage enum fields default, never throw.** Tolerant enum/decodable fields (`origin`, `access`, `model`,
   `startIn`, `column`, `deadReason`) are `try?`-guarded so a present-but-renamed/removed rawValue falls back
   to the same safe default the memberwise init uses (`.worktree`, `.readWrite`, `unknown` model, `.impl`,

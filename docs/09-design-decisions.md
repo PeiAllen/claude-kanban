@@ -98,8 +98,11 @@ The **only** backward-compat kept is the **one-time on-disk migration** that rea
 `tasks.json`: it lives inside `Task.init(from:)` (the card's own tolerant decoder, superseding the plan's
 separate `LegacyStoredBoard`), maps the legacy triple to `phase` fail-safe (nil/unknown status →
 `.dead(.rebootUnrevived)`, an idle card's absent wait reason → `.humanTurn`, preserving `deadReason`), and
-never drops a card except a genuinely id-less one — with the store's element-wise `FailableTask` load so a
-single corrupt record self-drops rather than stranding the whole board to `.bak`. The full mapping table and
+drops a record only when its `id` is absent or its `phase` value no longer decodes (the sole current such
+value is a legacy `.dead(.completed)`, after that case's clean-break removal — see the
+[note below](#done-is-not-observable--success-is-agent-signalled-not-inferred)) — with the store's
+element-wise `FailableTask` load so a single undecodable record self-drops rather than stranding the whole
+board to `.bak`. The full mapping table and
 fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-time-statuswaitreason--phase-mapping).
 This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
 never nuke on-disk state.

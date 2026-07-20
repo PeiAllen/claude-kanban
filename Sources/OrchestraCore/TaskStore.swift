@@ -55,24 +55,28 @@ public actor TaskStore {
     }
 
     /// On-disk payload shape (post-upgrade). Pre-upgrade files are a bare `[Task]` array.
-    /// Decoded ELEMENT-WISE via `FailableTask` so one throwing record (only an id-less one now) drops just
-    /// itself, never the whole board.
+    /// Decoded ELEMENT-WISE via `FailableTask` so one throwing record drops just itself, never the whole board.
     private struct StoredBoard: Decodable { let rev: Int; let tasks: [FailableTask] }
 
     /// The on-disk envelope we WRITE — same `{rev, tasks}` shape, encoding real `[Task]`.
     private struct BoardEnvelope: Encodable { let rev: Int; let tasks: [Task] }
 
-    /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` — which,
-    /// after the tolerant-field fix, happens ONLY when `id` is absent — becomes `nil` and is dropped,
-    /// instead of failing the array decode and stranding the entire board to `.bak`.
+    /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` becomes
+    /// `nil` and is dropped, instead of failing the array decode and stranding the entire board to `.bak`.
+    /// `Task.init` throws when `id` is absent, OR when `phase` carries an unknown value — the phase field is
+    /// decoded with an unguarded `try` (every OTHER enum field is `try?`-guarded and defaults). The one
+    /// current such value is a legacy `.dead(.completed)` record: `DeadReason.completed` was removed as a
+    /// clean on-disk break, so a stored `{"name":"dead","detail":"completed"}` throws here and self-drops
+    /// (accepted — see docs/09, "'Done' is not observable").
     private struct FailableTask: Decodable {
         let task: Task?
         init(from decoder: Decoder) throws { self.task = try? Task(from: decoder) }
     }
 
     /// Read + decode. `[]` if absent. The board reaches `.bak` ONLY when the top-level JSON is itself
-    /// unparseable — a single corrupt record is dropped element-wise, never `.bak`'d. An id-less record
-    /// (the sole unrecoverable case) is logged and dropped; every other record is kept (fields defaulted).
+    /// unparseable — a single corrupt record is dropped element-wise, never `.bak`'d. A record that throws
+    /// (an id-less record, or a legacy `.dead(.completed)` whose removed phase value no longer decodes) is
+    /// logged and dropped; every other record is kept (fields defaulted).
     @discardableResult
     public func load() -> [Task] {
         let url = URL(fileURLWithPath: path)

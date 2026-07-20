@@ -49,6 +49,9 @@ final class NeedsYouQueueTests: XCTestCase {
         // Context-full is gated to live (running/waiting) cards, but a real dead card still surfaces via .died
         // regardless of a stale high ctxPct.
         XCTAssertEqual(NeedsYouQueue.reason(for: card("dead", phase: .dead(.agentExited), ctx: 99)), .died)
+        // And a finished/retired card (`.archived`) is NEVER dragged back in by a stale high ctxPct —
+        // context-full is gated to live cards, so it surfaces for nothing.
+        XCTAssertNil(NeedsYouQueue.reason(for: card("done", phase: .archived(teardownComplete: true), ctx: 99)))
     }
 
     func testPermissionOutranksContextWhenBoth() {

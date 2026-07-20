@@ -126,9 +126,9 @@ struct StepperCrashMatrixTests {
         case .relaunching:
             e.adapter.writeTranscript(for: live.agentSessionId!)        // resumable so the relaunch resumes
             await e.svc.seedPhase(live.id, .relaunching)
-        // A genuinely-live DeadReason (not `.completed`) — a persisted `.dead(.completed)` now migrates to
-        // `.archived` on decode (the Task 2 guardrail), so this cell uses a reason that survives the
-        // crash-reload unchanged to keep testing what it's meant to: a dead session isn't swept.
+        // Use a DeadReason that survives a crash-reload unchanged, so this cell keeps testing what it's
+        // meant to — a dead session isn't swept. (`.dead(.completed)` is gone: `DeadReason.completed` was
+        // removed as a clean break, so a persisted such record would no longer decode at all.)
         case .dead:              await e.svc.markDead(live.id, reason: .agentExited, detail: nil, source: .daemon)
         case .archivedPending:   await e.svc.seedPhase(live.id, .archived(teardownComplete: false))
         case .archivedComplete:  try await batteryArchiveAndTeardown(e, live.id)

@@ -223,10 +223,10 @@ extension OrchestraService {
     /// SessionEnd window), unarchiving, and RETURN. The reconciler's `MaterializeStepper` re-cuts the run dir
     /// the archive reclaimed → `LaunchStepper` brings the agent up (resume vs blank re-derived from the
     /// persisted fields by `deriveLaunchFlavor`), its `.live` finalize `observedEpoch`-fenced (carried #5:
-    /// epoch-fence reopen resume-finalize). No `.dead→.archived` normalize is needed — `Phase.init`'s
-    /// one-time decode migration maps any legacy stored `dead(.completed)` straight to `.archived` on load, so
-    /// an archived card is ALWAYS `.archived(_)`, and the
-    /// `archivedPending/archivedComplete → creatingWorktree` reopen edge applies directly.
+    /// epoch-fence reopen resume-finalize). No `.dead→.archived` normalize is needed — the archive verb writes
+    /// `.archived(_)` + the `archived` Bool together, so an archived card is ALWAYS `.archived(_)`, and the
+    /// `archivedPending/archivedComplete → creatingWorktree` reopen edge applies directly. (`DeadReason.completed`
+    /// is gone — a legacy stored `dead(.completed)` record no longer decodes at all; it self-drops on load.)
     @discardableResult
     public func reopen(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
         let t = try await require(id)
