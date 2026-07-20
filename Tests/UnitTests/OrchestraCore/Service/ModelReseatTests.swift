@@ -399,11 +399,13 @@ struct ModelReseatTests {
         #expect(after.model.id == "m2")   // canonicalized back to the catalog id, not the dated form
     }
 
-    @Test("a handoff REFUSED mid-flight (card archived) puts the drained inbox back")
-    func refusedHandoffRestoresTheDrainedInbox() async throws {
-        // `inbox.drain` is destructive and suspends the actor, so an `archive` can interleave and the funnel
-        // then REFUSES the `→ .relaunching` intent — discarding the folded seed, and with it the messages.
-        // Validation runs before the drain, but it cannot cover this window; the messages must be put back.
+    @Test("a handoff REFUSED mid-flight (card archived) leaves the inbox durable")
+    func refusedHandoffLeavesInboxDurable() async throws {
+        // B3 DE-DRAINED `resumeInCard`: it no longer eats the inbox into the seed, so a refused
+        // `→ .relaunching` intent (the card archived first) can't discard folded messages — there is
+        // nothing folded. The message rides the durable inbox and is delivered by a later wake/arm.
+        // (Historically this pinned an `inbox.drain`-then-restore window; that drain is gone — the
+        // primitive was deleted in B4 — so the invariant is now "the inbox is never drained here".)
         let env = TestEnv.make(grace: 2)
         let t = try await liveCard(env)
         try await env.svc.send(t.id, "do not lose me")

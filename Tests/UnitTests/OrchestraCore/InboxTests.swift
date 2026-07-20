@@ -36,6 +36,23 @@ struct InboxClaimTests {
         #expect(rows.first(where: { $0.text == "second" })?.lease == nil)  // …so never leased
     }
 
+    @Test("isLeaseLive: live only while present AND unexpired — epoch-agnostic (B4 arm predicate)")
+    func isLeaseLiveTokenScoped() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path, leaseTimeout: 60); let card = UUID()
+        try await inbox.enqueue(card, "m")
+        let batch = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 1,
+                                                       budget: 4096, render: Self.fit, now: Self.t0))
+
+        #expect(await inbox.isLeaseLive(token: batch.token, now: Self.t0))
+        // A STALE-EPOCH lease is still live while unexpired — epoch-agnostic by design (the arm must
+        // charge it only once EXPIRED, not merely because its generation moved).
+        #expect(await inbox.isLeaseLive(token: batch.token, now: Self.t0.addingTimeInterval(59)))
+        // …and dead once expired, which is what lets the arm charge it.
+        #expect(await inbox.isLeaseLive(token: batch.token, now: Self.t0.addingTimeInterval(61)) == false)
+        #expect(await inbox.isLeaseLive(token: UUID(), now: Self.t0) == false)   // unknown token
+    }
+
     @Test("a fresh lease is not claimable by another route, and blocks nothing behind it")
     func freshLeaseNotClaimableByOtherRoute() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
@@ -460,8 +477,8 @@ struct InboxEnvelopeTests {
 struct InboxStoreTests {
     static func tmp() -> String { NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json" }
 
-    @Test("enqueue → drain preserves FIFO order, per card")
-    func enqueueDrainOrder() async throws {
+    @Test("enqueue preserves FIFO order per card; remove clears one card without touching another")
+    func enqueueFifoAndRemove() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path)
         let a = UUID(); let b = UUID()
@@ -469,11 +486,10 @@ struct InboxStoreTests {
         try await inbox.enqueue(b, "b1")
         try await inbox.enqueue(a, "a2")
 
+        #expect(await inbox.peek(a).map(\.text) == ["a1", "a2"])   // FIFO, per card
         #expect(await inbox.peek(a).map(\.text) == ["a1", "a2"])   // peek is non-destructive
-        #expect(await inbox.peek(a).map(\.text) == ["a1", "a2"])
-        let drainedA = try await inbox.drain(a)
-        #expect(drainedA.map(\.text) == ["a1", "a2"])
-        #expect(await inbox.peek(a).isEmpty)                        // drain cleared a
+        for m in await inbox.peek(a) { try await inbox.remove(m.id) }
+        #expect(await inbox.peek(a).isEmpty)                        // a cleared
         #expect(await inbox.peek(b).map(\.text) == ["b1"])          // b untouched
     }
 
@@ -498,7 +514,6 @@ struct InboxStoreTests {
         // Fresh instance simulates a daemon restart — must read the persisted queue.
         let reborn = Inbox(path: path)
         #expect(await reborn.peek(card).map(\.text) == ["before restart"])
-        #expect(try await reborn.drain(card).map(\.text) == ["before restart"])
     }
 }
 

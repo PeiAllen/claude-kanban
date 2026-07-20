@@ -104,6 +104,18 @@ extension OrchestraService {
         // the durable state write succeeds: a failed/rejected transition must never erase a still-current
         // reference, while a new epoch or archive intent invalidates prior data immediately.
         if to.kind == .creatingWorktree || to.kind == .relaunching {
+            // FIRST, before any unrelated cleanup. This is the one EAGER lease-invalidation duty an
+            // epoch bump owes (contract §lease-lifecycle): prior-epoch leases are re-owned LAZILY by
+            // the next claim, but a parked poll must die NOW — while `removePriorEpochs` suspends, an
+            // in-flight `wake` holding the pre-bump epoch could still push into that stale poll, and
+            // the resulting ack deletes a batch the superseded session never received. `epoch:` is
+            // the POST-bump value (bumped inside the update above) and the comparison is strictly
+            // `<`, so the generation that just claimed is never revoked.
+            await broker.revokeOlderEpochs(updated.id, epoch: updated.sessionEpoch)
+            // The attach-grace stamp is PER-GENERATION: a new session must get a full fresh window in
+            // which its pump can reconnect. Reusing the old expired stamp would cold-restart the
+            // brand-new session on its first queued message (B4 attach-grace).
+            channelUnattachedSince[updated.id] = nil
             await mediaStore.removePriorEpochs(cardId: updated.id, keeping: updated.sessionEpoch)
         } else if to.kind == .archivedPending {
             await mediaStore.removeCard(updated.id)
@@ -115,13 +127,18 @@ extension OrchestraService {
             await concludeCard(id, c.kind, deadReason: c.deadReason)
         }
 
-        // 6 · Wake-on-live — the single structural release point for a message parked while the card was
-        //     provisioning. `wakeIfPending` is a no-op unless the card is now `.live(.waiting)` with a
-        //     non-empty inbox, so a `.live(.running)` entry harmlessly falls through.
-        if to.kind == .live { await wakeIfPending(id) }
-
-        // 7 · Broadcast the new state.
+        // 6 · Broadcast the new state FIRST — before any wake. `wake` may record a `.relaunching`
+        //     intent INLINE (B4: it holds `deliveriesInFlight` across the ladder, so it no longer
+        //     detaches), and that nested transition emits its own upsert. Broadcasting this `.live`
+        //     one first keeps the pair in causal order (`.live` then `.relaunching`) instead of
+        //     inverted. Recursion is bounded by `deliveriesInFlight`: a nested wake sees the outer
+        //     claim and returns at once.
         emit(.taskUpserted(updated), rev: rev)
+
+        // 7 · Wake-on-live — the single structural release point for a message parked while the card
+        //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
+        //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.
+        if to.kind == .live { await wakeIfPending(id) }
         return .applied
     }
 

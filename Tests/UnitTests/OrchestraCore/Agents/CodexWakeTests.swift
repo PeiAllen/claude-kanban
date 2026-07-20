@@ -6,8 +6,9 @@ import TestSupport
 /// F2 · Codex wakes by **resume-seed** (`wakeTransport == .relaunch`), NOT a TUI keystroke. An idle Codex
 /// card `send`-ed a message relaunches via `resumeInCard` with the inbox folded into the opening turn — the
 /// same primitive Claude's no-wait wake uses (see `SendWakeTests` for the shared behaviour). The ONE
-/// divergence from Claude (`nativeReinvoke`): a Codex card has no harness re-invoke, so `resumeSeedWake`
-/// passes `watcherWillReinvoke: false` and it resumes **even when watching children**.
+/// divergence from Claude (`nativeReinvoke`): a Codex card has no harness re-invoke, so B4's wake ladder
+/// takes the cold `.relaunch` path with no `activeWaitProcesses` defer (that CLI-wait defer is
+/// `nativeReinvoke`-only), and it resumes **even when watching children**.
 @Suite("F2 · Codex resume-seed wake (.relaunch)")
 struct CodexWakeTests {
 

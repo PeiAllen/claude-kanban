@@ -41,6 +41,22 @@ public struct Config: Codable, Sendable, Equatable {
     /// construction site (first-reference rule: the claimable set is what reads it).
     public var deliveryLeaseTimeout: Int
 
+    /// How long a card may go on failing delivery before it is surfaced STUCK (seconds). Paired with
+    /// the attempt budget: the arm flips `deliveryStuckSince` only when BOTH the retry budget is
+    /// spent AND the oldest pending message is older than this — so a brief outage never nags.
+    public var deliveryStuckAfter: Int
+
+    /// How long a live `.controlChannel` card with no parked poll defers the cold path (seconds).
+    /// A daemon/bridge restart clears every parked poll for a few seconds; going cold there would
+    /// mass-restart healthy live sessions. Grace expiry still falls cold, so a bridge-less setup
+    /// delivers.
+    public var channelAttachGrace: Int
+
+    /// Master switch for Claude MCP channels. Read by the adapter in D2 to compute `wakeTransport`;
+    /// declared here (with the other two service-read knobs) so the config surface lands in one PR.
+    /// B4's channel branch is dark regardless — nothing parks.
+    public var claudeChannels: Bool
+
     /// Root for ephemeral scratch-card dirs. INSTANCE state, deliberately NON-Codable: every
     /// OrchestraService sweeps and rm -rf's under ITS config's root, so tests give each service a
     /// private root and concurrent daemons/tests can never delete each other's scratch dirs.
@@ -70,6 +86,9 @@ public struct Config: Codable, Sendable, Equatable {
         sessionLaunchTimeout: Int = 30,
         controlTimeout: Int = 15,
         deliveryLeaseTimeout: Int = 60,
+        deliveryStuckAfter: Int = 300,
+        channelAttachGrace: Int = 15,
+        claudeChannels: Bool = true,
         autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
         runtimeStateDir: String = Config.dataDir
@@ -88,6 +107,9 @@ public struct Config: Codable, Sendable, Equatable {
         self.sessionLaunchTimeout = sessionLaunchTimeout
         self.controlTimeout = controlTimeout
         self.deliveryLeaseTimeout = deliveryLeaseTimeout
+        self.deliveryStuckAfter = deliveryStuckAfter
+        self.channelAttachGrace = channelAttachGrace
+        self.claudeChannels = claudeChannels
         self.scratchRoot = scratchRoot
         self.runtimeStateDir = runtimeStateDir
     }
@@ -96,7 +118,8 @@ public struct Config: Codable, Sendable, Equatable {
         case reposRoot, worktreesRoot, defaultModel, defaultAgentId, allowlist,
              maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
              autoInstallMCPGlobally,
-             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout, deliveryLeaseTimeout
+             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout, deliveryLeaseTimeout,
+             deliveryStuckAfter, channelAttachGrace, claudeChannels
     }
 
     /// Custom decode so a pre-upgrade `config.json` lacking the new timeout keys still decodes,
@@ -121,6 +144,9 @@ public struct Config: Codable, Sendable, Equatable {
         sessionLaunchTimeout = try c.decodeIfPresent(Int.self, forKey: .sessionLaunchTimeout) ?? 30
         controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
         deliveryLeaseTimeout = try c.decodeIfPresent(Int.self, forKey: .deliveryLeaseTimeout) ?? 60
+        deliveryStuckAfter = try c.decodeIfPresent(Int.self, forKey: .deliveryStuckAfter) ?? 300
+        channelAttachGrace = try c.decodeIfPresent(Int.self, forKey: .channelAttachGrace) ?? 15
+        claudeChannels = try c.decodeIfPresent(Bool.self, forKey: .claudeChannels) ?? true
     }
 
     // MARK: Defaults

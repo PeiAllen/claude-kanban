@@ -9,6 +9,15 @@ public actor OrchestraService {
     /// clock; tests inject a TestClock and ADVANCE it instead of waiting. `nonisolated let` so
     /// off-actor closures can capture it.
     nonisolated let clock: any Clock<Duration>
+
+    /// Wall-clock stamping for DELIVERY decisions (lease expiry, stuck age, attach grace) and for the
+    /// `createdAt` the Inbox persists on enqueue — NOT `leasedAt`, which B1 deliberately takes from
+    /// `claim`'s explicit `now:` so one instant governs both the expiry decision and the stamp it
+    /// writes. Separate from `clock`, which schedules: `Clock` has no notion of a `Date`, and
+    /// lease/stuck math is expressed in absolute persisted instants. Tests inject a provider on the
+    /// TestClock's own timeline, so ONE `advance` moves scheduling and stamping together (B4 — B2
+    /// left `payloadForStop` on a bare `Date()` pending this seam).
+    nonisolated let now: @Sendable () -> Date
     /// The subprocess seam for the components the hidden-integration suites reach git through
     /// (BranchLineage, RemoteParents, tree/parent-ref probes). Tests inject a FakeProc.
     nonisolated let proc: any ProcRunning
@@ -46,6 +55,9 @@ public actor OrchestraService {
     let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
+    /// Parked-channel registry for the Claude no-restart push route. Starved in B4 (nothing parks);
+    /// D1 wires `channel-wait` into it and D2 lights the route via the capability.
+    let broker = ChannelBroker()
     /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
     /// pushes; the phone populates it over the `registerDevice` RPC.
     let devices: DeviceTokenStore
@@ -130,6 +142,12 @@ public actor OrchestraService {
     /// exactly once per token by intersecting this with the inbox's live leases; `confirmDelivery` removes
     /// a token once it is no longer in flight (confirmed OR released).
     var outstandingTokens: [UUID: Set<UUID>] = [:]
+    /// When a live `.controlChannel` card first failed the attach check (cleared on a successful
+    /// delivery, on teardown, and on an epoch bump). The cold path is deferred until
+    /// `channelAttachGrace` elapses, so a daemon/bridge restart never mass-cold-restarts healthy live
+    /// sessions while their pumps reconnect (B4 attach-grace). Dark in B4 — nothing parks — but the
+    /// funnel's per-generation clear and teardown's eviction land here where they are first written.
+    var channelUnattachedSince: [UUID: Date] = [:]
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
@@ -181,12 +199,12 @@ public actor OrchestraService {
     // await's timeout would fail the verb. Reset when the card leaves the being-born phase.
     var launchReadyTicks: [UUID: Int] = [:]
     let launchReadyTickThreshold = 3
-    // Narrow atomic-claim set (replaces the deleted `recovering` set's role (b)): a wake/idle-resume
-    // inserts the card SYNCHRONOUSLY (before any `await`) so a concurrent wake sees the claim and defers,
-    // avoiding a double-resume race on an idle card. Role (a) — the stale-SessionEnd grace window — is now
-    // covered by session epochs (2.4), so this is NOT read by the liveness reconcile (which uses phase
-    // rules). Cleared when the resume settles. See `wake`/`resumeSeedWake`/`clearRelaunchClaimed`.
-    var relaunchClaimed: Set<UUID> = []
+    // Cards with a delivery dispatch currently in flight — the ONE wake-vs-wake guard (B4). Inserted
+    // SYNCHRONOUSLY (no suspension between the last guard and the insert) so a concurrent `send`, arm
+    // tick, or `wakeIfPending` sees the claim and defers instead of double-driving. This subsumes the
+    // retired `relaunchClaimed`: its wake-claim role is here, and its relaunch-single-winner role is
+    // the funnel's `.relaunching` epoch bump. Cleared when the wake's ladder returns.
+    var deliveriesInFlight: Set<UUID> = []
     // Startup-abort confirmation (spawn only) — FOLDED from `spawn-startup-abort-classification` into the
     // convergence architecture. A freshly-launched card (armed in `finishLaunch`) is tracked here with a
     // grace DEADLINE until it proves it survived launch; the reconcile/liveness pass inspects its agent
@@ -267,6 +285,7 @@ public actor OrchestraService {
                 orchestraBin: String = siblingBinary("orchestra"),
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
                 clock: any Clock<Duration> = ContinuousClock(),
+                now: @escaping @Sendable () -> Date = { Date() },
                 // NO defaults on the fork seams (impl-review M4 residual, mirroring BranchLineage/
                 // RemoteParents): a defaulted RealProc lets a unit test fork real git invisibly to
                 // every lint. The caller chooses — production passes RealProc + the real probe.
@@ -274,6 +293,7 @@ public actor OrchestraService {
                 gitRemotesProbe: @escaping @Sendable (String) -> [String]) {
         self.config = config
         self.clock = clock
+        self.now = now
         self.proc = proc
         self.gitRemotesProbe = gitRemotesProbe
         self.lineage = BranchLineage(proc: proc)
@@ -286,7 +306,9 @@ public actor OrchestraService {
         self.store = store ?? TaskStore()
         self.trust = trust ?? TrustLedger()
         // The Inbox holds no Config — the lease timeout is injected here, at its one build site.
-        self.inbox = inbox ?? Inbox(leaseTimeout: TimeInterval(config.deliveryLeaseTimeout))
+        // Share the service's `now` provider so lease/stuck stamping and the arm's expiry math read
+        // one timeline (a TestClock advance moves both).
+        self.inbox = inbox ?? Inbox(leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: now)
         self.devices = devices ?? DeviceTokenStore()
         self.mediaStore = mediaStore ?? MediaStore(root: "\(config.runtimeStateDir)/media")
         self.grantResolver = grantResolver
@@ -751,6 +773,32 @@ public actor OrchestraService {
     /// pin that a handoff-only (0-message) batch leaves NO phantom token behind.
     func outstandingTokenCountForTest(_ cardId: UUID) -> Int { outstandingTokens[cardId]?.count ?? 0 }
 
+    /// Test-only: charged delivery attempts for a card (the arm's retry budget).
+    func deliveryAttemptCountForTest(_ cardId: UUID) -> Int { deliveryAttempts[cardId]?.count ?? 0 }
+
+    /// Test-only: re-arm a card's retry budget the way `send`/`deliveryConfirmed` do.
+    func resetDeliveryAttemptsForTest(_ id: UUID) { deliveryAttempts[id] = nil }
+
+    /// Test seam: pin the delivery-retry backoff (mirrors `stepBackoffOverrideSeconds`) so an arm
+    /// test's window is load-proof.
+    var deliveryBackoffOverrideSeconds: Double? = nil
+
+    /// Test seam: a pause point INSIDE `chargeExpiredTokens`, between the token-liveness scan and the
+    /// ledger re-read, so a race test can land a confirm/dispatch in that exact window. A closure (not
+    /// a `Gate`, which lives in TestSupport that OrchestraCore cannot import); nil in production.
+    var deliveryExpiryScanPause: (@Sendable () async -> Void)? = nil
+    func setExpiryScanPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        deliveryExpiryScanPause = pause
+    }
+
+    /// Test seam: a pause point in the arm's direct-dead bypass, AFTER `isResumable` and before the
+    /// stuck flip, so a race test can land a reviving `restart` in exactly that window and prove the
+    /// flip's generation fence aborts. Nil in production.
+    var deliveryDeadBypassPause: (@Sendable () async -> Void)? = nil
+    func setDeadBypassPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        deliveryDeadBypassPause = pause
+    }
+
     /// The token-based confirm chokepoint — every delivery path (Stop confirm, channel ack, stepper
     /// signal-readiness) funnels a receipt through here, so the archive guard and the attempt/stuck resets
     /// can't be forgotten at one site. A message leaves the durable inbox ONLY here.
@@ -780,6 +828,10 @@ public actor OrchestraService {
         if outstandingTokens[cardId]?.isEmpty == true { outstandingTokens[cardId] = nil }
         guard didConfirm else { return }
         deliveryAttempts[cardId] = nil                          // a real confirm re-arms the whole retry budget
+        // A delivered card is not waiting on a bridge: drop the unattached stamp so a LATER outage gets
+        // a FRESH full attach-grace window rather than an already-expired one (B4 attach-grace is
+        // per-outage, not per-daemon-lifetime — else the mass-restart protection disarms after one blip).
+        channelUnattachedSince[cardId] = nil
         // Clear any stuck flag (contract: every confirmed delivery clears deliveryStuckSince). A FRESH read
         // catches a flip that landed during the inbox await; skip-if-nil avoids a spurious emit on the hot
         // path. The narrow get-vs-update window is closed from the OTHER side by B4's arm: a stuck flip
@@ -802,7 +854,7 @@ public actor OrchestraService {
         let handoff = card.pendingSeed
         guard let batch = try? await inbox.claim(
             cardId, route: .relaunchSeed, epoch: epoch, budget: StopDrain.maxPayloadChars,
-            render: { HandoffSeed.compose(handoff: handoff, messages: $0, budget: $1) }, now: Date())
+            render: { HandoffSeed.compose(handoff: handoff, messages: $0, budget: $1) }, now: now())
         else { return nil }
         if !batch.ids.isEmpty { markDispatched(cardId, token: batch.token) }
         return batch
@@ -851,7 +903,7 @@ public actor OrchestraService {
         guard let batch = try? await inbox.claim(cardId, route: .stopDrain, epoch: epoch,
                                                  budget: StopDrain.maxPayloadChars,
                                                  render: { StopDrain.fit($0, budget: $1) },
-                                                 now: Date(), blockIfLiveLease: true)
+                                                 now: now(), blockIfLiveLease: true)
         else { return nil }   // `try?` flattens ClaimedBatch? — nil = threw / nothing claimable / live lease
         markDispatched(cardId, token: batch.token)
         injectCounts[cardId] = count + 1
@@ -1358,7 +1410,7 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
-            scratchRoot: config.scratchRoot,
+            broker: broker, scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },

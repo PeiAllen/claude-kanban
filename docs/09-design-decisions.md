@@ -571,6 +571,71 @@ that doesn't know the vars ignores them, and a modal that still appears degrades
 the lease survives and the arm retries rather than the seed being silently lost — and agent-agnostic, since
 other adapters return nothing.
 
+### The delivery arm and the wake route ladder (B4)
+
+`send` was a one-shot: enqueue, try once, hope. Every receipt that never came back — a lost
+`decision:block` reply, a dead bridge, a relaunch that crashed before its confirm, and B3's two documented
+residuals — left a durable message with nothing to re-drive it. Delivery is now **level-triggered**: an arm
+in the reconcile tick re-drives any deliverable card that still has claimable messages, so the durable inbox
+converges to empty the same way a phase converges to its target. This is why the B-spine sequences the arm
+strictly after both confirm paths (B2 busy, B3 cold) exist — a level-triggered retry over a still-pre-draining
+path would multiply the very loss being fixed.
+
+**`wake` is the single delivery chokepoint.** Every starter — `send`'s fast path, the arm, `wakeIfPending`'s
+live edge, `concludeCard`'s watcher nudges — goes through it, so there is one in-flight guard
+(`deliveriesInFlight`, acquired synchronously before any suspension) and one place route selection happens.
+The ladder is CLI-wait defer → outstanding-lease defer → channel push → attach grace → cold resume intent,
+selected purely from `AgentCapabilities.wakeTransport`; there is no `if agentId` anywhere on it.
+`resumeSeedWake` and `relaunchClaimed` are retired: the wake-claim role is `deliveriesInFlight`, and the
+relaunch single-winner role is the funnel's epoch bump. The card is re-read after **every** suspension —
+archived, left the deliverable set, or epoch-bumped by a concurrent relaunch — and this is not
+belt-and-braces: the re-guard *after the channel claim* closes a real loss window, because a push at a
+now-stale epoch would resolve a poll parked by the superseded session, and `confirmDelivery` is token-scoped
+with no epoch fence of its own (that fence lives in the report path's lease lookup, not the helper), so the
+dead session's ack would delete a batch it never received.
+
+Two rungs are *defers*, not failures, and deliberately charge nothing: a `.nativeReinvoke` card with a live
+`orchestra wait` will be re-invoked by its own harness, and an unexpired same-epoch lease means a delivery is
+mid-confirm — a channel push awaiting its ack, or a held relaunch seed awaiting its first-signal confirm, must
+never be superseded by a cold restart of the session that just took the delivery.
+
+**Attempt accounting is per-token, and the ledger is what makes it exact.** `outstandingTokens` records what
+was dispatched; `confirmDelivery` removes a token on confirm *or* release. So a token still in the set whose
+lease is no longer live was dispatched and died — the arm charges it once and removes it, via a new
+`Inbox.isLeaseLive(token:now:)` that is token-scoped and expiry-aware but deliberately epoch-**agnostic**
+where `hasLiveLease` is epoch-exact: since the wave-1 held-confirm fence, a stale-generation held lease can
+never confirm, so a mere presence test would strand it outstanding forever with no other reaper — a
+permanently stuck card, not a slow one. The charge re-reads the ledger after its awaits, so a confirm landing
+mid-scan is neither resurrected by a stale write-back nor charged after it reset the budget. Attempts reset
+only on a genuine confirm, so a bridge that acks without notifying cannot suppress the stuck flip.
+
+**Stuck is stable and double-conditioned.** A card flips `deliveryStuckSince` only when the retry budget is
+spent *and* the oldest pending message has outlived `deliveryStuckAfter` — either alone lies. Once stuck the
+arm goes quiet, so the queue stays editable and the human's clear/retry window is never raced by a re-lease;
+it still runs `clearStuckIfDrained`, so an emptied inbox clears the flag. The flip re-validates its guard on
+the actor immediately before the `store.update` write **and compensates after it**, because the update itself
+suspends: it re-reads the queue first and the actor-local budget last, and emits only the final state, so no
+subscriber ever observes a transient flip — which matters because B5b's tracker fires once on false→true and
+would send an irreversible push for a stuck state that never really existed.
+
+**The `ChannelBroker` ships starved.** Its type, service property, teardown `detachAll` and epoch-bump
+`revokeOlderEpochs` all land here — where they are first referenced — but nothing ever parks a poll, so
+`isAttached` is structurally false and the channel rung is compiled and unreachable. It is *starved*, not
+constant-returning: every method operates on a real parked map with no writer, so D1's wiring (`channel-wait`
++ a park entry point) is a pure addition. Every removal path resolves the polls it drops rather than
+discarding them, and `push` and the resolver are `async`, so D1 can report a real write outcome — a dropped
+`channel-wait` would otherwise hang to its ~55s timer and block the bridge's re-poll at the new epoch. "Dark"
+means unreachable, never undeclared.
+
+Two smaller decisions ride along. The funnel's wake-on-live moves **below** the state broadcast rather than
+being detached: `wake` now records the cold resume intent inline (holding `deliveriesInFlight` across the
+ladder), so the nested `.relaunching` upsert must not precede the `.live` one it supersedes — reordering fixes
+that while keeping the funnel wake awaited (deterministic) and spawning no task per `.live → .live` telemetry
+churn. And `Inbox.drain`/`drainFirst` are deleted outright: after B3's de-drain they had zero production
+callers, and a public remove-without-receipt primitive is exactly the trap the whole at-least-once design
+exists to eliminate — the four PRs basing on B4 could otherwise reach for one and silently reintroduce
+remove-before-receipt.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
@@ -1095,8 +1160,13 @@ decisions keep it small and provider-neutral:
   stays here as history.
 
 Also landing after the forest is **`send-wakes-idle-card` — waking an idle native (Claude) card via
-resume-seed** (commit `7d8037c`, branch `send-wakes-idle-card`). C1/C2 wired `send` to `wake` a card right
-after enqueuing, but the `nativeReinvoke` (Claude) transport treated *every* idle case as a no-op push: it
+resume-seed** (commit `7d8037c`, branch `send-wakes-idle-card`). **Superseded by B4** (see "The delivery arm
+and the wake route ladder" above): the `resumeSeedWake` and `recovering`/`relaunchClaimed` mechanisms this
+entry describes were retired when `wake` became the single capability-selected chokepoint — the idle-no-wait
+case is now the ladder's cold `.relaunching` intent, and the concurrency claim is `deliveriesInFlight`. The
+record below is kept for the history of *why* idle-wake exists; the *how* is the B4 ladder. C1/C2 wired
+`send` to `wake` a card right after enqueuing, but the `nativeReinvoke` (Claude) transport treated *every*
+idle case as a no-op push: it
 assumed a background `orchestra wait` whose exit the harness re-invokes on. That holds for the **reactive
 fan-out** (a watcher card always has a live wait), but **not** for a plain `send`/queue onto a genuinely idle
 `.waiting` Claude card — with no in-flight turn and no live wait, the message sat inbox-durable until some

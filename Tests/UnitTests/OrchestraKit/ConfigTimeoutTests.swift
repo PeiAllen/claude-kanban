@@ -74,4 +74,37 @@ struct ConfigTimeoutTests {
         let cfg = try OrchestraJSON.decoder.decode(Config.self, from: Data(old.utf8))
         #expect(cfg.deliveryLeaseTimeout == 60)
     }
+
+    @Test("the three B4 service-read knobs carry their contract defaults")
+    func b4DeliveryKnobDefaults() {
+        let c = Config()
+        #expect(c.deliveryStuckAfter == 300)
+        #expect(c.channelAttachGrace == 15)
+        #expect(c.claudeChannels == true)
+    }
+
+    @Test("a pre-B4 config lacking every new delivery key still decodes")
+    func b4DeliveryKnobsForwardCompat() throws {
+        // Carries exactly the REQUIRED keys (maxConcurrentRevivals/revivalGraceSeconds/statusLineMode
+        // are required-decode in CodingKeys, so they must be present or the whole envelope throws);
+        // the three B4 keys are absent and must fall back to their defaults, not throw.
+        let legacy = #"""
+        {"reposRoot":"/r","worktreesRoot":"/w","defaultAgentId":"claude-code","allowlist":[],
+         "maxConcurrentRevivals":4,"revivalGraceSeconds":15,"statusLineMode":"custom"}
+        """#
+        let c = try OrchestraJSON.decoder.decode(Config.self, from: Data(legacy.utf8))
+        #expect(c.deliveryStuckAfter == 300)
+        #expect(c.channelAttachGrace == 15)
+        #expect(c.claudeChannels == true)
+
+        // …and a config that DOES set one keeps the override while the others default.
+        let withOne = #"""
+        {"reposRoot":"/r","worktreesRoot":"/w","defaultAgentId":"claude-code","allowlist":[],
+         "maxConcurrentRevivals":4,"revivalGraceSeconds":15,"statusLineMode":"custom",
+         "claudeChannels":false}
+        """#
+        let c2 = try OrchestraJSON.decoder.decode(Config.self, from: Data(withOne.utf8))
+        #expect(c2.claudeChannels == false)
+        #expect(c2.deliveryStuckAfter == 300)
+    }
 }

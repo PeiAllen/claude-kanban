@@ -39,6 +39,10 @@ public struct ConvergeContext: Sendable {
     public let adapters: AgentRegistry
     /// The card durable message queue — Teardown's dedup child-nudge writes through here.
     public let inbox: Inbox
+    /// The parked-channel registry — Teardown detaches a card's polls before the terminal flip, so a
+    /// resolved-after-archive push can never write into a torn-down session. Starved in B4 (nothing
+    /// parks); a standalone actor like `inbox`, so it is a stored reference, not an actor callback.
+    public let broker: ChannelBroker
     /// The scratch-root fence — teardown's `rm -rf` guard. Carried as a plain value (the stepper
     /// bundle has no Config); always the owning service's `config.scratchRoot`.
     public let scratchRoot: String
@@ -75,7 +79,7 @@ public struct ConvergeContext: Sendable {
     public let claimSeed: @Sendable (_ cardId: UUID, _ epoch: Int) async -> ClaimedBatch?
 
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
-                adapters: AgentRegistry, inbox: Inbox, scratchRoot: String,
+                adapters: AgentRegistry, inbox: Inbox, broker: ChannelBroker, scratchRoot: String,
                 transition: @escaping @Sendable (UUID, Phase, Int?, Phase.Kind?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
@@ -84,7 +88,7 @@ public struct ConvergeContext: Sendable {
                 confirmDelivery: @escaping @Sendable (UUID, UUID) async -> Void,
                 claimSeed: @escaping @Sendable (UUID, Int) async -> ClaimedBatch?) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
-        self.adapters = adapters; self.inbox = inbox; self.scratchRoot = scratchRoot
+        self.adapters = adapters; self.inbox = inbox; self.broker = broker; self.scratchRoot = scratchRoot
         self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
@@ -359,12 +363,20 @@ public struct TeardownStepper: PhaseStepper {
         guard await stillArchiving(card.id, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
         await ctx.teardownActorDuties(card.id)
-        // 4b · B3 D9: release the card's delivery leases before the terminal flip. B3 introduces HELD
-        // relaunchSeed leases; without this, `confirmDelivery`'s archive-read→confirm await window could
-        // DELETE a held message on an archiving card instead of retaining it for a reopen. A released lease
-        // makes a late `confirm(token)` a token-no-op, so the message stays durable. (`broker.detachAll` is
-        // B4's — the broker doesn't exist yet.) The messages themselves stay queued; a reopen redelivers.
+        // 4b · B3 D9 + B4: release the card's delivery leases AND detach its channel polls before the
+        // terminal flip. B3 introduces HELD relaunchSeed leases; without the release, `confirmDelivery`'s
+        // archive-read→confirm await window could DELETE a held message on an archiving card instead of
+        // retaining it for a reopen. A released lease makes a late `confirm(token)` a token-no-op, so the
+        // message stays durable; the detach makes a late `push` find nothing parked. Messages stay queued;
+        // a reopen redelivers.
         try? await ctx.inbox.releaseAll(card.id)
+        // RE-FENCE before the detach, per this stepper's own discipline (a guard before EVERY duty).
+        // `releaseAll` suspends, and `reopen` is a legal edge straight out of `archivedPending` — a reopen
+        // winning that window brings the card back at a NEW epoch, and D1's pump can park a fresh poll for
+        // it. Detaching then would tear down the live card's channel on behalf of an archive that no longer
+        // owns it.
+        guard await stillArchiving(card.id, ctx) else { return }
+        await ctx.broker.detachAll(card.id)
         // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase.
         _ = await ctx.transition(card.id, .archived(teardownComplete: true), nil, .archivedPending) { t in t.archived = true }
     }

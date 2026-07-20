@@ -120,31 +120,12 @@ public actor Inbox {
         try persist()
     }
 
-    /// Return + remove all pending messages for a card, in order.
-    @discardableResult
-    public func drain(_ cardId: UUID) throws -> [InboxMessage] {
-        ensureLoaded()
-        let pending = messages.filter { $0.cardId == cardId }
-        guard !pending.isEmpty else { return [] }
-        messages.removeAll { $0.cardId == cardId }
-        try persist()
-        return pending
-    }
-
-    /// Remove + return the first `count` pending messages for a card, in order, leaving the rest queued.
-    /// Backs the Stop-hook's whole-messages-to-fit drain (`StopDrain.fit`): only the messages that fit the
-    /// payload budget this turn are removed; the overflow stays durable for the next turn-end.
-    @discardableResult
-    public func drainFirst(_ cardId: UUID, _ count: Int) throws -> [InboxMessage] {
-        ensureLoaded()
-        let pending = messages.filter { $0.cardId == cardId }
-        guard !pending.isEmpty, count > 0 else { return [] }
-        let take = Array(pending.prefix(count))
-        let takeIds = Set(take.map(\.id))
-        messages.removeAll { takeIds.contains($0.id) }
-        try persist()
-        return take
-    }
+    // `drain`/`drainFirst` DELETED (B4): after B3's de-drain they had zero production callers, and a
+    // public remove-without-receipt primitive is the exact trap this at-least-once design exists to
+    // eliminate — the confirm funnel guards `confirm`, not a raw drain, so a later delivery-path
+    // author (B5a/D1/E1) could silently reintroduce remove-before-receipt with nothing to catch it.
+    // Delivery removes ONLY through `confirm(token:)` on a proven receipt; the editor removes through
+    // `remove(_:)`; readers use the non-destructive `peek`.
 
     /// Remove one message by id (no-op if absent). Used by the inbox editor.
     ///
@@ -318,6 +299,21 @@ public actor Inbox {
     public func hasLiveLease(_ cardId: UUID, epoch: Int, now: Date) -> Bool {
         ensureLoaded()
         return liveLeaseExists(cardId, epoch: epoch, now: now)
+    }
+
+    /// Is THIS token still a live lease — present on some message AND not yet expired? The delivery
+    /// arm's expiry-charge predicate (B4), deliberately epoch-AGNOSTIC where `hasLiveLease` is
+    /// epoch-exact: the arm must charge a token whose generation is long gone. Presence alone would be
+    /// wrong — a stale-epoch held `relaunchSeed` lease still carries its token, and since the
+    /// held-confirm epoch fence it can never confirm, so a presence test would strand it outstanding
+    /// forever with no other reaper. `false` therefore means "dispatched and dead": re-owned by a
+    /// later claim (token gone) or expired in place.
+    public func isLeaseLive(token: UUID, now: Date) -> Bool {
+        ensureLoaded()
+        return messages.contains {
+            $0.lease?.token == token
+            && $0.lease.map { now.timeIntervalSince($0.leasedAt) < leaseTimeout } == true
+        }
     }
 
     /// Same predicate, callable from other already-on-actor methods (`claim`'s `blockIfLiveLease`) without a

@@ -144,7 +144,7 @@ extension OrchestraService {
     /// F1 (C3) — resume THIS card into a fresh process with CLEAN context, carrying the handoff/fork
     /// context as the resumed session's opening seed. This is **resume, not a blank restart**:
     /// `agentSessionId` is KEPT, so the vendor transcript carries forward. This is F1 (handoff) AND the
-    /// idle-wake path for a `.relaunch` agent (`resumeSeedWake`). Backs D1's `handoff` Command.
+    /// cold idle-wake path the `wake` ladder records as its `.relaunching` intent. Backs D1's `handoff`.
     ///
     /// B3 — NO inbox drain. The pending inbox is no longer eaten here and folded into the seed; it stays
     /// DURABLE and is delivered by the RelaunchStepper's `relaunchSeed` claim (which composes this handoff
@@ -575,21 +575,24 @@ extension OrchestraService {
         }
     }
 
-    /// Deliver an inbox that a `send`/inbox-add queued WHILE this card was mid-relaunch — its `wake` no-op'd
-    /// (the `relaunchClaimed` gate / a non-`.live` phase) and, uniquely, nothing else retries it (a running
-    /// card's Stop-drain, a not-yet-resumable card's next turn, and a watching parent's reinvoke all cover
-    /// their own gates). Called once the relaunch settles (`clearRelaunchClaimed`). `wake` re-checks every
-    /// gate, so this is a no-op unless there is a genuinely stranded message, and it self-terminates: the
-    /// resumed turn drains the inbox.
+    /// The funnel's wake-on-live release point (+Lifecycle step 7): a `send`/inbox-add that queued
+    /// WHILE the card was being born had its `wake` no-op'd on the being-born phase, and the arm
+    /// covers a `.dead` card — but a card landing `.live` after provisioning needs one nudge to drain
+    /// what accumulated. `wake` re-checks every gate, so this is a no-op unless a genuinely claimable
+    /// message remains, and it self-terminates (the delivered turn drains the inbox). The
+    /// `hasClaimable` gate (B3 D5) keeps a card holding a `.ticks` relaunchSeed lease from re-waking
+    /// itself into a kill loop.
     func wakeIfPending(_ id: UUID) async {
-        // B3 D5: gate on `hasClaimable`, NOT `!peek.isEmpty`. The funnel fires this on EVERY `.live`
-        // landing (+Lifecycle wake-on-live), and `peek` returns leased messages too — so a card that just
-        // landed `.live(.waiting)` HOLDING a `.ticks`-readiness relaunchSeed lease has a non-empty peek and
-        // would be re-woken → a fresh resume → epoch bump → the held lease re-claimed → the just-live
-        // session killed and re-delivered, in a loop. A held same-epoch lease is NOT claimable, so
-        // `hasClaimable` correctly leaves it alone until its held-confirm (or the lease expires).
-        guard let t = await store.get(id), case .live(.waiting) = t.phase, !t.archived,
-              await inbox.hasClaimable(id, epoch: t.sessionEpoch, now: Date()) else { return }
+        // B3 D5, kept: gate on `hasClaimable`, NOT `!peek.isEmpty`. The funnel fires this on EVERY
+        // `.live` landing (+Lifecycle wake-on-live), and `peek` returns leased messages too — so a
+        // card that just landed `.live(.waiting)` HOLDING a `.ticks`-readiness relaunchSeed lease has
+        // a non-empty peek and would be re-woken → a fresh resume → epoch bump → the held lease
+        // re-claimed → the just-live session killed and re-delivered, in a loop. A held same-epoch
+        // lease is NOT claimable, so `hasClaimable` leaves it alone until its held-confirm (or the
+        // lease expires). B4's `hasLiveLease` guard inside `wake` backs this up. Phase gate goes
+        // through `deliverable` so this stays in step with the ladder's target set.
+        guard let t = await store.get(id), deliverable(t),
+              await inbox.hasClaimable(id, epoch: t.sessionEpoch, now: now()) else { return }
         await wake(id)
     }
 

@@ -16,6 +16,9 @@ extension OrchestraService {
     /// Test seam: pin the step-backoff delay so the backoff test's window is load-proof (see the field's doc).
     func setStepBackoff(_ seconds: Double) { stepBackoffOverrideSeconds = seconds }
 
+    /// Test seam: pin the delivery-retry backoff so an arm test's window is load-proof.
+    func setDeliveryBackoff(_ seconds: Double) { deliveryBackoffOverrideSeconds = seconds }
+
     /// Test/introspection: the worktree registry's conservative-mode flag (post-corrupt-boot).
     func worktreeConservativeMode() async -> Bool { await worktrees.conservativeMode }
 
@@ -210,6 +213,12 @@ extension OrchestraService {
             case .dead, .archivedComplete:
                 launchReadyTicks[t.id] = nil          // terminal — nothing to step; keep the switch exhaustive
             }
+
+            // The delivery arm (B4) — level-triggered, AFTER the phase switch so it reads this tick's
+            // settled phase (it re-reads the card itself, since `.live`'s `markDead` path does not
+            // `continue`). The `continue`s above (startup-abort, orphan pane) deliberately skip it:
+            // those cards are converging to dead and are picked up next tick.
+            await reconcileDelivery(t)
         }
 
         // (5) orphan-session sweep — after the per-card pass so a just-transitioned card isn't misread.

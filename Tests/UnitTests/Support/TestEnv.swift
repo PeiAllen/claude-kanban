@@ -44,6 +44,7 @@ enum TestEnv {
                      registry: AgentRegistry? = nil,
                      extraAgents: [(id: String, models: [String])] = [],
                      clock: any Clock<Duration> = ContinuousClock(),
+                     now: (@Sendable () -> Date)? = nil,
                      proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
@@ -74,7 +75,11 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        let inbox = Inbox(path: base + "/inbox.json")
+        // Share ONE `now` provider across the Inbox and the service so lease/stuck stamping and the
+        // arm's expiry math read a single timeline — a TestClock advance then moves both.
+        let nowProvider: @Sendable () -> Date = now ?? { Date() }
+        let inbox = Inbox(path: base + "/inbox.json",
+                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
         let extras = extraAgents.map {
             StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities,
                         id: $0.id, name: $0.id, modelIds: $0.models)
@@ -84,7 +89,7 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
                                    gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
@@ -97,6 +102,7 @@ enum TestEnv {
     /// itself a realistic "fresh daemon" trait.
     static func remake(base: String, capabilities: AgentCapabilities = .stub,
                        clock: any Clock<Duration> = ContinuousClock(),
+                       now: (@Sendable () -> Date)? = nil,
                        proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
@@ -110,12 +116,14 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        let inbox = Inbox(path: base + "/inbox.json")
+        let nowProvider: @Sendable () -> Date = now ?? { Date() }
+        let inbox = Inbox(path: base + "/inbox.json",
+                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
                                    gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, base)
     }
