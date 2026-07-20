@@ -63,20 +63,17 @@ public actor TaskStore {
 
     /// A single record wrapper whose decode NEVER throws: a record that fails `Task.init(from:)` becomes
     /// `nil` and is dropped, instead of failing the array decode and stranding the entire board to `.bak`.
-    /// `Task.init` throws when `id` is absent, OR when `phase` carries an unknown value — the phase field is
-    /// decoded with an unguarded `try` (every OTHER enum field is `try?`-guarded and defaults). The one
-    /// current such value is a legacy `.dead(.completed)` record: `DeadReason.completed` was removed as a
-    /// clean on-disk break, so a stored `{"name":"dead","detail":"completed"}` throws here and self-drops
-    /// (accepted — see docs/09, "'Done' is not observable").
+    /// `Task.init` throws only when `id` is absent or `phase` holds an unknown value (`phase` is the one
+    /// field decoded with an unguarded `try`) — currently a legacy `.dead(.completed)`, whose case was
+    /// removed as a clean break, so it self-drops on load (accepted; see docs/09).
     private struct FailableTask: Decodable {
         let task: Task?
         init(from decoder: Decoder) throws { self.task = try? Task(from: decoder) }
     }
 
     /// Read + decode. `[]` if absent. The board reaches `.bak` ONLY when the top-level JSON is itself
-    /// unparseable — a single corrupt record is dropped element-wise, never `.bak`'d. A record that throws
-    /// (an id-less record, or a legacy `.dead(.completed)` whose removed phase value no longer decodes) is
-    /// logged and dropped; every other record is kept (fields defaulted).
+    /// unparseable — a single throwing record (id-less, or a legacy `.dead(.completed)` that no longer
+    /// decodes) is logged and dropped element-wise; every other record is kept (fields defaulted).
     @discardableResult
     public func load() -> [Task] {
         let url = URL(fileURLWithPath: path)
