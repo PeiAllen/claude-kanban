@@ -201,11 +201,6 @@ extension OrchestraService {
                 if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
                     task.phase = .live(run)
                 }
-                // A worktree card stays long-lived on a completed turn (`.live(.waiting(.humanTurn))`, set
-                // by `run` above); only a read-only freeform/scratch card (a one-shot delegation) concludes.
-                if snap.turnCompleted == true, shouldConcludeOnTurnCompletion(task) {
-                    task.phase = .dead(.completed)
-                }
             }
         }
 
@@ -326,12 +321,5 @@ extension OrchestraService {
         // guarantees we advance the cursor even under an improbable clock stall.
         let nowMicros = UInt64(max(0, Date().timeIntervalSince1970 * 1_000_000))
         return max(nowMicros, lastSeq &+ 1)
-    }
-
-    /// Read-only freeform/scratch cards are the durable-card form of a one-shot delegation: they have no
-    /// branch lifecycle to merge, so an adapter's explicit task-completion signal is the card's completion
-    /// signal. Worktree cards remain long-lived and keep their existing `.waiting(.humanTurn)` behavior.
-    private func shouldConcludeOnTurnCompletion(_ task: Task) -> Bool {
-        task.origin != .worktree && task.access == .readOnly && !task.archived && task.phase.kind != .dead
     }
 }

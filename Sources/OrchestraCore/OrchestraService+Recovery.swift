@@ -401,12 +401,12 @@ extension OrchestraService {
         }
         let evidence = probe.evidence
 
-        // The card may have been archived / killed / restarted / concluded (done → `.dead(.completed)`)
-        // during the capture await — stand down rather than resurrect it or fight an intentional teardown
-        // (requirement D). A terminal (`.dead(_)`/`.archived(_)`) phase covers a SessionEnd death AND a
-        // task_complete conclusion. A fresh restart/resume already cleared `spawnPending`, so a nil entry
-        // also means "superseded". The re-check after the capture await is the race guard (orch drops the
-        // old `recovering` set; report()'s death path is epoch-fenced, not `recovering`-gated).
+        // The card may have been archived / killed / restarted / concluded during the capture await —
+        // stand down rather than resurrect it or fight an intentional teardown (requirement D). A terminal
+        // (`.dead(_)`/`.archived(_)`) phase covers a SessionEnd death. A fresh restart/resume already
+        // cleared `spawnPending`, so a nil entry also means "superseded". The re-check after the capture
+        // await is the race guard (orch drops the old `recovering` set; report()'s death path is
+        // epoch-fenced, not `recovering`-gated).
         guard spawnPending[id] != nil,
               let live = await store.get(id),
               !live.archived, !live.phase.isTerminal else {
