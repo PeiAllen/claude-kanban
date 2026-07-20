@@ -137,10 +137,6 @@ struct DelegationDocsTests {
             #expect(doc.contains("ends its turn is left `waiting`, not"))
             #expect(doc.contains("`archive` the card"))
             #expect(doc.contains("research forks, fan-out probes, reviewers alike"))
-            // …and the review pair's teardown happens only once the bound pass CLOSES.
-            #expect(doc.contains("Then archive both reviewers — the parent's job"))
-            #expect(doc.contains("confirm/deny turn needs their context"))
-            #expect(doc.contains("A reviewer left `waiting` is a leak"))
         }
     }
 

@@ -116,36 +116,6 @@ tightly-coupled work.
   ask of it, `archive` the card: research forks, fan-out probes, reviewers alike. Children that
   conclude on their own (merged, exited) need nothing.
 
-## Review pairs — requesting a bounded dual review
-
-To get a plan or implementation reviewed, spawn **one Claude + one Codex reviewer simultaneously**,
-both **read-only**, and bound the exchange. Do NOT loop "until no complaints" — deep looped review
-belongs to the periodic (streaming) review card, and even that is capped at 3 pair-passes.
-
-- **Reviewing committed work on a branch:** spawn each reviewer as a read-only **worktree** card
-  with `base: <your-branch>` — its branch is cut at your tip commit at spawn time, so it reviews a
-  **pinned snapshot** even while your branch advances underneath it. Never point a reviewer at a
-  working directory that is still being mutated (a freeform `cwd` reviewer sees a moving tree —
-  it will silently review the wrong code).
-- **Reviewing a plan/doc only:** a read-only freeform card (`cwd` = your worktree) is fine if you
-  will not touch the tree while it runs; otherwise pin via `base` as above.
-- **Seed** each reviewer with: exactly what to review (diff range / files / doc), the pinned
-  commit, and the output contract — *"send your findings to <me> via `send`, severity-tagged
-  BLOCKER / MAJOR / minor, then conclude."* Findings return via `send`; do **not** also `wait` on
-  the reviewers (one completion channel per child).
-- **The bound:** one pass. Fix every confirmed finding; record a one-line rebuttal for anything
-  you reject (verify feedback — don't comply performatively). **Iff** any BLOCKER/MAJOR was
-  raised, `send` the fix diff back to the same reviewers for **one** confirm/deny turn. Then stop;
-  record leftover minors for the next periodic review card.
-- **Then archive both reviewers — the parent's job.** Keep them alive until the pass *closes* (the
-  confirm/deny turn needs their context), then `archive` every reviewer card, including a failed or
-  wholly-rebutted one. They're throwaway. A reviewer left `waiting` is a leak — agent process,
-  worktree, tmux session, dead `review/*` branch — and nothing else reclaims it.
-- **Degrade, don't hang:** if one backend fails to spawn, proceed **single-reviewer** and say so
-  in your plan/merge-request. If one reviewer's findings arrive and the other's don't: `status`
-  the straggler — dead → proceed single-reviewer; alive → nudge once via `send`, and if still
-  silent by your next wake, archive it and proceed. **Zero** completed reviews = do not advance.
-
 ## Cards vs. native subagents — keep both
 
 You also have **native subagents** (the `Task` tool). These are NOT the same as cards, and cards do **not**

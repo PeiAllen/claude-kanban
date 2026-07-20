@@ -71,8 +71,16 @@ weighed, the tradeoffs, the decision — has exactly two homes, and it must land
   merged range) to regenerate chapters 9 and 10, so a decision explained only in a local
   untracked file is invisible to it;
 - **`docs/` directly, in the same PR** — update the right chapter (design decisions → `docs/09`,
-  a shipped roadmap axis → its history entry in `docs/09`, feature narrative → the numbered
+  a shipped roadmap axis → its shipped-state entry in `docs/09`, feature narrative → the numbered
   chapter).
+
+**`docs/` states the *current* design, not a changelog — this is the whole point of an SSOT.** So
+when a change *removes or reverses* a decision, **update or delete the affected description** so the
+chapter reads as the system is *now*; never append a "we added X, then took it out" entry. If what
+you removed was never described in `docs/` in the first place (it lived only in a bundled resource, a
+comment, a config), there is **nothing to add to `docs/` at all** — the removal's *why* still goes in
+the commit/PR body, and git holds the history. Adding a narrative "we undid this" paragraph to
+`docs/09` turns the SSOT back into the log it must not be.
 
 Treat "the rationale is in the commit body **and** reflected in `docs/`" as part of the merge
 gate for any behavior- or design-changing PR.
