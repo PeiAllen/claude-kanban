@@ -157,7 +157,13 @@ extension OrchestraService {
         // explicitly separates the phase expectation from the budget bypass.
         let expectDeadPhase = expectDead ?? bypassAttemptBudget
         func budgetSpent() -> Bool {
-            bypassAttemptBudget || (deliveryAttempts[id]?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
+            // An editor-driven re-arm in flight is about to zero this budget — treat it as NOT spent so the
+            // flip can't re-stamp stuck in the window where the durable flag is already nil but attempts are
+            // not yet reset (checked FIRST, ahead of the bypass, so even the dead-unresumable path is fenced).
+            // Cheap synchronous actor-local read; `budgetSpent()` is re-evaluated at every guard/compensate
+            // checkpoint, so a re-arm starting mid-flip aborts the pending stamp too.
+            if reArmingCards[id] != nil { return false }
+            return bypassAttemptBudget || (deliveryAttempts[id]?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
         }
         guard budgetSpent() else { return }
         let oldest = await inbox.peek(id).map(\.createdAt).min()

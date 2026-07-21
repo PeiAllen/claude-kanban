@@ -790,6 +790,59 @@ struct InboxSendIdempotencyTests {
         #expect(await inbox.peek(card).isEmpty)                    // not re-appended
     }
 
+    /// BLOCKER (final-review): `enqueueIfUnknown` must be TRANSACTIONAL — a persist failure must NOT
+    /// leave the id published in memory, or the contracted retry would dedup to `false` (and `send` report
+    /// success) with the message never on disk → an acknowledged send lost on the next daemon death. This
+    /// reproduces the failure across a daemon reconstruction: persist throws (the inbox path's parent is a
+    /// regular file), the FIRST call throws and rolls back; after the path is unblocked the retry
+    /// RE-ENQUEUES and the message survives a fresh-`Inbox` reload. Pre-fix the retry returns `false` and
+    /// the reload is empty.
+    @Test("a persist throw rolls back enqueueIfUnknown so the same-id retry re-enqueues and survives a reload")
+    func enqueueIfUnknownPersistThrowRollsBack() async throws {
+        let dir = NSTemporaryDirectory() + "inbox-blocker-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let wall = dir + "/wall"                                  // a FILE where persist needs a DIRECTORY
+        FileManager.default.createFile(atPath: wall, contents: Data())
+        let inboxPath = wall + "/inbox.json"                     // parent `wall` is a file → persist() throws
+        let card = UUID(), id = UUID()
+
+        let first = Inbox(path: inboxPath)
+        await #expect(throws: (any Error).self) { _ = try await first.enqueueIfUnknown(card, "hi", id: id) }
+        #expect(await first.peek(card).isEmpty)                  // rolled back — NOT left published in memory
+
+        // Unblock the path (a transient disk condition clears) and RETRY the same id on a fresh inbox.
+        try FileManager.default.removeItem(atPath: wall)
+        let retry = Inbox(path: inboxPath)
+        #expect(try await retry.enqueueIfUnknown(card, "hi", id: id) == true)   // re-enqueues (would be false unfixed)
+
+        // Reload from disk (a daemon reconstruction): the acknowledged send is durable, never lost.
+        let reloaded = Inbox(path: inboxPath)
+        #expect(await reloaded.peek(card).map(\.id) == [id])
+    }
+
+    /// The `enqueue`/dedupKey sibling of the BLOCKER: same add-then-dedup-suppress shape, so a persist
+    /// throw must roll the row back too, else the deduped redrive would silently drop it.
+    @Test("a persist throw rolls back a dedupKey enqueue so the row isn't left suppressing its own redrive")
+    func enqueueDedupKeyPersistThrowRollsBack() async throws {
+        let dir = NSTemporaryDirectory() + "inbox-blocker-dk-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let wall = dir + "/wall"
+        FileManager.default.createFile(atPath: wall, contents: Data())
+        let inboxPath = wall + "/inbox.json"
+        let card = UUID()
+
+        let first = Inbox(path: inboxPath)
+        await #expect(throws: (any Error).self) { try await first.enqueue(card, "x", dedupKey: "k") }
+        #expect(await first.peek(card).isEmpty)                  // rolled back
+
+        try FileManager.default.removeItem(atPath: wall)
+        let retry = Inbox(path: inboxPath)
+        try await retry.enqueue(card, "x", dedupKey: "k")        // the dedupKey no longer suppresses a phantom row
+        #expect(await Inbox(path: inboxPath).peek(card).map(\.text) == ["x"])   // durable
+    }
+
     @Test("remove returns the message's owner cardId, or nil when the id is absent")
     func removeReturnsOwnerNilWhenAbsent() async throws {
         let (inbox, path, card, _) = freshInbox()

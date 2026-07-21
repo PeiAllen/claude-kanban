@@ -236,6 +236,66 @@ struct DeliveryStuckTests {
         #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince == nil)
     }
 
+    /// MAJOR (final-review): the editor stuck re-arm must be atomic across BOTH the persisted flag and the
+    /// service-local attempt budget. `reArmIfStuck` clears `deliveryStuckSince` through a suspending
+    /// TaskStore hop, then zeros `deliveryAttempts`; a concurrent `flipStuckIfExhausted` landing in that
+    /// gap (nil-flag + still-spent budget + a claimable message) would RE-STAMP stuck, wedging the card
+    /// with attempts 0 the arm never re-drives. The `reArmingCards` fence must make the flip no-op for the
+    /// whole window. This parks the re-arm in the flag-cleared/budget-not-yet-reset window and fires a flip.
+    @Test("the editor re-arm fences a concurrent stuck flip so it can't re-stamp between clear and budget-reset")
+    func reArmFencesConcurrentFlip() async throws {
+        let clock = TestClock()
+        let (env, card) = try await exhausted(clock)
+        for _ in 0..<6 { await env.svc.reconcile() }                // flip it stuck (budget spent)
+        #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince != nil)
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+
+        // Park the re-arm AFTER the flag is cleared but BEFORE the budget is zeroed — the vulnerable window.
+        let gate = Gate()
+        await env.svc.setReArmPauseForTest { _ = await gate.park() }
+        let reArm = _Concurrency.Task { await env.svc.reArmIfStuck(card.id) }
+        await gate.reached()                                        // flag nil, fence held, attempts still ≥5
+
+        // A concurrent flip must NOT re-stamp stuck — the fence makes its budget read "not spent".
+        await env.svc.flipStuckIfExhausted(card.id, expectedEpoch: epoch)
+        gate.release()
+        await reArm.value
+
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.deliveryStuckSince == nil)                   // re-armed, NOT re-wedged (fails unfixed)
+        #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 0)   // budget cleanly reset
+    }
+
+    /// The fence must be REFERENCE-COUNTED, not a bare set: two overlapping editor re-arms on the SAME
+    /// card (a rapid remove+edit) both hold it, and a plain `Set` would let the second op's `defer` remove
+    /// the shared member while the first is still between its clear and its budget reset — re-opening the
+    /// exact window the fence exists to close. Here re-arm A parks holding the fence; re-arm B runs fully
+    /// (its clear is a no-op, the flag is already nil) and exits; a concurrent flip must STILL be fenced.
+    @Test("overlapping editor re-arms don't clobber each other's fence (ref-counted, not a shared set member)")
+    func overlappingReArmsKeepFence() async throws {
+        let clock = TestClock()
+        let (env, card) = try await exhausted(clock)
+        for _ in 0..<6 { await env.svc.reconcile() }
+        #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince != nil)
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+
+        let gate = Gate()
+        await env.svc.setReArmPauseForTest { _ = await gate.park() }
+        let a = _Concurrency.Task { await env.svc.reArmIfStuck(card.id) }   // A: clears flag, parks holding the fence
+        await gate.reached()
+        // B: a second overlapping re-arm on the SAME card. Its clear is a no-op (flag already nil) so it
+        // returns immediately — its `defer` must NOT lift A's still-held fence.
+        await env.svc.reArmIfStuck(card.id)
+        // A concurrent flip during the window must still be fenced out (A's ref keeps the count > 0).
+        await env.svc.flipStuckIfExhausted(card.id, expectedEpoch: epoch)
+        gate.release()
+        await a.value
+
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.deliveryStuckSince == nil)                   // fence held through B's exit → not re-stamped
+        #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 0)
+    }
+
     @Test("stuck survives a daemon restart via the PERSISTED message age + flag")
     func stuckSurvivesRestartViaAge() async throws {
         let clock = TestClock()

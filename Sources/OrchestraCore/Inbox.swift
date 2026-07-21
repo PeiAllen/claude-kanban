@@ -116,8 +116,14 @@ public actor Inbox {
            messages.contains(where: { $0.cardId == cardId && $0.dedupKey == dedupKey }) {
             return   // already queued for this card under the same key — dedup
         }
-        messages.append(InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey, createdAt: now()))
-        try persist()
+        // Transactional: publish the in-memory row ONLY after the disk commit succeeds. A persist throw
+        // that left the row in `messages` would be re-observed by a later dedup check (the `dedupKey`
+        // guard above) as "already queued" and no-op the redrive, so a message the client believes was
+        // accepted could never reach disk and be lost on a crash — the same silent-loss class as
+        // `enqueueIfUnknown`. No `await` between append and persist, so the rollback is exact.
+        let msg = InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey, createdAt: now())
+        messages.append(msg)
+        do { try persist() } catch { messages.removeAll { $0.id == msg.id }; throw error }
     }
 
     /// Append a message carrying an explicit client-minted `id`, but ONLY if that id is unknown — not
@@ -132,8 +138,15 @@ public actor Inbox {
     public func enqueueIfUnknown(_ cardId: UUID, _ text: String, id: UUID) throws -> Bool {
         ensureLoaded()
         if messages.contains(where: { $0.id == id }) || confirmedIds.contains(id) { return false }
+        // TRANSACTIONAL: the candidate is published in memory ONLY after the disk commit succeeds. If
+        // `persist()` throws (disk full / permission / replace error), roll the append back before
+        // rethrowing — otherwise the contracted retry (`send` re-issues the same id) would find the row
+        // still in memory, return `false`, and `send:722` would report SUCCESS without the message ever
+        // reaching disk. A daemon death before the next inbox mutation flushes would then LOSE an
+        // acknowledged send — the at-least-once violation B exists to prevent. No `await` sits between
+        // the append and the persist, so `removeAll { id }` restores the exact prior state.
         messages.append(InboxMessage(id: id, cardId: cardId, text: text, createdAt: now()))
-        try persist()
+        do { try persist() } catch { messages.removeAll { $0.id == id }; throw error }
         return true
     }
 

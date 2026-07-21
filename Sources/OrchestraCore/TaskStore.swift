@@ -143,6 +143,16 @@ public actor TaskStore {
         return tasks
     }
 
+    /// An ATOMIC `(tasks, rev)` snapshot — both read in one actor call, so `rev` exactly matches the task
+    /// state returned (no interleaving mutation can advance one without the other). The daemon push
+    /// (`PushNotifier`) seeds its attention baseline from this and drops every buffered event with
+    /// `rev <= this`, so a boot-window transition already reflected in the snapshot is never replayed as a
+    /// stale/duplicate notification.
+    public func snapshot() -> (tasks: [Task], rev: Int) {
+        ensureLoaded()
+        return (tasks, currentRev)
+    }
+
     /// Whether the on-disk board was corrupt at load (top-level unparseable → side-lined + booted empty).
     /// Forces a load so a boot caller reads the real signal even before the first `all()`.
     public func wasCorrupt() -> Bool {

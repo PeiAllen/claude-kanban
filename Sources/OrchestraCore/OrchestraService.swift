@@ -139,6 +139,18 @@ public actor OrchestraService {
     /// exactly once per token by intersecting this with the inbox's live leases; `confirmDelivery` removes
     /// a token once it is no longer in flight (confirmed OR released).
     var outstandingTokens: [UUID: Set<UUID>] = [:]
+    /// Cards whose editor-driven stuck re-arm (`reArmIfStuck`) is IN FLIGHT — a mutual-exclusion fence the
+    /// stuck flip consults. The re-arm clears `deliveryStuckSince` (a suspending TaskStore hop) and only
+    /// THEN zeros `deliveryAttempts`; during that gap the durable flag is nil while the budget is still
+    /// spent, so a concurrent `flipStuckIfExhausted` would re-stamp stuck and wedge the card (nil-flag +
+    /// attempts-0 the arm never re-drives). Holding the card here across BOTH mutations makes the flip
+    /// no-op for the whole window; once it lifts, attempts are already 0 so no flip fires anyway.
+    ///
+    /// REFERENCE-COUNTED, not a bare set: two overlapping editor ops on the SAME card (a rapid
+    /// remove+edit) both re-arm it, and a plain `Set` would let the second op's `defer` remove the shared
+    /// member — lifting the fence while the first op is still between its clear and its budget reset. The
+    /// count holds the fence up until the LAST in-flight re-arm exits.
+    var reArmingCards: [UUID: Int] = [:]
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
@@ -328,6 +340,16 @@ public actor OrchestraService {
     }
 
     private func unsubscribe(_ id: UUID) { subscribers[id] = nil }
+
+    /// The race-free attention baseline for the daemon push (`PushNotifier`): the current board plus the
+    /// rev it reflects, captured atomically. The notifier subscribes FIRST, seeds its tracker from these
+    /// tasks, then drops every buffered stream event with `rev <= rev` — those are already reflected in the
+    /// seed, and replaying them (they are causally OLDER than this snapshot) against the newer seed would
+    /// otherwise lose a window death (dead→dead no-op) or fire a stale needs-you (a superseded waiting
+    /// replayed against a running seed). Events with `rev > rev` are genuinely post-snapshot and fire.
+    func attentionBaseline() async -> (tasks: [Task], rev: Int) {
+        await store.snapshot()
+    }
 
     /// SYNCHRONOUS: `rev` is passed in explicitly (from the mutation return, or `lastRev` for
     /// ephemerals) — there is no `await` between a mutation and its emit, so actor reentrancy cannot
@@ -816,6 +838,15 @@ public actor OrchestraService {
         stopClaimPause = pause
     }
 
+    /// Test seam: a pause point in `reArmIfStuck`, AFTER `clearStuckIfSet` commits `deliveryStuckSince =
+    /// nil` and BEFORE the attempt budget is zeroed — the exact window where the durable flag is nil while
+    /// the budget is still spent. A race test lands a concurrent `flipStuckIfExhausted` here and proves the
+    /// `reArmingCards` fence keeps it from re-stamping stuck. Nil in production.
+    var reArmPause: (@Sendable () async -> Void)? = nil
+    func setReArmPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        reArmPause = pause
+    }
+
     /// The token-based confirm chokepoint — every delivery path (Stop confirm, channel ack, stepper
     /// signal-readiness) funnels a receipt through here, so the archive guard and the attempt/stuck resets
     /// can't be forgotten at one site. A message leaves the durable inbox ONLY here.
@@ -887,10 +918,25 @@ public actor OrchestraService {
     /// `get(stuck?) → reset` would erase a healthy generation's freshly-charged attempts if a confirm
     /// unstuck-and-recharged the card while this continuation was parked on the read (the value the guard
     /// sees would be stale by the time the synchronous reset runs — the same reentrancy hazard the arm's
-    /// `flipStuckIfExhausted` guards with on-actor revalidation). Because the reset runs SYNCHRONOUSLY
-    /// after `clearStuckIfSet` returns `true` (no `await` between), nothing can charge in the gap either.
+    /// `flipStuckIfExhausted` guards with on-actor revalidation).
+    ///
+    /// FENCE across BOTH mutations. `clearStuckIfSet` commits `deliveryStuckSince = nil` through a
+    /// suspending TaskStore hop; the attempt-budget reset is a separate service-local write. Between them
+    /// the durable flag is nil while attempts are still ≥5, and a concurrent `flipStuckIfExhausted` would
+    /// re-stamp stuck (nil-flag + spent budget + a claimable message) → the card wedges stuck with attempts
+    /// 0 that the arm's stuck short-circuit never re-drives. Holding `reArmingCards` from BEFORE the clear
+    /// until AFTER the reset makes the flip's `budgetSpent()` no-op for the entire window — and since the
+    /// flag is nil ONLY inside that window, the flip can never observe the vulnerable state. (The prior
+    /// "no `await` between helper-return and reset" only covered the reset gap, NOT the TaskStore hop
+    /// inside `clearStuckIfSet` where the flag actually flips.)
     func reArmIfStuck(_ cardId: UUID) async {
+        reArmingCards[cardId, default: 0] += 1
+        defer {
+            if let n = reArmingCards[cardId], n > 1 { reArmingCards[cardId] = n - 1 }
+            else { reArmingCards[cardId] = nil }
+        }
         guard await clearStuckIfSet(cardId) else { return }
+        await reArmPause?()   // test seam: land a concurrent flip in the flag-cleared, budget-not-yet-reset window
         deliveryAttempts[cardId] = nil
     }
 
@@ -1000,6 +1046,22 @@ public actor OrchestraService {
                            report: StatusReport?, source: SessionSource?,
                            observedEpoch: Int? = nil, stopHookActive: Bool = false) async -> HookResponse? {
         guard let task = try? await resolveRef(ref) else { return nil }
+
+        // STOP: claim/confirm the stopDrain BEFORE applying the Stop's own report. A real Claude Stop
+        // report lands `.live(.waiting(.humanTurn))`, whose wake-on-live (+Lifecycle step 7) would else
+        // cold-relaunch a `nativeReinvoke` card with no active CLI wait — bumping the epoch out from under
+        // this same-epoch claim, so `payloadForStop`'s entry fence then fails and a HEALTHY session is
+        // needlessly restarted on every send. The Stop hook IS the reinvoke, so its same-epoch stopDrain
+        // claim must win over a cold relaunch: claiming first mints a live same-epoch lease, and the
+        // subsequent waiting-landing wake then DEFERS on `hasLiveLease` (deliver rung 3) instead of
+        // relaunching. Applying the report afterward still lands the phase; the epoch fence's real purpose
+        // is untouched — a genuinely stale Stop (observedEpoch ≠ sessionEpoch) still no-ops in payloadForStop.
+        if event == .stop {
+            let continuation = await payloadForStop(task.id, observedEpoch: observedEpoch, stopHookActive: stopHookActive)
+            if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
+            return continuation.map { HookResponse(continuation: $0) }
+        }
+
         if let report { try? await self.report(task.id, report, observedEpoch: observedEpoch) }
         if event == .sessionStart, let source, source != .startup, source != .compact,
            report?.event?.sessionSource == nil {
@@ -1009,9 +1071,6 @@ public actor OrchestraService {
         case .sessionStart where source != .compact:
             // Skip re-orienting on a mid-turn compact (the agent already has its bearings).
             return await sessionBrief(task.id).map { HookResponse(additionalContext: $0) }
-        case .stop:
-            return await payloadForStop(task.id, observedEpoch: observedEpoch, stopHookActive: stopHookActive)
-                .map { HookResponse(continuation: $0) }
         default:
             return nil
         }
