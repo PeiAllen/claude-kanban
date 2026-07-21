@@ -717,6 +717,36 @@ cross-card or nonexistent id therefore leaves the caller's card untouched. The r
 flag (a healthy card's accruing budget is never reset by an edit, which would mask a genuinely failing
 delivery), and `inbox-reorder` is excluded because it preserves leases and disturbs no live claim.
 
+**Surfacing a stuck card is a pure edge-detector over the flag the arm already sets.** Once a card carries
+`deliveryStuckSince`, two more surfaces make it visible to the human without any new daemon state: the Needs
+You queue's reason chip and a one-shot notification. The chip is derived, not stored — `NeedsYouQueue.reason(for:)`
+returns `.deliveryStuck` (📪) whenever `deliveryStuckSince != nil`, ranked *above* `humanTurn` (the stuck card
+is the one specifically needing a human) but below `permission`/`died` (a crash still wins recovery); no
+`DisplayState` field is widened for it. The notification is the subtler half: a stuck flag going true is **not**
+a phase transition, so the existing `lastPhase`-keyed one-shot can't fire on it. So `AttentionTracker` gains a
+per-card "was stuck" memory (`stuckCards`) and the transition core gains two pure helpers — `currentStuckTrigger`
+(which stuck cause a card warrants) and `stuckRise` (the false→true edge). The one-shot fires on the *boolean*
+rise, not the cause: a card that stays stuck while its cause changes (a delivery confirm clears
+`deliveryStuckSince` in the same tick a merge stalls) never left "stuck", so it never re-fires — the fix for a
+double-banner the naive per-cause edge would send. This matters because the arm already emits only the final
+stuck state (it re-validates its flip pre/post-write), so the tracker sees a clean false→true and can push an
+irreversible notification safely. The mac banner path (`BoardStore.apply`) and the daemon push path
+(`PushNotifier` → `AttentionTracker`) both resolve their one notification through the *same*
+`AttentionTransition.notifyTrigger` authority, so the two surfaces can't drift — and that authority reconciles
+the phase edge and the stuck rise into a single trigger with the *same* precedence the queue uses:
+`died`/`permission` (recovery- and block-critical) outrank a stuck rise, which outranks `needsYou`. So a card
+that (in some future path) both died and went stuck in one event still pushes the recovery-critical `died`, not
+the stuck one — the banner can never disagree with the queue.
+
+**Merge-stall rides the identical seam.** `TreeStat.mergeStalled` — the merge-request loop's sticky give-up
+flag (its own rationale is [below](#branch-tree)) — means the same thing to a human as a delivery stuck ("this
+card is wedged, come look") from a different cause, so it surfaces through one stack, not a parallel one:
+`reason(for:)` returns `.mergeStalled` (🚧, below `.deliveryStuck`), and `currentStuckTrigger` treats it as the
+second stuck cause. It is read independent of the underlying `TreeState`, so a card that is both `.stale` and
+`mergeStalled` surfaces the stall — the flag stays a flag precisely so the tracking state keeps computing
+underneath. This is a *second* Needs-You / push surface, not the first: the flag already renders as a card-face
+warning badge (`CardView`/`BoardCardCell`), which stays; B5b adds the queue row and the notification on top.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
