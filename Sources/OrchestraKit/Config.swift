@@ -46,15 +46,8 @@ public struct Config: Codable, Sendable, Equatable {
     /// spent AND the oldest pending message is older than this — so a brief outage never nags.
     public var deliveryStuckAfter: Int
 
-    /// How long a live `.controlChannel` card with no parked poll defers the cold path (seconds).
-    /// A daemon/bridge restart clears every parked poll for a few seconds; going cold there would
-    /// mass-restart healthy live sessions. Grace expiry still falls cold, so a bridge-less setup
-    /// delivers.
-    public var channelAttachGrace: Int
-
-    /// Master switch for Claude MCP channels. Read by the adapter in D2 to compute `wakeTransport`;
-    /// declared here (with the other two service-read knobs) so the config surface lands in one PR.
-    /// B4's channel branch is dark regardless — nothing parks.
+    /// Master switch for Claude MCP channels. Read by the adapter in D to compute `wakeTransport`;
+    /// declared here alongside the other service-read delivery knobs so the config surface lands early.
     public var claudeChannels: Bool
 
     /// Root for ephemeral scratch-card dirs. INSTANCE state, deliberately NON-Codable: every
@@ -87,7 +80,6 @@ public struct Config: Codable, Sendable, Equatable {
         controlTimeout: Int = 15,
         deliveryLeaseTimeout: Int = 60,
         deliveryStuckAfter: Int = 300,
-        channelAttachGrace: Int = 15,
         claudeChannels: Bool = true,
         autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
@@ -108,7 +100,6 @@ public struct Config: Codable, Sendable, Equatable {
         self.controlTimeout = controlTimeout
         self.deliveryLeaseTimeout = deliveryLeaseTimeout
         self.deliveryStuckAfter = deliveryStuckAfter
-        self.channelAttachGrace = channelAttachGrace
         self.claudeChannels = claudeChannels
         self.scratchRoot = scratchRoot
         self.runtimeStateDir = runtimeStateDir
@@ -119,7 +110,7 @@ public struct Config: Codable, Sendable, Equatable {
              maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
              autoInstallMCPGlobally,
              worktreeAddTimeout, sessionLaunchTimeout, controlTimeout, deliveryLeaseTimeout,
-             deliveryStuckAfter, channelAttachGrace, claudeChannels
+             deliveryStuckAfter, claudeChannels
     }
 
     /// Custom decode so a pre-upgrade `config.json` lacking the new timeout keys still decodes,
@@ -145,7 +136,6 @@ public struct Config: Codable, Sendable, Equatable {
         controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
         deliveryLeaseTimeout = try c.decodeIfPresent(Int.self, forKey: .deliveryLeaseTimeout) ?? 60
         deliveryStuckAfter = try c.decodeIfPresent(Int.self, forKey: .deliveryStuckAfter) ?? 300
-        channelAttachGrace = try c.decodeIfPresent(Int.self, forKey: .channelAttachGrace) ?? 15
         claudeChannels = try c.decodeIfPresent(Bool.self, forKey: .claudeChannels) ?? true
     }
 

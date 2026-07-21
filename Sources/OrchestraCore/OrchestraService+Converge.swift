@@ -341,7 +341,11 @@ extension OrchestraService {
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
         clearSpawnPending(id)        // an archived card is never startup-pending — don't let a retry resurrect it
         observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
-        channelUnattachedSince[id] = nil   // B4: evict the attach-grace stamp (else it leaks per teardown)
+        // B4 delivery-tracking hygiene: an archived card is never re-scanned, so its retry-accounting and
+        // outstanding-token entries are pruned nowhere else (confirm/expiry only fire while it is live) —
+        // drop both here or they leak one entry per card for the daemon's lifetime.
+        deliveryAttempts[id] = nil
+        outstandingTokens[id] = nil
         // S2-5: a worktree card's branch goes bare on archive — nudge its live children (deterministic,
         // oldest) so a stopped child re-evaluates its ship path instead of waiting on a dead inbox.
         guard t.origin == .worktree else { return }

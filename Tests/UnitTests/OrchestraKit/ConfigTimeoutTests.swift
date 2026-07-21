@@ -75,11 +75,10 @@ struct ConfigTimeoutTests {
         #expect(cfg.deliveryLeaseTimeout == 60)
     }
 
-    @Test("the three B4 service-read knobs carry their contract defaults")
+    @Test("the B4 service-read knobs carry their contract defaults")
     func b4DeliveryKnobDefaults() {
         let c = Config()
         #expect(c.deliveryStuckAfter == 300)
-        #expect(c.channelAttachGrace == 15)
         #expect(c.claudeChannels == true)
     }
 
@@ -94,7 +93,6 @@ struct ConfigTimeoutTests {
         """#
         let c = try OrchestraJSON.decoder.decode(Config.self, from: Data(legacy.utf8))
         #expect(c.deliveryStuckAfter == 300)
-        #expect(c.channelAttachGrace == 15)
         #expect(c.claudeChannels == true)
 
         // …and a config that DOES set one keeps the override while the others default.

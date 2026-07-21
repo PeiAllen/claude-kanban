@@ -7,9 +7,9 @@ import TestSupport
 /// B4 · the guarantee's spine: every failure injection ends in re-delivery or durable retention —
 /// never silence. Loss-shaped assertions ("gone AND never delivered") are the oracle.
 ///
-/// DEFERRED to D1 (needs a real parked poll, unreachable against B4's starved broker):
-/// `test_supersededMidClaimRetainsBatch` (the reguard-after-CHANNEL-claim window — the code is in
-/// `deliver`, but rung 4 is dark until D1 parks) and `test_pushFalseReleasesThenColdSameCall`.
+/// These use the `.channelPush` route as a plain non-relaunchSeed lease flavor to drive the inbox;
+/// the channel-push WAKE path itself is built in the D increment, so its supersede/refuse races
+/// (`test_supersededMidClaimRetainsBatch`, `test_pushFalseReleasesThenColdSameCall`) land with it.
 @Suite("B4 · delivery races + crash convergence")
 struct DeliveryRaceTests {
 

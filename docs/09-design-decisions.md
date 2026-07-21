@@ -488,7 +488,7 @@ peek/confirm/claim hops, and `blockIfLiveLease` will not catch it (that check is
 is a different generation). Left unguarded, the `e`-claim would hand fresh continuation payload to the
 superseded pane the relaunch is about to kill *and* lease messages the `e+1` relaunch then re-owns and
 re-delivers — the stale-pane injection and duplicate the fence exists to forbid. So the claim is followed by
-the same post-await re-guard the wake ladder applies after *its* channel claim: re-read the card, and if it
+the same post-await re-guard the wake ladder applies after its own suspensions: re-read the card, and if it
 raced away, archived, or lost `e`, release the batch and return nil. Fail-safe — the message stays durable
 and the `e+1` relaunch's `claimSeed` delivers it. This is a *duplicate*-not-loss window (the batch is re-owned,
 never dropped), but the fence is a locked invariant, so it is closed rather than tolerated.
@@ -586,7 +586,7 @@ land the card `.live` before the stepper ever claimed its seed. The RelaunchStep
 the worktree ensure and claims at the *current* epoch, so a relaunch that supersedes it during the ensure
 can't let a stale step re-own the lease at the wrong generation. And `TeardownStepper` releases the card's
 leases before the terminal flip, so the narrow archive-versus-confirm window B2 left to B4 is backstopped
-in-PR for B3's new held leases (the broker `detachAll` half stays B4). A handoff-only claim — non-empty
+in-PR for B3's new held leases. A handoff-only claim — non-empty
 payload, zero consumed messages — leases nothing, so it is neither dispatch-tracked nor signal-confirmed;
 tracking its token would leak a phantom outstanding token and mischarge the arm, and per the contract a
 handoff's context is a fire-and-forget re-seat with no durable receipt.
@@ -613,20 +613,19 @@ path would multiply the very loss being fixed.
 **`wake` is the single delivery chokepoint.** Every starter — `send`'s fast path, the arm, `wakeIfPending`'s
 live edge, `concludeCard`'s watcher nudges — goes through it, so there is one in-flight guard
 (`deliveriesInFlight`, acquired synchronously before any suspension) and one place route selection happens.
-The ladder is CLI-wait defer → outstanding-lease defer → channel push → attach grace → cold resume intent,
-selected purely from `AgentCapabilities.wakeTransport`; there is no `if agentId` anywhere on it.
+The ladder is CLI-wait defer → outstanding-lease defer → cold resume intent, selected purely from
+`AgentCapabilities.wakeTransport`; there is no `if agentId` anywhere on it.
 `resumeSeedWake` and `relaunchClaimed` are retired: the wake-claim role is `deliveriesInFlight`, and the
 relaunch single-winner role is the funnel's epoch bump. The card is re-read after **every** suspension —
 archived, left the deliverable set, or epoch-bumped by a concurrent relaunch — and this is not
-belt-and-braces: the re-guard *after the channel claim* closes a real loss window, because a push at a
-now-stale epoch would resolve a poll parked by the superseded session, and `confirmDelivery` is token-scoped
-with no epoch fence of its own (that fence lives in the report path's lease lookup, not the helper), so the
-dead session's ack would delete a batch it never received.
+belt-and-braces: `isResumable` hops off-actor for a filesystem stat, so the cold path re-guards after it, and
+a relaunch that landed during the stat must not get a second, redundant resume on top of the generation it
+just created.
 
 Two rungs are *defers*, not failures, and deliberately charge nothing: a `.nativeReinvoke` card with a live
 `orchestra wait` will be re-invoked by its own harness, and an unexpired same-epoch lease means a delivery is
-mid-confirm — a channel push awaiting its ack, or a held relaunch seed awaiting its first-signal confirm, must
-never be superseded by a cold restart of the session that just took the delivery.
+mid-confirm — a held relaunch seed awaiting its first-signal confirm must never be superseded by a cold
+restart of the session that just took the delivery.
 
 **Attempt accounting is per-token, and the ledger is what makes it exact.** `outstandingTokens` records what
 was dispatched; `confirmDelivery` removes a token on confirm *or* release. So a token still in the set whose
@@ -667,14 +666,14 @@ suspends: it re-reads the queue first and the actor-local budget last, and emits
 subscriber ever observes a transient flip — which matters because B5b's tracker fires once on false→true and
 would send an irreversible push for a stuck state that never really existed.
 
-**The `ChannelBroker` ships starved.** Its type, service property, teardown `detachAll` and epoch-bump
-`revokeOlderEpochs` all land here — where they are first referenced — but nothing ever parks a poll, so
-`isAttached` is structurally false and the channel rung is compiled and unreachable. It is *starved*, not
-constant-returning: every method operates on a real parked map with no writer, so D1's wiring (`channel-wait`
-+ a park entry point) is a pure addition. Every removal path resolves the polls it drops rather than
-discarding them, and `push` and the resolver are `async`, so D1 can report a real write outcome — a dropped
-`channel-wait` would otherwise hang to its ~55s timer and block the bridge's re-poll at the new epoch. "Dark"
-means unreachable, never undeclared.
+**The channel-push wake is built in the D increment, not on this ladder.** The Claude no-restart wake is a
+simple MCP server *push*: the wake empirics showed a correctly-configured `notifications/claude/channel`
+push autonomously wakes an idle interactive Claude at turn-end, so no daemon-side parked long-poll registry
+is needed. B's wake ladder therefore carries only the agent-agnostic rungs — CLI-wait defer,
+outstanding-lease defer, cold resume intent — and the channel route rides on top in D. `wakeTransport`'s
+`.controlChannel` case, the `claudeChannels` config switch, and the `DeliveryRoute.channelPush` lease flavor
+are the capability seam D routes on; they are inert here (no adapter reports `.controlChannel` yet), so the
+ladder never selects the channel rung.
 
 Two smaller decisions ride along. The funnel's wake-on-live moves **below** the state broadcast rather than
 being detached: `wake` now records the cold resume intent inline (holding `deliveriesInFlight` across the

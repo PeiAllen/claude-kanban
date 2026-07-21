@@ -167,16 +167,13 @@ extension OrchestraService {
     ///  2. **CLI-wait defer** (`.nativeReinvoke` only) — the card's own `orchestra wait` process will
     ///     re-invoke the harness when it exits; relaunching would replace that live wait.
     ///  3. **Outstanding-lease defer** — an unexpired same-epoch lease means a delivery is
-    ///     mid-confirm (a channelPush awaiting its ack across the pump's poll gap, or a held
-    ///     relaunchSeed awaiting its first-signal confirm). NEVER cold-restart a session that just
-    ///     took a delivery.
-    ///  4. **Channel push** (`.controlChannel`, live-idle, attached) — claim, push, done, PID stable.
-    ///     A refused push RELEASES the claim before the cold path claims, so the relaunch seed sees
-    ///     the full batch (no self-shadowing). DARK in B4: nothing parks.
-    ///  5. **Attach grace** — a live channel card with no parked poll defers cold briefly; grace
-    ///     expiry falls through, so a bridge-less setup still delivers.
-    ///  6. **Cold resume intent** — `.relaunching`; the RelaunchStepper claims the seed and delivers
+    ///     mid-confirm (a held relaunchSeed awaiting its first-signal confirm). NEVER cold-restart a
+    ///     session that just took a delivery.
+    ///  4. **Cold resume intent** — `.relaunching`; the RelaunchStepper claims the seed and delivers
     ///     it in the opening turn. No route at all ⇒ charge an attempt and leave it to the arm.
+    ///
+    /// The Claude no-restart channel-push route lives in the D increment, not here — B's earlier
+    /// parked-poll skeleton was removed once the empirics (03 §wake) picked a simple server push.
     ///
     /// Post-await re-guards: after every suspension the card is re-read and abandoned if it was
     /// archived, left the deliverable set, or had its epoch bumped by a concurrent relaunch —
@@ -215,54 +212,8 @@ extension OrchestraService {
         if await inbox.hasLiveLease(t.id, epoch: epoch, now: now()) { return }
         guard var card = await reguard(t.id, epoch: epoch) else { return }
 
-        // A parked poll DIED under our push (below) ⇒ the bridge is gone NOW, not merely reconnecting,
-        // so we skip rung 5's grace and go cold this call (02 §wake: "fall through to cold path NOW").
-        var pushRefused = false
-
-        // 4 · channel push (dark in B4 — `isAttached` is structurally false).
-        if transport == .controlChannel, case .live(.waiting(.humanTurn)) = card.phase,
-           await broker.isAttached(t.id, epoch: epoch) {
-            channelUnattachedSince[t.id] = nil
-            guard let fresh = await reguard(t.id, epoch: epoch) else { return }
-            card = fresh
-            if let batch = try? await inbox.claim(t.id, route: .channelPush, epoch: epoch,
-                                                  budget: StopDrain.maxPayloadChars,
-                                                  render: { StopDrain.fit($0, budget: $1) },
-                                                  now: now()) {
-                // RE-GUARD AFTER THE CLAIM — this is not belt-and-braces, it closes a LOSS window.
-                // `claim` suspends; a concurrent relaunch can persist e+1 during it. Pushing at the
-                // now-stale `epoch` resolves a poll parked by the SUPERSEDED session, and
-                // `confirmDelivery` is token-scoped with no epoch fence of its own (the fence lives
-                // in the report path's lease lookup, not the helper) — so that dead session's ack
-                // would delete a batch it never received.
-                guard await reguard(t.id, epoch: epoch) != nil else {
-                    await abandonClaim(t.id, batch.token)      // superseded: the new gen re-drives
-                    return
-                }
-                markDispatched(t.id, token: batch.token)
-                if await broker.push(t.id, batch, epoch: epoch) { return }   // in-place, PID-stable
-                // The parked poll died mid-write: return the batch to pending BEFORE the cold path
-                // claims (no self-shadowing), then fall through COLD NOW — the poll is gone, so rung
-                // 5's grace (for a bridge merely reconnecting) does not apply. No charge HERE: this
-                // wake's single §attempt-accounting charge is owned by its terminal cold outcome, so
-                // a push-refused that then cold-delivers correctly costs the retry budget nothing.
-                await abandonClaim(t.id, batch.token)
-                pushRefused = true
-            }
-        }
-        guard let fresh = await reguard(t.id, epoch: epoch) else { return }
-        card = fresh
-
-        // 5 · attach grace: never mass-cold-restart healthy live sessions while their pumps reconnect
-        //     — a channel card whose bridge is MISSING (no poll parked). A poll that just DIED under a
-        //     push (`pushRefused`) is a gone bridge, not a reconnecting one, so it skips straight to cold.
-        if !pushRefused, transport == .controlChannel, case .live = card.phase, withinAttachGrace(t.id) {
-            chargeDeliveryAttempt(t.id)
-            return
-        }
-
-        // 6 · cold: the resume intent. `resume` is intent-only — it records `.relaunching` (bumping
-        // the epoch, which revokes stale polls and invalidates prior-epoch leases) and returns; the
+        // 4 · cold: the resume intent. `resume` is intent-only — it records `.relaunching` (bumping
+        // the epoch, which invalidates prior-epoch leases) and returns; the
         // RelaunchStepper claims the seed and folds it into the opening turn. `isResumable` hops
         // off-actor (a filesystem stat), so re-guard AFTER it — a relaunch that landed during the
         // stat must not get a second, redundant resume on top of the generation it just created.
@@ -272,7 +223,7 @@ extension OrchestraService {
         if resumable || card.titleProvisional {
             // The one wake VISIBLE to the human: a cold delivery tears the session down and brings it
             // back. Say so — an unexplained restart in the terminal reads as a crash. The in-place
-            // routes (channel push, and E1's app-server turn injection) emit nothing. Emit ONLY once
+            // routes (D's channel push, E1's app-server turn injection) emit nothing. Emit ONLY once
             // the resume intent is ACCEPTED — on the `catch` (a rejected intent) nothing restarts, so
             // announcing one would be a lie.
             do {
@@ -290,28 +241,6 @@ extension OrchestraService {
         guard let t = await store.get(id), !t.archived, deliverable(t), t.sessionEpoch == epoch
         else { return nil }
         return t
-    }
-
-    /// Give a claimed batch back and stop tracking its token — the one place a dispatch is undone.
-    /// PRUNE FIRST, then release — the order matters and is not the intuitive one. With the release
-    /// first there is a window where the lease is dead but the token is still in `outstandingTokens`,
-    /// and `reconcileDelivery` calls `chargeExpiredTokens` BEFORE its `deliveriesInFlight` guard — so
-    /// a concurrent tick would charge the token as an expiry, and then the refused-push path charges
-    /// it again (one failure, two attempts, the stuck budget burning twice as fast). Pruning first
-    /// makes the token invisible to that scan. No-self-shadowing is unaffected: the release still
-    /// completes before this returns, so the messages are pending again before the cold path claims.
-    private func abandonClaim(_ id: UUID, _ token: UUID) async {
-        await deliveryConfirmed(cardId: id, token: token, didConfirm: false)
-        try? await inbox.release(token: token)
-    }
-
-    /// Is this card inside its channel attach grace? Stamps the first unattached observation, so the
-    /// window is measured from the moment the bridge went missing, not from daemon boot.
-    private func withinAttachGrace(_ id: UUID) -> Bool {
-        let since = channelUnattachedSince[id] ?? {
-            let stamp = now(); channelUnattachedSince[id] = stamp; return stamp
-        }()
-        return now().timeIntervalSince(since) < TimeInterval(config.channelAttachGrace)
     }
 
     /// Charge one failed delivery attempt and back the next one off (capped exponential, mirroring

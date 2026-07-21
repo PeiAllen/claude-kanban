@@ -10,7 +10,7 @@ public actor OrchestraService {
     /// off-actor closures can capture it.
     nonisolated let clock: any Clock<Duration>
 
-    /// Wall-clock stamping for DELIVERY decisions (lease expiry, stuck age, attach grace) and for the
+    /// Wall-clock stamping for DELIVERY decisions (lease expiry, stuck age) and for the
     /// `createdAt` the Inbox persists on enqueue — NOT `leasedAt`, which B1 deliberately takes from
     /// `claim`'s explicit `now:` so one instant governs both the expiry decision and the stamp it
     /// writes. Separate from `clock`, which schedules: `Clock` has no notion of a `Date`, and
@@ -55,9 +55,6 @@ public actor OrchestraService {
     let tailer = RolloutTailer()
     /// Durable per-card message inbox (F3). Sibling to `store`; `send` enqueues, the Stop hook drains.
     let inbox: Inbox
-    /// Parked-channel registry for the Claude no-restart push route. Starved in B4 (nothing parks);
-    /// D1 wires `channel-wait` into it and D2 lights the route via the capability.
-    let broker = ChannelBroker()
     /// Registered APNs device tokens (N1). The daemon's `PushNotifier` reads this to deliver attention
     /// pushes; the phone populates it over the `registerDevice` RPC.
     let devices: DeviceTokenStore
@@ -142,12 +139,6 @@ public actor OrchestraService {
     /// exactly once per token by intersecting this with the inbox's live leases; `confirmDelivery` removes
     /// a token once it is no longer in flight (confirmed OR released).
     var outstandingTokens: [UUID: Set<UUID>] = [:]
-    /// When a live `.controlChannel` card first failed the attach check (cleared on a successful
-    /// delivery, on teardown, and on an epoch bump). The cold path is deferred until
-    /// `channelAttachGrace` elapses, so a daemon/bridge restart never mass-cold-restarts healthy live
-    /// sessions while their pumps reconnect (B4 attach-grace). Dark in B4 — nothing parks — but the
-    /// funnel's per-generation clear and teardown's eviction land here where they are first written.
-    var channelUnattachedSince: [UUID: Date] = [:]
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
@@ -780,7 +771,7 @@ public actor OrchestraService {
     // MARK: - delivery confirm funnel
 
     /// Record a freshly-dispatched delivery token as outstanding for `cardId`. Called at every dispatch
-    /// (`payloadForStop`'s claim; the arm's channel/relaunch dispatch in B4). The arm charges expiry once
+    /// (`payloadForStop`'s Stop-drain claim; the relaunch-seed claim). The arm charges expiry once
     /// per token by intersecting this set with the inbox's live leases; `deliveryConfirmed` prunes it.
     func markDispatched(_ cardId: UUID, token: UUID) {
         outstandingTokens[cardId, default: []].insert(token)
@@ -854,10 +845,6 @@ public actor OrchestraService {
         if outstandingTokens[cardId]?.isEmpty == true { outstandingTokens[cardId] = nil }
         guard didConfirm else { return }
         deliveryAttempts[cardId] = nil                          // a real confirm re-arms the whole retry budget
-        // A delivered card is not waiting on a bridge: drop the unattached stamp so a LATER outage gets
-        // a FRESH full attach-grace window rather than an already-expired one (B4 attach-grace is
-        // per-outage, not per-daemon-lifetime — else the mass-restart protection disarms after one blip).
-        channelUnattachedSince[cardId] = nil
         // Clear any stuck flag (contract: every confirmed delivery clears deliveryStuckSince). A FRESH read
         // catches a flip that landed during the inbox await; skip-if-nil avoids a spurious emit on the hot
         // path. The narrow get-vs-update window is closed from the OTHER side by B4's arm: a stuck flip
@@ -975,7 +962,7 @@ public actor OrchestraService {
         // generation). Minting an epoch-e lease now would hand fresh payload to the SUPERSEDED Stop's pane
         // (about to be killed by the relaunch) AND lease messages the e+1 relaunch then re-owns and
         // re-delivers — the stale-pane injection + duplicate the locked Stop fence forbids. Mirrors the wake
-        // channel-claim re-guard (`+Wake.swift`): re-read, and if the card raced away / archived / lost e,
+        // ladder's post-await epoch re-guard (`+Wake.swift`): re-read, and if the card raced away / archived / lost e,
         // RELEASE the just-claimed batch and abandon so the e+1 relaunch's `claimSeed` delivers instead. The
         // message stays durable throughout — fail-safe. (`markDispatched` runs only past the guard, so an
         // abandoned claim leaves no phantom outstanding token.)
@@ -1489,7 +1476,7 @@ public actor OrchestraService {
     func convergeContext() -> ConvergeContext {
         ConvergeContext(
             store: store, worktrees: worktrees, sessions: sessions, adapters: registry, inbox: inbox,
-            broker: broker, scratchRoot: config.scratchRoot,
+            scratchRoot: config.scratchRoot,
             transition: { [self] id, to, epoch, expecting, mutate in
                 await transition(id, to: to, observedEpoch: epoch, expecting: expecting, mutate: mutate)
             },
