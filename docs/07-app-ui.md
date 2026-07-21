@@ -125,7 +125,9 @@ Send/Handoff/Fork buttons were removed in favor of it plus the natural-language 
   chevrons → `inbox-reorder`), **edit** the text inline (tap → commit → `inbox-edit`), and **delete**
   (→ `inbox-remove`), with an **append** field at the bottom (→ `send`). Every op round-trips to the daemon
   over the [`inbox*` commands](05-command-reference.md#registry-commands) and reloads; the list loads fresh
-  each time the popover opens. Messages are delivered at the agent's next turn-end.
+  each time the popover opens. Desktop and iOS show immutable `From …` provenance above every editable
+  body, including while the desktop editor is open; editing changes the body, not its source. Messages are
+  delivered at the agent's next turn-end.
 
 **Handoff**, **Fork**, and board **Fan-out** are no longer buttons — those moves are driven by talking to
 the agent (which calls the `handoff` / `spawn` / `batch-spawn` MCP tools), where an exploratory fork now

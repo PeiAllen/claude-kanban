@@ -1365,6 +1365,13 @@ decisions:
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
 
+The same inbox later gained **stored source metadata**. `InboxMessage.source` records Human, Orchestra, or
+a card id/title snapshot, while remaining optional so legacy records still decode. This is structured
+metadata rather than a `From …` text prefix or render-time inference: an edit changes only the body,
+persistence carries provenance through daemon restarts, and the snapshot remains stable when a source card
+is renamed or archived. The Stop-drain, resume seed, and both inbox editors render the same stored source as
+`From …`, so no surface needs an edit-author history or a live card lookup.
+
 Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
 Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`). This builds the **reusable
 client connection spine** the [phone client (axis 9)](10-roadmap.md#the-nine-axes) needs, proven on its

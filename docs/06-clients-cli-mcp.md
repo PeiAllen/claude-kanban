@@ -66,6 +66,12 @@ conclude on success, so its result must return via `send`, and the orchestrator 
 card itself. `wait` is for cards that conclude on their own (a worktree PR card that merges), never for a
 delegate's result.
 
+`send` uses that same environment only for provenance. CLI and MCP processes with
+`$ORCHESTRA_TASK_ID` attach their own card, so the daemon snapshots that card's title and id into the
+queued message; an external CLI or MCP process without it sends as **Human**. The source is edge-owned:
+the CLI creates its `senderCard` context only from the environment, and the MCP bridge discards any raw
+caller value before attaching the same context.
+
 `--model <id>` on `restart` / `handoff` / `resume` **re-seats the card onto another model in place** — the
 [`--model` re-seat](05-command-reference.md#the---model-re-seat). It is declared on those three schemas in
 the [command catalog](05-command-reference.md#registry-commands), so it is a real MCP tool argument too (the
