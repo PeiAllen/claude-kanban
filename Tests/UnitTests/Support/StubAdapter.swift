@@ -16,15 +16,6 @@ extension AgentCapabilities {
         wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
-
-    /// Claude-shaped WITH channels on — the `.controlChannel` transport. B4 exercises the wake
-    /// ladder's channel gate + attach grace against the STARVED broker (nothing parks ⇒ always
-    /// unattached, so a live channel card defers within grace then falls cold on expiry).
-    static let channelStub = AgentCapabilities(
-        sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
-        wakeTransport: .controlChannel, inboxDrain: .stopHook,
-        readOnlyEnforcement: .sandboxed, authMode: .subscription,
-        terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
 }
 
 final class StubAdapter: Adapter, @unchecked Sendable {

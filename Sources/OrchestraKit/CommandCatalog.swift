@@ -14,8 +14,10 @@ public enum CommandExposure: Sendable, Equatable { case all, appOnly, terminalOn
 
 /// The three verb kinds (spec §6). Query: read-only, retry-free, never changes `phase`. Mutation:
 /// completes inline, idempotent, may hop off-actor, never changes `phase`. Convergence: the sync part
-/// persists intent (one `transition()`) + returns `(card, rev)`; the reconciler's phase-keyed stepper
-/// drives the rest.
+/// persists *durable intent* — a `transition()` (the phase-keyed stepper drives the rest, returning
+/// `(card, rev)`) **or** durable side-state that a reconciler arm drives to its target. `send` is the
+/// second shape (B5a): its intent is the non-empty inbox row, the delivery arm drives it to empty, and it
+/// returns `{messageId, card}` — no `transition()`, no phase stepper.
 public enum VerbKind: String, Sendable, Equatable { case query, mutation, convergence }
 
 public struct CommandSchema: Sendable, Equatable {
@@ -88,9 +90,12 @@ public enum CommandCatalog {
                       kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "send", summary: "Queue a message to the agent's inbox (drained at its next turn-end).",
-                      params: schema(["ref": refProp(), "message": strProp("Text to send")],
+                      params: schema(["ref": refProp(), "message": strProp("Text to send"),
+                                      "id": strProp("Client-minted message UUID for idempotent retry — reuse the "
+                                          + "SAME id when re-issuing after a timeout so the daemon dedups instead "
+                                          + "of double-queuing; omit to have one minted (not retry-safe).")],
                                      required: ["ref", "message"]),
-                      kind: .mutation, phaseGate: gNonArchived),
+                      kind: .convergence, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox",
                       summary: "List a card's pending inbox messages, including source provenance, in FIFO order.",

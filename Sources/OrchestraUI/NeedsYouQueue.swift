@@ -9,30 +9,38 @@ import OrchestraKit
 /// Why a card is in the Needs You queue. Each case maps to a *real* daemon signal — there is no
 /// fabricated "blocked/error" bucket (design §6). The declaration order **is** the urgency order
 /// (`rawValue` ascending = most-urgent-first): unblock actively-halted work (permission) first, then
-/// recover dead cards, then reply to genuinely-done ones, then the soft context nudge last.
+/// recover dead cards, then the two "card stuck" signals (a queued message the arm can't deliver, then
+/// a merge-request the parent never answered), then reply to genuinely-done ones, then the soft context
+/// nudge last.
 public enum AttentionReason: Int, CaseIterable, Sendable, Equatable, Hashable {
-    case permission   // status == .waiting && waitReason == .permission — blocked on tool approval
-    case died         // status == .dead — needs recovery
-    case humanTurn    // status == .waiting && waitReason == .humanTurn — genuinely done, waiting on you
-    case contextFull  // derived from ctxPct — near-full; may still be running
+    case permission    // status == .waiting && waitReason == .permission — blocked on tool approval
+    case died          // status == .dead — needs recovery
+    case deliveryStuck // deliveryStuckSince != nil — the arm gave up delivering a queued message
+    case mergeStalled  // treeStat.mergeStalled — the merge-request loop gave up nudging the parent
+    case humanTurn     // status == .waiting && waitReason == .humanTurn — genuinely done, waiting on you
+    case contextFull   // derived from ctxPct — near-full; may still be running
 
-    /// The reason chip glyph (design §6: 🔐 / 💀 / 🙋 / ◔).
+    /// The reason chip glyph (design §6: 🔐 / 💀 / 📪 / 🚧 / 🙋 / ◔).
     public var emoji: String {
         switch self {
-        case .permission:  return "🔐"
-        case .died:        return "💀"
-        case .humanTurn:   return "🙋"
-        case .contextFull: return "◔"
+        case .permission:    return "🔐"
+        case .died:          return "💀"
+        case .deliveryStuck: return "📪"
+        case .mergeStalled:  return "🚧"
+        case .humanTurn:     return "🙋"
+        case .contextFull:   return "◔"
         }
     }
 
     /// The reason chip label.
     public var label: String {
         switch self {
-        case .permission:  return "Permission"
-        case .died:        return "Died"
-        case .humanTurn:   return "Needs you"
-        case .contextFull: return "Context full"
+        case .permission:    return "Permission"
+        case .died:          return "Died"
+        case .deliveryStuck: return "Delivery stuck"
+        case .mergeStalled:  return "Merge stalled"
+        case .humanTurn:     return "Needs you"
+        case .contextFull:   return "Context full"
         }
     }
 }
@@ -53,7 +61,10 @@ public enum NeedsYouQueue {
     public static let contextNearFullThreshold: Double = 85
 
     /// The single reason a card surfaces for, or `nil` if it needs nothing right now. Precedence
-    /// (matches `AttentionReason`'s order): permission > died > humanTurn > context.
+    /// (matches `AttentionReason`'s order): permission > died > deliveryStuck > mergeStalled > humanTurn
+    /// > context. The two stuck signals outrank `humanTurn` (they're the specific reason a human is
+    /// needed) but sit under `died` (a crash still wins recovery); `mergeStalled` is read independent of
+    /// the underlying `TreeState`, so a `.stale` AND stalled card surfaces the stall.
     ///
     /// **Background-waits are excluded by construction:** a card that yielded its turn to a background
     /// task (`run_in_background` shell, subagent, `/loop`/cron wake) stays `.running` with *no* wait —
@@ -64,6 +75,12 @@ public enum NeedsYouQueue {
                               contextThreshold: Double = contextNearFullThreshold) -> AttentionReason? {
         if t.waitReason == .permission { return .permission }
         if t.phase.kind == .dead { return .died }
+        // Stuck signals outrank humanTurn — they're the specific reason the human is needed. The arm's
+        // delivery-stuck flag first, then the merge-request loop's sticky give-up flag; the latter is read
+        // independent of the underlying `TreeState` (a card can be `.stale` AND `mergeStalled` at once, and
+        // the stall is the one needing a human). B5b renders these; it never sets them.
+        if t.deliveryStuckSince != nil { return .deliveryStuck }
+        if t.treeStat?.mergeStalled == true { return .mergeStalled }
         if t.waitReason == .humanTurn { return .humanTurn }
         if case .live = t.phase, t.ctxPct >= contextThreshold { return .contextFull }
         return nil

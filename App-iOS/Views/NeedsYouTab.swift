@@ -171,10 +171,12 @@ private struct AttentionRow: View {
     private var task: Task { item.task }
     private var sem: SemColor {
         switch item.reason {
-        case .permission:  return theme.amber
-        case .humanTurn:   return theme.blue
-        case .died:        return theme.red
-        case .contextFull: return theme.indigo
+        case .permission:    return theme.amber
+        case .humanTurn:     return theme.blue
+        case .died:          return theme.red
+        case .deliveryStuck: return theme.amber
+        case .mergeStalled:  return theme.red   // matches the card-face give-up badge
+        case .contextFull:   return theme.indigo
         }
     }
 
@@ -259,6 +261,10 @@ private struct AttentionRow: View {
                 }
             case .died:
                 ActionButton("Recover", systemImage: "cross.case", tint: theme.red, filled: true) { onRecover() }
+            case .deliveryStuck, .mergeStalled:
+                // A stuck card needs the human to LOOK (retry/edit the queue, or answer the merge) — open
+                // the card is the right primitive; no gate/reply fits either cause.
+                ActionButton("Open", systemImage: "arrow.up.forward.square", tint: sem) { onOpen() }
             case .contextFull:
                 ActionButton("Open", systemImage: "arrow.up.forward.square", tint: theme.indigo) { onOpen() }
             }

@@ -1,5 +1,6 @@
 import XCTest
 import OrchestraKit
+import TestSupport
 @testable import OrchestraCore
 #if canImport(CryptoKit)
 import CryptoKit
@@ -159,6 +160,91 @@ final class PushNotifierTests: XCTestCase {
         await notifier.handle(.taskUpserted(card(id: id, phase: .live(.waiting(.humanTurn)))))
         let sends = await mock.recorded()
         XCTAssertTrue(sends.isEmpty)
+    }
+
+    // MARK: Final-review MAJOR — boot baseline (a restart survivor's first real transition must fire)
+
+    /// A card LIVE-RUNNING when the daemon (re)starts is the baseline; when it later DIES that death is a
+    /// genuine transition and must push — not be swallowed as a first sighting. Pre-fix the tracker had no
+    /// baseline, so the death (its first observed event) mapped to `nil`.
+    func testBootBaselineSeedsSurvivorSoALaterDeathFires() async throws {
+        let service = makeService()
+        try await service.registerDevice(DeviceRegistration(token: validToken(1), clientId: "c", prefs: prefs(.always)))
+        let mock = MockPushSender()
+        let notifier = PushNotifier(service: service, sender: mock)
+
+        let id = UUID()
+        await notifier.seedBaseline([card(id: id, phase: .live(.running))])          // survivor of the restart
+        await notifier.handle(.taskUpserted(card(id: id, phase: .dead(.agentExited)))) // dies AFTER boot
+
+        let sends = await mock.recorded()
+        XCTAssertEqual(sends.map { $0.payload["trigger"]?.stringValue }, ["died"],
+                       "a survivor's post-boot death must push, not be consumed as a first sighting")
+    }
+
+    /// The counterpart: a card ALREADY dead at boot is the baseline, so a redundant re-upsert of the same
+    /// dead state must NOT re-notify (else every restart would re-push every already-dead card).
+    func testBootBaselineDoesNotReNotifyAnAlreadyDeadCard() async throws {
+        let service = makeService()
+        try await service.registerDevice(DeviceRegistration(token: validToken(1), clientId: "c", prefs: prefs(.always)))
+        let mock = MockPushSender()
+        let notifier = PushNotifier(service: service, sender: mock)
+
+        let id = UUID()
+        await notifier.seedBaseline([card(id: id, phase: .dead(.agentExited))])       // already dead at boot
+        await notifier.handle(.taskUpserted(card(id: id, phase: .dead(.agentExited)))) // redundant re-upsert
+        let sends = await mock.recorded()
+        XCTAssertTrue(sends.isEmpty, "an already-dead-at-boot card must not re-notify")
+    }
+
+    /// The stuck counterpart the reviewer named: a live-WAITING card at boot whose FIRST post-boot event
+    /// accrues `deliveryStuckSince` must fire `deliveryStuck` — the seed sets `seen == true` so the
+    /// false→true stuck rise is observed instead of suppressed.
+    func testBootBaselineSeedsWaitingSoAFirstStuckFires() async throws {
+        let service = makeService()
+        try await service.registerDevice(DeviceRegistration(token: validToken(1), clientId: "c", prefs: prefs(.always)))
+        let mock = MockPushSender()
+        let notifier = PushNotifier(service: service, sender: mock)
+
+        let id = UUID()
+        await notifier.seedBaseline([card(id: id, phase: .live(.waiting(.humanTurn)))])   // waiting at boot, not stuck
+        var stuck = card(id: id, phase: .live(.waiting(.humanTurn)))
+        stuck.deliveryStuckSince = Date()                                                 // first post-boot event: stuck
+        await notifier.handle(.taskUpserted(stuck))
+
+        let sends = await mock.recorded()
+        XCTAssertEqual(sends.map { $0.payload["trigger"]?.stringValue }, ["deliveryStuck"],
+                       "the first stuck rise after boot must fire, not be suppressed as a first sighting")
+    }
+
+    /// The window `run()` actually opens: an event landing between `subscribe()` and the baseline snapshot
+    /// is buffered but is causally OLDER than the seed, so replaying it against the newer seed would misfire.
+    /// This drives `run()` with both seams: the card flaps running→waiting→running INSIDE the window (all
+    /// revs ≤ baseline → must be dropped), then a GENUINE post-snapshot running→waiting (rev > baseline →
+    /// must fire). Without the rev boundary the stale window `waiting` fires a second, spurious needsYou.
+    func testRunWindowDropsStaleBufferedEventsButFiresGenuinePostBootTransition() async throws {
+        let env = TestEnv.make(grace: 2)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))   // .running
+        try await env.svc.registerDevice(DeviceRegistration(token: validToken(7), clientId: "c", prefs: prefs(.always)))
+        let mock = MockPushSender()
+        let notifier = PushNotifier(service: env.svc, sender: mock)
+
+        // Window flap (buffered, all rev ≤ the baseline the snapshot then captures = running).
+        await notifier.setAfterSubscribeForTest {
+            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+            try? await env.svc.report(card.id, StatusReport(run: .running))
+        }
+        // Genuine post-snapshot transition (rev > baseline): running→waiting → must push exactly once.
+        await notifier.setAfterBaselineForTest {
+            try? await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        }
+        let run = _Concurrency.Task { await notifier.run() }
+        defer { run.cancel() }
+
+        try await pollUntil { await mock.recorded().contains { $0.payload["trigger"]?.stringValue == "needsYou" } }
+        let needsYou = await mock.recorded().filter { $0.payload["trigger"]?.stringValue == "needsYou" }
+        XCTAssertEqual(needsYou.count, 1, "the stale window waiting must be dropped; only the genuine post-boot transition fires")
     }
 
     // MARK: Fix #1 — malformed device token is rejected at registration (never reaches URL(string:))

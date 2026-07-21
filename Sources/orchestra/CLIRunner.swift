@@ -38,8 +38,10 @@ enum CLIRunner {
                 // optionally `--read-only`. Otherwise repo + branch are required (the worktree path).
                 // Client-minted id (required wire field). Honour a caller-supplied `--id` so a script that
                 // retries `spawn` after a timeout reuses its id → the daemon dedups (idempotent retry);
-                // else mint a fresh one.
-                let spawnId = flags.value("id").flatMap(UUID.init(uuidString:)) ?? UUID()
+                // else mint a fresh one. A PRESENT-but-unparseable `--id` is a hard error, never a silent
+                // fresh mint: a mistyped id that fell through to a random UUID would defeat the very
+                // idempotency the flag exists for (the retry lands on a different card).
+                let spawnId = Self.clientMintedId(flags)
                 var fields: [String: JSONValue] = [
                     "id": .string(spawnId.uuidString),
                     "prompt": .string(flags.require("prompt")),
@@ -72,12 +74,19 @@ enum CLIRunner {
             case "send":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let msg = flags.value("message") ?? flags.positionalsFrom(1).joined(separator: " ")
-                var sendParams: [String: JSONValue] = ["ref": .string(ref), "message": .string(msg)]
+                // Client-minted message id (required at the daemon boundary): honour a caller-supplied
+                // `--id` so a script retrying `send` after a timeout reuses its id → the daemon dedups
+                // (idempotent), else mint a fresh one. A present-but-invalid `--id` is rejected, never
+                // silently re-minted — a mistyped id whose first reply was lost would otherwise re-run
+                // into a DIFFERENT UUID and double-deliver. Same pattern as `spawn` above.
+                let msgId = Self.clientMintedId(flags)
+                var sendParams: [String: JSONValue] = ["ref": .string(ref), "message": .string(msg),
+                                                       "id": .string(msgId.uuidString)]
                 if let senderCard = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !senderCard.isEmpty {
                     sendParams["senderCard"] = .string(senderCard)
                 }
                 _ = try await client.call("send", .object(sendParams))
-                print("sent")
+                print("sent \(msgId)")
 
             case "wait":
                 // Watch one or more child cards; block until one concludes, print it, and EXIT — the
@@ -381,6 +390,23 @@ enum CLIRunner {
     /// prevent, sneaking past it because the daemon never sees the arg. Fail loudly at the CLI instead.
     static func requireValue(_ flags: Flags, _ key: String) {
         if flags.has(key), flags.value(key) == nil { die("--\(key) needs a value") }
+    }
+
+    /// The client-minted UUID for an idempotent-retry verb (`spawn`/`send`): the caller's `--id` if
+    /// present and parseable, else a fresh mint. A present-but-unparseable value is a HARD ERROR — never
+    /// a silent fresh mint. Minting on a malformed id would defeat the idempotency the flag exists for: a
+    /// mistyped id whose first RPC timed out would re-run into a DIFFERENT UUID and duplicate the card /
+    /// re-deliver the message. Absent `--id` still mints (the non-retry-safe default the daemon requires).
+    static func clientMintedId(_ flags: Flags) -> UUID {
+        // A bare `--id` with no argument (a dropped/empty shell var — `--id` followed by another flag)
+        // parses as a boolean, so `value` is nil though the flag WAS passed. That is a malformed id, not an
+        // absent one: fail loudly rather than mint a fresh UUID (same silent-no-op guard as `--model`).
+        if flags.has("id"), flags.value("id") == nil { die("--id needs a value") }
+        guard let raw = flags.value("id") else { return UUID() }   // genuinely absent → mint a retry-safe id
+        guard let parsed = UUID(uuidString: raw) else {
+            die("--id must be a valid UUID (got \"\(raw)\")")
+        }
+        return parsed
     }
 }
 

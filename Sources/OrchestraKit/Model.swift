@@ -846,6 +846,16 @@ public struct BatchSpawnFailure: Codable, Sendable, Equatable {
     }
 }
 
+/// Outcome of the `send` verb (B5a): the message's id (the one the caller minted or that a client seam
+/// stamped) and a fresh snapshot of the target card. Returning the id lets a client correlate a retry
+/// with its original — the send contract is idempotent on that id — and the card snapshot mirrors how
+/// `move`/`spawn` return the affected card.
+public struct SendResult: Codable, Sendable, Equatable {
+    public let messageId: UUID
+    public let card: Task
+    public init(messageId: UUID, card: Task) { self.messageId = messageId; self.card = card }
+}
+
 // MARK: - Tree snapshot (the `tree` command payload)
 
 /// One card's lineage view: its parent ref (from git config), the derived parent *card* id (active

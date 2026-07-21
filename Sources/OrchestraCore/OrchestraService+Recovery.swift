@@ -48,7 +48,7 @@ extension OrchestraService {
     /// `agentId` never changes on a re-seat (the vendor transcript we are resuming is vendor-specific), so
     /// a Codex id handed to a claude-code card must be REJECTED here rather than becoming
     /// `claude --model gpt-5.6-terra` and dying at the process. `Adapter.model(for:)` cannot do this — it
-    /// falls back to `AgentModel(id:)` for anything it doesn't know (Adapter.swift:78) — so this is the gate.
+    /// falls back to `AgentModel(id:)` for anything it doesn't know (Adapter.swift) — so this is the gate.
     ///
     /// A DATED variant of a catalog id is accepted: the offline table carries `claude-haiku-4-5` while the
     /// vendor's own resolved id (and the id people have written down) is `claude-haiku-4-5-20251001`.
@@ -57,7 +57,7 @@ extension OrchestraService {
     /// variant of any Claude entry. Case-sensitive: fails closed.
     ///
     /// Known limit: if the bundled catalog resource fails to load, `models()` is a hardcoded fallback list
-    /// (ClaudeCodeAdapter.swift:30), so a genuinely valid id could be rejected. That fails closed, and the
+    /// (ClaudeCodeAdapter.swift), so a genuinely valid id could be rejected. That fails closed, and the
     /// error names the ids we actually know about.
     func resolveModelOverride(_ requested: String?, for task: Task) throws -> AgentModel? {
         guard let requested else { return nil }   // absent ⇒ no override (every pre-existing caller)

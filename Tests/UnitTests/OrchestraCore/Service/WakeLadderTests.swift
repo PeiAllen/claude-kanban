@@ -5,7 +5,7 @@ import OrchestraKit
 import TestSupport
 
 /// B4 · `wake` is the ONE delivery chokepoint. The ladder: in-flight claim → CLI-wait defer →
-/// outstanding-lease defer → channel push (dark) → attach grace → cold resume intent.
+/// outstanding-lease defer → cold resume intent. (The Claude channel-push route is built in D.)
 @Suite("B4 · wake route ladder")
 struct WakeLadderTests {
 
@@ -105,60 +105,6 @@ struct WakeLadderTests {
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)   // no relaunch
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["hello"])         // durable
         #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 1)               // charged
-    }
-
-    // MARK: - attach grace (against the starved broker — always unattached) + activity line
-
-    @Test("a live channel card with no parked poll defers cold inside the grace window")
-    func unattachedChannelCardDefersColdWithinGrace() async throws {
-        let clock = TestClock()
-        let env = TestEnv.make(grace: 2, capabilities: .channelStub,
-                               clock: clock, now: clock.dateProvider())
-        let card = try await idleResumable(env, branch: "b")
-        try await env.svc.inbox.enqueue(card.id, "m")
-
-        await env.svc.wake(card.id)
-
-        #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)   // deferred
-        #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 1)              // charged
-    }
-
-    @Test("grace expiry falls cold — a bridge-less setup still delivers")
-    func graceExpiryFallsCold() async throws {
-        let clock = TestClock()
-        let env = TestEnv.make(grace: 2, capabilities: .channelStub,
-                               clock: clock, now: clock.dateProvider())
-        await env.svc.setDeliveryBackoff(0)
-        let card = try await idleResumable(env, branch: "b")
-        try await env.svc.inbox.enqueue(card.id, "m")
-        await env.svc.wake(card.id)                        // stamps the unattached-since instant
-
-        clock.advance(by: .seconds(16))                    // past channelAttachGrace (15)
-        await env.svc.wake(card.id)
-
-        #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .relaunching)
-    }
-
-    @Test("a delivered card gets a FRESH grace window on the next outage")
-    func confirmClearsGraceStamp() async throws {
-        let clock = TestClock()
-        let env = TestEnv.make(grace: 2, capabilities: .channelStub,
-                               clock: clock, now: clock.dateProvider())
-        let card = try await idleResumable(env, branch: "b")
-        try await env.svc.inbox.enqueue(card.id, "m")
-        await env.svc.wake(card.id)                        // stamps unattached-since at t0
-        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        let batch = try #require(try await env.svc.inbox.claim(
-            card.id, route: .channelPush, epoch: epoch, budget: StopDrain.maxPayloadChars,
-            render: { StopDrain.fit($0, budget: $1) }, now: clock.dateProvider()()))
-        await env.svc.confirmDelivery(token: batch.token, cardId: card.id)   // clears the stamp
-
-        clock.advance(by: .seconds(16))                    // would have blown the ORIGINAL window
-        try await env.svc.inbox.enqueue(card.id, "m2")
-        await env.svc.wake(card.id)
-
-        // A fresh window, so this wake DEFERS rather than cold-restarting a healthy live session.
-        #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
     }
 
     @Test("an idle wake that restarts the session says so in the activity feed")

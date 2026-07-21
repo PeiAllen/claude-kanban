@@ -11,7 +11,7 @@ public actor TaskStore {
     public private(set) var currentRev: Int = 0
     /// Set true (once, at load) when the on-disk `tasks.json` was top-level-UNPARSEABLE and had to be
     /// side-lined to a timestamped `.corrupt-<ISO8601>` backup, booting the board empty. The daemon reads
-    /// this at boot to enter conservative worktree mode (carry #3) — a corrupt board can't prove ownership
+    /// this at boot to enter conservative worktree mode — a corrupt board can't prove ownership
     /// of any pre-existing tree, so no reclaim may run until a later clean restart re-establishes the map.
     public private(set) var loadWasCorrupt = false
 
@@ -91,7 +91,7 @@ public actor TaskStore {
         } catch {
             // Top-level unparseable: side-line to a TIMESTAMPED backup so a second corruption never
             // clobbers the first (`.corrupt-<ISO8601>`), then boot empty and raise `loadWasCorrupt` so the
-            // daemon enters conservative worktree mode (carry #3). Never `removeItem` the prior corrupt file.
+            // daemon enters conservative worktree mode. Never `removeItem` the prior corrupt file.
             let stamp = Self.corruptStamp(now())
             let backup = path + ".corrupt-\(stamp)"
             try? FileManager.default.moveItem(atPath: path, toPath: backup)
@@ -141,6 +141,16 @@ public actor TaskStore {
     public func all() -> [Task] {
         ensureLoaded()
         return tasks
+    }
+
+    /// An ATOMIC `(tasks, rev)` snapshot — both read in one actor call, so `rev` exactly matches the task
+    /// state returned (no interleaving mutation can advance one without the other). The daemon push
+    /// (`PushNotifier`) seeds its attention baseline from this and drops every buffered event with
+    /// `rev <= this`, so a boot-window transition already reflected in the snapshot is never replayed as a
+    /// stale/duplicate notification.
+    public func snapshot() -> (tasks: [Task], rev: Int) {
+        ensureLoaded()
+        return (tasks, currentRev)
     }
 
     /// Whether the on-disk board was corrupt at load (top-level unparseable → side-lined + booted empty).

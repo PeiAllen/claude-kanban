@@ -4,16 +4,14 @@ import Testing
 import OrchestraKit
 import TestSupport
 
-/// B4 · lease/broker disposition across teardown and epoch bumps. The broker is starved (nothing
-/// parks), so `isAttached` reads false either way — these pin the STRUCTURAL contract: teardown
-/// reaches a broker at all (release + detach), and the epoch bump runs the eager revoke. D1's
-/// `test_socketCloseDetaches` / `test_epochBumpRevokesOlderPolls` make the detach/revoke observable
-/// with a real parked poll.
-@Suite("B4 · teardown + epoch-bump lease disposition")
+/// B4 · teardown disposition of a card's delivery state: its inbox leases are released (so the
+/// message is retained-but-unleased for a reopen), and its in-memory delivery-tracking maps are
+/// evicted (an archived card is never re-scanned, so nothing else prunes them).
+@Suite("B4 · teardown delivery disposition")
 struct TeardownLeaseTests {
 
-    @Test("teardown releases every lease AND reaches the broker detach")
-    func teardownReleasesAllLeasesAndDetaches() async throws {
+    @Test("teardown releases every lease — the message is retained but unleased for a reopen")
+    func teardownReleasesAllLeases() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(
@@ -30,24 +28,25 @@ struct TeardownLeaseTests {
         let after = await env.svc.inbox.peek(card.id)
         #expect(after.count == 1)                                   // message RETAINED for a reopen
         #expect(after.allSatisfy { $0.lease == nil })               // …but unleased
-        #expect(await env.svc.broker.isAttached(card.id, epoch: epoch) == false)
     }
 
-    @Test("an epoch bump runs the eager older-generation poll revoke")
-    func epochBumpRevokesOlderPolls() async throws {
+    @Test("teardown clears a card's delivery-tracking maps (no per-card leak)")
+    func teardownClearsDeliveryMaps() async throws {
         let env = TestEnv.make(grace: 2)
         let repo = TestEnv.repo(env.base)
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        let before = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        env.adapter.writeTranscript(for: card.agentSessionId!)
+        // Populate both maps the way a real in-flight dispatch + a failed attempt would.
+        await env.svc.markDispatched(card.id, token: UUID())
+        await env.svc.chargeDeliveryAttempt(card.id)
+        #expect(await env.svc.outstandingTokenCountForTest(card.id) == 1)
+        #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 1)
 
-        try await env.svc.restart(card.id)                          // → .relaunching, epoch++
+        try await TestEnv.archiveAndTeardown(env.svc, card.id)
 
-        let after = try #require(await env.svc.store.get(card.id)).sessionEpoch
-        #expect(after == before + 1)
-        // Starved broker: both read false. What this pins is that the bump path reaches the revoke at
-        // all; D1's `test_epochBumpRevokesOlderPolls` parks a real poll and re-runs it.
-        #expect(await env.svc.broker.isAttached(card.id, epoch: before) == false)
+        // An archived card is never re-scanned by confirm/expiry, so teardown must evict both entries
+        // or they leak one-per-card for the daemon's lifetime.
+        #expect(await env.svc.outstandingTokenCountForTest(card.id) == 0)
+        #expect(await env.svc.deliveryAttemptCountForTest(card.id) == 0)
     }
 }

@@ -155,7 +155,7 @@ extension OrchestraService {
                 // `pendingModel == nil`, i.e. the relaunch has LANDED and the old process is dead: reports
                 // arriving before that are the DYING session's, and judging them would accuse the vendor of
                 // ignoring a flag it was never passed. That fence needs no epoch, which matters — Codex's
-                // file-tail reports carry none (OrchestraService.swift:382). Compared through the catalog,
+                // file-tail reports carry none (OrchestraService.swift). Compared through the catalog,
                 // never raw `==`: the vendor answers `claude-haiku-4-5-20251001` where the table says
                 // `claude-haiku-4-5`. One warning, then the watch is dropped — never a per-tick drumbeat.
                 if let mid = snap.modelId, !mid.isEmpty,
@@ -252,10 +252,10 @@ extension OrchestraService {
         if targetPhase != before.phase {
             // report() is the THIRD `.live` landing, besides the two steppers — and it needs their COMPANION
             // CLEANUP, not just their phase write. When a relaunch's readiness times out, the RelaunchStepper
-            // `break`s (PhaseStepper.swift:256) leaving the card `.relaunching` even though the session came
-            // up, and `runStep` releases its claim (+Reconcile.swift:218). The new session's own report then
+            // `break`s (PhaseStepper.swift) leaving the card `.relaunching` even though the session came
+            // up, and `runStep` releases its claim (+Reconcile.swift). The new session's own report then
             // finds `bringUpOwnsLanding == false` and lands the card `.live` here, over a legal
-            // `.relaunching → .live` edge (+Lifecycle.swift:132). Without this, `pendingSeed`/`pendingModel`
+            // `.relaunching → .live` edge (+Lifecycle.swift). Without this, `pendingSeed`/`pendingModel`
             // are stranded SET on a live card that no stepper will visit again — so the next ordinary
             // restart/resume would replay the handoff seed and silently relaunch on a stale re-seat model,
             // overriding whatever the session had switched to. Scoped to a landing FROM a being-born phase,

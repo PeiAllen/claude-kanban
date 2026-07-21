@@ -26,7 +26,7 @@ extension OrchestraService {
     /// readiness signal to a launching/relaunching stepper must wait for the waiter to exist FIRST — a
     /// signal delivered before the step reaches `awaitReadiness` is dropped by `finishLaunch`'s
     /// "start clean" `pendingReadiness.remove`. Polling this (not a fixed sleep) makes the handoff
-    /// deterministic and contention-proof (the flake the orchestrator reproduced under parallel load).
+    /// deterministic and contention-proof.
     func hasReadinessWaiter(_ id: UUID) -> Bool { readinessWaiters[id] != nil }
 
     /// Test seam: force a card's persisted phase (bypassing the funnel's legal-edge gate) so a test can
@@ -182,7 +182,7 @@ extension OrchestraService {
                 //     `inFlightSteps` (else a Codex `codex resume` / missed hook never confirms). Independent
                 //     of stepping so a card holding an in-flight step still gets ticked to `.live`.
                 if alive { tickLaunchReadyPublic(t.id) } else { launchReadyTicks[t.id] = nil }
-                // (6) `phaseChangedAt` timeout (carry #2, first consumer of `sessionLaunchTimeout`). A launch
+                // (6) `phaseChangedAt` timeout (`sessionLaunchTimeout`). A launch
                 //     that never confirmed within the timeout is dead. Checked BEFORE stepping so a doomed
                 //     launch is never re-driven past its deadline. The re-step invariant keeps the anchor:
                 //     a same-phase `transition(.launching)` is a funnel noop (no `phaseChangedAt` re-stamp),
@@ -320,7 +320,7 @@ extension OrchestraService {
     /// never-prompted card) — or `dead(.rebootUnrevived)` when unrecoverable. A `.live` card whose session
     /// is alive at the MATCHING epoch is adopted (left live). Transitional cards are left for the steady-
     /// state reconcile tick (which steps them, `inFlightSteps`-guarded so nothing double-drives). Also
-    /// wires corrupt-store conservative mode (carry #3).
+    /// wires corrupt-store conservative mode.
     public func reconcilePhasesAtBoot() async {
         // Corrupt board → conservative worktree mode for this daemon's WHOLE lifetime (cleared only by a
         // later clean restart, which is a fresh registry). `wasCorrupt()` forces the load.
