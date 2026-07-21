@@ -716,15 +716,18 @@ public actor OrchestraService {
     public func send(_ id: UUID, _ message: String,
                      sender: InboxMessageSource = .human) async throws {
         let t = try await require(id)
+        let inboxMessage = InboxMessage(cardId: t.id, text: message, source: sender)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
         // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
-        // message is guaranteed to reach the agent whole.
-        guard message.count <= StopDrain.maxMessageChars(for: sender) else {
+        // message is guaranteed to reach the agent whole. Check the actual formatter too: an oversized
+        // card title can consume the entire envelope even when the text itself is empty.
+        guard message.count <= StopDrain.maxMessageChars(for: sender),
+              StopDrain.renderMessages([inboxMessage]).count <= StopDrain.maxPayloadChars else {
             throw OrchestraError.invalidParams(
                 "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars(for: sender)). "
                 + "Put large content in a file in the worktree and reference it instead.")
         }
-        try await inbox.enqueue(InboxMessage(cardId: t.id, text: message, source: sender))
+        try await inbox.enqueue(inboxMessage)
         await wake(t.id)
     }
 

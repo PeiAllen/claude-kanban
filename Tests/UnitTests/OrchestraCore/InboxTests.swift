@@ -518,6 +518,19 @@ struct InboxStoreTests {
         #expect(await reborn.peek(card).map(\.source) == [source])
     }
 
+    @Test("enqueue without a source persists Orchestra provenance")
+    func defaultEnqueuePersistsOrchestraSource() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let card = UUID()
+        do {
+            let inbox = Inbox(path: path)
+            try await inbox.enqueue(card, "generated nudge")
+        }
+
+        let reborn = Inbox(path: path)
+        #expect(await reborn.peek(card).first?.source == .orchestra)
+    }
+
     @Test("legacy inbox message decodes without source and displays unavailable provenance")
     func legacySourceIsUnknown() throws {
         let original = InboxMessage(cardId: UUID(), text: "old", source: .human)
@@ -753,7 +766,7 @@ struct StopDrainTests {
 // `Service/PayloadForStopTests.swift`.
 
 @Suite("C1 · send routes through the inbox")
-struct SendRoutingTests {
+struct InboxRoutingTests {
     @Test("send enqueues a durable message instead of typing into tmux")
     func sendEnqueues() async throws {
         let env = TestEnv.make()
@@ -791,6 +804,37 @@ struct SendRoutingTests {
         #expect(payload.count <= StopDrain.maxPayloadChars)
         #expect(payload.contains(atLimit))                 // whole message present
         #expect(payload.hasSuffix("[…truncated]") == false)  // not clipped
+    }
+
+    @Test("send rejects an oversized source envelope before enqueueing an empty message")
+    func rejectsOversizedSourceEnvelope() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let source = InboxMessageSource.card(
+            id: UUID(),
+            title: String(repeating: "x", count: StopDrain.maxPayloadChars))
+        #expect(StopDrain.maxMessageChars(for: source) == 0)
+
+        await #expect(throws: OrchestraError.self) {
+            try await env.svc.send(task.id, "", sender: source)
+        }
+        #expect(try await env.svc.inboxPeek(task.id).isEmpty)
+    }
+
+    @Test("send accepts a normal card source message exactly at its rendered cap")
+    func acceptsCardSourceAtCap() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars(for: source))
+
+        try await env.svc.send(task.id, atLimit, sender: source)
+        let payload = try #require(await env.svc.drainForStop(task.id))
+        #expect(payload.count == StopDrain.maxPayloadChars)
+        #expect(payload.contains("From \(source.label): \(atLimit)"))
+        #expect(payload.hasSuffix("[…truncated]") == false)
     }
 }
 
