@@ -98,11 +98,28 @@ The **only** backward-compat kept is the **one-time on-disk migration** that rea
 `tasks.json`: it lives inside `Task.init(from:)` (the card's own tolerant decoder, superseding the plan's
 separate `LegacyStoredBoard`), maps the legacy triple to `phase` fail-safe (nil/unknown status →
 `.dead(.rebootUnrevived)`, an idle card's absent wait reason → `.humanTurn`, preserving `deadReason`), and
-never drops a card except a genuinely id-less one — with the store's element-wise `FailableTask` load so a
-single corrupt record self-drops rather than stranding the whole board to `.bak`. The full mapping table and
+drops a record only when its `id` is absent or its `phase` value no longer decodes (the sole current such
+value is a legacy `.dead(.completed)`, after that case's clean-break removal — see the
+[note below](#done-is-not-observable--success-is-agent-signalled-not-inferred)) — with the store's
+element-wise `FailableTask` load so a single undecodable record self-drops rather than stranding the whole
+board to `.bak`. The full mapping table and
 fail-safe rules are in [chapter 3](03-data-model.md#schema-migration--the-one-time-statuswaitreason--phase-mapping).
 This follows the project's *prefer breaking changes over compatibility shims* stance: break the wire, but
 never nuke on-disk state.
+
+### "Done" is not observable — success is agent-signalled, not inferred
+
+The daemon's only completion signal is `turnCompleted` ("a turn ended, idle"), identical for "finished the
+assignment" and "paused between turns" — so "done" is not observable, and the old inference that set a
+finished read-only reviewer to `.dead(.completed)` retired live cards merely waiting for instruction. It is
+gone: a finished reviewer idles `.live(.waiting(.humanTurn))` like any card, and **success is
+agent-signalled** — the delegate `send`s its result and the orchestrator `archive`s the card. Death stays
+observable (any `.dead` reason concludes `.exited`); archive is the only `.done`; `orchestra wait` resolves
+only on a real conclusion (merge/archive/death), never on a delegate finishing its work.
+
+`DeadReason.completed` is removed outright — a clean on-disk break, no migration: a stored
+`{"phase":{"name":"dead","detail":"completed"}}` record no longer decodes and self-drops (accepted — none
+existed). The `wait`/`watch` subsystem stays but dormant; excising it is deferred.
 
 ### Terminal bytes bypass the daemon
 

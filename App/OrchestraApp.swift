@@ -233,7 +233,7 @@ private struct DebugLaunchHook: ViewModifier {
             Task(title: title, repo: repo, branch: branch,
                  cwd: "~/worktrees/\((repo as NSString).lastPathComponent)/\(branch.replacingOccurrences(of: "/", with: "-"))",
                  agentId: agent, model: AgentModel(id: model), startIn: .impl, column: .review, order: 0,
-                 phase: .dead(.completed), initialPrompt: title, archived: true,
+                 phase: .archived(teardownComplete: true), initialPrompt: title, archived: true,
                  updatedAt: Date(timeIntervalSinceNow: -ago))
         }
         return [
@@ -379,7 +379,7 @@ private struct DebugLaunchHook: ViewModifier {
             mk("Add the command palette", "feat/palette", .impl, .live(.running), 1),
             mk("Pure BoardNavigator + tests", "feat/navigator", .impl, .live(.waiting(.humanTurn)), 2),
             mk("Review the focus model", "feat/review", .review, .live(.running), 0),
-            mk("Ship the context chip", "feat/chip", .review, .dead(.completed), 1),
+            mk("Ship the context chip", "feat/chip", .review, .live(.waiting(.humanTurn)), 1),
             mk("Scratch: perf notes", "perf-notes", .plan, .live(.running), 0, origin: .borrowed),
         ]
         model.selectedId = model.tasks.first?.id

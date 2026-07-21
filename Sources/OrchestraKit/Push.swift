@@ -40,9 +40,7 @@ public enum AttentionTransition {
         if !prev.isWaiting, case .live(.waiting(let reason)) = now {
             return reason == .permission ? .permission : .needsYou
         }
-        // `.dead(.completed)` is a read-only delegated child finishing its turn (report() sets it), NOT a
-        // death — exclude it so it fires no push, matching NeedsYouQueue.reason's identical guard.
-        if prev.kind != .dead, now.kind == .dead, now != .dead(.completed) { return .died }
+        if prev.kind != .dead, now.kind == .dead { return .died }
         return nil
     }
 }

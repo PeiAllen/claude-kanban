@@ -268,8 +268,8 @@ struct WakeMergeWatchTests {
         #expect(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false) == nil)
     }
 
-    @Test("Codex task_complete concludes a watched read-only delegated child without archiving it")
-    func codexTaskCompleteConcludesReadOnlyDelegatedChild() async throws {
+    @Test("Codex task_complete leaves a watched read-only delegated child idle — success is not a conclusion")
+    func codexTaskCompleteDoesNotConcludeReadOnlyDelegatedChild() async throws {
         let base = NSTemporaryDirectory() + "orch-codex-complete-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: base + "/cwd", withIntermediateDirectories: true)
         let codex = CodexAdapter(binOverride: "fake-codex", codexHome: base + "/codexhome")
@@ -286,17 +286,17 @@ struct WakeMergeWatchTests {
 
         let report = try #require(codex.parse(.fileTail(line: #"{"timestamp":"2026-07-01T10:00:09.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#)))
         try await env.svc.report(child.id, report)
+        await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
-        let conc = await waiting.value
-        #expect(conc?.cardId == child.id)
-        #expect(conc?.kind == .done)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .dead(.completed))
+        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
         #expect(after.archived == false)
+        waiting.cancel(); _ = await waiting.value
     }
 
-    @Test("Claude TaskCompleted concludes a watched read-only delegated child without archiving it")
-    func claudeTaskCompletedConcludesReadOnlyDelegatedChild() async throws {
+    @Test("Claude TaskCompleted leaves a watched read-only delegated child idle — success is not a conclusion")
+    func claudeTaskCompletedDoesNotConcludeReadOnlyDelegatedChild() async throws {
         let env = TestEnv.make(registry: AgentRegistry(adapters: [ClaudeCodeAdapter(binOverride: "fake-claude")]))
         let repo = TestEnv.repo(env.base)
         let cwd = env.base + "/borrowed"
@@ -308,13 +308,13 @@ struct WakeMergeWatchTests {
 
         let report = try #require(ClaudeCodeAdapter().parse(.hooksPush(kind: "taskcompleted", payload: .object([:]))))
         try await env.svc.report(child.id, report)
+        await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
-        let conc = await waiting.value
-        #expect(conc?.cardId == child.id)
-        #expect(conc?.kind == .done)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .dead(.completed))
+        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
         #expect(after.archived == false)
+        waiting.cancel(); _ = await waiting.value
     }
 
     @Test("Claude stop still waits for the human and does not conclude")
@@ -337,8 +337,8 @@ struct WakeMergeWatchTests {
         waiting.cancel(); _ = await waiting.value
     }
 
-    @Test("provider-neutral turn completion concludes a watched read-only delegated child")
-    func genericTurnCompletionConcludesReadOnlyDelegatedChild() async throws {
+    @Test("provider-neutral turn completion leaves a watched read-only delegated child idle — success is not a conclusion")
+    func genericTurnCompletionDoesNotConcludeReadOnlyDelegatedChild() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let cwd = env.base + "/generic-borrowed"
@@ -349,13 +349,13 @@ struct WakeMergeWatchTests {
         try await pollUntil { await env.svc.activeWaitSubscriptionCount() == 1 }
 
         try await env.svc.report(child.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))
+        await yieldBriefly()   // negative: a wrongful conclusion (awaited inside report) gets its chance to land
 
-        let conc = await waiting.value
-        #expect(conc?.cardId == child.id)
-        #expect(conc?.kind == .done)
+        #expect(await env.svc.activeWaitSubscriptionCount() == 1)   // NOT concluded — wait still pending
         let after = try #require(await env.svc.list().first { $0.id == child.id })
-        #expect(after.phase == .dead(.completed))
+        #expect(after.phase == .live(.waiting(.humanTurn)))         // idles, success is agent-signalled (send)
         #expect(after.archived == false)
+        waiting.cancel(); _ = await waiting.value
     }
 
     @Test("ordinary worktree turn completion still waits for the human and does not conclude")

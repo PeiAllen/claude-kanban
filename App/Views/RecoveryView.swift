@@ -23,7 +23,6 @@ struct RecoveryView: View {
             return "The agent exited right after launching." + (task.deadDetail.map { " \($0)" } ?? "")
         case .rebootUnrevived: return "Lost on reboot and couldn't be auto-resumed."
         case .resumeFailed:    return "Resume failed — \(task.deadDetail ?? "")."
-        case .completed:       return "The agent completed its work."
         case .spawnFailed:     return "Creating the workspace failed" + (task.deadDetail.map { " — \($0)" } ?? "") + "."
         case .resourceExhausted:
             // The MACHINE ran out — nothing about this card is broken. Name the resource (with its live

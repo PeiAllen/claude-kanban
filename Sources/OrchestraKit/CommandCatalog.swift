@@ -122,8 +122,10 @@ public enum CommandCatalog {
                       kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "wait",
-                      summary: "Subscribe to watched card conclusions (Done or clean exit) and wake/remind "
-                          + "the watcher when one fires. For reactive fan-out, re-issue on cards that remain.",
+                      summary: "Subscribe to watched card conclusions — a merge/archive (Done) or a death "
+                          + "(exit) — and wake/remind the watcher when one fires. A delegate that just ends "
+                          + "its turn does NOT conclude (it idles waiting); get its result via `send`, not "
+                          + "`wait`. For reactive fan-out, re-issue on cards that remain.",
                       params: schema([
                           "refs": .object([
                               "type": .string("array"),

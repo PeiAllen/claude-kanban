@@ -154,9 +154,9 @@ struct TaskStoreTests {
         #expect(phase("running") == .live(.running))
         #expect(phase("wait-nil") == .live(.waiting(.humanTurn)))         // nil waitReason → humanTurn, never unknown
         #expect(phase("wait-perm") == .live(.waiting(.permission)))
-        #expect(phase("done") == .dead(.completed))
+        #expect(phase("done") == .dead(.rebootUnrevived))                 // legacy "done" (unarchived) → safe recoverable terminal
         #expect(phase("dead") == .dead(.resumeFailed))                    // dead preserves its reason
-        #expect(phase("arch") == .archived(teardownComplete: true))
+        #expect(phase("arch") == .archived(teardownComplete: true))       // archived Bool short-circuits to the archived terminal
     }
 
     @Test("migrates a legacy bare [Task] array — every status → phase, rev 0")

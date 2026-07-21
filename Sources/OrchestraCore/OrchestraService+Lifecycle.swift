@@ -143,12 +143,12 @@ extension OrchestraService {
     }
 
     /// The `(kind, deadReason)` a terminal phase concludes with — or nil if `phase` is non-terminal.
-    /// `.done` (archived / a completed retire) carries no `deadReason`; any other dead reason concludes
-    /// `.exited` and carries the reason (so `wait` resolves on every terminal reason — the bug-#2 fix).
+    /// `.archived → (.done, nil); any .dead reason → (.exited, r)` so `wait` resolves on every terminal
+    /// reason — the bug-#2 fix.
     static func terminalConclusion(for phase: Phase) -> (kind: Conclusion.Kind, deadReason: DeadReason?)? {
         switch phase {
         case .archived: return (.done, nil)
-        case .dead(let r): return r == .completed ? (.done, nil) : (.exited, r)
+        case .dead(let r): return (.exited, r)
         default: return nil
         }
     }

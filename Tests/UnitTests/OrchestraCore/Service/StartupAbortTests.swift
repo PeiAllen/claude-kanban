@@ -237,14 +237,15 @@ struct StartupAbortTests {
         #expect(after.deadReason == .spawnExitedImmediately)
     }
 
-    /// (GPT-Important C) A card concluded to `.dead(.completed)` DURING the capture await (a fast read-only
-    /// freeform child reporting task_complete) must be left alone — not retried, not marked dead by the
-    /// abort path.
-    @Test("card that concludes (done) during the capture await is not retried or overwritten")
-    func doneDuringCaptureLeftAlone() async throws {
+    /// A read-only card that reports a completed turn (`.live(.waiting(.humanTurn))`) DURING the capture
+    /// await gets NO exemption from the bounded startup abort: an idle phase is indistinguishable between
+    /// "finished a turn" and "fresh provisional launch", so the abort path retries it exactly as it would a
+    /// blank launch whose pane died. (Turn-completion is no longer a terminal "done" — success is
+    /// agent-signalled, never inferred from an idle phase.) Sends `run: .waiting(.humanTurn)` as the real
+    /// adapters do; a bare `turnCompleted` would leave the phase `.running`.
+    @Test("a completed-turn report during the capture await does not exempt the card from the bounded abort")
+    func completedTurnReportDuringCaptureStillAborts() async throws {
         let env = TestEnv.make(grace: 1)
-        // A scratch read-only card is the durable form of a one-shot delegation: it concludes on
-        // `turnCompleted` (→ `.dead(.completed)`), which is what "turns done" means in the phase machine.
         let t = try await TestEnv.spawnStartupPending(env.svc, SpawnInput(id: UUID(), prompt: "x", access: .readOnly, scratch: true))
         await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
         env.sessions.setPaneDead(t.id)
@@ -255,14 +256,13 @@ struct StartupAbortTests {
         async let reconciled: Void = env.svc.reconcileLiveness()   // enters handleStartupAbort, parks in capture
         await gate.reached()                                       // provably inside the capture window
         env.sessions.captureGate = nil                             // only the scheduled capture parks
-        try await env.svc.report(t.id, StatusReport(turnCompleted: true))  // card concludes mid-capture
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn), turnCompleted: true))  // idles live, does NOT conclude
         gate.release()
         await reconciled
 
         let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
-        #expect(after.phase == .dead(.completed))          // preserved (done)…
-        #expect(after.deadReason != .spawnExitedImmediately)       // …not overwritten by the abort path
-        #expect(env.sessions.ensureCount == ensureAfterSpawn)      // …and not re-spawned
+        #expect(after.phase.kind != .dead)                         // a completed turn is not a conclusion…
+        #expect(env.sessions.ensureCount == ensureAfterSpawn + 1)  // …and the bounded retry fired (no phase-based immunity)
     }
 
     /// A `send` arriving during the startup grace is NOT swallowed — it queues and is available for delivery.

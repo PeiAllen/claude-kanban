@@ -219,9 +219,10 @@ extension OrchestraService {
     /// SessionEnd window), unarchiving, and RETURN. The reconciler's `MaterializeStepper` re-cuts the run dir
     /// the archive reclaimed → `LaunchStepper` brings the agent up (resume vs blank re-derived from the
     /// persisted fields by `deriveLaunchFlavor`), its `.live` finalize `observedEpoch`-fenced (carried #5:
-    /// epoch-fence reopen resume-finalize). No `.dead(.completed)→.archived` normalize is needed — after the
-    /// intent-only archive + the migration seeds, an archived card is ALWAYS `.archived(_)`, so the
-    /// `archivedPending/archivedComplete → creatingWorktree` reopen edge applies directly.
+    /// epoch-fence reopen resume-finalize). No `.dead→.archived` normalize is needed — the archive verb writes
+    /// `.archived(_)` + the `archived` Bool together, so an archived card is ALWAYS `.archived(_)`, and the
+    /// `archivedPending/archivedComplete → creatingWorktree` reopen edge applies directly. (`DeadReason.completed`
+    /// is gone — a legacy stored `dead(.completed)` record no longer decodes at all; it self-drops on load.)
     @discardableResult
     public func reopen(_ id: UUID, source: ActivitySource = .daemon) async throws -> Task {
         let t = try await require(id)
@@ -402,12 +403,12 @@ extension OrchestraService {
         }
         let evidence = probe.evidence
 
-        // The card may have been archived / killed / restarted / concluded (done → `.dead(.completed)`)
-        // during the capture await — stand down rather than resurrect it or fight an intentional teardown
-        // (requirement D). A terminal (`.dead(_)`/`.archived(_)`) phase covers a SessionEnd death AND a
-        // task_complete conclusion. A fresh restart/resume already cleared `spawnPending`, so a nil entry
-        // also means "superseded". The re-check after the capture await is the race guard (orch drops the
-        // old `recovering` set; report()'s death path is epoch-fenced, not `recovering`-gated).
+        // The card may have been archived / killed / restarted / concluded during the capture await —
+        // stand down rather than resurrect it or fight an intentional teardown (requirement D). A terminal
+        // (`.dead(_)`/`.archived(_)`) phase covers a SessionEnd death. A fresh restart/resume already
+        // cleared `spawnPending`, so a nil entry also means "superseded". The re-check after the capture
+        // await is the race guard (orch drops the old `recovering` set; report()'s death path is
+        // epoch-fenced, not `recovering`-gated).
         guard spawnPending[id] != nil,
               let live = await store.get(id),
               !live.archived, !live.phase.isTerminal else {

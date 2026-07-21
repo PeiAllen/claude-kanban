@@ -16,45 +16,8 @@ struct TaskMigrationTests {
         #expect(back.origin == .worktree)
     }
 
-    /// IMPORTANT regression: the legacy Bool-bridge `archive()` (PR2/PR3/PR4a) persisted a record WITH a
-    /// `phase` key as `.dead(.completed)` + `archived == true`. Post-PR4b that decodes as `.dead`, whose
-    /// gate rejects `reopen` (and `.dead → .creatingWorktree` is an illegal edge) — the card could never be
-    /// reopened. Decode must normalize it to the real `.archived` terminal.
-    @Test("a legacy .dead(.completed)+archived record with a phase key decodes as .archived")
-    func legacyArchivedDeadCompletedNormalizesToArchived() throws {
-        let id = UUID()
-        let json = """
-        {"id":"\(id.uuidString)","phase":{"name":"dead","detail":"completed"},"archived":true}
-        """
-        let decoded = try OrchestraJSON.decoder.decode(Task.self, from: Data(json.utf8))
-        #expect(decoded.phase == .archived(teardownComplete: true))
-        #expect(decoded.archived == true)
-    }
-
-    /// The complement: a genuinely `.dead(.completed)` record that is NOT archived stays `.dead` (a
-    /// completed-but-not-yet-retired card must not be silently archived by the normalization).
-    @Test("a .dead(.completed) record that is NOT archived stays .dead")
-    func deadCompletedNotArchivedStaysDead() throws {
-        let id = UUID()
-        let json = """
-        {"id":"\(id.uuidString)","phase":{"name":"dead","detail":"completed"},"archived":false}
-        """
-        let decoded = try OrchestraJSON.decoder.decode(Task.self, from: Data(json.utf8))
-        #expect(decoded.phase == .dead(.completed))
-    }
-
-    /// End-to-end: the normalized card is REOPENABLE — the `reopen` gate ({archivedPending, archivedComplete})
-    /// admits its effective kind, where the un-normalized `.dead` kind was gated out.
-    @Test("the normalized legacy-archived card is admitted by the reopen phase gate")
-    func normalizedLegacyArchivedCardIsReopenable() throws {
-        let id = UUID()
-        let json = """
-        {"id":"\(id.uuidString)","phase":{"name":"dead","detail":"completed"},"archived":true}
-        """
-        let decoded = try OrchestraJSON.decoder.decode(Task.self, from: Data(json.utf8))
-        let kind = CommandRegistry.gatedKind(of: decoded)
-        #expect(kind == .archivedComplete)
-        let reopen = try #require(CommandCatalog.all.first { $0.name == "reopen" })
-        #expect(reopen.phaseGate.contains(kind))   // admitted (would be rejected for `.dead`)
-    }
+    // NOTE: the `.dead(.completed)` legacy-migration tests were removed with the migration itself.
+    // `DeadReason.completed` is gone as a clean on-disk break (no records to migrate), so a stored
+    // `{"phase":{"name":"dead","detail":"completed"}}` record simply fails to decode and is dropped by
+    // `FailableTask` — there is no longer a conversion to pin.
 }

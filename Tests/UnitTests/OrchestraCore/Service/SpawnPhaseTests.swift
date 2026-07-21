@@ -127,13 +127,13 @@ struct SpawnPhaseTests {
         #expect(fresh == .applied)
     }
 
-    @Test("a .dead(.completed) card revives to .live only on an epoch-current signal — never a verb")
-    func test_deadCompletedRevivesOnSignal() async throws {
+    @Test("a .dead(.agentExited) card revives to .live only on an epoch-current signal — never a verb")
+    func test_deadAgentExitedRevivesOnSignal() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
 
         let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
-        _ = await env.svc.transition(t.id, to: .dead(.completed))
+        _ = await env.svc.transition(t.id, to: .dead(.agentExited))
         let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
         let revived = await env.svc.transition(t.id, to: .live(.running), observedEpoch: epoch)   // viaSignal
         #expect(revived == .applied)
@@ -141,9 +141,9 @@ struct SpawnPhaseTests {
 
         // A verb (no observedEpoch) may NOT drive dead → live.
         let t2 = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b2"))
-        _ = await env.svc.transition(t2.id, to: .dead(.completed))
+        _ = await env.svc.transition(t2.id, to: .dead(.agentExited))
         let byVerb = await env.svc.transition(t2.id, to: .live(.running))
-        #expect(byVerb == .rejected(from: .dead(.completed), to: .live(.running)))
+        #expect(byVerb == .rejected(from: .dead(.agentExited), to: .live(.running)))
     }
 
     @Test("two concurrent wakes on an idle card resume exactly once (deliveriesInFlight defers the second)")

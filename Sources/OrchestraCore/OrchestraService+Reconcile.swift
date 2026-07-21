@@ -277,7 +277,7 @@ extension OrchestraService {
 
     /// Kill a live `orchestra-<uuid>` session whose card is ARCHIVED or NONEXISTENT — but only AFTER a
     /// fresh off-actor `stampedEpoch`/`isAlive` probe (never off a stale snapshot; bug #7). A
-    /// `dead(.completed)` card's surviving session is left alone (revival stays possible), as is any
+    /// `.dead` card's surviving session is left alone (revival stays possible), as is any
     /// non-terminal card's session. Fail-safe: no kill without a fresh probe that still sees it alive.
     private func sweepOrphanSessions(aliveNames: Set<String>, tasks: [Task]) async {
         let byId = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -297,7 +297,7 @@ extension OrchestraService {
     }
 
     /// A session is an orphan (sweepable) when its card is ABSENT or ARCHIVED. Fail-safe carve-out: a
-    /// `.dead(.completed)` (or any `.dead`) card is NEVER swept — revival/reopen stays possible.
+    /// `.dead` card is NEVER swept — revival/reopen stays possible.
     static func isOrphanSession(_ card: Task?) -> Bool {
         guard let card else { return true }                                    // no card ⇒ orphan
         if card.archived { return true }                                       // archived ⇒ orphan

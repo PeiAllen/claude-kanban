@@ -28,7 +28,6 @@ public enum DeadReason: String, Codable, Sendable {
                                  // vanish; the dying pane's final output is captured into `deadDetail`.
     case rebootUnrevived   // reboot sweep couldn't auto-revive (no id / transcript gone / resume failed at boot)
     case resumeFailed      // a `resume` attempt (auto or user "Try resume") failed — see `deadDetail`
-    case completed         // the agent finished its work and the card was retired to Done
     case spawnFailed       // the initial spawn never came up (worktree/launch failure before first life)
     case resourceExhausted // the HOST ran out of a launch resource (PTYs / processes / fds) — nothing could
                            // start a terminal, so this is about the machine, not the card. TRANSIENT: the
@@ -156,7 +155,6 @@ extension Phase {
         case .live(.running):              return .running
         case .live(.waiting(.permission)): return .needsPermission
         case .live(.waiting(.humanTurn)):  return .idle
-        case .dead(.completed):            return .done
         case .archived:                    return .done
         case .dead:                        return .dead
         }
@@ -175,8 +173,8 @@ public enum PhaseDisplayKey: String, Sendable, Equatable, CaseIterable {
     case running         // .live(.running)
     case idle            // .live(.waiting(.humanTurn)) — finished its turn, waiting on the human
     case needsPermission // .live(.waiting(.permission)) — blocked on tool approval
-    case dead            // .dead(non-completed) — needs recovery
-    case done            // .dead(.completed) / .archived — finished + retired
+    case dead            // .dead — needs recovery
+    case done            // .archived — finished + retired
 }
 
 extension PhaseDisplayKey {
@@ -635,11 +633,6 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
             self.phase = phase
-            // Legacy Bool-bridge `archive()` (PR2/PR3/PR4a) wrote `.dead(.completed)` + `archived == true`.
-            // Post-PR4b that decodes as `.dead`, which `reopen`'s gate ({archivedPending, archivedComplete})
-            // rejects — the card could never be reopened. Normalize it to the real `.archived` terminal, matching
-            // the no-`phase`-key `migratedPhase` path (which already maps archived → `.archived(true)`).
-            if archived, case .dead(.completed) = self.phase { self.phase = .archived(teardownComplete: true) }
         } else {
             self.phase = Task.migratedPhase(
                 status: try? c.decodeIfPresent(String.self, forKey: .status),
@@ -657,9 +650,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         switch status {
         case "running": return .live(.running)
         case "waiting": return .live(.waiting(WaitReason(rawValue: waitReason ?? "") ?? .humanTurn))
-        case "done":    return .dead(.completed)
         case "dead":    return .dead(deadReason ?? .agentExited)
-        default:        return .dead(.rebootUnrevived)   // nil or an unrecognized legacy status
+        default:        return .dead(.rebootUnrevived)   // nil / legacy "done" / unrecognized → safe recoverable terminal
         }
     }
 

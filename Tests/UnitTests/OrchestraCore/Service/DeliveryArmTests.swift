@@ -80,7 +80,7 @@ struct DeliveryArmTests {
     func armRevivesDeadResumable() async throws {
         let env = TestEnv.make(grace: 2)
         let card = try await idleWithMessage(env)
-        await env.svc.markDead(card.id, reason: .completed, detail: nil, source: .daemon)
+        await env.svc.markDead(card.id, reason: .agentExited, detail: nil, source: .daemon)
 
         await env.svc.reconcile()
 

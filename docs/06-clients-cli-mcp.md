@@ -60,6 +60,12 @@ so conclusions coalesce into the caller's own inbox. (See
 [merge-watch / `wait`](05-command-reference.md#notes-on-key-commands) and
 [chapter 9](09-design-decisions.md#shipped-feature-history).)
 
+Note `wait` resolves only on a **real conclusion** — a merge/archive (`.done`) or a death (`.exited`).
+A read-only delegate (a reviewer or fork) that finishes its turn idles `.live(.waiting)` and does **not**
+conclude on success, so its result must return via `send`, and the orchestrator `archive`s the consumed
+card itself. `wait` is for cards that conclude on their own (a worktree PR card that merges), never for a
+delegate's result.
+
 `--model <id>` on `restart` / `handoff` / `resume` **re-seats the card onto another model in place** — the
 [`--model` re-seat](05-command-reference.md#the---model-re-seat). It is declared on those three schemas in
 the [command catalog](05-command-reference.md#registry-commands), so it is a real MCP tool argument too (the
