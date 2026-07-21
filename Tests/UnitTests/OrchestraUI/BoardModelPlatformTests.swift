@@ -42,7 +42,7 @@ final class BoardModelPlatformTests: XCTestCase {
         XCTAssertEqual(clip.copied.last, "\(t.tmuxSession):agent")
 
         model.copySelected(.id)
-        XCTAssertEqual(clip.copied.last, t.shortId)
+        XCTAssertEqual(clip.copied.last, t.ref(slugging: false))
 
         XCTAssertEqual(clip.copied.count, 4)
     }
@@ -54,7 +54,7 @@ final class BoardModelPlatformTests: XCTestCase {
         model.tasks = [a, b]; model.selectedId = a.id
 
         model.copy(.id, of: b)
-        XCTAssertEqual(clip.copied.last, b.shortId)
+        XCTAssertEqual(clip.copied.last, b.ref(slugging: false))
         XCTAssertNotEqual(b.shortId, a.shortId)
     }
 

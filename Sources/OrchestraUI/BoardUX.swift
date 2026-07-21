@@ -155,13 +155,13 @@ public final class BoardUX: BoardStore {
     public func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
     public func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
 
-    /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / id).
+    /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / card reference).
     public func copySelected(_ target: CopyTarget) {
         guard let t = selected else { return }
         copy(target, of: t)
     }
 
-    /// Yank a reference to a specific card — the card-id badge copies the card it sits on, which is
+    /// Yank a reference to a specific card — the card-reference badge copies the card it sits on, which is
     /// not necessarily the selected one.
     public func copy(_ target: CopyTarget, of t: Task) {
         let s: String
@@ -169,7 +169,7 @@ public final class BoardUX: BoardStore {
         case .chatLink: s = t.ref()
         case .tmux:     s = "\(t.tmuxSession):agent"
         case .path:     s = t.cwd
-        case .id:       s = t.shortId
+        case .id:       s = t.ref(slugging: false)
         }
         platform.clipboard.copy(s)
         toast("Copied", sub: s)
