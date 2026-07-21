@@ -1356,17 +1356,20 @@ decisions:
   [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
   for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
-- **A send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) now rejects a message
-  over `StopDrain.maxMessageChars` (the payload budget minus a lone-message header) with `invalidParams` — *put
-  large content in a file in the worktree and reference it instead* — so any *accepted* message is guaranteed to
-  deliver whole and the truncation fallback is unreachable for `send`-queued messages. The inbox is a nudge
-  channel, not a document transfer.
+- **A source-aware send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
+  `StopDrain.maxMessageChars(for: source)`, which reserves the full rendered `From <source>` envelope, then
+  validates the complete formatted payload before enqueueing. A long card title can therefore reduce the
+  permitted body; if even that envelope cannot fit, `send` rejects it with `invalidParams` rather than accepting
+  a message that delivery would truncate. Put large content in a file in the worktree and reference it instead:
+  the inbox is a nudge channel, not a document transfer.
 
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
 
-The same inbox later gained **stored source metadata**. `InboxMessage.source` records Human, Orchestra, or
-a card id/title snapshot, while remaining optional so legacy records still decode. This is structured
+The same inbox later gained **stored source metadata**. `InboxMessage.source` records **Human** for direct service
+and external CLI/MCP sends without a card context, **Card** as a durable title/id snapshot from a card bridge, or
+**Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default), while remaining optional
+so legacy records still decode. This is structured
 metadata rather than a `From …` text prefix or render-time inference: an edit changes only the body,
 persistence carries provenance through daemon restarts, and the snapshot remains stable when a source card
 is renamed or archived. The Stop-drain, resume seed, and both inbox editors render the same stored source as
