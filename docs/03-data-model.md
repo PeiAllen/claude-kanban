@@ -196,7 +196,9 @@ sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, ato
  filter on `cardId`. New messages carry **Human** for direct service sends and external CLI/MCP sends without
  a card context, **Card** for a durable title/id snapshot from a card bridge (displayed as title + short id),
  or **Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default); legacy records
- without `source` render as Unknown (queued before source tracking). `enqueue` appends, `peek` reads without
+ without `source` render as Unknown (queued before source tracking). Source is human-facing metadata: the
+ inbox API and editors expose it, but the Stop-hook and resume-seed delivery text uses the shared
+ operator-relayed header rather than rendering `From <source>` to the receiving model. `enqueue` appends, `peek` reads without
  removing, and `claim(cardId, route:, epoch:, budget:, render:, now:)` selects + fits + leases a FIFO batch
  in one call — the Stop-hook delivery's *whole-messages-to-fit* path (deliver the messages that fit this
  turn's 10 000-char budget, defer the overflow to the next turn-end; see

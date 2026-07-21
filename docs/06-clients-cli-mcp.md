@@ -70,7 +70,8 @@ delegate's result.
 `$ORCHESTRA_TASK_ID` attach their own card, so the daemon snapshots that card's title and id into the
 queued message; an external CLI or MCP process without it sends as **Human**. The source is edge-owned:
 the CLI creates its `senderCard` context only from the environment, and the MCP bridge discards any raw
-caller value before attaching the same context.
+caller value before attaching the same context. This records true provenance for people inspecting the
+inbox; it does not change the model-facing payload, which uses the shared operator-relayed delivery header.
 
 `--model <id>` on `restart` / `handoff` / `resume` **re-seats the card onto another model in place** — the
 [`--model` re-seat](05-command-reference.md#the---model-re-seat). It is declared on those three schemas in

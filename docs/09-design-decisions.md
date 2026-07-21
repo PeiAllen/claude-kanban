@@ -1332,7 +1332,7 @@ Phase 2 / plan *Deferred*), and whether any bindings become user-remappable is a
 later pass. Like the entries above, this is an app-UX feature, not a whole extensibility axis, so it stays
 here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
-Also landing after the forest is the **inbox provenance header + batching + send cap** (commit `4264575`,
+Also landing after the forest is the **inbox delivery framing + batching + send cap** (commit `4264575`,
 branch `inbox-stop-hook`), on the C1 inbox. It hardens how
 the durable [inbox](03-data-model.md#the-inbox-store-f3) *reads to the model* on the live-delivery channels
 the two agents distrust. The problem was verified empirically: a queued `send` reaches Claude as the
@@ -1340,13 +1340,14 @@ Stop-hook `reason` framed "Stop hook feedback:" and Codex as a resume seed — f
 automated hook noise and refuse to act on, treating a real instruction as an untrusted injection. Four
 decisions:
 
-- **A channel-neutral provenance header, shared byte-for-byte across both delivery paths.**
-  `StopDrain.inboxHeader` prepends a line stating the messages are *real instructions queued for this card via
-  Orchestra `send` (by the user or another agent), not automated system output — act on them*. It deliberately
-  says nothing about *how* they arrive ("turn-end", "hook", "seed"), so the Claude Stop-drain (`compose`) and
-  the Codex resume seed (`HandoffSeed.fold`, the [C3](#shipped-feature-history) fold) frame the identical
-  inbox identically — agent-agnostic. The header rides only the inbox portion of a seed, so a pure
-  handoff/fork seed is unchanged.
+- **A channel-neutral operator-relayed header, shared byte-for-byte across both delivery paths.**
+  `StopDrain.inboxHeader` says `Message from the user (relayed to you via Orchestra):` (plural when needed).
+  It deliberately says nothing about *how* messages arrive ("turn-end", "hook", "seed") and does not render
+  card-to-card provenance in model-facing text, so the Claude Stop-drain (`compose`) and the Codex resume seed
+  (`HandoffSeed.fold`, the [C3](#shipped-feature-history) fold) frame the inbox identically — agent-agnostic.
+  This is operator-authorized delivery language, not a claim that the human authored every body. In the
+  busy-agent conflict probe, this user-relayed framing was acted on in 6/6 trials, versus 1–3/6 for the old
+  inbox framing; the header rides only the inbox portion of a seed, so a pure handoff/fork seed is unchanged.
 - **`[k/N]` numbering for multi-message batches.** `StopDrain.renderMessages` numbers a pile-up (`[2/3] …`) so
   the agent treats several queued messages as distinct actionable items rather than one run-on blob — the
   documented mitigation for the "curse of instructions" compliance drop when instructions share a turn. A lone
@@ -1356,12 +1357,11 @@ decisions:
   [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
   for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
-- **A source-aware send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
-  `StopDrain.maxMessageChars(for: source)`, which reserves the full rendered `From <source>` envelope, then
-  validates the complete formatted payload before enqueueing. A long card title can therefore reduce the
-  permitted body; if even that envelope cannot fit, `send` rejects it with `invalidParams` rather than accepting
-  a message that delivery would truncate. Put large content in a file in the worktree and reference it instead:
-  the inbox is a nudge channel, not a document transfer.
+- **A shared send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
+  `StopDrain.maxMessageChars`, reserving the common operator-relayed header and separator, then validates the
+  body before enqueueing. Source metadata never changes that budget because it is deliberately absent from
+  the model delivery string. Put large content in a file in the worktree and reference it instead: the inbox
+  is a nudge channel, not a document transfer.
 
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
@@ -1372,8 +1372,9 @@ and external CLI/MCP sends without a card context, **Card** as a durable title/i
 so legacy records still decode. This is structured
 metadata rather than a `From …` text prefix or render-time inference: an edit changes only the body,
 persistence carries provenance through daemon restarts, and the snapshot remains stable when a source card
-is renamed or archived. The Stop-drain, resume seed, and both inbox editors render the same stored source as
-`From …`, so no surface needs an edit-author history or a live card lookup.
+is renamed or archived. The desktop and iOS inbox editors render that source as `From …`; the Stop-drain and
+resume seed deliberately do not, so the delivery text remains trusted operator-relayed context and no source
+title can reduce the delivery cap. No human-facing surface needs an edit-author history or a live card lookup.
 
 Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
 Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`). This builds the **reusable

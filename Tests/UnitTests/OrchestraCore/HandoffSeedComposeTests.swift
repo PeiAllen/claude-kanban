@@ -35,6 +35,17 @@ struct HandoffSeedComposeTests {
         #expect(out.payload.contains("only"))
     }
 
+    @Test("a card source stays in metadata while the cold seed uses operator-relayed framing")
+    func cardSourceStaysOutOfColdSeed() {
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        let message = InboxMessage(cardId: UUID(), text: "result is ready", source: source)
+        let out = try! #require(HandoffSeed.compose(handoff: nil, messages: [message]))
+
+        #expect(out.payload.hasPrefix("Message from the user (relayed to you via Orchestra):"))
+        #expect(out.payload.contains("result is ready"))
+        #expect(out.payload.contains(source.label) == false)
+    }
+
     @Test("nil when there is genuinely nothing to seed (and for a blank handoff)")
     func nothingToSeed() {
         #expect(HandoffSeed.compose(handoff: nil, messages: []) == nil)

@@ -93,7 +93,7 @@ public enum CommandCatalog {
                       kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "inbox",
-                      summary: "List a card's pending inbox messages (id, text, createdAt) in FIFO order.",
+                      summary: "List a card's pending inbox messages, including source provenance, in FIFO order.",
                       params: schema(["ref": refProp()], required: ["ref"]),
                       kind: .query, phaseGate: gAll),
 

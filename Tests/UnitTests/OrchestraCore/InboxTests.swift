@@ -36,6 +36,27 @@ struct InboxClaimTests {
         #expect(rows.first(where: { $0.text == "second" })?.lease == nil)  // …so never leased
     }
 
+    @Test("claim, release, and watermarking preserve durable source provenance")
+    func leaseLifecyclePreservesSource() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        try await inbox.enqueue(InboxMessage(cardId: card, text: "review complete", source: source))
+
+        let first = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1,
+                                                       budget: 10_000, render: Self.fit, now: Self.t0))
+        #expect(await inbox.peek(card).first?.source == source)
+        try await inbox.release(token: first.token)
+        #expect(await inbox.peek(card).first?.source == source)
+
+        _ = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 1,
+                                                budget: 10_000, render: Self.fit, now: Self.t0))
+        try await inbox.setTailWatermark(cardId: card, epoch: 1, watermark: 42, path: "/tmp/rollout.jsonl")
+        let row = try #require(await inbox.peek(card).first)
+        #expect(row.source == source)
+        #expect(row.lease?.tailWatermark == 42)
+    }
+
     @Test("isLeaseLive: live only while present AND unexpired — epoch-agnostic (B4 arm predicate)")
     func isLeaseLiveTokenScoped() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
@@ -694,43 +715,48 @@ struct StopDrainTests {
         let r = StopDrain.compose([msg(big)])
         #expect(r != nil)
         #expect(r!.count <= StopDrain.maxPayloadChars)
-        #expect(r!.hasPrefix("📥 Orchestra inbox"))   // provenance header survives truncation
+        #expect(r!.hasPrefix("Message from the user (relayed to you via Orchestra):"))
         #expect(r!.hasSuffix("[…truncated]"))
     }
 
-    @Test("carries a channel-neutral provenance header naming Orchestra, pluralized by count")
-    func provenanceHeader() {
+    @Test("uses the measured user-relayed header without queue or injection language")
+    func operatorRelayedHeader() {
         let one = StopDrain.compose([msg("do X")])
-        #expect(one?.contains("1 queued message") == true)
-        #expect(one?.contains("Orchestra") == true)
+        #expect(one?.hasPrefix("Message from the user (relayed to you via Orchestra):") == true)
         #expect(one?.contains("do X") == true)
         // Channel-neutral: no Stop-hook-specific wording leaks in (shared with the Codex seed path).
         #expect(one?.lowercased().contains("turn-end") == false)
         #expect(one?.lowercased().contains("hook") == false)
+        #expect(one?.lowercased().contains("inbox") == false)
+        #expect(one?.lowercased().contains("queued") == false)
+        #expect(one?.lowercased().contains("act on") == false)
         let two = StopDrain.compose([msg("a"), msg("b")])
-        #expect(two?.contains("2 queued messages") == true)
+        #expect(two?.hasPrefix("Messages from the user (relayed to you via Orchestra):") == true)
     }
 
     @Test("multi-message batch is numbered [k/N]; a lone message is not")
     func numbering() {
         let three = StopDrain.compose([msg("a"), msg("b"), msg("c")])
-        #expect(three?.contains("[1/3] From Orchestra: a") == true)
-        #expect(three?.contains("[2/3] From Orchestra: b") == true)
-        #expect(three?.contains("[3/3] From Orchestra: c") == true)
+        #expect(three?.contains("[1/3] a") == true)
+        #expect(three?.contains("[2/3] b") == true)
+        #expect(three?.contains("[3/3] c") == true)
         let one = StopDrain.compose([msg("solo")])
         #expect(one?.contains("[1/1]") == false)   // no redundant index on a single message
-        #expect(one?.contains("From Orchestra: solo") == true)
+        #expect(one?.contains("solo") == true)
     }
 
-    @Test("delivery renders the exact source for a lone and batched message")
-    func rendersSources() {
+    @Test("model delivery uses operator-relayed framing while source remains UI metadata")
+    func hidesSourcesFromDelivery() {
         let card = InboxMessage(cardId: UUID(), text: "review this",
                                 source: .card(id: UUID(), title: "review-pass"))
         let human = InboxMessage(cardId: UUID(), text: "please prioritize", source: .human)
-        #expect(StopDrain.compose([card])?.contains("From Card review-pass (") == true)
         let batch = StopDrain.compose([human, card])
-        #expect(batch?.contains("[1/2] From Human: please prioritize") == true)
-        #expect(batch?.contains("[2/2] From Card review-pass (") == true)
+        #expect(card.sourceLabel.hasPrefix("Card review-pass (") == true)
+        #expect(batch?.contains("[1/2] please prioritize") == true)
+        #expect(batch?.contains("[2/2] review this") == true)
+        #expect(batch?.contains("review-pass") == false)
+        #expect(batch?.contains("From Card") == false)
+        #expect(batch?.contains("From Human") == false)
     }
 
     @Test("fit consumes only the whole messages that fit and reports the count")
@@ -784,7 +810,7 @@ struct InboxRoutingTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
-        let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars(for: .human) + 1)
+        let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars + 1)
 
         await #expect(throws: OrchestraError.self) { try await env.svc.send(task.id, tooBig) }
         let inbox = Inbox(path: env.base + "/inbox.json")
@@ -797,7 +823,7 @@ struct InboxRoutingTests {
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
         let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
-        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars(for: .human))
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
 
         try await env.svc.send(task.id, atLimit)
         let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
@@ -806,34 +832,37 @@ struct InboxRoutingTests {
         #expect(payload.hasSuffix("[…truncated]") == false)  // not clipped
     }
 
-    @Test("send rejects an oversized source envelope before enqueueing an empty message")
-    func rejectsOversizedSourceEnvelope() async throws {
+    @Test("a long card title remains UI-only and does not shrink or leak into delivery")
+    func longCardSourceStaysOutOfDeliveryEnvelope() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
         let source = InboxMessageSource.card(
             id: UUID(),
             title: String(repeating: "x", count: StopDrain.maxPayloadChars))
-        #expect(StopDrain.maxMessageChars(for: source) == 0)
 
-        await #expect(throws: OrchestraError.self) {
-            try await env.svc.send(task.id, "", sender: source)
-        }
-        #expect(try await env.svc.inboxPeek(task.id).isEmpty)
+        try await env.svc.send(task.id, "please take this next", sender: source)
+        #expect(try await env.svc.inboxPeek(task.id).first?.source == source)
+        let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
+        #expect(payload.contains("please take this next"))
+        #expect(payload.contains(source.label) == false)
     }
 
-    @Test("send accepts a normal card source message exactly at its rendered cap")
+    @Test("send accepts a card source message at the shared delivery cap")
     func acceptsCardSourceAtCap() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
         let source = InboxMessageSource.card(id: UUID(), title: "child-review")
-        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars(for: source))
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
 
         try await env.svc.send(task.id, atLimit, sender: source)
-        let payload = try #require(await env.svc.drainForStop(task.id))
+        let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
         #expect(payload.count == StopDrain.maxPayloadChars)
-        #expect(payload.contains("From \(source.label): \(atLimit)"))
+        #expect(payload.contains(atLimit))
+        #expect(payload.contains(source.label) == false)
         #expect(payload.hasSuffix("[…truncated]") == false)
     }
 }

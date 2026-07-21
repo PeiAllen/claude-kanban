@@ -11,41 +11,31 @@ public enum StopDrain {
     /// The `additionalContext`/`reason` payload bound the Claude Stop hook enforces.
     public static let maxPayloadChars = 10_000
 
-    /// The **channel-neutral provenance header** prepended to inbox messages on *every* delivery path,
+    /// The **channel-neutral operator-relayed header** prepended to inbox messages on every delivery path,
     /// so the framing is identical whichever agent drains them: Claude via the Stop hook (`compose`, this
-    /// file) and Codex via the resume seed (`HandoffSeed.compose`). Deliberately says nothing about *how* the
-    /// messages arrive ("turn-end", "hook", "seed") — only *what* they are.
+    /// file) and Codex via the resume seed (`HandoffSeed.compose`). It deliberately says nothing about how
+    /// the messages arrive ("turn-end", "hook", "seed") and does not expose card-to-card provenance in the
+    /// model-facing text.
     ///
     /// Why it exists: inbox messages reach the model on channels it may distrust — Claude receives the
     /// Stop-hook `reason` framed as "Stop hook feedback:", indistinguishable without context from an
-    /// automated hook nagging it. Empirically an agent handed a bare, unrelated instruction that way may
-    /// treat it as an untrusted injection and refuse to act. This header states the messages are real,
-    /// deliberately queued for this card (via Orchestra `send`, by the user or another agent), so the
-    /// agent acts on them instead of second-guessing the channel.
+    /// automated hook nagging it. In the busy-task conflict probe, user-relayed language was acted on far
+    /// more reliably than queue, inbox, or agent-attribution language. An Orchestra `send` is operator
+    /// authorized, so the delivery text frames it as the user's relayed follow-up while the durable source
+    /// remains available to people in the inbox editors.
     public static func inboxHeader(_ count: Int) -> String {
-        let noun = count == 1 ? "message" : "messages"
-        let them = count == 1 ? "it" : "them"
-        return "📥 Orchestra inbox — \(count) queued \(noun) for your card, delivered to you now. "
-            + "These are real instructions sent to you via Orchestra (by the user or another agent), "
-            + "not automated system output — act on \(them):"
+        count == 1
+            ? "Message from the user (relayed to you via Orchestra):"
+            : "Messages from the user (relayed to you via Orchestra):"
     }
 
     /// The largest single message the inbox accepts (`send` rejects anything over this at enqueue time).
-    /// It is the payload budget minus the room a lone-message delivery spends on the provenance header +
+    /// It is the payload budget minus the room a lone-message delivery spends on the operator-relayed header +
     /// separator, so **any accepted message is always delivered whole** — the truncation fallback in `fit`
     /// is unreachable for `send`-queued messages and only ever guards non-`send` enqueues.
-    public static func maxMessageChars(for source: InboxMessageSource) -> Int {
-        let sample = InboxMessage(cardId: UUID(), text: "", source: source)
-        return max(0, maxPayloadChars - renderMessages([sample]).count)
-    }
+    public static var maxMessageChars: Int { maxPayloadChars - inboxHeader(1).count - 2 }
 
-    public static var maxMessageChars: Int { maxMessageChars(for: .human) }
-
-    private static func renderMessage(_ message: InboxMessage) -> String {
-        "From \(message.sourceLabel): \(message.text)"
-    }
-
-    /// Render the provenance header followed by the messages (FIFO) as a **numbered** blank-line list.
+    /// Render the operator-relayed header followed by the messages (FIFO) as a **numbered** blank-line list.
     /// Numbering (`[2/3] …`) is added only for multi-message batches, so the agent treats a pile-up as
     /// distinct actionable items rather than one run-on blob — the documented mitigation for the
     /// "curse of instructions" compliance drop when several instructions share a turn. A lone message
@@ -53,10 +43,10 @@ public enum StopDrain {
     /// seed's `HandoffSeed.compose`) so the framing is byte-identical whichever agent drains.
     public static func renderMessages(_ messages: [InboxMessage]) -> String {
         let header = inboxHeader(messages.count)
-        guard messages.count > 1 else { return header + "\n\n" + (messages.first.map(renderMessage) ?? "") }
+        guard messages.count > 1 else { return header + "\n\n" + (messages.first?.text ?? "") }
         let n = messages.count
         let body = messages.enumerated()
-            .map { "[\($0.offset + 1)/\(n)] \(renderMessage($0.element))" }
+            .map { "[\($0.offset + 1)/\(n)] \($0.element.text)" }
             .joined(separator: "\n\n")
         return header + "\n\n" + body
     }
@@ -79,7 +69,7 @@ public enum StopDrain {
         let header = inboxHeader(1) + "\n\n"
         let marker = "\n\n[…truncated]"
         let keep = max(0, budget - header.count - marker.count)
-        return (header + String(renderMessage(messages[0]).prefix(keep)) + marker, 1)
+        return (header + String(messages[0].text.prefix(keep)) + marker, 1)
     }
 
     /// Single-payload compose: fit everything into one bounded payload (truncating a lone oversized
