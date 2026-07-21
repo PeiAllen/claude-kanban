@@ -216,18 +216,17 @@ Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
 
 **F1 resume-in-card & the seed** (PR C3): `OrchestraService.resumeInCard(_:seed:)` reloads a card into a
 fresh process with **clean context while keeping its session id** — a *resume, not a blank `restart`*, so the
-transcript carries forward and the seed only adds the new instruction. It **drains the card's inbox first**,
-folds it with the authored handoff/fork context via `HandoffSeed.fold(handoff:inbox:)` (handoff first, then
-the inbox in FIFO order under the *same* channel-neutral provenance header the Claude Stop-drain uses —
-`StopDrain.inboxHeader`, `[k/N]`-numbered when batched — so a Codex card draining via the seed gets the
-identical framing a Claude card gets via the hook; the header rides only the inbox portion, so a pure
-handoff/fork seed is unchanged; bounded to the 10 000-char live-delivery limit), and threads the result onto a
-defaulted `seed:` param of `resume` → `ctx.seed`, which the adapter appends as the positional turn above.
-Draining before resume matters most for a `.sessionSeed` agent (Codex has no Stop hook) whose queued
-messages can *only* ride the seed; for Claude it also prevents a later Stop-drain double-delivering them.
+transcript carries forward and the authored seed only adds the new instruction. It does **not** drain the
+inbox. Instead, the RelaunchStepper calls `claimSeed`, which atomically calls `Inbox.claim` with
+`HandoffSeed.compose(handoff:messages:)`: handoff first, then the inbox in FIFO order under the same
+operator-relayed header the Claude Stop-drain uses (`StopDrain.inboxHeader`, `[k/N]`-numbered when batched).
+The compose runs inside the claim under the single 10 000-character budget, so only the messages actually
+rendered into the opening turn are leased; the overflow remains durable for the next delivery. A claimed
+message stays in the inbox until its token-confirmed receipt, preventing the old drain-then-crash loss and
+the old fold-after-drain truncation path. A pure handoff still seeds even with zero message ids.
 `resumeInCard` is the seam the [`handoff` Command](05-command-reference.md#registry-commands) (PR D1, MCP
 tool + CLI verb) calls; forks instead `spawn` a new card with a `SpawnInput.seed` (a *new-card* seed
-distinct from this resume-only `ctx.seed`; [chapter 9](09-design-decisions.md#shipped-feature-history)).
+distinct from this resume-only `pendingSeed`; [chapter 9](09-design-decisions.md#shipped-feature-history)).
 The D3 Handoff/Fork buttons that also drove these seams were later removed (the *agent-buttons
 simplification*), leaving the natural-language → MCP path. (See
 [One seed, four topologies](09-design-decisions.md#one-seed-four-topologies).)
@@ -406,7 +405,7 @@ sequenceDiagram
     O->>D: drains its inbox, re-issues wait on the cards that remain
 
     Note over O,X: send ref "..." is the same seam —<br/>enqueue to the Inbox [F3], then wake [F2]
-    Note over O,D: handoff thisCard "..." is F1 alone — resumeInCard:<br/>drain the inbox, HandoffSeed.fold(handoff:inbox:), resume with the seed
+    Note over O,D: handoff thisCard "..." is F1 alone — resumeInCard persists the handoff;<br/>RelaunchStepper claims + composes the inbox seed, then resumes
 ```
 
 Read the verbs against that seam and each one collapses into a composition of the three:
@@ -414,9 +413,9 @@ Read the verbs against that seam and each one collapses into a composition of th
 - **`spawn --seed`** is a *fork*: a new card whose `SpawnInput.seed` (the parent's slice of context)
   rides its opening turn — F1.
 - **`batch-spawn`** is *fan-out*: the same thing, one card per prompt.
-- **`handoff`** is F1 applied to the card *itself* — `resumeInCard` drains the inbox, folds it with the
-  authored context via `HandoffSeed.fold(handoff:inbox:)`, and resumes with clean context but the same
-  session identity.
+- **`handoff`** is F1 applied to the card *itself* — `resumeInCard` persists the authored context and
+  resumes with clean context but the same session identity; the RelaunchStepper atomically claims and
+  composes the pending inbox with that context before launch.
 - **`send`** is F3 + F2: enqueue durably, then wake.
 - **`wait`** is the reactive half. It parks on `MergeWatch` and resolves off **real card state — never
   `git merge-base`** — because [`transition()`](#the-transition-funnel--the-sole-writer-of-phase) is the
@@ -604,10 +603,12 @@ of being marked dead.
   `.dead(.resumeFailed)` + a `deadDetail`. The defaulted `seed:` (PR C3) is threaded onto `ctx.seed`; every
   recovery caller passes none, so the argv is byte-identical.
 - **`resumeInCard(id, seed:, model:)` — F1 context-clearing handoff** (PR C3). Reloads the card into a fresh
-  process with **clean context while keeping its `agentSessionId`**. It drains the inbox, folds it with the
-  authored handoff/fork context (`HandoffSeed.fold`), and calls `resume(seed:)`. It is the seam the
-  [`handoff` Command](05-command-reference.md#registry-commands) (PR D1) drives and the idle-wake path for a
-  resume-seed agent; forks instead `spawn` a fresh card carrying a `SpawnInput.seed`.
+  process with **clean context while keeping its `agentSessionId`**. It persists the authored handoff/fork
+  context and calls `resume(seed:)` without draining. The RelaunchStepper then atomically claims the pending
+  inbox and composes it with that context through `HandoffSeed.compose`; messages remain durable until their
+  token-confirmed receipt. It is the seam the [`handoff` Command](05-command-reference.md#registry-commands)
+  (PR D1) drives and the idle-wake path for a resume-seed agent; forks instead `spawn` a fresh card carrying
+  a `SpawnInput.seed`.
 - **`restart(id, model:)`.** Also **intent-only**: it enters `.relaunching` with the real persist block
   applied atomically (fresh `agentSessionId`, old id rolled onto `priorSessionIds`, `titleProvisional=true`,
   cleared dead/desc) and returns; the same `RelaunchStepper` then launches a blank session in the *same*
