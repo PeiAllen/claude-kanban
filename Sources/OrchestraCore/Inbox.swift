@@ -107,17 +107,25 @@ public actor Inbox {
         return messages.filter { $0.cardId == cardId }
     }
 
-    /// Append a message for a card. With a `dedupKey`, a no-op-safe idempotency guard: if a message for
-    /// this card already carries the same `dedupKey`, the append is SKIPPED (the crash-then-redrive
-    /// discipline — Teardown's child nudge fires at most once per `(childId, parent-archived:<branch>)`).
-    public func enqueue(_ cardId: UUID, _ text: String, dedupKey: String? = nil) throws {
+    /// Append an exact message, retaining its durable identity and delivery provenance. With a `dedupKey`,
+    /// a no-op-safe idempotency guard suppresses an already-pending message for the same card and key.
+    public func enqueue(_ message: InboxMessage) throws {
         ensureLoaded()
-        if let dedupKey,
-           messages.contains(where: { $0.cardId == cardId && $0.dedupKey == dedupKey }) {
+        if let dedupKey = message.dedupKey,
+           messages.contains(where: { $0.cardId == message.cardId && $0.dedupKey == dedupKey }) {
             return   // already queued for this card under the same key — dedup
         }
-        messages.append(InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey, createdAt: now()))
+        messages.append(message)
         try persist()
+    }
+
+    /// Append a message for a card. Internal Orchestra-generated nudges default to `.orchestra`; direct
+    /// user delivery enters through `OrchestraService.send`, whose default is `.human`.
+    public func enqueue(_ cardId: UUID, _ text: String,
+                        source: InboxMessageSource? = .orchestra,
+                        dedupKey: String? = nil) throws {
+        try enqueue(InboxMessage(cardId: cardId, text: text, source: source,
+                                 dedupKey: dedupKey, createdAt: now()))
     }
 
     // `drain`/`drainFirst` DELETED (B4): after B3's de-drain they had zero production callers, and a
@@ -141,9 +149,9 @@ public actor Inbox {
         try persist()
     }
 
-    /// Replace a message's text in place; id / cardId / createdAt are preserved. Force-releases the
-    /// batch for the same reason `remove` does — an in-flight token must never confirm text the human
-    /// has since rewritten.
+    /// Replace a message's text in place; id / cardId / source / deduplication / createdAt are preserved.
+    /// Force-releases the batch for the same reason `remove` does — an in-flight token must never confirm
+    /// text the human has since rewritten.
     public func update(_ id: UUID, text: String) throws {
         ensureLoaded()
         guard let idx = messages.firstIndex(where: { $0.id == id }) else {
@@ -151,8 +159,8 @@ public actor Inbox {
         }
         if let token = messages[idx].lease?.token { unlease { $0.lease?.token == token } }
         let old = messages[idx]
-        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text,
-                                     dedupKey: old.dedupKey, createdAt: old.createdAt)
+        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text, source: old.source,
+                                     dedupKey: old.dedupKey, createdAt: old.createdAt, lease: nil)
         try persist()
     }
 
@@ -176,7 +184,7 @@ public actor Inbox {
     /// Introduced HERE (not with release/releaseAll in Task 6) because `claim` is its first reference.
     private func unlease(where match: (InboxMessage) -> Bool) {
         for (idx, msg) in messages.enumerated() where match(msg) && msg.lease != nil {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: nil)
         }
     }
@@ -220,7 +228,7 @@ public actor Inbox {
         let takenIds = Set(taken.map(\.id))
         let lease = DeliveryLease(token: token, route: route, epoch: epoch, leasedAt: now)
         for (idx, msg) in messages.enumerated() where takenIds.contains(msg.id) {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: lease)
         }
         // Kill the DEAD leases on the claimable-but-unconsumed tail. A message that entered the pool did
@@ -342,7 +350,7 @@ public actor Inbox {
             guard let lease = msg.lease else { continue }
             let stamped = DeliveryLease(token: lease.token, route: lease.route, epoch: lease.epoch,
                                         leasedAt: lease.leasedAt, tailWatermark: watermark, tailPath: path)
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: stamped)
             changed = true
         }

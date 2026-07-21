@@ -713,17 +713,18 @@ public actor OrchestraService {
     /// no-ops on a card that already has a turn coming (running, mid-relaunch, or subscribed through a
     /// native background `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one
     /// drains at its Stop.
-    public func send(_ id: UUID, _ message: String) async throws {
+    public func send(_ id: UUID, _ message: String,
+                     sender: InboxMessageSource = .human) async throws {
         let t = try await require(id)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
         // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
         // message is guaranteed to reach the agent whole.
-        guard message.count <= StopDrain.maxMessageChars else {
+        guard message.count <= StopDrain.maxMessageChars(for: sender) else {
             throw OrchestraError.invalidParams(
-                "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars). "
+                "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars(for: sender)). "
                 + "Put large content in a file in the worktree and reference it instead.")
         }
-        try await inbox.enqueue(t.id, message)
+        try await inbox.enqueue(InboxMessage(cardId: t.id, text: message, source: sender))
         await wake(t.id)
     }
 

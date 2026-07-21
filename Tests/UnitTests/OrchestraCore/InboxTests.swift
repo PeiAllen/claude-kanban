@@ -507,13 +507,27 @@ struct InboxStoreTests {
     func durableAcrossRestart() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let card = UUID()
+        let source = InboxMessageSource.card(id: UUID(), title: "review-pass")
         do {
             let inbox = Inbox(path: path)
-            try await inbox.enqueue(card, "before restart")
+            try await inbox.enqueue(card, "before restart", source: source)
         }
         // Fresh instance simulates a daemon restart — must read the persisted queue.
         let reborn = Inbox(path: path)
         #expect(await reborn.peek(card).map(\.text) == ["before restart"])
+        #expect(await reborn.peek(card).map(\.source) == [source])
+    }
+
+    @Test("legacy inbox message decodes without source and displays unavailable provenance")
+    func legacySourceIsUnknown() throws {
+        let original = InboxMessage(cardId: UUID(), text: "old", source: .human)
+        var object = try #require(JSONSerialization.jsonObject(
+            with: OrchestraJSON.pretty.encode(original)) as? [String: Any])
+        object.removeValue(forKey: "source")
+        let legacy = try OrchestraJSON.decoder.decode(
+            InboxMessage.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.source == nil)
+        #expect(legacy.sourceLabel == "Unknown (queued before source tracking)")
     }
 }
 
@@ -531,16 +545,22 @@ struct InboxEditTests {
         #expect(await inbox.peek(c).map(\.text) == ["b"])
     }
 
-    @Test("update replaces text only, preserving id/createdAt")
+    @Test("update replaces text only, preserving id, source, deduplication, and createdAt")
     func updateText() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let c = UUID()
-        try await inbox.enqueue(c, "old")
+        try await inbox.enqueue(InboxMessage(
+            cardId: c,
+            text: "old",
+            source: .card(id: UUID(), title: "review-pass"),
+            dedupKey: "handoff-result"))
         let m = try #require(await inbox.peek(c).first)
         try await inbox.update(m.id, text: "new")
         let after = try #require(await inbox.peek(c).first)
         #expect(after.text == "new")
         #expect(after.id == m.id)
+        #expect(after.source == m.source)
+        #expect(after.dedupKey == m.dedupKey)
         #expect(after.createdAt == m.createdAt)
     }
 
@@ -557,14 +577,22 @@ struct InboxEditTests {
     func reorderPreservesInterleave() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let a = UUID(); let b = UUID()
+        let a1Source = InboxMessageSource.human
+        let b1Source = InboxMessageSource.orchestra
+        let a2Source = InboxMessageSource.card(id: UUID(), title: "review-pass")
+        let a3Source = InboxMessageSource.card(id: UUID(), title: "test-pass")
         // array order: a1, b1, a2, a3
-        try await inbox.enqueue(a, "a1"); try await inbox.enqueue(b, "b1")
-        try await inbox.enqueue(a, "a2"); try await inbox.enqueue(a, "a3")
+        try await inbox.enqueue(a, "a1", source: a1Source)
+        try await inbox.enqueue(b, "b1", source: b1Source)
+        try await inbox.enqueue(a, "a2", source: a2Source)
+        try await inbox.enqueue(a, "a3", source: a3Source)
         let aIds = await inbox.peek(a).map(\.id)          // [a1, a2, a3]
         // new order for a: a3, a1, a2
         try await inbox.reorder(a, orderedIds: [aIds[2], aIds[0], aIds[1]])
         #expect(await inbox.peek(a).map(\.text) == ["a3", "a1", "a2"])
+        #expect(await inbox.peek(a).map(\.source) == [a3Source, a1Source, a2Source])
         #expect(await inbox.peek(b).map(\.text) == ["b1"])  // b untouched
+        #expect(await inbox.peek(b).map(\.source) == [b1Source])
     }
 
     @Test("reorder rejects a non-permutation of the card's ids")
@@ -673,12 +701,23 @@ struct StopDrainTests {
     @Test("multi-message batch is numbered [k/N]; a lone message is not")
     func numbering() {
         let three = StopDrain.compose([msg("a"), msg("b"), msg("c")])
-        #expect(three?.contains("[1/3] a") == true)
-        #expect(three?.contains("[2/3] b") == true)
-        #expect(three?.contains("[3/3] c") == true)
+        #expect(three?.contains("[1/3] From Orchestra: a") == true)
+        #expect(three?.contains("[2/3] From Orchestra: b") == true)
+        #expect(three?.contains("[3/3] From Orchestra: c") == true)
         let one = StopDrain.compose([msg("solo")])
         #expect(one?.contains("[1/1]") == false)   // no redundant index on a single message
-        #expect(one?.contains("solo") == true)
+        #expect(one?.contains("From Orchestra: solo") == true)
+    }
+
+    @Test("delivery renders the exact source for a lone and batched message")
+    func rendersSources() {
+        let card = InboxMessage(cardId: UUID(), text: "review this",
+                                source: .card(id: UUID(), title: "review-pass"))
+        let human = InboxMessage(cardId: UUID(), text: "please prioritize", source: .human)
+        #expect(StopDrain.compose([card])?.contains("From Card review-pass (") == true)
+        let batch = StopDrain.compose([human, card])
+        #expect(batch?.contains("[1/2] From Human: please prioritize") == true)
+        #expect(batch?.contains("[2/2] From Card review-pass (") == true)
     }
 
     @Test("fit consumes only the whole messages that fit and reports the count")
@@ -724,6 +763,7 @@ struct SendRoutingTests {
 
         let inbox = Inbox(path: env.base + "/inbox.json")
         #expect(await inbox.peek(task.id).map(\.text) == ["hello there"])
+        #expect(await inbox.peek(task.id).first?.source == .human)
     }
 
     @Test("send rejects a message over the inbox cap and enqueues nothing")
@@ -731,7 +771,7 @@ struct SendRoutingTests {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
-        let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars + 1)
+        let tooBig = String(repeating: "x", count: StopDrain.maxMessageChars(for: .human) + 1)
 
         await #expect(throws: OrchestraError.self) { try await env.svc.send(task.id, tooBig) }
         let inbox = Inbox(path: env.base + "/inbox.json")
@@ -744,7 +784,7 @@ struct SendRoutingTests {
         let repo = TestEnv.repo(env.base)
         let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
         let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
-        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars(for: .human))
 
         try await env.svc.send(task.id, atLimit)
         let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))

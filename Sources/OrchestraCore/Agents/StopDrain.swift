@@ -34,7 +34,16 @@ public enum StopDrain {
     /// It is the payload budget minus the room a lone-message delivery spends on the provenance header +
     /// separator, so **any accepted message is always delivered whole** — the truncation fallback in `fit`
     /// is unreachable for `send`-queued messages and only ever guards non-`send` enqueues.
-    public static var maxMessageChars: Int { maxPayloadChars - inboxHeader(1).count - 2 }
+    public static func maxMessageChars(for source: InboxMessageSource) -> Int {
+        let sample = InboxMessage(cardId: UUID(), text: "", source: source)
+        return max(0, maxPayloadChars - renderMessages([sample]).count)
+    }
+
+    public static var maxMessageChars: Int { maxMessageChars(for: .human) }
+
+    private static func renderMessage(_ message: InboxMessage) -> String {
+        "From \(message.sourceLabel): \(message.text)"
+    }
 
     /// Render the provenance header followed by the messages (FIFO) as a **numbered** blank-line list.
     /// Numbering (`[2/3] …`) is added only for multi-message batches, so the agent treats a pile-up as
@@ -44,10 +53,10 @@ public enum StopDrain {
     /// seed's `HandoffSeed.compose`) so the framing is byte-identical whichever agent drains.
     public static func renderMessages(_ messages: [InboxMessage]) -> String {
         let header = inboxHeader(messages.count)
-        guard messages.count > 1 else { return header + "\n\n" + (messages.first?.text ?? "") }
+        guard messages.count > 1 else { return header + "\n\n" + (messages.first.map(renderMessage) ?? "") }
         let n = messages.count
         let body = messages.enumerated()
-            .map { "[\($0.offset + 1)/\(n)] \($0.element.text)" }
+            .map { "[\($0.offset + 1)/\(n)] \(renderMessage($0.element))" }
             .joined(separator: "\n\n")
         return header + "\n\n" + body
     }
@@ -70,7 +79,7 @@ public enum StopDrain {
         let header = inboxHeader(1) + "\n\n"
         let marker = "\n\n[…truncated]"
         let keep = max(0, budget - header.count - marker.count)
-        return (header + String(messages[0].text.prefix(keep)) + marker, 1)
+        return (header + String(renderMessage(messages[0]).prefix(keep)) + marker, 1)
     }
 
     /// Single-payload compose: fit everything into one bounded payload (truncating a lone oversized
