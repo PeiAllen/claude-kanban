@@ -727,11 +727,13 @@ public actor OrchestraService {
     /// native background `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one
     /// drains at its Stop.
     @discardableResult
-    public func send(_ id: UUID, _ message: String, messageId: UUID = UUID()) async throws -> SendResult {
+    public func send(_ id: UUID, _ message: String, messageId: UUID = UUID(),
+                     sender: InboxMessageSource = .human) async throws -> SendResult {
         let t = try await require(id)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
         // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
-        // message is guaranteed to reach the agent whole.
+        // message is guaranteed to reach the agent whole. Source provenance is UI metadata rather than
+        // model-facing payload text, so its title cannot shrink the accepted body budget.
         guard message.count <= StopDrain.maxMessageChars else {
             throw OrchestraError.invalidParams(
                 "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars). "
@@ -741,7 +743,7 @@ public actor OrchestraService {
         // in one actor call (the service is reentrant — a split check-then-append would let two concurrent
         // same-id sends both enqueue). A replay (id already pending, or delivered+tombstoned) mutates NO
         // delivery state and fires NO wake — it just re-returns the id and a card snapshot.
-        guard try await inbox.enqueueIfUnknown(t.id, message, id: messageId) else {
+        guard try await inbox.enqueueIfUnknown(t.id, message, id: messageId, source: sender) else {
             return SendResult(messageId: messageId, card: t)
         }
         // A fresh send re-arms the WHOLE retry budget before its opportunistic wake: reset attempts and

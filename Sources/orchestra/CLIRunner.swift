@@ -80,8 +80,12 @@ enum CLIRunner {
                 // silently re-minted — a mistyped id whose first reply was lost would otherwise re-run
                 // into a DIFFERENT UUID and double-deliver. Same pattern as `spawn` above.
                 let msgId = Self.clientMintedId(flags)
-                _ = try await client.call("send", .object(["ref": .string(ref), "message": .string(msg),
-                                                           "id": .string(msgId.uuidString)]))
+                var sendParams: [String: JSONValue] = ["ref": .string(ref), "message": .string(msg),
+                                                       "id": .string(msgId.uuidString)]
+                if let senderCard = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !senderCard.isEmpty {
+                    sendParams["senderCard"] = .string(senderCard)
+                }
+                _ = try await client.call("send", .object(sendParams))
                 print("sent \(msgId)")
 
             case "wait":

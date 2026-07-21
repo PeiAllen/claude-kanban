@@ -238,16 +238,19 @@ struct InboxEditorView: View {
                 chevron("chevron.up") { _Concurrency.Task { await move(m, by: -1) } }
                 chevron("chevron.down") { _Concurrency.Task { await move(m, by: 1) } }
             }
-            if editingId == m.id {
-                TextField("", text: $editText, onCommit: { _Concurrency.Task { await commitEdit(m) } })
-                    .textFieldStyle(.plain)
-                    .font(F.ui(12)).foregroundColor(theme.text)
-            } else {
-                Text(m.text).font(F.ui(12)).foregroundColor(theme.text).lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { editingId = m.id; editText = m.text }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("From \(m.sourceLabel)").font(F.ui(10.5, .medium)).foregroundColor(theme.text2)
+                if editingId == m.id {
+                    TextField("", text: $editText, onCommit: { _Concurrency.Task { await commitEdit(m) } })
+                        .textFieldStyle(.plain)
+                        .font(F.ui(12)).foregroundColor(theme.text)
+                } else {
+                    Text(m.text).font(F.ui(12)).foregroundColor(theme.text).lineLimit(2)
+                        .contentShape(Rectangle())
+                        .onTapGesture { editingId = m.id; editText = m.text }
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button { _Concurrency.Task { await remove(m) } } label: {
                 Image(systemName: "trash").font(F.ui(10)).foregroundColor(theme.text2)
             }

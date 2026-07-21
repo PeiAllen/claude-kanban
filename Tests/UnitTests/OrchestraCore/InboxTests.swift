@@ -36,6 +36,27 @@ struct InboxClaimTests {
         #expect(rows.first(where: { $0.text == "second" })?.lease == nil)  // …so never leased
     }
 
+    @Test("claim, release, and watermarking preserve durable source provenance")
+    func leaseLifecyclePreservesSource() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let inbox = Inbox(path: path); let card = UUID()
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        try await inbox.enqueue(InboxMessage(cardId: card, text: "review complete", source: source))
+
+        let first = try #require(try await inbox.claim(card, route: .stopDrain, epoch: 1,
+                                                       budget: 10_000, render: Self.fit, now: Self.t0))
+        #expect(await inbox.peek(card).first?.source == source)
+        try await inbox.release(token: first.token)
+        #expect(await inbox.peek(card).first?.source == source)
+
+        _ = try #require(try await inbox.claim(card, route: .relaunchSeed, epoch: 1,
+                                                budget: 10_000, render: Self.fit, now: Self.t0))
+        try await inbox.setTailWatermark(cardId: card, epoch: 1, watermark: 42, path: "/tmp/rollout.jsonl")
+        let row = try #require(await inbox.peek(card).first)
+        #expect(row.source == source)
+        #expect(row.lease?.tailWatermark == 42)
+    }
+
     @Test("isLeaseLive: live only while present AND unexpired — epoch-agnostic (B4 arm predicate)")
     func isLeaseLiveTokenScoped() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
@@ -507,13 +528,40 @@ struct InboxStoreTests {
     func durableAcrossRestart() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let card = UUID()
+        let source = InboxMessageSource.card(id: UUID(), title: "review-pass")
         do {
             let inbox = Inbox(path: path)
-            try await inbox.enqueue(card, "before restart")
+            try await inbox.enqueue(card, "before restart", source: source)
         }
         // Fresh instance simulates a daemon restart — must read the persisted queue.
         let reborn = Inbox(path: path)
         #expect(await reborn.peek(card).map(\.text) == ["before restart"])
+        #expect(await reborn.peek(card).map(\.source) == [source])
+    }
+
+    @Test("enqueue without a source persists Orchestra provenance")
+    func defaultEnqueuePersistsOrchestraSource() async throws {
+        let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
+        let card = UUID()
+        do {
+            let inbox = Inbox(path: path)
+            try await inbox.enqueue(card, "generated nudge")
+        }
+
+        let reborn = Inbox(path: path)
+        #expect(await reborn.peek(card).first?.source == .orchestra)
+    }
+
+    @Test("legacy inbox message decodes without source and displays unavailable provenance")
+    func legacySourceIsUnknown() throws {
+        let original = InboxMessage(cardId: UUID(), text: "old", source: .human)
+        var object = try #require(JSONSerialization.jsonObject(
+            with: OrchestraJSON.pretty.encode(original)) as? [String: Any])
+        object.removeValue(forKey: "source")
+        let legacy = try OrchestraJSON.decoder.decode(
+            InboxMessage.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.source == nil)
+        #expect(legacy.sourceLabel == "Unknown (queued before source tracking)")
     }
 }
 
@@ -531,16 +579,22 @@ struct InboxEditTests {
         #expect(await inbox.peek(c).map(\.text) == ["b"])
     }
 
-    @Test("update replaces text only, preserving id/createdAt")
+    @Test("update replaces text only, preserving id, source, deduplication, and createdAt")
     func updateText() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let c = UUID()
-        try await inbox.enqueue(c, "old")
+        try await inbox.enqueue(InboxMessage(
+            cardId: c,
+            text: "old",
+            source: .card(id: UUID(), title: "review-pass"),
+            dedupKey: "handoff-result"))
         let m = try #require(await inbox.peek(c).first)
         try await inbox.update(m.id, text: "new")
         let after = try #require(await inbox.peek(c).first)
         #expect(after.text == "new")
         #expect(after.id == m.id)
+        #expect(after.source == m.source)
+        #expect(after.dedupKey == m.dedupKey)
         #expect(after.createdAt == m.createdAt)
     }
 
@@ -557,14 +611,22 @@ struct InboxEditTests {
     func reorderPreservesInterleave() async throws {
         let path = Self.tmp(); defer { try? FileManager.default.removeItem(atPath: path) }
         let inbox = Inbox(path: path); let a = UUID(); let b = UUID()
+        let a1Source = InboxMessageSource.human
+        let b1Source = InboxMessageSource.orchestra
+        let a2Source = InboxMessageSource.card(id: UUID(), title: "review-pass")
+        let a3Source = InboxMessageSource.card(id: UUID(), title: "test-pass")
         // array order: a1, b1, a2, a3
-        try await inbox.enqueue(a, "a1"); try await inbox.enqueue(b, "b1")
-        try await inbox.enqueue(a, "a2"); try await inbox.enqueue(a, "a3")
+        try await inbox.enqueue(a, "a1", source: a1Source)
+        try await inbox.enqueue(b, "b1", source: b1Source)
+        try await inbox.enqueue(a, "a2", source: a2Source)
+        try await inbox.enqueue(a, "a3", source: a3Source)
         let aIds = await inbox.peek(a).map(\.id)          // [a1, a2, a3]
         // new order for a: a3, a1, a2
         try await inbox.reorder(a, orderedIds: [aIds[2], aIds[0], aIds[1]])
         #expect(await inbox.peek(a).map(\.text) == ["a3", "a1", "a2"])
+        #expect(await inbox.peek(a).map(\.source) == [a3Source, a1Source, a2Source])
         #expect(await inbox.peek(b).map(\.text) == ["b1"])  // b untouched
+        #expect(await inbox.peek(b).map(\.source) == [b1Source])
     }
 
     @Test("reorder rejects a non-permutation of the card's ids")
@@ -653,21 +715,23 @@ struct StopDrainTests {
         let r = StopDrain.compose([msg(big)])
         #expect(r != nil)
         #expect(r!.count <= StopDrain.maxPayloadChars)
-        #expect(r!.hasPrefix("📥 Orchestra inbox"))   // provenance header survives truncation
+        #expect(r!.hasPrefix("Message from the user (relayed to you via Orchestra):"))
         #expect(r!.hasSuffix("[…truncated]"))
     }
 
-    @Test("carries a channel-neutral provenance header naming Orchestra, pluralized by count")
-    func provenanceHeader() {
+    @Test("uses the measured user-relayed header without queue or injection language")
+    func operatorRelayedHeader() {
         let one = StopDrain.compose([msg("do X")])
-        #expect(one?.contains("1 queued message") == true)
-        #expect(one?.contains("Orchestra") == true)
+        #expect(one?.hasPrefix("Message from the user (relayed to you via Orchestra):") == true)
         #expect(one?.contains("do X") == true)
         // Channel-neutral: no Stop-hook-specific wording leaks in (shared with the Codex seed path).
         #expect(one?.lowercased().contains("turn-end") == false)
         #expect(one?.lowercased().contains("hook") == false)
+        #expect(one?.lowercased().contains("inbox") == false)
+        #expect(one?.lowercased().contains("queued") == false)
+        #expect(one?.lowercased().contains("act on") == false)
         let two = StopDrain.compose([msg("a"), msg("b")])
-        #expect(two?.contains("2 queued messages") == true)
+        #expect(two?.hasPrefix("Messages from the user (relayed to you via Orchestra):") == true)
     }
 
     @Test("multi-message batch is numbered [k/N]; a lone message is not")
@@ -679,6 +743,20 @@ struct StopDrainTests {
         let one = StopDrain.compose([msg("solo")])
         #expect(one?.contains("[1/1]") == false)   // no redundant index on a single message
         #expect(one?.contains("solo") == true)
+    }
+
+    @Test("model delivery uses operator-relayed framing while source remains UI metadata")
+    func hidesSourcesFromDelivery() {
+        let card = InboxMessage(cardId: UUID(), text: "review this",
+                                source: .card(id: UUID(), title: "review-pass"))
+        let human = InboxMessage(cardId: UUID(), text: "please prioritize", source: .human)
+        let batch = StopDrain.compose([human, card])
+        #expect(card.sourceLabel.hasPrefix("Card review-pass (") == true)
+        #expect(batch?.contains("[1/2] please prioritize") == true)
+        #expect(batch?.contains("[2/2] review this") == true)
+        #expect(batch?.contains("review-pass") == false)
+        #expect(batch?.contains("From Card") == false)
+        #expect(batch?.contains("From Human") == false)
     }
 
     @Test("fit consumes only the whole messages that fit and reports the count")
@@ -714,7 +792,7 @@ struct StopDrainTests {
 // `Service/PayloadForStopTests.swift`.
 
 @Suite("C1 · send routes through the inbox")
-struct SendRoutingTests {
+struct InboxRoutingTests {
     @Test("send enqueues a durable message instead of typing into tmux")
     func sendEnqueues() async throws {
         let env = TestEnv.make()
@@ -724,6 +802,7 @@ struct SendRoutingTests {
 
         let inbox = Inbox(path: env.base + "/inbox.json")
         #expect(await inbox.peek(task.id).map(\.text) == ["hello there"])
+        #expect(await inbox.peek(task.id).first?.source == .human)
     }
 
     @Test("send rejects a message over the inbox cap and enqueues nothing")
@@ -752,6 +831,43 @@ struct SendRoutingTests {
         #expect(payload.contains(atLimit))                 // whole message present
         #expect(payload.hasSuffix("[…truncated]") == false)  // not clipped
     }
+
+    @Test("a long card title remains UI-only and does not shrink or leak into delivery")
+    func longCardSourceStaysOutOfDeliveryEnvelope() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
+        let messageId = UUID()
+        let source = InboxMessageSource.card(
+            id: UUID(),
+            title: String(repeating: "x", count: StopDrain.maxPayloadChars))
+
+        try await env.svc.send(task.id, "please take this next", messageId: messageId, sender: source)
+        let queued = try #require(try await env.svc.inboxPeek(task.id).first)
+        #expect(queued.id == messageId)
+        #expect(queued.source == source)
+        let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
+        #expect(payload.contains("please take this next"))
+        #expect(payload.contains(source.label) == false)
+    }
+
+    @Test("send accepts a card source message at the shared delivery cap")
+    func acceptsCardSourceAtCap() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let task = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "work", repo: repo, branch: "feat"))
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        let atLimit = String(repeating: "y", count: StopDrain.maxMessageChars)
+
+        try await env.svc.send(task.id, atLimit, sender: source)
+        let payload = try #require(await env.svc.payloadForStop(task.id, observedEpoch: epoch, stopHookActive: false))
+        #expect(payload.count == StopDrain.maxPayloadChars)
+        #expect(payload.contains(atLimit))
+        #expect(payload.contains(source.label) == false)
+        #expect(payload.hasSuffix("[…truncated]") == false)
+    }
 }
 
 /// B5a · the Inbox primitives `send` and the editor now depend on: an ATOMIC dedup-append keyed on the
@@ -772,6 +888,32 @@ struct InboxSendIdempotencyTests {
         #expect(try await inbox.enqueueIfUnknown(card, "first", id: id) == true)
         #expect(try await inbox.enqueueIfUnknown(card, "again", id: id) == false)   // pending → dedup
         #expect(await inbox.peek(card).map(\.text) == ["first"])                    // one row, unrewritten
+    }
+
+    @Test("enqueueIfUnknown preserves source beside its client id through lease and editor rebuilds")
+    func enqueueIfUnknownPreservesSourceThroughRebuilds() async throws {
+        let (inbox, path, card, _) = freshInbox()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let id = UUID()
+        let source = InboxMessageSource.card(id: UUID(), title: "child-review")
+        #expect(try await inbox.enqueueIfUnknown(card, "review complete", id: id, source: source))
+
+        let stopBatch = try #require(try await inbox.claim(
+            card, route: .stopDrain, epoch: 1, budget: StopDrain.maxPayloadChars,
+            render: { HandoffSeed.compose(handoff: nil, messages: $0, budget: $1) }, now: Date()))
+        try await inbox.release(token: stopBatch.token)
+        #expect(await inbox.peek(card).first?.source == source)
+
+        _ = try #require(try await inbox.claim(
+            card, route: .relaunchSeed, epoch: 1, budget: StopDrain.maxPayloadChars,
+            render: { HandoffSeed.compose(handoff: nil, messages: $0, budget: $1) }, now: Date()))
+        try await inbox.setTailWatermark(cardId: card, epoch: 1, watermark: 42, path: "/tmp/rollout.jsonl")
+        #expect(try await inbox.update(id, text: "edited") == card)
+
+        let row = try #require(await inbox.peek(card).first)
+        #expect(row.id == id)
+        #expect(row.source == source)
+        #expect(row.lease == nil)
     }
 
     @Test("enqueueIfUnknown dedups an id already tombstoned in the confirmed-ids ring")

@@ -142,6 +142,45 @@ struct CommandsTests {
         }
     }
 
+    @Test("send attributes a hidden senderCard to the resolved card, otherwise Human")
+    func sendSourceAttribution() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let sender = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "sender card", repo: repo, branch: "sender"))
+        let recipient = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "recipient card", repo: repo, branch: "recipient"))
+        let send = try #require(CommandRegistry().command("send"))
+        let cardMessageId = UUID()
+        let humanMessageId = UUID()
+
+        _ = try await send.run(env.svc, .object([
+            "ref": .string(recipient.shortId), "message": .string("from a card"),
+            "id": .string(cardMessageId.uuidString),
+            "senderCard": .string(sender.id.uuidString),
+        ]), .mcp)
+        _ = try await send.run(env.svc, .object([
+            "ref": .string(recipient.shortId), "message": .string("from a person"),
+            "id": .string(humanMessageId.uuidString),
+        ]), .cli)
+
+        let messages = try await env.svc.inboxPeek(recipient.id)
+        #expect(messages.count == 2)
+        #expect(messages.map(\.id) == [cardMessageId, humanMessageId])
+        #expect(messages[0].source == .card(id: sender.id, title: sender.title))
+        #expect(messages[1].source == .human)
+
+        let invalidSenderRef = "not-a-card"
+        let error = await #expect(throws: OrchestraError.self) {
+            _ = try await send.run(env.svc, .object([
+                "ref": .string(recipient.shortId), "message": .string("invalid sender"),
+                "id": .string(UUID().uuidString),
+                "senderCard": .string(invalidSenderRef),
+            ]), .mcp)
+        }
+        #expect(error == .unknownTask(invalidSenderRef))
+    }
+
     @Test("inbox lists, inbox-edit rewrites, inbox-remove drops, inbox-reorder permutes")
     func inboxCrud() async throws {
         let env = TestEnv.make()

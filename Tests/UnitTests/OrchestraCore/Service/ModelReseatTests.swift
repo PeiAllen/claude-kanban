@@ -408,12 +408,20 @@ struct ModelReseatTests {
         // primitive was deleted in B4 — so the invariant is now "the inbox is never drained here".)
         let env = TestEnv.make(grace: 2)
         let t = try await liveCard(env)
-        try await env.svc.send(t.id, "do not lose me")
+        let message = InboxMessage(
+            cardId: t.id,
+            text: "do not lose me",
+            source: .card(id: UUID(), title: "child-review"),
+            dedupKey: "child-review-result")
+        try await env.svc.inbox.enqueue(message)
         try await env.svc.archive(t.id)   // terminal ⇒ the relaunch intent will be refused
 
         _ = try? await env.svc.resumeInCard(t.id, seed: "ctx", model: "m2")
 
-        #expect(try await env.svc.inboxPeek(t.id).count == 1)   // survived the refused handoff
+        let restored = try #require(try await env.svc.inboxPeek(t.id).first)
+        #expect(restored.source == message.source)
+        #expect(restored.id == message.id)
+        #expect(restored.dedupKey == message.dedupKey)
     }
 
     // MARK: - the REAL adapters, not the stub

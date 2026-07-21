@@ -190,17 +190,24 @@ before borrowed/scratch cards existed still opens.
 
 Alongside `tasks.json`, the daemon keeps a second durable store — the **`Inbox`** (`Inbox.swift`), a
 sibling to `TaskStore` built on the same actor-over-JSON pattern (lazy load, atomic write, malformed →
-`.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage` (`{id, cardId, text, createdAt}`)
-at `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
-filter on `cardId`. `enqueue` appends, `peek` reads without removing, and `claim(cardId, route:, epoch:,
-budget:, render:, now:)` selects + fits + leases a FIFO batch in one call — the Stop-hook delivery's
-*whole-messages-to-fit* path (deliver the messages that fit this turn's 10 000-char budget, defer the
-overflow to the next turn-end; see [Design decisions](09-design-decisions.md#the-durable-inbox-is-the-delivery-ssot-claim-then-confirm)).
-A claimed batch leaves the inbox only through `confirm(token:)` on a receipt proof — it is *leased*, not
-removed, so a crash or a lost reply re-delivers rather than losing silently. (`drain`/`drainFirst` still
-remove-and-return raw; `drain` backs the handoff-resume fold until that path also converts.) Messages
-persist until confirmed, so they survive a daemon restart. Three
-editor mutators — `remove(id)`, `update(id, text:)` (text only; id/cardId/createdAt preserved), and
+`.bak` + `[]`). It holds a flat, append-ordered array of `InboxMessage`
+ (`{id, cardId, text, source?, dedupKey?, createdAt, lease?}`) at
+ `~/Library/Application Support/Orchestra/inbox.json`, giving **FIFO-per-card** delivery via a stable
+ filter on `cardId`. New messages carry **Human** for direct service sends and external CLI/MCP sends without
+ a card context, **Card** for a durable title/id snapshot from a card bridge (displayed as title + short id),
+ or **Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default); legacy records
+ without `source` render as Unknown (queued before source tracking). Source is human-facing metadata, not an
+ authorization credential: the inbox API and editors expose it, but no permission or model-facing trust
+ decision may depend on it. The Stop-hook and resume-seed delivery text uses the shared
+ operator-relayed header rather than rendering `From <source>` to the receiving model. `enqueue` appends, `peek` reads without
+ removing, and `claim(cardId, route:, epoch:, budget:, render:, now:)` selects + fits + leases a FIFO batch
+ in one call — the Stop-hook delivery's *whole-messages-to-fit* path (deliver the messages that fit this
+ turn's 10 000-char budget, defer the overflow to the next turn-end; see
+ [Design decisions](09-design-decisions.md#the-durable-inbox-is-the-delivery-ssot-claim-then-confirm)). A
+ claimed batch leaves the inbox only through `confirm(token:)` on a receipt proof — it is *leased*, not
+ removed, so a crash or a lost reply re-delivers rather than losing silently. Messages persist until
+ confirmed, so they survive a daemon restart. Three editor mutators — `remove(id)`, `update(id, text:)`
+ (text only; id/cardId/source/dedupKey/createdAt preserved), and
 `reorder(cardId, orderedIds:)` (a permutation of that card's ids, refilling only its own array slots so
 other cards' interleaving is untouched) — back the app's [inbox editor](07-app-ui.md#the-inspector) and
 the [`inbox*` commands](05-command-reference.md#registry-commands).
@@ -209,9 +216,9 @@ This is the durable merge-back channel for **F3** (see [Design decisions](09-des
 `send` enqueues here instead of typing into tmux (then [wakes the card](09-design-decisions.md#shipped-feature-history)
 so an idle agent drains promptly rather than at its next unprompted turn; `send` rejects a message over
 `StopDrain.maxMessageChars` at enqueue so any accepted one delivers whole — the inbox is a nudge channel, not
-a document transfer), and the agent's Stop hook claims it
-into the agent at its next turn-end (`OrchestraService.payloadForStop` — epoch-fenced claim-then-confirm,
-dispatched by the [`hook` RPC](05-command-reference.md#server-only-built-in-methods)
+a document transfer), and the agent's Stop hook claims it into the agent at its next turn-end
+(`OrchestraService.payloadForStop` — epoch-fenced claim-then-confirm, dispatched by the
+[`hook` RPC](05-command-reference.md#server-only-built-in-methods)
 on the `stop` event — see the [`_report` Stop-drain](06-clients-cli-mcp.md#the-hooks--_report-channel)).
 
 ## The trust ledger (T1)

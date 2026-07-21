@@ -105,9 +105,14 @@ struct E2EBinaryTests {
     /// exited 1 with "daemon not reachable … did not answer version probe", a scheduling artifact that
     /// looked like a broken daemon. The deadline is client policy (see `CLIRunner.rpcTimeout`); raise it so
     /// this test asserts what the daemon DOES, not how fast the host happened to schedule it.
-    private func cli(_ args: [String], ctlSock: String) throws -> ProcResult {
-        try Proc.run([binary("orchestra")] + args,
-                     env: ["ORCHESTRA_SOCK": ctlSock, "ORCHESTRA_RPC_TIMEOUT_MS": "120000"])
+    private func cli(_ args: [String], ctlSock: String,
+                     environment: [String: String] = [:]) throws -> ProcResult {
+        // The test process itself may run inside an Orchestra card. An empty value models no usable relay
+        // context while preventing that ambient card id from leaking into tests that are meant to be Human.
+        var env = ["ORCHESTRA_SOCK": ctlSock, "ORCHESTRA_RPC_TIMEOUT_MS": "120000",
+                   "ORCHESTRA_TASK_ID": ""]
+        env.merge(environment, uniquingKeysWith: { _, incoming in incoming })
+        return try Proc.run([binary("orchestra")] + args, env: env)
     }
 
     @Test("CLI: spawn → list → exec → sessions drive real daemon state")
@@ -197,6 +202,51 @@ struct E2EBinaryTests {
         #expect(!errText.contains("--trust"))
     }
 
+    @Test("CLI and MCP send persist source only from their bridge card context")
+    func sendSourceAttribution() async throws {
+        let fx = try await E2EFixture.shared.get()
+        let suffix = UUID().uuidString.lowercased()
+        let sender = try await fx.service.spawn(SpawnInput(
+            id: UUID(), prompt: "binary sender", repo: fx.repo, branch: "binary-sender-\(suffix)"))
+        let recipient = try await fx.service.spawn(SpawnInput(
+            id: UUID(), prompt: "binary recipient", repo: fx.repo, branch: "binary-recipient-\(suffix)"))
+        let spoofedSender = try await fx.service.spawn(SpawnInput(
+            id: UUID(), prompt: "spoofed sender", repo: fx.repo, branch: "binary-spoofed-\(suffix)"))
+
+        let humanCLI = try cli(["send", recipient.shortId, "human CLI"], ctlSock: fx.ctlSock)
+        #expect(humanCLI.exitCode == 0,
+                "human CLI send failed (rc=\(humanCLI.exitCode)) stderr=\(humanCLI.stderr)")
+
+        let cardCLI = try cli(["send", recipient.shortId, "card CLI"], ctlSock: fx.ctlSock,
+                               environment: ["ORCHESTRA_TASK_ID": sender.id.uuidString])
+        #expect(cardCLI.exitCode == 0,
+                "card CLI send failed (rc=\(cardCLI.exitCode)) stderr=\(cardCLI.stderr)")
+
+        let noContextMCP = [
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send","arguments":{"ref":"\#(recipient.shortId)","message":"human MCP","senderCard":"\#(sender.id.uuidString)"}}}"#,
+        ].joined(separator: "\n") + "\n"
+        _ = try await runMCP(binary("orchestra-mcp"), stdin: noContextMCP, ctlSock: fx.ctlSock)
+
+        let cardContextMCP = [
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send","arguments":{"ref":"\#(recipient.shortId)","message":"card MCP","senderCard":"\#(spoofedSender.id.uuidString)"}}}"#,
+        ].joined(separator: "\n") + "\n"
+        _ = try await runMCP(binary("orchestra-mcp"), stdin: cardContextMCP, ctlSock: fx.ctlSock,
+                              environment: ["ORCHESTRA_TASK_ID": sender.id.uuidString])
+
+        let messages = try await fx.service.inboxPeek(recipient.id)
+        #expect(messages.map(\.text) == ["human CLI", "card CLI", "human MCP", "card MCP"])
+        #expect(messages[0].source == .human)
+        #expect(messages[1].source == .card(id: sender.id, title: sender.title))
+        #expect(messages[2].source == .human)
+        #expect(messages[3].source == .card(id: sender.id, title: sender.title))
+    }
+
     @Test("MCP: initialize + tools/list parity with the registry; tools/call spawn creates a card")
     func mcpSmoke() async throws {
         let fx = try await E2EFixture.shared.get()
@@ -246,10 +296,9 @@ struct E2EBinaryTests {
         let ref = spawn.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(ref.hasPrefix("orchestra://task/"))
 
-        try await pollUntil("MCP image card reaches .live(.running)", timeout: .seconds(60)) {
-            let listed = try? cli(["list"], ctlSock: fx.ctlSock)
-            let output = listed?.stdout ?? ""
-            return output.contains("MCP image marker") && output.lowercased().contains("running")
+        try await pollUntil("MCP image card \(ref) reaches .live", timeout: .seconds(60)) {
+            guard let card = try? await fx.service.resolveRef(ref) else { return false }
+            return card.phase.kind == .live
         }
 
         let requests = [
@@ -281,12 +330,16 @@ struct E2EBinaryTests {
     /// Run the MCP binary, feed stdin, and collect stdout. The SDK server handles requests in async
     /// child tasks and exits on stdin EOF, so we keep stdin OPEN (like a real client), poll stdout until
     /// the last request's response (id 3) has arrived (was a fixed 1.5s Thread.sleep), then terminate.
-    private func runMCP(_ bin: String, stdin: String, ctlSock: String) async throws -> String {
+    private func runMCP(_ bin: String, stdin: String, ctlSock: String,
+                        environment: [String: String] = [:]) async throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = [bin]
         var env = ProcessInfo.processInfo.environment
         env["ORCHESTRA_SOCK"] = ctlSock
+        // Keep an enclosing card's context out of a bridge test unless the test explicitly injects one.
+        env["ORCHESTRA_TASK_ID"] = ""
+        env.merge(environment, uniquingKeysWith: { _, incoming in incoming })
         p.environment = env
         let inPipe = Pipe(), outPipe = Pipe()
         p.standardInput = inPipe

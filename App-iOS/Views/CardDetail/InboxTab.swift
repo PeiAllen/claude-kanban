@@ -87,8 +87,11 @@ struct InboxTab: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "text.bubble").font(.caption).foregroundStyle(theme.text3)
-                Text(m.text).font(.callout).foregroundStyle(theme.text)
-                    .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("From \(m.sourceLabel)").font(.caption2.weight(.medium)).foregroundStyle(theme.text2)
+                    Text(m.text).font(.callout).foregroundStyle(theme.text).lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .contentShape(Rectangle())
         }

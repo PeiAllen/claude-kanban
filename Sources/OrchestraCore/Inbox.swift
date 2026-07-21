@@ -107,23 +107,19 @@ public actor Inbox {
         return messages.filter { $0.cardId == cardId }
     }
 
-    /// Append a message for a card. With a `dedupKey`, a no-op-safe idempotency guard: if a message for
-    /// this card already carries the same `dedupKey`, the append is SKIPPED (the crash-then-redrive
-    /// discipline — Teardown's child nudge fires at most once per `(childId, parent-archived:<branch>)`).
-    public func enqueue(_ cardId: UUID, _ text: String, dedupKey: String? = nil) throws {
+    /// Append an exact message, retaining its durable identity and delivery provenance. With a `dedupKey`,
+    /// a no-op-safe idempotency guard suppresses an already-pending message for the same card and key.
+    public func enqueue(_ message: InboxMessage) throws {
         ensureLoaded()
-        if let dedupKey,
-           messages.contains(where: { $0.cardId == cardId && $0.dedupKey == dedupKey }) {
+        if let dedupKey = message.dedupKey,
+           messages.contains(where: { $0.cardId == message.cardId && $0.dedupKey == dedupKey }) {
             return   // already queued for this card under the same key — dedup
         }
-        // Transactional: publish the in-memory row ONLY after the disk commit succeeds. A persist throw
-        // that left the row in `messages` would be re-observed by a later dedup check (the `dedupKey`
-        // guard above) as "already queued" and no-op the redrive, so a message the client believes was
-        // accepted could never reach disk and be lost on a crash — the same silent-loss class as
-        // `enqueueIfUnknown`. No `await` between append and persist, so the rollback is exact.
-        let msg = InboxMessage(cardId: cardId, text: text, dedupKey: dedupKey, createdAt: now())
-        messages.append(msg)
-        do { try persist() } catch { messages.removeAll { $0.id == msg.id }; throw error }
+        // Transactional: publish the in-memory row only after the disk commit succeeds. A persist throw
+        // must not leave a dedup key resident in memory, or a redrive could be suppressed even though the
+        // original message never reached durable storage.
+        messages.append(message)
+        do { try persist() } catch { messages.removeAll { $0.id == message.id }; throw error }
     }
 
     /// Append a message carrying an explicit client-minted `id`, but ONLY if that id is unknown — not
@@ -133,9 +129,11 @@ public actor Inbox {
     /// `enqueue` across two awaits lets two concurrent same-id sends both observe "unknown" and both
     /// append — the exact check-then-act race B2's atomic `claim` closed. `confirm` tombstones the id in
     /// the ring, so this no-ops a retry whose response was lost even AFTER the message was delivered and
-    /// removed. (Internal nudge callers use the plain `enqueue`, which mints its own id — no dedup.)
+    /// removed. `source` is retained beside the client id and delivery lease; internal nudge callers use
+    /// the plain `enqueue`, which mints its own id — no dedup.
     @discardableResult
-    public func enqueueIfUnknown(_ cardId: UUID, _ text: String, id: UUID) throws -> Bool {
+    public func enqueueIfUnknown(_ cardId: UUID, _ text: String, id: UUID,
+                                 source: InboxMessageSource? = .orchestra) throws -> Bool {
         ensureLoaded()
         if messages.contains(where: { $0.id == id }) || confirmedIds.contains(id) { return false }
         // TRANSACTIONAL: the candidate is published in memory ONLY after the disk commit succeeds. If
@@ -145,9 +143,18 @@ public actor Inbox {
         // reaching disk. A daemon death before the next inbox mutation flushes would then LOSE an
         // acknowledged send — the at-least-once violation B exists to prevent. No `await` sits between
         // the append and the persist, so `removeAll { id }` restores the exact prior state.
-        messages.append(InboxMessage(id: id, cardId: cardId, text: text, createdAt: now()))
+        messages.append(InboxMessage(id: id, cardId: cardId, text: text, source: source, createdAt: now()))
         do { try persist() } catch { messages.removeAll { $0.id == id }; throw error }
         return true
+    }
+
+    /// Append a message for a card. Internal Orchestra-generated nudges default to `.orchestra`; direct
+    /// user delivery enters through `OrchestraService.send`, whose default is `.human`.
+    public func enqueue(_ cardId: UUID, _ text: String,
+                        source: InboxMessageSource? = .orchestra,
+                        dedupKey: String? = nil) throws {
+        try enqueue(InboxMessage(cardId: cardId, text: text, source: source,
+                                 dedupKey: dedupKey, createdAt: now()))
     }
 
     // `drain`/`drainFirst` DELETED (B4): after B3's de-drain they had zero production callers, and a
@@ -175,10 +182,10 @@ public actor Inbox {
         return msg.cardId
     }
 
-    /// Replace a message's text in place; id / cardId / createdAt are preserved. Force-releases the
-    /// batch for the same reason `remove` does — an in-flight token must never confirm text the human
-    /// has since rewritten. Returns the edited message's OWNER `cardId` (throws if absent) so B5a's
-    /// editor stuck-reset re-arms that owner, not the caller's ref (the lookup is global by message id).
+    /// Replace a message's text in place; id / cardId / source / deduplication / createdAt are preserved.
+    /// Force-releases the batch for the same reason `remove` does — an in-flight token must never confirm
+    /// text the human has since rewritten. Returns the edited message's OWNER `cardId` (throws if absent)
+    /// so B5a's editor stuck-reset re-arms that owner, not the caller's ref (the lookup is global by id).
     @discardableResult
     public func update(_ id: UUID, text: String) throws -> UUID {
         ensureLoaded()
@@ -187,8 +194,8 @@ public actor Inbox {
         }
         if let token = messages[idx].lease?.token { unlease { $0.lease?.token == token } }
         let old = messages[idx]
-        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text,
-                                     dedupKey: old.dedupKey, createdAt: old.createdAt)
+        messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text, source: old.source,
+                                     dedupKey: old.dedupKey, createdAt: old.createdAt, lease: nil)
         try persist()
         return old.cardId
     }
@@ -213,7 +220,7 @@ public actor Inbox {
     /// Introduced HERE (not with release/releaseAll in Task 6) because `claim` is its first reference.
     private func unlease(where match: (InboxMessage) -> Bool) {
         for (idx, msg) in messages.enumerated() where match(msg) && msg.lease != nil {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: nil)
         }
     }
@@ -257,7 +264,7 @@ public actor Inbox {
         let takenIds = Set(taken.map(\.id))
         let lease = DeliveryLease(token: token, route: route, epoch: epoch, leasedAt: now)
         for (idx, msg) in messages.enumerated() where takenIds.contains(msg.id) {
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: lease)
         }
         // Kill the DEAD leases on the claimable-but-unconsumed tail. A message that entered the pool did
@@ -379,7 +386,7 @@ public actor Inbox {
             guard let lease = msg.lease else { continue }
             let stamped = DeliveryLease(token: lease.token, route: lease.route, epoch: lease.epoch,
                                         leasedAt: lease.leasedAt, tailWatermark: watermark, tailPath: path)
-            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text,
+            messages[idx] = InboxMessage(id: msg.id, cardId: msg.cardId, text: msg.text, source: msg.source,
                                          dedupKey: msg.dedupKey, createdAt: msg.createdAt, lease: stamped)
             changed = true
         }

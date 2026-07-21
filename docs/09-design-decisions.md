@@ -529,8 +529,8 @@ drain to the claim. The pivot is removing `resumeInCard`'s `inbox.drain`: it now
 handoff context (it *is* `resume(seed:)`), and the pending inbox stays durable, delivered by the
 RelaunchStepper's `relaunchSeed` claim, which composes the handoff and the inbox under one budget with
 `HandoffSeed.compose`. Removing the drain is what closes the L1 crash window — there is no drained-then-
-folded-then-lost seed to lose, because nothing is removed until a receipt is proven. `HandoffSeed.fold`
-retires with its last caller; `compose` runs *inside* the claim, so the claim's consumed-prefix guarantee
+folded-then-lost seed to lose, because nothing is removed until a receipt is proven. The prior post-drain
+fold retires with its last caller; `compose` runs *inside* the claim, so the claim's consumed-prefix guarantee
 covers the final argv bytes and a truncating fold can never leave a leased-but-unrendered message to be
 confirmed.
 
@@ -949,14 +949,14 @@ live-delivery functions (see [One seed, four topologies](#one-seed-four-topologi
 id** — a *resume, not a blank restart*, so the vendor transcript carries forward and the seed only adds the
 new instruction. Three symbols carry it:
 
-- **`HandoffSeed.fold(handoff:inbox:)`** — a pure helper that folds an authored handoff/fork context (first,
-  trimmed, dropped if empty) and the card's drained pending inbox (FIFO) into **one** seed string, bounded to
-  the same 10 000-char live-delivery limit (`StopDrain.maxPayloadChars`) with a `[…truncated]` prefix on
-  overflow; `nil` when there is nothing to deliver.
-- **`OrchestraService.resumeInCard(_:seed:…)`** — the F1 entry point. It **drains the inbox first**, folds it
-  into the seed, then delegates to `resume`. Draining before resume is the load-bearing ordering decision: a
-  `.sessionSeed` agent (Codex has no Stop hook) would otherwise never receive its queued messages, and a
-  later Claude Stop-drain must not double-deliver them.
+- **`HandoffSeed.compose(handoff:messages:)`** — the pure claim renderer that combines an authored
+  handoff/fork context (first, trimmed, dropped if empty) and the pending inbox (FIFO) into **one** seed
+  payload, bounded to `StopDrain.maxPayloadChars`; it returns the exact count of whole messages rendered, so
+  `Inbox.claim` leases only that prefix and leaves the overflow durable.
+- **`OrchestraService.resumeInCard(_:seed:…)`** — the F1 entry point. It persists the authored seed and
+  delegates to `resume` without draining; the RelaunchStepper's `relaunchSeed` claim calls `compose` at
+  launch time. This is the load-bearing ordering decision: a crash before launch leaves every message
+  durable, while a receipt confirms only the batch that actually reached the resumed agent.
 - A defaulted **`seed:` parameter on the service `resume`**, threaded onto the frozen `AdapterContext.seed`
   (A1). Each adapter then **reads** `ctx.seed` and appends it as the resumed session's **trailing positional
   turn** (Claude after `--resume`, Codex after `resume <sid>`, and `StubAdapter` mirrors it); with no seed the
@@ -1013,9 +1013,9 @@ delegates to C3's `OrchestraService.resumeInCard(seed:)`, wiring the F1 *same-ca
 [handoff topology](#one-seed-four-topologies) into a callable tool. Three properties keep it thin:
 
 - **No new mechanism — pure delegation.** The Command adds only a schema (`ref` + `context`) and a
-  two-line handler (`resolveRef` → `resumeInCard(seed:)`); all the load-bearing logic (drain the inbox
-  first, `HandoffSeed.fold`, kill + `--resume` the same session id, the seed as the opening positional
-  turn) already shipped in C3. `SpawnInput`/`spawn` are untouched — stacked (`repo`/`branch`) and
+  two-line handler (`resolveRef` → `resumeInCard(seed:)`); all the load-bearing logic (persisting the
+  handoff, claim-time `HandoffSeed.compose`, kill + `--resume` the same session id, the claimed seed as the
+  opening positional turn) already shipped in C3/B3. `SpawnInput`/`spawn` are untouched — stacked (`repo`/`branch`) and
   cross-agent (`agentId`) delegation were already covered by existing spawn params, and the *new-card*
   handoff/fork/fan-out start-actions are D3, not D1.
 - **MCP is auto; the CLI is the one manual surface.** Because `orchestra-mcp` maps `registry.commands`,
@@ -1442,7 +1442,7 @@ Phase 2 / plan *Deferred*), and whether any bindings become user-remappable is a
 later pass. Like the entries above, this is an app-UX feature, not a whole extensibility axis, so it stays
 here as history rather than migrating a [roadmap](10-roadmap.md) row.
 
-Also landing after the forest is the **inbox provenance header + batching + send cap** (commit `4264575`,
+Also landing after the forest is the **inbox delivery framing + batching + send cap** (commit `4264575`,
 branch `inbox-stop-hook`), on the C1 inbox. It hardens how
 the durable [inbox](03-data-model.md#the-inbox-store-f3) *reads to the model* on the live-delivery channels
 the two agents distrust. The problem was verified empirically: a queued `send` reaches Claude as the
@@ -1450,13 +1450,14 @@ Stop-hook `reason` framed "Stop hook feedback:" and Codex as a resume seed — f
 automated hook noise and refuse to act on, treating a real instruction as an untrusted injection. Four
 decisions:
 
-- **A channel-neutral provenance header, shared byte-for-byte across both delivery paths.**
-  `StopDrain.inboxHeader` prepends a line stating the messages are *real instructions queued for this card via
-  Orchestra `send` (by the user or another agent), not automated system output — act on them*. It deliberately
-  says nothing about *how* they arrive ("turn-end", "hook", "seed"), so the Claude Stop-drain (`compose`) and
-  the Codex resume seed (`HandoffSeed.fold`, the [C3](#shipped-feature-history) fold) frame the identical
-  inbox identically — agent-agnostic. The header rides only the inbox portion of a seed, so a pure
-  handoff/fork seed is unchanged.
+- **A channel-neutral operator-relayed header, shared byte-for-byte across both delivery paths.**
+  `StopDrain.inboxHeader` says `Message from the user (relayed to you via Orchestra):` (plural when needed).
+  It deliberately says nothing about *how* messages arrive ("turn-end", "hook", "seed") and does not render
+  card-to-card provenance in model-facing text, so the Claude Stop-drain (`compose`) and the Codex resume seed
+  (`HandoffSeed.compose`, the [C3](#shipped-feature-history) claim render) frame the inbox identically — agent-agnostic.
+  This is operator-authorized delivery language, not a claim that the human authored every body. In the
+  busy-agent conflict probe, this user-relayed framing was acted on in 6/6 trials, versus 1–3/6 for the old
+  inbox framing; the header rides only the inbox portion of a seed, so a pure handoff/fork seed is unchanged.
 - **`[k/N]` numbering for multi-message batches.** `StopDrain.renderMessages` numbers a pile-up (`[2/3] …`) so
   the agent treats several queued messages as distinct actionable items rather than one run-on blob — the
   documented mitigation for the "curse of instructions" compliance drop when instructions share a turn. A lone
@@ -1466,14 +1467,27 @@ decisions:
   [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
   for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
-- **A send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) now rejects a message
-  over `StopDrain.maxMessageChars` (the payload budget minus a lone-message header) with `invalidParams` — *put
-  large content in a file in the worktree and reference it instead* — so any *accepted* message is guaranteed to
-  deliver whole and the truncation fallback is unreachable for `send`-queued messages. The inbox is a nudge
-  channel, not a document transfer.
+- **A shared send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) uses
+  `StopDrain.maxMessageChars`, reserving the common operator-relayed header and separator, then validates the
+  body before enqueueing. Source metadata never changes that budget because it is deliberately absent from
+  the model delivery string. Put large content in a file in the worktree and reference it instead: the inbox
+  is a nudge channel, not a document transfer.
 
 Like the entries above, this refines the already-shipped [C1](#shipped-feature-history) /
 [C3](#shipped-feature-history) live-delivery path rather than opening a new axis, so it stays here as history.
+
+The same inbox later gained **stored source metadata**. `InboxMessage.source` records **Human** for direct service
+and external CLI/MCP sends without a card context, **Card** as a durable title/id snapshot from a card bridge, or
+**Orchestra** for daemon-generated/internal nudges (the direct `Inbox.enqueue` default), while remaining optional
+so legacy records still decode. This is structured
+metadata rather than a `From …` text prefix or render-time inference: an edit changes only the body,
+persistence carries provenance through daemon restarts, and the snapshot remains stable when a source card
+is renamed or archived. The desktop and iOS inbox editors render that source as `From …`; the Stop-drain and
+resume seed deliberately do not, so the delivery text remains trusted operator-relayed context and no source
+title can reduce the delivery cap. No human-facing surface needs an edit-author history or a live card lookup.
+Source is display provenance, **not authentication**: a local process can set the ambient card id, which is
+acceptable in the single-user local orchestration threat model where every sender is operator-authorized.
+If that threat model becomes adversarial, future work is session-credential-based non-spoofable attribution.
 
 Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
 Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`). This builds the **reusable
