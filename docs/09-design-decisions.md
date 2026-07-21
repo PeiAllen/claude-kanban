@@ -480,6 +480,15 @@ params builder, and one shared key referenced by both the builder and the `Contr
 typo fails a unit test instead of silently breaking every continuation. B2 trusts the contract's claim that
 both agents emit the flag; D2 re-probes it empirically before the channels path depends on it.
 
+**The confirm's safety rests on a recorded assumption: an at-most-once hook transport and exactly one Stop
+per continuation.** The stopDrain confirm (a `stop_hook_active==true` Stop confirms the prior injected batch)
+is safe because the hook transport is at-most-once (`_report`/`boundedCall` fire the hook RPC once, no retry)
+and Claude fires exactly one Stop per continuation, with `active=true` strictly following a *delivered*
+`decision:block` (empirically verified, Claude 2.1.217). A lost block produces no `active=true` successor, so
+the confirm never runs and the delivery arm re-drives the message — at-least-once holds. **Any future
+transport that adds Stop-hook retries, or a Claude that re-fires/duplicates a Stop with `active=true`, MUST
+add Stop-RPC idempotency (per-continuation nonce binding) before this confirm is safe.**
+
 **A live-lease guard keeps at most one stopDrain batch in flight, atomically.** The claim refuses to lease
 while an unexpired same-epoch lease is already outstanding — and that check lives *inside* `Inbox.claim`
 (its `blockIfLiveLease` flag), in the same atomic actor call as the lease, not as a separate

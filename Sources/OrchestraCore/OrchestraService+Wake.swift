@@ -6,7 +6,7 @@ extension OrchestraService {
 
     /// Register a watcher's interest in `children` so each child's conclusion routes into the watcher's
     /// durable inbox (F3, coalesces) and wakes it (F2). Idempotent (unions). Writes through to the durable
-    /// `watchStore` so the registration survives a daemon restart (carry #4).
+    /// `watchStore` so the registration survives a daemon restart.
     public func registerWatch(_ watcher: UUID, _ children: Set<UUID>) {
         guard !children.isEmpty else { return }
         ensureWatchRegistryLoaded()
@@ -150,7 +150,7 @@ extension OrchestraService {
             }
             // Route through `unregisterWatch` so the removal PERSISTS (write-through). A missed inline
             // remove would leave a concluded child registered on disk → duplicate conclusion on the next
-            // boot reload (carry #4 / Opus finding 5).
+            // boot reload.
             unregisterWatch(watcher, id)
         }
         // Resolve any active CLI `orchestra wait` subscribed to this child (per-child, first-wins).

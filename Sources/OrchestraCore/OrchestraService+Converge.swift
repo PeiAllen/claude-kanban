@@ -14,7 +14,7 @@ extension OrchestraService {
     /// → the S2-3(iii) rollback on a lineage failure → the resource epilogue (release the just-cut tree if a
     /// newer intent made the card terminal during the `ensure` await). Reads `spawnBase`/branch from the
     /// persisted card and re-derives the remote/local classification with `RemoteParentRef.parse` (so a
-    /// remote base survives a restart). Mirrors today's inline spawn body (`OrchestraService.swift:329-401`).
+    /// remote base survives a restart). Mirrors today's inline spawn body (`OrchestraService.swift`).
     func materialize(_ id: UUID) async -> MaterializeOutcome {
         guard let card = await store.get(id) else { return .failed(detail: "unknown card \(id)") }
         // Scratch dirs are materialized synchronously (mkdir) — ensure the dir exists, then advance.
@@ -186,7 +186,7 @@ extension OrchestraService {
             //    lockdown flags from `ctx.access` on resume as well as on start, so a READ-ONLY card came
             //    back writable.
             //  • `startIn` — not merely a board column: `.plan` becomes `--permission-mode auto`
-            //    (ClaudeCodeAdapter.swift:204-206), so a resumed plan card silently lost it and began
+            //    (ClaudeCodeAdapter.swift), so a resumed plan card silently lost it and began
             //    prompting for permissions mid-task.
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,

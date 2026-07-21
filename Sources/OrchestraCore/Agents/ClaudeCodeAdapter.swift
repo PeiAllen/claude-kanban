@@ -13,7 +13,7 @@ public struct ClaudeCodeAdapter: Adapter {
     /// Claude Code's shipped seam behavior, frozen as the descriptor (A1).
     public var capabilities: AgentCapabilities { .claudeCode }
 
-    /// B3 — cold-path resume-modal suppression (5866ea). A machine-driven `claude --resume` on an old
+    /// B3 — cold-path resume-modal suppression. A machine-driven `claude --resume` on an old
     /// (> ~70min) AND large (> ~100k tokens) session opens a "Resume from summary/full" modal INSTEAD of
     /// running the seed argv; with no human to answer it, the resume deadlocks and swallows the seed (two
     /// live cards were observed parked at it). Set both thresholds impossibly high so the modal never

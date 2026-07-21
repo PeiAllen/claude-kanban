@@ -104,7 +104,7 @@ public actor OrchestraService {
     /// Durable inbox routing for the fan-out: watcher card → the children it is watching. A child's
     /// conclusion enqueues into every watching parent's inbox (F3 coalesce) + wakes it (F2). Write-through
     /// mirror of `watchStore` — EVERY mutation persists (via `registerWatch`/`unregisterWatch`) so a
-    /// watcher survives a daemon restart (carry #4).
+    /// watcher survives a daemon restart.
     var watchRegistry: [UUID: Set<UUID>] = [:]
     /// Lazy-load latch for `watchRegistry` (mirrors `WorktreeRegistry.borrowsLoaded`). The server accepts
     /// RPCs before boot's `reloadWatchRegistry` runs, so the FIRST access — a boot-window `registerWatch`/
@@ -909,7 +909,7 @@ public actor OrchestraService {
     /// B5a-owed editor seam: re-arm a card a human edited/removed a message on — but ONLY if it is
     /// actually delivery-stuck. A stuck card whose message is edited force-releases the lease (B1) yet
     /// keeps `deliveryStuckSince` + its spent budget, so the arm short-circuits and never re-drives it
-    /// (`+DeliveryArm.swift:34`). Resetting a HEALTHY card's budget on every edit would instead mask a
+    /// (`+DeliveryArm.swift`). Resetting a HEALTHY card's budget on every edit would instead mask a
     /// genuinely-failing delivery, so the reset is gated on the stuck flag. Called with the edited
     /// message's true OWNER (from `inbox.remove`/`update`), never the caller's ref — a cross-card or
     /// nonexistent message id therefore leaves the caller's card untouched.

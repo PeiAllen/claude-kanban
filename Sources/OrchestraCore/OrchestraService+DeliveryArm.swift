@@ -62,7 +62,7 @@ extension OrchestraService {
         // Fence to the pre-`wake` generation: if `wake` recorded a cold relaunch (bumping the epoch to
         // `.relaunching`) the card is being delivered to, not stuck — the epoch mismatch aborts the flip.
         let liveEpoch = t.sessionEpoch
-        // PRE-WAKE stuck flip (wave-1 T3). The stuck rule (02 §delivery-arm / docs/09) is UNCONDITIONAL on
+        // PRE-WAKE stuck flip. The stuck rule (02 §delivery-arm / docs/09) is UNCONDITIONAL on
         // route: attempts ≥ 5 ∧ oldest age > `deliveryStuckAfter` → flip. But a RESUMABLE card's only route
         // is a cold relaunch, and `resumeInCard` bumps the epoch the POST-wake flip below is fenced to — so
         // that flip can NEVER fire for it, and left alone the card relaunch-churns on the lease-expiry
@@ -100,7 +100,7 @@ extension OrchestraService {
         guard let outstanding = outstandingTokens[t.id], !outstanding.isEmpty else { return }
         // Ask the Inbox per token, through the TOKEN-scoped, EXPIRY-aware predicate. Presence alone is
         // the wrong test: a stale-epoch held relaunchSeed lease still carries its token, and since the
-        // wave-1 fence it can never confirm — a presence test would leave it outstanding forever.
+        // post-claim epoch fence it can never confirm — a presence test would leave it outstanding forever.
         var dead: Set<UUID> = []
         for token in outstanding where !(await inbox.isLeaseLive(token: token, now: now())) {
             dead.insert(token)

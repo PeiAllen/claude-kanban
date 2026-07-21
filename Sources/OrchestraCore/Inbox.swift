@@ -80,7 +80,7 @@ public actor Inbox {
             } else {
                 // Pre-upgrade bare array → messages + an empty ring. TOLERANT BY CONSTRUCTION: an
                 // envelope-only decoder would .bak every existing inbox on upgrade and drop every
-                // pending send (round-4 gate CRITICAL). Mirrors TaskStore's {rev,tasks} precedent.
+                // pending send. Mirrors TaskStore's {rev,tasks} precedent.
                 messages = try OrchestraJSON.decoder
                     .decode([FailableInboxMessage].self, from: data).compactMap(\.message)
                 confirmedIds = []
