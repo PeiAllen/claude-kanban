@@ -16,7 +16,11 @@ struct VerbContractTests {
         "list": (.query, allKinds), "status": (.query, allKinds), "sessions": (.query, allKinds),
         "capture": (.query, allKinds), "tree": (.query, allKinds), "trustState": (.query, allKinds),
         "inbox": (.query, allKinds),
-        "move": (.mutation, nonArchived), "send": (.mutation, nonArchived), "trust": (.mutation, nonArchived),
+        "move": (.mutation, nonArchived), "trust": (.mutation, nonArchived),
+        // `send` is a CONVERGENCE verb (B5a): the persisted intent is the non-empty inbox row, which the
+        // delivery arm drives to empty — not a one-shot mutation. Gate stays non-archived (a send to a
+        // dead card persists intent the arm revives).
+        "send": (.convergence, nonArchived),
         "wait": (.mutation, allKinds),
         "inbox-edit": (.mutation, nonArchived), "inbox-remove": (.mutation, nonArchived),
         "inbox-reorder": (.mutation, nonArchived),

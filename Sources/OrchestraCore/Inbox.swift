@@ -120,6 +120,23 @@ public actor Inbox {
         try persist()
     }
 
+    /// Append a message carrying an explicit client-minted `id`, but ONLY if that id is unknown — not
+    /// already pending AND not in the confirmed-ids ring. Returns whether it actually enqueued (`false`
+    /// = a duplicate that mutated nothing). This is B5a's `send` idempotency, and the check+append MUST
+    /// be ONE atomic actor call: `OrchestraService` is reentrant, so a caller-side `wasConfirmed`-then-
+    /// `enqueue` across two awaits lets two concurrent same-id sends both observe "unknown" and both
+    /// append — the exact check-then-act race B2's atomic `claim` closed. `confirm` tombstones the id in
+    /// the ring, so this no-ops a retry whose response was lost even AFTER the message was delivered and
+    /// removed. (Internal nudge callers use the plain `enqueue`, which mints its own id — no dedup.)
+    @discardableResult
+    public func enqueueIfUnknown(_ cardId: UUID, _ text: String, id: UUID) throws -> Bool {
+        ensureLoaded()
+        if messages.contains(where: { $0.id == id }) || confirmedIds.contains(id) { return false }
+        messages.append(InboxMessage(id: id, cardId: cardId, text: text, createdAt: now()))
+        try persist()
+        return true
+    }
+
     // `drain`/`drainFirst` DELETED (B4): after B3's de-drain they had zero production callers, and a
     // public remove-without-receipt primitive is the exact trap this at-least-once design exists to
     // eliminate — the confirm funnel guards `confirm`, not a raw drain, so a later delivery-path
@@ -127,24 +144,30 @@ public actor Inbox {
     // Delivery removes ONLY through `confirm(token:)` on a proven receipt; the editor removes through
     // `remove(_:)`; readers use the non-destructive `peek`.
 
-    /// Remove one message by id (no-op if absent). Used by the inbox editor.
+    /// Remove one message by id (no-op if absent). Used by the inbox editor. Returns the removed
+    /// message's OWNER `cardId`, or `nil` when no message matched — B5a's editor stuck-reset re-arms
+    /// exactly that owner, never the caller's ref (this lookup is GLOBAL by message id, so the ref a
+    /// verb was given and the message's true owner can differ, or the id may not exist at all).
     ///
     /// FORCE-RELEASES the message's in-flight batch (the human always wins): the rendered payload no
     /// longer matches the queue, so the batch returns to pending and re-delivers as a fresh claim. The
     /// already-rendered payload may still arrive once — benign and disclosed.
-    public func remove(_ id: UUID) throws {
+    @discardableResult
+    public func remove(_ id: UUID) throws -> UUID? {
         ensureLoaded()
-        if let token = messages.first(where: { $0.id == id })?.lease?.token {
-            unlease { $0.lease?.token == token }
-        }
+        guard let msg = messages.first(where: { $0.id == id }) else { return nil }
+        if let token = msg.lease?.token { unlease { $0.lease?.token == token } }
         messages.removeAll { $0.id == id }
         try persist()
+        return msg.cardId
     }
 
     /// Replace a message's text in place; id / cardId / createdAt are preserved. Force-releases the
     /// batch for the same reason `remove` does — an in-flight token must never confirm text the human
-    /// has since rewritten.
-    public func update(_ id: UUID, text: String) throws {
+    /// has since rewritten. Returns the edited message's OWNER `cardId` (throws if absent) so B5a's
+    /// editor stuck-reset re-arms that owner, not the caller's ref (the lookup is global by message id).
+    @discardableResult
+    public func update(_ id: UUID, text: String) throws -> UUID {
         ensureLoaded()
         guard let idx = messages.firstIndex(where: { $0.id == id }) else {
             throw OrchestraError.invalidParams("no inbox message with id \(id)")
@@ -154,6 +177,7 @@ public actor Inbox {
         messages[idx] = InboxMessage(id: old.id, cardId: old.cardId, text: text,
                                      dedupKey: old.dedupKey, createdAt: old.createdAt)
         try persist()
+        return old.cardId
     }
 
     /// Reorder a single card's pending messages. `orderedIds` must be a permutation of that card's

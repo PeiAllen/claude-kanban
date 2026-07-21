@@ -72,8 +72,13 @@ enum CLIRunner {
             case "send":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let msg = flags.value("message") ?? flags.positionalsFrom(1).joined(separator: " ")
-                _ = try await client.call("send", .object(["ref": .string(ref), "message": .string(msg)]))
-                print("sent")
+                // Client-minted message id (required at the daemon boundary): honour a caller-supplied
+                // `--id` so a script retrying `send` after a timeout reuses its id → the daemon dedups
+                // (idempotent), else mint a fresh one. Same pattern as `spawn` above.
+                let msgId = flags.value("id").flatMap(UUID.init(uuidString:)) ?? UUID()
+                _ = try await client.call("send", .object(["ref": .string(ref), "message": .string(msg),
+                                                           "id": .string(msgId.uuidString)]))
+                print("sent \(msgId)")
 
             case "wait":
                 // Watch one or more child cards; block until one concludes, print it, and EXIT — the

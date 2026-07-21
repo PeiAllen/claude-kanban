@@ -754,6 +754,64 @@ struct SendRoutingTests {
     }
 }
 
+/// B5a · the Inbox primitives `send` and the editor now depend on: an ATOMIC dedup-append keyed on the
+/// client message id (so a reentrant double-send can't double-append), and owner-returning editor
+/// mutations (so the service re-arms the message's true owner, not the caller's ref).
+@Suite("B5a · Inbox send idempotency + editor owner")
+struct InboxSendIdempotencyTests {
+    private func freshInbox() -> (inbox: Inbox, path: String, cardA: UUID, cardB: UUID) {
+        let path = NSTemporaryDirectory() + "inbox-\(UUID().uuidString).json"
+        return (Inbox(path: path), path, UUID(), UUID())
+    }
+
+    @Test("enqueueIfUnknown appends once, then dedups a still-pending id")
+    func enqueueIfUnknownPendingDedups() async throws {
+        let (inbox, path, card, _) = freshInbox()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let id = UUID()
+        #expect(try await inbox.enqueueIfUnknown(card, "first", id: id) == true)
+        #expect(try await inbox.enqueueIfUnknown(card, "again", id: id) == false)   // pending → dedup
+        #expect(await inbox.peek(card).map(\.text) == ["first"])                    // one row, unrewritten
+    }
+
+    @Test("enqueueIfUnknown dedups an id already tombstoned in the confirmed-ids ring")
+    func enqueueIfUnknownRingDedups() async throws {
+        let (inbox, path, card, _) = freshInbox()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let id = UUID()
+        #expect(try await inbox.enqueueIfUnknown(card, "delivered", id: id) == true)
+        let batch = try #require(try await inbox.claim(
+            card, route: .channelPush, epoch: 1, budget: StopDrain.maxPayloadChars,
+            render: { HandoffSeed.compose(handoff: nil, messages: $0, budget: $1) }, now: Date()))
+        #expect(try await inbox.confirm(token: batch.token))       // records id in the ring, removes the row
+        #expect(await inbox.wasConfirmed(id))
+
+        #expect(try await inbox.enqueueIfUnknown(card, "retry", id: id) == false)   // ring → dedup
+        #expect(await inbox.peek(card).isEmpty)                    // not re-appended
+    }
+
+    @Test("remove returns the message's owner cardId, or nil when the id is absent")
+    func removeReturnsOwnerNilWhenAbsent() async throws {
+        let (inbox, path, card, _) = freshInbox()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let id = UUID()
+        try await inbox.enqueueIfUnknown(card, "m", id: id)
+        #expect(try await inbox.remove(UUID()) == nil)             // absent → nil owner
+        #expect(try await inbox.remove(id) == card)               // present → the owner
+        #expect(await inbox.peek(card).isEmpty)
+    }
+
+    @Test("update returns the edited message's owner; an absent id throws")
+    func updateReturnsOwner() async throws {
+        let (inbox, path, card, _) = freshInbox()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let id = UUID()
+        try await inbox.enqueueIfUnknown(card, "m", id: id)
+        #expect(try await inbox.update(id, text: "edited") == card)
+        await #expect(throws: OrchestraError.self) { _ = try await inbox.update(UUID(), text: "x") }
+    }
+}
+
 @Suite("C1 · Stop-drain preserves the stop/waiting report")
 struct NotifyPreservedTests {
     @Test("the Stop hook's stop event still parses to a waiting StatusReport and drives the card to waiting")

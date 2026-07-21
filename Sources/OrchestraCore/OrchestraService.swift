@@ -713,7 +713,8 @@ public actor OrchestraService {
     /// no-ops on a card that already has a turn coming (running, mid-relaunch, or subscribed through a
     /// native background `orchestra wait`). See `wake` for delivery: an idle card resume-seeds; a busy one
     /// drains at its Stop.
-    public func send(_ id: UUID, _ message: String) async throws {
+    @discardableResult
+    public func send(_ id: UUID, _ message: String, messageId: UUID = UUID()) async throws -> SendResult {
         let t = try await require(id)
         // Reject over-cap messages at the boundary rather than silently truncating them at delivery: the
         // inbox is a nudge channel (`StopDrain.maxMessageChars`), not a document transfer. An accepted
@@ -723,8 +724,20 @@ public actor OrchestraService {
                 "message is \(message.count) chars; the inbox limit is \(StopDrain.maxMessageChars). "
                 + "Put large content in a file in the worktree and reference it instead.")
         }
-        try await inbox.enqueue(t.id, message)
+        // Dedup-FIRST, ATOMICALLY: `enqueueIfUnknown` checks pending ∪ the confirmed-ids ring AND appends
+        // in one actor call (the service is reentrant — a split check-then-append would let two concurrent
+        // same-id sends both enqueue). A replay (id already pending, or delivered+tombstoned) mutates NO
+        // delivery state and fires NO wake — it just re-returns the id and a card snapshot.
+        guard try await inbox.enqueueIfUnknown(t.id, message, id: messageId) else {
+            return SendResult(messageId: messageId, card: t)
+        }
+        // A fresh send re-arms the WHOLE retry budget before its opportunistic wake: reset attempts and
+        // clear any stuck flag (contract §stuck-cleared-with-owners — `send` is one of the three clear
+        // owners), else a stuck cold card would get exactly one doomed wake instead of a full retry budget.
+        deliveryAttempts[t.id] = nil
+        await clearStuckIfSet(t.id)
         await wake(t.id)
+        return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)
     }
 
     /// Send a constrained key chord to one of the card's tmux windows (default `agent`). Unlike
@@ -742,16 +755,20 @@ public actor OrchestraService {
         return await inbox.peek(t.id)
     }
 
-    /// Inbox editor: remove one queued message by its id.
+    /// Inbox editor: remove one queued message by its id. Re-arms the removed message's OWNER if it was
+    /// delivery-stuck (B5a-owed seam) — force-release alone (B1) leaves a stuck card wedged with a spent
+    /// budget; a human removing a message is an intervention that should let the arm re-drive what remains.
     public func inboxRemove(_ id: UUID, messageId: UUID) async throws {
         _ = try await require(id)
-        try await inbox.remove(messageId)
+        if let owner = try await inbox.remove(messageId) { await reArmIfStuck(owner) }
     }
 
-    /// Inbox editor: edit the text of one queued message.
+    /// Inbox editor: edit the text of one queued message. Re-arms the edited message's OWNER if it was
+    /// delivery-stuck (same B5a-owed seam as `inboxRemove`).
     public func inboxUpdate(_ id: UUID, messageId: UUID, text: String) async throws {
         _ = try await require(id)
-        try await inbox.update(messageId, text: text)
+        let owner = try await inbox.update(messageId, text: text)
+        await reArmIfStuck(owner)
     }
 
     /// Inbox editor: reorder a card's queued messages (ids = full new order).
@@ -850,6 +867,44 @@ public actor OrchestraService {
            let (saved, rev) = try? await store.update(cardId, { $0.deliveryStuckSince = nil }) {
             emit(.taskUpserted(saved), rev: rev)
         }
+    }
+
+    /// Clear a card's `deliveryStuckSince` if set, and report whether THIS call performed the set→nil
+    /// transition. The prior-value read and the clear happen in ONE atomic `store.update` closure, so the
+    /// `true`/`false` answer can't be stale: a concurrent confirm that already unstuck the card makes the
+    /// closure observe `nil` → returns `false` (and, by `TaskStore.update`'s no-op rule, bumps no rev and
+    /// emits nothing). The leading `store.get` is a cheap early-out only. Shared by `send`'s re-arm (which
+    /// ignores the result — a new message always re-arms) and the editor stuck-reset (which gates the
+    /// attempt-budget reset on it — see `reArmIfStuck`).
+    @discardableResult
+    func clearStuckIfSet(_ cardId: UUID) async -> Bool {
+        guard await store.get(cardId)?.deliveryStuckSince != nil else { return false }
+        var wasSet = false
+        guard let (saved, rev) = try? await store.update(cardId, { task in
+            wasSet = task.deliveryStuckSince != nil
+            task.deliveryStuckSince = nil
+        }), wasSet else { return false }
+        emit(.taskUpserted(saved), rev: rev)
+        return true
+    }
+
+    /// B5a-owed editor seam: re-arm a card a human edited/removed a message on — but ONLY if it is
+    /// actually delivery-stuck. A stuck card whose message is edited force-releases the lease (B1) yet
+    /// keeps `deliveryStuckSince` + its spent budget, so the arm short-circuits and never re-drives it
+    /// (`+DeliveryArm.swift:34`). Resetting a HEALTHY card's budget on every edit would instead mask a
+    /// genuinely-failing delivery, so the reset is gated on the stuck flag. Called with the edited
+    /// message's true OWNER (from `inbox.remove`/`update`), never the caller's ref — a cross-card or
+    /// nonexistent message id therefore leaves the caller's card untouched.
+    ///
+    /// The reset is gated on `clearStuckIfSet`'s ATOMIC transition, not a separate pre-read: a bare
+    /// `get(stuck?) → reset` would erase a healthy generation's freshly-charged attempts if a confirm
+    /// unstuck-and-recharged the card while this continuation was parked on the read (the value the guard
+    /// sees would be stale by the time the synchronous reset runs — the same reentrancy hazard the arm's
+    /// `flipStuckIfExhausted` guards with on-actor revalidation). Because the reset runs SYNCHRONOUSLY
+    /// after `clearStuckIfSet` returns `true` (no `await` between), nothing can charge in the gap either.
+    func reArmIfStuck(_ cardId: UUID) async {
+        guard await clearStuckIfSet(cardId) else { return }
+        deliveryAttempts[cardId] = nil
     }
 
     /// Claim the cold-delivery `relaunchSeed` batch for a relaunch (the RelaunchStepper's `ctx.claimSeed`):
@@ -990,7 +1045,7 @@ public actor OrchestraService {
         // moving ITSELF via CLI/MCP/agent, or a no-op drop back into its own column, does not. Best-effort
         // (`try?`): a notification failure must never fail the move it is reporting on.
         if source == .app, from != column {
-            try? await send(id, "You were moved from \(from.displayName) to \(column.displayName) by the user (via the board UI).")
+            _ = try? await send(id, "You were moved from \(from.displayName) to \(column.displayName) by the user (via the board UI).")
         }
         return updated
     }

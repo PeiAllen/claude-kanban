@@ -685,6 +685,38 @@ callers, and a public remove-without-receipt primitive is exactly the trap the w
 exists to eliminate — the four PRs basing on B4 could otherwise reach for one and silently reintroduce
 remove-before-receipt.
 
+### `send` is a convergence verb with an idempotent message id (B5a)
+
+`send` is no longer a `.mutation` — it is a `.convergence` verb, because the persisted intent it records is
+the non-empty inbox row itself, and the delivery arm drives that intent to empty. The gate stays
+non-archived: a send to a dead card persists intent the arm revives. The handler carries a **client-minted
+message id**, advertised *optional* in the catalog but required at the daemon boundary and stamped by every
+client seam (CLI `--id`, the MCP bridge, the board store) exactly as `spawn`'s card id is — so an agent can
+omit it and still get a stamped, retry-safe id, while a seam that forgets one fails loudly instead of
+silently re-delivering.
+
+The id makes `send` idempotent, and the dedup is **one atomic Inbox operation** —
+`enqueueIfUnknown(cardId, text, id)` checks pending messages *and* the confirmed-ids ring and appends in a
+single actor call. Atomicity is not incidental: `OrchestraService` is reentrant, so a split
+check-then-append across two awaits would let two concurrent same-id sends both observe "unknown" and both
+append — the exact race B2's atomic `claim` closed. Because `confirm` tombstones the id in the ring, a retry
+whose response was lost is a true no-op *even after* the message was delivered and removed. A replay returns
+the id and a card snapshot having mutated no delivery state and fired no wake; only a genuinely new message
+re-arms the retry budget (resets attempts, clears any `deliveryStuckSince`) before its opportunistic wake, so
+a stuck cold card gets its whole budget back rather than a single doomed retry. Inbox mutations bump no board
+`rev` and emit no task event — clients inspect the queue through the `inbox` verb, as before — so on a
+running, non-stuck card `send` is observably event-silent.
+
+The inbox editor is the third owner of the stuck-clear (beside a confirmed delivery and an emptied inbox). A
+stuck card whose message a human **edits or removes** force-releases the lease (B1) but would otherwise stay
+wedged with `deliveryStuckSince` set and its budget spent — the arm short-circuits a stuck card, so the
+edited message would never be re-driven. So the editor re-arms it. The re-arm is scoped to the edited
+message's **true owner**, not the caller's ref: `inbox-remove`/`inbox-edit` mutate globally by message id, so
+`Inbox.remove`/`update` return the affected message's `cardId` and the service re-arms *that* card — a
+cross-card or nonexistent id therefore leaves the caller's card untouched. The re-arm is gated on the stuck
+flag (a healthy card's accruing budget is never reset by an edit, which would mask a genuinely failing
+delivery), and `inbox-reorder` is excluded because it preserves leases and disturbs no live claim.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
