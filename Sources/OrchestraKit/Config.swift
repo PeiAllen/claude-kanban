@@ -35,6 +35,21 @@ public struct Config: Codable, Sendable, Equatable {
     /// (`worktree list/remove/prune`, `rev-parse`, `status --porcelain`).
     public var controlTimeout: Int
 
+    /// How long a delivery lease stays live before the batch is re-claimable (seconds). The failure
+    /// bound for a lost receipt: a lost hook reply / dead bridge / failed relaunch leaves the token to
+    /// expire and the arm re-claims. Read by the `Inbox` actor, which holds no Config — injected at its
+    /// construction site (first-reference rule: the claimable set is what reads it).
+    public var deliveryLeaseTimeout: Int
+
+    /// How long a card may go on failing delivery before it is surfaced STUCK (seconds). Paired with
+    /// the attempt budget: the arm flips `deliveryStuckSince` only when BOTH the retry budget is
+    /// spent AND the oldest pending message is older than this — so a brief outage never nags.
+    public var deliveryStuckAfter: Int
+
+    /// Master switch for Claude MCP channels. Read by the adapter in D to compute `wakeTransport`;
+    /// declared here alongside the other service-read delivery knobs so the config surface lands early.
+    public var claudeChannels: Bool
+
     /// Root for ephemeral scratch-card dirs. INSTANCE state, deliberately NON-Codable: every
     /// OrchestraService sweeps and rm -rf's under ITS config's root, so tests give each service a
     /// private root and concurrent daemons/tests can never delete each other's scratch dirs.
@@ -63,6 +78,9 @@ public struct Config: Codable, Sendable, Equatable {
         worktreeAddTimeout: Int = 600,
         sessionLaunchTimeout: Int = 30,
         controlTimeout: Int = 15,
+        deliveryLeaseTimeout: Int = 60,
+        deliveryStuckAfter: Int = 300,
+        claudeChannels: Bool = true,
         autoInstallMCPGlobally: Bool = false,
         scratchRoot: String = Config.defaultScratchRoot,
         runtimeStateDir: String = Config.dataDir
@@ -80,6 +98,9 @@ public struct Config: Codable, Sendable, Equatable {
         self.worktreeAddTimeout = worktreeAddTimeout
         self.sessionLaunchTimeout = sessionLaunchTimeout
         self.controlTimeout = controlTimeout
+        self.deliveryLeaseTimeout = deliveryLeaseTimeout
+        self.deliveryStuckAfter = deliveryStuckAfter
+        self.claudeChannels = claudeChannels
         self.scratchRoot = scratchRoot
         self.runtimeStateDir = runtimeStateDir
     }
@@ -88,7 +109,8 @@ public struct Config: Codable, Sendable, Equatable {
         case reposRoot, worktreesRoot, defaultModel, defaultAgentId, allowlist,
              maxConcurrentRevivals, revivalGraceSeconds, statusLineMode, customStatusLine,
              autoInstallMCPGlobally,
-             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout
+             worktreeAddTimeout, sessionLaunchTimeout, controlTimeout, deliveryLeaseTimeout,
+             deliveryStuckAfter, claudeChannels
     }
 
     /// Custom decode so a pre-upgrade `config.json` lacking the new timeout keys still decodes,
@@ -112,6 +134,9 @@ public struct Config: Codable, Sendable, Equatable {
         worktreeAddTimeout = try c.decodeIfPresent(Int.self, forKey: .worktreeAddTimeout) ?? 600
         sessionLaunchTimeout = try c.decodeIfPresent(Int.self, forKey: .sessionLaunchTimeout) ?? 30
         controlTimeout = try c.decodeIfPresent(Int.self, forKey: .controlTimeout) ?? 15
+        deliveryLeaseTimeout = try c.decodeIfPresent(Int.self, forKey: .deliveryLeaseTimeout) ?? 60
+        deliveryStuckAfter = try c.decodeIfPresent(Int.self, forKey: .deliveryStuckAfter) ?? 300
+        claudeChannels = try c.decodeIfPresent(Bool.self, forKey: .claudeChannels) ?? true
     }
 
     // MARK: Defaults
@@ -162,7 +187,7 @@ public struct Config: Codable, Sendable, Equatable {
     public static var borrowsPath: String { "\(dataDir)/borrows.json" }
     /// Durable watch registry (`[watcherCardId: [childCardId]]`), sibling to `inboxPath`. Survives a
     /// daemon restart so an MCP `wait` watcher is re-notified of a child that concluded while the daemon
-    /// was down (F2/F3 fan-out durability, PR4b carry #4).
+    /// was down (F2/F3 fan-out durability).
     public static var watchRegistryPath: String { "\(dataDir)/watch-registry.json" }
     /// Registry-owned worktree "materialized" markers (one sentinel file per worktree path), sibling to `inboxPath`.
     public static var worktreeMarkersDir: String { "\(dataDir)/worktree-markers" }

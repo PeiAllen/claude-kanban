@@ -63,7 +63,7 @@ struct CodexAdapterArgvTests {
     }
 
     // F3 · live drain: Codex encodes a Stop-drain continuation into the SAME `decision:block` envelope as
-    // Claude (byte-identical framing). This is what `handleHook(.stop)` → `drainForStop` rides.
+    // Claude (byte-identical framing). This is what `handleHook(.stop)` → `payloadForStop` rides.
     @Test("encode(.continuation, for: .stop) is the shared block continuation")
     func encodesStopContinuation() {
         let out = CodexAdapter().encode(HookResponse(continuation: "DRAIN-ME"), for: .stop)

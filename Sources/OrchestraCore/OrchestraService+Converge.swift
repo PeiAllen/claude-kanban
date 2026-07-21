@@ -14,7 +14,7 @@ extension OrchestraService {
     /// → the S2-3(iii) rollback on a lineage failure → the resource epilogue (release the just-cut tree if a
     /// newer intent made the card terminal during the `ensure` await). Reads `spawnBase`/branch from the
     /// persisted card and re-derives the remote/local classification with `RemoteParentRef.parse` (so a
-    /// remote base survives a restart). Mirrors today's inline spawn body (`OrchestraService.swift:329-401`).
+    /// remote base survives a restart). Mirrors today's inline spawn body (`OrchestraService.swift`).
     func materialize(_ id: UUID) async -> MaterializeOutcome {
         guard let card = await store.get(id) else { return .failed(detail: "unknown card \(id)") }
         // Scratch dirs are materialized synchronously (mkdir) — ensure the dir exists, then advance.
@@ -150,12 +150,16 @@ extension OrchestraService {
         let grace = config.revivalGraceSeconds
         let env = withEpoch(adapter.env, epoch)   // stamp the current generation into the session env
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
-        pendingReadiness.remove(id)   // start clean so only THIS bring-up's signal can confirm it
+        pendingReadiness.removeValue(forKey: id)   // start clean so only THIS bring-up's signal can confirm it
 
         let argv: [String]
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a
         // fresh spawn's blank launch so a bounded retry can re-`ensure` the SAME session + cwd.
         var armCtx: AdapterContext? = nil
+        // B3 tail watermark: for a fileTail RESUME (Codex — same rollout carries forward), the rollout path
+        // whose post-kill EOF fences a held relaunchSeed lease's confirm. nil for a blank launch, a
+        // non-fileTail agent (Claude confirms via the epoch-matched hook, not the tail), or no rollout.
+        var tailWatermarkPath: String? = nil
         // A staged `--model` re-seat (restart/handoff/resume) WINS over `model` for the launch. It has to:
         // restart/resume are intent-only, so the outgoing session stays alive and reporting for a reconcile
         // tick after the verb writes the card, and its statusline's model — applied through report()'s
@@ -182,7 +186,7 @@ extension OrchestraService {
             //    lockdown flags from `ctx.access` on resume as well as on start, so a READ-ONLY card came
             //    back writable.
             //  • `startIn` — not merely a board column: `.plan` becomes `--permission-mode auto`
-            //    (ClaudeCodeAdapter.swift:204-206), so a resumed plan card silently lost it and began
+            //    (ClaudeCodeAdapter.swift), so a resumed plan card silently lost it and began
             //    prompting for permissions mid-task.
             let ctx = AdapterContext(cwd: task.cwd, repo: task.repo, model: launchModel, startIn: task.startIn,
                                      sessionId: task.agentSessionId, name: task.title, orchestraBin: orchestraBin,
@@ -193,15 +197,20 @@ extension OrchestraService {
             guard let sid = task.agentSessionId else { return .timedOut }
             let a = adapter, c = ctx, priorIds = task.priorSessionIds
             // 5.1.3 pattern: hop the adapter's fs-touching sessionInfo() + the transcript existence check
-            // off-actor before the `.timedOut` decision — same guard, same short-circuit order.
-            let transcriptOK: Bool = (try? await offActor {
+            // off-actor before the `.timedOut` decision — same guard, same short-circuit order. B3: also
+            // yield the resolved transcript/rollout PATH (nil unless it exists) so a fileTail resume can
+            // fence its held lease on that exact path.
+            let resolvedTranscript: String? = (try? await offActor { () -> String? in
                 guard let info = a.sessionInfo(c, current: sid, prior: priorIds),
-                      let tp = info.transcriptPath else { return false }
-                return FileManager.default.fileExists(atPath: tp)
-            }) ?? false
-            guard transcriptOK, let resumeArgv = adapter.resume(ctx) else {
+                      let tp = info.transcriptPath, FileManager.default.fileExists(atPath: tp) else { return nil }
+                return tp
+            }) ?? nil
+            guard let resolvedTranscript, let resumeArgv = adapter.resume(ctx) else {
                 return .timedOut   // transcript vanished between the stepper's pre-check and here
             }
+            // Only a fileTail agent confirms its held lease by rollout provenance; a hooksPush agent (Claude)
+            // uses the epoch-matched hook, so it needs no watermark (and its transcript is not a tailed rollout).
+            if adapter.capabilities.telemetry == .fileTail { tailWatermarkPath = resolvedTranscript }
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = resumeArgv
         }
@@ -221,10 +230,19 @@ extension OrchestraService {
                 detail: "preflight: the host could not provide a \(report.resource.rawValue) "
                       + "(session not started, existing session left intact)", resource: report))
         }
+        let capturedWatermark: Int64?
+        let watermarkPath = tailWatermarkPath   // immutable copy for the @Sendable hop
         do {
-            try await offActor { [sessions] in
+            // B3 watermark capture: kill → eofOffset → ensure, ALL in this one off-actor hop. The EOF is read
+            // AFTER the predecessor is killed (so it cannot append past the fence) and BEFORE the new session
+            // is launched (so the new session hasn't written yet). `eofOffset` is a stateless stat, so it runs
+            // inside this hop with no extra actor suspension — tightening the fence. A blank/non-fileTail
+            // launch has `watermarkPath == nil` and captures nothing.
+            capturedWatermark = try await offActor { [sessions] () -> Int64? in
                 _ = try? sessions.kill(sessions.sessionName(id))   // idempotent for a fresh launch
+                let wm = watermarkPath.map { RolloutTailer.eofOffset(path: $0) }
                 _ = try sessions.ensure(task, argv: argv, env: env)
+                return wm
             }
         } catch {
             // The tmux stderr IS the diagnosis ("create window failed: fork failed: Device not configured")
@@ -286,7 +304,15 @@ extension OrchestraService {
             spawnAttempts[id] = 0
             spawnRelaunch[id] = (adapter.id, ctx)
         }
-        return await confirmReadiness(id, adapter: adapter, graceSeconds: grace)
+        // B3: stamp the post-kill watermark + rollout path on the held relaunchSeed lease (fileTail resume
+        // only). Done AFTER the ensure + the ownership re-check (a superseded bring-up returned above, so its
+        // watermark never lands), and BEFORE readiness — so a rollout line tailed during the readiness wait is
+        // fenced. A no-op when there is no held lease (a handoff-only or seedless relaunch).
+        if let watermarkPath, let capturedWatermark {
+            try? await inbox.setTailWatermark(cardId: id, epoch: expectedEpoch,
+                                              watermark: capturedWatermark, path: watermarkPath)
+        }
+        return await confirmReadiness(id, adapter: adapter, graceSeconds: grace, expectedEpoch: expectedEpoch)
     }
 
     /// Does this bring-up still own the card — is it still in the phase + generation its step was dispatched
@@ -315,6 +341,11 @@ extension OrchestraService {
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
         clearSpawnPending(id)        // an archived card is never startup-pending — don't let a retry resurrect it
         observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
+        // B4 delivery-tracking hygiene: an archived card is never re-scanned, so its retry-accounting and
+        // outstanding-token entries are pruned nowhere else (confirm/expiry only fire while it is live) —
+        // drop both here or they leak one entry per card for the daemon's lifetime.
+        deliveryAttempts[id] = nil
+        outstandingTokens[id] = nil
         // S2-5: a worktree card's branch goes bare on archive — nudge its live children (deterministic,
         // oldest) so a stopped child re-evaluates its ship path instead of waiting on a dead inbox.
         guard t.origin == .worktree else { return }

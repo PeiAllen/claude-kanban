@@ -6,8 +6,9 @@ import TestSupport
 /// F2 · Codex wakes by **resume-seed** (`wakeTransport == .relaunch`), NOT a TUI keystroke. An idle Codex
 /// card `send`-ed a message relaunches via `resumeInCard` with the inbox folded into the opening turn — the
 /// same primitive Claude's no-wait wake uses (see `SendWakeTests` for the shared behaviour). The ONE
-/// divergence from Claude (`nativeReinvoke`): a Codex card has no harness re-invoke, so `resumeSeedWake`
-/// passes `watcherWillReinvoke: false` and it resumes **even when watching children**.
+/// divergence from Claude (`nativeReinvoke`): a Codex card has no harness re-invoke, so B4's wake ladder
+/// takes the cold `.relaunch` path with no `activeWaitProcesses` defer (that CLI-wait defer is
+/// `nativeReinvoke`-only), and it resumes **even when watching children**.
 @Suite("F2 · Codex resume-seed wake (.relaunch)")
 struct CodexWakeTests {
 
@@ -52,7 +53,8 @@ struct CodexWakeTests {
         let argv = try #require(env.sessions.ensureArgv[name])
         #expect(argv.contains("--resume"))                    // a resume relaunch, never a fresh start
         #expect(try #require(argv.last).contains("PING-CODEX"))   // the message rides the opening turn
-        #expect(await env.svc.drainForStop(card.id) == nil)   // drained into the seed — no double-delivery
+        let epoch = try #require(await env.svc.store.get(card.id)).sessionEpoch   // current post-relaunch epoch
+        #expect(await env.svc.payloadForStop(card.id, observedEpoch: epoch, stopHookActive: false) == nil)   // drained into the seed — no double-delivery
     }
 
     // The divergence from Claude: a WATCHING Codex card still resumes — there is no `orchestra wait`

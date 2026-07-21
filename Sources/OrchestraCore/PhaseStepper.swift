@@ -66,6 +66,13 @@ public struct ConvergeContext: Sendable {
     public let teardownActorDuties: @Sendable (_ id: UUID) async -> Void
     /// Emit an activity feed entry (re-materialized / spawn-failed / backoff), closed over the actor.
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
+    /// Funnel a delivery receipt (a claimed token's confirm) back to the service actor's `confirmDelivery`
+    /// — B3's stepper signal-readiness confirm reaches the archive guard + attempt/stuck resets through here.
+    public let confirmDelivery: @Sendable (_ token: UUID, _ cardId: UUID) async -> Void
+    /// Claim the cold-delivery `relaunchSeed` batch on the service actor: the card's `pendingSeed` (handoff)
+    /// composed with its pending inbox under one budget, leased at `epoch`. `nil` when there is nothing to
+    /// seed. The RelaunchStepper seeds the launch with `batch.payload` and confirms/holds on readiness.
+    public let claimSeed: @Sendable (_ cardId: UUID, _ epoch: Int) async -> ClaimedBatch?
 
     public init(store: TaskStore, worktrees: WorktreeRegistry, sessions: any SessionManaging,
                 adapters: AgentRegistry, inbox: Inbox, scratchRoot: String,
@@ -73,12 +80,16 @@ public struct ConvergeContext: Sendable {
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
                 teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
-                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void) {
+                emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void,
+                confirmDelivery: @escaping @Sendable (UUID, UUID) async -> Void,
+                claimSeed: @escaping @Sendable (UUID, Int) async -> ClaimedBatch?) {
         self.store = store; self.worktrees = worktrees; self.sessions = sessions
         self.adapters = adapters; self.inbox = inbox; self.scratchRoot = scratchRoot
         self.transition = transition
         self.materialize = materialize; self.finishLaunch = finishLaunch
         self.teardownActorDuties = teardownActorDuties; self.emitActivity = emitActivity
+        self.confirmDelivery = confirmDelivery
+        self.claimSeed = claimSeed
     }
 }
 
@@ -238,13 +249,29 @@ public struct RelaunchStepper: PhaseStepper {
                 return
             }
         }
-        // Resume when resumable (`pendingSeed` folded); a provisional card is a blank restart; a
-        // non-provisional card whose transcript vanished can't resume → fail safe.
+        // B3 D8: RE-READ the card AFTER the worktree ensure (which suspends). The claim epoch must be the
+        // card's CURRENT generation, not the possibly-stale dispatch snapshot — a relaunch that superseded
+        // us during `ensure` would otherwise let this stale step claim/re-own the lease at the wrong epoch.
+        guard let fresh = await ctx.store.get(card.id), fresh.phase.kind == .relaunching else { return }
+        let epoch = fresh.sessionEpoch
+
+        // B3 — claim the cold-delivery seed: the card's handoff (`pendingSeed`) composed with its pending
+        // inbox, leased on the `relaunchSeed` route. `batch.payload` is the FINAL argv seed verbatim (never
+        // re-folded). `nil` when there's nothing to seed (a bare relaunch: no handoff, no claimable message).
+        let batch = await ctx.claimSeed(card.id, epoch)
+
+        // Resume when resumable (seeded with the claimed payload); a provisional card blank-launches with the
+        // payload as its opening positional (landing `.running` when a prompt is submitted); a non-provisional
+        // card whose transcript vanished can't resume → fail safe.
         let flavor: LaunchFlavor
-        if transcriptExists(card, adapter) {
-            flavor = .resume(seed: card.pendingSeed)
-        } else if card.titleProvisional {
-            flavor = .blank(landing: .waiting(.humanTurn), prompt: nil)
+        if transcriptExists(fresh, adapter) {
+            flavor = .resume(seed: batch?.payload)
+        } else if fresh.titleProvisional {
+            if let payload = batch?.payload, !payload.isEmpty {
+                flavor = .blank(landing: .running, prompt: payload)   // a prompt IS submitted → running
+            } else {
+                flavor = .blank(landing: .waiting(.humanTurn), prompt: nil)
+            }
         } else {
             _ = await ctx.transition(card.id, .dead(.resumeFailed), nil, .relaunching) { t in
                 t.deadReason = .resumeFailed; t.deadDetail = "transcript gone"
@@ -252,20 +279,28 @@ public struct RelaunchStepper: PhaseStepper {
             return
         }
         let land = landing(of: flavor)
-        let epoch = card.sessionEpoch
         switch await ctx.finishLaunch(card.id, flavor, .relaunching, epoch) {
-        case .confirmed:
+        case .confirmed(let via):
             _ = await ctx.transition(card.id, .live(land), epoch, .relaunching) { t in
                 t.pendingSeed = nil
                 consumeModelReseat(&t, adapter)
+            }
+            // Signal readiness proves the NEW session booted with the seed → confirm now (removes the
+            // messages + rings). Tick readiness proves only liveness → HOLD the lease; `report()`'s
+            // provenance-fenced held-confirm removes it on the first proven current-gen line/hook. A
+            // handoff-only batch (ids == []) leased no message, so there is nothing to confirm — skip it
+            // (a 0-id confirm is a harmless no-op, but skipping avoids touching the funnel for nothing).
+            if via == .signal, let batch, !batch.ids.isEmpty {
+                await ctx.confirmDelivery(batch.token, card.id)
             }
         case .launchFailed(let failure):
             await concludeFailedLaunch(card.id, failure, fallback: .resumeFailed,
                                        expecting: .relaunching, ctx: ctx)
         case .timedOut:
-            break   // leave `.relaunching` for the reconciler's timeout (Task 2) — keeps `pendingSeed`
+            break   // leave `.relaunching` for the reconciler's timeout — keeps `pendingSeed` AND the held
+                    // lease; the retry's claim re-owns the batch (relaunchSeed re-own rule)
         case .superseded:
-            break   // a newer relaunch bumped the epoch and owns the card (single-winner discipline)
+            break   // a newer relaunch bumped the epoch and owns the card; its claim re-owns the lease
         }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
@@ -309,7 +344,7 @@ public struct TeardownStepper: PhaseStepper {
             try? await ctx.worktrees.release(cardId: card.id, cards: await ctx.store.all(), force: false)
         case .scratch:
             // Truly ephemeral — rm -rf, DOUBLE-guarded (debug `assert` + the release-safe runtime `if`).
-            // Conservative mode (post-corrupt boot, carry #3) removes NOTHING — the scratch dir's ownership
+            // Conservative mode (post-corrupt boot) removes NOTHING — the scratch dir's ownership
             // is as unprovable as a worktree's from an empty board, so the reclaim is gated on it too.
             assert(card.cwd.hasPrefix(ctx.scratchRoot + "/"))   // never rm -rf outside the scratch root
             let conservative = await ctx.worktrees.conservativeMode
@@ -324,7 +359,16 @@ public struct TeardownStepper: PhaseStepper {
         guard await stillArchiving(card.id, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
         await ctx.teardownActorDuties(card.id)
-        // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase.
+        // 4b · B3 D9: release the card's delivery leases before the terminal flip. B3 introduces HELD
+        // relaunchSeed leases; without the release, `confirmDelivery`'s archive-read→confirm await window
+        // could DELETE a held message on an archiving card instead of retaining it for a reopen. A released
+        // lease makes a late `confirm(token)` a token-no-op, so the message stays durable; a reopen redelivers.
+        try? await ctx.inbox.releaseAll(card.id)
+        // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase. The
+        // `expecting: .archivedPending` fence self-guards a reopen that won `releaseAll`'s suspension (a legal
+        // edge straight out of `archivedPending`): it brings the card back at a NEW epoch, so this transition
+        // stands down rather than flipping a live card to archived.
+        guard await stillArchiving(card.id, ctx) else { return }
         _ = await ctx.transition(card.id, .archived(teardownComplete: true), nil, .archivedPending) { t in t.archived = true }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {

@@ -83,6 +83,12 @@ _ = await server.withMethodHandler(CallTool.self) { params in
         fields["id"] = .string(UUID().uuidString)
         args = .object(fields)
     }
+    // `send`'s message id follows the same required-wire / stamp-if-absent contract: inject one ONLY when
+    // the agent omitted it, so an agent that reuses an `id` across a manual retry gets idempotent dedup.
+    if params.name == "send", case .object(var fields) = args, fields["id"] == nil {
+        fields["id"] = .string(UUID().uuidString)
+        args = .object(fields)
+    }
     if params.name == "batch-spawn", case .object(var fields) = args,
        case .array(let items)? = fields["tasks"] {
         fields["tasks"] = .array(items.map { item in

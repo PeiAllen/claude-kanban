@@ -114,3 +114,23 @@ public final class TestClock: Clock, @unchecked Sendable {
         }
     }
 }
+
+extension TestClock {
+    /// A `Date` provider on THIS clock's timeline: one `advance` moves both scheduling (`sleep`) and
+    /// absolute stamping (lease `leasedAt`, message `createdAt`, stuck age). Keeping them on one
+    /// timeline is what lets a test advance 61s and have the lease expire deterministically without a
+    /// wall-clock wait. `base` is a fixed epoch so failures print stable instants.
+    public func dateProvider(base: Date = Date(timeIntervalSince1970: 1_800_000_000))
+        -> @Sendable () -> Date {
+        { [self] in base.addingTimeInterval(now.offset.asTimeInterval) }
+    }
+}
+
+extension Duration {
+    /// Whole + fractional seconds as a `TimeInterval` (attoseconds folded in). Named `asTimeInterval`
+    /// rather than `seconds` so it cannot be misread as the stdlib's `Duration.seconds(_:)` factory.
+    public var asTimeInterval: TimeInterval {
+        let c = components
+        return TimeInterval(c.seconds) + TimeInterval(c.attoseconds) * 1e-18
+    }
+}

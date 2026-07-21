@@ -219,10 +219,11 @@ multiple `--settings` last-file-wins, so a second file would silently drop the s
    `{"decision":"block","reason":<payload>}` for the Stop-hook continuation — and the client prints it.
    The drain payload (`StopDrain`) leads with a channel-neutral **provenance header** — telling the model
    these are real instructions queued via Orchestra, not hook noise to distrust — followed by the messages
-   `[k/N]`-numbered when batched; only the *whole messages that fit* the 10 000-char budget are delivered
-   and drained, with overflow left queued for the next turn-end. A per-card **consecutive-inject loop
-   guard** (`OrchestraService.drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a
-   runaway Stop→inject→Stop cycle.
+   `[k/N]`-numbered when batched; only the *whole messages that fit* the 10 000-char budget are delivered,
+   with overflow left queued for the next turn-end. A per-card **consecutive-inject loop guard**
+   (`OrchestraService.payloadForStop`, cap 25, reset by a genuine `UserPromptSubmit`) breaks a runaway
+   Stop→inject→Stop cycle. Delivery is claim-then-confirm: the batch is *leased* into the continuation and
+   leaves the inbox only when the next same-epoch Stop proves the continuation ran (`stop_hook_active`).
 
 This single `hook` RPC replaced the former `report`/`drain`/`sessionBrief` methods. Because the daemon
 resolves the card's adapter from the persisted `agentId`, there is no agent identity on the wire beyond

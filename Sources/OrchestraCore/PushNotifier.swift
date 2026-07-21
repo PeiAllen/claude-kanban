@@ -35,12 +35,49 @@ public actor PushNotifier {
         self.sender = sender
     }
 
+    /// A test seam fired between `subscribe()` and the baseline snapshot, so a race test can land a
+    /// transition in exactly that window and prove buffered stale events are dropped by the rev boundary.
+    /// Nil in production.
+    var afterSubscribeForTest: (@Sendable () async -> Void)?
+    /// A test seam fired AFTER the baseline is seeded and BEFORE the stream loop, so a race test can fire a
+    /// genuine post-snapshot transition (rev > boundary) that MUST still notify. Nil in production.
+    var afterBaselineForTest: (@Sendable () async -> Void)?
+    func setAfterSubscribeForTest(_ hook: @escaping @Sendable () async -> Void) { afterSubscribeForTest = hook }
+    func setAfterBaselineForTest(_ hook: @escaping @Sendable () async -> Void) { afterBaselineForTest = hook }
+
     /// Consume the service event stream until it ends. Wired as a second subscriber alongside the
     /// ControlServer's event pump.
+    ///
+    /// SEED A BOOT BASELINE before consuming live events, so a card that is ALREADY dead/stuck when the
+    /// daemon (re)starts is the tracker's baseline — never re-notified — while its first GENUINE transition
+    /// after boot still fires. Without it, `subscribe()` replays no snapshot and `AttentionTracker.observe`
+    /// suppresses every first sighting (`prev == nil` / `seen == false`), so a survivor that dies after a
+    /// restart has that death consumed as a first sighting and no push is ever sent.
+    ///
+    /// Subscribe FIRST (so nothing landing in the window is lost), take an ATOMIC `(tasks, rev)` baseline,
+    /// seed from `tasks`, and DROP every buffered event with `rev <= baseline.rev`. Those are causally
+    /// OLDER than the snapshot yet already reflected in the seed, so replaying them against the newer seed
+    /// would misfire: a windowed death would no-op (dead→dead) and a superseded waiting would fire a stale
+    /// needs-you against a running seed. Only `rev > baseline.rev` events are genuinely post-snapshot, and
+    /// they fire normally. (`observe`'s phase-idempotency alone is NOT enough — it cannot tell a stale
+    /// replay from a real transition; the rev boundary is what distinguishes them.)
     public func run() async {
-        for await envelope in await service.subscribe() {
+        let stream = await service.subscribe()
+        await afterSubscribeForTest?()
+        let baseline = await service.attentionBaseline()
+        seedBaseline(baseline.tasks)
+        await afterBaselineForTest?()
+        for await envelope in stream where envelope.rev > baseline.rev {
             await handle(envelope.event)
         }
+    }
+
+    /// Prime the tracker's per-card baseline from a board snapshot WITHOUT emitting: `observe` suppresses
+    /// every first sighting by construction, so seeding fires nothing — it just records each card's boot
+    /// phase/stuck state so a later genuine transition is measured against it. Exposed for the boot-baseline
+    /// test; called by `run()` at startup.
+    func seedBaseline(_ tasks: [Task]) {
+        for task in tasks { _ = tracker.observe(task) }
     }
 
     /// Process one event: a genuine attention transition fans out a push; a removed card is forgotten so

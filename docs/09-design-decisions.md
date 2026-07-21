@@ -409,6 +409,392 @@ and that wire now uses a shared `AgentGuidance` bundle: Claude materializes proj
 passes the same selected sections as launch-scoped `developer_instructions`. Codex keeps its native home
 and global `AGENTS.md`, and the required launch argv is the provider-specific adapter seam.
 
+### The durable inbox is the delivery SSOT: claim, then confirm
+
+Delivery used to mean removal: `drain` took messages out of `inbox.json` and *then* handed them to a
+session. Every path removed before receipt, so a crash, a lost hook reply, or a dead session between
+those two steps lost the message silently — the queue was already empty and nothing retried.
+
+B1 lands the primitive for a new delivery model; the routes that carry it — the Stop-hook drain, the idle channel push, the relaunch seed — convert from remove-before-receipt to it across the PRs that follow, so this section describes the model, not yet the wired-through behavior. Under it, the inbox stays the source of truth until receipt is proven: a delivery path **claims** a FIFO batch —
+select + whole-message fit + lease + a fresh token, in ONE `Inbox.claim` actor call — and messages leave
+only through `confirm(token:)` on a route-specific receipt proof. One call, because a select/lease split
+races: two routes could claim the same message, and a render truncated after the select could confirm
+messages it never delivered. The route's `render` runs *inside* the claim and reports what it consumed, so
+exactly the rendered prefix is leased.
+
+Confirms are token-scoped, not id-scoped: re-leasing mints a fresh token, so a late ack from a superseded
+attempt is an idempotent no-op instead of removing a re-claimed message. A batch becomes re-claimable when
+its lease ages past `deliveryLeaseTimeout` (60s, config) or when its epoch falls below the claiming epoch —
+the funnel's epoch bump *proves* the leased session is gone, so a restart re-claims immediately rather than
+waiting out the timeout. A `relaunchSeed` claim additionally re-owns its own prior `relaunchSeed` lease, so
+a retried relaunch never comes up seedless. Once a route delivers through the primitive, the result is at-least-once: duplicates over loss, and every
+failure ends in re-delivery or durable retention, never silence.
+
+Leases live on `InboxMessage` inside `inbox.json` rather than in a sidecar file — two files can't be
+written atomically, which is the class of bug this design removes. For the same reason `confirm` writes the
+removal and the confirmed-ids ring in a single persist: a crash leaves both or neither.
+
+`inbox.json` moved from a bare `[InboxMessage]` array to a `{messages, confirmedIds}` envelope, and the
+loader decodes **tolerantly** — a legacy array becomes `messages` with an empty ring. An envelope-only
+decoder would have `.bak`'d every existing inbox on upgrade and dropped every pending send; only
+top-level-unparseable JSON still `.bak`s. The ring is a bounded (256) FIFO tombstone of delivered ids:
+`confirm` removes the row, so `send`'s idempotency needs it to no-op a retry whose response was lost after
+delivery.
+
+Editor verbs win over a live lease: `inbox-remove`/`inbox-edit` force-release the in-flight batch, which
+returns to pending and re-delivers. An already-rendered payload may still arrive once — benign, and
+preferable to letting a stale token confirm text the human has rewritten. `inbox-reorder` permutes the full
+set including leased rows; order is metadata for future renders and never disturbs a live claim.
+
+### The Stop-hook drain is the first route wired to claim-then-confirm
+
+B2 converts the busy path — a live agent's turn-end Stop hook — from `drainForStop` (remove-then-inject)
+to `payloadForStop` (claim-then-confirm), the first route to carry B1's primitive. The order is
+load-bearing. **The epoch fence runs first:** a confirm or claim requires the Stop's `observedEpoch` to
+equal the card's current `sessionEpoch`, and a mismatched *or nil* epoch (a pre-upgrade session with no
+`ORCH_EPOCH`, or a superseded one) returns nil with no confirm and no claim — so a dead session's Stop can
+never lease fresh messages into a pane nobody is reading, and the messages stay durable for the arm's idle
+routes. Because the fence reads `sessionEpoch`, `payloadForStop` now needs the card in the store, dropping
+`drainForStop`'s "safe without a task" property; that's sound because a real Stop hook always fires for a
+live card.
+
+**The hook dispatch claims the stopDrain *before* applying the Stop's own report.** A real Claude Stop
+carries a `waiting(.humanTurn)` report, and applying it first lands the card `.live(.waiting)` — whose
+wake-on-live would cold-relaunch a `nativeReinvoke` card with no active CLI wait, bumping the epoch out from
+under this Stop's own claim so the fence above then rejects it and a healthy session is needlessly restarted
+on every send. The Stop hook *is* the reinvoke, so its same-epoch claim must win over a cold relaunch:
+`handleHook(.stop)` runs `payloadForStop` first — minting a live same-epoch lease — and only then applies
+the report, so the waiting-landing wake now defers on that live lease instead of relaunching. The fence's
+real purpose is untouched: a genuinely stale Stop (a superseded generation's) still fails the epoch check
+and no-ops.
+
+**The receipt proof is `stop_hook_active`, and it rides as a sibling hook-RPC field, not through
+`Adapter.parse`.** Both agents set that top-level boolean on a `decision:block` continuation Stop (their own
+loop guard), so the *next* same-epoch Stop with `stop_hook_active == true` proves the prior continuation
+actually ran — and only then does its batch confirm. Nothing else confirms: not a human turn (Opus emits a
+plain Stop), not a lagged rollout line. It has to be a sibling field because `parse` can't carry it —
+Codex's Stop reports nothing to parse, and Claude drops the hook during a background-work hold — so it is
+read straight off the raw payload at the `_report` edge and rides even when the typed report is nil, which
+is exactly what lets a background-yielding continuation still confirm. `HookRPC` holds the extractor, the
+params builder, and one shared key referenced by both the builder and the `ControlServer` decode, so a key
+typo fails a unit test instead of silently breaking every continuation. B2 trusts the contract's claim that
+both agents emit the flag; D2 re-probes it empirically before the channels path depends on it.
+
+**The confirm's safety rests on a recorded assumption: an at-most-once hook transport and exactly one Stop
+per continuation.** The stopDrain confirm (a `stop_hook_active==true` Stop confirms the prior injected batch)
+is safe because the hook transport is at-most-once (`_report`/`boundedCall` fire the hook RPC once, no retry)
+and Claude fires exactly one Stop per continuation, with `active=true` strictly following a *delivered*
+`decision:block` (empirically verified, Claude 2.1.217). A lost block produces no `active=true` successor, so
+the confirm never runs and the delivery arm re-drives the message — at-least-once holds. **Any future
+transport that adds Stop-hook retries, or a Claude that re-fires/duplicates a Stop with `active=true`, MUST
+add Stop-RPC idempotency (per-continuation nonce binding) before this confirm is safe.**
+
+**A live-lease guard keeps at most one stopDrain batch in flight, atomically.** The claim refuses to lease
+while an unexpired same-epoch lease is already outstanding — and that check lives *inside* `Inbox.claim`
+(its `blockIfLiveLease` flag), in the same atomic actor call as the lease, not as a separate
+`hasLiveLease` await before it. That matters under concurrency: two same-epoch Stop RPCs reenter
+`payloadForStop` on the service actor, and a separate check-then-claim would let both pass the check and
+then lease *different* overflow batches — two same-epoch leases. A later `stop_hook_active` Stop finds the
+lease by scanning, so it would confirm the older (lost-reply) batch and silently drop it. Folding the check
+into the claim makes a second live lease impossible to *create*, not merely detectable after the fact; one
+outstanding lease makes the scan unambiguous. (`hasLiveLease` remains as the standalone predicate the wake
+path reuses.)
+
+**The epoch fence is re-checked *after* the claim, not only at entry** (wave-1 T3 review). The entry fence
+proves the Stop belongs to the current generation, but it is stale across `payloadForStop`'s later awaits —
+the service actor is reentrant, so a concurrent `restart`/`resume` can persist epoch `e+1` during the
+peek/confirm/claim hops, and `blockIfLiveLease` will not catch it (that check is `e`-scoped; the new lease
+is a different generation). Left unguarded, the `e`-claim would hand fresh continuation payload to the
+superseded pane the relaunch is about to kill *and* lease messages the `e+1` relaunch then re-owns and
+re-delivers — the stale-pane injection and duplicate the fence exists to forbid. So the claim is followed by
+the same post-await re-guard the wake ladder applies after its own suspensions: re-read the card, and if it
+raced away, archived, or lost `e`, release the batch and return nil. Fail-safe — the message stays durable
+and the `e+1` relaunch's `claimSeed` delivers it. This is a *duplicate*-not-loss window (the batch is re-owned,
+never dropped), but the fence is a locked invariant, so it is closed rather than tolerated.
+
+The delivery-tracking state the confirm touches is **declared here even though the reconciler arm reads it
+later**, by the first-reference rule: `Task.deliveryStuckSince` (persisted, UI-less), the service's
+`deliveryAttempts` and `outstandingTokens`, and the single `confirmDelivery` funnel every route confirms
+through — so the archive guard and the attempt/stuck resets can't be forgotten at one call site. The funnel
+resets that state *only* on a genuine confirmation: `Inbox.confirm` returns whether it actually removed a
+batch, so a stale-token no-op or an archive release prunes the outstanding token but never re-arms the retry
+budget or clears the stuck flag. Archive-versus-confirm is deliberately a two-part design — the funnel's
+fresh archived-read plus teardown's lease release — because the actor model can't linearize a cross-actor
+store-read and inbox-write into one atomic step.
+
+### The cold path flips to claim-then-confirm, fenced by a persisted tail watermark
+
+B3 converts the **cold** routes — idle-wake, send-to-a-dead-card, and handoff — from the destructive
+drain to the claim. The pivot is removing `resumeInCard`'s `inbox.drain`: it now carries only the
+handoff context (it *is* `resume(seed:)`), and the pending inbox stays durable, delivered by the
+RelaunchStepper's `relaunchSeed` claim, which composes the handoff and the inbox under one budget with
+`HandoffSeed.compose`. Removing the drain is what closes the L1 crash window — there is no drained-then-
+folded-then-lost seed to lose, because nothing is removed until a receipt is proven. `HandoffSeed.fold`
+retires with its last caller; `compose` runs *inside* the claim, so the claim's consumed-prefix guarantee
+covers the final argv bytes and a truncating fold can never leave a leased-but-unrendered message to be
+confirmed.
+
+**Readiness now carries provenance, because the confirm depends on it.** `ReadinessOutcome.confirmed`
+gains a `via: {.signal, .ticks}`. A `.signal` is a positive session signal proving the new generation
+booted with the seed — a current-epoch SessionStart hook, or a fresh launch's rollout `session_meta` — so
+the stepper confirms the batch immediately. A `.ticks` is the N=3 liveness fallback (a `codex resume`
+emits no rollout) or a signal that can't be attributed to the current generation; it proves only that
+something is alive, so the stepper **holds** the lease and lets `report()` confirm it later. That the
+signal is *current-generation* is load-bearing and enforced two ways. The readiness waiter records the
+epoch it was armed for, and `resolveReadiness` yields `.signal` only when the delivering signal's
+`observedEpoch` matches — a stale predecessor resume hook that lands in the relaunch's readiness window is
+ignored (a nil-epoch signal degrades to `.ticks`, never a premature confirm). This matters because
+`resolveReadiness` is not otherwise epoch-fenced the way the phase write is; without it a delayed
+predecessor hook would confirm the new batch with no proof the new session ever received it. There are two
+tick resolvers — a test-only one and the production `tickLaunchReadyPublic` in the reconciler — and *both*
+must mark `.ticks`; the production one is easy to miss (it compiles either way) and missing it would make
+Codex idle-wake confirm every seed unfenced, turning the whole watermark machinery into dead code.
+
+**A held lease is confirmed by a provenance-fenced line, so a crash or a replay can't false-confirm.** A
+`report()` for a card holding a `relaunchSeed` lease confirms it only on a signal proven to post-date the
+relaunch: a fileTail line qualifies only when it is on the same rollout path *and* at or past a **persisted
+tail watermark**, and a hook qualifies only when its epoch matches the lease's. The watermark is the
+rollout's EOF byte offset captured inside `finishLaunch`'s one off-actor hop — after the predecessor is
+killed (so it cannot append past the fence) and before the new session launches (so the new session has
+not written yet) — and stored on the lease together with the path. `RolloutTailer.eofOffset` is a
+stateless stat precisely so it can run in that hop without a third suspension between kill and launch, and
+`RolloutTailer.newLines` now returns each line's byte offset and path (`TailedLine`) so `pollTelemetry` can
+thread the provenance through. Because the watermark and path are persisted on the lease, a daemon restart
+that re-reads the rollout from offset zero replays only pre-watermark lines, which fail the offset test and
+never confirm — the fence is crash-proof by construction, not by arrival-order luck. The confirm itself
+routes through B2's `confirmDelivery` (not a self-confirming inbox helper, which is why B1's
+`confirmHeldRelaunch` is retired), so the archive guard is never bypassed.
+
+One route is deliberately left at **lease-expiry** rather than a proven confirm: a *provisional* (never-
+prompted, transcript-less) fileTail card blank-launches rather than resuming, and a blank launch mints a
+fresh session whose rollout does not exist yet — so there is no EOF to capture before launch and no path to
+fence on. Its held lease therefore carries no watermark and `report()` can never confirm it (a fileTail
+agent has no epoch-stamped hook to take the other branch either). The payload is still delivered — it rides
+the launch as the opening positional — so nothing is lost; the lease simply lingers until it expires and is
+re-claimed, which re-delivers once. That is the contract's at-least-once posture (duplicates over loss)
+applied to the one case where post-kill provenance is unobtainable, and it is narrow in practice: it needs a
+send to a dead, never-prompted Codex card. Read the cold path as exactly-once *only* where a watermark or an
+epoch-matched hook exists; this case is at-least-once by construction.
+
+A second, narrower residual has the same shape. The watermark is *captured* inside the kill→ensure hop but
+*stamped* on the lease a few actor hops later, and `pollTelemetry` keeps tailing a card while it is
+`.relaunching` — so a rollout line emitted by the new session in that gap is consumed (the tailer cursor
+advances) at a moment when the lease carries no watermark yet and the card has not landed `.live`, and it
+therefore cannot confirm. If that were the session's *only* line, the lease would sit held until it expired
+and re-delivered. It is left as a residual rather than restructured: closing it means splitting the hop so
+the stamp precedes the launch, which trades a verified-atomic post-kill capture for a window where the card
+has no session at all, to convert a within-contract duplicate into a slightly earlier confirm. Codex emits
+many lines per turn, so "the only line lands in that gap" is vanishingly rare, and the outcome is a
+duplicate, never a loss.
+
+Both residuals share one root: a confirm needs *proof* the current generation received the seed, and where
+that proof is unobtainable the design holds the message rather than guessing. The delivery arm (B4) is what
+turns an expired held lease back into a prompt re-delivery; until it lands, an expired lease waits for the
+next wake rather than being re-driven on a timer — the message stays durable throughout, which is why the
+B-spine deliberately sequences the arm after both confirm paths exist.
+
+Four fences make the flip **independently correct**, not merely correct once B4 lands, and each is here
+rather than deferred because B3 is where the held lease is *born*. `wakeIfPending` now gates on
+`hasClaimable`, not a non-empty peek: the funnel fires wake-on-live on every `.live` landing, and a held
+same-epoch lease still shows in `peek`, so the old gate would re-wake the just-live card into an infinite
+relaunch loop — a held lease is deliberately not claimable, so `hasClaimable` leaves it alone. The
+`report()` being-born landing fence drops its `owesLaunch` term (`!(beingBorn && observedEpoch !=
+sessionEpoch)`): the de-drain means a cold relaunch carries neither `pendingSeed` nor `pendingModel`, so
+the old gate no longer covered it, and an unstamped file-tail snapshot from the dying predecessor could
+land the card `.live` before the stepper ever claimed its seed. The RelaunchStepper re-reads the card after
+the worktree ensure and claims at the *current* epoch, so a relaunch that supersedes it during the ensure
+can't let a stale step re-own the lease at the wrong generation. And `TeardownStepper` releases the card's
+leases before the terminal flip, so the narrow archive-versus-confirm window B2 left to B4 is backstopped
+in-PR for B3's new held leases. A handoff-only claim — non-empty
+payload, zero consumed messages — leases nothing, so it is neither dispatch-tracked nor signal-confirmed;
+tracking its token would leak a phantom outstanding token and mischarge the arm, and per the contract a
+handoff's context is a fire-and-forget re-seat with no durable receipt.
+
+Finally, the cold path suppresses Claude's **resume modal**. A machine-driven `claude --resume` on an old,
+large session opens a "Resume from summary/full" dialog instead of running the seed, and with no human to
+answer it the resume deadlocks and swallows the seed (two live cards were observed parked at it).
+`ClaudeCodeAdapter.env` sets `CLAUDE_CODE_RESUME_THRESHOLD_MINUTES` and `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD`
+impossibly high through the same `Adapter.env` seam Codex uses for `CODEX_HOME`. It is fail-soft — a build
+that doesn't know the vars ignores them, and a modal that still appears degrades to a readiness timeout, so
+the lease survives and the arm retries rather than the seed being silently lost — and agent-agnostic, since
+other adapters return nothing.
+
+### The delivery arm and the wake route ladder (B4)
+
+`send` was a one-shot: enqueue, try once, hope. Every receipt that never came back — a lost
+`decision:block` reply, a dead bridge, a relaunch that crashed before its confirm, and B3's two documented
+residuals — left a durable message with nothing to re-drive it. Delivery is now **level-triggered**: an arm
+in the reconcile tick re-drives any deliverable card that still has claimable messages, so the durable inbox
+converges to empty the same way a phase converges to its target. This is why the B-spine sequences the arm
+strictly after both confirm paths (B2 busy, B3 cold) exist — a level-triggered retry over a still-pre-draining
+path would multiply the very loss being fixed.
+
+**`wake` is the single delivery chokepoint.** Every starter — `send`'s fast path, the arm, `wakeIfPending`'s
+live edge, `concludeCard`'s watcher nudges — goes through it, so there is one in-flight guard
+(`deliveriesInFlight`, acquired synchronously before any suspension) and one place route selection happens.
+The ladder is CLI-wait defer → outstanding-lease defer → cold resume intent, selected purely from
+`AgentCapabilities.wakeTransport`; there is no `if agentId` anywhere on it.
+`resumeSeedWake` and `relaunchClaimed` are retired: the wake-claim role is `deliveriesInFlight`, and the
+relaunch single-winner role is the funnel's epoch bump. The card is re-read after **every** suspension —
+archived, left the deliverable set, or epoch-bumped by a concurrent relaunch — and this is not
+belt-and-braces: `isResumable` hops off-actor for a filesystem stat, so the cold path re-guards after it, and
+a relaunch that landed during the stat must not get a second, redundant resume on top of the generation it
+just created.
+
+Two rungs are *defers*, not failures, and deliberately charge nothing: a `.nativeReinvoke` card with a live
+`orchestra wait` will be re-invoked by its own harness, and an unexpired same-epoch lease means a delivery is
+mid-confirm — a held relaunch seed awaiting its first-signal confirm must never be superseded by a cold
+restart of the session that just took the delivery.
+
+**Attempt accounting is per-token, and the ledger is what makes it exact.** `outstandingTokens` records what
+was dispatched; `confirmDelivery` removes a token on confirm *or* release. So a token still in the set whose
+lease is no longer live was dispatched and died — the arm charges it once and removes it, via a new
+`Inbox.isLeaseLive(token:now:)` that is token-scoped and expiry-aware but deliberately epoch-**agnostic**
+where `hasLiveLease` is epoch-exact: since the wave-1 held-confirm fence, a stale-generation held lease can
+never confirm, so a mere presence test would strand it outstanding forever with no other reaper — a
+permanently stuck card, not a slow one. The charge re-reads the ledger after its awaits, so a confirm landing
+mid-scan is neither resurrected by a stale write-back nor charged after it reset the budget. Attempts reset
+only on a genuine confirm, so a bridge that acks without notifying cannot suppress the stuck flip.
+
+The stuck flip is evaluated **both before and after the wake dispatch** (wave-1 T3 review), and the
+before-check is what makes the flip rule hold for the *cold relaunch* route. The rule — attempts ≥ 5 ∧
+oldest age > `deliveryStuckAfter` — is unconditional on route, but a resumable card's only route is a cold
+relaunch, and `resumeInCard` bumps the epoch the *post*-wake flip is fenced to, so that flip can never fire
+for it. Left with only the post-wake flip, a card whose relaunch boots but never emits a proven current-gen
+confirming signal (the seed-drop residuals — a provisional card with no watermark, or a resume that never
+confirms) would relaunch-churn on the lease-expiry period forever, re-charging and re-driving without ever
+setting `deliveryStuckSince` — a state B5b cannot surface because B5b is surfacing-only and reads a
+B4-stable flag. So the arm evaluates the flip against the card's *current* generation **before** dispatching
+the next relaunch: once the budget is spent and the age gate holds, it flips and skips the wake, so the
+churn terminates in the human-visible stuck state the contract requires. The flip matches the card's
+*current* phase — and that phase can be `.dead`, not only `.live(.waiting)`: a `.dead(.resumeFailed)` card
+is still resumable (`isResumable` keys on capability + session id + transcript, with no dead-reason check),
+so it skips the unresumable-dead shortcut and would churn identically. So the flip's expected ownership phase
+is decoupled from the attempt-budget bypass — the pre-wake flip expects `.dead` when its snapshot is dead
+while still requiring the full budget, and only the unresumable-dead shortcut both bypasses the budget and
+expects `.dead`. The post-wake flip is untouched and still covers the in-place / no-relaunch routes;
+`flipStuckIfExhausted`'s own pre/post-write revalidation keeps a just-re-armed (send/confirm) or
+not-yet-exhausted card from being falsely flagged.
+
+**Stuck is stable and double-conditioned.** A card flips `deliveryStuckSince` only when the retry budget is
+spent *and* the oldest pending message has outlived `deliveryStuckAfter` — either alone lies. Once stuck the
+arm goes quiet, so the queue stays editable and the human's clear/retry window is never raced by a re-lease;
+it still runs `clearStuckIfDrained`, so an emptied inbox clears the flag. The flip re-validates its guard on
+the actor immediately before the `store.update` write **and compensates after it**, because the update itself
+suspends: it re-reads the queue first and the actor-local budget last, and emits only the final state, so no
+subscriber ever observes a transient flip — which matters because B5b's tracker fires once on false→true and
+would send an irreversible push for a stuck state that never really existed.
+
+**The channel-push wake is built in the D increment, not on this ladder.** The Claude no-restart wake is a
+simple MCP server *push*: the wake empirics showed a correctly-configured `notifications/claude/channel`
+push autonomously wakes an idle interactive Claude at turn-end, so no daemon-side parked long-poll registry
+is needed. B's wake ladder therefore carries only the agent-agnostic rungs — CLI-wait defer,
+outstanding-lease defer, cold resume intent — and the channel route rides on top in D. `wakeTransport`'s
+`.controlChannel` case, the `claudeChannels` config switch, and the `DeliveryRoute.channelPush` lease flavor
+are the capability seam D routes on; they are inert here (no adapter reports `.controlChannel` yet), so the
+ladder never selects the channel rung.
+
+Two smaller decisions ride along. The funnel's wake-on-live moves **below** the state broadcast rather than
+being detached: `wake` now records the cold resume intent inline (holding `deliveriesInFlight` across the
+ladder), so the nested `.relaunching` upsert must not precede the `.live` one it supersedes — reordering fixes
+that while keeping the funnel wake awaited (deterministic) and spawning no task per `.live → .live` telemetry
+churn. And `Inbox.drain`/`drainFirst` are deleted outright: after B3's de-drain they had zero production
+callers, and a public remove-without-receipt primitive is exactly the trap the whole at-least-once design
+exists to eliminate — the four PRs basing on B4 could otherwise reach for one and silently reintroduce
+remove-before-receipt.
+
+### `send` is a convergence verb with an idempotent message id (B5a)
+
+`send` is no longer a `.mutation` — it is a `.convergence` verb, because the persisted intent it records is
+the non-empty inbox row itself, and the delivery arm drives that intent to empty. The gate stays
+non-archived: a send to a dead card persists intent the arm revives. The handler carries a **client-minted
+message id**, advertised *optional* in the catalog but required at the daemon boundary and stamped by every
+client seam (CLI `--id`, the MCP bridge, the board store) exactly as `spawn`'s card id is — so an agent can
+omit it and still get a stamped, retry-safe id, while a seam that forgets one fails loudly instead of
+silently re-delivering. The CLI mints only when `--id` is *absent*: a present-but-unparseable value is
+rejected with an error, never quietly replaced by a fresh UUID — a mistyped id whose first reply was lost
+would otherwise re-run into a *different* UUID and double-deliver, defeating the very idempotency the id
+exists for (the same guard covers `spawn --id`).
+
+The id makes `send` idempotent, and the dedup is **one atomic Inbox operation** —
+`enqueueIfUnknown(cardId, text, id)` checks pending messages *and* the confirmed-ids ring and appends in a
+single actor call. Atomicity is not incidental: `OrchestraService` is reentrant, so a split
+check-then-append across two awaits would let two concurrent same-id sends both observe "unknown" and both
+append — the exact race B2's atomic `claim` closed. The append is also **transactional**: the in-memory row
+is published only after the disk commit succeeds, and a `persist()` throw rolls the append back before
+rethrowing. Otherwise a failed first send would leave the id in memory, the contracted retry would dedup to
+"already pending" and `send` would report success, yet the message never reached disk — lost on the next
+daemon death. Rolling back means the retry genuinely re-enqueues and the acknowledged send survives a
+restart (the same discipline guards `enqueue`'s dedupKey path). This is the at-least-once floor the whole B
+increment exists to hold: duplicates over loss, never silent loss. Because `confirm` tombstones the id in the ring, a retry
+whose response was lost is a true no-op *even after* the message was delivered and removed. A replay returns
+the id and a card snapshot having mutated no delivery state and fired no wake; only a genuinely new message
+re-arms the retry budget (resets attempts, clears any `deliveryStuckSince`) before its opportunistic wake, so
+a stuck cold card gets its whole budget back rather than a single doomed retry. Inbox mutations bump no board
+`rev` and emit no task event — clients inspect the queue through the `inbox` verb, as before — so on a
+running, non-stuck card `send` is observably event-silent.
+
+The inbox editor is the third owner of the stuck-clear (beside a confirmed delivery and an emptied inbox). A
+stuck card whose message a human **edits or removes** force-releases the lease (B1) but would otherwise stay
+wedged with `deliveryStuckSince` set and its budget spent — the arm short-circuits a stuck card, so the
+edited message would never be re-driven. So the editor re-arms it. The re-arm is scoped to the edited
+message's **true owner**, not the caller's ref: `inbox-remove`/`inbox-edit` mutate globally by message id, so
+`Inbox.remove`/`update` return the affected message's `cardId` and the service re-arms *that* card — a
+cross-card or nonexistent id therefore leaves the caller's card untouched. The re-arm is gated on the stuck
+flag (a healthy card's accruing budget is never reset by an edit, which would mask a genuinely failing
+delivery), and `inbox-reorder` is excluded because it preserves leases and disturbs no live claim. The
+re-arm also **fences the stuck flip across both pieces of state it touches**: clearing `deliveryStuckSince`
+is a suspending `TaskStore` hop, and zeroing the service-local attempt budget is a separate write, so
+between them the durable flag is nil while the budget is still spent — a concurrent `flipStuckIfExhausted`
+landing there would re-stamp stuck and wedge the card with a spent budget the arm never re-drives. So the
+service holds the card in a **reference-counted** `reArmingCards` fence from before the clear until after
+the reset, and the flip reads a fenced card as "budget not spent" — no flip can re-stamp in the gap, and
+once the fence lifts the budget is already zero so none fires anyway. The count (not a bare set) is what
+keeps two overlapping editor ops on the same card safe: the second op's exit decrements rather than
+clearing the shared membership, so the fence stays up until the *last* in-flight re-arm returns.
+
+**Surfacing a stuck card is a pure edge-detector over the flag the arm already sets.** Once a card carries
+`deliveryStuckSince`, two more surfaces make it visible to the human without any new daemon state: the Needs
+You queue's reason chip and a one-shot notification. The chip is derived, not stored — `NeedsYouQueue.reason(for:)`
+returns `.deliveryStuck` (📪) whenever `deliveryStuckSince != nil`, ranked *above* `humanTurn` (the stuck card
+is the one specifically needing a human) but below `permission`/`died` (a crash still wins recovery); no
+`DisplayState` field is widened for it. The notification is the subtler half: a stuck flag going true is **not**
+a phase transition, so the existing `lastPhase`-keyed one-shot can't fire on it. So `AttentionTracker` gains a
+per-card "was stuck" memory (`stuckCards`) and the transition core gains two pure helpers — `currentStuckTrigger`
+(which stuck cause a card warrants) and `stuckRise` (the false→true edge). The one-shot fires on the *boolean*
+rise, not the cause: a card that stays stuck while its cause changes (a delivery confirm clears
+`deliveryStuckSince` in the same tick a merge stalls) never left "stuck", so it never re-fires — the fix for a
+double-banner the naive per-cause edge would send. This matters because the arm already emits only the final
+stuck state (it re-validates its flip pre/post-write), so the tracker sees a clean false→true and can push an
+irreversible notification safely. The daemon push path **seeds a boot baseline** before it consumes live
+events: `subscribe()` replays no snapshot and the tracker suppresses every first sighting, so without a
+baseline a card that was alive at a daemon restart and *then* dies (or goes stuck) would have that
+transition consumed as its first observation and never notified. So `PushNotifier.run` subscribes first
+(so nothing landing in the window is lost), then takes an **atomic `(tasks, rev)` baseline** and primes the
+tracker from `tasks` via `observe` — first-sighting-suppressed, so seeding fires nothing — so a card
+already dead/stuck at boot is the baseline and never re-notified, while a genuinely new post-boot
+transition still fires. The **revision boundary is load-bearing**: every event buffered between the
+subscribe and the snapshot is dropped when its `rev <= baseline.rev`, because it is causally *older* than
+the seed yet already reflected in it, and replaying it against the newer seed would misfire — a windowed
+death would no-op (`dead→dead`) while a superseded `waiting` would fire a *stale* needs-you against a
+`running` seed. Phase idempotency alone cannot tell a stale replay from a real transition; the rev
+boundary is what distinguishes them, and only `rev > baseline.rev` events (genuinely post-snapshot) fire. The mac banner path (`BoardStore.apply`) and the daemon push path
+(`PushNotifier` → `AttentionTracker`) both resolve their one notification through the *same*
+`AttentionTransition.notifyTrigger` authority, so the two surfaces can't drift — and that authority reconciles
+the phase edge and the stuck rise into a single trigger with the *same* precedence the queue uses:
+`died`/`permission` (recovery- and block-critical) outrank a stuck rise, which outranks `needsYou`. So a card
+that (in some future path) both died and went stuck in one event still pushes the recovery-critical `died`, not
+the stuck one — the banner can never disagree with the queue.
+
+**Merge-stall rides the identical seam.** `TreeStat.mergeStalled` — the merge-request loop's sticky give-up
+flag (its own rationale is [below](#branch-tree)) — means the same thing to a human as a delivery stuck ("this
+card is wedged, come look") from a different cause, so it surfaces through one stack, not a parallel one:
+`reason(for:)` returns `.mergeStalled` (🚧, below `.deliveryStuck`), and `currentStuckTrigger` treats it as the
+second stuck cause. It is read independent of the underlying `TreeState`, so a card that is both `.stale` and
+`mergeStalled` surfaces the stall — the flag stays a flag precisely so the tracking state keeps computing
+underneath. This is a *second* Needs-You / push surface, not the first: the flag already renders as a card-face
+warning badge (`CardView`/`BoardCardCell`), which stays; B5b adds the queue row and the notification on top.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session
@@ -470,9 +856,9 @@ payload. The delivery rides the Claude Stop hook: on the `stop` event the daemon
 and returns a `HookResponse.continuation`, which the edge encodes as a `{"decision":"block","reason":…}`
 continuation so the model reads the queued messages and keeps working. Two decisions shape it: the
 merge-back is **turn-end, never mid-turn** — a queued `send` waits for the agent's natural stop rather than
-interrupting it — and because `stop_hook_active` is only *informational* on the agent, Orchestra enforces
-its **own consecutive-inject loop guard** (`drainForStop`, cap 25, reset by a genuine `UserPromptSubmit`)
-to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
+interrupting it — and because `stop_hook_active` is only a *loop-guard* signal on the agent, Orchestra
+enforces its **own consecutive-inject loop guard** (`payloadForStop`, cap 25, reset by a genuine
+`UserPromptSubmit`) to break a runaway Stop→inject→Stop cycle, leaving messages durable when it trips. (As originally shipped,
 C1 reused the shared `notify` command distinguished by `hook_event_name` and a standalone `drain` RPC;
 the [first-class-hooks](06-clients-cli-mcp.md#the-hooks--_report-channel) refactor later split `Stop` into its own `--event stop` and folded drain into
 the unified `hook` channel, but the turn-end/loop-guard behaviour is byte-preserved.) Waking an *idle* card so it takes a turn to
@@ -933,8 +1319,13 @@ decisions keep it small and provider-neutral:
   stays here as history.
 
 Also landing after the forest is **`send-wakes-idle-card` — waking an idle native (Claude) card via
-resume-seed** (commit `7d8037c`, branch `send-wakes-idle-card`). C1/C2 wired `send` to `wake` a card right
-after enqueuing, but the `nativeReinvoke` (Claude) transport treated *every* idle case as a no-op push: it
+resume-seed** (commit `7d8037c`, branch `send-wakes-idle-card`). **Superseded by B4** (see "The delivery arm
+and the wake route ladder" above): the `resumeSeedWake` and `recovering`/`relaunchClaimed` mechanisms this
+entry describes were retired when `wake` became the single capability-selected chokepoint — the idle-no-wait
+case is now the ladder's cold `.relaunching` intent, and the concurrency claim is `deliveriesInFlight`. The
+record below is kept for the history of *why* idle-wake exists; the *how* is the B4 ladder. C1/C2 wired
+`send` to `wake` a card right after enqueuing, but the `nativeReinvoke` (Claude) transport treated *every*
+idle case as a no-op push: it
 assumed a background `orchestra wait` whose exit the harness re-invokes on. That holds for the **reactive
 fan-out** (a watcher card always has a live wait), but **not** for a plain `send`/queue onto a genuinely idle
 `.waiting` Claude card — with no in-flight turn and no live wait, the message sat inbox-durable until some
@@ -1071,9 +1462,9 @@ decisions:
   documented mitigation for the "curse of instructions" compliance drop when instructions share a turn. A lone
   message gets no index.
 - **Whole-messages-to-fit drain.** `StopDrain.fit` packs as many *whole* messages (FIFO) as fit the
-  10 000-char budget and reports how many it consumed; `drainForStop` then drains exactly that many via the new
-  [`Inbox.drainFirst(_:count:)`](03-data-model.md#the-inbox-store-f3), leaving the overflow durable for the next
-  turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
+  10 000-char budget and reports how many it consumed; `payloadForStop` then `claim`s exactly that many via
+  [`Inbox.claim`](03-data-model.md#the-inbox-store-f3), leasing the fitted prefix and leaving the overflow durable
+  for the next turn-end — a message is **never** sliced mid-text. (A lone first message larger than the whole budget is still
   delivered truncated rather than stranded forever.)
 - **A send cap enforced at enqueue.** [`send`](05-command-reference.md#registry-commands) now rejects a message
   over `StopDrain.maxMessageChars` (the payload budget minus a lone-message header) with `invalidParams` — *put

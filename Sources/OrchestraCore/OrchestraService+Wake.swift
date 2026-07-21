@@ -6,7 +6,7 @@ extension OrchestraService {
 
     /// Register a watcher's interest in `children` so each child's conclusion routes into the watcher's
     /// durable inbox (F3, coalesces) and wakes it (F2). Idempotent (unions). Writes through to the durable
-    /// `watchStore` so the registration survives a daemon restart (carry #4).
+    /// `watchStore` so the registration survives a daemon restart.
     public func registerWatch(_ watcher: UUID, _ children: Set<UUID>) {
         guard !children.isEmpty else { return }
         ensureWatchRegistryLoaded()
@@ -150,78 +150,109 @@ extension OrchestraService {
             }
             // Route through `unregisterWatch` so the removal PERSISTS (write-through). A missed inline
             // remove would leave a concluded child registered on disk → duplicate conclusion on the next
-            // boot reload (carry #4 / Opus finding 5).
+            // boot reload.
             unregisterWatch(watcher, id)
         }
         // Resolve any active CLI `orchestra wait` subscribed to this child (per-child, first-wins).
         await mergeWatch.conclude(conc)
     }
 
-    /// F2 — the ONE wake primitive: start a turn on an idle card so it drains its durable inbox (F3).
-    /// Every caller funnels through here — `send` (a just-queued message) and the fan-out `concludeCard`
-    /// (a child's conclusion). It is idempotent and non-intrusive by construction: it only ever acts on a
-    /// card that is genuinely IDLE (`.waiting`, from the authoritative telemetry — never a pane scrape) with
-    /// no turn already coming, so it can be called freely without risk of double-driving.
+    /// The SINGLE delivery chokepoint (B4). Every starter funnels through here — `send`'s fast path,
+    /// the reconciler's delivery arm, `wakeIfPending`'s live edge, `concludeCard`'s watcher nudges —
+    /// so `deliveriesInFlight` is the one wake-vs-wake guard and every route decision is made once.
     ///
-    /// Both live agents wake the SAME way — resume-seed (`resumeInCard`: kill + resume with the pending
-    /// inbox folded into the opening turn). The ONLY per-agent difference is whether a *watching* card will
-    /// be brought back by something else: Claude's harness re-invokes it when a CLI `orchestra wait`
-    /// process exits, so we must NOT relaunch in that one case (it would replace the live wait); MCP/tool
-    /// watches and Codex have no such CLI process, so they resume-seed. That single distinction is
-    /// `watcherWillReinvoke` plus the `activeWaitProcesses` gate. A card mid-relaunch (`relaunchClaimed`) or
-    /// archived is never woken.
+    /// The ladder, in order, and what each rung is FOR:
+    ///  1. **Deliverable + in-flight claim.** `.live(.waiting(.humanTurn))` or a revivable `.dead`;
+    ///     the claim is inserted with no suspension after the guard, so concurrent wakes serialize.
+    ///  2. **CLI-wait defer** (`.nativeReinvoke` only) — the card's own `orchestra wait` process will
+    ///     re-invoke the harness when it exits; relaunching would replace that live wait.
+    ///  3. **Outstanding-lease defer** — an unexpired same-epoch lease means a delivery is
+    ///     mid-confirm (a held relaunchSeed awaiting its first-signal confirm). NEVER cold-restart a
+    ///     session that just took a delivery.
+    ///  4. **Cold resume intent** — `.relaunching`; the RelaunchStepper claims the seed and delivers
+    ///     it in the opening turn. No route at all ⇒ charge an attempt and leave it to the arm.
     ///
-    /// REVISIT — `controlChannel` (a real `turn/start` RPC via the Codex app-server) is the agent-agnostic
-    /// target that would retire the resume-*relaunch* for wake (deliver a turn without tearing the session
-    /// down). It needs the app-server run-mode (drops the TUI for a viewer); until then wake is resume-seed.
-    /// See docs/09-design-decisions.md (the send-wakes-idle-card note — `controlChannel` is the agent-agnostic target).
+    /// The Claude no-restart channel-push route lives in the D increment, not here — B's earlier
+    /// parked-poll skeleton was removed once the empirics (03 §wake) picked a simple server push.
+    ///
+    /// Post-await re-guards: after every suspension the card is re-read and abandoned if it was
+    /// archived, left the deliverable set, or had its epoch bumped by a concurrent relaunch —
+    /// claiming at a stale epoch would lease a batch into a provably-dead session.
     func wake(_ id: UUID) async {
-        guard let t = await store.get(id), let adapter = try? registry.get(t.agentId),
-              !t.archived, case .live = t.phase, !relaunchClaimed.contains(id) else { return }
-        switch adapter.capabilities.wakeTransport {
-        case .nativeReinvoke: await resumeSeedWake(t, watcherWillReinvoke: true)   // Claude: harness re-invokes on wait-exit
-        case .relaunch:       await resumeSeedWake(t, watcherWillReinvoke: false)  // Codex: no reinvoke — resume even when watching
-        case .controlChannel: break                                               // future: turn/start RPC (no relaunch)
+        guard let t = await store.get(id), !t.archived, deliverable(t),
+              !deliveriesInFlight.contains(id) else { return }
+        deliveriesInFlight.insert(id)          // SYNCHRONOUS claim — no await since the guard
+        await deliver(t)
+        deliveriesInFlight.remove(id)
+    }
+
+    /// Is this card a legal delivery target right now? `.live(.waiting(.humanTurn))` — never
+    /// `.running` (its Stop hook owns delivery; this is also the background-work safety gate) and
+    /// never `.waiting(.permission)` (mid-turn; wake mechanisms only latch at turn-end). A
+    /// non-archived `.dead` card is deliverable too: the arm revives a resumable/provisional one
+    /// through the resume intent (a send to a completed card is an explicit request for more work),
+    /// and a non-resumable dead card is charged straight to stuck by the arm.
+    func deliverable(_ t: Task) -> Bool {
+        if t.archived { return false }
+        if case .live(.waiting(.humanTurn)) = t.phase { return true }
+        if case .dead = t.phase { return true }
+        return false
+    }
+
+    /// The ladder body. Split out so `wake` owns the in-flight claim/release symmetrically.
+    private func deliver(_ t: Task) async {
+        guard let adapter = try? registry.get(t.agentId) else { return }
+        let transport = adapter.capabilities.wakeTransport
+        let epoch = t.sessionEpoch
+
+        // 2 · the harness will re-invoke it — defer, don't charge (a turn IS coming).
+        if transport == .nativeReinvoke, activeWaitProcesses[t.id] != nil { return }
+
+        // 3 · a delivery is mid-confirm — defer, don't charge.
+        if await inbox.hasLiveLease(t.id, epoch: epoch, now: now()) { return }
+        guard var card = await reguard(t.id, epoch: epoch) else { return }
+
+        // 4 · cold: the resume intent. `resume` is intent-only — it records `.relaunching` (bumping
+        // the epoch, which invalidates prior-epoch leases) and returns; the
+        // RelaunchStepper claims the seed and folds it into the opening turn. `isResumable` hops
+        // off-actor (a filesystem stat), so re-guard AFTER it — a relaunch that landed during the
+        // stat must not get a second, redundant resume on top of the generation it just created.
+        let resumable = await isResumable(card)
+        guard let reg = await reguard(t.id, epoch: epoch) else { return }
+        card = reg
+        if resumable || card.titleProvisional {
+            // The one wake VISIBLE to the human: a cold delivery tears the session down and brings it
+            // back. Say so — an unexplained restart in the terminal reads as a crash. The in-place
+            // routes (D's channel push, E1's app-server turn injection) emit nothing. Emit ONLY once
+            // the resume intent is ACCEPTED — on the `catch` (a rejected intent) nothing restarts, so
+            // announcing one would be a lie.
+            do {
+                _ = try await resumeInCard(card.id, source: .daemon)
+                emitActivity(.recovered, card, .daemon, "idle wake — restarting to deliver queued messages")
+            } catch { chargeDeliveryAttempt(card.id) }             // intent rejected
+        } else {
+            chargeDeliveryAttempt(card.id)   // no route; the arm retries, then flips stuck
         }
     }
 
-    /// Resume-seed wake (Claude no-wait + Codex idle): start a turn by RESUMING the session with the pending
-    /// inbox folded into its opening turn — the proven `resumeInCard` primitive (the same engine `handoff`
-    /// uses; delivery rides the durable inbox, never a keystroke). Acts ONLY on a genuinely idle card with
-    /// nothing already bringing it back — otherwise DEFER (the inbox stays durable for the turn that IS
-    /// coming):
-    ///   • not `.waiting` → a running turn drains it at its Stop; a dead/done card can't turn.
-    ///   • `watcherWillReinvoke` AND an active CLI wait (`activeWaitProcesses` non-empty) → its
-    ///     `orchestra wait` process re-invokes it when that wait exits; relaunching would replace the live
-    ///     wait and break the fan-out. A durable MCP/tool watch has no CLI process, so it must resume-seed.
-    ///     Codex (`.relaunch`) also resumes regardless, since nothing else would bring a watching-but-idle
-    ///     card back.
-    ///   • not resumable (never-prompted / no transcript) → nothing to resume; it waits for its first turn.
-    /// Fire-and-forget so the caller acks immediately (the inbox is durable regardless; a failed resume just
-    /// leaves it for the next turn). No loop: the resumed session runs ONE turn off the drained seed and its
-    /// Stop finds the inbox empty.
-    func resumeSeedWake(_ t: Task, watcherWillReinvoke: Bool) async {
-        guard case .live(.waiting) = t.phase, await isResumable(t) else { return }
-        if watcherWillReinvoke, activeWaitProcesses[t.id] != nil { return }
-        // Claim the relaunch SYNCHRONOUSLY (before the detached hop) so a concurrent wake sees the claim and
-        // defers — else two resumes race and the second drains an already-emptied inbox and kills the first's
-        // freshly-resumed session. This is the narrow atomic-claim role the deleted `recovering` set played;
-        // the reconcile no longer reads it (it gates on phase). Cleared when the resume settles.
-        guard !relaunchClaimed.contains(t.id) else { return }
-        relaunchClaimed.insert(t.id)
-        _Concurrency.Task { [weak self] in
-            _ = try? await self?.resumeInCard(t.id, source: .daemon)
-            await self?.clearRelaunchClaimed(t.id)
-        }
+    /// Post-await epilogue: re-read the card and require it is still a legal, same-generation target.
+    /// `nil` ⇒ abandon this wake (archived / left the deliverable set / superseded by a relaunch).
+    private func reguard(_ id: UUID, epoch: Int) async -> Task? {
+        guard let t = await store.get(id), !t.archived, deliverable(t), t.sessionEpoch == epoch
+        else { return nil }
+        return t
     }
 
-    /// Release a wake/idle-resume's atomic claim once the relaunch settles, then re-drive `wake` for a
-    /// message that a `send` queued DURING the claim window (its `wake` deferred at the `relaunchClaimed`
-    /// gate and nothing else retries it). `wakeIfPending` re-checks every gate, so it is a no-op unless a
-    /// genuinely stranded message remains.
-    func clearRelaunchClaimed(_ id: UUID) async {
-        relaunchClaimed.remove(id)
-        await wakeIfPending(id)
+    /// Charge one failed delivery attempt and back the next one off (capped exponential, mirroring
+    /// the step backoff). Attempts reset ONLY on a confirmed delivery (`deliveryConfirmed`) or a new
+    /// `send` — never on mere dispatch success, so an acking-but-not-notifying bridge cannot suppress
+    /// the stuck flip.
+    func chargeDeliveryAttempt(_ id: UUID) {
+        let count = (deliveryAttempts[id]?.count ?? 0) + 1
+        let delay = deliveryBackoffOverrideSeconds
+            ?? min(pow(2.0, Double(min(count, 6))), 64)            // 2,4,8,…,64 capped
+        deliveryAttempts[id] = DeliveryAttempt(count: count,
+                                               nextEligible: now().addingTimeInterval(delay))
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.

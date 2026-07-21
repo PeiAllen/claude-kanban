@@ -104,9 +104,13 @@ public struct CommandRegistry: Sendable {
 
             "send": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                try await svc.send(t.id, try p.string("message"))
+                // `id` is REQUIRED at this boundary (throws if absent) though advertised optional in the
+                // catalog — every client seam (CLI --id / MCP bridge / BoardStore) stamps one if the caller
+                // omitted it, exactly like `spawn`. Required-here makes a seam that forgets fail loudly.
+                let messageId = try p.uuid("id")
+                let result = try await svc.send(t.id, try p.string("message"), messageId: messageId)
                 await svc.logCommand("send", ref: t, source: src)
-                return .ok()
+                return try JSONValue(encodable: result)
             },
 
             "inbox": { svc, p, _ in

@@ -116,7 +116,7 @@ struct ControlRoundTripTests {
         }
     }
 
-    @Test("hook RPC: stop drains the inbox into the continuation; empty inbox → null")
+    @Test("hook RPC: a matching-epoch stop claims the inbox into the continuation; a nil epoch is fenced out")
     func hookStopDrainRPC() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
@@ -126,16 +126,29 @@ struct ControlRoundTripTests {
         let client = TestEnv.controlClient(path, source: .agent)
         try client.connect(); defer { client.close() }
 
-        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString), 
+        let task = try await client.call("spawn", .object(["id": .string(UUID().uuidString),
             "prompt": .string("c"), "repo": .string(repo), "branch": .string("feat")])).decode(Task.self)
+        let epoch = try #require(await env.svc.store.get(task.id)).sessionEpoch   // the fence reads sessionEpoch
+        let inbox = await env.svc.inbox
 
-        // empty inbox → no continuation
-        let empty = try await client.call("hook", .object(["ref": .string(task.shortId), "event": .string("stop")]))
+        // empty inbox (matching epoch) → no continuation. The epoch is passed so the nil is honest — it comes
+        // from an empty queue, NOT from the epoch fence.
+        let empty = try await client.call("hook", .object([
+            "ref": .string(task.shortId), "event": .string("stop"), "epoch": .int(epoch)]))
         #expect(empty["response"]?["continuation"]?.stringValue == nil)
 
-        // enqueue via send, then stop returns the drain as continuation
         try await env.svc.send(task.id, "queued work")
-        let got = try await client.call("hook", .object(["ref": .string(task.shortId), "event": .string("stop")]))
+
+        // FENCE: a stop with NO epoch (a pre-upgrade / superseded session) neither confirms nor claims —
+        // the message stays pending and UNLEASED for the arm's idle routes.
+        let fenced = try await client.call("hook", .object([
+            "ref": .string(task.shortId), "event": .string("stop")]))
+        #expect(fenced["response"]?["continuation"]?.stringValue == nil)
+        #expect(await inbox.peek(task.id).first?.lease == nil)   // untouched by the fenced stop
+
+        // A matching-epoch stop claims it into the continuation.
+        let got = try await client.call("hook", .object([
+            "ref": .string(task.shortId), "event": .string("stop"), "epoch": .int(epoch)]))
         #expect(got["response"]?["continuation"]?.stringValue?.contains("queued work") == true)
     }
 

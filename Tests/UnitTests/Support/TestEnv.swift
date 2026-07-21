@@ -44,6 +44,7 @@ enum TestEnv {
                      registry: AgentRegistry? = nil,
                      extraAgents: [(id: String, models: [String])] = [],
                      clock: any Clock<Duration> = ContinuousClock(),
+                     now: (@Sendable () -> Date)? = nil,
                      proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let base = NSTemporaryDirectory() + "orch-svc-\(UUID().uuidString)"
@@ -74,7 +75,11 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        let inbox = Inbox(path: base + "/inbox.json")
+        // Share ONE `now` provider across the Inbox and the service so lease/stuck stamping and the
+        // arm's expiry math read a single timeline — a TestClock advance then moves both.
+        let nowProvider: @Sendable () -> Date = now ?? { Date() }
+        let inbox = Inbox(path: base + "/inbox.json",
+                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
         let extras = extraAgents.map {
             StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities,
                         id: $0.id, name: $0.id, modelIds: $0.models)
@@ -84,7 +89,7 @@ enum TestEnv {
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    grantResolver: grantResolver,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
                                    gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, PathResolver.canonical(base))
     }
@@ -97,6 +102,7 @@ enum TestEnv {
     /// itself a realistic "fresh daemon" trait.
     static func remake(base: String, capabilities: AgentCapabilities = .stub,
                        clock: any Clock<Duration> = ContinuousClock(),
+                       now: (@Sendable () -> Date)? = nil,
                        proc: (any ProcRunning)? = nil)
         -> (svc: OrchestraService, sessions: StubSessions, worktrees: StubWorktrees, adapter: StubAdapter, trust: TrustLedger, base: String) {
         let config = Config(reposRoot: base + "/repos",
@@ -110,12 +116,14 @@ enum TestEnv {
         let adapter = StubAdapter(transcriptDir: base + "/transcripts", capabilities: capabilities)
         let store = TaskStore(path: base + "/tasks.json", clock: clock)
         let trust = TrustLedger(path: base + "/trust-ledger.json")
-        let inbox = Inbox(path: base + "/inbox.json")
+        let nowProvider: @Sendable () -> Date = now ?? { Date() }
+        let inbox = Inbox(path: base + "/inbox.json",
+                          leaseTimeout: TimeInterval(config.deliveryLeaseTimeout), now: nowProvider)
         let svc = OrchestraService(config: config, store: store,
                                    registry: AgentRegistry(adapters: [adapter]),
                                    worktrees: wtRegistry, sessions: sessions, trust: trust, inbox: inbox,
                                    watchStore: WatchRegistryStore(path: base + "/watch-registry.json"),
-                                   clock: clock, proc: proc ?? Self.defaultFakeProc(),
+                                   clock: clock, now: nowProvider, proc: proc ?? Self.defaultFakeProc(),
                                    gitRemotesProbe: { _ in [] })
         return (svc, sessions, worktrees, adapter, trust, base)
     }
@@ -213,8 +221,12 @@ enum TestEnv {
             // finishLaunch's "start clean" pendingReadiness.remove, and under parallel-suite load the
             // off-actor step can lag the phase write — the race behind the reopen/relaunch flakes.
             if inject, await svc.hasReadinessWaiter(id), let k = card?.phase.kind {
-                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume")) }
-                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup")) }
+                // Stamp the CURRENT generation like a real SessionStart hook (ORCH_EPOCH) so B3's readiness
+                // epoch-fence resolves it as `.signal` (a proven current-gen boot), not the unattributable
+                // `.ticks` degrade a nil-epoch signal would take.
+                let e = card?.sessionEpoch
+                if k == .relaunching { try? await svc.report(id, StatusReport(sessionSource: "resume"), observedEpoch: e) }
+                else if k == .launching { try? await svc.report(id, StatusReport(sessionSource: "startup"), observedEpoch: e) }
             }
             return card?.phase.kind == .live
         }
@@ -275,7 +287,8 @@ enum TestEnv {
             // Deliver on WAITER-REGISTERED, not phase kind (see reconcileToLive): avoids the
             // pendingReadiness-clear race that flakes under parallel-suite contention.
             if await svc.hasReadinessWaiter(created.id) {
-                try? await svc.report(created.id, StatusReport(sessionSource: "startup"))
+                try? await svc.report(created.id, StatusReport(sessionSource: "startup"),
+                                      observedEpoch: card?.sessionEpoch)   // epoch-stamped → .signal (B3 fence)
             }
             return card?.phase.kind == .live
         }

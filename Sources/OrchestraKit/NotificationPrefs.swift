@@ -1,7 +1,7 @@
 import Foundation
 
 /// Client-local notification preferences, shared across every client (the macOS notifier and the iOS
-/// Settings screen). Three attention triggers, each with a focus **scope** (off / background / always)
+/// Settings screen). Five attention triggers, each with a focus **scope** (off / background / always)
 /// and a **sound** (default / none / a named system sound). Persisted per-client in `UserDefaults` under
 /// the SAME keys the macOS `AgentNotifier` reads (`orch_notify_<trigger>_scope` / `_sound`) so choosing
 /// how notifications fire is one model, not two that drift.
@@ -10,7 +10,7 @@ import Foundation
 /// persist prefs without APNs delivery, which is a backend follow-on (N1). The macOS notifier keeps its
 /// own `UNNotificationSound` mapping; this type owns only the scope/sound *storage* contract.
 public enum NotifyTrigger: String, CaseIterable, Codable, Sendable {
-    case permission, needsYou, died
+    case permission, needsYou, died, deliveryStuck, mergeStalled
 }
 
 public enum NotifyScope: String, CaseIterable, Codable, Sendable {
@@ -51,16 +51,22 @@ public struct NotificationPrefs {
 
     public static func defaultScope(_ t: NotifyTrigger) -> NotifyScope {
         switch t {
-        case .permission: return .always
-        case .needsYou:   return .background
-        case .died:       return .always
+        case .permission:    return .always
+        case .needsYou:      return .background
+        case .died:          return .always
+        // A stuck card needs the human but isn't as urgent as a crash — background (like needsYou),
+        // so it stays quiet while the Mac app is frontmost yet still pushes to a backgrounded phone.
+        case .deliveryStuck: return .background
+        case .mergeStalled:  return .background
         }
     }
     public static func defaultSound(_ t: NotifyTrigger) -> NotifySound {
         switch t {
-        case .permission: return .hero
-        case .needsYou:   return .submarine
-        case .died:       return .basso
+        case .permission:    return .hero
+        case .needsYou:      return .submarine
+        case .died:          return .basso
+        case .deliveryStuck: return .submarine
+        case .mergeStalled:  return .submarine
         }
     }
 

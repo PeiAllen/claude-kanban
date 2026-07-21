@@ -4,7 +4,8 @@ import Testing
 import TestSupport
 
 /// Task 2.5 — spawn/reopen walk the phase funnel synchronously; liveness respects being-born phases;
-/// markDead concludes; the `relaunchClaimed` atomic claim replaces the deleted `recovering` set.
+/// markDead concludes; the wake-vs-wake single-winner guard is B4's `deliveriesInFlight` (which retired
+/// the `relaunchClaimed` set, itself the successor to the deleted `recovering` set).
 @Suite("OrchestraService — spawn/reopen phase funnel (2.5)")
 struct SpawnPhaseTests {
 
@@ -145,10 +146,10 @@ struct SpawnPhaseTests {
         #expect(byVerb == .rejected(from: .dead(.agentExited), to: .live(.running)))
     }
 
-    @Test("two concurrent wakes on an idle card resume exactly once (relaunchClaimed defers the second)")
+    @Test("two concurrent wakes on an idle card resume exactly once (deliveriesInFlight defers the second)")
     func test_concurrentWakeDoesNotDoubleResume() async throws {
         // .claudeCode (sessionStartHook): the resume genuinely awaits its signal, so the in-flight window
-        // the `relaunchClaimed` deferral depends on is observable (a `.relaunchLiveness` stub confirms too
+        // the `deliveriesInFlight` deferral depends on is observable (a `.relaunchLiveness` stub confirms too
         // fast to exercise it). spawnAwaited drives the setup spawn's launch-ready signal.
         let env = TestEnv.make(grace: 30, capabilities: .claudeCode)
         let repo = TestEnv.repo(env.base)
@@ -162,8 +163,8 @@ struct SpawnPhaseTests {
         async let w2: Void = env.svc.wake(t.id)
         _ = await (w1, w2)
 
-        // `relaunchClaimed` lets ONE resume-seed proceed → ONE `.relaunching` transition; the reconciler
-        // then drives that single relaunch (the other wake deferred at the claim).
+        // `deliveriesInFlight` lets ONE wake proceed → ONE `.relaunching` intent; the reconciler then
+        // drives that single relaunch (the other wake deferred at the in-flight guard).
         try await pollUntil {
             await env.svc.reconcile()
             return env.sessions.ensureArgv[name]?.contains("--resume") == true

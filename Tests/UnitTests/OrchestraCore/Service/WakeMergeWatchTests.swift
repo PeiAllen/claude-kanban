@@ -159,11 +159,18 @@ struct WakeMergeWatchTests {
 
         let inbox = await env.svc.inbox
         #expect(await inbox.peek(parent.id).count == 3)          // none lost
-        let payload = try #require(await env.svc.drainForStop(parent.id))
+        let epoch = try #require(await env.svc.store.get(parent.id)).sessionEpoch
+        let payload = try #require(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false))
         #expect(payload.contains(a.shortId))                     // all three drain together
         #expect(payload.contains(b.shortId))
         #expect(payload.contains(c.shortId))
-        #expect(await inbox.peek(parent.id).isEmpty)             // one drain cleared them
+        // Claim-then-confirm: all three ride ONE claim (delivered together) and are now LEASED — not
+        // removed — until the continuation's own Stop confirms them.
+        let leased = await inbox.peek(parent.id)
+        #expect(leased.count == 3)
+        #expect(leased.allSatisfy { $0.lease?.route == .stopDrain })
+        _ = await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: true)
+        #expect(await inbox.peek(parent.id).isEmpty)             // the continuation's Stop confirms the batch
     }
 
     // extra · the `wait` command is registered (MCP parity) and round-trips a conclusion.
@@ -257,7 +264,8 @@ struct WakeMergeWatchTests {
         }
         let seed = try #require(env.sessions.ensureArgv[name]?.last)
         #expect(seed.contains(child.shortId))
-        #expect(await env.svc.drainForStop(parent.id) == nil)
+        let epoch = try #require(await env.svc.store.get(parent.id)).sessionEpoch   // current post-relaunch epoch
+        #expect(await env.svc.payloadForStop(parent.id, observedEpoch: epoch, stopHookActive: false) == nil)
     }
 
     @Test("Codex task_complete leaves a watched read-only delegated child idle — success is not a conclusion")

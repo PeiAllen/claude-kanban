@@ -117,4 +117,25 @@ struct ModelCodableTests {
         #expect(intermediate.sessionDiscoverySince == epochDate)   // accepts the intermediate ISO-8601 shape
         #expect(back.pendingSeed == "carried context")
     }
+
+    @Test("Task round-trips deliveryStuckSince; a record without the key decodes to nil")
+    func test_taskCarriesDeliveryStuckSince() throws {
+        let stuckAt = Date(timeIntervalSince1970: 1_700_000_500)   // whole-second → exact ISO-8601 round-trip
+        var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
+                     model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                     order: 0, initialPrompt: "go")
+        #expect(t.deliveryStuckSince == nil)   // defaults to nil, like pendingSeed
+        t.deliveryStuckSince = stuckAt
+
+        let data = try OrchestraJSON.wire.encode(t)
+        let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
+        #expect(back.deliveryStuckSince == stuckAt)
+
+        // Additive-optional forward-compat: a legacy record lacking the key decodes to nil, never throws.
+        var shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        shape.removeValue(forKey: "deliveryStuckSince")
+        let legacy = try OrchestraJSON.decoder.decode(
+            Task.self, from: JSONSerialization.data(withJSONObject: shape))
+        #expect(legacy.deliveryStuckSince == nil)
+    }
 }

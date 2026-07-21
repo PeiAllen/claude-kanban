@@ -466,6 +466,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// survives deterministically. Set at spawn's `store.create`, read by `materialize`, cleared on the
     /// `→.launching` transition. nil ⇒ HEAD / no base. Additive-optional Codable (mirrors `pendingSeed`).
     public var spawnBase: String?
+    /// When a card's queued delivery has been stuck (repeated failed attempts past the age threshold),
+    /// stamped by the reconciler arm (B4) and cleared by a confirmed delivery / `send`. Persisted so the
+    /// stuck state survives a daemon restart. Additive-optional Codable (mirrors `pendingSeed`); UI-less
+    /// until B5b surfaces it — nothing reads it in B2.
+    public var deliveryStuckSince: Date?
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
@@ -501,6 +506,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         pendingSeed: String? = nil,
         pendingModel: String? = nil,
         spawnBase: String? = nil,
+        deliveryStuckSince: Date? = nil,
         ctxPct: Double = 0,
         agentSessionId: String? = nil,
         priorSessionIds: [String] = [],
@@ -536,6 +542,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.pendingSeed = pendingSeed
         self.pendingModel = pendingModel
         self.spawnBase = spawnBase
+        self.deliveryStuckSince = deliveryStuckSince
         self.ctxPct = ctxPct
         self.agentSessionId = agentSessionId
         self.priorSessionIds = priorSessionIds
@@ -561,6 +568,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
+        case deliveryStuckSince
         case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
@@ -620,6 +628,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.pendingSeed = try c.decodeIfPresent(String.self, forKey: .pendingSeed)
         self.pendingModel = try c.decodeIfPresent(String.self, forKey: .pendingModel)
         self.spawnBase = try c.decodeIfPresent(String.self, forKey: .spawnBase)
+        self.deliveryStuckSince = try c.decodeIfPresent(Date.self, forKey: .deliveryStuckSince)
         // Migration: a record with a `phase` key is post-Stage-2 — decode it. Otherwise seed `phase`
         // from the legacy triple (leniently, so a garbage status still decodes to a safe terminal).
         if let phase = try c.decodeIfPresent(Phase.self, forKey: .phase) {
@@ -675,6 +684,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(pendingSeed, forKey: .pendingSeed)
         try c.encodeIfPresent(pendingModel, forKey: .pendingModel)
         try c.encodeIfPresent(spawnBase, forKey: .spawnBase)
+        try c.encodeIfPresent(deliveryStuckSince, forKey: .deliveryStuckSince)
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encodeIfPresent(treeStat, forKey: .treeStat)
@@ -834,6 +844,16 @@ public struct BatchSpawnFailure: Codable, Sendable, Equatable {
     public init(index: Int, prompt: String, error: String) {
         self.index = index; self.prompt = prompt; self.error = error
     }
+}
+
+/// Outcome of the `send` verb (B5a): the message's id (the one the caller minted or that a client seam
+/// stamped) and a fresh snapshot of the target card. Returning the id lets a client correlate a retry
+/// with its original — the send contract is idempotent on that id — and the card snapshot mirrors how
+/// `move`/`spawn` return the affected card.
+public struct SendResult: Codable, Sendable, Equatable {
+    public let messageId: UUID
+    public let card: Task
+    public init(messageId: UUID, card: Task) { self.messageId = messageId; self.card = card }
 }
 
 // MARK: - Tree snapshot (the `tree` command payload)

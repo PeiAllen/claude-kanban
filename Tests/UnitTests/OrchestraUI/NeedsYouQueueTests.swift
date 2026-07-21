@@ -65,6 +65,59 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertEqual(NeedsYouQueue.reason(for: card("at", phase: .live(.running), ctx: 85)), .contextFull)
     }
 
+    // MARK: delivery-stuck / merge-stalled reasons (B5b) — RENDERED, never set here
+
+    private func stuckCard(_ title: String,
+                           phase: Phase = .live(.waiting(.humanTurn)),
+                           deliveryStuck: Bool = false,
+                           mergeStalled: Bool = false,
+                           treeState: TreeState = .inSync) -> Task {
+        let ts: TreeStat? = (mergeStalled || treeState != .inSync)
+            ? TreeStat(state: treeState, mergeStalled: mergeStalled) : nil
+        return Task(title: title, repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
+                    model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
+                    phase: phase,
+                    deliveryStuckSince: deliveryStuck ? Date(timeIntervalSince1970: 1000) : nil,
+                    ctxPct: 0, initialPrompt: title, treeStat: ts)
+    }
+
+    func testDeliveryStuckSurfacesAndOutranksHumanTurn() {
+        // A stuck card waiting on the human surfaces as deliveryStuck (the specific reason), not humanTurn.
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("s", deliveryStuck: true)), .deliveryStuck)
+        // But permission and died still outrank it.
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("perm", phase: .live(.waiting(.permission)),
+                                                           deliveryStuck: true)), .permission)
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("dead", phase: .dead(.agentExited),
+                                                           deliveryStuck: true)), .died)
+    }
+
+    func testMergeStalledSurfacesInNeedsYou() {
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("m", mergeStalled: true)), .mergeStalled)
+        // Outranks a concurrent humanTurn (the stall is the one needing a human).
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("m", phase: .live(.waiting(.humanTurn)),
+                                                           mergeStalled: true)), .mergeStalled)
+    }
+
+    func testMergeStalledOutranksUnderlyingStale() {
+        // The sticky give-up flag is read INDEPENDENT of the underlying TreeState — a card that is both
+        // .stale AND mergeStalled surfaces the stall (04-tests §80), not dropped or masked.
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("stale-stalled", mergeStalled: true,
+                                                           treeState: .stale)), .mergeStalled)
+    }
+
+    func testDeliveryStuckOutranksMergeStalledWhenBoth() {
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("both", deliveryStuck: true, mergeStalled: true)),
+                       .deliveryStuck)
+    }
+
+    func testStuckClearsBackToUnderlyingReason() {
+        // Once unstuck, the card falls back to its underlying reason (here humanTurn).
+        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("cleared", phase: .live(.waiting(.humanTurn)))),
+                       .humanTurn)
+        // A plain running card with no stuck flag and no other signal surfaces for nothing.
+        XCTAssertNil(NeedsYouQueue.reason(for: stuckCard("running", phase: .live(.running))))
+    }
+
     // MARK: build — filtering + sort
 
     func testArchivedCardsAreExcluded() {

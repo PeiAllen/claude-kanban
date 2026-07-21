@@ -714,20 +714,25 @@ public class BoardStore: ObservableObject {
                 if selectedId == t.id { selectedId = nil }
                 if archiveConfirm == t.id { archiveConfirm = nil }
             } else {
-                // Prior status of an *existing* card, captured before we overwrite it. `nil` for a
+                // Prior snapshot of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
-                // `tasks` wholesale, bypassing `apply`) never fire a notification.
-                let prev = tasks.first { $0.id == t.id }?.phase
+                // `tasks` wholesale, bypassing `apply`) never fire a notification. The array IS the mac
+                // path's per-card memory (no separate stuck-state store needed).
+                let prevTask = tasks.first { $0.id == t.id }
+                let prevPhase = prevTask?.phase
+                let wasStuck = prevTask.map { AttentionTransition.currentStuckTrigger($0) != nil } ?? false
                 archived.removeAll { $0.id == t.id }
                 if let idx = tasks.firstIndex(where: { $0.id == t.id }) { tasks[idx] = t }
                 else { tasks.append(t) }
                 // Genuine transitions → the matching notification trigger, decided by the SHARED
-                // `AttentionTransition` core (the same mapping the phone's push path uses) so the macOS
-                // banner can't drift from the phone push. `prev == nil` (fresh card) and the
-                // post-reconnect wholesale set (which bypasses `apply`) yield nil and never fire.
+                // `AttentionTransition.notifyTrigger` core (the same mapping + precedence the phone's push
+                // path uses) so the macOS banner can't drift from the phone push. It reconciles the phase
+                // edge and a "card stuck" rise into ONE trigger (died/permission > stuck > needsYou). A fresh
+                // card (`prevTask == nil`, so `seen: false`) yields nil and never fires.
                 // Host-only: the macOS notifier surfaces these as system banners; iOS notifications are N1.
                 #if os(macOS)
-                if let trigger = AttentionTransition.trigger(prev: prev, task: t) {
+                if let trigger = AttentionTransition.notifyTrigger(prev: prevPhase, wasStuck: wasStuck,
+                                                                   seen: prevTask != nil, task: t) {
                     notifier.notify(trigger, task: t)
                 }
                 #endif
@@ -854,7 +859,13 @@ public class BoardStore: ObservableObject {
         } catch { toast("Reopen failed", sub: "\(error)", color: .red); return nil }
     }
     public func send(_ id: UUID, _ message: String) async {
-        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString), "message": .string(message)])) }
+        // Mint the required message id here (the daemon requires it; this is a client seam like the CLI
+        // and MCP bridge). A fresh id per UI send is correct — the phone's reply/compose is a new intent,
+        // not a retry.
+        let messageId = UUID()
+        do { _ = try await client.call("send", .object(["ref": .string(id.uuidString),
+                                                        "message": .string(message),
+                                                        "id": .string(messageId.uuidString)])) }
         catch { toast("Couldn't send message", sub: "\(error)", color: .red) }
     }
 

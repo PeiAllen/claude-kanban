@@ -115,13 +115,18 @@ extension OrchestraService {
             await concludeCard(id, c.kind, deadReason: c.deadReason)
         }
 
-        // 6 · Wake-on-live — the single structural release point for a message parked while the card was
-        //     provisioning. `wakeIfPending` is a no-op unless the card is now `.live(.waiting)` with a
-        //     non-empty inbox, so a `.live(.running)` entry harmlessly falls through.
-        if to.kind == .live { await wakeIfPending(id) }
-
-        // 7 · Broadcast the new state.
+        // 6 · Broadcast the new state FIRST — before any wake. `wake` may record a `.relaunching`
+        //     intent INLINE (B4: it holds `deliveriesInFlight` across the ladder, so it no longer
+        //     detaches), and that nested transition emits its own upsert. Broadcasting this `.live`
+        //     one first keeps the pair in causal order (`.live` then `.relaunching`) instead of
+        //     inverted. Recursion is bounded by `deliveriesInFlight`: a nested wake sees the outer
+        //     claim and returns at once.
         emit(.taskUpserted(updated), rev: rev)
+
+        // 7 · Wake-on-live — the single structural release point for a message parked while the card
+        //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
+        //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.
+        if to.kind == .live { await wakeIfPending(id) }
         return .applied
     }
 
