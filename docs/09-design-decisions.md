@@ -1485,6 +1485,9 @@ persistence carries provenance through daemon restarts, and the snapshot remains
 is renamed or archived. The desktop and iOS inbox editors render that source as `From …`; the Stop-drain and
 resume seed deliberately do not, so the delivery text remains trusted operator-relayed context and no source
 title can reduce the delivery cap. No human-facing surface needs an edit-author history or a live card lookup.
+Source is display provenance, **not authentication**: a local process can set the ambient card id, which is
+acceptable in the single-user local orchestration threat model where every sender is operator-authorized.
+If that threat model becomes adversarial, future work is session-credential-based non-spoofable attribution.
 
 Also landing after the forest is **remote-daemon connections — running the Mac board against a remote
 Linux `orchestrad`** (merge `63bece4`, branch `remote-daemon-impl`). This builds the **reusable
