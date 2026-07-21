@@ -94,12 +94,14 @@ A `Task` is the single persisted record behind every card. Its fields:
 
 ### Identity and references
 
-A card can be named three ways, all resolvable by `TaskRef`:
+A card can be named with a short id, a full UUID, or either of two URI forms, all resolvable by `TaskRef`:
 
 - **short id** — first 6 chars of the UUID, lowercased,
 - **full UUID**,
-- **URI** — `orchestra://task/<shortId>-<slug>`, where `slug` is the slugified title (this is the
-  "Copy chat link" value and the deep-link the app registers).
+- **short URI** — `orchestra://task/<shortId>`, the compact self-identifying form copied by the board
+  card-reference badge and the inspector's "Copy chat link" action,
+- **descriptive URI** — `orchestra://task/<shortId>-<slug>`, where `slug` is the slugified title; this
+  remains a valid deep link and the full form returned by `Task.ref()`.
 
 `resolve(ref, in: tasks)` throws `unknownTask` if nothing matches and `ambiguousTask` if a short id
 matches more than one card.

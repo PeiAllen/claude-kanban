@@ -27,6 +27,8 @@ struct TaskRefTests {
         let ref = t.ref()
         #expect(ref.hasPrefix("orchestra://task/\(t.shortId)"))
         #expect(try resolve(.init(parsing: ref), in: [t]).id == t.id)
+        #expect(t.ref(slugging: false) == "orchestra://task/\(t.shortId)")
+        #expect(t.ref() == "orchestra://task/\(t.shortId)-fix-the-login-flow")
     }
 
     @Test("unknown ref throws")

@@ -52,6 +52,8 @@ view so the inspector overlay renders on top of it.
   read-only **eye badge** for `.readOnly` cards, and — for a git card the daemon has diffed — a **branch
   diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
   there is no stat (non-git / zero-change / not-yet-computed).
+- The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
+  `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
   don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row
@@ -151,8 +153,8 @@ The **agent chrome** stacks, top to bottom:
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
 2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the read-only eye badge, the
    status pill, and an **Inspect** button (opens a read-only shell agent in the worktree);
-3. a **breadcrumb strip** — "Copy chat link" (the `orchestra://` URI), "Copy tmux target", and a
-   clickable path breadcrumb;
+3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
+   target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);
 5. a **shell panel** — either the shell tabs, or a "New terminal" button when none are open.
 
@@ -304,7 +306,7 @@ The shipped bindings:
 | `c` | New card (opens the spawn sheet) |
 | `H` / `L` | **Carry** the selected card one column left / right (shift = grab the card) |
 | `a` · `o` · `O` · `d` · `I` · `t` | Archive · open the card's **notes** (Obsidian vault) · View changes in Zed · toggle Agent/Diff view · open the inbox editor · new shell tab |
-| `y c` / `y t` / `y p` | Copy chat link / tmux target / cwd path |
+| `y c` / `y t` / `y p` / `y i` | Copy chat link / tmux target / cwd path / card reference |
 | `/` · `n` / `N` | **Search / filter cards** — opens the `SearchBar` (matches title / branch / repo); typing dims non-matches and jumps to the first hit, `Enter` commits back to the board where `n`/`N` cycle matches, `Esc` clears |
 | `f` | **Link-hints** — overlay a short home-row label on every visible card; type the label to jump to it (`Esc` aborts) |
 | `:` | **Command palette** (`CommandPalette`) — a fuzzy list of every board action with its shortcut shown inline (so it teaches the keymap); `⌃j`/`⌃k` move the highlight, `Enter` runs, `Esc` closes |
