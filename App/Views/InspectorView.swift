@@ -608,10 +608,10 @@ private struct BreadcrumbStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // The card's id IS its chat link — `orchestra://task/<shortId>-<slug>` — so one control
-            // carries both: the id is the label, the link is what lands on the clipboard.
+            // The card's short URI IS its chat link — `orchestra://task/<shortId>` — so one control
+            // carries both: the short id is the label, and the qualified reference lands on the clipboard.
             Button {
-                copy(task.ref())
+                copy(task.ref(slugging: false))
                 linkCopied = true
                 _Concurrency.Task {
                     try? await _Concurrency.Task.sleep(nanoseconds: 1_200_000_000)
@@ -627,7 +627,7 @@ private struct BreadcrumbStrip: View {
                 .frame(maxHeight: .infinity)
             }
             .buttonStyle(.plain)
-            .help(linkCopied ? "Copied!" : "Copy chat link — \(task.ref())")
+            .help(linkCopied ? "Copied!" : "Copy chat link — \(task.ref(slugging: false))")
 
             Rectangle().fill(theme.hair).frame(width: 0.5, height: 14)
 
@@ -686,7 +686,7 @@ private struct BreadcrumbStrip: View {
     }
 }
 
-// (The card id lives on the chat-link button in `BreadcrumbStrip` — the link *is* the id.)
+// (The card reference lives on the chat-link button in `BreadcrumbStrip` — the link *is* the reference.)
 
 private struct BottomStrip: View {
     @EnvironmentObject var model: BoardModel

@@ -88,13 +88,13 @@ struct CardView: View {
         }
     }
 
-    // MARK: - Card id watermark
+    // MARK: - Card reference watermark
 
-    /// The card's short id (`shortId` — the ref the CLI and agents address it by), tucked into the
-    /// opposite corner from the `f` hint badge. At rest it's a watermark: faint enough that the eye
-    /// skips it while scanning the board. Hovering *the card* (not just the id) brings it to full
-    /// contrast and grows the copy affordance leftward, so the id itself never moves. Click copies;
-    /// `y i` yanks the selected card's id the same way.
+    /// The card's short id (`shortId`), tucked into the opposite corner from the `f` hint badge. At
+    /// rest it's a watermark: faint enough that the eye skips it while scanning the board. Hovering
+    /// *the card* (not just the id) brings it to full contrast and grows the copy affordance leftward,
+    /// so the id itself never moves. Click copies the card's short Orchestra URI; `y i` yanks the
+    /// selected card's reference the same way.
     private var idBadge: some View {
         Button {
             model.copy(.id, of: task)
@@ -125,7 +125,7 @@ struct CardView: View {
         }
         .buttonStyle(.plain)
         .onHover { idHover = $0 }
-        .help(idCopied ? "Copied!" : "Copy card id \(task.shortId)")
+        .help(idCopied ? "Copied!" : "Copy card reference — \(task.ref(slugging: false))")
         .padding(.top, 7)
         .padding(.trailing, 7)
         .animation(.easeOut(duration: 0.12), value: awake)

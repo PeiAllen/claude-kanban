@@ -325,7 +325,7 @@ public final class BoardUX: BoardStore {
             .init(title: "Copy chat link", keys: "y c") { [self] in copySelected(.chatLink) },
             .init(title: "Copy tmux target", keys: "y t") { [self] in copySelected(.tmux) },
             .init(title: "Copy path", keys: "y p") { [self] in copySelected(.path) },
-            .init(title: "Copy card id", keys: "y i") { [self] in copySelected(.id) },
+            .init(title: "Copy card reference", keys: "y i") { [self] in copySelected(.id) },
             .init(title: "Go to Plan", keys: "g p") { [self] in goTo(.plan) },
             .init(title: "Go to Implementation", keys: "g i") { [self] in goTo(.impl) },
             .init(title: "Go to Review", keys: "g r") { [self] in goTo(.review) },
