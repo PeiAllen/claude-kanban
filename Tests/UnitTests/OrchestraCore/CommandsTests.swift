@@ -151,17 +151,22 @@ struct CommandsTests {
         let recipient = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "recipient card", repo: repo, branch: "recipient"))
         let send = try #require(CommandRegistry().command("send"))
+        let cardMessageId = UUID()
+        let humanMessageId = UUID()
 
         _ = try await send.run(env.svc, .object([
             "ref": .string(recipient.shortId), "message": .string("from a card"),
+            "id": .string(cardMessageId.uuidString),
             "senderCard": .string(sender.id.uuidString),
         ]), .mcp)
         _ = try await send.run(env.svc, .object([
             "ref": .string(recipient.shortId), "message": .string("from a person"),
+            "id": .string(humanMessageId.uuidString),
         ]), .cli)
 
         let messages = try await env.svc.inboxPeek(recipient.id)
         #expect(messages.count == 2)
+        #expect(messages.map(\.id) == [cardMessageId, humanMessageId])
         #expect(messages[0].source == .card(id: sender.id, title: sender.title))
         #expect(messages[1].source == .human)
 
@@ -169,6 +174,7 @@ struct CommandsTests {
         let error = await #expect(throws: OrchestraError.self) {
             _ = try await send.run(env.svc, .object([
                 "ref": .string(recipient.shortId), "message": .string("invalid sender"),
+                "id": .string(UUID().uuidString),
                 "senderCard": .string(invalidSenderRef),
             ]), .mcp)
         }
