@@ -72,7 +72,11 @@ enum CLIRunner {
             case "send":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 let msg = flags.value("message") ?? flags.positionalsFrom(1).joined(separator: " ")
-                _ = try await client.call("send", .object(["ref": .string(ref), "message": .string(msg)]))
+                var sendParams: [String: JSONValue] = ["ref": .string(ref), "message": .string(msg)]
+                if let senderCard = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !senderCard.isEmpty {
+                    sendParams["senderCard"] = .string(senderCard)
+                }
+                _ = try await client.call("send", .object(sendParams))
                 print("sent")
 
             case "wait":

@@ -67,6 +67,18 @@ _ = await server.withMethodHandler(CallTool.self) { params in
         }
     }
     var args = argsToJSON(params.arguments)
+    if params.name == "send" {
+        let existing: [String: JSONValue]
+        if case .object(let fields) = args { existing = fields } else { existing = [:] }
+        var fields = existing
+        // `senderCard` is relay context, not an agent-selectable tool argument. Always discard a raw
+        // caller value, then attach the bridge process's card only when the process actually has one.
+        fields.removeValue(forKey: "senderCard")
+        if let senderCard = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"], !senderCard.isEmpty {
+            fields["senderCard"] = .string(senderCard)
+        }
+        args = .object(fields)
+    }
     if params.name == "wait",
        args.optString("watcher") == nil,
        let selfId = ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"],

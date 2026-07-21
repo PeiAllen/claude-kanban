@@ -104,7 +104,14 @@ public struct CommandRegistry: Sendable {
 
             "send": { svc, p, src in
                 let t = try await svc.resolveRef(try p.string("ref"))
-                try await svc.send(t.id, try p.string("message"))
+                let sender: InboxMessageSource
+                if let senderRef = p.optString("senderCard") {
+                    let senderTask = try await svc.resolveRef(senderRef)
+                    sender = .card(id: senderTask.id, title: senderTask.title)
+                } else {
+                    sender = .human
+                }
+                try await svc.send(t.id, try p.string("message"), sender: sender)
                 await svc.logCommand("send", ref: t, source: src)
                 return .ok()
             },
