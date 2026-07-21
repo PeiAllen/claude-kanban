@@ -99,6 +99,74 @@ struct DeliveryStuckTests {
         #expect(await env.svc.inbox.peek(card.id).count == 1)      // durable, never silently dropped
     }
 
+    /// Wave-1 T3 regression (Codex). The stuck rule is UNCONDITIONAL on route, but a RESUMABLE card's only
+    /// route is a cold relaunch that bumps the epoch the post-wake flip is fenced to — so before the
+    /// pre-wake flip a boots-but-never-confirms card relaunch-churned forever and NEVER set
+    /// `deliveryStuckSince`. B5b is surfacing-only (reads a B4-stable flag), so it cannot surface a state
+    /// B4 never sets: the arm itself must reach the terminal state. After ≥5 charged attempts and an aged
+    /// message, the arm must flip stuck BEFORE the next relaunch (card stays `.live`, does not churn).
+    @Test("a resumable card that never confirms flips stuck instead of relaunch-churning forever")
+    func resumableNeverConfirmingFlipsStuck() async throws {
+        let clock = TestClock()
+        let env = TestEnv.make(grace: 2, clock: clock, now: clock.dateProvider())
+        await env.svc.setDeliveryBackoff(0)
+        // A RESUMABLE, graduated, live-waiting card: its transcript exists, so wake's ONLY route is a cold
+        // relaunch (the churn path). Contrast `idleUnresumable`, which has no route and flips via the
+        // post-wake path already covered above.
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))
+        env.adapter.writeTranscript(for: card.agentSessionId!)
+        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.reconcile()                                    // graduate (no message yet ⇒ no charge)
+        try await env.svc.inbox.enqueue(card.id, "never confirms")   // stamped at clock t0
+        // Spend the retry budget directly — the same shortcut `ackWithoutNotifyCannotSuppressStuck` uses;
+        // in production these accrue one-per-expired-relaunch-token over the churn cycles.
+        for _ in 0..<OrchestraService.deliveryStuckAttemptThreshold { await env.svc.chargeDeliveryAttempt(card.id) }
+        clock.advance(by: .seconds(301))                            // oldest message older than deliveryStuckAfter
+
+        await env.svc.reconcile()
+
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.deliveryStuckSince != nil)                    // the terminal state is REACHED (never set before the fix)
+        #expect(after.phase.kind == .live)                          // flipped BEFORE the next relaunch — no churn
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["never confirms"])   // durable throughout
+    }
+
+    /// Wave-1 T3 (Codex, MAJOR follow-up). A `.dead(.resumeFailed)` card is STILL resumable — `isResumable`
+    /// keys on capability + session id + transcript existence, with NO deadReason check — so it skips the
+    /// unresumable-dead shortcut and reaches the pre-wake flip. The live-waiting fix's `expectDead == false`
+    /// would reject its dead phase, letting it relaunch-churn forever (the reviewer's fifth-relaunch-fails
+    /// path). The flip must expect `.dead` when its snapshot is dead, while still requiring the ≥5 budget.
+    @Test("a resumable DEAD card that never confirms flips stuck instead of relaunch-churning")
+    func resumableDeadNeverConfirmingFlipsStuck() async throws {
+        let clock = TestClock()
+        let env = TestEnv.make(grace: 2, clock: clock, now: clock.dateProvider())
+        await env.svc.setDeliveryBackoff(0)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "b"))
+        env.adapter.writeTranscript(for: card.agentSessionId!)      // transcript retained ⇒ resumable even when dead
+        try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
+        await env.svc.reconcile()                                   // graduate
+        try await env.svc.inbox.enqueue(card.id, "never confirms")
+        // Dead but resumable (transcript intact, session id retained) — the reviewer's "fifth relaunch
+        // claims the message but launch fails, leaving .dead(.resumeFailed)" state. markDead does not bump
+        // the epoch, so any relaunch by the arm would.
+        await env.svc.markDead(card.id, reason: .resumeFailed, detail: "launch failed", source: .daemon)
+        let deadEpoch = try #require(await env.svc.store.get(card.id)).sessionEpoch
+        for _ in 0..<OrchestraService.deliveryStuckAttemptThreshold { await env.svc.chargeDeliveryAttempt(card.id) }
+        clock.advance(by: .seconds(301))
+
+        await env.svc.reconcile()
+
+        let after = try #require(await env.svc.store.get(card.id))
+        #expect(after.deliveryStuckSince != nil)                    // terminal state reached (dead phase now owned)
+        #expect(after.phase.kind == .dead)                          // did NOT relaunch
+        #expect(after.sessionEpoch == deadEpoch)                    // and did NOT bump the epoch
+        #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["never confirms"])   // durable
+    }
+
     /// The wave-1 fix (aeffa75) epoch-fences the held-relaunch confirm, so a stale-generation held
     /// lease is now NEVER confirmed — it must expire and be re-driven. The arm's expiry charge is what
     /// terminates the path: without it the token sits outstanding forever.

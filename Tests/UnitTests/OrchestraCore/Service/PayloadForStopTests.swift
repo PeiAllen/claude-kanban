@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import OrchestraCore
+import TestSupport
 
 /// B2 — the busy (Stop-hook) delivery path: claim-then-confirm with an epoch fence, a `stopHookActive`
 /// confirm, and a live-lease guard so a later Stop can never confirm the wrong batch.
@@ -217,5 +218,36 @@ struct PayloadForStopTests {
         // Turn 3: confirm the last batch → nothing left; every one of the 3 messages was delivered whole.
         #expect(await env.svc.payloadForStop(c.id, observedEpoch: c.epoch, stopHookActive: true) == nil)
         #expect(await inbox.peek(c.id).isEmpty)
+    }
+
+    // MARK: post-claim epoch re-guard (wave-1 T3 regression)
+
+    /// The step-1 epoch fence is only an ENTRY check. The service actor is reentrant, so a restart can
+    /// persist epoch e+1 DURING payloadForStop's peek/confirm/claim awaits — and `blockIfLiveLease`
+    /// won't catch it (it is epoch-e-scoped). Without the post-claim re-guard, the stale-e claim mints a
+    /// lease and returns fresh payload to the SUPERSEDED Stop's pane (about to be killed by the relaunch),
+    /// leasing messages the e+1 relaunch then re-owns and re-delivers — the stale-pane injection + duplicate
+    /// the locked Stop fence forbids. The re-guard must RELEASE the batch and return nil, leaving the
+    /// message durable and unleased for the new generation. (Found by the wave-1 T3 review pair.)
+    @Test("a restart landing during the stopDrain claim releases the stale-epoch batch and returns nil")
+    func stopClaimLosingEpochReleasesAndReturnsNil() async throws {
+        let env = TestEnv.make()
+        let c = try await Self.liveCard(env.svc, env.base)
+        try await env.svc.inbox.enqueue(c.id, "deliver me")
+
+        let gate = Gate()
+        await env.svc.setStopClaimPauseForTest { _ = await gate.park() }
+        let stop = _Concurrency.Task {
+            await env.svc.payloadForStop(c.id, observedEpoch: c.epoch, stopHookActive: false)
+        }
+        await gate.reached()                 // parked AFTER the claim, BEFORE the re-guard
+        try await env.svc.restart(c.id)      // → .relaunching, epoch e+1: supersedes the Stop's generation
+        gate.release()
+
+        #expect(await stop.value == nil)     // stale-epoch payload is NOT handed to the dying pane
+        let after = await env.svc.inbox.peek(c.id)
+        #expect(after.map(\.text) == ["deliver me"])              // durable — never lost
+        #expect(after.allSatisfy { $0.lease == nil })             // and NOT left leased at the stale epoch
+        #expect(await env.svc.outstandingTokenCountForTest(c.id) == 0)   // no phantom dispatched token
     }
 }

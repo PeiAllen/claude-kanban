@@ -62,6 +62,25 @@ extension OrchestraService {
         // Fence to the pre-`wake` generation: if `wake` recorded a cold relaunch (bumping the epoch to
         // `.relaunching`) the card is being delivered to, not stuck — the epoch mismatch aborts the flip.
         let liveEpoch = t.sessionEpoch
+        // PRE-WAKE stuck flip (wave-1 T3). The stuck rule (02 §delivery-arm / docs/09) is UNCONDITIONAL on
+        // route: attempts ≥ 5 ∧ oldest age > `deliveryStuckAfter` → flip. But a RESUMABLE card's only route
+        // is a cold relaunch, and `resumeInCard` bumps the epoch the POST-wake flip below is fenced to — so
+        // that flip can NEVER fire for it, and left alone the card relaunch-churns on the lease-expiry
+        // period forever with no human-visible terminal state (the boots-but-never-confirms seed residual;
+        // B5b is surfacing-ONLY and cannot flag a state B4 never sets). So evaluate the flip HERE too,
+        // against the card's CURRENT generation, BEFORE dispatching the next relaunch; a stuck card stops
+        // re-claiming, so skip the wake once it flips. This does NOT weaken the post-wake fence — that still
+        // covers the in-place / no-relaunch routes (a live-but-unresumable card): `flipStuckIfExhausted`
+        // re-checks budget + age + ownership with its own pre/post-write revalidation, so a just-re-armed
+        // (send/confirm) or not-yet-exhausted (< 5) card no-ops straight through to the wake — no false flag.
+        // The ownership phase must match THIS snapshot: a `.dead(.resumeFailed)` card is still resumable
+        // (`isResumable` has no deadReason check), so it reaches here rather than the unresumable-dead
+        // shortcut above, and the flip must expect `.dead` — else it rejects the dead phase and the card
+        // relaunch-churns exactly as the live case did. `expectDead` is decoupled from the budget bypass so
+        // this keeps the normal ≥5 requirement while owning a dead phase.
+        let expectDeadNow: Bool = { if case .dead = t.phase { return true }; return false }()
+        await flipStuckIfExhausted(t.id, expectedEpoch: liveEpoch, expectDead: expectDeadNow)
+        if await store.get(t.id)?.deliveryStuckSince != nil { return }
         await wake(t.id)
         await flipStuckIfExhausted(t.id, expectedEpoch: liveEpoch)
     }
@@ -127,7 +146,16 @@ extension OrchestraService {
     /// still in the phase the decision was made for (`.dead` for the direct-dead bypass, else
     /// `.live(.waiting(.humanTurn))`) — checked before the write AND re-checked after it, since the
     /// write itself suspends.
-    func flipStuckIfExhausted(_ id: UUID, expectedEpoch: Int, bypassAttemptBudget: Bool = false) async {
+    func flipStuckIfExhausted(_ id: UUID, expectedEpoch: Int, bypassAttemptBudget: Bool = false,
+                              expectDead: Bool? = nil) async {
+        // `expectDead` decouples the OWNERSHIP phase the flip requires from the attempt-budget bypass. The
+        // dead-unresumable shortcut is BOTH (bypass the budget AND expect `.dead`), so `expectDead` defaults
+        // to `bypassAttemptBudget`. But the pre-wake flip must expect `.dead` when its decision snapshot is
+        // a resumable dead card while STILL requiring the normal ≥5 budget: a `.dead(.resumeFailed)` card is
+        // still resumable (`isResumable` has no deadReason check), so it skips the unresumable shortcut and
+        // would otherwise relaunch-churn forever with the flip rejecting its dead phase. Passing `expectDead`
+        // explicitly separates the phase expectation from the budget bypass.
+        let expectDeadPhase = expectDead ?? bypassAttemptBudget
         func budgetSpent() -> Bool {
             bypassAttemptBudget || (deliveryAttempts[id]?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
         }
@@ -139,7 +167,7 @@ extension OrchestraService {
         // generation + still stuck-eligible + budget still spent + not already flagged.
         guard budgetSpent(),
               let card = await store.get(id), card.deliveryStuckSince == nil,
-              stuckOwnershipHolds(card, expectedEpoch: expectedEpoch, expectDead: bypassAttemptBudget),
+              stuckOwnershipHolds(card, expectedEpoch: expectedEpoch, expectDead: expectDeadPhase),
               budgetSpent()
         else { return }
         let stamp = now()
@@ -158,7 +186,7 @@ extension OrchestraService {
         // PERSISTED field can hold `stamp` for one actor hop before the undo; nothing reads it in-flight.
         let stillQueued = !(await inbox.peek(id).isEmpty)
         let fresh = await store.get(id)
-        let stillOwned = fresh.map { stuckOwnershipHolds($0, expectedEpoch: expectedEpoch, expectDead: bypassAttemptBudget) } ?? false
+        let stillOwned = fresh.map { stuckOwnershipHolds($0, expectedEpoch: expectedEpoch, expectDead: expectDeadPhase) } ?? false
         guard stillQueued, stillOwned, budgetSpent() else {
             if let (undone, r) = try? await store.update(id, { $0.deliveryStuckSince = nil }) {
                 emit(.taskUpserted(undone), rev: r)      // emit ONLY the final state

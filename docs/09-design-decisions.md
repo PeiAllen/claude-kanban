@@ -481,6 +481,18 @@ into the claim makes a second live lease impossible to *create*, not merely dete
 outstanding lease makes the scan unambiguous. (`hasLiveLease` remains as the standalone predicate the wake
 path reuses.)
 
+**The epoch fence is re-checked *after* the claim, not only at entry** (wave-1 T3 review). The entry fence
+proves the Stop belongs to the current generation, but it is stale across `payloadForStop`'s later awaits —
+the service actor is reentrant, so a concurrent `restart`/`resume` can persist epoch `e+1` during the
+peek/confirm/claim hops, and `blockIfLiveLease` will not catch it (that check is `e`-scoped; the new lease
+is a different generation). Left unguarded, the `e`-claim would hand fresh continuation payload to the
+superseded pane the relaunch is about to kill *and* lease messages the `e+1` relaunch then re-owns and
+re-delivers — the stale-pane injection and duplicate the fence exists to forbid. So the claim is followed by
+the same post-await re-guard the wake ladder applies after *its* channel claim: re-read the card, and if it
+raced away, archived, or lost `e`, release the batch and return nil. Fail-safe — the message stays durable
+and the `e+1` relaunch's `claimSeed` delivers it. This is a *duplicate*-not-loss window (the batch is re-owned,
+never dropped), but the fence is a locked invariant, so it is closed rather than tolerated.
+
 The delivery-tracking state the confirm touches is **declared here even though the reconciler arm reads it
 later**, by the first-reference rule: `Task.deliveryStuckSince` (persisted, UI-less), the service's
 `deliveryAttempts` and `outstandingTokens`, and the single `confirmDelivery` funnel every route confirms
@@ -625,6 +637,26 @@ never confirm, so a mere presence test would strand it outstanding forever with 
 permanently stuck card, not a slow one. The charge re-reads the ledger after its awaits, so a confirm landing
 mid-scan is neither resurrected by a stale write-back nor charged after it reset the budget. Attempts reset
 only on a genuine confirm, so a bridge that acks without notifying cannot suppress the stuck flip.
+
+The stuck flip is evaluated **both before and after the wake dispatch** (wave-1 T3 review), and the
+before-check is what makes the flip rule hold for the *cold relaunch* route. The rule — attempts ≥ 5 ∧
+oldest age > `deliveryStuckAfter` — is unconditional on route, but a resumable card's only route is a cold
+relaunch, and `resumeInCard` bumps the epoch the *post*-wake flip is fenced to, so that flip can never fire
+for it. Left with only the post-wake flip, a card whose relaunch boots but never emits a proven current-gen
+confirming signal (the seed-drop residuals — a provisional card with no watermark, or a resume that never
+confirms) would relaunch-churn on the lease-expiry period forever, re-charging and re-driving without ever
+setting `deliveryStuckSince` — a state B5b cannot surface because B5b is surfacing-only and reads a
+B4-stable flag. So the arm evaluates the flip against the card's *current* generation **before** dispatching
+the next relaunch: once the budget is spent and the age gate holds, it flips and skips the wake, so the
+churn terminates in the human-visible stuck state the contract requires. The flip matches the card's
+*current* phase — and that phase can be `.dead`, not only `.live(.waiting)`: a `.dead(.resumeFailed)` card
+is still resumable (`isResumable` keys on capability + session id + transcript, with no dead-reason check),
+so it skips the unresumable-dead shortcut and would churn identically. So the flip's expected ownership phase
+is decoupled from the attempt-budget bypass — the pre-wake flip expects `.dead` when its snapshot is dead
+while still requiring the full budget, and only the unresumable-dead shortcut both bypasses the budget and
+expects `.dead`. The post-wake flip is untouched and still covers the in-place / no-relaunch routes;
+`flipStuckIfExhausted`'s own pre/post-write revalidation keeps a just-re-armed (send/confirm) or
+not-yet-exhausted card from being falsely flagged.
 
 **Stuck is stable and double-conditioned.** A card flips `deliveryStuckSince` only when the retry budget is
 spent *and* the oldest pending message has outlived `deliveryStuckAfter` — either alone lies. Once stuck the

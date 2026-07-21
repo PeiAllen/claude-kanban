@@ -799,6 +799,15 @@ public actor OrchestraService {
         deliveryDeadBypassPause = pause
     }
 
+    /// Test seam: a pause point in `payloadForStop`, AFTER the stopDrain claim and before the post-claim
+    /// epoch re-guard, so a race test can land a `restart` (epoch bump) in exactly that window and prove
+    /// the re-guard releases the stale-epoch lease instead of injecting into the superseded pane. Nil in
+    /// production.
+    var stopClaimPause: (@Sendable () async -> Void)? = nil
+    func setStopClaimPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        stopClaimPause = pause
+    }
+
     /// The token-based confirm chokepoint — every delivery path (Stop confirm, channel ack, stepper
     /// signal-readiness) funnels a receipt through here, so the archive guard and the attempt/stuck resets
     /// can't be forgotten at one site. A message leaves the durable inbox ONLY here.
@@ -905,6 +914,21 @@ public actor OrchestraService {
                                                  render: { StopDrain.fit($0, budget: $1) },
                                                  now: now(), blockIfLiveLease: true)
         else { return nil }   // `try?` flattens ClaimedBatch? — nil = threw / nothing claimable / live lease
+        // POST-CLAIM EPOCH RE-GUARD. The step-1 entry fence is STALE across the peek/confirm/claim awaits:
+        // the service actor is reentrant, so a concurrent restart/resume can persist epoch e+1 during them,
+        // and `blockIfLiveLease` does NOT catch it (it is epoch-e-scoped — the e+1 lease is a different
+        // generation). Minting an epoch-e lease now would hand fresh payload to the SUPERSEDED Stop's pane
+        // (about to be killed by the relaunch) AND lease messages the e+1 relaunch then re-owns and
+        // re-delivers — the stale-pane injection + duplicate the locked Stop fence forbids. Mirrors the wake
+        // channel-claim re-guard (`+Wake.swift`): re-read, and if the card raced away / archived / lost e,
+        // RELEASE the just-claimed batch and abandon so the e+1 relaunch's `claimSeed` delivers instead. The
+        // message stays durable throughout — fail-safe. (`markDispatched` runs only past the guard, so an
+        // abandoned claim leaves no phantom outstanding token.)
+        await stopClaimPause?()   // test seam: land a restart (epoch bump) in this exact window
+        guard let cur = await store.get(cardId), !cur.archived, cur.sessionEpoch == epoch else {
+            try? await inbox.release(token: batch.token)
+            return nil
+        }
         markDispatched(cardId, token: batch.token)
         injectCounts[cardId] = count + 1
         return batch.payload

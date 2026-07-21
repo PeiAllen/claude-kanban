@@ -76,6 +76,10 @@ struct DeliveryArmTests {
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)
     }
 
+    /// A resumable dead card BELOW the retry budget is revived, not flipped stuck — the below-budget
+    /// counterexample to `resumableDeadNeverConfirmingFlipsStuck` (the pre-wake flip owns the dead phase
+    /// ONLY once ≥ 5 attempts are spent). `.agentExited` is the resumable dead reason (the mid-life quit)
+    /// after `DeadReason.completed` was removed upstream (`remove-inferred-done-state`).
     @Test("the arm revives a resumable DEAD card — a send to a dead card is a work request")
     func armRevivesDeadResumable() async throws {
         let env = TestEnv.make(grace: 2)
