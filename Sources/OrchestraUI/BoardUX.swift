@@ -155,13 +155,13 @@ public final class BoardUX: BoardStore {
     public func openZedSelected() { if let id = selectedId { _Concurrency.Task { await openInZed(id) } } }
     public func openNotesSelected() { if let id = selectedId { _Concurrency.Task { await openNotes(id) } } }
 
-    /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / id).
+    /// Yank a reference to the selected card to the pasteboard (chat link / tmux target / path / card reference).
     public func copySelected(_ target: CopyTarget) {
         guard let t = selected else { return }
         copy(target, of: t)
     }
 
-    /// Yank a reference to a specific card — the card-id badge copies the card it sits on, which is
+    /// Yank a reference to a specific card — the card-reference badge copies the card it sits on, which is
     /// not necessarily the selected one.
     public func copy(_ target: CopyTarget, of t: Task) {
         let s: String
@@ -169,7 +169,7 @@ public final class BoardUX: BoardStore {
         case .chatLink: s = t.ref()
         case .tmux:     s = "\(t.tmuxSession):agent"
         case .path:     s = t.cwd
-        case .id:       s = t.shortId
+        case .id:       s = t.ref(slugging: false)
         }
         platform.clipboard.copy(s)
         toast("Copied", sub: s)
@@ -325,7 +325,7 @@ public final class BoardUX: BoardStore {
             .init(title: "Copy chat link", keys: "y c") { [self] in copySelected(.chatLink) },
             .init(title: "Copy tmux target", keys: "y t") { [self] in copySelected(.tmux) },
             .init(title: "Copy path", keys: "y p") { [self] in copySelected(.path) },
-            .init(title: "Copy card id", keys: "y i") { [self] in copySelected(.id) },
+            .init(title: "Copy card reference", keys: "y i") { [self] in copySelected(.id) },
             .init(title: "Go to Plan", keys: "g p") { [self] in goTo(.plan) },
             .init(title: "Go to Implementation", keys: "g i") { [self] in goTo(.impl) },
             .init(title: "Go to Review", keys: "g r") { [self] in goTo(.review) },
