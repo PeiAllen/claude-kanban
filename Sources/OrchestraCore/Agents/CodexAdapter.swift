@@ -248,6 +248,14 @@ public struct CodexAdapter: Adapter {
         CodexLaunchConfiguration.flags(cwd: ctx.cwd)
     }
 
+    /// The per-launch profile file (`$CODEX_HOME/orch-<djb2>.config.toml`), reaped by core's card-file
+    /// sweep (`sweepCardFiles`). `directory` is the (instance) native codex home; `-p <profileName>`
+    /// resolves to exactly this file. Not the user's own `config.toml` — the `orch-` prefix scopes the
+    /// sweep off it (and off the global MCP-install `config.toml`).
+    public var cardFile: CardFileSpec? {
+        CardFileSpec(directory: codexHome, prefix: "orch-", suffix: ".config.toml", key: .cwdHash)
+    }
+
     /// Write this launch's profile file BEFORE `start`/`resume` reference it via `-p`. The profile carries
     /// the hooks, per-project trust, and (~16KB) developer instructions off the tmux command line — see
     /// [[CodexLaunchConfiguration]] for why inlining them via `-c` killed every card at spawn. Mirrors the

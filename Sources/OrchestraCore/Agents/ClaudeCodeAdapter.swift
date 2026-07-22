@@ -217,13 +217,18 @@ public struct ClaudeCodeAdapter: Adapter {
         ["--mcp-config", MCPConfiguration.claudeJSON(command: ctx.orchestraMCPBin)]
     }
 
+    /// The managed per-card `--settings` file (statusLine + telemetry hooks + any overlays), reaped by
+    /// core's card-file sweep (`sweepCardFiles`). Only actually WRITTEN for cards with overlays (today:
+    /// read-only), but the spec describes the whole class so the sweep recognizes every one on disk.
+    public var cardFile: CardFileSpec? {
+        CardFileSpec(directory: Config.dataDir, prefix: "card-settings-", suffix: ".json", key: .cwdHash)
+    }
+
     /// Deterministic per-cwd path for the merged per-card settings file, so `prepareToLaunch` writes the
-    /// same file `start`/`resume` reference. Hashed (not the raw cwd-slug) to stay under the 255-char
-    /// filename cap for deeply-nested directories.
+    /// same file `start`/`resume` reference. Routed through `cardFile` so the writer and the sweep agree
+    /// on one hash. `cardFile!` is safe — this adapter always returns a non-nil `cardFile`.
     private func cardSettingsPath(_ cwd: String) -> String {
-        var h: UInt64 = 5381
-        for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
-        return "\(Config.dataDir)/card-settings-\(String(h, radix: 16)).json"
+        cardFile!.path(token: CardFileSpec.cwdHash(cwd))
     }
 
     /// In the plan column we hand `--permission-mode auto` so planning workflows (e.g. `/layered-plan`)

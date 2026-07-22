@@ -65,11 +65,16 @@ public protocol Adapter: Sendable {
     /// worktree's directory-trust dialog so an autonomous agent never blocks on the "trust this
     /// folder?" prompt — every worktree is a fresh path the CLI would otherwise ask about each time.
     func prepareToLaunch(_ ctx: AdapterContext) throws
+    /// The derived per-card file this adapter writes OUTSIDE the worktree (statusLine settings / launch
+    /// profile), if any — so core can reap it generically (`sweepCardFiles`) without agent branching.
+    /// DEFAULT nil (additive): an adapter that writes no such file opts out for free.
+    var cardFile: CardFileSpec? { get }
     var env: [String: String] { get }
 }
 
 public extension Adapter {
     var env: [String: String] { [:] }
+    var cardFile: CardFileSpec? { nil }
     func prepareToLaunch(_ ctx: AdapterContext) throws {}
     func parse(_ raw: RawTelemetry) -> StatusReport? { nil }
     func encode(_ response: HookResponse, for event: HookEvent) -> String? { nil }   // fail-safe: no output

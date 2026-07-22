@@ -23,9 +23,7 @@ enum CodexLaunchConfiguration {
     /// `-p` later resolves. Hashed (not the raw cwd) to stay a short, filename-safe profile id, and
     /// `orch-` namespaced so it can never collide with a profile the user authored.
     static func profileName(cwd: String) -> String {
-        var h: UInt64 = 5381
-        for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
-        return "orch-\(String(h, radix: 16))"
+        "orch-\(CardFileSpec.cwdHash(cwd))"   // shared djb2 — the file the sweep reaps and `-p` selects agree
     }
 
     /// Absolute path of the profile file in the (native) Codex home. Codex only discovers profiles under
