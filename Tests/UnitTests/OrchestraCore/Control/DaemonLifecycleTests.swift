@@ -110,8 +110,9 @@ struct DaemonLifecycleTests {
             await svc.reconcile()
             return await svc.list(includeArchived: true).first { $0.id == card.id }?.phase.kind == .dead
         }
-        // The fresh tree WAS reclaimed (clean, unshared) — but through release(force:FALSE), not remove(force:true).
-        #expect(worktrees.removedForce.contains { $0.path == nbPath && $0.force == false })
-        #expect(!worktrees.removedForce.contains { $0.path == nbPath && $0.force == true })
+        // The fresh tree WAS reclaimed — through release(force:false), whose guards (siblings,
+        // unsaved-work predicate) cleared before it issued the forced manager remove. "Never
+        // force-removes SHARED" is the sibling guard: a referenced tree returns before any remove.
+        #expect(worktrees.removedForce.contains { $0.path == nbPath && $0.force == true })
     }
 }

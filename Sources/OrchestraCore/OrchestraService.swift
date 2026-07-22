@@ -702,6 +702,39 @@ public actor OrchestraService {
         }
     }
 
+    /// Boot re-drive: finish interrupted worktree removals for FULLY-archived cards. A removal killed
+    /// mid-delete (a daemon crash, power loss) used to leak the tree forever —
+    /// teardown had already flipped `archivedComplete`, so nothing ever retried. This re-runs the
+    /// SINGLE removal policy (`release`, all guards intact — marker, siblings, inflight, unsaved-work
+    /// predicate) for every `origin == .worktree` card whose phase is `archivedComplete`. NEVER
+    /// `archivedPending`: the `archived` flag is written before the teardown kills the session, so
+    /// only the completed teardown proves the agent is gone. Then, per distinct repo, prune dangling
+    /// registrations (dir gone, admin entry alive — what the sandbox deny-list actually scans).
+    public func redriveArchivedWorktreeReleases() async {
+        let cards = await store.all()
+        let targets = cards.filter { $0.origin == .worktree && $0.phase.kind == .archivedComplete }
+        guard !targets.isEmpty else { return }
+        for t in targets {
+            let outcome = (try? await worktrees.release(cardId: t.id, cards: cards, force: false)) ?? .noop
+            switch outcome {
+            case .removed:
+                emitActivity(.recovered, t, .daemon,
+                             "reclaimed archived card's worktree \(t.cwd) (earlier removal was interrupted)")
+            case .keptUnsavedWork:
+                emitActivity(.warning, t, .daemon,
+                             "archived card's worktree kept — unsaved work in \(t.cwd); resolve or remove manually")
+            case .removalFailed(let detail):
+                emitActivity(.warning, t, .daemon,
+                             "archived card's worktree removal failed (will retry next boot): \(detail)")
+            case .keptReferenced, .noop:
+                break
+            }
+        }
+        for repo in Set(targets.map(\.repo)) {
+            await worktrees.pruneDanglingRegistrations(repo: repo)
+        }
+    }
+
     /// Boot: one-time marker migration for pre-upgrade (marker-less) worktree trees. Non-archived worktree
     /// cards only; being-born phases excluded as defense-in-depth (they can't exist at the first post-upgrade
     /// boot anyway — those phases are new). The registry's sentinel makes this a genuine no-op on every later

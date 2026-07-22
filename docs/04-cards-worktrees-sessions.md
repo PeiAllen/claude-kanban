@@ -72,9 +72,14 @@ A **one-time migration** (`stampMarkers(forMigratedPaths:)`, gated by its own pe
 runs at most once, at the first post-upgrade boot) stamps markers for every pre-existing worktree so it
 becomes adoptable without touching its contents — a dirty pre-upgrade tree survives byte-intact.
 
-**Removal** (on archive, via `release`) runs `git worktree remove` but **guards a dirty tree**: it
-refuses unless forced, and treats a failed `git status` query as "dirty" (fail-safe), so uncommitted work
-is never silently deleted. The **branch is kept** after removal so the work can be recovered — which is
+**Removal** (on archive, via `release`) runs `git worktree remove --force` under the bulk-IO timeout,
+but only after a **work-aware guard**: a config-pinned `git status` probe keeps the tree if it holds any
+*unsaved work* (staged/modified/untracked/unmerged entries — or an unqueryable probe, fail-safe), and
+surfaces the keep as a warning. Entries that are only ` D` worktree-deletions of index-clean files do
+NOT block removal — nothing is left on disk to lose, and that state is precisely what an interrupted
+removal leaves behind. Removals interrupted by a timeout or crash are **re-driven at the next daemon
+boot** (`archivedComplete` cards only), with a repo-root `git worktree prune` reclaiming any dangling
+registrations. The **branch is kept** after removal so the work can be recovered — which is
 exactly what [`reopen`](#recovery-resume-and-restart) does: it re-`ensure`s the worktree from that
 surviving branch and resumes the agent.
 

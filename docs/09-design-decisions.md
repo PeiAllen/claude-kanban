@@ -228,7 +228,7 @@ backbone for the planned Orchestra → agent context injection.
 
 Cleanup is decided by `origin`:
 
-- **`worktree`** — Orchestra created it; archive removes the dir (kept if dirty, and only when no other
+- **`worktree`** — Orchestra created it; archive removes the dir (kept if it holds unsaved work, and only when no other
   live worktree card shares it — see [the WorktreeRegistry](#the-worktreeregistry-materialized-markers-on-demand-siblings-persisted-borrows)
   below for the exact removal policy, including that a `dead`-but-not-yet-`archived` sibling still counts
   as "shares it").
@@ -404,6 +404,28 @@ same file, a compile-time guarantee that nothing else can call a git worktree op
   can't be positively re-established against an empty board, so nothing is removed. Nothing in-process
   clears it: conservative mode holds for that corrupt-boot daemon's entire run, and only a fresh daemon
   start against a clean store comes up un-conservative.
+- **Release keeps trees for *unsaved work*, not for any `git status` output.** The keep-gate in
+  `release` is `hasUnsavedWork`, a config-pinned porcelain probe (`--porcelain=v1 -z
+  --untracked-files=all --ignore-submodules=none`, two-status-byte classification): a tree whose only
+  entries are ` D` worktree-deletions of index-clean files has nothing left on disk to lose — that is
+  exactly the residue a killed `git worktree remove` leaves — so it is removed, with `--force`, since
+  git's own clean-check would refuse that state forever. Anything else (staged, modified, untracked,
+  unmerged, renames), or an unqueryable probe, keeps the tree and emits a warning. `isDirty` (any
+  output ⇒ dirty) remains the gate on the *ensure*-path's marker-less-dir handling, which never
+  auto-removes.
+- **Worktree removal runs under the bulk-IO timeout (`worktreeAddTimeout`).** Removal deletes the same
+  bytes a checkout writes — plus a shipped card's multi-GB ignored `.build` — so bounding it at
+  `controlTimeout` (15s) guaranteed mid-delete SIGKILLs on real trees. That killed removal was the
+  worktree-orphan leak's root cause: the partial state read as dirty, the old any-output gate then
+  blocked every retry, and nothing retried anyway.
+- **Interrupted removals are re-driven at boot.** `redriveArchivedWorktreeReleases()` re-runs
+  `release(force: false)` — the same policy, every guard intact — for each `origin == .worktree` card
+  whose phase is `archivedComplete` (never `archivedPending`: the `archived` flag is written before
+  teardown kills the session, so only the completed teardown proves the agent is gone), then prunes
+  dangling registrations per repo (`git worktree prune` from the repo root — metadata-only, and
+  registrations are what the sandbox profile scans). Deletion progress is monotonic, so re-drives
+  converge; `release` returns a `ReleaseOutcome` so kept/failed trees surface as warnings instead of
+  `try?` silence.
 - **An in-flight holder set closes the concurrent-spawn rollback race.** Between `ensure` returning and
   the card's persistence to the store, a second same-branch spawn can interleave at the service actor's
   `await` and adopt the first spawn's tree while still unpersisted. A store-only sibling scan in `release`

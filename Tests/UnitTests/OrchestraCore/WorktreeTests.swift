@@ -88,7 +88,7 @@ struct WorktreeBoundedTests {
         }
     }
 
-    @Test("the `worktree remove` and its fallback `worktree prune` are bounded by controlTimeout")
+    @Test("the `worktree remove` is bulk-IO-bounded (worktreeAddTimeout); the fallback `worktree prune` stays control-bounded")
     func test_pruneIsBounded() async throws {
         let (cfg, cleanup) = config(); defer { cleanup() }
         let id = UUID()
@@ -121,10 +121,55 @@ struct WorktreeBoundedTests {
                         order: 0, phase: .live(.running), initialPrompt: "")
         try await reg.release(cardId: id, cards: [card], force: true)   // force skips the isDirty status query
 
+        // Removal is bulk IO exactly like `worktree add` — a multi-GB ignored `.build` blew the old
+        // 15s bound, git died mid-delete, and the half-deleted tree leaked forever (the orphan-leak
+        // root cause). The fallback prune is metadata-only and stays control-bounded.
         let removeCall = try #require(rec.first(where: Self.isRemove))
-        #expect(removeCall.timeout == .seconds(cfg.controlTimeout))   // the `worktree remove` itself, 15s
+        #expect(removeCall.timeout == .seconds(cfg.worktreeAddTimeout))   // bulk deletion budget, 600s
         let prune = try #require(rec.first(where: Self.isPrune))
-        #expect(prune.timeout == .seconds(cfg.controlTimeout))        // the fallback prune, 15s
+        #expect(prune.timeout == .seconds(cfg.controlTimeout))            // the fallback prune, 15s
+    }
+
+    @Test("release's unsaved-work probe is config-pinned, -z, control-bounded; a clear probe forces the remove")
+    func test_unsavedWorkProbePinnedAndForces() async throws {
+        let (cfg, cleanup) = config(); defer { cleanup() }
+        let id = UUID()
+        let wt = cfg.worktreePath(repo: cfg.reposRoot, branch: "probe")
+        let rec = Recorder { _ in Self.ok() }   // status returns ok+empty ⇒ no unsaved work
+        let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+        _ = try await reg.ensure(repo: cfg.reposRoot, branch: "probe", cardId: id)
+        try FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+        let c = Task(id: id, title: "t", repo: cfg.reposRoot, branch: "probe", cwd: wt,
+                     origin: .worktree, model: AgentModel(id: "m"), startIn: .impl, column: .impl,
+                     order: 0, phase: .live(.running), initialPrompt: "")
+        _ = try await reg.release(cardId: id, cards: [c], force: false)
+        // The probe must be config-immune: repo-local status.* settings can otherwise HIDE untracked
+        // work from the predicate and turn a forced removal into data loss.
+        let probe = try #require(rec.first(where: { $0.contains("status") }))
+        #expect(probe.argv == ["git", "-C", wt, "-c", "status.showUntrackedFiles=all", "status",
+                               "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"])
+        #expect(probe.timeout == .seconds(cfg.controlTimeout))
+        let remove = try #require(rec.first(where: Self.isRemove))
+        #expect(remove.argv.contains("--force"))   // predicate-cleared ⇒ forced (git's clean-check would refuse ` D` dirt)
+    }
+
+    @Test("a failed unsaved-work probe fails SAFE — the tree is kept, nothing is removed")
+    func test_unsavedWorkProbeFailureKeeps() async throws {
+        let (cfg, cleanup) = config(); defer { cleanup() }
+        let id = UUID()
+        let wt = cfg.worktreePath(repo: cfg.reposRoot, branch: "sick")
+        let rec = Recorder { argv in
+            argv.contains("status") ? Self.fail("index locked") : Self.ok()
+        }
+        let reg = registry(cfg, base: cfg.reposRoot, run: { try rec.run($0, $1) })
+        _ = try await reg.ensure(repo: cfg.reposRoot, branch: "sick", cardId: id)
+        try FileManager.default.createDirectory(atPath: wt, withIntermediateDirectories: true)
+        let c = Task(id: id, title: "t", repo: cfg.reposRoot, branch: "sick", cwd: wt,
+                     origin: .worktree, model: AgentModel(id: "m"), startIn: .impl, column: .impl,
+                     order: 0, phase: .live(.running), initialPrompt: "")
+        let outcome = try await reg.release(cardId: id, cards: [c], force: false)
+        #expect(outcome == .keptUnsavedWork)                 // unqueryable ⇒ treated as unsaved work
+        #expect(rec.first(where: Self.isRemove) == nil)      // and nothing was removed
     }
 
     // Real wall-clock enforcement lives in the timeout-bearing `Proc` runner (covered by Proc's own tests) and
