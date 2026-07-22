@@ -56,5 +56,7 @@ struct AttachedAgentRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // During a `/` search this row is revealed in place; dim it unless it's one of the matches.
+        .opacity(model.searchActive && !model.isSearchMatch(agent) ? 0.32 : 1)
     }
 }

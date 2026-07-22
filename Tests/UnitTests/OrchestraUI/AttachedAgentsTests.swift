@@ -191,32 +191,36 @@ import Foundation
         #expect(m.cards(in: .impl).contains { $0.id == target.id })     // target stays
     }
 
-    @Test func matchingSearch_reappears_borrowed_noRecursion() {
-        // The exact config that recursed / hid the card in the pre-fix design: active search + an
-        // attached borrowed card in the dock. Must not crash, and the card must be findable.
+    @Test func matchingSearch_borrowedReviewer_revealedInPlace() {
+        // A matching borrowed reviewer STAYS embedded (a subcard, never a standalone dock card) and is
+        // surfaced in place: its target reveals the row and the reviewer joins the search-match set.
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x", cwd: "/repo/.wt/x")
         let borrowReviewer = borrowed("03", cwd: "/repo/.wt/x")
         m.tasks = [target, borrowReviewer]
         #expect(!m.freeformTasks.contains { $0.id == borrowReviewer.id })   // hidden with no search
         m.searchQuery = "borrowed-03"
-        #expect(!m.isEmbedded(borrowReviewer))                             // exempt under match
-        #expect(m.freeformTasks.contains { $0.id == borrowReviewer.id })    // re-appears in the dock
-        #expect(m.searchMatchIds.contains(borrowReviewer.id))              // and is findable
+        #expect(m.isEmbedded(borrowReviewer))                              // stays a subcard (no un-embed)
+        #expect(!m.freeformTasks.contains { $0.id == borrowReviewer.id })  // never a standalone dock card
+        #expect(m.revealsSearchMatchRow(target))                          // target auto-reveals the row
+        #expect(m.showsInlineRows(target))
+        #expect(m.searchMatchIds.contains(borrowReviewer.id))             // findable via n/N
     }
 
-    @Test func matchingSearch_reappears_worktreeReviewer_inColumn() {
+    @Test func matchingSearch_worktreeReviewer_revealedNotInColumn() {
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x", column: .impl)
         let wtReviewer = worktree("02", branch: "review/x", access: .readOnly,
                                   parentBranch: "feat/x", column: .impl)
         m.tasks = [target, wtReviewer]
-        #expect(!m.cards(in: .impl).contains { $0.id == wtReviewer.id })
         m.searchQuery = "review/x"                                          // matches its branch
-        #expect(m.cards(in: .impl).contains { $0.id == wtReviewer.id })
+        #expect(m.isEmbedded(wtReviewer))                                  // stays a subcard
+        #expect(!m.cards(in: .impl).contains { $0.id == wtReviewer.id })   // never a standalone column card
+        #expect(m.showsInlineRows(target))                                 // revealed in place under target
+        #expect(m.searchMatchIds.contains(wtReviewer.id))
     }
 
-    @Test func navigation_skipsEmbedded_reachableUnderSearch() {
+    @Test func navigation_skipsEmbedded_reviewerReachableViaSearchMatch() {
         let m = BoardModel(platform: .noop)
         let a = worktree("01", branch: "feat/a", column: .impl, order: 0)
         let reviewer = worktree("02", branch: "review/x", access: .readOnly,
@@ -226,9 +230,12 @@ import Foundation
         #expect(!m.orderedVisibleCards.contains { $0.id == reviewer.id })
         m.selectedId = a.id
         m.selectMove(.down)
-        #expect(m.selectedId == b.id)                                       // skipped the hidden reviewer
+        #expect(m.selectedId == b.id)                                       // j/k skips the embedded reviewer
         m.searchQuery = "review/x"
-        #expect(m.orderedVisibleCards.contains { $0.id == reviewer.id })    // reachable again under search
+        #expect(!m.orderedVisibleCards.contains { $0.id == reviewer.id })   // STILL embedded (a subcard)
+        #expect(m.searchMatchIds.contains(reviewer.id))                     // reachable via n/N instead
+        m.selectedId = reviewer.id                                          // selecting the match…
+        #expect(m.revealsAttached(a))                                       // …reveals its target's rows
     }
 
     @Test func readWrite_unaffected_byEmbedding() {
@@ -288,19 +295,21 @@ import Foundation
         #expect(!m.revealsAttached(solo))
     }
 
-    @Test func expandedRows_revealedVsGatedBySearch() {
+    @Test func expandedRows_revealedBySelectionOrSearchMatch() {
         let m = BoardModel(platform: .noop)
         let c  = worktree("01", branch: "feat/x", column: .impl)
         let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
         m.tasks = [c, r1]
+        #expect(!m.showsInlineRows(c))                       // nothing selected, no search ⇒ collapsed
         m.selectedId = c.id
+        #expect(m.showsInlineRows(c))                        // selection reveals
+        #expect(m.expandedRows(for: c).map(\.id) == [r1.id])
+        // With nothing selected, a matching row still reveals the target IN PLACE (no un-embed).
+        m.selectedId = nil
+        m.searchQuery = "review/x"
+        #expect(m.revealsSearchMatchRow(c))
         #expect(m.showsInlineRows(c))
         #expect(m.expandedRows(for: c).map(\.id) == [r1.id])
-        // Active search suppresses inline rows (the matched reviewer un-embeds as a full card instead),
-        // so no reviewer is ever both a row AND a full card.
-        m.searchQuery = "review/x"
-        #expect(!m.showsInlineRows(c))
-        #expect(m.expandedRows(for: c).isEmpty)
     }
 
     // MARK: card-level anchor (j/k treats an expanded card as one unit)
@@ -315,18 +324,6 @@ import Foundation
         #expect(m.cardLevelAnchor(r2.id) == c.id)           // nested row → climbs to the visible root
         #expect(m.cardLevelAnchor(c.id) == c.id)            // a normal card → itself
         #expect(m.cardLevelAnchor(nil) == nil)
-    }
-
-    @Test func cardLevelAnchor_searchUnembeddedReviewerAnchorsToItself() {
-        // A `/`-matched reviewer un-embeds to a full card (isEmbedded == false), so j/k must navigate
-        // from its own visible slot, NOT climb to its target — else the search fallback is broken.
-        let m = BoardModel(platform: .noop)
-        let c  = worktree("01", branch: "feat/x", column: .impl)
-        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
-        m.tasks = [c, r1]
-        m.searchQuery = "review/x"
-        #expect(!m.isEmbedded(r1))
-        #expect(m.cardLevelAnchor(r1.id) == r1.id)
     }
 
     @Test func selectMove_fromRow_stepsOffVisibleTarget_notFirstPlan() {
@@ -418,29 +415,35 @@ import Foundation
         m.selectEnd(first: true);  #expect(m.selectedId == c.id)   // gg → first card
     }
 
-    // MARK: search interaction with the row axis (impl-review coverage gaps)
+    // MARK: search reveals reviewer rows in place (reviewers stay embedded)
 
-    @Test func selectRowMove_noopDuringSearch() {
+    @Test func selectRowMove_intoRow_whenTargetSelectedDuringSearch() {
+        // Selecting a card reveals its rows regardless of search (no more !searchActive suppression), so
+        // ↑/↓ steps into them normally.
         let m = BoardModel(platform: .noop)
         let c  = worktree("01", branch: "feat/x", column: .impl)
         let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
         m.tasks = [c, r1]
         m.selectedId = c.id
-        m.searchQuery = "feat/x"                             // rows suppressed ⇒ group collapses to [c]
-        m.selectRowMove(.down); #expect(m.selectedId == c.id)
+        m.searchQuery = "feat/x"                             // matches the target, not the row
+        m.selectRowMove(.down); #expect(m.selectedId == r1.id)   // group is [c, r1]; ↓ enters the row
     }
 
-    @Test func nestedChain_underSearch_anchorsToNearestVisibleAncestor() {
-        // R1 matches (un-embeds to a full card); R2 doesn't (stays embedded). cardLevelAnchor(R2) must
-        // resolve to the now-visible R1 — nearest VISIBLE ancestor — not climb to a hidden root.
+    @Test func nestedChain_underSearch_bothStayEmbedded_revealedUnderRoot() {
+        // R1 matches; R2 doesn't. Neither un-embeds — both flatten under the visible root C, which
+        // reveals its rows in place, and both climb to C for card-axis nav.
         let m = BoardModel(platform: .noop)
         let c  = worktree("01", branch: "feat/x", column: .impl)
         let r1 = worktree("02", branch: "review/match", access: .readOnly, parentBranch: "feat/x", column: .impl)
         let r2 = worktree("05", branch: "review/x2", access: .readOnly, parentBranch: "review/match", column: .impl)
         m.tasks = [c, r1, r2]
         m.searchQuery = "review/match"
-        #expect(!m.isEmbedded(r1))                           // matched → visible
-        #expect(m.isEmbedded(r2))                            // unmatched → embedded
-        #expect(m.cardLevelAnchor(r2.id) == r1.id)           // climbs only to the nearest visible ancestor
+        #expect(m.isEmbedded(r1))                            // matched but STILL a subcard (no un-embed)
+        #expect(m.isEmbedded(r2))
+        #expect(m.revealsSearchMatchRow(c))                  // the match is revealed under the root C
+        #expect(m.showsInlineRows(c))
+        #expect(m.searchMatchIds.contains(r1.id))            // and reachable via n/N
+        #expect(m.cardLevelAnchor(r1.id) == c.id)            // both climb to the visible root
+        #expect(m.cardLevelAnchor(r2.id) == c.id)
     }
 }

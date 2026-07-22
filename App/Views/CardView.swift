@@ -70,8 +70,11 @@ struct CardView: View {
         .onTapGesture { model.selectAndEnterTerminal(task.id) }
     }
 
-    /// Dim when a `/` search is active and this card doesn't match.
-    private var dimmed: Bool { model.searchActive && !model.isSearchMatch(task) }
+    /// Dim when a `/` search is active and this card neither matches NOR hosts a matching attached row —
+    /// a host stays bright so its revealed reviewer match is visible in place.
+    private var dimmed: Bool {
+        model.searchActive && !model.isSearchMatch(task) && !model.revealsSearchMatchRow(task)
+    }
 
     /// The `f` link-hint label badge, shown over each card while hint mode is active.
     @ViewBuilder private var hintBadge: some View {

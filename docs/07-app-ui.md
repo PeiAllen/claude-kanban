@@ -76,11 +76,12 @@ into it) — while `↑`/`↓` are the row axis, walking the reviewer rows *insi
 
 Three **fail-safes** guarantee a card is never stranded. If **no live target is derivable** (the parent
 was archived, no dir matches), the card is not attached and renders exactly as today. While a **`/`
-search** is active, an attached card that **matches** re-appears in its normal column/dock position (and
-in navigation) so it stays findable — and the inline rows are suppressed for the duration, so a matched
-reviewer is never both a row *and* a full card. And **read-write cards are never embedded**, whatever
-their lineage. The iPhone companion consumes the same shared reveal predicates but owns its own
-presentation (its base store never embeds).
+search** is active, a reviewer stays a subcard — it is never promoted to a standalone column/dock card —
+and a **match is surfaced in place**: its target auto-expands to reveal the matching row (highlighted;
+non-matching rows dim like non-matching cards), and the match joins the `n`/`N` cycle, so selecting it
+reveals its target and lands on the row. And **read-write cards are never embedded**, whatever their
+lineage. The iPhone companion consumes the same shared reveal predicates but owns its own presentation
+(its base store never embeds).
 
 ## Cards
 
