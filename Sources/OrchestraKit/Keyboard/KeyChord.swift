@@ -36,6 +36,7 @@ public enum GoTarget: String, Sendable, CaseIterable, Equatable {
 /// The resolved meaning of a chord in a context — a pure value the App executes against `BoardModel`.
 public enum KeyIntent: Equatable, Sendable {
     case moveSelection(Direction)   // bare hjkl — move selection within a pane
+    case moveRow(Direction)         // ↑/↓ — move within the selected card's attached-row group
     case selectEnd(first: Bool)     // gg / G — first/last card of the column
     case openInspector              // Enter
     case closeOrClear               // Esc — peel the frontmost thing

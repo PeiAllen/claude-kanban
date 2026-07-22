@@ -239,4 +239,149 @@ import Foundation
         #expect(!m.isEmbedded(rw))
         #expect(m.cards(in: .impl).contains { $0.id == rw.id })
     }
+
+    // MARK: nested chain — flatten via attachedRoot (Codex BLOCKER)
+
+    /// A reviewer-of-a-reviewer (C ← R1 ← R2): both flatten onto the visible root C, so R2 is never
+    /// orphaned behind the hidden R1, and R1 (itself attached) never self-reveals.
+    @Test func nestedChain_flattensOntoVisibleRoot() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        let r2 = worktree("05", branch: "review/x2", access: .readOnly, parentBranch: "review/x", column: .impl)
+        m.tasks = [c, r1, r2]
+        #expect(m.attachedRoot(of: r1)?.id == c.id)
+        #expect(m.attachedRoot(of: r2)?.id == c.id)         // climbs past the embedded intermediate R1
+        #expect(m.attachedRoot(of: c) == nil)               // a real card has no root
+        #expect(m.attachedAgents(of: c).map(\.id) == [r1.id, r2.id])   // both flattened under C
+        #expect(m.attachedAgents(of: r1).isEmpty)           // R1 owns no rows of its own
+        #expect(!m.revealsAttached(r1))                     // and never self-reveals
+    }
+
+    @Test func attachedRoot_nilForUnattached() {
+        let m = BoardModel(platform: .noop)
+        let rw = worktree("01", branch: "feat/x")
+        m.tasks = [rw]
+        #expect(m.attachedRoot(of: rw) == nil)
+    }
+
+    // MARK: reveal state (revealsAttached / showsInlineRows / expandedRows)
+
+    @Test func revealsAttached_onCardOrRowSelection_notOtherwise() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x")
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
+        m.tasks = [c, r1]
+        m.selectedId = nil
+        #expect(!m.revealsAttached(c))                      // nothing selected
+        m.selectedId = c.id
+        #expect(m.revealsAttached(c))                       // target selected
+        m.selectedId = r1.id
+        #expect(m.revealsAttached(c))                       // one of its rows selected
+    }
+
+    @Test func revealsAttached_falseWhenNoneAttached() {
+        let m = BoardModel(platform: .noop)
+        let solo = worktree("01", branch: "feat/x")
+        m.tasks = [solo]
+        m.selectedId = solo.id
+        #expect(!m.revealsAttached(solo))
+    }
+
+    @Test func expandedRows_revealedVsGatedBySearch() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        m.tasks = [c, r1]
+        m.selectedId = c.id
+        #expect(m.showsInlineRows(c))
+        #expect(m.expandedRows(for: c).map(\.id) == [r1.id])
+        // Active search suppresses inline rows (the matched reviewer un-embeds as a full card instead),
+        // so no reviewer is ever both a row AND a full card.
+        m.searchQuery = "review/x"
+        #expect(!m.showsInlineRows(c))
+        #expect(m.expandedRows(for: c).isEmpty)
+    }
+
+    // MARK: card-level anchor (j/k treats an expanded card as one unit)
+
+    @Test func cardLevelAnchor_rowResolvesToVisibleRoot() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        let r2 = worktree("05", branch: "review/x2", access: .readOnly, parentBranch: "review/x", column: .impl)
+        m.tasks = [c, r1, r2]
+        #expect(m.cardLevelAnchor(r1.id) == c.id)           // embedded row → its visible target
+        #expect(m.cardLevelAnchor(r2.id) == c.id)           // nested row → climbs to the visible root
+        #expect(m.cardLevelAnchor(c.id) == c.id)            // a normal card → itself
+        #expect(m.cardLevelAnchor(nil) == nil)
+    }
+
+    @Test func cardLevelAnchor_searchUnembeddedReviewerAnchorsToItself() {
+        // A `/`-matched reviewer un-embeds to a full card (isEmbedded == false), so j/k must navigate
+        // from its own visible slot, NOT climb to its target — else the search fallback is broken.
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        m.tasks = [c, r1]
+        m.searchQuery = "review/x"
+        #expect(!m.isEmbedded(r1))
+        #expect(m.cardLevelAnchor(r1.id) == r1.id)
+    }
+
+    @Test func selectMove_fromRow_stepsOffVisibleTarget_notFirstPlan() {
+        // j from a selected row must land on the card after its visible target, never fall through to
+        // the first Plan card (the stranding bug the anchor fixes).
+        let m = BoardModel(platform: .noop)
+        let plan = worktree("09", branch: "feat/plan", column: .plan, order: 0)
+        let c  = worktree("01", branch: "feat/x", column: .impl, order: 0)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl, order: 1)
+        let d  = worktree("03", branch: "feat/d", column: .impl, order: 2)
+        m.tasks = [plan, c, r1, d]
+        m.selectedId = r1.id
+        m.selectMove(.down)
+        #expect(m.selectedId == d.id)                       // C → D within Impl, not the Plan card
+    }
+
+    // MARK: row axis (selectRowMove within the group only)
+
+    @Test func selectRowMove_walksGroup_clampsBothEnds() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "r1", access: .readOnly, parentBranch: "feat/x", createdAt: t0, column: .impl)
+        let r2 = worktree("05", branch: "r2", access: .readOnly, parentBranch: "feat/x",
+                          createdAt: Date(timeIntervalSince1970: 1_000_001), column: .impl)
+        m.tasks = [c, r1, r2]
+        m.selectedId = c.id
+        m.selectRowMove(.down); #expect(m.selectedId == r1.id)     // main card → first row
+        m.selectRowMove(.down); #expect(m.selectedId == r2.id)     // → second row
+        m.selectRowMove(.down); #expect(m.selectedId == r2.id)     // clamp past the last row
+        m.selectRowMove(.up);   #expect(m.selectedId == r1.id)
+        m.selectRowMove(.up);   #expect(m.selectedId == c.id)      // back up INTO the main card
+        m.selectRowMove(.up);   #expect(m.selectedId == c.id)      // clamp at the main card (never above)
+    }
+
+    @Test func selectRowMove_noopFromNilAndNoRows() {
+        let m = BoardModel(platform: .noop)
+        let solo = worktree("01", branch: "feat/x", column: .impl)
+        m.tasks = [solo]
+        m.selectedId = nil
+        m.selectRowMove(.down); #expect(m.selectedId == nil)       // arrows aren't a board-entry path
+        m.selectedId = solo.id
+        m.selectRowMove(.down); #expect(m.selectedId == solo.id)   // no rows → single-element group
+        m.selectRowMove(.up);   #expect(m.selectedId == solo.id)
+    }
+
+    // MARK: base BoardStore (iOS) parity
+
+    @Test func baseStore_anchorIdentity_showsRowsWithoutSearchGate() {
+        let base = BoardStore(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        base.tasks = [c, r1]
+        base.selectedId = c.id
+        #expect(base.cardLevelAnchor(r1.id) == r1.id)       // nothing embedded ⇒ identity anchor
+        #expect(base.showsInlineRows(c))                    // base gate == revealsAttached (no / search)
+        #expect(base.expandedRows(for: c).map(\.id) == [r1.id])
+    }
 }

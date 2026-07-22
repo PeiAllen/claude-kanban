@@ -35,6 +35,7 @@ struct CardView: View {
             title
             description
             footer
+            attachedRows
         }
         .padding(model.density.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -182,6 +183,22 @@ struct CardView: View {
                 .foregroundStyle(isWaiting ? theme.amber.text : theme.text2)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Attached-agent rows (inline accordion)
+
+    /// The read-only reviewers embedded behind this card, revealed as compact rows INSIDE the card's
+    /// frame when the card (or one of its rows) is selected. `expandedRows` carries the reveal +
+    /// `/`-search gate, so this is empty (and the card renders as today) whenever it shouldn't expand.
+    @ViewBuilder private var attachedRows: some View {
+        let rows = model.expandedRows(for: task)
+        if !rows.isEmpty {
+            Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
+            VStack(spacing: 2) {
+                ForEach(rows) { agent in AttachedAgentRow(agent: agent) }
+            }
+            .padding(.top, 6)
         }
     }
 

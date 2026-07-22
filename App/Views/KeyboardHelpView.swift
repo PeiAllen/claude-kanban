@@ -14,6 +14,7 @@ struct KeyboardHelpView: View {
     private let sections: [Section] = [
         Section(title: "Navigate", rows: [
             Row(keys: "h j k l", desc: "Move card selection (within a pane)"),
+            Row(keys: "↑ / ↓", desc: "Move among a card's attached rows"),
             Row(keys: "g g / G", desc: "First / last card in column"),
             Row(keys: "⌃o / ⌃i", desc: "Previous / next visited card"),
             Row(keys: "⌃h ⌃j ⌃k ⌃l", desc: "Move focus between panes (spatial)"),

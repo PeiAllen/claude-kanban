@@ -68,6 +68,22 @@ public enum BoardNavigator {
         }
     }
 
+    /// Step within a precomputed row-walk `sequence` (a card followed by its revealed attached rows) —
+    /// the pure core of the `↑`/`↓` axis. `.up`/`.down` move to the previous/next id, clamped at the
+    /// ends (never wraps, never clears). `.left`/`.right` are inert (arrows are a vertical axis). An
+    /// EMPTY sequence returns `selected` unchanged, so a no-selection / no-rows group can never blank
+    /// the selection. A `selected` absent from a non-empty sequence lands on its first element.
+    public static func moveRow(_ sequence: [UUID], selected: UUID?, _ dir: Direction) -> UUID? {
+        guard !sequence.isEmpty else { return selected }
+        switch dir {
+        case .left, .right: return selected
+        case .up, .down:
+            guard let selected, let i = sequence.firstIndex(of: selected) else { return sequence.first }
+            let j = dir == .up ? i - 1 : i + 1
+            return (j >= 0 && j < sequence.count) ? sequence[j] : selected
+        }
+    }
+
     /// First (`first: true`) or last card of the selected card's region — its column on the board, or
     /// the freeform dock when a freeform card is selected.
     public static func end(_ tasks: [Task], selected: UUID?, first: Bool) -> UUID? {

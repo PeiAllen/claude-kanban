@@ -23,6 +23,26 @@ final class KeybindingsTests: XCTestCase {
         XCTAssertEqual(map(KeyChord("l"), .board), .moveSelection(.right))
     }
 
+    func test_board_arrows_moveRow() {
+        // NSEvent charactersIgnoringModifiers for ↑/↓ — the row axis, board context only.
+        XCTAssertEqual(map(KeyChord("\u{F700}"), .board), .moveRow(.up))
+        XCTAssertEqual(map(KeyChord("\u{F701}"), .board), .moveRow(.down))
+    }
+
+    func test_board_leftRightArrows_unbound() {
+        // ←/→ stay unbound so they pass through to the pty (terminal send-keys) as today.
+        XCTAssertNil(map(KeyChord("\u{F702}"), .board))
+        XCTAssertNil(map(KeyChord("\u{F703}"), .board))
+    }
+
+    func test_arrows_passThrough_outsideBoard() {
+        for ch: Character in ["\u{F700}", "\u{F701}"] {
+            XCTAssertNil(map(KeyChord(ch), .terminal))
+            XCTAssertNil(map(KeyChord(ch), .field))
+            XCTAssertNil(map(KeyChord(ch), .overlay))
+        }
+    }
+
     func test_board_verbs() {
         XCTAssertEqual(map(KeyChord("c"), .board), .spawn)
         XCTAssertEqual(map(KeyChord("a"), .board), .archive)

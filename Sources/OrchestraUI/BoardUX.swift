@@ -57,11 +57,37 @@ public final class BoardUX: BoardStore {
     // Thin executors the KeyboardController calls; selection movement delegates to the pure
     // BoardNavigator, everything else reuses the existing daemon-backed actions above.
 
+    /// `j`/`k` — the ONLY card-to-card axis. Anchors through `cardLevelAnchor` so a move from an
+    /// embedded attached row steps off the row's VISIBLE target (never falls through to first-Plan);
+    /// a normal card anchors to itself, so this is identical to before for un-attached selections.
     public func selectMove(_ dir: Direction) {
-        selectedId = BoardNavigator.move(visibleTasks, selected: selectedId, dir)
+        selectedId = BoardNavigator.move(visibleTasks, selected: cardLevelAnchor(selectedId), dir)
     }
     public func selectEnd(first: Bool) {
         selectedId = BoardNavigator.end(visibleTasks, selected: selectedId, first: first)
+    }
+
+    /// Desktop reveal gate: show rows only when NOT in a `/` search — a matched reviewer un-embeds as a
+    /// full card instead, so the inline rows and the search fail-safe never double-render one reviewer.
+    override func showsInlineRows(_ target: Task) -> Bool {
+        !searchActive && revealsAttached(target)
+    }
+
+    /// The `↑`/`↓` walk sequence — a SINGLE group, never crossing cards: the anchor card followed by
+    /// its own revealed rows. `expandedRows` carries the `showsInlineRows` gate, so a card with no
+    /// revealed rows yields a 1-element list ⇒ arrows clamp/no-op. Empty when nothing is selected.
+    func groupSequence() -> [UUID] {
+        guard let anchorId = cardLevelAnchor(selectedId),
+              let anchor = tasks.first(where: { $0.id == anchorId }) else { return [] }
+        return [anchorId] + expandedRows(for: anchor).map(\.id)
+    }
+
+    /// `↑`/`↓` — walk within the selected card's attached-row group only (never between cards; that
+    /// stays `j`/`k`). No-op from no selection (arrows aren't a board-entry path) and on a card with no
+    /// rows: `moveRow` clamps at both group edges and preserves the selection on an empty sequence.
+    public func selectRowMove(_ dir: Direction) {
+        selectedId = BoardNavigator.moveRow(groupSequence(), selected: selectedId, dir)
+        focusZone = .board
     }
 
     /// Vim Ctrl-O / Ctrl-I traversal. The keyboard controller supplies the real responder-derived

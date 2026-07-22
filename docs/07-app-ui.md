@@ -43,10 +43,10 @@ view so the inspector overlay renders on top of it.
 ### Attached agents
 
 A read-only sub-card (a review agent, fork inspector, or a borrow opened just to browse) is not a board
-citizen of its own — it's **embedded behind the card it hangs off of**. This keeps the board about the
-work rather than the agents watching it. A card is *attached* when it is `.readOnly` **and** a live
-target card is derivable — no new model field, purely inferred client-side from what the card already
-carries:
+citizen of its own — it's **embedded behind the card it hangs off of** and surfaced as a collapsed row
+*inside* that card. This keeps the board about the work rather than the agents watching it. A card is
+*attached* when it is `.readOnly` **and** a live target card is derivable — no new model field, purely
+inferred client-side from what the card already carries:
 
 - a **worktree** reviewer (spawned with `base: <branch-under-review>`, so its `parentBranch` names the
   reviewed branch) attaches to the live card on that branch (`BoardTree.parentCard`);
@@ -54,21 +54,33 @@ carries:
   `cwd` match). (A `.scratch` card runs in its own freshly-made unique dir that no worktree card shares,
   so it never matches and stays a freeform citizen.)
 
+A reviewer can itself be reviewed; such a chain **flattens** onto the first non-attached ancestor
+(`attachedRoot`), so every reviewer in a lineage renders as a flat sibling row under the one real board
+card — a nested reviewer never hides behind an embedded intermediate.
+
 Attached cards are pulled out of the columns and the freeform dock (they no longer show as separate
-cards) and surfaced only through their target — via the target's **attached-agents badge** (see below)
-and the same list in its inspector. This is a **desktop projection over `visibleTasks`**, the single set
-the columns, dock, spatial keyboard navigation (`hjkl` / go-to / carry), link-hints, and tree indentation
-all read, so a hidden card leaves *render and spatial navigation together* — it can never be a phantom
-`hjkl`/hint target that isn't drawn. It stays fully **reachable** through its target's badge/popover
-(which selects it, opening its inspector and terminal like any card), and the vim-style visit history
-(`⌃o`/`⌃i`) can still return to one you selected that way — the same as it returns to an archived card.
+cards). This is a **desktop projection over `visibleTasks`**, the single set the columns, dock, spatial
+keyboard navigation (`hjkl` / go-to / carry), link-hints, and tree indentation all read, so a hidden card
+leaves *render and spatial navigation together* — it can never be a phantom `hjkl`/hint target that isn't
+drawn. They surface **inline**: when the target — or one of its attached rows — is selected, the card
+**expands** to list its attached agents as compact rows (status dot · short id · title) within the card's
+own frame (an accordion; the card grows), collapsing again once the selection leaves the group. Clicking a
+row selects that agent, opening its inspector and terminal like any card; the row stays visible while
+selected, so Esc out of that agent's terminal lands back on the row rather than into the void.
+
+**Keyboard navigation is two-level.** `j`/`k` stay the card axis — they move card-to-card, treating an
+expanded card and its rows as one unit (a selection on a row steps off the row's visible target, never
+into it) — while `↑`/`↓` are the row axis, walking the reviewer rows *inside* the selected card (main card
+→ rows, clamped at both ends; they never move between cards, and do nothing from an empty selection).
+`Return` / `i` act on whichever row or card is focused.
 
 Three **fail-safes** guarantee a card is never stranded. If **no live target is derivable** (the parent
 was archived, no dir matches), the card is not attached and renders exactly as today. While a **`/`
 search** is active, an attached card that **matches** re-appears in its normal column/dock position (and
-in navigation) so it stays findable. And **read-write cards are never embedded**, whatever their lineage.
-The iPhone companion has no attached-agents affordance yet, so it does not embed at all — every card
-renders as a full citizen there (the base projection is a no-op).
+in navigation) so it stays findable — and the inline rows are suppressed for the duration, so a matched
+reviewer is never both a row *and* a full card. And **read-write cards are never embedded**, whatever
+their lineage. The iPhone companion consumes the same shared reveal predicates but owns its own
+presentation (its base store never embeds).
 
 ## Cards
 
@@ -84,10 +96,10 @@ renders as a full citizen there (the base projection is a no-op).
   there is no stat (non-git / zero-change / not-yet-computed).
 - When a card has [attached agents](#attached-agents), the footer also shows an **attached-agents badge**
   — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
-  starting up, **amber** when any is waiting on the human or has died. Clicking it opens a popover
-  listing those agents (status dot · short id · title); picking one selects it, opening its full
-  inspector / terminal like any card. The same badge also sits in the shared inspector header (visible
-  in both Agent and Diff modes).
+  starting up, **amber** when any is waiting on the human or has died. It's a glance-only indicator;
+  selecting the card expands its attached agents as inline rows (see [Attached agents](#attached-agents)),
+  which is how they're reached. The same badge also sits in the shared inspector header (visible in both
+  Agent and Diff modes).
 - The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
@@ -283,9 +295,10 @@ the inode alive for its open descriptors.
 ![Keyboard navigation: selection movement, link-hints, search, and the command palette](images/keyboard.gif)
 
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
-selection, spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f` link-hints, a `:`
-command palette, and standard `⌘` accelerators — designed so it never fights the live agent terminals the
-inspector embeds. Everything below flows from resolving one tension — the inspector embeds live SwiftTerm
+selection (`hjkl` card-to-card, and `↑`/`↓` to step into a selected card's [attached-agent
+rows](#attached-agents)), spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f`
+link-hints, a `:` command palette, and standard `⌘` accelerators — designed so it never fights the live
+agent terminals the inspector embeds. Everything below flows from resolving one tension — the inspector embeds live SwiftTerm
 terminals, so vim's `hjkl` collide head-on with terminal input, where every keystroke must reach the
 agent/shell untouched — through three design rules: *focus is the mode*, *edge-aware pane interception*,
 and *`Esc` is sacred to the terminal*.

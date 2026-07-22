@@ -117,4 +117,36 @@ final class BoardNavigatorTests: XCTestCase {
         XCTAssertEqual(BoardNavigator.columnOf(ts, ts[1].id), .impl)
         XCTAssertNil(BoardNavigator.columnOf(ts, UUID()))
     }
+
+    // MARK: moveRow — the ↑/↓ row-group stepper (in-group only, clamps, never clears)
+
+    func test_moveRow_down_and_up_within_sequence() {
+        let a = UUID(), b = UUID(), c = UUID()
+        XCTAssertEqual(BoardNavigator.moveRow([a, b, c], selected: a, .down), b)
+        XCTAssertEqual(BoardNavigator.moveRow([a, b, c], selected: b, .up), a)
+    }
+
+    func test_moveRow_clamps_at_both_ends() {
+        let a = UUID(), b = UUID()
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: b, .down), b)   // past last → stays
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: a, .up), a)     // before first → stays
+    }
+
+    func test_moveRow_nil_or_absent_selects_first() {
+        let a = UUID(), b = UUID()
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: nil, .down), a)
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: UUID(), .up), a)
+    }
+
+    func test_moveRow_empty_sequence_preserves_selection() {
+        let sel = UUID()
+        XCTAssertEqual(BoardNavigator.moveRow([], selected: sel, .down), sel)
+        XCTAssertNil(BoardNavigator.moveRow([], selected: nil, .up))
+    }
+
+    func test_moveRow_leftRight_are_noop() {
+        let a = UUID(), b = UUID()
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: a, .left), a)
+        XCTAssertEqual(BoardNavigator.moveRow([a, b], selected: a, .right), a)
+    }
 }
