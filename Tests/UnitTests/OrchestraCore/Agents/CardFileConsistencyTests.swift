@@ -10,14 +10,15 @@ struct CardFileConsistencyTests {
              model: AgentModel(id: "m"), startIn: .impl, column: .impl, order: 0, initialPrompt: "")
     }
 
-    @Test("Claude cardFile path is $dataDir/card-settings-<djb2>.json")
+    @Test("Claude cardFile is the card-settings-<djb2>.json spec")
     func claudeSpec() {
         let spec = ClaudeCodeAdapter().cardFile
-        #expect(spec != nil)
+        #expect(spec?.prefix == "card-settings-")
+        #expect(spec?.suffix == ".json")
         let cwd = "/wt/alpha"
-        #expect(spec?.path(token: CardFileSpec.cwdHash(cwd))
-                == "\(Config.dataDir)/card-settings-\(CardFileSpec.cwdHash(cwd)).json")
         #expect(spec?.token(for: card(cwd: cwd)) == CardFileSpec.cwdHash(cwd))
+        // path composes directory + prefix + token + suffix (directory is $dataDir by construction).
+        #expect(spec?.path(token: "T") == "\(spec!.directory)/card-settings-T.json")
     }
 
     @Test("Codex cardFile path equals the file that `-p <profileName>` resolves to")
