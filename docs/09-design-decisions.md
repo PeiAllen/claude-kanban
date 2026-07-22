@@ -238,6 +238,35 @@ Cleanup is decided by `origin`:
 
 This clean rule removes any ambiguity about which cleanup is safe.
 
+### Garbage-collecting derived per-card files
+
+Both adapters — and `inspect` — write a small **derived per-card file outside the worktree**, in a
+directory Orchestra owns, regenerated on every launch: Claude's managed `--settings`
+(`$dataDir/card-settings-<djb2(cwd)>.json`), Codex's launch profile
+(`$CODEX_HOME/orch-<djb2(cwd)>.config.toml`, which carries ~16KB of developer instructions off the tmux
+argv — see [one seed, four topologies](#one-seed-four-topologies) for why it can't be inlined), and the
+read-only inspect settings (`$runtimeStateDir/readonly-<shortId>.json`). None was reaped, so they
+accumulated one-per-card forever — and because the name is a hash of a **reused** worktree path, a stale
+file could be silently inherited by a later card at the same path.
+
+They're reaped by **one fail-safe sweep** (`sweepCardFiles`) that runs at daemon boot (the backlog and
+any crash residue) and after a card's teardown-kill (steady state). The sweep never inverts a filename
+back to a card; instead it **forward-computes the keep-set** — every live (non-archived) card's token —
+and reclaims only files outside it. This makes the shared-cwd case safe for free (two cards on one cwd
+share one file; it survives while either is live) where a per-card delete would have needed its own
+live-sibling check. It is **non-recursive and prefix+suffix scoped**, so a directory neighbour like
+`media/`, the user's own `~/.codex/config.toml`, `borrows.json`, or the socket is untouchable by
+construction, not by special-case.
+
+The fail-safe direction is always **keep**: an empty store (indistinguishable from a failed load) reaps
+nothing, and a file modified within a grace window is kept as a possibly-in-flight launch. Every ambiguous
+case leaks a file the next boot heals; none can delete a live card's file (which would silently drop that
+card's managed statusLine + telemetry hooks). Each adapter names its own file through one
+`Adapter.cardFile: CardFileSpec?` (default `nil`), so a new agent opts in by returning a spec — no
+`if agent ==` branching — and `CardFileSpec` owns the **single** djb2 the two adapters used to duplicate.
+The decision itself is the pure `OrphanSweep.reclaimable`, now shared with `sweepOrphanScratch` so the
+contract the scratch/borrow/session sweeps each learned the hard way lives in exactly one place.
+
 ### Trust boundaries: allowlist for worktrees, sandbox for the rest
 
 Worktree cards validate their repo path against the allowlist (`PathResolver`, symlink- and

@@ -81,6 +81,12 @@ surviving branch and resumes the agent.
 Borrowed and scratch cards have **no worktree**: a borrowed card's `cwd` is the directory you chose; a
 scratch card's `cwd` is a freshly `mkdir`'d `~/.orchestra/scratch/<id>`.
 
+Alongside the worktree, each launch writes a small **derived per-card config file outside the tree** —
+Claude's managed `--settings`, Codex's launch profile, the read-only inspect settings — reaped by
+`sweepCardFiles` at boot and after teardown. It is a fail-safe, forward-keep-set sweep sharing
+`OrphanSweep.reclaimable` with the scratch/borrow sweeps; see
+[garbage-collecting derived per-card files](09-design-decisions.md#garbage-collecting-derived-per-card-files).
+
 ## Sessions (tmux)
 
 `SessionManager` gives each card one tmux session named `orchestra-<uuid>` on the `orchestra` tmux
