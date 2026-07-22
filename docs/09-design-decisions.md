@@ -256,27 +256,38 @@ and reclaims only files outside it. This makes the shared-cwd case safe for free
 share one file; it survives while either is live) where a per-card delete would have needed its own
 live-sibling check.
 
-Three guards keep it from ever deleting something it shouldn't:
+Guards keep it from ever deleting something it shouldn't:
 - **Scope.** Non-recursive and prefix+suffix matched, so a directory neighbour like `media/`, the user's
   own `~/.codex/config.toml`, `borrows.json`, or the socket is out of range by construction.
-- **Structural ownership, not convention.** A candidate's token must have the exact shape the key
-  *generates* — canonical lowercase hex for a cwd hash, a 6-char UUID prefix for a shortId
-  (`hasWellFormedToken`). The `orch-` prefix alone is only a convention: a user could hand-author
-  `~/.codex/orch-research.config.toml` for `codex -p orch-research` in their own home. Its token
-  (`research`) isn't a generated hash, so it is never a candidate — the sweep reaps only files it could
-  itself have written.
+- **Ownership, proved two ways by where the file lives.** For a file in a directory Orchestra owns
+  *exclusively* (its Application Support data dir — Claude's `card-settings-*`, the `readonly-*` settings)
+  the directory itself is the proof, and a token-shape check (`hasWellFormedToken`: the exact canonical
+  lowercase hex a cwd hash produces, or a 6-char UUID prefix) rejects anything malformed. For a file in a
+  directory the user *also* writes to — Codex's real `~/.codex` — shape isn't enough: a user could
+  hand-author `orch-<16-hex-digits>.config.toml` for their own `codex -p`. So Orchestra stamps a first-line
+  **ownership marker** into every profile it writes, and the sweep reaps such a file only if it carries
+  that marker (`CardFileSpec.ownershipMarker`). A user's file — same name shape, no marker — is never a
+  candidate. (Consequence: Codex profiles written *before* this marker existed are not auto-reaped; that
+  one-time residue is harmless and steady-state operation adds none, since every live card re-stamps its
+  profile on next launch.)
 - **Trustworthy evidence only.** The keep-set is meaningful only if the loaded board is *complete*. An
   empty store (indistinguishable from a failed load) reaps nothing; and because `TaskStore` drops
   individually-undecodable records element-wise (an id-less row, or a phase this binary can't decode), a
   *partial* load looks non-empty yet may be missing the very live card a file belongs to — so the sweep
   also gates on `TaskStore.loadWasComplete()` and prunes nothing when a record was dropped. This is the
   borrow sweep's "prune nothing when the registry can't be trusted as complete" (FIX E), one tier finer.
+- **A fresh keep-set, captured just before deletion.** The sweep runs in two phases: enumerate candidates
+  off-actor (the slow stat-per-file pass), then re-read the live set on-actor immediately before deleting.
+  Because a spawn *persists* its card before that card's launch writes any file, any card that could have
+  written a candidate path is in the store by delete time — including a *different* card that came live on
+  a shared cwd after the first snapshot. The forward keep-set alone (captured once, up front) couldn't see
+  that card; the fresh re-read does.
 
 Beyond those, a file modified within a grace window is kept as a possibly-in-flight launch, and the
-delete re-stats each file immediately before unlinking so a card *reopened onto the same cwd* — which
-rewrites the same path during teardown — never loses its freshly-written file to a stale candidate. Every
-ambiguous case leaks a file the next boot heals; none can delete a live card's file (which would silently
-drop that card's managed statusLine + telemetry hooks). Each adapter names its own file through one
+delete re-stats each file immediately before unlinking so a card launched onto the same path since
+enumeration never loses its freshly-written file to a stale candidate. Every ambiguous case leaks a file
+the next boot heals; none can delete a live card's file (which would silently drop that card's managed
+statusLine + telemetry hooks). Each adapter names its own file through one
 `Adapter.cardFile: CardFileSpec?` (default `nil`), so a new agent opts in by returning a spec — no
 `if agent ==` branching — and `CardFileSpec` owns the **single** djb2 the two adapters used to duplicate.
 The decision itself is the pure `OrphanSweep.reclaimable`, now shared with `sweepOrphanScratch` so the
