@@ -40,6 +40,36 @@ wrap in an adaptive grid (270–360 pt columns) that reflows with the window. It
 a drag handle (drag up to grow), and its height persists across launches. It lives *inside* the board
 view so the inspector overlay renders on top of it.
 
+### Attached agents
+
+A read-only sub-card (a review agent, fork inspector, or a borrow opened just to browse) is not a board
+citizen of its own — it's **embedded behind the card it hangs off of**. This keeps the board about the
+work rather than the agents watching it. A card is *attached* when it is `.readOnly` **and** a live
+target card is derivable — no new model field, purely inferred client-side from what the card already
+carries:
+
+- a **worktree** reviewer (spawned with `base: <branch-under-review>`, so its `parentBranch` names the
+  reviewed branch) attaches to the live card on that branch (`BoardTree.parentCard`);
+- a **branchless** `.borrowed` reviewer attaches to the `.worktree` card whose directory it borrowed (a
+  `cwd` match). (A `.scratch` card runs in its own freshly-made unique dir that no worktree card shares,
+  so it never matches and stays a freeform citizen.)
+
+Attached cards are pulled out of the columns and the freeform dock (they no longer show as separate
+cards) and surfaced only through their target — via the target's **attached-agents badge** (see below)
+and the same list in its inspector. This is a **desktop projection over `visibleTasks`**, the single set
+the columns, dock, spatial keyboard navigation (`hjkl` / go-to / carry), link-hints, and tree indentation
+all read, so a hidden card leaves *render and spatial navigation together* — it can never be a phantom
+`hjkl`/hint target that isn't drawn. It stays fully **reachable** through its target's badge/popover
+(which selects it, opening its inspector and terminal like any card), and the vim-style visit history
+(`⌃o`/`⌃i`) can still return to one you selected that way — the same as it returns to an archived card.
+
+Three **fail-safes** guarantee a card is never stranded. If **no live target is derivable** (the parent
+was archived, no dir matches), the card is not attached and renders exactly as today. While a **`/`
+search** is active, an attached card that **matches** re-appears in its normal column/dock position (and
+in navigation) so it stays findable. And **read-write cards are never embedded**, whatever their lineage.
+The iPhone companion has no attached-agents affordance yet, so it does not embed at all — every card
+renders as a full citizen there (the base projection is a no-op).
+
 ## Cards
 
 `CardView` shows, top to bottom: a **status pill**, the **title** (up to 2 lines), an optional
@@ -52,6 +82,11 @@ view so the inspector overlay renders on top of it.
   read-only **eye badge** for `.readOnly` cards, and — for a git card the daemon has diffed — a **branch
   diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
   there is no stat (non-git / zero-change / not-yet-computed).
+- When a card has [attached agents](#attached-agents), the footer also shows an **attached-agents badge**
+  — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
+  starting up, **amber** when any is waiting on the human or has died. Clicking it opens a popover
+  listing those agents (status dot · short id · title); picking one selects it, opening its full
+  inspector / terminal like any card. The same badge appears in the target's inspector terminal header.
 - The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
@@ -156,6 +191,7 @@ The **agent chrome** stacks, top to bottom:
 
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
 2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the read-only eye badge, the
+   shared-worktree badge, the [attached-agents badge](#attached-agents) (when the card has any), the
    status pill, and an **Inspect** button (opens a read-only shell agent in the worktree);
 3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
    target", and a clickable path breadcrumb;

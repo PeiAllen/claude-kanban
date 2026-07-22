@@ -58,10 +58,10 @@ public final class BoardUX: BoardStore {
     // BoardNavigator, everything else reuses the existing daemon-backed actions above.
 
     public func selectMove(_ dir: Direction) {
-        selectedId = BoardNavigator.move(tasks, selected: selectedId, dir)
+        selectedId = BoardNavigator.move(visibleTasks, selected: selectedId, dir)
     }
     public func selectEnd(first: Bool) {
-        selectedId = BoardNavigator.end(tasks, selected: selectedId, first: first)
+        selectedId = BoardNavigator.end(visibleTasks, selected: selectedId, first: first)
     }
 
     /// Vim Ctrl-O / Ctrl-I traversal. The keyboard controller supplies the real responder-derived
@@ -92,9 +92,11 @@ public final class BoardUX: BoardStore {
         }
     }
 
-    /// Carry the selected card one column left/right (Plan↔Impl↔Review).
+    /// Carry the selected card one column left/right (Plan↔Impl↔Review). Over `visibleTasks` so an
+    /// embedded (hidden) card can't be silently column-carried — a spatial move only acts on cards the
+    /// board actually draws (an embedded card selected via its target's popover no-ops here).
     public func carrySelected(_ dir: Direction) {
-        guard let id = selectedId, let col = BoardNavigator.columnOf(tasks, id) else { return }
+        guard let id = selectedId, let col = BoardNavigator.columnOf(visibleTasks, id) else { return }
         let order: [Column] = [.plan, .impl, .review]
         guard let ci = order.firstIndex(of: col) else { return }
         let ti = dir == .left ? ci - 1 : ci + 1
@@ -178,9 +180,9 @@ public final class BoardUX: BoardStore {
     /// Jump to a region: select the first card of a column / freeform, or open a popover / settings.
     public func goTo(_ target: GoTarget) {
         switch target {
-        case .plan:     selectedId = BoardNavigator.columnCards(tasks, .plan).first?.id
-        case .impl:     selectedId = BoardNavigator.columnCards(tasks, .impl).first?.id
-        case .review:   selectedId = BoardNavigator.columnCards(tasks, .review).first?.id
+        case .plan:     selectedId = BoardNavigator.columnCards(visibleTasks, .plan).first?.id
+        case .impl:     selectedId = BoardNavigator.columnCards(visibleTasks, .impl).first?.id
+        case .review:   selectedId = BoardNavigator.columnCards(visibleTasks, .review).first?.id
         case .freeform: selectedId = freeformTasks.first?.id; focusZone = .board
         case .activity: showActivity = true
         case .done:     showDone = true
@@ -218,25 +220,47 @@ public final class BoardUX: BoardStore {
     // MARK: search / hints / resize / collapse
 
     /// Every visible card in navigation order: Plan → Impl → Review columns, then the freeform dock.
+    /// Projects over `visibleTasks` so embedded (attached read-only) cards drop out of keyboard/hint
+    /// navigation in lock-step with the board render — and re-appear together under a matching search.
     public var orderedVisibleCards: [Task] {
-        BoardNavigator.columnCards(tasks, .plan)
-            + BoardNavigator.columnCards(tasks, .impl)
-            + BoardNavigator.columnCards(tasks, .review)
+        BoardNavigator.columnCards(visibleTasks, .plan)
+            + BoardNavigator.columnCards(visibleTasks, .impl)
+            + BoardNavigator.columnCards(visibleTasks, .review)
             + freeformTasks
+    }
+
+    /// Pure per-card search predicate (title / branch / repo substring, case-insensitive). Read
+    /// straight off the task — NOT via `searchMatchIds`/`orderedVisibleCards`, which now project over
+    /// `visibleTasks` → `isEmbedded`; routing the embedding decision back through them would recurse
+    /// (`freeformTasks → isEmbedded → searchMatchIds → orderedVisibleCards → freeformTasks`) and, worse,
+    /// filter an attached borrowed card out of the very set the search scans — making it un-findable.
+    /// Shared by `searchMatchIds` and the `isEmbedded` search exemption so the two never disagree.
+    func matchesSearch(_ t: Task, query: String) -> Bool {
+        let q = query.lowercased()
+        return t.title.lowercased().contains(q) || t.branch.lowercased().contains(q)
+            || (t.repo as NSString).lastPathComponent.lowercased().contains(q)
     }
 
     /// Ids of cards matching the active `/` query (title / branch / repo substring, case-insensitive).
     public var searchMatchIds: [UUID] {
-        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces).lowercased(), !q.isEmpty else { return [] }
-        return orderedVisibleCards.filter {
-            $0.title.lowercased().contains(q) || $0.branch.lowercased().contains(q)
-                || (($0.repo as NSString).lastPathComponent).lowercased().contains(q)
-        }.map(\.id)
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
+        return orderedVisibleCards.filter { matchesSearch($0, query: q) }.map(\.id)
     }
     /// True when a search is active and this card matches (drives the dim of non-matches).
     public func isSearchMatch(_ t: Task) -> Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
         return searchMatchIds.contains(t.id)
+    }
+
+    /// Desktop embeds attached read-only agents behind their target — EXCEPT one that matches the
+    /// active `/` search, which re-appears in its fallback board/dock position (and thus in navigation
+    /// and hints too, since all read `visibleTasks`) so it always stays reachable. The exemption is
+    /// computed from the task's own fields via `matchesSearch`, never `isSearchMatch`, to avoid the
+    /// recursion described there.
+    override func isEmbedded(_ task: Task) -> Bool {
+        guard isAttached(task) else { return false }
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
+        return !matchesSearch(task, query: q)
     }
     /// A search filter is active (a non-empty committed query).
     public var searchActive: Bool {

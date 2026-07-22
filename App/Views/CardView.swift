@@ -211,6 +211,7 @@ struct CardView: View {
             }
             parentChip
             worktreeBadge
+            AttachedAgentsBadge(task: task)
             treeBadge
             Spacer(minLength: 6)
             meta

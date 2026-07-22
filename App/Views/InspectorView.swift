@@ -113,6 +113,12 @@ private struct HeaderBar: View {
                 .disabled(!ds.validActions.contains(.archive))
             }
 
+            // Attached-agents badge lives in this shared header (not AgentChrome's terminal header) so it
+            // stays visible in BOTH Agent and Diff modes — the popover is the reachability path for the
+            // read-only sub-cards embedded behind this target, and a wide inspector can cover their board
+            // footer badge. (Dead targets show RecoveryView instead; those stay reachable via the footer.)
+            AttachedAgentsBadge(task: task)
+
             Spacer(minLength: 0)
 
             Button {

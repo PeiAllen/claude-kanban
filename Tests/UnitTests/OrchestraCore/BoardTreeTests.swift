@@ -151,4 +151,21 @@ final class BoardTreeTests: XCTestCase {
         let child = card("02", .impl, order: 0, parent: "01", repo: "/r")
         XCTAssertNil(BoardTree.parentCard([other, child], of: child))
     }
+
+    func test_parentCard_tie_broken_by_id_deterministically() {
+        // Two live cards on the SAME repo/branch with EQUAL createdAt — a real case, since task dates
+        // serialize at second resolution. The winner must be stable by id, not by input order.
+        let t0 = Date(timeIntervalSince1970: 1000)
+        func onBranchP(_ id: String) -> Task {
+            Task(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!,
+                 title: id, repo: "/r", branch: "p", cwd: "/r/\(id)",
+                 model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                 order: 0, phase: .live(.running), initialPrompt: id, createdAt: t0)
+        }
+        let a = onBranchP("01")   // lower id ⇒ the deterministic winner
+        let b = onBranchP("04")
+        let child = card("02", .impl, order: 0, parent: "p")
+        XCTAssertEqual(BoardTree.parentCard([b, a, child], of: child)?.id, a.id)
+        XCTAssertEqual(BoardTree.parentCard([a, b, child], of: child)?.id, a.id)
+    }
 }
