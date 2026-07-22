@@ -73,6 +73,29 @@ struct TaskStoreTests {
         #expect(!FileManager.default.fileExists(atPath: path + ".bak"))
     }
 
+    @Test("a partial load (one record dropped element-wise) keeps the rest but flags incompleteness")
+    func partialLoadFlagged() async throws {
+        let path = tempPath()
+        let store = TaskStore(path: path)
+        _ = try await store.create(sample("Keeper"))   // one valid record persisted as {rev, tasks:[…]}
+        // Inject a second, id-LESS record: Task.init throws on a missing id → FailableTask drops it
+        // element-wise while the top-level JSON stays valid (so this is NOT a .corrupt path).
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        var root = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        var tasks = root["tasks"] as! [[String: Any]]
+        tasks.append(["title": "ghost", "column": "plan"])   // no id → undecodable
+        root["tasks"] = tasks
+        try JSONSerialization.data(withJSONObject: root).write(to: URL(fileURLWithPath: path))
+
+        let store2 = TaskStore(path: path)
+        let loaded = await store2.load()
+        #expect(loaded.count == 1)                        // the valid record survives
+        #expect(loaded.first?.title == "Keeper")
+        #expect(await store2.loadDroppedRecords)          // partiality is recorded
+        #expect(!(await store2.loadWasComplete()))        // ⇒ reclaims must treat evidence as untrustworthy
+        #expect(!(await store2.wasCorrupt()))             // but the board was NOT top-level corrupt
+    }
+
     @Test("a second corruption does NOT clobber the first .corrupt backup")
     func secondCorruptionKeepsBoth() async throws {
         let path = tempPath()

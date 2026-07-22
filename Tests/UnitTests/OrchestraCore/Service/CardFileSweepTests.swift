@@ -78,6 +78,26 @@ struct CardFileSweepTests {
         #expect(fm.fileExists(atPath: "\(dir)/media"))      // subdir → non-recursive, untouched
     }
 
+    @Test("a user-authored file sharing prefix/suffix but not the token shape is never swept")
+    func userAuthoredFileKept() async throws {
+        let env = TestEnv.make()
+        let dir = "\(env.base)/codexhome"
+        let spec = CardFileSpec(directory: dir, prefix: "orch-", suffix: ".config.toml", key: .cwdHash)
+        _ = try await seedCard(env.svc.store, cwd: "/wt/live")   // store non-empty (past the evidence gate)
+        // A profile the USER hand-wrote for `codex -p orch-research` — shares the prefix/suffix, but its
+        // token "research" is not a generated hash, so it must never become a sweep candidate.
+        let userFile = try writeFile(spec, token: "research", dir: dir)
+
+        await env.svc.sweepCardFiles(specs: [spec], grace: 0)
+
+        #expect(fm.fileExists(atPath: userFile))
+    }
+
+    // NOTE: the partial-load fail-safe (a non-empty but incomplete store ⇒ prune nothing) is covered by
+    // its two halves — `TaskStoreTests.partialLoadFlagged` pins `loadWasComplete() == false` on an
+    // element-wise drop, and `OrphanSweepTests.incompleteEvidenceKeepsAll` pins `evidenceIsComplete:false`
+    // ⇒ []. `sweepCardFiles` composes them as `!cards.isEmpty && loadWasComplete()`.
+
     @Test("empty store ⇒ sweep nothing (a failed/empty load is not 'all orphaned')")
     func emptyStoreSweepsNothing() async throws {
         let env = TestEnv.make()   // no cards seeded
