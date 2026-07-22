@@ -86,7 +86,8 @@ renders as a full citizen there (the base projection is a no-op).
   — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
   starting up, **amber** when any is waiting on the human or has died. Clicking it opens a popover
   listing those agents (status dot · short id · title); picking one selects it, opening its full
-  inspector / terminal like any card. The same badge appears in the target's inspector terminal header.
+  inspector / terminal like any card. The same badge also sits in the shared inspector header (visible
+  in both Agent and Diff modes).
 - The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
@@ -191,8 +192,9 @@ The **agent chrome** stacks, top to bottom:
 
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
 2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the read-only eye badge, the
-   shared-worktree badge, the [attached-agents badge](#attached-agents) (when the card has any), the
-   status pill, and an **Inspect** button (opens a read-only shell agent in the worktree);
+   shared-worktree badge, the status pill, and an **Inspect** button (opens a read-only shell agent in
+   the worktree); (the [attached-agents badge](#attached-agents) lives one level up, in the shared
+   inspector header, so it also shows in Diff mode);
 3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
    target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);
