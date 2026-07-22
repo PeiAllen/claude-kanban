@@ -103,6 +103,10 @@ public struct VimKeybindings: Keybindings {
         case "j": return .moveSelection(.down)
         case "k": return .moveSelection(.up)
         case "l": return .moveSelection(.right)
+        // ↑/↓ (NSEvent charactersIgnoringModifiers) — the row axis, within a card's attached-row group.
+        // Left/right arrows (\u{F702}/\u{F703}) stay unbound so they pass through to the pty as today.
+        case "\u{F700}": return .moveRow(.up)
+        case "\u{F701}": return .moveRow(.down)
         case "H": return .carry(.left)
         case "L": return .carry(.right)
         case "G": return .selectEnd(first: false)

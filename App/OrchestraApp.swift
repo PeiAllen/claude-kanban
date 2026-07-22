@@ -587,21 +587,17 @@ private struct DebugLaunchHook: ViewModifier {
     }
 
     /// Render the attached-agents surface headlessly (no daemon, no Screen-Recording): the target card
-    /// carrying the amber `👁 2` badge (two attached read-only reviewers seeded into `model.tasks`, one
-    /// running + one waiting), above the popover list body. `ORCH_SNAPSHOT_ATTACHED=/path.png`.
+    /// (selected, so it renders EXPANDED) carrying the amber `👁 2` glance badge, with its two attached
+    /// read-only reviewers listed as inline rows (one running + one waiting). `ORCH_SNAPSHOT_ATTACHED`.
     static func snapshotAttached(to path: String, model: BoardModel) {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
-        showAttached(model: model)                       // seeds target + 2 embedded reviewers
+        showAttached(model: model)                       // seeds target (selected) + 2 embedded reviewers
         let target = model.tasks[0]
-        let list = VStack(alignment: .leading, spacing: 12) {
-            CardView(task: target)
-            AttachedAgentsList(agents: model.attachedAgents(of: target), onPick: { _ in })
-        }
-        .padding(14)
-        .frame(width: 320)
-        .background(theme.colBg)
-        let view = list
+        let view = CardView(task: target)
+            .padding(14)
+            .frame(width: 320)
+            .background(theme.colBg)
             .environmentObject(model)
             .environment(\.theme, theme)
             .preferredColorScheme(model.darkMode ? .dark : .light)

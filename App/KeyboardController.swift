@@ -127,6 +127,7 @@ final class KeyboardController {
     private func execute(_ intent: KeyIntent, ctx: KeyContext) -> Bool {
         switch intent {
         case .moveSelection(let d): model.selectMove(d); model.focusZone = .board; return true
+        case .moveRow(let d):       model.selectRowMove(d); return true
         case .selectEnd(let f):     model.selectEnd(first: f); return true
         // Enter and `i` are the same verb: descend the keyboard into the selected card's terminal.
         case .openInspector:        model.enterTerminalZone(); return true

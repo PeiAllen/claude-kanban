@@ -144,8 +144,11 @@ private struct ColumnView: View {
                 .frame(maxHeight: .infinity)
                 // Keep the keyboard-selected card visible as hjkl moves the selection through the column.
                 .onChange(of: model.selectedId) { _, id in
-                    guard let id, cards.contains(where: { $0.id == id }) else { return }
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+                    // A selected attached ROW isn't a top-level card — scroll its visible target (the
+                    // card whose inline rows contain it) into view, via the card-level anchor.
+                    guard let anchor = model.cardLevelAnchor(id),
+                          cards.contains(where: { $0.id == anchor }) else { return }
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(anchor, anchor: .center) }
                 }
             }
         }

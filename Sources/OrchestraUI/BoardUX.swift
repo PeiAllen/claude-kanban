@@ -57,11 +57,41 @@ public final class BoardUX: BoardStore {
     // Thin executors the KeyboardController calls; selection movement delegates to the pure
     // BoardNavigator, everything else reuses the existing daemon-backed actions above.
 
+    /// `j`/`k` — the ONLY card-to-card axis. Anchors through `cardLevelAnchor` so a move from an
+    /// embedded attached row steps off the row's VISIBLE target (never falls through to first-Plan);
+    /// a normal card anchors to itself, so this is identical to before for un-attached selections.
     public func selectMove(_ dir: Direction) {
-        selectedId = BoardNavigator.move(visibleTasks, selected: selectedId, dir)
+        selectedId = BoardNavigator.move(visibleTasks, selected: cardLevelAnchor(selectedId), dir)
     }
+    /// `gg`/`G` — first/last card of the selection's column. Anchored like `selectMove` so it acts on
+    /// the row's visible target column when an embedded attached row is selected (else it would find no
+    /// column for the hidden row and silently no-op).
     public func selectEnd(first: Bool) {
-        selectedId = BoardNavigator.end(visibleTasks, selected: selectedId, first: first)
+        selectedId = BoardNavigator.end(visibleTasks, selected: cardLevelAnchor(selectedId), first: first)
+    }
+
+    /// Desktop reveal gate: a target expands its rows when it (or one of its rows) is selected, OR when a
+    /// `/` search is active and one of its rows matches — so a matching reviewer surfaces in place rather
+    /// than as a standalone card. Both the render and the `↑`/`↓` walk read this, so they never disagree.
+    override func showsInlineRows(_ target: Task) -> Bool {
+        revealsAttached(target) || revealsSearchMatchRow(target)
+    }
+
+    /// The `↑`/`↓` walk sequence — a SINGLE group, never crossing cards: the anchor card followed by
+    /// its own revealed rows. `expandedRows` carries the `showsInlineRows` gate, so a card with no
+    /// revealed rows yields a 1-element list ⇒ arrows clamp/no-op. Empty when nothing is selected.
+    func groupSequence() -> [UUID] {
+        guard let anchorId = cardLevelAnchor(selectedId),
+              let anchor = tasks.first(where: { $0.id == anchorId }) else { return [] }
+        return [anchorId] + expandedRows(for: anchor).map(\.id)
+    }
+
+    /// `↑`/`↓` — walk within the selected card's attached-row group only (never between cards; that
+    /// stays `j`/`k`). No-op from no selection (arrows aren't a board-entry path) and on a card with no
+    /// rows: `moveRow` clamps at both group edges and preserves the selection on an empty sequence.
+    public func selectRowMove(_ dir: Direction) {
+        selectedId = BoardNavigator.moveRow(groupSequence(), selected: selectedId, dir)
+        focusZone = .board
     }
 
     /// Vim Ctrl-O / Ctrl-I traversal. The keyboard controller supplies the real responder-derived
@@ -230,37 +260,52 @@ public final class BoardUX: BoardStore {
     }
 
     /// Pure per-card search predicate (title / branch / repo substring, case-insensitive). Read
-    /// straight off the task — NOT via `searchMatchIds`/`orderedVisibleCards`, which now project over
-    /// `visibleTasks` → `isEmbedded`; routing the embedding decision back through them would recurse
-    /// (`freeformTasks → isEmbedded → searchMatchIds → orderedVisibleCards → freeformTasks`) and, worse,
-    /// filter an attached borrowed card out of the very set the search scans — making it un-findable.
-    /// Shared by `searchMatchIds` and the `isEmbedded` search exemption so the two never disagree.
+    /// straight off the task — works for an embedded reviewer row too. Shared by `searchMatchIds`,
+    /// `isSearchMatch`, and `revealsSearchMatchRow`, all of which read it directly (never via
+    /// `isSearchMatch`/`searchMatchIds`) so nothing recurses through `visibleTasks`.
     func matchesSearch(_ t: Task, query: String) -> Bool {
         let q = query.lowercased()
         return t.title.lowercased().contains(q) || t.branch.lowercased().contains(q)
             || (t.repo as NSString).lastPathComponent.lowercased().contains(q)
     }
 
-    /// Ids of cards matching the active `/` query (title / branch / repo substring, case-insensitive).
+    /// Ids matching the active `/` query, in board order — each visible card, then its matching attached
+    /// rows (embedded reviewers) right after their root. So `n`/`N` cycles hits INCLUDING in-place
+    /// reviewer matches; selecting a row hit reveals its target (`revealsAttached`).
     public var searchMatchIds: [UUID] {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
-        return orderedVisibleCards.filter { matchesSearch($0, query: q) }.map(\.id)
+        var ids: [UUID] = []
+        for card in orderedVisibleCards {
+            if matchesSearch(card, query: q) { ids.append(card.id) }
+            for agent in attachedAgents(of: card) where matchesSearch(agent, query: q) {
+                ids.append(agent.id)                       // embedded reviewer hit, surfaced under its root
+            }
+        }
+        return ids
     }
-    /// True when a search is active and this card matches (drives the dim of non-matches).
+    /// True when a search is active and `t` matches — drives the dim of non-matches (cards AND rows).
+    /// Read straight off the task via `matchesSearch` (O(1), works for an embedded reviewer row), so it
+    /// can't recurse through `searchMatchIds`/`visibleTasks`.
     public func isSearchMatch(_ t: Task) -> Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
-        return searchMatchIds.contains(t.id)
+        return matchesSearch(t, query: q)
     }
 
-    /// Desktop embeds attached read-only agents behind their target — EXCEPT one that matches the
-    /// active `/` search, which re-appears in its fallback board/dock position (and thus in navigation
-    /// and hints too, since all read `visibleTasks`) so it always stays reachable. The exemption is
-    /// computed from the task's own fields via `matchesSearch`, never `isSearchMatch`, to avoid the
-    /// recursion described there.
+    /// Desktop embeds every attached read-only agent behind its target, ALWAYS — a reviewer is a subcard
+    /// (an inline row), never a standalone column card, even under a `/` search. A search surfaces a
+    /// matching reviewer IN PLACE: its target auto-reveals the row (`showsInlineRows` →
+    /// `revealsSearchMatchRow`) and the hit is reachable via `n`/`N` (`searchMatchIds` includes it).
+    /// Fail-open guard: a malformed read-only cycle has `isAttached == true` but `attachedRoot == nil`;
+    /// embedding it would hide every member behind another hidden member, so render it as a board card.
     override func isEmbedded(_ task: Task) -> Bool {
-        guard isAttached(task) else { return false }
-        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
-        return !matchesSearch(task, query: q)
+        attachedRoot(of: task) != nil
+    }
+
+    /// A `/` search is active and one of `target`'s attached rows matches it — the target then reveals
+    /// those rows (so the hit shows in place) and stays undimmed. Pure over task fields.
+    public func revealsSearchMatchRow(_ target: Task) -> Bool {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return false }
+        return attachedAgents(of: target).contains { matchesSearch($0, query: q) }
     }
     /// A search filter is active (a non-empty committed query).
     public var searchActive: Bool {

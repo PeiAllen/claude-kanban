@@ -23,8 +23,13 @@ struct CardView: View {
     private var isWaiting: Bool { task.waitReason != nil }
     private var isDead: Bool { display == .dead }
 
+    /// One of this card's attached rows is selected (the card itself isn't). Keeps a retained cue on the
+    /// parent so "which card am I in" stays legible while `↑`/`↓` walk its rows.
+    private var rowSelectedInGroup: Bool { !isSelected && model.revealsAttached(task) }
+
     private var borderColor: Color {
         if isSelected { return theme.accent }
+        if rowSelectedInGroup { return theme.accent.opacity(0.5) }
         if isWaiting { return theme.waitingBorder }
         return theme.cardBorder
     }
@@ -35,6 +40,7 @@ struct CardView: View {
             title
             description
             footer
+            attachedRows
         }
         .padding(model.density.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -64,8 +70,11 @@ struct CardView: View {
         .onTapGesture { model.selectAndEnterTerminal(task.id) }
     }
 
-    /// Dim when a `/` search is active and this card doesn't match.
-    private var dimmed: Bool { model.searchActive && !model.isSearchMatch(task) }
+    /// Dim when a `/` search is active and this card neither matches NOR hosts a matching attached row —
+    /// a host stays bright so its revealed reviewer match is visible in place.
+    private var dimmed: Bool {
+        model.searchActive && !model.isSearchMatch(task) && !model.revealsSearchMatchRow(task)
+    }
 
     /// The `f` link-hint label badge, shown over each card while hint mode is active.
     @ViewBuilder private var hintBadge: some View {
@@ -182,6 +191,22 @@ struct CardView: View {
                 .foregroundStyle(isWaiting ? theme.amber.text : theme.text2)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Attached-agent rows (inline accordion)
+
+    /// The read-only reviewers embedded behind this card, revealed as compact rows INSIDE the card's
+    /// frame when the card (or one of its rows) is selected. `expandedRows` carries the reveal +
+    /// `/`-search gate, so this is empty (and the card renders as today) whenever it shouldn't expand.
+    @ViewBuilder private var attachedRows: some View {
+        let rows = model.expandedRows(for: task)
+        if !rows.isEmpty {
+            Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
+            VStack(spacing: 2) {
+                ForEach(rows) { agent in AttachedAgentRow(agent: agent) }
+            }
+            .padding(.top, 6)
         }
     }
 

@@ -377,11 +377,30 @@ public class BoardStore: ObservableObject {
     /// Whether this card is an attached read-only agent (has a derivable target).
     public func isAttached(_ task: Task) -> Bool { attachedTarget(of: task) != nil }
 
-    /// The read-only agents attached to `target`, in a deterministic `(createdAt, id)` order. O(n)
-    /// per target (each candidate re-derives its own target) — fine at board sizes; memoize if boards
-    /// ever grow large.
+    /// The visible ROOT board card an attached agent ultimately hangs off of: climb `attachedTarget`
+    /// while the ancestor is ITSELF attached, stopping at the first non-attached card. Flattens a
+    /// reviewer-of-a-reviewer chain (`C ← R1 ← R2`) so every reviewer in it groups under the one real
+    /// card `C` — a nested reviewer never orphans behind a hidden intermediate (`R1` is embedded, so it
+    /// draws no rows of its own). Nil when `task` isn't attached. Cycle-guarded against malformed lineage.
+    public func attachedRoot(of task: Task) -> Task? {
+        guard var current = attachedTarget(of: task) else { return nil }
+        var visited: Set<UUID> = [task.id]
+        while isAttached(current) {
+            // A malformed lineage (a cycle among read-only cards) has NO real root. Fail OPEN — return
+            // nil so `isEmbedded` keeps the card on the board as a normal citizen, rather than embedding
+            // it behind a peer that is itself hidden (which would strand every member of the cycle).
+            guard visited.insert(current.id).inserted, let next = attachedTarget(of: current) else { return nil }
+            current = next
+        }
+        return current
+    }
+
+    /// The read-only agents attached to `target`, in a deterministic `(createdAt, id)` order. Grouped
+    /// by `attachedRoot` (not the one-hop `attachedTarget`), so a whole nested chain flattens into
+    /// `target`'s row list. O(n) per target (each candidate re-derives its own root) — fine at board
+    /// sizes; memoize if boards ever grow large.
     public func attachedAgents(of target: Task) -> [Task] {
-        tasks.filter { !$0.archived && attachedTarget(of: $0)?.id == target.id }
+        tasks.filter { !$0.archived && attachedRoot(of: $0)?.id == target.id }
             .sorted(by: attachedBefore)
     }
 
@@ -396,6 +415,43 @@ public class BoardStore: ObservableObject {
             switch $0.phase { case .live(.waiting), .dead: return true; default: return false }
         }
         return needsAttention ? .needsAttention : .allRunning
+    }
+
+    /// True when `target`'s attached rows should be REVEALED — the target itself is selected, or one of
+    /// its attached agents is. Only a real root card reveals: a nested reviewer's own `attachedAgents`
+    /// is empty (its children flatten onto the root), so it never self-reveals. Shared with iOS.
+    public func revealsAttached(_ target: Task) -> Bool {
+        let agents = attachedAgents(of: target)
+        guard !agents.isEmpty else { return false }
+        return selectedId == target.id || agents.contains { $0.id == selectedId }
+    }
+
+    /// The single gate for BOTH the inline-row render and the `↑`/`↓` walk splice, so they can never
+    /// disagree. Base (iOS) = `revealsAttached` (no `/` search there). The desktop `BoardUX` overrides
+    /// it to also require `!searchActive`, so a `/`-matched reviewer that un-embeds as a full card is
+    /// never ALSO drawn as a row (double-render) nor left as an invisible arrow-stop.
+    func showsInlineRows(_ target: Task) -> Bool { revealsAttached(target) }
+
+    /// The attached rows to render inside `target` right now — empty unless revealed and gated. iOS
+    /// consumes this predicate but owns its own presentation: its base never embeds, so it must NOT
+    /// draw these rows while ALSO rendering the reviewer as a full card (double-render).
+    public func expandedRows(for target: Task) -> [Task] {
+        showsInlineRows(target) ? attachedAgents(of: target) : []
+    }
+
+    /// The card-axis anchor for a selection: the nearest VISIBLE ancestor when the selection is an
+    /// embedded (hidden) attached row — climb `attachedTarget` while the current card `isEmbedded`. So
+    /// `j`/`k` from a row step off its visible target instead of falling through to first-Plan, while a
+    /// `/`-search-un-embedded reviewer (now visible, `isEmbedded == false`) anchors to ITSELF, keeping
+    /// its own board slot. Identity on the base store (nothing is embedded there). Cycle-guarded.
+    public func cardLevelAnchor(_ id: UUID?) -> UUID? {
+        guard let id, var current = tasks.first(where: { $0.id == id }) else { return id }
+        var visited: Set<UUID> = []
+        while isEmbedded(current), visited.insert(current.id).inserted,
+              let target = attachedTarget(of: current) {
+            current = target
+        }
+        return current.id
     }
 
     /// Overridable embedding GATE. Base returns `false`: nothing is embedded, so a client without an
