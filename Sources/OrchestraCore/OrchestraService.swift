@@ -695,7 +695,7 @@ public actor OrchestraService {
     }
 
     /// Boot re-drive: finish interrupted worktree removals for FULLY-archived cards. A removal killed
-    /// mid-delete (the old 15s bound, a daemon crash, power loss) used to leak the tree forever —
+    /// mid-delete (a daemon crash, power loss) used to leak the tree forever —
     /// teardown had already flipped `archivedComplete`, so nothing ever retried. This re-runs the
     /// SINGLE removal policy (`release`, all guards intact — marker, siblings, inflight, unsaved-work
     /// predicate) for every `origin == .worktree` card whose phase is `archivedComplete`. NEVER
