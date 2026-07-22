@@ -253,7 +253,11 @@ public struct CodexAdapter: Adapter {
     /// resolves to exactly this file. Not the user's own `config.toml` — the `orch-` prefix scopes the
     /// sweep off it (and off the global MCP-install `config.toml`).
     public var cardFile: CardFileSpec? {
-        CardFileSpec(directory: codexHome, prefix: "orch-", suffix: ".config.toml", key: .cwdHash)
+        // `ownershipMarker` set because codexHome is the user's REAL `~/.codex` — the sweep must prove
+        // Orchestra wrote a file (via the stamped marker) before deleting it, since the name shape alone
+        // can't distinguish our hash from a user profile that happens to look like one.
+        CardFileSpec(directory: codexHome, prefix: "orch-", suffix: ".config.toml", key: .cwdHash,
+                     ownershipMarker: CodexLaunchConfiguration.ownershipMarker)
     }
 
     /// Write this launch's profile file BEFORE `start`/`resume` reference it via `-p`. The profile carries

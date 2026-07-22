@@ -35,6 +35,20 @@ struct CardFileConsistencyTests {
         #expect(CodexLaunchConfiguration.profileName(cwd: cwd) == "orch-\(CardFileSpec.cwdHash(cwd))")
     }
 
+    @Test("Codex writes the ownership marker the sweep checks for, as the file's first line")
+    func codexOwnershipMarker() {
+        let adapter = CodexAdapter(codexHome: "/tmp/ch")
+        #expect(adapter.cardFile?.ownershipMarker == CodexLaunchConfiguration.ownershipMarker)
+        let toml = CodexLaunchConfiguration.profileTOML(
+            context: AdapterContext(cwd: "/wt/x"), agentId: "codex")
+        #expect(toml.hasPrefix(CodexLaunchConfiguration.ownershipMarker))   // sweep reads the head for this
+    }
+
+    @Test("Orchestra's own data-dir specs carry NO marker (the directory is the ownership proof)")
+    func dataDirSpecsHaveNoMarker() {
+        #expect(ClaudeCodeAdapter().cardFile?.ownershipMarker == nil)
+    }
+
     @Test("an adapter without a cardFile is allowed (default nil)")
     func defaultNil() {
         struct Bare: Adapter {

@@ -19,9 +19,17 @@ public struct CardFileSpec: Sendable {
     public let prefix: String
     public let suffix: String
     public let key: Key
+    /// A content sentinel the writer stamps INTO every file it generates, proving Orchestra authorship
+    /// when the file lives in a directory the user ALSO writes to (Codex's real `~/.codex`). The sweep
+    /// reaps a candidate only if the file actually contains this marker — so a user's own
+    /// `orch-<16-hex-digits>.config.toml`, which shares the name shape but was never written by Orchestra,
+    /// is safe. `nil` for files in a directory Orchestra owns exclusively (its Application Support dir),
+    /// where the directory itself is the ownership proof and no user file can collide.
+    public let ownershipMarker: String?
 
-    public init(directory: String, prefix: String, suffix: String, key: Key) {
+    public init(directory: String, prefix: String, suffix: String, key: Key, ownershipMarker: String? = nil) {
         self.directory = directory; self.prefix = prefix; self.suffix = suffix; self.key = key
+        self.ownershipMarker = ownershipMarker
     }
 
     /// The absolute path for a given filename token. Total (no precondition): writers pass a locally-built

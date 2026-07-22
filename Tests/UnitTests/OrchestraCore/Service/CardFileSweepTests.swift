@@ -93,6 +93,33 @@ struct CardFileSweepTests {
         #expect(fm.fileExists(atPath: userFile))
     }
 
+    @Test("with an ownership marker set, only files that CARRY it are swept (a user's hash-named file is safe)")
+    func ownershipMarkerRequired() async throws {
+        let env = TestEnv.make()
+        let dir = "\(env.base)/codexhome"
+        let marker = "# orchestra-managed"
+        let spec = CardFileSpec(directory: dir, prefix: "orch-", suffix: ".config.toml",
+                                key: .cwdHash, ownershipMarker: marker)
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        _ = try await seedCard(env.svc.store, cwd: "/wt/live")   // store non-empty (past the evidence gate)
+
+        // (a) An ARCHIVED card's profile that ORCHESTRA wrote — carries the marker → reaped.
+        let dead = try await seedCard(env.svc.store, cwd: "/wt/dead", archived: true)
+        let ours = spec.path(token: spec.token(for: dead))
+        try "\(marker)\ntrust_level = \"trusted\"\n".write(toFile: ours, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -10_000)], ofItemAtPath: ours)
+
+        // (b) A USER's own profile with a valid-hash-shaped name but NO marker → never reaped.
+        let userFile = spec.path(token: CardFileSpec.cwdHash("/some/user/cwd"))   // passes the shape check
+        try "trust_level = \"trusted\"\n".write(toFile: userFile, atomically: true, encoding: .utf8)  // no marker
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -10_000)], ofItemAtPath: userFile)
+
+        await env.svc.sweepCardFiles(specs: [spec], grace: 0)
+
+        #expect(!fm.fileExists(atPath: ours))       // marked + archived → swept
+        #expect(fm.fileExists(atPath: userFile))    // hash-shaped but unmarked → kept (the user's own file)
+    }
+
     // NOTE: the partial-load fail-safe (a non-empty but incomplete store ⇒ prune nothing) is covered by
     // its two halves — `TaskStoreTests.partialLoadFlagged` pins `loadWasComplete() == false` on an
     // element-wise drop, and `OrphanSweepTests.incompleteEvidenceKeepsAll` pins `evidenceIsComplete:false`
