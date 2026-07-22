@@ -125,7 +125,9 @@ struct MaterializeStepperTests {
         try await MaterializeStepper().step(card, ctx)
         let a = try #require(await env.svc.store.get(card.id))
         #expect(a.phase == .dead(.spawnFailed))
-        #expect(env.worktrees.removedForce.contains { $0.path == card.cwd && $0.force == false })
+        // Routed through release (guards intact); the manager call is forced only because release's
+        // unsaved-work predicate cleared first — the (b) sibling case below is the policy proof.
+        #expect(env.worktrees.removedForce.contains { $0.path == card.cwd && $0.force == true })
 
         // (b) a SHARED sibling on the same tree is NEVER removed by the rollback.
         let env2 = TestEnv.make(proc: cfgFake())
@@ -153,7 +155,7 @@ struct MaterializeStepperTests {
         try await MaterializeStepper().step(fresh, await env.svc.convergeContext())
         let after = try #require(await env.svc.store.get(card.id))
         #expect(after.phase.kind == .dead)                                   // NOT launching
-        #expect(env.worktrees.removedForce.contains { $0.path == card.cwd && $0.force == false })
+        #expect(env.worktrees.removedForce.contains { $0.path == card.cwd && $0.force == true })   // release cleared ⇒ forced
     }
 }
 
@@ -350,7 +352,7 @@ struct TeardownStepperTests {
         #expect(after.phase.kind == .archivedComplete)                       // final flip
         #expect(after.archived)                                              // companion Bool mirror
         #expect(env.sessions.killed.contains(env.sessions.sessionName(parent.id)))   // session killed
-        #expect(env.worktrees.removedForce.contains { $0.path == parent.cwd && $0.force == false })  // reclaim
+        #expect(env.worktrees.removedForce.contains { $0.path == parent.cwd && $0.force == true })  // reclaim (release cleared ⇒ forced)
         let nudges = await ctx.inbox.peek(child.id)                          // deterministic child nudged
         #expect(nudges.count == 1)
         #expect(nudges.first?.text.contains("parent") == true)

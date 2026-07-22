@@ -159,15 +159,47 @@ struct WorktreeRegistryTests {
         #expect(!stub.removed.contains(w.path))   // kept — a dead sibling references it
     }
 
-    @Test func test_releaseNeverRemovesDirtyWithoutForce() async throws {
+    @Test func test_releaseKeepsUnsavedWorkWithoutForce() async throws {
         let (reg, stub, _) = makeRegistry()
         let a = UUID()
         let w = try await reg.ensure(repo: "app", branch: "d", cardId: a)
+        stub.setUnsavedWork(w.path, true)
+        let kept = try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)
+        #expect(kept == .keptUnsavedWork)         // unsaved work + !force ⇒ kept, and SAYS so
+        #expect(!stub.removed.contains(w.path))
+        let removed = try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: true)
+        #expect(removed == .removed)              // caller-force ⇒ removed
+        #expect(stub.removed.contains(w.path))
+    }
+
+    @Test func test_releaseForceRemovesReclaimableDirt() async throws {
+        // The manufactured partial-deletion state: git-dirty (the OLD gate would keep it forever)
+        // but no unsaved work (only ` D` entries) — release must remove, and must pass force to the
+        // manager, whose own clean-check would otherwise refuse the ` D` dirt.
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "partial", cardId: a)
         stub.setDirty(w.path, true)
-        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)   // no throw
-        #expect(!stub.removed.contains(w.path))   // dirty + !force ⇒ kept
-        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: true)
-        #expect(stub.removed.contains(w.path))    // force ⇒ removed
+        stub.setUnsavedWork(w.path, false)
+        let outcome = try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)
+        #expect(outcome == .removed)
+        let call = try #require(stub.removedForce.first(where: { $0.path == w.path }))
+        #expect(call.force)                        // predicate-cleared ⇒ forced removal
+    }
+
+    @Test func test_releaseOutcomeClassification() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID(), b = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "shared2", cardId: a)
+        let sib = card(b, cwd: w.path)
+        let referenced = try await reg.release(cardId: a, cards: [card(a, cwd: w.path), sib], force: false)
+        #expect(referenced == .keptReferenced)     // sibling holds it — normal, not warn-worthy
+        let unknown = try await reg.release(cardId: UUID(), cards: [], force: false)
+        #expect(unknown == .noop)
+        try FileManager.default.removeItem(atPath: w.path)
+        let missing = try await reg.release(cardId: b, cards: [sib], force: false)
+        #expect(missing == .noop)                  // idempotent-to-missing stays a noop
+        #expect(!stub.removed.contains(w.path))
     }
 
     @Test func test_releaseHonorsCreatedFlag() async throws {
@@ -250,5 +282,42 @@ struct WorktreeRegistryTests {
         }
         // The just-created throwaway borrow tree must be rolled back (removed), not left as a phantom.
         #expect(stub.removed.contains(where: { $0.contains("orch-borrow-main") }))
+    }
+}
+
+// MARK: - the release-path unsaved-work classifier (pure, no git, no fs)
+
+@Suite("WorktreePorcelain — ` D`-only is reclaimable dirt; everything else is unsaved work")
+struct WorktreePorcelainTests {
+    /// NUL-join records the way `git status --porcelain=v1 -z` emits them (trailing NUL included).
+    private func z(_ recs: String...) -> String { recs.isEmpty ? "" : recs.joined(separator: "\0") + "\0" }
+
+    @Test func test_reclaimableStates() {
+        #expect(!WorktreePorcelain.hasUnsavedWork(""))                                // clean tree
+        #expect(!WorktreePorcelain.hasUnsavedWork(z(" D a.txt")))                     // worktree-deleted, index clean
+        #expect(!WorktreePorcelain.hasUnsavedWork(z(" D a", " D b", " D dir/c")))     // the partial-deletion state
+        // intent-to-add THEN deleted also reads ` D` — safe because the path is already gone from disk
+        #expect(!WorktreePorcelain.hasUnsavedWork(z(" D was-ita.txt")))
+    }
+
+    @Test func test_unsavedStates() {
+        for rec in ["D  gone.txt",       // staged deletion (content only in HEAD^index history)
+                    "MD both.txt",       // staged modification + worktree delete
+                    "AD added.txt",      // staged add + worktree delete
+                    " M mod.txt",        // unstaged modification
+                    " A ita.txt",        // intent-to-add, file present
+                    "?? new.txt",        // untracked
+                    "UU c.txt", "AA c.txt", "DD c.txt"] {   // unmerged
+            #expect(WorktreePorcelain.hasUnsavedWork(z(rec)), "\(rec) must count as unsaved work")
+        }
+        // rename record (-z: "R  new\0old"): the R decides before the second path is ever parsed
+        #expect(WorktreePorcelain.hasUnsavedWork(z("R  new.txt", "old.txt")))
+        // one unsaved entry among reclaimable ones taints the whole tree
+        #expect(WorktreePorcelain.hasUnsavedWork(z(" D a", "?? b")))
+    }
+
+    @Test func test_malformedIsUnsaved() {
+        #expect(WorktreePorcelain.hasUnsavedWork(z("D")))       // truncated record
+        #expect(WorktreePorcelain.hasUnsavedWork(z(" Dx")))     // missing XY/path separator
     }
 }

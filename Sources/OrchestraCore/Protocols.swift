@@ -19,8 +19,16 @@ public protocol WorktreeManaging: Sendable {
     func borrow(repo: String, branch: String) throws -> String
     /// True if the worktree has uncommitted changes. FAILS SAFE (unqueryable ⇒ dirty).
     func isDirty(worktree: String) -> Bool
+    /// RELEASE-path predicate: true unless every status entry is a ` D` worktree-deletion of an
+    /// index-clean file (a path already absent from disk — removing the tree destroys nothing).
+    /// Strictly narrower than `isDirty` in the keep direction it relaxes, and FAILS SAFE the same
+    /// way (unqueryable ⇒ unsaved work).
+    func hasUnsavedWork(worktree: String) -> Bool
     /// Canonical `orch-borrow-*` dir paths currently present under `repo` (LIST only, no removal).
     func orphanBorrowPaths(repo: String) -> [String]
+    /// Repo-root `git worktree prune`: drops admin entries whose worktree dir is missing (a failed
+    /// removal can delete the dir but leave the registration). Inherently safe — metadata only.
+    func pruneRegistrations(repo: String)
 }
 
 public extension WorktreeManaging {
@@ -31,7 +39,9 @@ public extension WorktreeManaging {
         try ensure(repo: repo, branch: branch, base: nil)
     }
     func isDirty(worktree: String) -> Bool { true }          // conservative default
+    func hasUnsavedWork(worktree: String) -> Bool { true }   // conservative default (keep)
     func orphanBorrowPaths(repo: String) -> [String] { [] }
+    func pruneRegistrations(repo: String) {}
 }
 
 /// Liveness of a card's `agent` pane — finer-grained than session presence. `.dead` (the pane's process
