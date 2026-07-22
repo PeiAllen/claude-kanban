@@ -9,6 +9,7 @@ import OrchestraUI
 struct CardDetailHeader: View {
     let task: Task
     let connection: ConnectionState
+    @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
     private var ds: DisplayState { displayState(phase: task.phase, connection: connection) }
@@ -30,6 +31,10 @@ struct CardDetailHeader: View {
             HStack(spacing: 8) {
                 if task.origin != .worktree { ModeAccessChips(origin: task.origin, access: task.access) }
                 ModelChip(model: task.model)
+                // The attached-agents affordance in the detail (parity with the board accordion): the
+                // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
+                // this card is a target). Same tap-expand state as the board, so it stays consistent.
+                AttachedExpandToggle(task: task)
                 Spacer(minLength: 6)
                 if task.ctxPct > 0 { CtxGauge(pct: task.ctxPct, theme: theme) }
             }
@@ -39,6 +44,20 @@ struct CardDetailHeader: View {
                 .foregroundStyle(theme.text2)
                 .lineLimit(1)
                 .truncationMode(.middle)
+
+            // The revealed attached agents (gated by `showsInlineRows` = the tap-expand state). Tapping a
+            // row selects that agent → the detail navigates to it (`navigationDestination(item:)` replace).
+            let rows = model.expandedRows(for: task)
+            if !rows.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { idx, agent in
+                        if idx > 0 { Rectangle().fill(theme.hair).frame(height: 0.5) }
+                        AttachedAgentRow(agent: agent)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.winBg))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)

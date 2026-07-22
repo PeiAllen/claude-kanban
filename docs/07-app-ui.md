@@ -80,8 +80,15 @@ search** is active, a reviewer stays a subcard — it is never promoted to a sta
 and a **match is surfaced in place**: its target auto-expands to reveal the matching row (highlighted;
 non-matching rows dim like non-matching cards), and the match joins the `n`/`N` cycle, so selecting it
 reveals its target and lands on the row. And **read-write cards are never embedded**, whatever their
-lineage. The iPhone companion consumes the same shared reveal predicates but owns its own presentation
-(its base store never embeds).
+lineage. The iPhone companion consumes the same shared derivation and `expandedRows` seam but owns its
+own presentation: it embeds attached agents too (`IOSBoardModel` overrides `isEmbedded`), and reveals
+them **tap-driven** rather than on selection — the `👁 N` indicator on a target's board card gains a
+chevron and toggles the accordion, expanding the reviewers as rows inside the card's own frame. It has
+to differ here because on the phone `selectedId` drives full-screen navigation (tapping a card *pushes*
+its detail), so the desktop's selection-reveal would fire exactly when the board is off-screen. Tapping
+a target's card body still opens its detail (unchanged); tapping a revealed row opens that agent's
+detail; and the card-detail header carries the same `👁 N` toggle + inline list. There is no `/` search
+on the phone board, so no search fail-safe is needed there.
 
 ## Cards
 

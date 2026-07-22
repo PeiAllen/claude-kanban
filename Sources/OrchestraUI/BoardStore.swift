@@ -33,10 +33,11 @@ public struct PhoneTakeoverRequest: Identifiable, Equatable {
 /// business logic here). Cross-platform and iOS-clean — the macOS-only host machinery it carries is
 /// `#if os(macOS)`-fenced (enforced by `scripts/typecheck-ios-ui.sh`). Desktop-only keyboard/palette/
 /// pane-resize UX lives in the `BoardUX` subclass (`BoardUX.swift`, macOS-only); views bind to the
-/// per-platform `BoardModel` typealias (`= BoardUX` on macOS, `= BoardStore` on iOS).
+/// per-platform `BoardModel` typealias (`= BoardUX` on macOS, `= IOSBoardModel` on iOS — the latter a
+/// thin subclass adding attached-agents embedding + a tap-driven inline reveal, `BoardModelIOS.swift`).
 ///
-/// Non-`final` so `BoardUX` can subclass it (same module). `@Published` state declared here propagates to
-/// a `BoardUX` observer unchanged (the synthesized `objectWillChange` lives on this base class).
+/// Non-`final` so `BoardUX`/`IOSBoardModel` can subclass it (same module). `@Published` state declared
+/// here propagates to a subclass observer unchanged (the synthesized `objectWillChange` lives here).
 @MainActor
 public class BoardStore: ObservableObject {
     @Published public var tasks: [Task] = []
@@ -454,10 +455,11 @@ public class BoardStore: ObservableObject {
         return current.id
     }
 
-    /// Overridable embedding GATE. Base returns `false`: nothing is embedded, so a client without an
-    /// attached-agents reachability affordance (iOS, this PR) renders every card as today and can
-    /// never strand one. The desktop `BoardUX` overrides this to embed attached agents behind their
-    /// target (with the `/`-search fail-safe). `isAttached` is the shared derivation both build on.
+    /// Overridable embedding GATE. Base returns `false`: nothing is embedded, so a base consumer with no
+    /// attached-agents reachability affordance renders every card as today and can never strand one. Both
+    /// platform subclasses override it to embed attached agents behind their target: `BoardUX` (macOS,
+    /// with the `/`-search fail-safe) and `IOSBoardModel` (iOS, no search so `isAttached` alone).
+    /// `isAttached` is the shared derivation both build on.
     func isEmbedded(_ task: Task) -> Bool { false }
 
     /// Every board-visible card — the ONE projection the columns, freeform dock, keyboard navigation,
@@ -1332,10 +1334,12 @@ public class BoardStore: ObservableObject {
 }
 
 // The type views bind to (`@EnvironmentObject var model: BoardModel`). Per-platform so the SAME view code
-// gets the desktop UX surface on macOS and the lean sync core on iOS, with zero call-site churn across the
-// split: macOS constructs/injects `BoardUX` (which IS-A `BoardStore`); iOS constructs/injects `BoardStore`.
+// gets each platform's UX surface, with zero call-site churn across the split: macOS injects `BoardUX`,
+// iOS injects `IOSBoardModel` — both IS-A `BoardStore`, both inherited-init, so `BoardModel(platform:)`
+// builds either. macOS adds keyboard/palette/search + selection-reveal; iOS adds attached-agents
+// embedding + a tap-driven inline reveal (`BoardModelIOS.swift`).
 #if os(macOS)
 public typealias BoardModel = BoardUX
 #else
-public typealias BoardModel = BoardStore
+public typealias BoardModel = IOSBoardModel
 #endif

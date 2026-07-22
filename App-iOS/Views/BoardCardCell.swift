@@ -8,6 +8,10 @@ import OrchestraUI
 /// context mini-gauge, diffstat, current-activity line.
 struct BoardCardCell: View {
     let task: Task
+    /// When the attached-agents accordion is expanded, the card's bottom corners square off so the
+    /// rows-block (`AttachedAgentsRows`) drawn directly below merges into one continuous frame (not a
+    /// separate tile). Default false — freeform cards and collapsed targets keep the full round.
+    var expanded: Bool = false
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
@@ -15,6 +19,13 @@ struct BoardCardCell: View {
     private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
     private var sem: SemColor { theme.statusColor(ds.statusKey) }
     private var isLive: Bool { if case .live = task.phase { return true } else { return false } }
+
+    /// The card outline — fully rounded, or squared at the bottom when the accordion is open.
+    private var cardShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: expanded ? 0 : 14,
+                               bottomTrailingRadius: expanded ? 0 : 14, topTrailingRadius: 14,
+                               style: .continuous)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -35,10 +46,9 @@ struct BoardCardCell: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.card))
+        .background(cardShape.fill(theme.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(task.waitReason != nil ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
+            cardShape.strokeBorder(task.waitReason != nil ? theme.waitingBorder : theme.cardBorder, lineWidth: 1)
         )
         .overlay(alignment: .top) {
             if task.phaseDisplay == .running {
