@@ -132,6 +132,9 @@ fileprivate struct WorktreeManager: Sendable {
     }
 
     /// Remove a worktree directory (keeps the branch). Guards a dirty tree unless `force`.
+    /// Runs under `worktreeAddTimeout`, NOT `controlTimeout`: removal is bulk IO exactly like the
+    /// add (a shipped card's ignored `.build` is multi-GB), and the old 15s bound is what killed git
+    /// mid-delete and manufactured the permanently-"dirty" orphans of the worktree-leak bug.
     func remove(worktree: String, force: Bool = false) throws {
         try resolver.assertAllowed(worktree)
         guard FileManager.default.fileExists(atPath: worktree) else { return }
@@ -141,7 +144,7 @@ fileprivate struct WorktreeManager: Sendable {
         var argv = ["git", "-C", worktree, "worktree", "remove"]
         if force { argv.append("--force") }
         argv.append(worktree)
-        let r = try run(argv, .seconds(config.controlTimeout))
+        let r = try run(argv, .seconds(config.worktreeAddTimeout))
         if !r.ok {
             // Fall back to pruning from the parent repo when the dir is already gone/detached.
             _ = try? run(["git", "-C", worktree, "worktree", "prune"], .seconds(config.controlTimeout))
@@ -171,6 +174,28 @@ fileprivate struct WorktreeManager: Sendable {
         return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// RELEASE-path predicate: unlike `isDirty`, a tree whose only status entries are ` D`
+    /// worktree-deletions of index-clean files has NO unsaved work — that is exactly the state a
+    /// killed `git worktree remove` manufactures, and keeping it is what leaked 19 orphans. The
+    /// probe is config-PINNED: repo-local `status.*` settings must not be able to hide untracked or
+    /// submodule changes from a predicate that gates a forced removal. Fails safe like `isDirty`
+    /// (unqueryable ⇒ unsaved work).
+    func hasUnsavedWork(worktree: String) -> Bool {
+        let argv = ["git", "-C", worktree, "-c", "status.showUntrackedFiles=all", "status",
+                    "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]
+        guard let r = try? run(argv, .seconds(config.controlTimeout)), r.ok else { return true }
+        return WorktreePorcelain.hasUnsavedWork(r.stdout)
+    }
+
+    /// Repo-root `git worktree prune`: metadata-only, drops admin entries whose dir is missing (a
+    /// failed removal can delete the dir but strand the registration — which is what the sandbox
+    /// deny-list scans). `remove`'s own prune fallback runs `-C <worktree>`, a path that no longer
+    /// exists in exactly that corner; this one runs from the repo root.
+    func pruneRegistrations(repo: String) {
+        guard let realRepo = try? resolver.resolveRepo(repo) else { return }
+        _ = try? run(["git", "-C", realRepo, "worktree", "prune"], .seconds(config.controlTimeout))
+    }
+
     /// List (no removal) canonical `orch-borrow-*` worktree dir paths currently present under `repo`.
     /// `WorktreeRegistry`'s orphan sweep uses this to reclaim stray/crashed borrow dirs it doesn't have
     /// a persisted registration for.
@@ -188,6 +213,37 @@ fileprivate struct WorktreeManager: Sendable {
 }
 
 extension WorktreeManager: WorktreeManaging {}
+
+/// PURE classifier over `git status --porcelain=v1 -z` output — the release-path predicate's core,
+/// extracted so the ` D`-only rule is unit-testable without git.
+enum WorktreePorcelain {
+    /// True unless EVERY record is a ` D` worktree-deletion (X=space, Y=D): a path already absent
+    /// from the working tree, so removing the tree destroys nothing on disk. (NOT "X=space ⇒
+    /// committed" — false for intent-to-add-then-deleted — the deleted-from-disk fact is the safety
+    /// argument.) Anything else — staged changes, modifications, untracked, unmerged, renames/copies
+    /// — is unsaved work. A malformed record is unsaved work (fail-safe direction).
+    static func hasUnsavedWork(_ zOutput: String) -> Bool {
+        for record in zOutput.split(separator: "\0", omittingEmptySubsequences: true) {
+            // Record shape: "XY <path>". An R/C record decides the answer HERE, before its second
+            // NUL-separated path would ever be read as a record — so no rename-arrow/path parsing.
+            let chars = Array(record)
+            guard chars.count >= 4, chars[2] == " " else { return true }   // malformed ⇒ unsaved
+            if !(chars[0] == " " && chars[1] == "D") { return true }
+        }
+        return false
+    }
+}
+
+/// What `release` did — replaces the `Void` + `try?` silence that let 19 failed removals go
+/// unnoticed. `keptUnsavedWork`/`removalFailed` are the warn-worthy cases; `keptReferenced` is
+/// normal sibling-sharing; `noop` covers the idempotent guards.
+public enum ReleaseOutcome: Sendable, Equatable {
+    case removed
+    case keptReferenced
+    case keptUnsavedWork
+    case removalFailed(detail: String)
+    case noop
+}
 
 public actor WorktreeRegistry {
     private let config: Config
@@ -399,23 +455,37 @@ public actor WorktreeRegistry {
     /// The SINGLE removal policy every teardown routes through. Removes the card's tree only when
     /// siblings==0 && (!dirty || force) && created(marker present) && pathUnderOwnedRoots. A missing
     /// tree is a no-op success. Never throws in a way that escalates to data loss.
-    public func release(cardId: UUID, cards: [Task], force: Bool) async throws {
-        guard let card = cards.first(where: { $0.id == cardId }) else { return }   // unknown ⇒ no-op
+    @discardableResult
+    public func release(cardId: UUID, cards: [Task], force: Bool) async throws -> ReleaseOutcome {
+        guard let card = cards.first(where: { $0.id == cardId }) else { return .noop }   // unknown ⇒ no-op
         let wt = card.cwd
         let canon = PathResolver.canonical(wt)
         defer { inflight[canon]?.remove(cardId); if inflight[canon]?.isEmpty == true { inflight[canon] = nil } }
-        if conservativeMode { return }                                            // Stage-4 seam
-        guard isUnderOwnedRoots(wt) else { return }                              // never outside owned roots
-        guard markerExists(wt) else { return }                                    // created(≡marker) guard
-        guard FileManager.default.fileExists(atPath: wt) else { removeMarker(wt); return }  // idempotent-to-missing
+        if conservativeMode { return .noop }                                      // Stage-4 seam
+        guard isUnderOwnedRoots(wt) else { return .noop }                        // never outside owned roots
+        guard markerExists(wt) else { return .noop }                              // created(≡marker) guard
+        guard FileManager.default.fileExists(atPath: wt) else { removeMarker(wt); return .noop }  // idempotent-to-missing
         let storeSibling = cards.contains {
             $0.id != cardId && !$0.archived && $0.origin == .worktree && PathResolver.canonical($0.cwd) == canon
         }
         let inflightSibling = !(inflight[canon]?.subtracting([cardId]).isEmpty ?? true)   // another in-flight holder?
-        guard !storeSibling && !inflightSibling else { return }                 // referenced (stored OR in-flight) ⇒ keep
-        if manager.isDirty(worktree: wt) && !force { return }                    // dirty + !force ⇒ keep
-        try? manager.remove(worktree: wt, force: force)                          // never throw to data loss
-        if !FileManager.default.fileExists(atPath: wt) { removeMarker(wt) }
+        guard !storeSibling && !inflightSibling else { return .keptReferenced } // referenced (stored OR in-flight) ⇒ keep
+        // Work-aware gate, not `isDirty`: ` D`-only "dirt" (the killed-removal residue) is reclaimable.
+        if !force && manager.hasUnsavedWork(worktree: wt) { return .keptUnsavedWork }
+        do {
+            // Predicate/caller cleared ⇒ FORCE: git's own clean-check would refuse the ` D` dirt
+            // forever, and our gate is the stricter one in the dimension that matters (unsaved work).
+            try manager.remove(worktree: wt, force: true)
+        } catch {
+            return .removalFailed(detail: "\(error)")                            // never throw to data loss
+        }
+        if !FileManager.default.fileExists(atPath: wt) { removeMarker(wt); return .removed }
+        return .removalFailed(detail: "worktree dir survived removal")
+    }
+
+    /// Repo-root registration GC (metadata-only, inherently safe) — see `WorktreeManaging.pruneRegistrations`.
+    public func pruneDanglingRegistrations(repo: String) async {
+        manager.pruneRegistrations(repo: repo)
     }
 
     // MARK: - borrow persistence (atomic JSON, [String:String] on disk)

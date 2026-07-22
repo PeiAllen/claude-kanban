@@ -93,6 +93,73 @@ struct WorktreeRegistryIntegrationTests {
         #expect(try Proc.checked(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/feature-y"]).ok)
     }
 
+    // MARK: - orphan-leak fix: the unsaved-work predicate + convergent removal, against REAL git.
+    // The realness IS the assertion here: porcelain record shapes, `worktree remove --force`
+    // semantics, config poisoning, and `worktree prune` behavior.
+
+    @Test("the manufactured partial-deletion state (` D`-only) is reclaimed; branch survives")
+    func partialDeletionIsReclaimed() async throws {
+        let (repo, config, base) = try makeRepo()
+        let wm = registry(config, base: base)
+        let id = UUID()
+        let w = try await wm.ensure(repo: repo, branch: "half-dead", cardId: id)
+        // Simulate a removal killed mid-delete: tracked files gone from disk, index intact.
+        try FileManager.default.removeItem(atPath: w.path + "/README.md")
+        // Sanity: git itself calls this dirty — the OLD gate (and git's own clean-check) kept it forever.
+        let porcelain = try Proc.checked(["git", "-C", w.path, "status", "--porcelain"]).stdout
+        #expect(porcelain.contains(" D README.md"))
+        let card = Task(id: id, title: "t", repo: repo, branch: "half-dead", cwd: w.path,
+                        origin: .worktree, model: AgentModel(id: "m"), startIn: .impl, column: .impl,
+                        order: 0, phase: .live(.running), initialPrompt: "")
+        let outcome = try await wm.release(cardId: id, cards: [card], force: false)
+        #expect(outcome == .removed)
+        #expect(!FileManager.default.fileExists(atPath: w.path))
+        // registration gone too, not just the dir
+        let list = try Proc.checked(["git", "-C", repo, "worktree", "list", "--porcelain"]).stdout
+        #expect(!list.contains(w.path))
+        // and the branch ref is untouched — the load-bearing invariant
+        #expect(try Proc.checked(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/half-dead"]).ok)
+    }
+
+    @Test("untracked and staged states are kept; repo config cannot hide untracked work")
+    func unsavedWorkIsKeptEvenWithPoisonedConfig() async throws {
+        let (repo, config, base) = try makeRepo()
+        let wm = registry(config, base: base)
+        let id = UUID()
+        let w = try await wm.ensure(repo: repo, branch: "has-work", cardId: id)
+        try "precious".write(toFile: w.path + "/untracked.txt", atomically: true, encoding: .utf8)
+        // Poison the repo config the way that would hide untracked files from an UNPINNED probe.
+        try Proc.checked(["git", "-C", w.path, "config", "status.showUntrackedFiles", "no"])
+        let card = Task(id: id, title: "t", repo: repo, branch: "has-work", cwd: w.path,
+                        origin: .worktree, model: AgentModel(id: "m"), startIn: .impl, column: .impl,
+                        order: 0, phase: .live(.running), initialPrompt: "")
+        let outcome = try await wm.release(cardId: id, cards: [card], force: false)
+        #expect(outcome == .keptUnsavedWork)   // the pinned probe saw through the config
+        #expect(FileManager.default.fileExists(atPath: w.path + "/untracked.txt"))
+        // A staged rename is also unsaved work (pins the -z record shape against real git).
+        try Proc.checked(["git", "-C", w.path, "config", "--unset", "status.showUntrackedFiles"])
+        try FileManager.default.removeItem(atPath: w.path + "/untracked.txt")
+        try Proc.checked(["git", "-C", w.path, "mv", "README.md", "RENAMED.md"])
+        #expect(try await wm.release(cardId: id, cards: [card], force: false) == .keptUnsavedWork)
+        #expect(FileManager.default.fileExists(atPath: w.path))
+    }
+
+    @Test("pruneDanglingRegistrations reclaims a registration whose dir vanished")
+    func pruneReclaimsDanglingRegistration() async throws {
+        let (repo, config, base) = try makeRepo()
+        let wm = registry(config, base: base)
+        let w = try await wm.ensure(repo: repo, branch: "vanished", cardId: UUID())
+        // The dir disappears outside git's knowledge (the failed-removal corner: dir gone, admin alive).
+        try FileManager.default.removeItem(atPath: w.path)
+        let before = try Proc.checked(["git", "-C", repo, "worktree", "list", "--porcelain"]).stdout
+        #expect(before.contains("vanished"))
+        await wm.pruneDanglingRegistrations(repo: repo)
+        let after = try Proc.checked(["git", "-C", repo, "worktree", "list", "--porcelain"]).stdout
+        #expect(!after.contains("vanished"))
+        // branch survives the prune, as always
+        #expect(try Proc.checked(["git", "-C", repo, "rev-parse", "--verify", "--quiet", "refs/heads/vanished"]).ok)
+    }
+
     @Test("a non-allowlisted repo is rejected before anything is created")
     func rejectsDisallowedRepo() async throws {
         let (_, config, base) = try makeRepo()
