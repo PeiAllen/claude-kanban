@@ -43,4 +43,19 @@ public struct CardFileSpec: Sendable {
         for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
         return String(h, radix: 16)
     }
+
+    /// Does `token` have the exact shape THIS spec's key generates? The sweep reaps only files whose token
+    /// is well-formed — so a file that merely shares the prefix/suffix but was authored by the USER (e.g. a
+    /// hand-written `~/.codex/orch-research.config.toml` for `codex -p orch-research`) is never a candidate.
+    /// `orch-` is only a convention; this makes ownership structural. Both keys emit lowercase hex:
+    ///  - `.cwdHash` → exactly what `String(UInt64, radix: 16)` produces (canonical, no leading zeros).
+    ///  - `.shortId` → a 6-char UUID prefix.
+    public func hasWellFormedToken(_ token: String) -> Bool {
+        switch key {
+        case .cwdHash:
+            return UInt64(token, radix: 16).map { String($0, radix: 16) == token } ?? false
+        case .shortId:
+            return token.count == 6 && token.allSatisfy { "0123456789abcdef".contains($0) }
+        }
+    }
 }
