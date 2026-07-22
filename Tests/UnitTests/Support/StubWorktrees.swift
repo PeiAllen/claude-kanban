@@ -78,6 +78,15 @@ final class StubWorktrees: WorktreeManaging, @unchecked Sendable {
     func setDirty(_ path: String, _ v: Bool) { lock.lock(); if v { dirtyPaths.insert(path) } else { dirtyPaths.remove(path) }; lock.unlock() }
     func isDirty(worktree: String) -> Bool { lock.lock(); defer { lock.unlock() }; return dirtyPaths.contains(worktree) }
 
+    /// Controllable unsaved-work set — the RELEASE-path predicate, independent of `isDirty` (which the
+    /// ensure path still consults). Default clean, mirroring the old dirty default.
+    private var unsavedPaths: Set<String> = []
+    func setUnsavedWork(_ path: String, _ v: Bool) { lock.lock(); if v { unsavedPaths.insert(path) } else { unsavedPaths.remove(path) }; lock.unlock() }
+    func hasUnsavedWork(worktree: String) -> Bool { lock.lock(); defer { lock.unlock() }; return unsavedPaths.contains(worktree) }
+
+    private(set) var prunedRepos: [String] = []
+    func pruneRegistrations(repo: String) { lock.lock(); prunedRepos.append(repo); lock.unlock() }
+
     func orphanBorrowPaths(repo: String) -> [String] {
         let dir = "\(root)/\((repo as NSString).lastPathComponent)"
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []

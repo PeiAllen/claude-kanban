@@ -340,8 +340,21 @@ public struct TeardownStepper: PhaseStepper {
         // 3 · origin-aware run-dir reclaim, matching today's `archive()` switch.
         switch card.origin {
         case .worktree:
-            // The SINGLE removal policy: keeps a shared/dirty tree, never force-drops (`force: false`).
-            try? await ctx.worktrees.release(cardId: card.id, cards: await ctx.store.all(), force: false)
+            // The SINGLE removal policy: keeps a shared tree or unsaved work, never force-drops
+            // (`force: false`). The outcome is consumed, not `try?`-swallowed — a silent keep is how
+            // 19 orphaned worktrees accumulated unnoticed until the sandbox profile overflowed.
+            let outcome = (try? await ctx.worktrees.release(
+                cardId: card.id, cards: await ctx.store.all(), force: false)) ?? .removalFailed(detail: "release threw")
+            switch outcome {
+            case .keptUnsavedWork:
+                await ctx.emitActivity(card.id, .warning,
+                                       "worktree kept — unsaved work in \(card.cwd); resolve or remove manually")
+            case .removalFailed(let detail):
+                await ctx.emitActivity(card.id, .warning,
+                                       "worktree removal failed (the boot re-drive will retry): \(detail)")
+            case .removed, .keptReferenced, .noop:
+                break
+            }
         case .scratch:
             // Truly ephemeral — rm -rf, DOUBLE-guarded (debug `assert` + the release-safe runtime `if`).
             // Conservative mode (post-corrupt boot) removes NOTHING — the scratch dir's ownership
