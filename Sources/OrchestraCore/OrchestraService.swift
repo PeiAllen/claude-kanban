@@ -682,14 +682,22 @@ public actor OrchestraService {
             let liveSessions = Set((try? s.list())?.filter(\.running).map(\.name) ?? [])
             let now = Date()
 
+            // Fold BOTH live sources into ONE keep-set of dir NAMES (store-matched cwd + live tmux session),
+            // then route the (b) grace gate + deletion through the shared `OrphanSweep.reclaimable`. The
+            // empty-store guard (c) already ran on-actor above, so reaching here means evidence is complete.
+            var keep = Set<String>()
             for name in entries {
                 let path = "\(root)/\(name)"
-                if liveScratchDirs.contains(path) { continue }
-                if let id = UUID(uuidString: name), liveSessions.contains(s.sessionName(id)) { continue }
-                // (b) Skip anything modified within the grace window (freshly created / actively touched).
-                if let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
-                   now.timeIntervalSince(mtime) < graceInterval { continue }
-                try? fm.removeItem(atPath: path)
+                if liveScratchDirs.contains(path) { keep.insert(name); continue }
+                if let id = UUID(uuidString: name), liveSessions.contains(s.sessionName(id)) { keep.insert(name) }
+            }
+            let candidates: [OrphanSweep.Candidate] = entries.map { name in
+                let mtime = (try? fm.attributesOfItem(atPath: "\(root)/\(name)")[.modificationDate]) as? Date ?? .distantPast
+                return OrphanSweep.Candidate(id: name, mtime: mtime)
+            }
+            for c in OrphanSweep.reclaimable(candidates: candidates, keep: keep,
+                                             evidenceIsComplete: true, now: now, grace: graceInterval) {
+                try? fm.removeItem(atPath: "\(root)/\(c.id)")
             }
         }
     }

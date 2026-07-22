@@ -23,10 +23,14 @@ enum CodexLaunchConfiguration {
     /// `-p` later resolves. Hashed (not the raw cwd) to stay a short, filename-safe profile id, and
     /// `orch-` namespaced so it can never collide with a profile the user authored.
     static func profileName(cwd: String) -> String {
-        var h: UInt64 = 5381
-        for b in cwd.utf8 { h = (h &* 33) &+ UInt64(b) }
-        return "orch-\(String(h, radix: 16))"
+        "orch-\(CardFileSpec.cwdHash(cwd))"   // shared djb2 — the file the sweep reaps and `-p` selects agree
     }
+
+    /// A first-line TOML comment stamped into every profile we write, proving Orchestra authorship. The
+    /// GC sweep reaps an `orch-*.config.toml` only if it contains this marker — so a user's own hand-written
+    /// `~/.codex/orch-<name>.config.toml` (which never carries it) is never deleted, even if its name shares
+    /// the hash shape. A bare TOML comment; codex ignores it when layering the profile.
+    static let ownershipMarker = "# orchestra-managed card launch profile — GC-owned"
 
     /// Absolute path of the profile file in the (native) Codex home. Codex only discovers profiles under
     /// `$CODEX_HOME`, so it must live there — clearly namespaced (`orch-…`) and separate from the user's
@@ -40,7 +44,7 @@ enum CodexLaunchConfiguration {
     /// line — dotted keys are valid TOML and the RHS is already TOML from `TOMLOverride`. Always non-empty
     /// (trust is always set), so a written profile is never a no-op file `-p` would fail to layer.
     static func profileTOML(context: AdapterContext, agentId: String) -> String {
-        var lines: [String] = []
+        var lines: [String] = [ownershipMarker]   // first line: proves Orchestra authorship to the GC sweep
 
         if let hooks = HooksRenderer.codexHooks(orchestraBin: context.orchestraBin, agentId: agentId) {
             for event in hooks.keys.sorted() {

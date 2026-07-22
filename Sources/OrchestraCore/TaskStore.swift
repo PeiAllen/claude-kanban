@@ -15,6 +15,13 @@ public actor TaskStore {
     /// of any pre-existing tree, so no reclaim may run until a later clean restart re-establishes the map.
     public private(set) var loadWasCorrupt = false
 
+    /// True when the last load PARSED the board but dropped ≥1 record element-wise (id-less, or a phase
+    /// this binary can't decode — see `FailableTask`). The board is non-empty yet INCOMPLETE: a live card
+    /// may be missing. Any reclaim keyed off "the live set" (e.g. `sweepCardFiles`) must treat this as
+    /// untrustworthy evidence and prune nothing — the same fail-safe stance as `loadWasCorrupt`, one tier
+    /// finer (partial, not total).
+    public private(set) var loadDroppedRecords = false
+
     /// Test-visible count of ACTUAL `tasks.json` disk writes (bumped in `writeToDisk`). Debounced
     /// telemetry mutations bump `currentRev` synchronously but coalesce into ONE write, so this lags
     /// `currentRev` while a telemetry burst is pending.
@@ -84,9 +91,11 @@ public actor TaskStore {
             let data = try Data(contentsOf: url)
             if let board = try? OrchestraJSON.decoder.decode(StoredBoard.self, from: data) {
                 tasks = Self.compact(board.tasks); currentRev = board.rev   // post-upgrade envelope
+                loadDroppedRecords = tasks.count != board.tasks.count       // any element-wise drop ⇒ partial
             } else {
-                tasks = Self.compact(try OrchestraJSON.decoder.decode([FailableTask].self, from: data))
-                currentRev = 0                                              // pre-upgrade bare array → rev 0
+                let raw = try OrchestraJSON.decoder.decode([FailableTask].self, from: data)
+                tasks = Self.compact(raw); currentRev = 0                   // pre-upgrade bare array → rev 0
+                loadDroppedRecords = tasks.count != raw.count
             }
         } catch {
             // Top-level unparseable: side-line to a TIMESTAMPED backup so a second corruption never
@@ -158,6 +167,14 @@ public actor TaskStore {
     public func wasCorrupt() -> Bool {
         ensureLoaded()
         return loadWasCorrupt
+    }
+
+    /// Whether the on-disk board loaded FULLY and trustworthily: neither top-level corrupt nor a partial
+    /// (element-wise dropped) load. A reclaim that decides orphan-hood from the live card set must gate on
+    /// this — a partial load looks non-empty but may be missing the very card a candidate file belongs to.
+    public func loadWasComplete() -> Bool {
+        ensureLoaded()
+        return !loadWasCorrupt && !loadDroppedRecords
     }
 
     public func get(_ id: UUID) -> Task? {
