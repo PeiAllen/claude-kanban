@@ -63,6 +63,7 @@ _Concurrency.Task {
     await service.reconcilePhasesAtBoot()  // re-drive stranded phases; revive .live cards; conservative mode
     await service.reconcileTranscriptMediaAtBoot()  // retain only current media for non-archived cards
     await service.sweepOrphanBorrows()     // O3: prune orch-borrow-* worktrees a crashed borrow left behind
+    await service.sweepCardFiles()         // reap orphaned per-card launch-config files (backlog + crash residue)
     await service.reloadWatchRegistry()    // carry #4: durable watch registry + terminal-at-reload delivery
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
     await service.rebuildMergeRequestNudges()   // re-arm merge-request re-nudge timers from live cards' state

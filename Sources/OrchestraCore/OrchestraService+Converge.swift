@@ -332,6 +332,12 @@ extension OrchestraService {
     /// run-dir reclaim stay in the stepper (reachable via `ctx`).
     func teardownActorDuties(_ id: UUID) async {
         guard let t = await store.get(id) else { return }
+        // The archived card's launch-config file is now orphaned (TeardownStepper step 1 killed its session
+        // before delegating here). A full sweep — keep-set from all live cards — reclaims it AND is safe for
+        // the shared-cwd case for free; a per-card targeted delete would need its own live-sibling check.
+        // Cheap: archives are infrequent, and the mtime grace keeps a just-archived card's file until the
+        // next sweep if it launched within the window (fail-safe: err toward keeping).
+        await sweepCardFiles()
         stopRemoteWatch(id)          // BT6: tear down any remote merge-watch
         remoteWatchGen[id] = nil     // S4: drop its generation entry (bounds the map)
         stopMergeRequestNudge(id)    // O2: tear down any pending merge-request re-nudge loop
