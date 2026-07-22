@@ -385,8 +385,11 @@ public class BoardStore: ObservableObject {
     public func attachedRoot(of task: Task) -> Task? {
         guard var current = attachedTarget(of: task) else { return nil }
         var visited: Set<UUID> = [task.id]
-        while isAttached(current), visited.insert(current.id).inserted,
-              let next = attachedTarget(of: current) {
+        while isAttached(current) {
+            // A malformed lineage (a cycle among read-only cards) has NO real root. Fail OPEN — return
+            // nil so `isEmbedded` keeps the card on the board as a normal citizen, rather than embedding
+            // it behind a peer that is itself hidden (which would strand every member of the cycle).
+            guard visited.insert(current.id).inserted, let next = attachedTarget(of: current) else { return nil }
             current = next
         }
         return current

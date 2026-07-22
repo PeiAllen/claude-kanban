@@ -23,8 +23,13 @@ struct CardView: View {
     private var isWaiting: Bool { task.waitReason != nil }
     private var isDead: Bool { display == .dead }
 
+    /// One of this card's attached rows is selected (the card itself isn't). Keeps a retained cue on the
+    /// parent so "which card am I in" stays legible while `↑`/`↓` walk its rows.
+    private var rowSelectedInGroup: Bool { !isSelected && model.revealsAttached(task) }
+
     private var borderColor: Color {
         if isSelected { return theme.accent }
+        if rowSelectedInGroup { return theme.accent.opacity(0.5) }
         if isWaiting { return theme.waitingBorder }
         return theme.cardBorder
     }

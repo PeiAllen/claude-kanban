@@ -63,8 +63,11 @@ public final class BoardUX: BoardStore {
     public func selectMove(_ dir: Direction) {
         selectedId = BoardNavigator.move(visibleTasks, selected: cardLevelAnchor(selectedId), dir)
     }
+    /// `gg`/`G` — first/last card of the selection's column. Anchored like `selectMove` so it acts on
+    /// the row's visible target column when an embedded attached row is selected (else it would find no
+    /// column for the hidden row and silently no-op).
     public func selectEnd(first: Bool) {
-        selectedId = BoardNavigator.end(visibleTasks, selected: selectedId, first: first)
+        selectedId = BoardNavigator.end(visibleTasks, selected: cardLevelAnchor(selectedId), first: first)
     }
 
     /// Desktop reveal gate: show rows only when NOT in a `/` search — a matched reviewer un-embeds as a
@@ -284,7 +287,10 @@ public final class BoardUX: BoardStore {
     /// computed from the task's own fields via `matchesSearch`, never `isSearchMatch`, to avoid the
     /// recursion described there.
     override func isEmbedded(_ task: Task) -> Bool {
-        guard isAttached(task) else { return false }
+        // Require a REAL non-attached root, not just an immediate target: a malformed read-only cycle
+        // has `isAttached == true` but `attachedRoot == nil`, and embedding it would hide every member
+        // behind another hidden member (unreachable). Fail open there — render it as a board card.
+        guard attachedRoot(of: task) != nil else { return false }
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return true }
         return !matchesSearch(task, query: q)
     }

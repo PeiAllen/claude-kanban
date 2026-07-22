@@ -384,4 +384,63 @@ import Foundation
         #expect(base.showsInlineRows(c))                    // base gate == revealsAttached (no / search)
         #expect(base.expandedRows(for: c).map(\.id) == [r1.id])
     }
+
+    // MARK: malformed-lineage fail-open (Codex impl-review MAJOR)
+
+    /// A read-only cycle (R1↔R2 each naming the other's branch) has no real root: `attachedRoot` must
+    /// fail OPEN (nil) so neither is embedded, leaving both as reachable board cards rather than hidden
+    /// behind each other.
+    @Test func malformedCycle_failsOpen_bothReachable() {
+        let m = BoardModel(platform: .noop)
+        let r1 = worktree("02", branch: "loop/a", access: .readOnly, parentBranch: "loop/b", column: .impl)
+        let r2 = worktree("05", branch: "loop/b", access: .readOnly, parentBranch: "loop/a", column: .impl)
+        m.tasks = [r1, r2]
+        #expect(m.attachedRoot(of: r1) == nil)
+        #expect(m.attachedRoot(of: r2) == nil)
+        #expect(!m.isEmbedded(r1))
+        #expect(!m.isEmbedded(r2))
+        #expect(m.cards(in: .impl).contains { $0.id == r1.id })
+        #expect(m.cards(in: .impl).contains { $0.id == r2.id })
+        #expect(m.cardLevelAnchor(r1.id) == r1.id)          // visible ⇒ anchors to itself, no strand
+    }
+
+    // MARK: gg/G from a row (Codex impl-review minor)
+
+    @Test func selectEnd_fromRow_operatesOnTargetColumn() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl, order: 0)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl, order: 1)
+        let d  = worktree("03", branch: "feat/d", column: .impl, order: 2)
+        m.tasks = [c, r1, d]
+        m.selectedId = r1.id
+        m.selectEnd(first: false); #expect(m.selectedId == d.id)   // G → last card of the target's column
+        m.selectedId = r1.id
+        m.selectEnd(first: true);  #expect(m.selectedId == c.id)   // gg → first card
+    }
+
+    // MARK: search interaction with the row axis (impl-review coverage gaps)
+
+    @Test func selectRowMove_noopDuringSearch() {
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        m.tasks = [c, r1]
+        m.selectedId = c.id
+        m.searchQuery = "feat/x"                             // rows suppressed ⇒ group collapses to [c]
+        m.selectRowMove(.down); #expect(m.selectedId == c.id)
+    }
+
+    @Test func nestedChain_underSearch_anchorsToNearestVisibleAncestor() {
+        // R1 matches (un-embeds to a full card); R2 doesn't (stays embedded). cardLevelAnchor(R2) must
+        // resolve to the now-visible R1 — nearest VISIBLE ancestor — not climb to a hidden root.
+        let m = BoardModel(platform: .noop)
+        let c  = worktree("01", branch: "feat/x", column: .impl)
+        let r1 = worktree("02", branch: "review/match", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        let r2 = worktree("05", branch: "review/x2", access: .readOnly, parentBranch: "review/match", column: .impl)
+        m.tasks = [c, r1, r2]
+        m.searchQuery = "review/match"
+        #expect(!m.isEmbedded(r1))                           // matched → visible
+        #expect(m.isEmbedded(r2))                            // unmatched → embedded
+        #expect(m.cardLevelAnchor(r2.id) == r1.id)           // climbs only to the nearest visible ancestor
+    }
 }
