@@ -67,10 +67,13 @@ public enum BoardTree {
     /// has no parent branch or no live card owns it (bare/archived parent ⇒ chip is a no-op).
     public static func parentCard(_ tasks: [Task], of task: Task) -> Task? {
         guard let parent = task.parentBranch else { return nil }
-        // S2-6: deterministic (oldest) among co-located siblings, not an arbitrary `.first`.
+        // S2-6: deterministic among co-located siblings, not an arbitrary `.first`. A total
+        // (createdAt, id) order — `createdAt` alone is NOT total, since task dates serialize at
+        // second resolution (Coders.swift), so equal-timestamp cards on the same repo/branch would
+        // otherwise resolve by snapshot-input order. The id break makes the winner stable.
         return tasks.filter {
             !$0.archived && $0.origin == .worktree && $0.id != task.id
                 && $0.repo == task.repo && $0.branch == parent
-        }.min { $0.createdAt < $1.createdAt }
+        }.min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
     }
 }

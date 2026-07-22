@@ -308,14 +308,14 @@ public class BoardStore: ObservableObject {
 
     public func cards(in column: Column) -> [Task] {
         BoardTree.ordered(
-            tasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
+            visibleTasks.filter { $0.column == column && !$0.archived && $0.origin == .worktree }
                  .sorted { $0.order < $1.order })
     }
 
     /// Non-worktree cards (`.borrowed`/`.scratch`) live in the standalone freeform region, not the
     /// plan/impl/review lifecycle columns. Oldest-first for a stable order.
     public var freeformTasks: [Task] {
-        tasks.filter { $0.origin != .worktree && !$0.archived }
+        visibleTasks.filter { $0.origin != .worktree && !$0.archived }
              .sorted { $0.createdAt < $1.createdAt }
     }
 
@@ -342,11 +342,80 @@ public class BoardStore: ObservableObject {
         BoardTree.parentCard(tasks, of: task)
     }
 
+    // MARK: attached agents (read-only reviewers embedded behind their target)
+
+    /// Liveness roll-up for a target's attached agents: green when all are running or still being
+    /// born, amber when any needs the human or has died. Drives the target's eye-badge colour.
+    public enum AttachedLiveness: Equatable { case allRunning, needsAttention }
+
+    /// Total order for co-located / attached cards: created-time, then id. `createdAt` alone is not a
+    /// total order — task dates serialize at second resolution (`Coders.swift`), so equal-timestamp
+    /// cards would otherwise sort by snapshot-input order; the id break makes the winner stable.
+    private func attachedBefore(_ a: Task, _ b: Task) -> Bool {
+        (a.createdAt, a.id.uuidString) < (b.createdAt, b.id.uuidString)
+    }
+
+    /// The card a read-only agent is a review/fork OF, or nil (⇒ it's not an attached agent). Two
+    /// derivations, no new model field: a **worktree** reviewer → its lineage parent card (it was
+    /// spawned with `base: <branch-under-review>`, so `parentBranch` points at the reviewed branch);
+    /// a **branchless** reviewer → the `.worktree` card whose dir it borrowed (`cwd` match). In
+    /// practice that branchless case is `.borrowed` only: a `.scratch` card runs in a freshly-made
+    /// unique dir that no worktree card shares, so it never matches and stays a freeform citizen — the
+    /// `!= .worktree` test just doesn't special-case it. Read-write cards are never attached; an
+    /// archived agent never attaches. When no target is derivable this returns nil and the card
+    /// renders exactly as today (fail-safe).
+    public func attachedTarget(of task: Task) -> Task? {
+        guard task.access == .readOnly, !task.archived else { return nil }
+        // Worktree reviewer: the reviewed card is its lineage parent (deterministic via BoardTree).
+        if task.origin == .worktree { return parentCard(of: task) }
+        // Branchless reviewer: the worktree card it shares a directory with (oldest wins on a tie).
+        return tasks.filter { $0.id != task.id && $0.origin == .worktree
+                              && !$0.archived && $0.cwd == task.cwd }
+            .min(by: attachedBefore)
+    }
+
+    /// Whether this card is an attached read-only agent (has a derivable target).
+    public func isAttached(_ task: Task) -> Bool { attachedTarget(of: task) != nil }
+
+    /// The read-only agents attached to `target`, in a deterministic `(createdAt, id)` order. O(n)
+    /// per target (each candidate re-derives its own target) — fine at board sizes; memoize if boards
+    /// ever grow large.
+    public func attachedAgents(of target: Task) -> [Task] {
+        tasks.filter { !$0.archived && attachedTarget(of: $0)?.id == target.id }
+            .sorted(by: attachedBefore)
+    }
+
+    /// Liveness roll-up for `target`'s attached agents (green vs amber), or nil when none are
+    /// attached (the badge is hidden). Green covers running AND the being-born phases so a
+    /// freshly-spawned reviewer doesn't flash amber; amber means at least one agent is waiting on the
+    /// human or has died.
+    public func attachedLiveness(of target: Task) -> AttachedLiveness? {
+        let agents = attachedAgents(of: target)
+        guard !agents.isEmpty else { return nil }
+        let needsAttention = agents.contains {
+            switch $0.phase { case .live(.waiting), .dead: return true; default: return false }
+        }
+        return needsAttention ? .needsAttention : .allRunning
+    }
+
+    /// Overridable embedding GATE. Base returns `false`: nothing is embedded, so a client without an
+    /// attached-agents reachability affordance (iOS, this PR) renders every card as today and can
+    /// never strand one. The desktop `BoardUX` overrides this to embed attached agents behind their
+    /// target (with the `/`-search fail-safe). `isAttached` is the shared derivation both build on.
+    func isEmbedded(_ task: Task) -> Bool { false }
+
+    /// Every board-visible card — the ONE projection the columns, freeform dock, keyboard navigation,
+    /// link-hints, and tree-depth all read, so a card hidden from the board is also unreachable by
+    /// navigation (and, under search, re-appears in every one of them together).
+    public var visibleTasks: [Task] { tasks.filter { !isEmbedded($0) } }
+
     /// Indent level of `task` within its column's branch tree (0 for roots), capped at
     /// `BoardTree.maxIndent`. The card views multiply this by a per-surface step for the leading inset.
     public func treeDepth(of task: Task) -> Int {
+        // Over `visibleTasks` (not raw `tasks`) so a descendant of a hidden/embedded parent renders at
+        // root indent, matching the root position `cards(in:)` draws it at — the two must agree.
         BoardTree.indent(
-            tasks.filter { $0.column == task.column && !$0.archived && $0.origin == .worktree }
+            visibleTasks.filter { $0.column == task.column && !$0.archived && $0.origin == .worktree }
                  .sorted { $0.order < $1.order },
             of: task)
     }

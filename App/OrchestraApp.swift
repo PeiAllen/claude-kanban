@@ -388,6 +388,31 @@ private struct DebugLaunchHook: ViewModifier {
         model.showOnboarding = false
     }
 
+    /// `ORCH_SHOW=attached`: a target worktree card with two attached read-only reviewers (one running,
+    /// one waiting → the badge reads amber `👁 2`). The reviewers are embedded, so the board shows only
+    /// the target carrying the attached-agents badge — the feature at a glance.
+    static func showAttached(model: BoardModel) {
+        let repo = DemoConfig.repoRoot
+        let targetBranch = "feat/attached-agents"
+        func mk(_ title: String, _ branch: String, _ phase: Phase, _ order: Int,
+                access: CardAccess = .readWrite, parentBranch: String? = nil) -> Task {
+            Task(title: title, repo: repo, branch: branch,
+                 cwd: "\(repo)/.worktrees/\(branch)", origin: .worktree, access: access,
+                 model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                 order: order, phase: phase, initialPrompt: title, parentBranch: parentBranch)
+        }
+        model.tasks = [
+            mk("Attached agents PR", targetBranch, .live(.running), 0),
+            mk("Claude review", "review/attached-claude", .live(.running), 1,
+               access: .readOnly, parentBranch: targetBranch),
+            mk("Codex review", "review/attached-codex", .live(.waiting(.humanTurn)), 2,
+               access: .readOnly, parentBranch: targetBranch),
+        ]
+        model.selectedId = model.tasks.first?.id
+        model.onboarded = true
+        model.showOnboarding = false
+    }
+
     /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
     /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
     static func snapshotDone(to path: String, model: BoardModel) {
@@ -561,6 +586,28 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the attached-agents surface headlessly (no daemon, no Screen-Recording): the target card
+    /// carrying the amber `👁 2` badge (two attached read-only reviewers seeded into `model.tasks`, one
+    /// running + one waiting), above the popover list body. `ORCH_SNAPSHOT_ATTACHED=/path.png`.
+    static func snapshotAttached(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        showAttached(model: model)                       // seeds target + 2 embedded reviewers
+        let target = model.tasks[0]
+        let list = VStack(alignment: .leading, spacing: 12) {
+            CardView(task: target)
+            AttachedAgentsList(agents: model.attachedAgents(of: target), onPick: { _ in })
+        }
+        .padding(14)
+        .frame(width: 320)
+        .background(theme.colBg)
+        let view = list
+            .environmentObject(model)
+            .environment(\.theme, theme)
+            .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
     /// Render the `?` keyboard-help overlay to a PNG via `ImageRenderer` — headless, no daemon, no
     /// Screen-Recording permission. Used by `ORCH_SNAPSHOT_HELP=/path.png` for UI review.
     static func snapshotHelp(to path: String, model: BoardModel) {
@@ -672,6 +719,10 @@ private struct DebugLaunchHook: ViewModifier {
                 DebugLaunchHook.snapshotCards(to: path, model: model)
                 exit(0)
             }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_ATTACHED"] {
+                DebugLaunchHook.snapshotAttached(to: path, model: model)
+                exit(0)
+            }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {
             case "spawn":
                 // Seed the agent catalog (no daemon in this hook) so the Spawn sheet's agent picker
@@ -690,6 +741,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "image": DebugLaunchHook.showTranscriptImage(model: model)
             case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
+            case "attached": DebugLaunchHook.showAttached(model: model)
             default: break
             }
         }

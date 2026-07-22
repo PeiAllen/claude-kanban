@@ -211,7 +211,7 @@ enum FocusBridge {
                 model.selectedId = model.freeformTasks.first?.id; model.focusZone = .board; return true
             case .up:
                 // Climb back out of the freeform dock into the board columns.
-                guard onFreeform, let target = BoardNavigator.firstBoardCard(model.tasks) else { return false }
+                guard onFreeform, let target = BoardNavigator.firstBoardCard(model.visibleTasks) else { return false }
                 model.selectedId = target; model.focusZone = .board; return true
             default:
                 return false
