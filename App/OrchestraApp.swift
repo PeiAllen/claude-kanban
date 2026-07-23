@@ -313,13 +313,33 @@ private struct DebugLaunchHook: ViewModifier {
         if let h = env["ORCH_SHELL_HEIGHT"], let hv = Double(h) {
             UserDefaults.standard.set(hv, forKey: "shellPanelHeight")
         }
-        let mock = Task(title: "Wire shell-panel resize + strip swap",
+        var mock = Task(title: "Wire shell-panel resize + strip swap",
                         repo: DemoConfig.repoRoot, branch: "fix/shells",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
+        // A lineage state the daemon would have computed for a stacked card, so the board badge and the
+        // inspector header both have something to render (they share `TreeBadge`). `ORCH_TREE` picks
+        // which; unset leaves the card untracked, which is the no-badge case worth shooting too.
+        if let want = env["ORCH_TREE"] {
+            mock.parentBranch = env["ORCH_PARENT"] ?? "feat/branch-tree"
+            switch want {
+            case "restack":         mock.treeStat = TreeStat(state: .restackNeeded)
+            case "merge-requested": mock.treeStat = TreeStat(state: .mergeRequested)
+            // Stalled keeps a live `stale` underneath it — the flag outranks the state, and shooting it
+            // that way is the only way to see that the warning really does win the slot.
+            case "stalled":         mock.treeStat = TreeStat(state: .stale, behind: 2, nudges: 3,
+                                                             mergeStalled: true)
+            case "in-sync":         mock.treeStat = TreeStat(state: .inSync)
+            default:                mock.treeStat = TreeStat(state: .stale,
+                                                             behind: Int(env["ORCH_BEHIND"] ?? "") ?? 3)
+            }
+        }
         model.tasks = [mock]
         model.selectedId = mock.id
+        // ORCH_INSPECTOR=diff opens the Diff pane instead of the agent terminal — the shared header
+        // (tree badge, attached agents) has to read the same from either tab.
+        if env["ORCH_INSPECTOR"] == "diff" { model.inspectorMode = .diff }
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
         model.onboarded = true
         model.showOnboarding = false

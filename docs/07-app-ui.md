@@ -174,7 +174,11 @@ the [Recovery panel](#recovery-panel) instead.
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
-(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
+(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). It also
+carries the card's **tree state** — the same `TreeBadge` glyph (`↓N` / restack / merge-requested /
+merge-stalled) the [board card](#cards) shows, absent when the card is in sync or has no parent,
+with hover text naming the parent branch — in this shared header, so branch-sync status reads from
+the Diff tab as well as the Agent tab.
 **Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
 `~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`

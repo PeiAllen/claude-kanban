@@ -28,10 +28,17 @@ OUT="${1:-./.scratch/ui-shots}"
 mkdir -p "$OUT"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-DD="${TMPDIR:-/tmp}/orch-ui-shot-dd"
-ISO_HOME="${TMPDIR:-/tmp}/orch-ui-shot-home"
+# Every piece of throwaway state is keyed to THIS checkout. `$TMPDIR` is per-user, not per-worktree,
+# so two cards running this harness at once shared one DerivedData dir, one isolated $HOME, one tmux
+# socket, and one binary path — and `pkill -f "$BIN"` plus `rm -rf "$ISO_HOME"` in cleanup are then
+# aimed at each other. Measured failure: a sibling worktree's rebuild landed in the shared DD between
+# a build and a capture, so the shots showed the OTHER branch's app; its pkill also killed this run's
+# window mid-capture. The suffix makes concurrent cards invisible to one another.
+WT="$(printf '%s' "$PWD" | /usr/bin/shasum | cut -c1-8)"
+DD="${TMPDIR:-/tmp}/orch-ui-shot-dd-$WT"
+ISO_HOME="${TMPDIR:-/tmp}/orch-ui-shot-home-$WT"
 # Throwaway tmux server for the mock cards' terminal panes — never the live `-L orchestra` server.
-ISO_TMUX_SOCKET="orch-ui-shot"
+ISO_TMUX_SOCKET="orch-ui-shot-$WT"
 export ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET"
 cleanup() { pkill -f "${BIN:-__none__}" 2>/dev/null || true; tmux -L "$ISO_TMUX_SOCKET" kill-server 2>/dev/null || true; rm -rf "$ISO_HOME"; }
 trap cleanup EXIT
@@ -111,5 +118,15 @@ shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=ter
 # "Taken over by phone" placeholder. Fresh owner ⇒ Retake Terminal; stale owner ⇒ Force Retake.
 shoot "9-takeover-placeholder"       env ORCH_SHOW=takeover
 shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
+
+# Tree state in the shared inspector header (`ORCH_TREE`): every badge the board card can show, plus
+# the Diff tab — the badge lives in the shared header precisely so it survives that swap. `in-sync`
+# and the unset case must render NOTHING; they are shot because "no badge" is the assertion.
+shoot "11-tree-stale"        env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3
+shoot "12-tree-restack"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=restack
+shoot "13-tree-merge-req"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=merge-requested
+shoot "14-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
+shoot "15-tree-in-sync"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=in-sync
+shoot "16-tree-stale-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

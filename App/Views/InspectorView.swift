@@ -119,6 +119,23 @@ private struct HeaderBar: View {
             // inline, beside the inspector) and via the ↑/↓ row axis — not through this badge.
             AttachedAgentsBadge(task: task)
 
+            // Branch-sync state (`↓N` / restack / merge-requested / stalled), the same glyph the board
+            // card carries — in this SHARED header, so it reads from the Agent and the Diff tab alike.
+            // Nothing renders when the card is in sync or untracked, so the row is unchanged for the
+            // cards this doesn't apply to. It sits with the badges, after where a diffstat readout
+            // goes and before the trailing close button.
+            //
+            // Width: measured at the shipped 392pt default (`inspectorWidth`) and at the 320pt drag
+            // minimum. It fits at 392 with the close button intact. At 320 the row ALREADY overflows
+            // without it — every child is at its minimum there (the action buttons have truncated
+            // their labels to a single glyph) and the close button renders half-cut, so this badge
+            // costs that button its remaining half rather than causing the clipping. Fixing that
+            // wants the row itself to collapse to icon-only below a width threshold, which is a
+            // change to every control in it, not to this badge.
+            if let ts = task.treeStat {
+                TreeBadge(stat: ts, parentBranch: task.parentBranch)
+            }
+
             Spacer(minLength: 0)
 
             Button {
