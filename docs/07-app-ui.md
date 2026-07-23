@@ -175,8 +175,8 @@ The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
 (`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
-**Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
-`~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
+**Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
+`~/.claude/open-obsidian-vault.sh` recipe, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
 plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
 since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a
