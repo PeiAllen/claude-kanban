@@ -160,12 +160,23 @@ extension OrchestraService {
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
         }
 
+        // The `needs-input` turn-start fence: when a report is a fileTail agent's turn-start `.running`,
+        // capture the ROLLOUT LINE'S OWN write time (its `seq`, stamped in epoch µs by `CodexAdapter`).
+        // That is the clock a declaration's `declaredAt` is compared against below — a line written before
+        // a declaration must not retire it, however late the poll delivers it. nil for a hooksPush agent
+        // (Claude has no polling lag, so its turn-start clears unconditionally) and for a seq-less hook.
+        var turnStartEvidenceAt: Date? = nil
+
         // --- Snapshot half (seq-gated as a unit) ---
         // Stamped statusLine reports (seq>0) are coalesced/dropped when stale (an equal seq is
         // treated as already-applied); hook snapshots (seq==0) are naturally ordered and always
         // apply. The cursor is monotonic — it never moves backward.
         if let snap = patch.snapshot {
             let lastSeq = lastSeqStore[id] ?? 0
+            if snap.run == .running, snap.seq > 0,
+               (try? registry.get(task.agentId))?.capabilities.telemetry == .fileTail {
+                turnStartEvidenceAt = Date(timeIntervalSince1970: Double(snap.seq) / 1_000_000)
+            }
             // Permission-fence for fileTail agents (Codex): a `PermissionRequest` hook arrives as a
             // seq==0 push ("naturally ordered, always apply") but does NOT advance the cursor — leaving
             // `.waiting/.permission` open to being clobbered by a rollout line the agent wrote µs before
@@ -343,12 +354,24 @@ extension OrchestraService {
                 && (before.phase.kind == .relaunching || before.phase.kind == .launching)
                 && observedEpoch == task.sessionEpoch
             let landingAdapter = try? registry.get(task.agentId)
+            // The next turn STARTING retires a declared question — the waiting→running edge, which only
+            // `report()` produces (steppers land from bring-up phases; those are the session-replacement
+            // clear inside `transition`). Permission→running is excluded: an approval resumes the SAME
+            // turn, so `from` must be the genuine idle wait. Fenced on the evidence clock: a fileTail
+            // turn-start whose line predates the declaration is a stale late poll, not a new turn, so it
+            // must not clear. hooksPush agents carry no evidence time and clear unconditionally (no lag).
+            let isTurnStart = targetPhase == .live(.running) && before.phase == .live(.waiting(.humanTurn))
+            let evidenceAt = turnStartEvidenceAt
             let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
                 t.deadReason = targetDeadReason
                 t.deadDetail = targetDeadDetail
                 if landsFromBringUp {
                     t.pendingSeed = nil
                     if let landingAdapter { consumeModelReseat(&t, landingAdapter) }
+                }
+                if isTurnStart, let pq = t.pendingQuestion,
+                   evidenceAt.map({ $0 > pq.declaredAt }) ?? true {
+                    t.pendingQuestion = nil
                 }
             }
             if result == .applied {

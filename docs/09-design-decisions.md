@@ -237,9 +237,21 @@ agent that has run out of road declares its question: the receipt would erase th
 it was made, on both backends. And the opposite rule — clear on any dispatch — is wrong for the relaunch
 path, where the seed is leased *before* the launch runs, so a failed launch would erase a question no
 agent ever saw. The relaunch path needs no seam of its own: its `.live` landing out of `.relaunching` is a
-completed session replacement, which is the third clear (alongside an id rollover and `/clear`), and those
+completed session replacement, which is a third clear (alongside an id rollover and `/clear`), and those
 are generation-fenced so a dying session's late signal cannot erase what the incoming one declared.
 Nothing else clears it; selection cannot, because glancing at a question is not answering it.
+
+The turn-start proof carries one **transport fence**, because how a turn-start reaches the daemon differs
+by backend. Claude pushes it synchronously through a hook, so it is applied in order and clears
+unconditionally. Codex's turn-start is a line in a rollout file the daemon **polls**, so a line *written*
+before a declaration can be *applied* after it — a stale poll that would erase a question it predates. The
+declaration therefore carries its own `declaredAt`, and a turn-start retires it only when the turn-start
+evidence is newer. The comparison is a genuine cross-source one — the rollout line's own write time (its
+`seq`, stamped in epoch µs) against the daemon's clock at the declaration — sound because both are one
+host's wall clock and the line-write causally precedes the tool call that declares. That comparison lives
+in `report()`, where the evidence timestamp is in scope; the phase funnel, the sole phase writer, is left
+reasoning about phases, not clocks, and handles only the unconditional session-replacement clear. The two
+fields travel as one `PendingQuestion` value so a clear can never drop the text while keeping the stamp.
 
 ### Terminal bytes bypass the daemon
 

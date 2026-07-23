@@ -145,11 +145,13 @@ struct ModelCodableTests {
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                      order: 0, initialPrompt: "go")
         #expect(t.pendingQuestion == nil)          // defaults to nil, like note
-        t.pendingQuestion = "ship to main or hold for PR 4?"
+        let declaredAt = Date(timeIntervalSince1970: 1_700_000_500)   // whole-second → exact round-trip
+        t.pendingQuestion = PendingQuestion(text: "ship to main or hold for PR 4?", declaredAt: declaredAt)
 
         let data = try OrchestraJSON.wire.encode(t)
         let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
-        #expect(back.pendingQuestion == "ship to main or hold for PR 4?")
+        #expect(back.pendingQuestion == PendingQuestion(text: "ship to main or hold for PR 4?", declaredAt: declaredAt))
+        #expect(back.pendingQuestion?.declaredAt == declaredAt)   // the timestamp travels with the text
 
         // Additive-optional forward-compat: every card persisted before this field decodes to nil rather
         // than throwing — a throw would make `FailableTask` DROP the whole card.

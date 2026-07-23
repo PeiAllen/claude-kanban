@@ -20,6 +20,21 @@ public enum WaitReason: String, Codable, Sendable {
     case humanTurn    // agent genuinely finished its turn / idle, waiting on the human
 }
 
+/// A `needs-input` declaration: the one-line question, and WHEN it was declared. The two travel as one
+/// value so they can't drift — every clear nils the pair by construction, and nothing can carry the text
+/// without its timestamp. `declaredAt` exists for the fileTail turn-start fence (see `OrchestraService`'s
+/// report path): a Codex turn-start report arrives by a polled rollout tail, so a line WRITTEN before the
+/// declaration can be APPLIED after it; the daemon retires the question only when the turn-start evidence
+/// is newer than `declaredAt`, so a stale late line can't erase a question it predates.
+public struct PendingQuestion: Codable, Sendable, Equatable {
+    public var text: String
+    public var declaredAt: Date
+    public init(text: String, declaredAt: Date) {
+        self.text = text
+        self.declaredAt = declaredAt
+    }
+}
+
 /// Why a card went `dead` — set alongside `status = .dead`, surfaced by the Recovery panel + CLI/MCP.
 public enum DeadReason: String, Codable, Sendable {
     case agentExited       // SessionEnd reason exit/logout — the agent quit (mid-life, usually resumable)
@@ -443,11 +458,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var note: String?
     /// The agent's DECLARED open question — "I ended my turn blocked on a decision only you can make".
     /// Set by `needs-input` (set/replace only; there is no clear form), and cleared by the daemon at the
-    /// only two events that can retire it: proof that the agent's next turn started (a landed turn, or a
-    /// confirmed inbox delivery), and a completed session replacement. It exists because an agent asking a
-    /// question in its own terminal is otherwise indistinguishable from an ordinary idle card — the human
-    /// never learns they are the blocker. nil ⇒ no open question.
-    public var pendingQuestion: String?
+    /// only events that can retire it: proof that the agent's next turn started (a landed turn-start, or a
+    /// continuation handed back at Stop), and a completed session replacement. It exists because an agent
+    /// asking a question in its own terminal is otherwise indistinguishable from an ordinary idle card —
+    /// the human never learns they are the blocker. Carries its own `declaredAt` for the fileTail
+    /// turn-start fence (see `PendingQuestion`). nil ⇒ no open question.
+    public var pendingQuestion: PendingQuestion?
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
     public var parentBranch: String?  // stacked-branch parent (stub; nil until stacked-branches sets it) — the `.parent` diff baseline
@@ -517,7 +533,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         lastSessionName: String? = nil,
         desc: String = "",
         note: String? = nil,
-        pendingQuestion: String? = nil,
+        pendingQuestion: PendingQuestion? = nil,
         repo: String,
         branch: String,
         cwd: String,
@@ -631,7 +647,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
         self.note = try c.decodeIfPresent(String.self, forKey: .note)
-        self.pendingQuestion = try c.decodeIfPresent(String.self, forKey: .pendingQuestion)
+        self.pendingQuestion = try c.decodeIfPresent(PendingQuestion.self, forKey: .pendingQuestion)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)

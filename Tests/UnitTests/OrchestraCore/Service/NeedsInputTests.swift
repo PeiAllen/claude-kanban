@@ -30,11 +30,11 @@ struct NeedsInputTests {
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
 
         _ = try await env.svc.needsInput(ref: t.shortId, question: "  Ship to main or wait for PR 4?  ")
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "Ship to main or wait for PR 4?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "Ship to main or wait for PR 4?")
 
         // Replace, not append — one open question per card.
         _ = try await env.svc.needsInput(ref: t.shortId, question: "Squash or keep\nthe history?")
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "Squash or keep the history?")   // newlines flattened
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "Squash or keep the history?")   // newlines flattened
     }
 
     @Test("an empty question is rejected — there is no clear form")
@@ -47,7 +47,7 @@ struct NeedsInputTests {
             guard case OrchestraError.invalidParams = error else { return false }
             return true
         }
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "real question")   // the prior declaration stands
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "real question")   // the prior declaration stands
     }
 
     @Test("an over-long question is capped, not rejected")
@@ -55,7 +55,7 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: String(repeating: "q", count: 400))
-        #expect(await card(env.svc, t.id)?.pendingQuestion?.count == CardNaming.maxQuestionChars)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text.count == CardNaming.maxQuestionChars)
     }
 
     @Test("status carries the declaration to clients")
@@ -63,7 +63,7 @@ struct NeedsInputTests {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
-        #expect(try await env.svc.status(t.id).task.pendingQuestion == "which base?")
+        #expect(try await env.svc.status(t.id).task.pendingQuestion?.text == "which base?")
     }
 
     // MARK: - what does NOT clear it
@@ -79,7 +79,7 @@ struct NeedsInputTests {
                                  observedEpoch: epoch)
 
         #expect(await card(env.svc, t.id)?.phase == Phase.live(.waiting(.humanTurn)))
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")   // armed, waiting on the human
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // armed, waiting on the human
     }
 
     @Test("a permission approval resumes the SAME turn and must not clear it")
@@ -93,7 +93,7 @@ struct NeedsInputTests {
         try await env.svc.report(t.id, StatusReport(run: .waiting(.permission)), observedEpoch: epoch)
         try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
 
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
     @Test("a relaunch INTENT does not clear it — only a landing does")
@@ -104,12 +104,12 @@ struct NeedsInputTests {
 
         _ = try await env.svc.resume(t.id)   // persists `.relaunching` before any launch runs
         #expect(await card(env.svc, t.id)?.phase.kind == .relaunching)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
 
         // …and a bring-up that FAILS leaves the question standing: the agent never saw it, and a dead card
         // is where the human needs the question most.
         _ = await env.svc.transition(t.id, to: .dead(.resumeFailed), expecting: .relaunching)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
     @Test("a stale session's rollover cannot erase the CURRENT generation's question")
@@ -122,7 +122,34 @@ struct NeedsInputTests {
         // A rollover stamped with a generation that is provably not the card's — the dying predecessor.
         try await env.svc.report(t.id, StatusReport(sessionId: "late-old-session"),
                                  observedEpoch: epoch + 7)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
+    }
+
+    /// The Codex-only race the fence exists for. Codex turn-start reaches the daemon by a POLLED rollout
+    /// tail, so a `.running` line WRITTEN before a declaration can be APPLIED after it. Such a stale line
+    /// must not retire the question — only a turn-start whose evidence is newer than the declaration does.
+    /// A `.stub`-with-fileTail card + a fixed clock lets this run without a real Codex or wall-clock.
+    @Test("a stale fileTail turn-start keeps the question; the next genuine one clears it")
+    func fileTailTurnStartFence() async throws {
+        let declaredAt = Date(timeIntervalSince1970: 2_000_000)   // the fixed instant `needs-input` stamps
+        let env = TestEnv.make(capabilities: .fileTailStub, now: { declaredAt })
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+
+        // A rollout line written one second BEFORE the declaration, delivered now by the lagging poll.
+        let staleSeq = UInt64((declaredAt.timeIntervalSince1970 - 1) * 1_000_000)
+        try await env.svc.report(t.id, StatusReport(seq: staleSeq, run: .running), observedEpoch: epoch)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // predates the ask → kept
+        #expect(await card(env.svc, t.id)?.phase == Phase.live(.running))            // …but the phase did move
+
+        // The turn ends; the human answers; the NEXT turn's line is written AFTER the declaration.
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        let freshSeq = UInt64((declaredAt.timeIntervalSince1970 + 1) * 1_000_000)
+        try await env.svc.report(t.id, StatusReport(seq: freshSeq, run: .running), observedEpoch: epoch)
+        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)                   // a genuine new turn → cleared
     }
 
     // MARK: - what DOES clear it
@@ -191,7 +218,7 @@ struct NeedsInputTests {
         // question must still be there for the human to see on the idle card.
         _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
                                      observedEpoch: epoch, stopHookActive: true)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
     }
 
     /// The full re-declare cycle the guidance promises, end to end: ask, get answered, ask again. Q1 is
@@ -220,7 +247,7 @@ struct NeedsInputTests {
         // The Stop closing that turn confirms Q1's delivery. It must not touch Q2.
         _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
                                      observedEpoch: epoch, stopHookActive: true)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "Q2: squash or keep history?")
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "Q2: squash or keep history?")
     }
 
     @Test("a landed relaunch clears it — the session that asked is gone")

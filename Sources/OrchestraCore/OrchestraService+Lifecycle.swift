@@ -95,26 +95,23 @@ extension OrchestraService {
                 } else if to.kind == .live, t.agentSessionId != nil {
                     t.sessionDiscoverySince = nil
                 }
-                // A declared `needs-input` question is retired by PROOF that it is moot — never by an
-                // intent. Two proofs live on this edge set:
-                //   · a TURN START — landing `.live(.running)` from anywhere that isn't already running
-                //     and isn't a permission wait. Excluding permission is what makes this "the next
-                //     TURN" and not "the next time it runs": an approval resumes the SAME turn, and a
-                //     question declared earlier in that turn must survive it.
-                //   · a COMPLETED session replacement — landing `.live` out of a bring-up phase. The
-                //     replacement is what makes the question moot (the session that asked it is gone),
-                //     and a blank restart lands `.waiting(.humanTurn)` (PhaseStepper.deriveLaunchFlavor),
-                //     so the turn-start arm alone would miss it.
-                // Deliberately NOT on ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that
-                // intent before any launch runs, so a failed or timed-out bring-up would erase a question
-                // the agent never saw — and that card is now `.dead`, where the human needs the question
-                // more, not less.
-                if t.pendingQuestion != nil {
-                    let turnStart = to == .live(.running)
-                        && from != .live(.running) && from != .live(.waiting(.permission))
-                    let sessionReplaced = to.kind == .live
-                        && [.relaunching, .launching, .creatingWorktree].contains(from.kind)
-                    if turnStart || sessionReplaced { t.pendingQuestion = nil }
+                // A declared `needs-input` question is retired by PROOF that it is moot — never an intent.
+                // THIS seam handles only a COMPLETED SESSION REPLACEMENT: a `.live` landing out of a
+                // bring-up phase, where the session that asked the question is provably gone. It is
+                // unconditional and correct precisely because it is a replacement (a blank restart even
+                // lands `.waiting(.humanTurn)`, which the turn-start rule would miss). Deliberately NOT on
+                // ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that intent before any
+                // launch runs, so a failed bring-up would erase a question the agent never saw — and that
+                // card is now `.dead`, where the human needs the question more, not less.
+                //
+                // The OTHER proof — the next turn STARTING (waiting→running) — lives in `report()`, where
+                // the turn-start evidence's own timestamp is in scope: a Codex turn-start arrives by a
+                // polled rollout tail, so a line written before a declaration can be applied after it, and
+                // only `report()` can compare the two clocks. Keeping that comparison out of here leaves the
+                // sole-phase-writer reasoning about phases, not clocks.
+                if t.pendingQuestion != nil,
+                   to.kind == .live, [.relaunching, .launching, .creatingWorktree].contains(from.kind) {
+                    t.pendingQuestion = nil
                 }
             }
         } catch {

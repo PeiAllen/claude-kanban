@@ -73,8 +73,14 @@ extension OrchestraService {
         guard !clean.isEmpty else {
             throw OrchestraError.invalidParams("needs-input requires a question — one line stating what you need decided")
         }
-        guard let (saved, rev) = try? await store.update(t.id, { $0.pendingQuestion = clean })
-        else { throw OrchestraError.unknownTask(t.id.uuidString) }
+        // Stamp WHEN via the injected clock (`now`), so the fileTail turn-start fence has a declaration
+        // time to compare a Codex rollout line's own write time against — and so the whole thing is
+        // testable without wall-clock. Hoisted out of the `@Sendable` store.update closure so it doesn't
+        // capture the actor's `now`.
+        let declaredAt = now()
+        guard let (saved, rev) = try? await store.update(t.id, {
+            $0.pendingQuestion = PendingQuestion(text: clean, declaredAt: declaredAt)
+        }) else { throw OrchestraError.unknownTask(t.id.uuidString) }
         emit(.taskUpserted(saved), rev: rev)
         emitActivity(.command, saved, source, "needs input → “\(clean)”")
         return saved
