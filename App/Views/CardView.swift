@@ -288,31 +288,35 @@ struct CardView: View {
 
     // MARK: - L4 · subtree line
 
-    /// The card's subordinates, summarised. Today that is only the attached-agents eye, labelled so
-    /// the section reads as intentional rather than as a stray glyph. It gives way to the rows
-    /// themselves once the card expands — the summary and the detail never show at once.
+    /// The card's subordinates, summarised: stage-coloured segments (one per live lineage child, plus the
+    /// merged-green / dashed-planned slots the daemon counters carry) and the attached-agents eye
+    /// (`SubtreeSegments`). Shown whenever the card has a live subordinate OR non-zero progress counters —
+    /// so a root that has already SHIPPED all its children (no live subordinate, but `mergedChildren > 0`)
+    /// keeps its progress bar — and isn't currently expanded; it gives way to the peek rows once the card
+    /// (or a descendant) is selected, so the summary and the detail never show at once.
+    private var hasProgressCounters: Bool {
+        guard let ts = task.treeStat else { return false }
+        return ts.mergedChildren > 0 || ts.plannedChildren > 0
+    }
     @ViewBuilder private var subtreeLine: some View {
-        if model.attachedLiveness(of: task) != nil, model.expandedRows(for: task).isEmpty {
+        if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
-            HStack(spacing: 0) {
-                AttachedAgentsBadge(task: task)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 6)
+            SubtreeSegments(root: task).padding(.top, 6)
         }
     }
 
     // MARK: - Attached-agent rows (inline accordion)
 
-    /// The read-only reviewers embedded behind this card, revealed as compact rows INSIDE the card's
-    /// frame when the card (or one of its rows) is selected. `expandedRows` carries the reveal +
-    /// `/`-search gate, so this is empty (and the card renders as today) whenever it shouldn't expand.
+    /// The card's subordinates — lineage children AND attached reviewers — revealed as compact peek rows
+    /// INSIDE the card's frame when the card (or one of its descendants) is selected. `peekRows` carries
+    /// the reveal + `/`-search gate and the one-level-deeper indent depth, so this is empty (and the card
+    /// renders as today) whenever it shouldn't expand.
     @ViewBuilder private var attachedRows: some View {
-        let rows = model.expandedRows(for: task)
+        let rows = model.peekRows(of: task)
         if !rows.isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             VStack(spacing: 2) {
-                ForEach(rows) { agent in AttachedAgentRow(agent: agent) }
+                ForEach(rows, id: \.task.id) { row in PeekRow(task: row.task, depth: row.depth) }
             }
             .padding(.top, 6)
         }

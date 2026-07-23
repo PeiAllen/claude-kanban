@@ -128,6 +128,10 @@ final class KeyboardController {
         switch intent {
         case .moveSelection(let d): model.selectMove(d); model.focusZone = .board; return true
         case .moveRow(let d):       model.selectRowMove(d); return true
+        // → drills into the selected card's visible root (no-op unless it has lineage children);
+        // ← pops out one scope level. `drillInto` guards the optional and the leaf/reviewer-only case.
+        case .drillIn:              model.drillInto(model.cardLevelAnchor(model.selectedId)); model.focusZone = .board; return true
+        case .drillOut:             model.drillOut(); model.focusZone = .board; return true
         case .selectEnd(let f):     model.selectEnd(first: f); return true
         // Enter and `i` are the same verb: descend the keyboard into the selected card's terminal.
         case .openInspector:        model.enterTerminalZone(); return true

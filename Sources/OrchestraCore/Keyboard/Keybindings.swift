@@ -104,9 +104,13 @@ public struct VimKeybindings: Keybindings {
         case "k": return .moveSelection(.up)
         case "l": return .moveSelection(.right)
         // ↑/↓ (NSEvent charactersIgnoringModifiers) — the row axis, within a card's attached-row group.
-        // Left/right arrows (\u{F702}/\u{F703}) stay unbound so they pass through to the pty as today.
+        // ←/→ (\u{F702}/\u{F703}) — the SCOPE axis (slice 2b), mirroring the row axis one level up: →
+        // drills into the selected root's subtree, ← pops out one scope level. Bound only in the board
+        // context (this table), so a focused terminal still passes them straight through to the pty.
         case "\u{F700}": return .moveRow(.up)
         case "\u{F701}": return .moveRow(.down)
+        case "\u{F702}": return .drillOut
+        case "\u{F703}": return .drillIn
         case "H": return .carry(.left)
         case "L": return .carry(.right)
         case "G": return .selectEnd(first: false)

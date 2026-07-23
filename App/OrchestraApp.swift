@@ -637,6 +637,38 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
+    /// Render the slice-2b hierarchy surfaces headlessly (no daemon, no window, no Screen-Recording) —
+    /// the board's ScrollView columns can't be laid out by `ImageRenderer`, but the individual card /
+    /// banner components can, so this writes three PNGs into `dir` from the REAL `CardView` /
+    /// `SubtreeSegments` / `PeekRow` / `DrillHeader`: `23-hier-toplevel` (a root card collapsed → L4
+    /// stage segments + eye), `24-hier-peek` (the same root selected → five-zone peek rows replacing L4),
+    /// `25-hier-drill` (the drill breadcrumb + banner above the root's direct children). `ORCH_SNAPSHOT_HIER=<dir>`.
+    static func snapshotHierarchy(toDir dir: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        showAnatomy(model: model)                       // seeds the fixture incl. live-wake's subtree
+        guard let root = model.tasks.first(where: { $0.branch == "feat/live-wake" }) else { return }
+        func framed(_ v: some View, width: CGFloat = 440) -> some View {
+            v.padding(16).frame(width: width).background(theme.colBg)
+                .environmentObject(model).environment(\.theme, theme)
+                .preferredColorScheme(model.darkMode ? .dark : .light)
+        }
+        // 23 — top level: the root card collapsed shows its stage-segment bar + eye.
+        model.selectedId = nil
+        renderPNG(framed(CardView(task: root)), to: "\(dir)/23-hier-toplevel.png")
+        // 24 — peek: selecting the root reveals its subordinates as five-zone rows in place of L4.
+        model.selectedId = root.id
+        renderPNG(framed(CardView(task: root)), to: "\(dir)/24-hier-peek.png")
+        // 25 — drill: the breadcrumb + banner over the root's direct children (the scoped board).
+        model.selectedId = nil
+        model.drillInto(root.id)
+        let kids = model.visibleTasks
+        renderPNG(framed(VStack(alignment: .leading, spacing: 10) {
+            DrillHeader()
+            ForEach(kids) { CardView(task: $0) }
+        }, width: 820), to: "\(dir)/25-hier-drill.png")
+    }
+
     // MARK: - Card anatomy (slice 2a) fixtures
 
     /// Every card state the four-line anatomy has to survive, as one board. Used windowed
@@ -674,7 +706,8 @@ private struct DebugLaunchHook: ViewModifier {
             mk("live-wake-delivery", "feat/live-wake", .impl, .live(.running), 0,
                note: "Wave 2/4 — lease/claim delivery",
                diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9),
-               tree: TreeStat(state: .stale, behind: 3), ageMinutes: 12),
+               tree: TreeStat(state: .stale, behind: 3, mergedChildren: 4, plannedChildren: 10),
+               ageMinutes: 12),
             // Desc only (the volatile blurb), no note — and a long title that has to wrap.
             mk("fix/the-startup-abort-misclassification-that-marks-cards-dead", "fix/startup-abort",
                .impl, .live(.running), 1, desc: "Reproducing the <1s exit path under a fake clock",
@@ -708,6 +741,26 @@ private struct DebugLaunchHook: ViewModifier {
             mk("board-redesign research", "", .plan, .live(.running), 6,
                desc: "Surveying agent-tree UIs", ageMinutes: 4,
                origin: .borrowed, cwd: DemoConfig.notesRoot),
+            // live-wake-delivery's SUBTREE (slice 2b hierarchy): four PR children across the macro-phases
+            // + two attached wave reviewers, all on feat/live-wake. At the top level they embed (roots
+            // only) and the root shows a stage-segment bar + eye; selecting the root reveals them as peek
+            // rows; drilling the root scopes the board to just these. (ORCH_ANATOMY=peek/drill below.)
+            mk("pr/codex-clean-restart", "pr/codex-restart", .plan, .live(.running), 7,
+               desc: "Codex clean-restart launch path", ageMinutes: 3, parentBranch: "feat/live-wake"),
+            mk("pr/lease-claim", "pr/lease-claim", .impl, .live(.running), 8,
+               desc: "Lease/claim delivery core",
+               diff: DiffStat(filesChanged: 8, insertions: 188, deletions: 40), ageMinutes: 47,
+               parentBranch: "feat/live-wake"),
+            mk("pr/claude-channels", "pr/claude-channels", .impl, .live(.waiting(.permission)), 9,
+               desc: "MCP channel push wiring", ageMinutes: 9, parentBranch: "feat/live-wake"),
+            mk("pr/wake-route", "pr/wake-route", .review, .live(.waiting(.humanTurn)), 10,
+               desc: "Wake endpoint + route ladder",
+               diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28), ageMinutes: 21,
+               parentBranch: "feat/live-wake"),
+            mk("wave-2 review · claude", "review/wave2-claude", .impl, .live(.running), 11,
+               ageMinutes: 6, access: .readOnly, parentBranch: "feat/live-wake"),
+            mk("wave-2 review · codex", "review/wave2-codex", .impl, .live(.running), 12,
+               ageMinutes: 6, access: .readOnly, parentBranch: "feat/live-wake"),
         ]
         model.onboarded = true
         model.showOnboarding = false
@@ -715,8 +768,12 @@ private struct DebugLaunchHook: ViewModifier {
         // (dimmed to 72%) — correct behaviour, but it would misreport every colour in a fixture whose
         // whole job is to show what the anatomy looks like on a live board.
         model.connectionState = .live
-        if ProcessInfo.processInfo.environment["ORCH_ANATOMY"] == "expanded" {
-            model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
+        let liveWake = model.tasks.first { $0.branch == "feat/live-wake" }?.id
+        switch ProcessInfo.processInfo.environment["ORCH_ANATOMY"] {
+        case "expanded": model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
+        case "peek":     model.selectedId = liveWake                       // reveal the root's peek rows
+        case "drill":    if let id = liveWake { model.drillInto(id) }      // scope the board to its subtree
+        default:         break
         }
     }
 
@@ -889,6 +946,10 @@ private struct DebugLaunchHook: ViewModifier {
             }
             if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_LADDER"] {
                 DebugLaunchHook.snapshotLadder(to: path, model: model)
+                exit(0)
+            }
+            if let dir = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_HIER"] {
+                DebugLaunchHook.snapshotHierarchy(toDir: dir, model: model)
                 exit(0)
             }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {

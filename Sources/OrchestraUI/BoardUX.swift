@@ -32,6 +32,20 @@ public final class BoardUX: BoardStore {
     @Published public var showHelp = false
     /// Non-nil while the `/` card filter is active; the empty string means "field open, no query yet".
     @Published public var searchQuery: String? = nil
+
+    // MARK: drill scope (slice 2b) — pure app-local view state
+
+    /// The root whose subtree the board is currently scoped to, or `nil` at the top level. Drilling
+    /// re-homes the columns to one root's direct children (`isEmbedded` reads this). The drilled root
+    /// itself leaves the columns (it becomes the `DrillBanner`). Recursive: a nested drill points this
+    /// deeper. Purely app-local — nothing daemon-side, no persistence.
+    @Published public private(set) var drillScope: UUID? = nil
+    /// The durable identity of the drilled root: its `(repo, branch)`. The root's *branch* is the thing
+    /// that persists across card succession (planning card → orchestrator), so the reaper re-resolves
+    /// `drillScope` from this key whenever `tasks` changes — surviving the owning card being replaced,
+    /// and clearing the scope only when no live card owns the branch. See `reapDrillScope`.
+    private var drillScopeKey: BranchKey?
+    struct BranchKey: Hashable { let repo: String; let branch: String }
     /// The inspector's Agent/Diff mode, kept *per card* (keyed by task id) so switching cards preserves
     /// each card's own choice instead of carrying one global mode everywhere. Defaults to `.agent`.
     @Published public var inspectorModeByCard: [UUID: InspectorMode] = [:]
@@ -70,20 +84,68 @@ public final class BoardUX: BoardStore {
         selectedId = BoardNavigator.end(visibleTasks, selected: cardLevelAnchor(selectedId), first: first)
     }
 
-    /// Desktop reveal gate: a target expands its rows when it (or one of its rows) is selected, OR when a
-    /// `/` search is active and one of its rows matches — so a matching reviewer surfaces in place rather
-    /// than as a standalone card. Both the render and the `↑`/`↓` walk read this, so they never disagree.
+    /// Desktop reveal gate (slice 2b): a root expands its subordinate rows when it (or one of its
+    /// descendants) is selected — `revealsPeek`, generic over lineage children AND attached reviewers,
+    /// not attached-only — OR when a `/` search is active and a descendant matches (so the match surfaces
+    /// in place). Both the render and the `↑`/`↓` walk read this, so they never disagree.
     override func showsInlineRows(_ target: Task) -> Bool {
-        revealsAttached(target) || revealsSearchMatchRow(target)
+        revealsPeek(target) || revealsSearchMatchRow(target)
     }
 
     /// The `↑`/`↓` walk sequence — a SINGLE group, never crossing cards: the anchor card followed by
-    /// its own revealed rows. `expandedRows` carries the `showsInlineRows` gate, so a card with no
-    /// revealed rows yields a 1-element list ⇒ arrows clamp/no-op. Empty when nothing is selected.
+    /// its own revealed peek rows (lineage children + attached reviewers, flattened). `expandedRows`
+    /// carries the `showsInlineRows` gate, so a card with no revealed rows yields a 1-element list ⇒
+    /// arrows clamp/no-op. Empty when nothing is selected.
     func groupSequence() -> [UUID] {
         guard let anchorId = cardLevelAnchor(selectedId),
               let anchor = tasks.first(where: { $0.id == anchorId }) else { return [] }
         return [anchorId] + expandedRows(for: anchor).map(\.id)
+    }
+
+    // MARK: peek rows (slice 2b) — the generalized inline-row reveal
+
+    /// The ids on the path from the current selection up to its forest root (the selection plus its
+    /// hierarchy ancestors), cycle-safe — the `insert(_).inserted` guard also breaks a malformed cycle.
+    /// A subtree in the peek list expands exactly when its node is in this set.
+    private func selectionAncestry() -> Set<UUID> {
+        guard let sel = selectedId, var cur = tasks.first(where: { $0.id == sel }) else { return [] }
+        var set: Set<UUID> = [cur.id]
+        while let p = hierarchyParent(of: cur), set.insert(p.id).inserted { cur = p }
+        return set
+    }
+
+    /// `target`'s peek rows should be revealed: it has subordinates AND it is on the selection's ancestry
+    /// (itself selected, or an ancestor of the selected card — including a selected attached reviewer or a
+    /// selected deep descendant). Generic replacement for the attached-only `revealsAttached`.
+    public func revealsPeek(_ target: Task) -> Bool {
+        guard !subordinates(of: target).isEmpty else { return false }
+        return selectionAncestry().contains(target.id)
+    }
+
+    /// The subordinate rows to render inside `target`, each with an indent DEPTH. Direct children at
+    /// depth 0; a child expands its OWN subordinates one level deeper iff it is on the selection path (or,
+    /// under `/` search, on the path to a match). A stable pre-order flatten, cycle-safe — so
+    /// `groupSequence`/`moveRow` walk the list and the depth only drives indentation.
+    public func peekRows(of target: Task) -> [(task: Task, depth: Int)] {
+        guard showsInlineRows(target) else { return [] }
+        let expand = selectionAncestry().union(searchExpansionAncestry())
+        var rows: [(task: Task, depth: Int)] = []
+        var visited: Set<UUID> = [target.id]
+        func add(_ node: Task, _ depth: Int) {
+            for child in subordinates(of: node) where visited.insert(child.id).inserted {
+                rows.append((task: child, depth: depth))
+                if expand.contains(child.id) { add(child, depth + 1) }
+            }
+        }
+        add(target, 0)
+        return rows
+    }
+
+    /// Desktop replaces the base attached-only `expandedRows` with the full subordinate set (lineage +
+    /// attached), so `groupSequence` and any `[Task]` consumer walk the whole peek group. iOS keeps the
+    /// base (attached-only) — it has no scope/peek yet (slice 5).
+    override public func expandedRows(for target: Task) -> [Task] {
+        peekRows(of: target).map(\.task)
     }
 
     /// `↑`/`↓` — walk within the selected card's attached-row group only (never between cards; that
@@ -275,10 +337,16 @@ public final class BoardUX: BoardStore {
     public var searchMatchIds: [UUID] {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
         var ids: [UUID] = []
+        // In a drill, the scope root is the banner (not a visible card), so its OWN attached reviewers —
+        // hosted as banner rows — would otherwise be unreachable by search. Surface their matches first.
+        for r in drillHostedRows() where matchesSearch(r.task, query: q) { ids.append(r.task.id) }
         for card in orderedVisibleCards {
             if matchesSearch(card, query: q) { ids.append(card.id) }
-            for agent in attachedAgents(of: card) where matchesSearch(agent, query: q) {
-                ids.append(agent.id)                       // embedded reviewer hit, surfaced under its root
+            // Any DESCENDANT (embedded lineage child or attached reviewer, at any depth) matching the
+            // query surfaces under its visible root — a deep grandchild match is reachable via n/N and
+            // its ancestor path auto-expands (`searchExpansionAncestry`).
+            for d in descendants(of: card) where matchesSearch(d, query: q) {
+                ids.append(d.id)
             }
         }
         return ids
@@ -291,21 +359,43 @@ public final class BoardUX: BoardStore {
         return matchesSearch(t, query: q)
     }
 
-    /// Desktop embeds every attached read-only agent behind its target, ALWAYS — a reviewer is a subcard
-    /// (an inline row), never a standalone column card, even under a `/` search. A search surfaces a
-    /// matching reviewer IN PLACE: its target auto-reveals the row (`showsInlineRows` →
-    /// `revealsSearchMatchRow`) and the hit is reachable via `n`/`N` (`searchMatchIds` includes it).
-    /// Fail-open guard: a malformed read-only cycle has `isAttached == true` but `attachedRoot == nil`;
-    /// embedding it would hide every member behind another hidden member, so render it as a board card.
+    /// The scope-aware embedding gate (slice 2b). Three rungs, in order:
+    ///  1. **Fail open on a malformed lineage.** A cycle has no real root (`hierarchyRoot == nil`) —
+    ///     embedding both members would hide each behind the other, so render them as citizens. Subsumes
+    ///     the old read-only-cycle guard (`attachedRoot == nil`), now over the unified relation.
+    ///  2. **Attached read-only agents ALWAYS embed** (a reviewer is a subcard behind its target — the
+    ///     peek row / eye — never a column card), in EVERY scope, even under `/` search (the search
+    ///     surfaces it in place via `showsInlineRows`, it does NOT un-embed). This is the invariant the
+    ///     plan-review BLOCKER protected: attachment must not become citizenship when we drill the target.
+    ///  3. **Lineage citizenship.** A non-attached card is a column citizen of the CURRENT scope iff its
+    ///     LINEAGE parent is the scope anchor — at top level (`drillScope == nil`) that's the forest roots
+    ///     and standalones; in a drill it's the root's direct children. Deeper descendants and other
+    ///     subtrees embed (revealed via peek, or reached by drilling).
     override func isEmbedded(_ task: Task) -> Bool {
-        attachedRoot(of: task) != nil
+        guard hierarchyRoot(of: task) != nil else { return false }   // 1
+        if isAttached(task) { return true }                          // 2
+        return lineageParent(of: task)?.id != drillScope             // 3
     }
 
-    /// A `/` search is active and one of `target`'s attached rows matches it — the target then reveals
-    /// those rows (so the hit shows in place) and stays undimmed. Pure over task fields.
+    /// A `/` search is active and some DESCENDANT of `target` (any depth) matches it — the target then
+    /// reveals the path to the hit (so it shows in place) and stays undimmed. Pure over task fields.
     public func revealsSearchMatchRow(_ target: Task) -> Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return false }
-        return attachedAgents(of: target).contains { matchesSearch($0, query: q) }
+        return descendants(of: target).contains { matchesSearch($0, query: q) }
+    }
+
+    /// Under `/` search, the ancestor ids of every matching card — so a deep match's path auto-expands in
+    /// `peekRows` (the root reveals, and each intermediate node expands down to the match). Empty when no
+    /// search is active. Cycle-safe.
+    private func searchExpansionAncestry() -> Set<UUID> {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
+        var set: Set<UUID> = []
+        for t in tasks where !t.archived && matchesSearch(t, query: q) {
+            var cur = t
+            guard set.insert(cur.id).inserted else { continue }
+            while let p = hierarchyParent(of: cur), set.insert(p.id).inserted { cur = p }
+        }
+        return set
     }
     /// A search filter is active (a non-empty committed query).
     public var searchActive: Bool {
@@ -320,6 +410,94 @@ public final class BoardUX: BoardStore {
         let cur = selectedId.flatMap { ids.firstIndex(of: $0) }
         let next = cur.map { ($0 + step + ids.count) % ids.count } ?? 0
         selectedId = ids[next]
+    }
+
+    // MARK: drill actions (slice 2b)
+
+    /// Re-scope the board to the subtree of `id`. No-op unless the card exists and has ≥1 LINEAGE child:
+    /// an attached-reviewer-only card (or a leaf) has nothing to re-scope to, and a drill into it would
+    /// just show an empty board — its reviewers are reached by peek, not by drilling.
+    public func drillInto(_ id: UUID?) {
+        guard let id, let card = tasks.first(where: { $0.id == id }), hasLineageChildren(card) else { return }
+        drillScopeKey = BranchKey(repo: card.repo, branch: card.branch)
+        drillScope = id
+    }
+
+    /// Pop out one scope level: to the drilled root's own parent (deeper drills climb one at a time),
+    /// or to the top level at a forest root. Lands the selection on the root we just exited.
+    public func drillOut() {
+        guard let scope = drillScope, let card = tasks.first(where: { $0.id == scope }) else {
+            drillScope = nil; drillScopeKey = nil; return
+        }
+        if let parent = hierarchyParent(of: card) {
+            drillScopeKey = BranchKey(repo: parent.repo, branch: parent.branch)
+            drillScope = parent.id
+        } else {
+            drillScope = nil; drillScopeKey = nil
+        }
+        selectedId = scope
+    }
+
+    /// Jump straight to a specific scope on the breadcrumb path (or the top level with `nil`).
+    public func setDrillScope(_ id: UUID?) {
+        guard let id, let card = tasks.first(where: { $0.id == id }) else {
+            drillScope = nil; drillScopeKey = nil; return
+        }
+        drillScopeKey = BranchKey(repo: card.repo, branch: card.branch)
+        drillScope = id
+    }
+
+    /// The forest-root → current-scope chain (breadcrumb order), cycle-safe. Empty at the top level.
+    public var scopePath: [Task] {
+        guard let scope = drillScope, let card = tasks.first(where: { $0.id == scope }) else { return [] }
+        var path = [card]
+        var current = card
+        var visited: Set<UUID> = [card.id]
+        while let parent = hierarchyParent(of: current), visited.insert(parent.id).inserted {
+            path.insert(parent, at: 0)
+            current = parent
+        }
+        return path
+    }
+
+    /// The card the board is scoped to right now (the `DrillBanner`'s subject), or `nil` at top level.
+    public var drillScopeCard: Task? { drillScope.flatMap { id in tasks.first { $0.id == id } } }
+
+    /// The rows the `DrillHeader` hosts inline (slice 2b): the drilled root's OWN direct subordinates that
+    /// are embedded in its scope — i.e. its attached reviewers (its lineage children are the board
+    /// columns). The root became the banner rather than a peekable card, so hosting them here is the only
+    /// way they stay reachable in their target's drill (the reachability invariant). Empty at top level.
+    public func drillHostedRows() -> [(task: Task, depth: Int)] {
+        guard let root = drillScopeCard else { return [] }
+        return subordinates(of: root).filter { isEmbedded($0) }.map { (task: $0, depth: 0) }
+    }
+
+    /// Re-resolve `drillScope` from its durable `(repo, branch)` key after any change to `tasks`. Root
+    /// identity follows the BRANCH across card succession (planning card → orchestrator), so when the
+    /// scoped card is replaced by its successor we retarget to the new owner rather than losing the drill;
+    /// when the branch has no live owner at all (root archived / merged away) we clear to the top level so
+    /// the board never strands on a scope whose banner card is gone. Public so the reap is directly tested.
+    public func reapDrillScope() {
+        guard let key = drillScopeKey else { drillScope = nil; return }
+        // Deterministic winner among co-located cards (oldest by (createdAt, id)) — the same total order
+        // `BoardTree.parentCard` uses — so a handoff window where two live cards briefly share a
+        // (repo, branch) can't flip the banner target across snapshots.
+        let owner = tasks.filter {
+            !$0.archived && $0.origin == .worktree && $0.repo == key.repo && $0.branch == key.branch
+        }.min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+        drillScope = owner?.id
+        if owner == nil { drillScopeKey = nil }
+    }
+
+    /// Reap after a live event (streaming path) and after a wholesale reconcile — `refresh()` assigns
+    /// `tasks` directly and never routes through `apply`, so both hooks are required (mirrors iOS).
+    override func apply(_ event: Event) {
+        super.apply(event)
+        reapDrillScope()
+    }
+    override public func refresh() async {
+        await super.refresh()
+        reapDrillScope()
     }
 
     // f link-hints: assign a short label to every visible card; the controller matches typed keys.

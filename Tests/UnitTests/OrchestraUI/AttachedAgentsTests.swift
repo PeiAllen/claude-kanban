@@ -140,25 +140,48 @@ import Foundation
 
     // MARK: liveness roll-up
 
-    @Test func liveness_greenIncludesBeingBorn_amberOnWaitingOrDead() {
+    @Test func liveness_threeTier_needsAttentionDominates_greenDominatesIdle() {
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x")
         func reviewer(_ id: String, _ phase: Phase) -> Task {
             worktree(id, branch: "r\(id)", access: .readOnly, parentBranch: "feat/x", phase: phase)
         }
+        // Running + being-born → green.
         m.tasks = [target, reviewer("02", .live(.running)),
                    reviewer("03", .launching), reviewer("04", .creatingWorktree)]
-        #expect(m.attachedLiveness(of: target) == .allRunning)
+        #expect(m.attachedLiveness(of: target) == .running)
 
+        // GREEN DOMINATES IDLE: a concluded (humanTurn) reviewer beside a running one stays green —
+        // a finished reviewer is idle, NOT attention. (This is the bug the old test enshrined.)
         m.tasks = [target, reviewer("02", .live(.running)),
                    reviewer("03", .live(.waiting(.humanTurn)))]
+        #expect(m.attachedLiveness(of: target) == .running)
+
+        // All concluded, none running, none blocked → idle (grey), still not amber.
+        m.tasks = [target, reviewer("02", .live(.waiting(.humanTurn))),
+                   reviewer("03", .live(.waiting(.humanTurn)))]
+        #expect(m.attachedLiveness(of: target) == .idle)
+
+        // NEEDS-YOU-NOW DOMINATES: a permission block ambers even beside a running reviewer.
+        m.tasks = [target, reviewer("02", .live(.running)),
+                   reviewer("03", .live(.waiting(.permission)))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
+        // Dead is needs-you-now too.
         m.tasks = [target, reviewer("02", .dead(.sessionVanished))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
+        // None attached → nil (badge hidden).
         m.tasks = [target]
         #expect(m.attachedLiveness(of: target) == nil)
+    }
+
+    @Test func livenessTier_perAgentClassification() {
+        #expect(BoardStore.AttachedLiveness(phase: .live(.running)) == .running)
+        #expect(BoardStore.AttachedLiveness(phase: .launching) == .running)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.humanTurn))) == .idle)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.permission))) == .needsAttention)
+        #expect(BoardStore.AttachedLiveness(phase: .dead(.sessionVanished)) == .needsAttention)
     }
 
     // MARK: base BoardStore (iOS) never strands
@@ -238,13 +261,22 @@ import Foundation
         #expect(m.revealsAttached(a))                                       // …reveals its target's rows
     }
 
-    @Test func readWrite_unaffected_byEmbedding() {
+    @Test func readWriteChild_isNeverAttached_butEmbedsAsNonRootAtTopLevel() {
+        // A read-write lineage child is NEVER an attached agent — attachment is a read-only relation, so
+        // the target has no reviewers to embed. (This is the invariant the old readWrite_unaffected test
+        // protected.) What CHANGED in slice 2b: the roots-only top level now embeds the child as a
+        // non-root DESCENDANT (revealed via peek under its root), not as a column citizen — so it leaves
+        // `cards(in:)` but stays reachable through its visible root (`cardLevelAnchor`). Full scope
+        // behaviour is covered in BoardHierarchyScopeTests.
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x", column: .impl)
         let rw = worktree("02", branch: "feat/x2", access: .readWrite, parentBranch: "feat/x", column: .impl)
         m.tasks = [target, rw]
-        #expect(!m.isEmbedded(rw))
-        #expect(m.cards(in: .impl).contains { $0.id == rw.id })
+        #expect(!m.isAttached(rw))                                  // not a reviewer
+        #expect(m.attachedAgents(of: target).isEmpty)              // target embeds no attached agents
+        #expect(m.isEmbedded(rw))                                  // roots-only: the child embeds…
+        #expect(!m.cards(in: .impl).contains { $0.id == rw.id })   // …so it isn't a column card…
+        #expect(m.cardLevelAnchor(rw.id) == target.id)            // …but it's reachable via its root
     }
 
     // MARK: nested chain — flatten via attachedRoot (Codex BLOCKER)
@@ -445,5 +477,81 @@ import Foundation
         #expect(m.searchMatchIds.contains(r1.id))            // and reachable via n/N
         #expect(m.cardLevelAnchor(r1.id) == c.id)            // both climb to the visible root
         #expect(m.cardLevelAnchor(r2.id) == c.id)
+    }
+
+    // MARK: peek rows — generalized reveal over lineage children (slice 2b)
+
+    @Test func rootWithOnlyReadWriteChildRevealsOnSelection() {
+        // The MAJOR fix: the old reveal only recognised attached agents, so a root whose only subordinate
+        // is a read-write lineage child stayed collapsed. Now selecting it reveals the child as a peek row.
+        let m = BoardModel(platform: .noop)
+        let root = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-pr", access: .readWrite, parentBranch: "feat/x", column: .plan)
+        m.tasks = [root, child]
+        #expect(!m.revealsPeek(root))                        // nothing selected → collapsed
+        m.selectedId = root.id
+        #expect(m.revealsPeek(root))
+        #expect(m.peekRows(of: root).map(\.task.id) == [child.id])
+        #expect(m.peekRows(of: root).first?.depth == 0)
+    }
+
+    @Test func peekExpandsSelectedChildOneLevelDeeper() {
+        // Selecting a grandchild expands the path to it: the child row (depth 0) followed by the
+        // grandchild (depth 1) — the "reveals them one level down when selected" recursion.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let grand = worktree("03", branch: "feat/x-g", parentBranch: "feat/x-c", column: .review)
+        m.tasks = [root, child, grand]
+        m.selectedId = grand.id
+        let rows = m.peekRows(of: root)
+        #expect(rows.map(\.task.id) == [child.id, grand.id])
+        #expect(rows.map(\.depth) == [0, 1])
+    }
+
+    @Test func groupSequenceWalksPeekRows() {
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let rev   = worktree("05", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        m.tasks = [root, child, rev]
+        m.selectedId = root.id
+        #expect(m.groupSequence() == [root.id, child.id, rev.id])   // anchor + lineage-then-attached rows
+    }
+
+    @Test func selectedChildStaysOnVisibleRow() {
+        // Esc-out-of-terminal-lands-on-row: an embedded child, once selected, remains a revealed row and
+        // the card-axis anchor is its visible root, so `j`/`k` step off the root, not into the void.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        m.tasks = [root, child]
+        m.selectedId = child.id
+        #expect(m.peekRows(of: root).map(\.task.id).contains(child.id))   // row still drawn
+        #expect(m.cardLevelAnchor(child.id) == root.id)                  // card-axis anchor is the root
+    }
+
+    // MARK: search reveals subordinates in place (slice 2b, Task 5)
+
+    @Test func searchMatchOnDeepGrandchildRevealsAncestorPath() {
+        // R → C → G, no selection. Searching G's title surfaces G (not just C) and auto-expands the path.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let grand = worktree("03", branch: "feat/x-g", parentBranch: "feat/x-c", column: .review)
+        m.tasks = [root, child, grand]
+        m.searchQuery = "card-03"                            // matches ONLY the grandchild
+        #expect(m.searchMatchIds.contains(grand.id))         // deep match reachable via n/N
+        #expect(m.revealsSearchMatchRow(root))               // root reveals the path
+        #expect(m.peekRows(of: root).map(\.task.id) == [child.id, grand.id])   // path expanded to the match
+    }
+
+    @Test func searchMatchIdsOrderChildAfterRoot() {
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "match-root", column: .impl)
+        let child = worktree("02", branch: "match-child", parentBranch: "match-root", column: .impl)
+        m.tasks = [root, child]
+        m.searchQuery = "match-"                             // matches both branch names
+        #expect(m.searchMatchIds == [root.id, child.id])     // child ordered right after its root
     }
 }

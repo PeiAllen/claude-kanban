@@ -37,6 +37,8 @@ public enum GoTarget: String, Sendable, CaseIterable, Equatable {
 public enum KeyIntent: Equatable, Sendable {
     case moveSelection(Direction)   // bare hjkl — move selection within a pane
     case moveRow(Direction)         // ↑/↓ — move within the selected card's attached-row group
+    case drillIn                    // → — enter the selected root's subtree (re-scope the board)
+    case drillOut                   // ← — pop out one drill scope level (to the parent scope / top)
     case selectEnd(first: Bool)     // gg / G — first/last card of the column
     case openInspector              // Enter
     case closeOrClear               // Esc — peel the frontmost thing
