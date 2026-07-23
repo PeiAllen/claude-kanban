@@ -32,7 +32,9 @@ extension OrchestraService {
     /// Non-`.worktree` cards resolve to `nil`. Returns the current stat.
     @discardableResult
     public func recomputeDiffStat(_ id: UUID, base: DiffBase? = nil) async -> DiffStat? {
-        guard let t = await store.get(id) else { return nil }
+        // Archived gate: cancellation is cooperative, so a debounce cancelled just past its sleep
+        // check still lands here — it must not fork git for, or write a stat onto, a dead card.
+        guard let t = await store.get(id), !t.archived else { return nil }
         var newStat: DiffStat? = nil
         if t.origin == .worktree {
             do {
@@ -68,14 +70,14 @@ extension OrchestraService {
     /// **not** a periodic timer. Called from the normalized `report()` funnel (adapter-agnostic: it
     /// sees only that the card had activity, never which tool ran).
     func scheduleDiffStat(_ id: UUID) {
-        diffStatDebounce[id]?.cancel()
-        diffStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
-            try? await clock.sleep(for: .milliseconds(750))
-            if _Concurrency.Task.isCancelled { return }
-            await self?.recomputeDiffStat(id)
-            await self?.clearDiffStatDebounce(id)
+        _ = arm(id, .diffStat) { token in
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .milliseconds(750))
+                if _Concurrency.Task.isCancelled { return }
+                await self?.recomputeDiffStat(id)
+                // Token-fenced: a task superseded mid-recompute must not nil its replacement's slot.
+                await self?.clearSlot(id, .diffStat, ifToken: token)
+            }
         }
     }
-
-    private func clearDiffStatDebounce(_ id: UUID) { diffStatDebounce[id] = nil }
 }

@@ -234,6 +234,20 @@ struct WorktreeRegistryTests {
         #expect(stub.removed.contains(w.path))    // last holder gone ⇒ removed
     }
 
+    @Test func test_releaseUnknownCardDropsItsInflightEntries() async throws {
+        let (reg, stub, _) = makeRegistry()
+        let a = UUID(), b = UUID()
+        let w = try await reg.ensure(repo: "app", branch: "ghosthold", cardId: a)  // creates; inflight {a}
+        _ = try await reg.ensure(repo: "app", branch: "ghosthold", cardId: b)      // adopts; inflight {a,b}
+        // B's spawn rolled back so hard it never reached the store. Its release must STILL drop
+        // B's in-flight hold — the unknown-card early-return runs before the `defer` that would,
+        // so without the scan the hold is permanent and every sibling release below is blocked.
+        let unknown = try await reg.release(cardId: b, cards: [card(a, cwd: w.path)], force: false)
+        #expect(unknown == .noop)
+        try await reg.release(cardId: a, cards: [card(a, cwd: w.path)], force: false)
+        #expect(stub.removed.contains(w.path))    // no phantom in-flight sibling ⇒ removable
+    }
+
     @Test func test_releaseNeverRemovesOutsideOwnedRoots() async throws {
         let (reg, stub, base) = makeRegistry()
         let a = UUID()

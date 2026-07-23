@@ -73,6 +73,7 @@ extension OrchestraService {
             // handing over. Arming after the enqueue left a window across two awaits in which that
             // reconcile saw an un-armed `.mergeRequested` card and enqueued a second copy of the same
             // request. (Always re-arm: a re-send after the loop stopped must restart it.)
+            ensureRuntime(for: child)   // post-restart, this verb can be the child's first touch
             startMergeRequestNudge(childId: child.id)
             if !resuming {
                 try? await inbox.enqueue(parentCard.id, Self.handoverText(child: child, parent: target),
@@ -141,6 +142,7 @@ extension OrchestraService {
         // Arm FIRST — see the note in `mergeRequest`. The guard above and this arm are both synchronous on
         // the actor, so two concurrent recomputes of the same card cannot both pass the guard and both
         // enqueue; arming after the awaits below left exactly that window.
+        ensureRuntime(for: child)   // post-restart, the handover can be the child's first touch
         startMergeRequestNudge(childId: childId)
         try? await inbox.enqueue(owner.id, Self.handoverText(child: child, parent: link.parent),
                                  dedupKey: Self.handoverDedupKey(childId))
@@ -159,25 +161,25 @@ extension OrchestraService {
     /// re-arms every pending card at boot, so an in-memory counter would reset on each restart and the cap
     /// would never fire.
     func startMergeRequestNudge(childId: UUID) {
-        mergeRequestNudge[childId]?.cancel()
-        // Generation fence, as `startRemoteWatch` carries (`remoteWatchGen`). `cancel()` does not abort a
-        // tick already suspended inside `reNudgeMergeRequest`, so a superseded loop still runs to completion:
-        // without this its terminal cleanup would null the slot holding the NEWER task, orphaning a live,
-        // uncancellable loop. cancel+bump+install has no `await`, so it is atomic on the actor.
-        let gen = (mergeRequestNudgeGen[childId] ?? 0) + 1
-        mergeRequestNudgeGen[childId] = gen
-        // `self` is re-acquired PER HOP, never hoisted above the loop: a hoisted `guard let self` would hold
-        // a strong ref across the sleep (~all of the loop's life) and the service could never deallocate.
-        mergeRequestNudge[childId] = _Concurrency.Task { [weak self, clock] in
-            while !_Concurrency.Task.isCancelled {
-                guard let sent = await self?.nudgesSent(childId),
-                      let base = await self?.mergeRequestNudgeInterval else { return }
-                try? await clock.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
-                if _Concurrency.Task.isCancelled { return }
-                guard let stop = await self?.reNudgeMergeRequest(childId, gen: gen) else { return }
-                if stop { break }                     // no longer pending / parent gone / superseded / gave up
+        // Arming-token fence (see `CardRuntime.Armed`): `arm` cancels the predecessor and mints a
+        // process-unique token. `cancel()` does not abort a tick already suspended inside
+        // `reNudgeMergeRequest`, so a superseded loop still runs to completion — every state touch it
+        // makes is token-gated, and its terminal `clearSlot(ifToken:)` no-ops once superseded. Arm +
+        // install has no `await`, so it is atomic on the actor. No runtime entry (archived) ⇒ no arm.
+        // `self` is re-acquired PER HOP, never hoisted above the loop: a hoisted `guard let self` would
+        // hold a strong ref across the sleep and the service could never deallocate.
+        _ = arm(childId, .mergeRequestNudge) { token in
+            _Concurrency.Task { [weak self, clock] in
+                while !_Concurrency.Task.isCancelled {
+                    guard let sent = await self?.nudgesSent(childId),
+                          let base = await self?.mergeRequestNudgeInterval else { return }
+                    try? await clock.sleep(for: OrchestraService.nudgeDelay(base: base, attempt: sent))
+                    if _Concurrency.Task.isCancelled { return }
+                    guard let stop = await self?.reNudgeMergeRequest(childId, token: token) else { return }
+                    if stop { break }                 // no longer pending / parent gone / superseded / gave up
+                }
+                await self?.clearSlot(childId, .mergeRequestNudge, ifToken: token)
             }
-            await self?.clearMergeRequestNudge(childId, gen: gen)
         }
     }
 
@@ -186,9 +188,9 @@ extension OrchestraService {
 
     /// One re-nudge tick. Returns `true` when the loop should STOP (superseded by a re-arm / child no longer
     /// waiting / parent gone / cap reached).
-    func reNudgeMergeRequest(_ childId: UUID, gen: Int) async -> Bool {
+    func reNudgeMergeRequest(_ childId: UUID, token: UInt64) async -> Bool {
         // A superseded (but still-running) loop is a ghost: it must not nudge or count.
-        guard mergeRequestNudgeGen[childId] == gen else { return true }
+        guard runtime[childId]?.tasks[.mergeRequestNudge]?.token == token else { return true }
         guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
               child.treeStat?.state == .mergeRequested,
               let link = await lineage.read(repo: child.repo, branch: child.branch) else { return true }
@@ -205,7 +207,7 @@ extension OrchestraService {
         // Re-check before any side effect: the entry guard is stale by now (we suspended in `store.get`,
         // `lineage.read`, `store.all`). A supersession inside the enqueue below still costs one duplicate
         // reminder — that send can't be un-made — but the post-wake re-check keeps it out of the state.
-        guard mergeRequestNudgeGen[childId] == gen else { return true }
+        guard runtime[childId]?.tasks[.mergeRequestNudge]?.token == token else { return true }
 
         let prior = child.treeStat?.nudges ?? 0
         let cap = mergeRequestNudgeCap
@@ -222,8 +224,9 @@ extension OrchestraService {
 
         // Re-check AFTER the send: the fence, not the count, is the authority. `nudges == prior` is ABA-prone
         // at `prior == 0` (a freshly re-armed request also has 0), so a ghost tick could otherwise pass the CAS
-        // and steal a reminder from a brand-new request. The generation is unique per arming and cannot ABA.
-        guard mergeRequestNudgeGen[childId] == gen else { return true }
+        // and steal a reminder from a brand-new request. The arming token is unique per arming — for the
+        // process's whole life, across archive→reopen — and cannot ABA.
+        guard runtime[childId]?.tasks[.mergeRequestNudge]?.token == token else { return true }
 
         if sent >= cap {
             return await giveUp(childId, sent: sent, prior: prior, link: link, child: child)
@@ -314,17 +317,10 @@ extension OrchestraService {
     }
 
     func stopMergeRequestNudge(_ id: UUID) {
-        mergeRequestNudge[id]?.cancel()
-        mergeRequestNudge[id] = nil
-        // Bump: invalidates any in-flight tick/cleanup from the loop we just cancelled, so it can't nudge
-        // after a `shipped`/`synced`/archive, nor null a task a later re-arm installs.
-        mergeRequestNudgeGen[id] = (mergeRequestNudgeGen[id] ?? 0) + 1
-    }
-
-    /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
-    /// in `startMergeRequestNudge`).
-    func clearMergeRequestNudge(_ id: UUID, gen: Int) {
-        if mergeRequestNudgeGen[id] == gen { mergeRequestNudge[id] = nil }
+        // Disarm drops the slot (and its token), so any in-flight tick/cleanup from the cancelled loop
+        // fails its token gates — it can't nudge after a `shipped`/`synced`/archive, nor null a task a
+        // later re-arm installs (a re-arm mints a fresh, never-reused token).
+        disarm(id, .mergeRequestNudge)
     }
 
     // MARK: - startup rebuild (mirrors rebuildRemoteWatches — the in-memory timer dies on restart)
@@ -378,6 +374,6 @@ extension OrchestraService {
     // MARK: - test-support
     func setMergeRequestNudgeInterval(_ d: Duration) { mergeRequestNudgeInterval = d }
     func setMergeRequestNudgeCap(_ n: Int) { mergeRequestNudgeCap = n }
-    func mergeRequestNudgeGeneration(_ id: UUID) -> Int { mergeRequestNudgeGen[id] ?? 0 }
-    func mergeRequestNudgeActive(_ id: UUID) -> Bool { mergeRequestNudge[id] != nil }
+    func mergeRequestNudgeGeneration(_ id: UUID) -> UInt64 { armingToken(id, .mergeRequestNudge) }
+    func mergeRequestNudgeActive(_ id: UUID) -> Bool { runtime[id]?.tasks[.mergeRequestNudge] != nil }
 }

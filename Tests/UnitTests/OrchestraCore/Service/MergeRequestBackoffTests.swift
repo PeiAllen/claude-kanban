@@ -272,13 +272,13 @@ struct MergeRequestCapTests {
 
         // A's terminal cleanup lands late — it must no-op, not evict B (which would orphan a live,
         // uncancellable loop that `stop` can no longer reach).
-        await env.svc.clearMergeRequestNudge(child.id, gen: genA)
+        await env.svc.clearSlot(child.id, .mergeRequestNudge, ifToken: genA)
         #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)
 
         // And A's in-flight tick must send nothing.
         await env.svc.stopMergeRequestNudge(child.id)
         let before = try await env.svc.inboxPeek(parent.id).count
-        #expect(await env.svc.reNudgeMergeRequest(child.id, gen: genA))   // stops
+        #expect(await env.svc.reNudgeMergeRequest(child.id, token: genA))   // stops
         #expect(try await env.svc.inboxPeek(parent.id).count == before)   // no ghost reminder
         #expect(await stat(env.svc, child.id)?.nudges == 0)               // no ghost count bump
     }
@@ -321,7 +321,7 @@ struct MergeRequestCapTests {
         _ = try await env.svc.mergeRequest(ref: child.ref())    // ...then a NEW request (fresh budget)
         await env.svc.stopMergeRequestNudge(child.id)
 
-        _ = await env.svc.reNudgeMergeRequest(child.id, gen: genOld)   // the exhausted tick lands late
+        _ = await env.svc.reNudgeMergeRequest(child.id, token: genOld)   // the exhausted tick lands late
 
         let ts = await stat(env.svc, child.id)
         #expect(ts?.mergeStalled == false)          // not dead on arrival

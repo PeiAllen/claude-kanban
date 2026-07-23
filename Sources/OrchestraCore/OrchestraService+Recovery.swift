@@ -116,7 +116,7 @@ extension OrchestraService {
         // `resumeInCard`, which validates for the same reason) still intact.
         let override = try resolveModelOverride(model, for: task)
         clearSpawnPending(id)   // a user-driven resume supersedes any in-flight spawn startup-watch
-        modelOverrideWatch[id] = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
+        runtime[id]?.modelOverrideWatch = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
         // The `relaunching → relaunching` supersede self-edge is legal, so a newer relaunch bumps the epoch
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
@@ -136,7 +136,8 @@ extension OrchestraService {
         // interleave across the `await transition` above, and arming from the loser would later accuse the
         // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
         // are leaving — the one a vendor that ignored `--model` would keep reporting.
-        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
+        ensureRuntime(for: updated)   // a resumed card may be the daemon's first touch of it post-restart
+        if let want = updated.pendingModel { runtime[id]?.modelOverrideWatch = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "resuming “\(updated.title)”")
         return updated
     }
@@ -173,7 +174,7 @@ extension OrchestraService {
         // Validate before the first mutation — a rejected model leaves the card exactly as it was.
         let override = try resolveModelOverride(model, for: task)
         clearSpawnPending(id)   // a user-driven restart supersedes any in-flight spawn startup-watch
-        modelOverrideWatch[id] = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
+        runtime[id]?.modelOverrideWatch = nil   // this relaunch supersedes any earlier re-seat: never warn about a stale one
 
         // Same capability gate as spawn: only a `.seeded` agent mints a fresh id on restart.
         let freshId: String?
@@ -206,7 +207,8 @@ extension OrchestraService {
         // interleave across the `await transition` above, and arming from the loser would later accuse the
         // agent of running the wrong model when it faithfully came up on the winner's. `left` is the model we
         // are leaving — the one a vendor that ignored `--model` would keep reporting.
-        if let want = updated.pendingModel { modelOverrideWatch[id] = (want, task.model.id, 0) }
+        ensureRuntime(for: updated)   // a restarted card may be the daemon's first touch of it post-restart
+        if let want = updated.pendingModel { runtime[id]?.modelOverrideWatch = (want, task.model.id, 0) }
         emitActivity(.recovered, updated, source, "new session “\(updated.title)”")
         return updated
     }
@@ -310,7 +312,7 @@ extension OrchestraService {
             // `aliveNames` can't see the abort — only the pane state can. Also graduates a card that
             // survived its grace. GATED on `.live` ONLY (mirrors `reconcile()`): a still-being-born card is
             // owned by the readiness machinery + launch timeout and must NEVER be startup-classified here.
-            if t.phase.kind == .live, let deadline = spawnPending[t.id] {
+            if t.phase.kind == .live, let deadline = runtime[t.id]?.spawnPending {
                 await confirmSpawnStartup(t, deadline: deadline)
                 continue
             }
@@ -324,29 +326,29 @@ extension OrchestraService {
             }
             switch t.phase.kind {
             case .creatingWorktree:
-                launchReadyTicks[t.id] = nil   // not yet awaiting readiness — nothing to tick
+                runtime[t.id]?.launchReadyTicks = 0   // not yet awaiting readiness — nothing to tick
                 continue   // being born — the session is legitimately not up yet
             case .relaunching:
                 // A relaunch's session IS up once `ensure` returned (resume/restart bring it up off-actor),
                 // but the phase stays `.relaunching` until the inline waiter resolves. If the session is
                 // live and a waiter is still pending, tick the N=3 fallback (covers Codex `codex resume`
                 // with no rollout, a missed hook). Never markDead a relaunching card (its absence is legit).
-                if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
+                if alive { tickLaunchReady(t.id) } else { runtime[t.id]?.launchReadyTicks = 0 }
                 continue
             case .launching:
                 // Being born under the reconciler-driven LaunchStepper, which owns readiness; the reconcile tick owns
                 // the spawnFailed launch timeout via `phaseChangedAt`. Mirror `.relaunching`: tick the N=3 fallback while
                 // a waiter is pending; NEVER markDead here — killing a launching card races the launch's own
                 // `transition(.launching)`→`ensure` window and would false-kill a live spawn.
-                if alive { tickLaunchReady(t.id) } else { launchReadyTicks[t.id] = nil }
+                if alive { tickLaunchReady(t.id) } else { runtime[t.id]?.launchReadyTicks = 0 }
                 continue
             case .live:
-                launchReadyTicks[t.id] = nil   // reached live — reset the being-born counter
+                runtime[t.id]?.launchReadyTicks = 0   // reached live — reset the being-born counter
                 if !alive {
                     await markDead(t.id, reason: .sessionVanished, detail: nil, source: .daemon)
                 }
             case .dead, .archivedPending, .archivedComplete:
-                launchReadyTicks[t.id] = nil
+                runtime[t.id]?.launchReadyTicks = 0
                 continue   // terminal — excluded by `isTerminal`, but keep the switch exhaustive
             }
         }
@@ -409,7 +411,7 @@ extension OrchestraService {
         // cleared `spawnPending`, so a nil entry also means "superseded". The re-check after the capture
         // await is the race guard (orch drops the old `recovering` set; report()'s death path is
         // epoch-fenced, not `recovering`-gated).
-        guard spawnPending[id] != nil,
+        guard runtime[id]?.spawnPending != nil,
               let live = await store.get(id),
               !live.archived, !live.phase.isTerminal else {
             clearSpawnPending(id)
@@ -429,11 +431,11 @@ extension OrchestraService {
             return
         }
 
-        let attempt = spawnAttempts[id] ?? 0
+        let attempt = runtime[id]?.spawnAttempts ?? 0
         if attempt < maxStartupRetries,
-           let spec = spawnRelaunch[id],
+           let spec = runtime[id]?.spawnRelaunch,
            let adapter = try? registry.get(spec.adapterId) {
-            spawnAttempts[id] = attempt + 1
+            runtime[id]?.spawnAttempts = attempt + 1
             // Re-name the stored context from the LIVE card: a `set-title` between the aborted launch and
             // this retry must reach the agent, and the same value has to arm the session-name mirror or the
             // retried session's first report reads as a rename. Every other field is deliberately reused —
@@ -458,7 +460,7 @@ extension OrchestraService {
             // so the destructive kill+ensure below still runs on a card that is ours: a restart landing in
             // the new window would otherwise be overwritten by a retry re-`ensure`ing the OLD argv (old
             // `--session-id`) under a generation that no longer exists.
-            guard spawnPending[id] != nil, let stillOurs = await store.get(id),
+            guard runtime[id]?.spawnPending != nil, let stillOurs = await store.get(id),
                   !stillOurs.archived, !stillOurs.phase.isTerminal,
                   stillOurs.sessionEpoch == live.sessionEpoch else {
                 clearSpawnPending(id)
@@ -480,7 +482,7 @@ extension OrchestraService {
                     _ = try sessions.ensure(launchTask, argv: argv, env: env)
                     try? sessions.setRemainOnExit(name, window: "agent", on: true)
                 }
-                spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
+                runtime[id]?.spawnPending = Date().addingTimeInterval(Double(spawnGraceSeconds))
                 emitActivity(.recovered, stillOurs, .daemon,
                              "restarted “\(stillOurs.title)” after a startup abort (retry \(attempt + 1))")
                 return
@@ -536,7 +538,7 @@ extension OrchestraService {
     /// `concludeCard` (the single terminal chokepoint — `markDead` alone would miss a failed launch, which
     /// concludes through the steppers).
     func clearSpawnPending(_ id: UUID) {
-        spawnPending[id] = nil; spawnAttempts[id] = nil; spawnRelaunch[id] = nil
+        runtime[id]?.spawnPending = nil; runtime[id]?.spawnAttempts = 0; runtime[id]?.spawnRelaunch = nil
     }
 
     /// Test hook: tighten the startup-confirmation grace + retry budget (production uses the defaults).
@@ -557,7 +559,7 @@ extension OrchestraService {
     func setStartupConfirmation(graceSeconds: Int, maxRetries: Int) {
         spawnGraceSeconds = graceSeconds; maxStartupRetries = maxRetries
         let newDeadline = Date().addingTimeInterval(Double(graceSeconds))
-        for id in spawnPending.keys { spawnPending[id] = newDeadline }
+        for (id, rt) in runtime where rt.spawnPending != nil { runtime[id]?.spawnPending = newDeadline }
     }
 
     /// Distil captured pane text to its meaningful tail (last few non-empty lines), trimmed + capped, so
@@ -575,13 +577,13 @@ extension OrchestraService {
     /// timeout would fail it. No pending waiter → reset (e.g. a `.relaunchLiveness` restart that never awaits,
     /// or the instant after the waiter already resolved).
     private func tickLaunchReady(_ id: UUID) {
-        guard readinessWaiters[id] != nil else { launchReadyTicks[id] = nil; return }
-        let n = (launchReadyTicks[id] ?? 0) + 1
+        guard runtime[id]?.readinessWaiter != nil else { runtime[id]?.launchReadyTicks = 0; return }
+        let n = (runtime[id]?.launchReadyTicks ?? 0) + 1
         if n >= launchReadyTickThreshold {
-            launchReadyTicks[id] = nil
+            runtime[id]?.launchReadyTicks = 0
             resolveReadiness(id, true, via: .ticks)   // liveness fallback → HOLD the seed lease (B3)
         } else {
-            launchReadyTicks[id] = n
+            runtime[id]?.launchReadyTicks = n
         }
     }
 
@@ -639,7 +641,7 @@ extension OrchestraService {
         })
         guard result == .applied, let updated = await store.get(id) else { return }
         clearSpawnPending(id)   // a dead card is never startup-pending (covers give-up + any other death)
-        modelOverrideWatch[id] = nil   // nothing left to confirm — the card is gone
+        runtime[id]?.modelOverrideWatch = nil   // nothing left to confirm — the card is gone
         emitActivity(.dead, updated, source, "session lost (\(reason.rawValue))")
         // An exhausted host is a MACHINE-wide fault — every card's spawn/resume is failing, not just this
         // one — so it also gets a board-level warning naming the resource and what to do about it.
@@ -667,9 +669,10 @@ extension OrchestraService {
         // registration below run without an intervening `await`, so no callback can slip between the check
         // and the registration on this serialized actor. The early signal is EPOCH-CHECKED (B3 D6): a stale
         // predecessor signal that landed in the register window can't confirm the new generation.
-        if let early = pendingReadiness.removeValue(forKey: id) {
-            if early == expectedEpoch { return .confirmed(via: .signal) }   // proven current-gen signal
-            if early == nil { return .confirmed(via: .ticks) }              // unattributable → hold
+        if let early = runtime[id]?.pendingReadiness {
+            runtime[id]?.pendingReadiness = nil
+            if early.epoch == expectedEpoch { return .confirmed(via: .signal) }   // proven current-gen signal
+            if early.epoch == nil { return .confirmed(via: .ticks) }              // unattributable → hold
             // else: a stale mismatched-epoch signal — dropped; register a fresh waiter below.
         }
         readinessTokenSeq &+= 1
@@ -679,8 +682,15 @@ extension OrchestraService {
             // waiter `.superseded` (the newer relaunch now owns the session). Without this,
             // `readinessWaiters[id] = …` would drop the old continuation unresumed → that relaunch hangs
             // forever → the idle card can never be woken again.
-            if let old = readinessWaiters[id] { old.cont.resume(returning: .superseded) }
-            readinessWaiters[id] = (token, expectedEpoch, cont)
+            if let old = runtime[id]?.readinessWaiter { old.cont.resume(returning: .superseded) }
+            guard runtime[id] != nil else {
+                // No runtime entry means the card was archived out from under this bring-up (the
+                // ensure gate refused). NEVER park the continuation somewhere it can leak — resolve
+                // it superseded so the step unwinds and the teardown wins cleanly.
+                cont.resume(returning: .superseded)
+                return
+            }
+            runtime[id]?.readinessWaiter = (token, expectedEpoch, cont)
             let grace = max(0, graceSeconds)
             _Concurrency.Task { [weak self, clock] in
                 try? await clock.sleep(for: .seconds(grace))
@@ -696,9 +706,9 @@ extension OrchestraService {
     /// fallback) and an unattributable nil-epoch signal resolve as `.ticks` (hold the seed). `ok == false`
     /// times the waiter out as before.
     func resolveReadiness(_ id: UUID, _ ok: Bool, observedEpoch: Int? = nil, via: ReadinessVia = .signal) {
-        if let w = readinessWaiters[id] {
+        if let w = runtime[id]?.readinessWaiter {
             guard ok else {
-                readinessWaiters.removeValue(forKey: id)
+                runtime[id]?.readinessWaiter = nil
                 w.cont.resume(returning: .timedOut)
                 return
             }
@@ -711,13 +721,13 @@ extension OrchestraService {
             } else {
                 resolvedVia = .ticks   // a signal we can't attribute to the current generation → hold, fail-safe
             }
-            readinessWaiters.removeValue(forKey: id)
+            runtime[id]?.readinessWaiter = nil
             w.cont.resume(returning: .confirmed(via: resolvedVia))
         } else if ok {
             // No waiter yet: `awaitReadiness` hasn't registered (the relaunch is still bringing the session
             // up off-actor). Remember this confirmation — WITH its epoch — so the waiter epoch-checks it on
             // consume. Ticks never reach here (the tick resolvers only fire while a waiter is registered).
-            pendingReadiness[id] = observedEpoch
+            runtime[id]?.pendingReadiness = CardRuntime.PendingReadiness(epoch: observedEpoch)
         }
     }
 
@@ -725,8 +735,8 @@ extension OrchestraService {
     /// confirmation that already resolved it) advanced the slot's token, so a stale timer is a no-op —
     /// it must never resolve an unrelated, still-pending waiter.
     private func timeoutReadiness(_ id: UUID, token: UInt64) {
-        guard let w = readinessWaiters[id], w.token == token else { return }
-        readinessWaiters.removeValue(forKey: id)
+        guard let w = runtime[id]?.readinessWaiter, w.token == token else { return }
+        runtime[id]?.readinessWaiter = nil
         w.cont.resume(returning: .timedOut)
     }
 
