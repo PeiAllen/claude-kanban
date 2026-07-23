@@ -1716,7 +1716,7 @@ marker is a **boolean `mergeStalled` flag on `TreeStat`, not a fifth `TreeState`
 applicable rule for any persisted, forward-compatible record: an older decoder **ignores** an unknown JSON
 *key* but treats an unknown enum *rawValue* as **fatal** (the record throws, and `FailableTask` drops the
 whole card). A new enum case would therefore have been the first producer of a rawValue that any revert,
-`/ship` relaunch off main, or lagging phone build couldn't decode — silently losing the card, worktree
+app relaunch off main, or lagging phone build couldn't decode — silently losing the card, worktree
 orphaned, no `.corrupt` backup because the top-level JSON parsed fine. A flag can't fail that way; it also
 keeps the underlying `state` tracking the parent (so a stalled child still gets "parent moved ahead"
 updates) while merely outranking it on the card face.
