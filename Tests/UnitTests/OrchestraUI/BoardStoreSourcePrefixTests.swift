@@ -41,9 +41,11 @@ import Foundation
         #expect(model.repoPrefix(of: b) == "site")
     }
 
-    /// A freeform card has no repo, so it names its directory instead — but under the same gate, so
-    /// it stays prefixless on an unambiguous board.
-    @Test func test_freeformCardNamesItsDirectoryUnderTheSameGate() {
+    /// A freeform card never gets a board prefix — not even when the gate is open. Gating its cwd on
+    /// the WORKTREE cards' repo count would sprout a prefix on it (and, symmetrically, would make a
+    /// lone scratch card flip prefixes onto every worktree card) for reasons unrelated to the
+    /// freeform card itself. Its location lives in the inspector; its title is its board identity.
+    @Test func test_freeformCardNeverGetsABoardPrefix() {
         let model = TestModel.make()
         let scratch = freeformCard("notes", cwd: "/Users/a/vault")
         model.tasks = [worktreeCard("a", repo: "/code/orchestra"), scratch]
@@ -51,8 +53,19 @@ import Foundation
         #expect(model.repoPrefix(of: scratch) == nil)
 
         model.tasks.append(worktreeCard("b", repo: "/code/site"))
-        #expect(model.showsRepoPrefix)
-        #expect(model.repoPrefix(of: scratch) == "vault")
+        #expect(model.showsRepoPrefix)                   // the two REPOS opened the gate…
+        #expect(model.repoPrefix(of: scratch) == nil)    // …but the freeform card still shows nothing
+    }
+
+    /// A board of only freeform cards is never ambiguous BY REPO — none of them has one — so the gate
+    /// stays shut and no card is prefixed, whatever their directories.
+    @Test func test_freeformOnlyBoardShowsNoPrefix() {
+        let model = TestModel.make()
+        model.tasks = [freeformCard("notes", cwd: "/Users/a/vault"),
+                       freeformCard("scratch", cwd: "/Users/a/scratch")]
+        #expect(model.showsRepoPrefix == false)
+        #expect(model.repoPrefix(of: model.tasks[0]) == nil)
+        #expect(model.repoPrefix(of: model.tasks[1]) == nil)
     }
 
     /// Archived cards have left the board and must not hold the prefix open behind them.

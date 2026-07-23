@@ -486,15 +486,15 @@ public class BoardStore: ObservableObject {
         return false
     }
 
-    /// The muted prefix for a card's identity line, or nil while the board is unambiguous. A
-    /// worktree card names its repo; a freeform card has no repo, so it names the directory it runs
-    /// in — under the SAME gate, so a single-repo board stays prefixless either way and the full
-    /// path keeps its home in the inspector.
+    /// The muted repo prefix for a worktree card's identity line, or nil while the board is
+    /// unambiguous. A freeform card never gets one: it carries no repo, and gating its cwd on the
+    /// *worktree* cards' repo count is two unrelated facts — a scratch card would sprout a prefix
+    /// only because two real repos happen to share the board. A freeform card's location joins the
+    /// other per-card facts this anatomy moves off the board (repo·branch, parent, siblings): its
+    /// full path lives in the inspector, and its title is its board identity.
     public func repoPrefix(of task: Task) -> String? {
-        guard showsRepoPrefix else { return nil }
-        let path = task.origin == .worktree ? task.repo : task.cwd
-        guard !path.isEmpty else { return nil }
-        return (path as NSString).lastPathComponent
+        guard showsRepoPrefix, task.origin == .worktree, !task.repo.isEmpty else { return nil }
+        return (task.repo as NSString).lastPathComponent
     }
 
     /// Indent level of `task` within its column's branch tree (0 for roots), capped at

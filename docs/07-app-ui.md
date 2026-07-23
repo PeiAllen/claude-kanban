@@ -128,8 +128,9 @@ selection writes, because the phone presents card details from two different sta
   the agent that made it.
 - **L2 — identity, uncontested.** The card's title on its own line (up to 2 lines), so nothing
   competes with the name for width. A muted **source prefix** precedes it only when the board is
-  ambiguous — i.e. holds more than one repo — naming a worktree card's repo or a freeform card's
-  directory; single-repo boards show no prefix at all.
+  ambiguous — i.e. holds more than one repo — naming a worktree card's repo; single-repo boards
+  show no prefix at all. A freeform card carries no repo and is never prefixed: its directory, like
+  the other per-card facts this anatomy moves off the board, lives in the inspector.
 - **L3 — context.** `note ?? desc`: the durable authored note when one is set, else the live agent
   blurb, on one truncating line. The **card reference** (`#<shortId>`) sits at this line's right
   end — or at the identity line's end when there's no context — and copies the self-identifying
