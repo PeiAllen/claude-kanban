@@ -193,24 +193,16 @@ shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=ter
 shoot "9-takeover-placeholder"       env ORCH_SHOW=takeover
 shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 
-# Tree state in the shared inspector header (`ORCH_TREE`): every badge the board card can show, plus
-# the Diff tab — the badge lives in the shared header precisely so it survives that swap. `in-sync`
-# is here because it must render NOTHING, and an empty slot is only worth looking at next to the
-# filled ones. Shot 16 shows the badge surviving the swap to the Diff tab.
+# Tree state (`ORCH_TREE=stale|restack|merge-requested|stalled|in-sync`) in the shared inspector
+# header. `stalled` is the one worth looking at — the warning has to win over the live `stale`
+# underneath it — and `in-sync` is here because it must render NOTHING. 13 checks the badge surviving
+# the swap to the Diff tab; 14/15 pin the width, since every other shot renders at whatever width the
+# human last dragged this app to (see the preferences note at the top) and so can't show which
+# `ViewThatFits` rung real users get.
 shoot "11-tree-stale"        env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3
-shoot "12-tree-restack"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=restack
-shoot "13-tree-merge-req"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=merge-requested
-shoot "14-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
-shoot "15-tree-in-sync"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=in-sync
-shoot "16-tree-stale-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
-# The header row PINNED to the widths that decide its `ViewThatFits` rung, because every shot above
-# renders at whatever width the human last dragged this app to (see the preferences note at the top)
-# and so can't tell you which rung real users get. The two 392pt shots are the interesting pair: at the
-# shipped default the shared chip holds the diffstat AND a one-digit badge, but a two-digit `↓12` is
-# ~15pt more than the row's remaining slack and drops the ladder a rung, trading the diffstat away.
-# That is the intended give — see the chip comment in InspectorView — and 17-vs-18 is the evidence.
-shoot "17-tree-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3 -- -inspectorWidth 392
-shoot "18-tree-392-2digit"   env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 392
-shoot "19-tree-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 320
+shoot "12-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
+shoot "13-tree-diff-tab"     env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
+shoot "14-tree-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
+shoot "15-tree-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

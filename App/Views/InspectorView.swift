@@ -76,17 +76,9 @@ private struct HeaderBar: View {
     }
 
     var body: some View {
-        // This row is over-subscribed at the shipped 392pt inspector width — spelled out in full it
-        // overflows and clips the trailing close button, which is what it used to do (truncating the
-        // captions to unreadable stubs, "Z \" and "▤ (", on the way). So it degrades: everything
-        // spelled out when the inspector is dragged wide, and at 392 the captions drop to icons alone
-        // with tighter gutters. The icons carry the meaning the captions did, and every button has a
-        // tooltip with the words. Nothing ever clips.
-        //
-        // There used to be a third rung that dropped the diffstat, because this row also carried it and
-        // could not hold everything at 392. The diffstat now lives beside the branch it measures, in
-        // the terminal header, which has the slack this row never had — so the only thing left here
-        // that can give is the captions.
+        // Over-subscribed at the shipped 392pt width: spelled out in full it overflows and clips the
+        // close button. So it degrades — captions drop to icons (each button keeps a tooltip with the
+        // words), which is the only thing left to give now that the diffstat lives one row down.
         ViewThatFits(in: .horizontal) {
             row(compact: false)
             row(compact: true)
@@ -112,16 +104,10 @@ private struct HeaderBar: View {
             .fixedSize()
             .help(diffTabHelp)
 
-            // Branch-sync state (`↓N` / restack / merge-requested / stalled) — the same glyph the board
-            // card carries, in THIS row rather than the terminal header below it, because this row is
-            // the one both tabs share: a stale base is exactly what you want to know while reading the
-            // diff, and the terminal header unmounts with the Agent tab.
-            //
-            // Chipped, not bare: everything else here is a filled control, so a loose glyph between the
-            // toggle and the buttons reads as debris — the same reason the diffstat was chipped before
-            // it moved. The glyph and its semantic colour are the board card's; only the surface is new.
-            // `renders` is checked BEFORE laying out because an in-sync badge draws nothing, and an
-            // empty chip is not what "show nothing" means.
+            // Branch-sync state, in THIS row rather than the terminal header below, because this row is
+            // the one both tabs share — a stale base is what you want to know while reading the diff,
+            // and the terminal header unmounts with the Agent tab. Chipped because a loose glyph
+            // between filled controls reads as debris.
             if let tree = task.treeStat, TreeBadge.renders(tree) {
                 TreeBadge(stat: tree, parentBranch: task.parentBranch)
                     .fixedSize()
@@ -513,15 +499,10 @@ private struct TerminalHeader: View {
     private var baseline: DiffBase { task.parentBranch != nil ? .parent : .branch }
 
     var body: some View {
-        // Taking the diffstat in cost this row its slack: at the 392pt default, model chip + repo chip +
-        // branch + numbers + status pill overflowed, and everything truncated to stubs (`opus…`,
-        // `or…tra`, `fix…ells`) with the pill wrapping onto two lines. So it degrades, giving up the
-        // most redundant thing first rather than shrinking everything at once:
-        //   1. everything — a widened inspector;
-        //   2. the repo chip drops — the breadcrumb directly below spells out the whole path anyway,
-        //      so the repo is still on screen; this is the 392pt default, numbers intact;
-        //   3. the diffstat sheds its file count;
-        //   4. and then goes, at the 320pt drag minimum.
+        // Taking the diffstat in cost this row its slack — at 392 it overflowed, truncating everything
+        // to stubs and wrapping the status pill onto two lines. So it degrades, most redundant thing
+        // first: the repo chip goes at 392 (the breadcrumb below still spells out the whole path), then
+        // the file count, then the numbers at the 320pt minimum.
         ViewThatFits(in: .horizontal) {
             row(repo: true, stat: .full)
             row(repo: false, stat: .full)
@@ -545,12 +526,9 @@ private struct TerminalHeader: View {
             .clipShape(RoundedRectangle(cornerRadius: 5))
 
             if task.origin == .worktree {
-                // No width cap at all. A `maxWidth` frame on a Text ACCEPTS the whole proposal rather
-                // than hugging, so the old `.frame(maxWidth: 140)` — inside the background — painted
-                // every repo chip 140pt wide, leaving a slab of empty fill after a short name that read
-                // as a broken box; moving the cap outside the background only moved the empty space out
-                // of the chip and left the same gap before the branch. A single-line Text already
-                // shrinks and truncates when the row runs out of room, which is all the cap was for.
+                // No width cap: a `maxWidth` frame on a Text accepts the whole proposal instead of
+                // hugging, so the old `.frame(maxWidth: 140)` painted every chip 140pt wide whatever
+                // the name. A single-line Text truncates on its own, which is all the cap was for.
                 if repo {
                     Text(repoName)
                         .font(F.mono(10, .semibold))
@@ -568,11 +546,9 @@ private struct TerminalHeader: View {
                     .truncationMode(.middle)
                     .help(task.branch)
 
-                // The branch diffstat, beside the branch it measures rather than up in the shared action
-                // row. That row is all controls, so the numbers had to fight the buttons for space
-                // through a `ViewThatFits` rung and lost them at the narrower widths; here they sit with
-                // the thing they describe. The Diff tab doesn't lose them by the move — its body IS the
-                // diff, with per-file `+N −M` pills on every section header.
+                // Beside the branch it measures, not up in the action row: that row is all controls, so
+                // the numbers fought the buttons for space and lost at narrow widths. The Diff tab
+                // doesn't lose them — its body IS the diff, with per-file `+N −M` pills.
                 if stat != .hidden, let s = task.diffStat, s.filesChanged > 0 {
                     DiffStatNumbers(stat: s, showFiles: stat == .full)
                         .lineLimit(1)

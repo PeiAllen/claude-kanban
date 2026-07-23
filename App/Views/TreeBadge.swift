@@ -2,43 +2,29 @@ import SwiftUI
 import OrchestraUI
 import OrchestraCore
 
-/// A child card's lineage state against its parent branch, as one compact glyph: `↓N` while the
-/// parent has advanced past the recorded base, a restack arrow once that base is no longer an
-/// ancestor, a clock while a merge-request waits, and a red warning once the merge-request has been
-/// given up on. Rendered on the board card's footer and in the shared inspector header — one view,
-/// so the two surfaces can't drift apart on glyph or colour.
-///
-/// Nothing renders for `inSync` (and the call sites render nothing at all for a nil `treeStat`):
-/// absence is the in-sync signal, so an untracked card and a synced one both stay quiet rather than
-/// carry a placeholder that trains the eye to ignore this slot.
-///
-/// The hover text names the **parent branch** whenever the card records one, because the glyph alone
-/// says a parent moved without saying which — the one question a `↓3` immediately raises.
+/// A card's lineage state against its parent branch, as one compact glyph. Shared by the board card's
+/// footer and the inspector header so the two can't drift on glyph or colour. `inSync` renders
+/// nothing, and the call sites render nothing for a nil `treeStat`: absence IS the in-sync signal.
 struct TreeBadge: View {
     @Environment(\.theme) var theme: Theme
     let stat: TreeStat
     let parentBranch: String?
 
-    /// Whether this badge draws anything at all — false for an in-sync card, which renders `EmptyView`.
-    /// A caller that puts the badge on its own surface (the inspector header chips it) has to know that
-    /// BEFORE laying out, or an in-sync card gets an empty chip where the design says "show nothing".
+    /// Whether this draws anything — a caller that puts the badge on its own surface (the inspector
+    /// chips it) must know before laying out, or an in-sync card gets an empty chip.
     static func renders(_ stat: TreeStat) -> Bool { stat.mergeStalled || stat.state != .inSync }
 
-    /// Sentence subject for the two help strings that open on the parent: "Parent branch feat/x" when
-    /// the name is known, a bare "The parent branch" when it isn't. The other two mention the parent
-    /// mid-sentence and interpolate it themselves, since neither reads as a subject.
     private var parentSubject: String {
         parentBranch.map { "Parent branch \($0)" } ?? "The parent branch"
     }
 
     var body: some View {
-        // The give-up flag outranks the tracking state: a stalled card still computes stale/↓N
-        // underneath, but "nobody answered the merge-request" is what the human needs to see first.
+        // The give-up flag outranks the state: a stalled card still computes stale/↓N underneath, but
+        // "nobody answered the merge-request" is what the human needs first.
         if stat.mergeStalled {
             Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
                 .foregroundStyle(theme.red.text)
-                // `nudges` really can be 0 here: `giveUp` is also reached with an already-exhausted
-                // budget, which gives up without sending anything.
+                // `nudges` can be 0 — the daemon also gives up with an already-exhausted budget.
                 .help("Merge-request unanswered — \(stat.nudges) reminder\(stat.nudges == 1 ? "" : "s") sent and "
                       + "\(parentBranch ?? "the parent") never merged this branch. "
                       + "Merge it yourself, or re-send the merge-request.")

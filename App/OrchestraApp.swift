@@ -327,9 +327,9 @@ private struct DebugLaunchHook: ViewModifier {
         // A branch diffstat the daemon would have computed, so the card footer and the inspector
         // header both have something to render (they share the `k files · +N −M` formatting).
         mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
-        // A lineage state the daemon would have computed for a stacked card, so the board badge and the
-        // inspector header both have something to render (they share `TreeBadge`). `ORCH_TREE` picks
-        // which; unset leaves the card untracked, which is the no-badge case worth shooting too.
+        // A lineage state so `TreeBadge` has something to render. `stalled` deliberately keeps a live
+        // `stale` underneath, since the flag is supposed to outrank the state. Unknown values abort
+        // rather than defaulting: this hook exists to show WHICH glyph renders.
         if let want = env["ORCH_TREE"] {
             mock.parentBranch = "feat/branch-tree"
             switch want {
@@ -337,13 +337,9 @@ private struct DebugLaunchHook: ViewModifier {
                                                              behind: Int(env["ORCH_BEHIND"] ?? "") ?? 3)
             case "restack":         mock.treeStat = TreeStat(state: .restackNeeded)
             case "merge-requested": mock.treeStat = TreeStat(state: .mergeRequested)
-            // Stalled keeps a live `stale` underneath it — the flag outranks the state, and shooting it
-            // that way is the only way to see that the warning really does win the slot.
             case "stalled":         mock.treeStat = TreeStat(state: .stale, behind: 2, nudges: 3,
                                                              mergeStalled: true)
             case "in-sync":         mock.treeStat = TreeStat(state: .inSync)
-            // Loud, not lenient: this hook exists to assert WHICH glyph renders, so a typo that quietly
-            // fell through to a default state would shoot the wrong badge under the right filename.
             default: fatalError("ORCH_TREE=\(want) is not a tree state — use "
                                 + "stale | restack | merge-requested | stalled | in-sync")
             }
