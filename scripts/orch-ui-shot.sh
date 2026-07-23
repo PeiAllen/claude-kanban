@@ -75,7 +75,21 @@ ISO_HOME="${TMPDIR:-/tmp}/orch-ui-shot-home-$WT"
 # Throwaway tmux server for the mock cards' terminal panes — never the live `-L orchestra` server.
 ISO_TMUX_SOCKET="orch-ui-shot-$WT"
 export ORCHESTRA_TMUX_SOCKET="$ISO_TMUX_SOCKET"
-cleanup() { pkill -f "${BIN:-__none__}" 2>/dev/null || true; tmux -L "$ISO_TMUX_SOCKET" kill-server 2>/dev/null || true; rm -rf "$ISO_HOME"; }
+# The pid of the app this script currently has running, if any — the ONLY process it ever kills.
+SHOT_PID=""
+# Reap by tracked pid, never by pattern. `pkill -f "$BIN"` used to live here, and on one specific
+# path it was aimed at the human's real app: when `find` turns up no Orchestra.app (a wiped or
+# never-built DerivedData under `--no-build`), `APP` is empty, so `BIN` becomes the bare relative
+# tail "/Contents/MacOS/Orchestra" — a SUBSTRING of every Orchestra binary path on the machine,
+# including /Applications/Orchestra.app/Contents/MacOS/Orchestra. The very next line exits, firing
+# this trap, which would then kill the live app (verified: `pgrep -f` on that string matches it) and
+# any sibling worktree's capture. A tracked pid cannot be over-broad, whatever `BIN` holds.
+cleanup() {
+  [[ -n "$SHOT_PID" ]] && kill "$SHOT_PID" 2>/dev/null || true
+  tmux -L "$ISO_TMUX_SOCKET" kill-server 2>/dev/null || true
+  rm -rf "$ISO_HOME"
+  return 0
+}
 trap cleanup EXIT
 
 if [[ "$BUILD" == 1 ]]; then
@@ -131,12 +145,14 @@ shoot() { # name  env VAR=VAL…  [-- binary args…]
     if [[ "$a" == "--" ]]; then seen=1; continue; fi
     if [[ "$seen" == 1 ]]; then args+=("$a"); else launch+=("$a"); fi
   done
-  pkill -f "$BIN" 2>/dev/null || true
+  # Clear the previous shot's app if it somehow outlived its own kill — by pid, same rule as cleanup.
+  [[ -n "$SHOT_PID" ]] && kill "$SHOT_PID" 2>/dev/null || true
   sleep 0.5
   # `${arr[@]+…}` guards the empty-array expansion, which is an unbound-variable error under
   # `set -u` in the bash 3.2 that ships with macOS.
   HOME="$ISO_HOME" "${launch[@]}" "$BIN" ${args[@]+"${args[@]}"} >/dev/null 2>&1 &
   local pid=$!
+  SHOT_PID="$pid"
   # Give SwiftUI time to lay out + the DEBUG hook to inject the mock card.
   local wid=""
   for _ in $(seq 1 40); do
@@ -144,13 +160,15 @@ shoot() { # name  env VAR=VAL…  [-- binary args…]
     wid="$(window_id "$pid" || true)"
     [[ -n "$wid" ]] && break
   done
-  if [[ -z "$wid" ]]; then echo "  ✗ $name: no window found"; kill "$pid" 2>/dev/null || true; return 1; fi
+  if [[ -z "$wid" ]]; then
+    echo "  ✗ $name: no window found"; kill "$pid" 2>/dev/null || true; SHOT_PID=""; return 1
+  fi
   # Float it off the user's tiling WM, or the capture is a squished sliver (see lib/wm-float.sh).
   float_window_for_pid "$pid"
   sleep 1.0   # settle terminal/chrome layout
   screencapture -x -o -l"$wid" "$OUT/$name.png"
   echo "  ✓ $OUT/$name.png  (window $wid)"
-  kill "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true; SHOT_PID=""
   sleep 0.3
 }
 
