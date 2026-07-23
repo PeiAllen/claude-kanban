@@ -90,8 +90,13 @@ It prints the phone it chose. If you have **more than one** iPhone paired it ref
 lists them — name the one you want, by identifier, udid, or any part of its name:
 
 ```sh
-scripts/build-ios-device.sh --install --device 'Allen'   # or: export ORCH_IOS_DEVICE=…
+scripts/build-ios-device.sh --install --device 'Allen’s iPhone'   # or: export ORCH_IOS_DEVICE=…
 ```
+
+A `--device` you pass explicitly is matched against every paired device, not only iPhones, so make
+the substring specific enough to be unambiguous — with an iPad also paired, `--device Allen` matches
+both and is rejected rather than guessed. The device is picked *before* the build, so a typo costs
+seconds rather than a full build.
 
 To launch it without touching the phone:
 

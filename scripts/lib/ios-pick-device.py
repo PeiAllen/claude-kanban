@@ -154,6 +154,23 @@ def select(payload, selector=None):
             )
         return None, _fail("devicectl knows about no devices at all." + NO_DEVICE_HINT)
 
+    # A row that looks like a target iPhone but carries no identifier drops out of `candidates`
+    # silently. On its own that is caught below (zero candidates → we list everything we saw), but
+    # alongside a healthy phone it would disappear without a word and the "several iPhones, say which
+    # one" guard would quietly fail to apply. Say what was skipped, then carry on.
+    skipped = [
+        d
+        for d in devices
+        if not d.identifier
+        and d.platform == PLATFORM
+        and d.reality == REALITY
+        and d.device_type == DEVICE_TYPE
+    ]
+    for device in skipped:
+        sys.stderr.write(
+            "warning: ignoring iPhone '%s' — devicectl reported no identifier for it.\n" % device.name
+        )
+
     # Never install onto an arbitrary phone. Which one you meant is unknowable here, and guessing
     # wrong wipes the wrong device's build, so make the human say it once.
     if len(candidates) > 1:

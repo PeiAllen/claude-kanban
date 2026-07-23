@@ -280,8 +280,17 @@ than installing over the wrong phone's build. Name the one you want with `--devi
 udid, or any part of the device name) or export `ORCH_IOS_DEVICE` to make it stick:
 
 ```sh
-scripts/build-ios-device.sh --install --device 'Allen'
+scripts/build-ios-device.sh --install --device 'Allen’s iPhone'
 ```
+
+An explicit `--device` is matched against **every** device devicectl knows about, not just the
+iPhones the automatic path considers — naming a device is treated as intent, so it is honored
+verbatim. The flip side is that a short substring can be ambiguous across device *kinds*: with an
+"Allen's iPad" also paired, `--device Allen` matches both and is rejected rather than guessed. Give
+enough of the name to be unambiguous, or paste the identifier.
+
+Selection happens **before** the build, so a bad selector or an absent phone fails in seconds instead
+of after a full signed build.
 
 `scripts/lib/ios-pick-device.py` holds that policy and `scripts/lib/ios-pick-device-test.sh` pins it
 against captured `devicectl` JSON — network-paired, cable-attached, none, several, bad override — so

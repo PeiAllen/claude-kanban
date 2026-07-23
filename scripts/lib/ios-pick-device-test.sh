@@ -153,9 +153,12 @@ check "identifier-less sole iPhone: nothing on stdout" "$out" ""
 out="$(payload "$ghost" | $PICK --device Ghost 2>/dev/null)"; rc=$?
 check "identifier-less via override: exit nonzero" "$rc" "1"
 check "identifier-less via override: nothing on stdout" "$out" ""
-# …and it must not mask a real phone sitting alongside it.
+# …and it must not mask a real phone sitting alongside it — but it must not vanish in silence either,
+# or the "several iPhones, say which one" guard would quietly fail to apply to it.
 out="$(payload "$ghost" "$(device_json localNetwork paired)" | $PICK 2>/dev/null)"
 check "real iPhone still picked alongside a ghost row" "$out" "$IPHONE_ID"
+err="$(payload "$ghost" "$(device_json localNetwork paired)" | $PICK 2>&1 >/dev/null)"
+contains "the skipped iPhone is reported, not silently dropped" "$err" "Ghost"
 
 echo "7. stdout carries the identifier and nothing else"
 out="$(payload "$(device_json localNetwork paired)" | $PICK 2>/dev/null | wc -l | tr -d ' ')"

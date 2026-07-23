@@ -101,6 +101,40 @@ fi
 BUNDLE_ID="${ORCH_IOS_BUNDLE_ID:-com.orchestra.ios}"
 echo "team=$TEAM  bundle=$BUNDLE_ID  config=$CONFIG  entitlements=OrchestraiOS-nopush.entitlements"
 
+# --- resolve the target device FIRST, before the expensive build ----------------------------------
+# Selection is seconds; the build is minutes. Doing it in this order means a typo'd --device, a phone
+# that is off the network, or two paired iPhones fails immediately instead of after a full signed
+# build — which is the exact shape of the failure this lane was fixed for. Nothing here depends on
+# build output, so there is no reason to wait.
+DEVICE=""
+if [[ "$INSTALL" == 1 ]]; then
+  # Ask devicectl for JSON rather than scraping its table. `devicectl list devices --help` states that
+  # "JSON output to a user-provided file on disk is the ONLY supported interface for scripts/programs
+  # to consume command output." The table is exactly what broke this lane before: its State column
+  # renders a network-paired iPhone (the normal state once "Connect via network" is ticked) as
+  # `available (paired)`, so filtering rows for `connected` matched nothing. There is no `state` field
+  # in the JSON to key off either — that column is assembled from connectionProperties — so
+  # scripts/lib/ios-pick-device.py selects on device IDENTITY (platform/reality/deviceType) and never
+  # on connection state. See that file for the policy; scripts/lib/ios-pick-device-test.sh pins it
+  # against captured JSON, no phone required, and runs on the merge gate via scripts/test.sh --all.
+  #
+  # --json-output takes a path, so route it through a temp file we own and clean up. devicectl still
+  # prints its human table to stdout; drop that and keep stderr, which carries the real diagnosis when
+  # CoreDevice itself is unhappy (e.g. the XPC/CoreDeviceService errors you get in a sandbox).
+  DEVICES_JSON="$(mktemp -t orch-ios-devices)"
+  trap 'rm -f "$DEVICES_JSON"' EXIT
+  xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null \
+    || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
+  # An array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and
+  # an unquoted conditional expansion would word-split it into two arguments. And the ATTACHED form
+  # (--device=x, not --device x) because a selector starting with a dash would otherwise arrive as its
+  # own argv token and argparse would read it as an option; attached values are never reparsed.
+  PICK_ARGS=(--json "$DEVICES_JSON")
+  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=("--device=$DEVICE_SELECTOR"); fi
+  # `set -e` aborts here if the picker can't choose one device; it has already explained why on stderr.
+  DEVICE="$(scripts/lib/ios-pick-device.py "${PICK_ARGS[@]}")"
+fi
+
 # --- generate the project + build signed for a device ---------------------------------------------
 command -v xcodegen >/dev/null 2>&1 || { echo "error: xcodegen not found (brew install xcodegen)" >&2; exit 1; }
 xcodegen generate --spec App-iOS/project.yml --project App-iOS >/dev/null
@@ -123,7 +157,8 @@ scripts/lib/with-lock.sh build -- xcodebuild \
 # App-iOS/OrchestraiOS-nopush.entitlements. A leading `App-iOS/` here double-nests to
 # App-iOS/App-iOS/OrchestraiOS-nopush.entitlements (nonexistent) → signing silently uses the target's
 # default OrchestraiOS.entitlements (which HAS aps-environment) and free-team signing fails. project.yml's
-# own `CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements` (bare) confirms the SRCROOT-relative convention.
+# own `CODE_SIGN_ENTITLEMENTS: OrchestraiOS-nopush.entitlements` (bare) confirms the SRCROOT-relative
+# convention — it names the same file this script passes, just via the project rather than the CLI.
 
 APP="$(xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration "$CONFIG" \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM="$TEAM" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
@@ -134,34 +169,8 @@ echo "built: $APP"
 echo "entitlements: $(codesign -d --entitlements :- "$APP" 2>/dev/null | tr -d '\0' \
   | grep -oE 'aps-environment|keychain-access-groups' | sort -u | paste -sd, -)  (must NOT list aps-environment)"
 
-# --- optionally install to the paired iPhone ------------------------------------------------------
+# --- install to the iPhone chosen before the build ------------------------------------------------
 if [[ "$INSTALL" == 1 ]]; then
-  # Ask devicectl for JSON rather than scraping its table. `devicectl list devices --help` states that
-  # "JSON output to a user-provided file on disk is the ONLY supported interface for scripts/programs
-  # to consume command output" — and the table is exactly what broke this lane before: its State column
-  # renders a network-paired iPhone (the normal state once "Connect via network" is ticked) as
-  # `available (paired)`, so filtering rows for `connected` matched nothing and the install died after a
-  # good build. There is no `state` field in the JSON to key off either — that column is assembled from
-  # connectionProperties — so scripts/lib/ios-pick-device.py selects on device IDENTITY instead
-  # (platform/reality/deviceType) and never on connection state. See that file for the full policy;
-  # scripts/lib/ios-pick-device-test.sh pins it against captured JSON, no phone required.
-  #
-  # --json-output takes a path, so route it through a temp file we own and clean up. devicectl still
-  # prints its human table to stdout; drop that and keep stderr, which carries the real diagnosis when
-  # CoreDevice itself is unhappy (e.g. the XPC/CoreDeviceService errors you get in a sandbox).
-  DEVICES_JSON="$(mktemp -t orch-ios-devices)"
-  trap 'rm -f "$DEVICES_JSON"' EXIT
-  xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null \
-    || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
-  # Array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and an
-  # unquoted conditional expansion would word-split it into two arguments.
-  # ATTACHED form (--device=x, not --device x): a selector that starts with a dash arrives as its own
-  # argv token and argparse would read it as an option and abort. Attached values are never reparsed.
-  PICK_ARGS=(--json "$DEVICES_JSON")
-  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=("--device=$DEVICE_SELECTOR"); fi
-  # `set -e` aborts here if the picker can't choose one device; it has already explained why on stderr.
-  DEVICE="$(scripts/lib/ios-pick-device.py "${PICK_ARGS[@]}")"
-
   echo "=== install to $DEVICE ==="
   # A locked phone fails here with kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which
   # reads like a pairing fault — say so up front rather than leaving that to be rediscovered.
