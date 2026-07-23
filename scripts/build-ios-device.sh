@@ -13,31 +13,93 @@
 # Accounts ▸ your Apple ID ▸ team. A free Apple ID gets a "Personal Team" with a valid id.
 #
 # Usage:
-#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed .app for a device
-#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to a connected iPhone
+#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed RELEASE .app
+#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to the paired iPhone
+#   scripts/build-ios-device.sh --install --device 'Allen'             # pick one of several iPhones
+#                                                                        # (or export ORCH_IOS_DEVICE)
+#   scripts/build-ios-device.sh --install --debug                      # unoptimized build (debugger/symbols)
 #   ORCH_IOS_BUNDLE_ID=com.you.orchestra scripts/build-ios-device.sh   # override bundle id (free teams
 #                                                                        # often need a unique one)
 #
-# ⚠️ NOT YET VERIFIED ON METAL. The path/parsing bugs below were fixed by static reasoning + `xcodegen
-# generate` (project resolves, entitlements path resolves SRCROOT-relative). The signing + install steps
-# themselves — `xcodebuild ... -destination generic/platform=iOS -allowProvisioningUpdates` producing a
-# free-team-signed .app, and `devicectl device install` onto a paired iPhone — have NOT been run: this
-# needs a real device + an Apple ID logged into Xcode. Do that end-to-end before calling the lane "done".
-# Expected free-team gotchas to confirm on-device: bundle id may need to be unique per Apple ID
-# (ORCH_IOS_BUNDLE_ID), and the dev cert/profile expires every 7 days (re-run this script to resign).
+# VERIFIED ON METAL 2026-07-23 — entirely over Wi-Fi, no cable: this script built `** BUILD SUCCEEDED **`
+# signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, and
+# `devicectl device install app` put it on a network-paired iPhone 16 Pro Max. Verified for both
+# configurations — the Release build this script now defaults to gave a clean Release-iphoneos build and
+# a clean wireless install too. A successful install is the whole of what this lane claims: devicectl
+# reports `App installed:` with the bundle id and installation URL, and that IS the verification.
+# Still unverified: a bundle id colliding with another Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch)
+# and re-signing after the 7-day profile expiry.
+#
+# ⚠️ THREE GOTCHAS, because each presents as some other, more alarming failure:
+#
+# 1. THE PHONE MUST BE UNLOCKED FOR THE INSTALL, or the developer-disk-image mount fails with
+#    kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040. It reads like a pairing or transport
+#    fault; it is the lock screen. Unlock to the home screen and re-run.
+#    (Aside, for anyone running `devicectl device process launch` BY HAND — this script never does:
+#    a locked phone refuses that too, but with a completely different error, "denied by service
+#    delegate (SBMainWorkspace) for reason: Locked" / FBSOpenApplicationErrorDomain error 7 (0x07),
+#    and it refuses AFTER a successful install. That combination reads as a broken install or a crash
+#    on launch; it is neither. Unlock and open the app normally — rebuild and reinstall nothing.)
+#
+# 2. THIS SCRIPT CANNOT MINT A FREE-TEAM PROFILE — only consume one. `xcodebuild` cannot reach the
+#    keychain-backed session of the Apple ID signed into Xcode from a non-GUI shell, so on a
+#    profile-less bundle it fails with "No Accounts: Add a new account in Accounts settings" +
+#    "No profiles for '<bundle id>' were found" EVEN THOUGH the Apple ID is signed in correctly.
+#    That message invites the wrong diagnosis ("I'm not signed in") — you are; there is simply no
+#    profile on disk yet. -allowProvisioningUpdates is still passed below because it does refresh an
+#    existing profile. So the free-tier cycle is: ⌘R once from the Xcode GUI to mint the 7-day
+#    profile, after which this scripted lane works unattended until it expires. See
+#    App-iOS/DEPLOY-TO-DEVICE.md and docs/08-building-operations.md (§Building the iOS app for a real device).
+#
+# 3. ENDING AT "trust the developer on the phone" IS SUCCESS, NOT FAILURE. iOS's Untrusted Developer
+#    gate is a per-signing-identity consent step downstream of compile/sign/install, so reaching it
+#    means everything this script does worked. It is manual, it is on the device, and because each
+#    profile renewal it has been observed to come back, it is NOT first-install-only — expect it every
+#    cycle rather than being surprised by it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 INSTALL=0
-CONFIG="Debug"
+# RELEASE by default, unlike the Simulator lane (scripts/ios-live.sh), and the two are deliberately
+# NOT harmonized: this script's output goes on a real phone to be USED, where Debug's -Onone Swift is
+# felt directly as UI lag (SwiftUI diffing, terminal rendering). ios-live.sh is a tight
+# iterate-in-the-Simulator loop where a faster build beats a faster app, so Debug is right there.
+# Optimize each lane for what it is actually for; --debug below is the escape hatch for the rare
+# device build you mean to attach a debugger to or want usable symbols in.
+CONFIG="Release"
+DEVICE_SELECTOR="${ORCH_IOS_DEVICE:-}"   # env default; --device wins over it
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --install) INSTALL=1; shift ;;
+    --debug) CONFIG="Debug"; shift ;;
+    # Redundant with the default, but kept and kept MEANINGFUL: an older invocation asking for
+    # Release still gets Release, and selecting rather than ignoring keeps the two flags
+    # order-independent (last one wins) instead of silently letting --debug beat a later --release.
     --release) CONFIG="Release"; shift ;;
+    # Reject a separated value that is itself an option. `--device --install` would otherwise swallow
+    # the --install as the selector and shift past it, leaving INSTALL=0 and no leftover argument to
+    # trip the check below — so the script does a full build, installs nothing, and prints DONE as if
+    # it had. A selector deliberately starting with a dash goes through the attached form
+    # (`--device=--weird-name`), which is unambiguous.
+    --device)
+      DEVICE_SELECTOR="${2:-}"
+      [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }
+      case "$DEVICE_SELECTOR" in
+        --*) echo "error: --device got the option '$DEVICE_SELECTOR' as its value; use --device=$DEVICE_SELECTOR if that really is the device name" >&2; exit 1 ;;
+      esac
+      shift 2 ;;
+    # Same emptiness check as the spaced form. Without it `--device=` reads as an empty selector,
+    # which would silently CLEAR an ORCH_IOS_DEVICE override and fall through to auto-selection —
+    # so a typo'd explicit flag would install to whatever phone happened to be around.
+    --device=*) DEVICE_SELECTOR="${1#*=}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device= needs a value" >&2; exit 1; }; shift ;;
     *) echo "error: unknown option '$1'" >&2; exit 1 ;;
   esac
 done
+# The loop above only consumes --flags, so anything left is a typo ('install' for '--install') that
+# would otherwise be discarded in silence — and silently building the wrong thing is the failure mode
+# this script keeps getting bitten by.
+[ $# -eq 0 ] || { echo "error: unexpected argument '$1' (options start with --)" >&2; exit 1; }
 
 # --- resolve the team id (never committed) --------------------------------------------------------
 LOCAL_XCCONFIG="App-iOS/DeviceSigning.local.xcconfig"
@@ -55,6 +117,40 @@ EOF
 fi
 BUNDLE_ID="${ORCH_IOS_BUNDLE_ID:-com.orchestra.ios}"
 echo "team=$TEAM  bundle=$BUNDLE_ID  config=$CONFIG  entitlements=OrchestraiOS-nopush.entitlements"
+
+# --- resolve the target device FIRST, before the expensive build ----------------------------------
+# Selection is seconds; the build is minutes. Doing it in this order means a typo'd --device, a phone
+# that is off the network, or two paired iPhones fails immediately instead of after a full signed
+# build — which is the exact shape of the failure this lane was fixed for. Nothing here depends on
+# build output, so there is no reason to wait.
+DEVICE=""
+if [[ "$INSTALL" == 1 ]]; then
+  # Ask devicectl for JSON rather than scraping its table. `devicectl list devices --help` states that
+  # "JSON output to a user-provided file on disk is the ONLY supported interface for scripts/programs
+  # to consume command output." The table is exactly what broke this lane before: its State column
+  # renders a network-paired iPhone (the normal state once "Connect via network" is ticked) as
+  # `available (paired)`, so filtering rows for `connected` matched nothing. There is no `state` field
+  # in the JSON to key off either — that column is assembled from connectionProperties — so
+  # scripts/lib/ios-pick-device.py selects on device IDENTITY (platform/reality/deviceType) and never
+  # on connection state. See that file for the policy; scripts/lib/ios-pick-device-test.sh pins it
+  # against captured JSON, no phone required, and runs on the merge gate via scripts/test.sh --all.
+  #
+  # --json-output takes a path, so route it through a temp file we own and clean up. devicectl still
+  # prints its human table to stdout; drop that and keep stderr, which carries the real diagnosis when
+  # CoreDevice itself is unhappy (e.g. the XPC/CoreDeviceService errors you get in a sandbox).
+  DEVICES_JSON="$(mktemp -t orch-ios-devices)"
+  trap 'rm -f "$DEVICES_JSON"' EXIT
+  xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null \
+    || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
+  # An array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and
+  # an unquoted conditional expansion would word-split it into two arguments. And the ATTACHED form
+  # (--device=x, not --device x) because a selector starting with a dash would otherwise arrive as its
+  # own argv token and argparse would read it as an option; attached values are never reparsed.
+  PICK_ARGS=(--json "$DEVICES_JSON")
+  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=("--device=$DEVICE_SELECTOR"); fi
+  # `set -e` aborts here if the picker can't choose one device; it has already explained why on stderr.
+  DEVICE="$(scripts/lib/ios-pick-device.py "${PICK_ARGS[@]}")"
+fi
 
 # --- generate the project + build signed for a device ---------------------------------------------
 command -v xcodegen >/dev/null 2>&1 || { echo "error: xcodegen not found (brew install xcodegen)" >&2; exit 1; }
@@ -78,7 +174,8 @@ scripts/lib/with-lock.sh build -- xcodebuild \
 # App-iOS/OrchestraiOS-nopush.entitlements. A leading `App-iOS/` here double-nests to
 # App-iOS/App-iOS/OrchestraiOS-nopush.entitlements (nonexistent) → signing silently uses the target's
 # default OrchestraiOS.entitlements (which HAS aps-environment) and free-team signing fails. project.yml's
-# own `CODE_SIGN_ENTITLEMENTS: OrchestraiOS.entitlements` (bare) confirms the SRCROOT-relative convention.
+# own `CODE_SIGN_ENTITLEMENTS: OrchestraiOS-nopush.entitlements` (bare) confirms the SRCROOT-relative
+# convention — it names the same file this script passes, just via the project rather than the CLI.
 
 APP="$(xcodebuild -project App-iOS/OrchestraiOS.xcodeproj -scheme OrchestraiOS -configuration "$CONFIG" \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM="$TEAM" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
@@ -89,21 +186,24 @@ echo "built: $APP"
 echo "entitlements: $(codesign -d --entitlements :- "$APP" 2>/dev/null | tr -d '\0' \
   | grep -oE 'aps-environment|keychain-access-groups' | sort -u | paste -sd, -)  (must NOT list aps-environment)"
 
-# --- optionally install to a connected iPhone -----------------------------------------------------
+# --- install to the iPhone chosen before the build ------------------------------------------------
 if [[ "$INSTALL" == 1 ]]; then
-  # Extract the device Identifier (a standard 8-4-4-4-12 UUID) from `devicectl list devices`, robustly.
-  # The old `awk '{print $(NF-1)}'` counted columns from the end, but Name ("Allen's iPhone") and Model
-  # ("iPhone 15 Pro") are multi-word, so NF-1 landed on a Model word (e.g. "15"), never the UUID. Instead
-  # we filter to connected-iPhone rows and grep the one field that has a fixed, unambiguous shape — the
-  # Identifier UUID — which is immune to column count. (The Hostname column is `<udid>.coredevice.local`,
-  # an 8hex-16hex form that does NOT match the full-UUID pattern, so it can't be picked by mistake.)
-  DEVICE="$(xcrun devicectl list devices 2>/dev/null \
-    | awk '/iPhone/ && /connected/' \
-    | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-    | head -1)"
-  [ -n "$DEVICE" ] || { echo "error: no connected iPhone found (xcrun devicectl list devices)" >&2; exit 1; }
   echo "=== install to $DEVICE ==="
-  xcrun devicectl device install app --device "$DEVICE" "$APP"
-  echo "installed. First launch: on the iPhone, trust the developer profile in Settings ▸ General ▸ VPN & Device Management."
+  # A locked phone fails here with kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which
+  # reads like a pairing fault — say so up front rather than leaving that to be rediscovered.
+  xcrun devicectl device install app --device "$DEVICE" "$APP" \
+    || { echo "hint: is the iPhone unlocked? a locked phone fails the developer-disk-image mount (kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040)." >&2; exit 1; }
+  # The trust gate below is per SIGNING IDENTITY, not per app, so it recurs with every fresh 7-day
+  # profile — not just the first install. It sits downstream of compile/sign/install, so reaching it
+  # means this script SUCCEEDED; say so plainly rather than leaving it to read as a failure.
+  # The lane deliberately ENDS HERE. devicectl's own "App installed:" line is the verification, and a
+  # scripted `process launch` would add nothing: it starts the app over the developer-disk-image debug
+  # path, which the Untrusted Developer gate does not cover, so it succeeds in exactly the case where
+  # tapping the icon fails — false confidence precisely where the risk is. It is also intrusive:
+  # --terminate-existing kills a running instance, and this is someone's personal phone in active use.
+  echo "installed."
+  echo "NEXT (manual, and needed again after every new 7-day profile — this is not an error):"
+  echo "  on the iPhone, Settings ▸ General ▸ VPN & Device Management ▸ your Apple ID ▸ Trust,"
+  echo "  then open the app yourself. Until you trust it, iOS shows \"Untrusted Developer\"."
 fi
 echo "DONE"
