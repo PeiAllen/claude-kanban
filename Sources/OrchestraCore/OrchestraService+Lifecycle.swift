@@ -134,10 +134,10 @@ extension OrchestraService {
         }
 
         // 6 · Broadcast the new state FIRST — before any wake. `wake` may record a `.relaunching`
-        //     intent INLINE (B4: it holds `deliveriesInFlight` across the ladder, so it no longer
+        //     intent INLINE (B4: it holds the delivery-in-flight claim across the ladder, so it no longer
         //     detaches), and that nested transition emits its own upsert. Broadcasting this `.live`
         //     one first keeps the pair in causal order (`.live` then `.relaunching`) instead of
-        //     inverted. Recursion is bounded by `deliveriesInFlight`: a nested wake sees the outer
+        //     inverted. Recursion is bounded by the delivery-in-flight claim: a nested wake sees the outer
         //     claim and returns at once.
         emit(.taskUpserted(updated), rev: rev)
 

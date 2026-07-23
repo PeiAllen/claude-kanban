@@ -68,14 +68,14 @@ extension OrchestraService {
     /// **not** a periodic timer. Called from the normalized `report()` funnel (adapter-agnostic: it
     /// sees only that the card had activity, never which tool ran).
     func scheduleDiffStat(_ id: UUID) {
-        diffStatDebounce[id]?.cancel()
-        diffStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
-            try? await clock.sleep(for: .milliseconds(750))
-            if _Concurrency.Task.isCancelled { return }
-            await self?.recomputeDiffStat(id)
-            await self?.clearDiffStatDebounce(id)
+        _ = arm(id, .diffStat) { token in
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .milliseconds(750))
+                if _Concurrency.Task.isCancelled { return }
+                await self?.recomputeDiffStat(id)
+                // Token-fenced: a task superseded mid-recompute must not nil its replacement's slot.
+                await self?.clearSlot(id, .diffStat, ifToken: token)
+            }
         }
     }
-
-    private func clearDiffStatDebounce(_ id: UUID) { diffStatDebounce[id] = nil }
 }

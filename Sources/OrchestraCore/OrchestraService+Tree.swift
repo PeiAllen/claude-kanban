@@ -44,7 +44,7 @@ extension OrchestraService {
                     $0.treeStat = TreeStat(state: .inSync, parentIsRemote: true)
                 }
                 emit(.taskUpserted(updated), rev: rev)
-                if watch { startRemoteWatch(cardId: t.id) } else { stopRemoteWatch(t.id) }
+                if watch { ensureRuntime(for: updated); startRemoteWatch(cardId: t.id) } else { stopRemoteWatch(t.id) }
                 emitActivity(.command, updated, source, "set remote parent → \(remote.canonical)")
                 return updated
             }
@@ -201,8 +201,7 @@ extension OrchestraService {
         }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
-        treeStatDebounce[t.id]?.cancel()
-        treeStatDebounce[t.id] = nil
+        disarm(t.id, .treeStat)
         await recomputeTreeStat(t.id)
         emitActivity(.command, t, source, "synced parent \(link.parent)")
         return (await store.get(t.id)) ?? t
@@ -331,7 +330,7 @@ extension OrchestraService {
                     }) {
                         emit(.taskUpserted(saved), rev: rev)
                     }
-                    if gpRemote != nil { startRemoteWatch(cardId: card.id) }
+                    if gpRemote != nil { ensureRuntime(for: card); startRemoteWatch(cardId: card.id) }
                     // S3-7: route the rebase target through the resolvable ref, and skip the command text
                     // entirely when the anchor is empty (an empty `--onto X ` is malformed).
                     if gcLink.base.isEmpty {
@@ -490,31 +489,30 @@ extension OrchestraService {
     /// Coalescing per-card trigger for `recomputeTreeStat` — a one-shot debounce off the report funnel,
     /// twin of `scheduleDiffStat`.
     func scheduleTreeStat(_ id: UUID) {
-        treeStatDebounce[id]?.cancel()
-        treeStatDebounce[id] = _Concurrency.Task { [weak self, clock] in
-            try? await clock.sleep(for: .milliseconds(750))
-            if _Concurrency.Task.isCancelled { return }
-            await self?.recomputeTreeStat(id)
-            await self?.clearTreeStatDebounce(id)
+        _ = arm(id, .treeStat) { token in
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .milliseconds(750))
+                if _Concurrency.Task.isCancelled { return }
+                await self?.recomputeTreeStat(id)
+                // Token-fenced: a task superseded mid-recompute must not nil its replacement's slot.
+                await self?.clearSlot(id, .treeStat, ifToken: token)
+            }
         }
     }
-
-    private func clearTreeStatDebounce(_ id: UUID) { treeStatDebounce[id] = nil }
 
     /// Coalescing per-parent trigger for the child fan-out — a one-shot debounce off the report funnel,
     /// like `scheduleTreeStat`. Debounced (not inline on the funnel) so the `git config --get-regexp`
     /// child lookup runs once per activity burst instead of once per report on the hot path.
     func scheduleChildFanout(_ id: UUID) {
-        childFanoutDebounce[id]?.cancel()
-        childFanoutDebounce[id] = _Concurrency.Task { [weak self, clock] in
-            try? await clock.sleep(for: .milliseconds(750))
-            if _Concurrency.Task.isCancelled { return }
-            await self?.fanOutChildTreeStats(id)
-            await self?.clearChildFanoutDebounce(id)
+        _ = arm(id, .childFanout) { token in
+            _Concurrency.Task { [weak self, clock] in
+                try? await clock.sleep(for: .milliseconds(750))
+                if _Concurrency.Task.isCancelled { return }
+                await self?.fanOutChildTreeStats(id)
+                await self?.clearSlot(id, .childFanout, ifToken: token)
+            }
         }
     }
-
-    private func clearChildFanoutDebounce(_ id: UUID) { childFanoutDebounce[id] = nil }
 
     /// Schedule a TreeStat recompute for each LIVE child card of `id`'s branch — a card whose branch
     /// records that branch as its parent. Runs off the debounced fan-out (a parent card's activity may

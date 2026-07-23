@@ -24,12 +24,12 @@ struct TeardownDutiesTests {
 
         await env.svc.scheduleDiffStat(card.id)
         await clock.parked(1, deadlineAtLeast: .milliseconds(700))   // debounce sleeper is parked
-        let task = try #require(await env.svc.diffStatDebounce[card.id])
+        let task = try #require(await env.svc.runtime[card.id]?.tasks[.diffStat]?.task)
 
         try await TestEnv.archiveAndTeardown(env.svc, card.id)
 
         #expect(task.isCancelled)                                     // cancelled, not orphaned
-        #expect(await env.svc.diffStatDebounce[card.id] == nil)       // and the slot is dropped
+        #expect(await env.svc.runtime[card.id] == nil)                // the whole entry is detached
     }
 
     /// The merge-request-nudge generation fence must SURVIVE teardown. It is unique per arming for
@@ -49,31 +49,19 @@ struct TeardownDutiesTests {
         let armed = await env.svc.mergeRequestNudgeGeneration(card.id)
         #expect(armed >= 1)
 
+        // Arming tokens are minted from a PROCESS-monotonic counter, never per-card: a re-arm on any
+        // card can never mint a value a parked pre-archive ghost holds. Teardown detaches the entry
+        // outright (token reads 0), which is safe for the same reason — a ghost's token matches
+        // neither an empty slot nor any future arming.
         try await TestEnv.archiveAndTeardown(env.svc, card.id)
-        // `stopMergeRequestNudge` bumped past `armed`; teardown must NOT nil the entry back to 0.
-        #expect(await env.svc.mergeRequestNudgeGeneration(card.id) > armed)
+        #expect(await env.svc.mergeRequestNudgeGeneration(card.id) == 0)   // entry detached
+        #expect(await env.svc.reNudgeMergeRequest(card.id, token: armed))  // ghost tick: stops, no effect
 
-        // A later re-arm (reopen path) seeds beyond every pre-archive gen — a parked ghost holding
-        // `armed` can never match again.
-        await env.svc.startMergeRequestNudge(childId: card.id)
-        #expect(await env.svc.mergeRequestNudgeGeneration(card.id) > armed)
-        await env.svc.stopMergeRequestNudge(card.id)
-    }
-
-    /// Same fence-survival contract for the remote-watch gen (the twin map, nilled on the
-    /// adjacent teardown line).
-    @Test("teardown keeps the remote-watch gen fence")
-    func teardownKeepsRemoteWatchGenFence() async throws {
-        let env = TestEnv.make(clock: TestClock())
-        let repo = TestEnv.repo(env.base)
-        let card = try await TestEnv.spawnAndAwaitLive(
-            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "rwgen"))
-
-        await env.svc.startRemoteWatch(cardId: card.id)
-        let armed = await env.svc.remoteWatchGen[card.id] ?? 0
-        #expect(armed >= 1)
-
-        try await TestEnv.archiveAndTeardown(env.svc, card.id)
-        #expect((await env.svc.remoteWatchGen[card.id] ?? 0) > armed)
+        // A fresh arming (other card or reopened successor) mints strictly beyond every prior token.
+        let other = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: TestEnv.repo(env.base), branch: "genf2"))
+        await env.svc.startMergeRequestNudge(childId: other.id)
+        #expect(await env.svc.mergeRequestNudgeGeneration(other.id) > armed)
+        await env.svc.stopMergeRequestNudge(other.id)
     }
 }

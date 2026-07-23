@@ -46,7 +46,7 @@ extension OrchestraService {
         var moved = false
         if case .oid(let observed) = tip, observed != fetchedTip {
             moved = true
-            remoteWarnLatch.remove(cardId)   // S3-1: tip changed — a prior gone/closed warning may no longer hold
+            runtime[cardId]?.remoteWarned = false   // S3-1: tip changed — a prior gone/closed warning may no longer hold
             fetchedTip = (try? await remoteParents.fetch(repo: t.repo, ref)) ?? fetchedTip
             scheduleTreeStat(cardId)
         }
@@ -69,8 +69,8 @@ extension OrchestraService {
         // S2-8: a PR closed WITHOUT merging is safe but otherwise silent — GitHub keeps `refs/pull/N/head`
         // so the tip never goes `.gone` and the card sits inSync/watched forever with no hint. Surface it
         // once (latched) so the human picks a new base.
-        if let st = prState, st.state == "CLOSED", !st.merged, !remoteWarnLatch.contains(cardId) {
-            remoteWarnLatch.insert(cardId)
+        if let st = prState, st.state == "CLOSED", !st.merged, runtime[cardId]?.remoteWarned != true {
+            runtime[cardId]?.remoteWarned = true
             emitActivity(.warning, t, .daemon,
                 "parent \(link.parent) PR closed without merging — pick a new base with "
                 + "`orchestra set-parent \(t.shortId) <newBranch>`")
@@ -81,8 +81,8 @@ extension OrchestraService {
         // S3-1: latch the warning (this condition is persistent — it would re-fire every idle tick).
         // S2-8: consult gh — don't claim "likely merged" when gh just said the PR was CLOSED-not-merged.
         if tip == .gone {
-            if !remoteWarnLatch.contains(cardId) {
-                remoteWarnLatch.insert(cardId)
+            if runtime[cardId]?.remoteWarned != true {
+                runtime[cardId]?.remoteWarned = true
                 let closedNotMerged = (prState?.state == "CLOSED" && prState?.merged == false)
                 emitActivity(.warning, t, .daemon, closedNotMerged
                     ? "parent \(link.parent) branch is gone and its PR was closed without merging — "
@@ -184,7 +184,7 @@ extension OrchestraService {
     // MARK: - watch loop lifecycle
 
     func setRemoteWatchIntervals(active: Duration, idle: Duration) { remoteWatchIntervals = (active, idle) }
-    func remoteWatchActive(_ id: UUID) -> Bool { remoteWatch[id] != nil }
+    func remoteWatchActive(_ id: UUID) -> Bool { runtime[id]?.tasks[.remoteWatch] != nil }
 
     /// Start (or restart) the per-card watch loop. Each tick runs `remoteMergeStep`; the backoff is the
     /// `active` interval right after the tip moved (poll faster while the parent is churning) and `idle`
@@ -192,25 +192,25 @@ extension OrchestraService {
     /// leaves the remote tier (archived/cleared/local parent) — a redirect onto `origin/<base>` keeps it
     /// running (harmless; a base branch never "merges") so the child keeps a fresh stale badge.
     func startRemoteWatch(cardId: UUID) {
-        remoteWatch[cardId]?.cancel()
-        // Generation token: `startRemoteWatch` runs to completion on the actor with no `await`, so this
-        // cancel+bump+install is atomic. A cancelled prior loop's terminal `clearRemoteWatch(gen:)` then
-        // hops back onto the actor with its OLD gen and no-ops instead of nulling out THIS newer Task — the
-        // restart race that would otherwise orphan the live loop (uncancellable, wrong `remoteWatchActive`).
-        let gen = (remoteWatchGen[cardId] ?? 0) + 1
-        remoteWatchGen[cardId] = gen
+        // Arming-token fence (see `CardRuntime.Armed`): `arm` cancels the predecessor and mints a
+        // process-unique token; a cancelled prior loop's terminal `clearSlot(ifToken:)` hops back with
+        // its OLD token and no-ops instead of nulling out THIS newer Task — the restart race that would
+        // otherwise orphan the live loop (uncancellable, wrong `remoteWatchActive`). Arm + install has
+        // no `await`, so it is atomic on the actor. No runtime entry (archived) ⇒ no arm.
         // `self` is re-acquired PER HOP, never hoisted above the loop — see the note on
         // `startMergeRequestNudge`. A hoisted `guard let self` pinned the service for the loop's whole
-        // life, so `[weak self]` bought nothing. The generation token above is unchanged.
-        remoteWatch[cardId] = _Concurrency.Task { [weak self, clock] in
-            while !_Concurrency.Task.isCancelled {
-                guard let stop = await self?.shouldStopRemoteWatch(cardId) else { return }
-                if stop { break }
-                guard let outcome = await self?.remoteMergeStep(cardId: cardId) else { return }
-                guard let delay = await self?.remoteWatchDelay(after: outcome) else { return }
-                try? await clock.sleep(for: delay)
+        // life, so `[weak self]` bought nothing.
+        _ = arm(cardId, .remoteWatch) { token in
+            _Concurrency.Task { [weak self, clock] in
+                while !_Concurrency.Task.isCancelled {
+                    guard let stop = await self?.shouldStopRemoteWatch(cardId) else { return }
+                    if stop { break }
+                    guard let outcome = await self?.remoteMergeStep(cardId: cardId) else { return }
+                    guard let delay = await self?.remoteWatchDelay(after: outcome) else { return }
+                    try? await clock.sleep(for: delay)
+                }
+                await self?.clearSlot(cardId, .remoteWatch, ifToken: token)
             }
-            await self?.clearRemoteWatch(cardId, gen: gen)
         }
     }
 
@@ -233,19 +233,12 @@ extension OrchestraService {
         return false
     }
 
-    /// Cancel + drop a card's watch loop (archive / clear / retarget-to-local). Bumping the generation
-    /// invalidates any in-flight terminal cleanup from a loop we just cancelled, so it can't null a Task a
-    /// later `startRemoteWatch` may install.
+    /// Cancel + drop a card's watch loop (archive / clear / retarget-to-local). Disarm drops the slot
+    /// and its token, so an in-flight terminal cleanup from the cancelled loop fails its token gate and
+    /// can't null a Task a later `startRemoteWatch` installs (fresh tokens are never reused).
     func stopRemoteWatch(_ id: UUID) {
-        remoteWatch[id]?.cancel()
-        remoteWatch[id] = nil
-        remoteWatchGen[id] = (remoteWatchGen[id] ?? 0) + 1
-        remoteWarnLatch.remove(id)   // S3-1: leaving the remote tier clears any latched gone/closed warning
-    }
-    /// Terminal cleanup — only clears the slot if it still holds THIS loop's generation (see the race note
-    /// in `startRemoteWatch`).
-    private func clearRemoteWatch(_ id: UUID, gen: Int) {
-        if remoteWatchGen[id] == gen { remoteWatch[id] = nil }
+        disarm(id, .remoteWatch)
+        runtime[id]?.remoteWarned = false   // S3-1: leaving the remote tier clears any latched gone/closed warning
     }
 
     /// Daemon-startup reconstruction: for every LIVE worktree card whose lineage records a watched remote
@@ -256,6 +249,7 @@ extension OrchestraService {
             guard let link = await lineage.read(repo: t.repo, branch: t.branch), link.watch else { continue }
             let remotes = (try? await offActor { self.gitRemotes(repo: t.repo) }) ?? []
             guard RemoteParentRef.parse(link.parent, remotes: remotes) != nil else { continue }
+            ensureRuntime(for: t)   // boot reconstruction: the arm needs the entry
             startRemoteWatch(cardId: t.id)
         }
     }

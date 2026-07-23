@@ -65,7 +65,10 @@ extension OrchestraService {
         let children = Set(refs)
         if let watcher {
             registerWatch(watcher, children)
-            activeWaitProcesses[watcher, default: 0] += 1
+            // The wait count must persist even if this is the daemon's first touch of the watcher
+            // (post-restart): ensure, then count — an uncounted wait would double-notify on conclude.
+            if let w = await store.get(watcher) { ensureRuntime(for: w) }
+            runtime[watcher]?.activeWaitProcesses += 1
         }
         // SUBSCRIBE BEFORE READING CARD STATE. `transition` writes the terminal phase to the store BEFORE it
         // calls `concludeCard` → `mergeWatch.conclude`, so with the subscription already armed every
@@ -120,9 +123,8 @@ extension OrchestraService {
     }
 
     private func releaseActiveWaitProcess(_ watcher: UUID) {
-        guard let count = activeWaitProcesses[watcher] else { return }
-        if count <= 1 { activeWaitProcesses[watcher] = nil }
-        else { activeWaitProcesses[watcher] = count - 1 }
+        guard let count = runtime[watcher]?.activeWaitProcesses, count > 0 else { return }
+        runtime[watcher]?.activeWaitProcesses = count - 1
     }
 
     /// The single authority declares a card SETTLED terminal (a conclusion). Called from `archive`
@@ -135,7 +137,7 @@ extension OrchestraService {
         // terminal chokepoint. Doing it in `markDead` alone would miss the most likely post-re-seat death of
         // all: a re-seat whose launch fails concludes via the steppers' `concludeFailedLaunch`, which goes
         // through the funnel, not through `markDead`.
-        modelOverrideWatch[id] = nil
+        runtime[id]?.modelOverrideWatch = nil
         ensureWatchRegistryLoaded()   // a card concluding in the boot window must see the persisted watchers
         let conc = Conclusion(cardId: id, ref: t.ref(), kind: kind, deadReason: deadReason)
         // F3 inbox routing + F2 wake for every registered watcher of this child. If the watcher has a
@@ -143,7 +145,7 @@ extension OrchestraService {
         // enqueue a duplicate automatic inbox notice. MCP/tool watches have no later process output, so
         // they need the durable inbox notice as their wake context.
         for (watcher, children) in watchRegistry where children.contains(id) {
-            if activeWaitProcesses[watcher] == nil {
+            if (runtime[watcher]?.activeWaitProcesses ?? 0) == 0 {
                 let detail = deadReason.map { " — \($0.rawValue)" } ?? ""
                 try? await inbox.enqueue(watcher, "Card \(t.shortId) concluded (\(kind.rawValue)\(detail)).")
                 await wake(watcher)
@@ -180,10 +182,11 @@ extension OrchestraService {
     /// claiming at a stale epoch would lease a batch into a provably-dead session.
     func wake(_ id: UUID) async {
         guard let t = await store.get(id), !t.archived, deliverable(t),
-              !deliveriesInFlight.contains(id) else { return }
-        deliveriesInFlight.insert(id)          // SYNCHRONOUS claim — no await since the guard
+              runtime[id]?.deliveryInFlight != true else { return }
+        ensureRuntime(for: t)
+        runtime[id]?.deliveryInFlight = true   // SYNCHRONOUS claim — no await since the guard
         await deliver(t)
-        deliveriesInFlight.remove(id)
+        runtime[id]?.deliveryInFlight = false
     }
 
     /// Is this card a legal delivery target right now? `.live(.waiting(.humanTurn))` — never
@@ -206,7 +209,7 @@ extension OrchestraService {
         let epoch = t.sessionEpoch
 
         // 2 · the harness will re-invoke it — defer, don't charge (a turn IS coming).
-        if transport == .nativeReinvoke, activeWaitProcesses[t.id] != nil { return }
+        if transport == .nativeReinvoke, (runtime[t.id]?.activeWaitProcesses ?? 0) > 0 { return }
 
         // 3 · a delivery is mid-confirm — defer, don't charge.
         if await inbox.hasLiveLease(t.id, epoch: epoch, now: now()) { return }
@@ -248,11 +251,11 @@ extension OrchestraService {
     /// `send` — never on mere dispatch success, so an acking-but-not-notifying bridge cannot suppress
     /// the stuck flip.
     func chargeDeliveryAttempt(_ id: UUID) {
-        let count = (deliveryAttempts[id]?.count ?? 0) + 1
+        let count = (runtime[id]?.deliveryAttempt?.count ?? 0) + 1
         let delay = deliveryBackoffOverrideSeconds
             ?? min(pow(2.0, Double(min(count, 6))), 64)            // 2,4,8,…,64 capped
-        deliveryAttempts[id] = DeliveryAttempt(count: count,
-                                               nextEligible: now().addingTimeInterval(delay))
+        runtime[id]?.deliveryAttempt = DeliveryAttempt(count: count,
+                                                       nextEligible: now().addingTimeInterval(delay))
     }
 
     /// A card's conclusion kind from REAL card state, or nil if not settled-terminal. NEVER git.

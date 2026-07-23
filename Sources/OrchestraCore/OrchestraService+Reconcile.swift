@@ -27,7 +27,7 @@ extension OrchestraService {
     /// signal delivered before the step reaches `awaitReadiness` is dropped by `finishLaunch`'s
     /// "start clean" `pendingReadiness.remove`. Polling this (not a fixed sleep) makes the handoff
     /// deterministic and contention-proof.
-    func hasReadinessWaiter(_ id: UUID) -> Bool { readinessWaiters[id] != nil }
+    func hasReadinessWaiter(_ id: UUID) -> Bool { runtime[id]?.readinessWaiter != nil }
 
     /// Test seam: force a card's persisted phase (bypassing the funnel's legal-edge gate) so a test can
     /// SEED a transitional card the reconciler then drives — the crash-recovery premise that phase +
@@ -69,6 +69,11 @@ extension OrchestraService {
         // whose snapshot pair is consistent, lands it. We can be late to notice a death; we must never
         // invent one. (Pinned by `freshlyLiveCardNotKilledByStaleSnapshot`.)
         let tasks = await store.all()
+        // Boot reconstruction, amortized: every non-archived card holds a runtime entry from the first
+        // tick after daemon start (transitional and .dead cards included — the boot passes deliberately
+        // visit only `.live`). One dictionary-presence check per card per tick; archived cards are
+        // refused by the ensure gate, so a torn-down entry can never resurrect here (A1).
+        for t in tasks { ensureRuntime(for: t) }
         let aliveNames = Set((try? await offActor { [sessions] in try? sessions.list() })??.map(\.name) ?? [])
         // Sessions whose `agent` pane process DIED but whose session persists (remain-on-exit) — the
         // observable startup-abort / orphaned-dead-pane signal (folded from spawn-startup-abort).
@@ -89,9 +94,9 @@ extension OrchestraService {
             return out
         }) ?? [:]
         for (id, ts) in observedAlive {
-            observedSessions[id] = ObservedSession(targets: ts, running: !ts.isEmpty, observedAt: now)
+            runtime[id]?.observedSession = ObservedSession(targets: ts, running: !ts.isEmpty, observedAt: now)
         }
-        for id in deadIds { observedSessions[id] = ObservedSession(targets: [], running: false, observedAt: now) }
+        for id in deadIds { runtime[id]?.observedSession = ObservedSession(targets: [], running: false, observedAt: now) }
 
         for t in tasks {
             let name = sessions.sessionName(t.id)
@@ -104,7 +109,7 @@ extension OrchestraService {
             // (`.creatingWorktree`/`.launching`/`.relaunching`) is owned by the readiness machinery + launch
             // timeout and must NEVER be startup-classified here — its session is legitimately absent
             // mid-bring-up, and a lingering `spawnPending` from an earlier spawn must not kill it.
-            if t.phase.kind == .live, let deadline = spawnPending[t.id] {
+            if t.phase.kind == .live, let deadline = runtime[t.id]?.spawnPending {
                 await confirmSpawnStartup(t, deadline: deadline)
                 continue
             }
@@ -118,7 +123,7 @@ extension OrchestraService {
             switch t.phase.kind {
 
             case .live:
-                launchReadyTicks[t.id] = nil            // reached live — reset the being-born counter
+                runtime[t.id]?.launchReadyTicks = 0     // reached live — reset the being-born counter
                 if !alive {
                     // NEVER kill off a stale snapshot (the fail-safe `sweepOrphanSessions` already applies —
                     // bug #7). The ordering above closes the race that produced a stale `aliveNames`; this
@@ -142,7 +147,7 @@ extension OrchestraService {
                 // the adopt below would land the card `.live` out from under its own in-flight step. The step
                 // then stands down (`finishLaunch` is fenced on the dispatched phase), but the adopt is still
                 // a double-drive of a card that was already being brought up. Take the step's own claim.
-                let bringingUp = readinessWaiters[t.id] != nil || inFlightSteps.contains(t.id)
+                let bringingUp = runtime[t.id]?.readinessWaiter != nil || inFlightSteps.contains(t.id)
                 // (adopt) a stranded being-born card whose session is ALREADY up at the SAME epoch → adopt to
                 // live rather than re-launching it (the session came up before a crash cut the phase write).
                 // An OLDER-epoch session is NEVER adopted — the stepper completes the relaunch (kill+launch).
@@ -154,7 +159,7 @@ extension OrchestraService {
                     // (single-winner fence). `launching→live`/`relaunching→live` are legal for viaSignal too.
                     let probedEpoch = try? await offActor { [sessions] in try? sessions.stampedEpoch(name: name) }
                     if let probed = probedEpoch ?? nil, probed == t.sessionEpoch {
-                        launchReadyTicks[t.id] = nil
+                        runtime[t.id]?.launchReadyTicks = 0
                         // Land in the flavor the LaunchStepper WOULD have used (mirror its rule) rather than a
                         // hardcoded `.humanTurn`: a prompted first launch lands `.running`, a provisional/resumed
                         // card `.waiting`. Adopt jumps `.launching→.live` WITHOUT the LaunchStepper, so nothing
@@ -181,7 +186,7 @@ extension OrchestraService {
                 // (3) tick the N=3 launch-readiness fallback — gated ONLY on phase + session-alive, NEVER on
                 //     `inFlightSteps` (else a Codex `codex resume` / missed hook never confirms). Independent
                 //     of stepping so a card holding an in-flight step still gets ticked to `.live`.
-                if alive { tickLaunchReadyPublic(t.id) } else { launchReadyTicks[t.id] = nil }
+                if alive { tickLaunchReadyPublic(t.id) } else { runtime[t.id]?.launchReadyTicks = 0 }
                 // (6) `phaseChangedAt` timeout (`sessionLaunchTimeout`). A launch
                 //     that never confirmed within the timeout is dead. Checked BEFORE stepping so a doomed
                 //     launch is never re-driven past its deadline. The re-step invariant keeps the anchor:
@@ -207,11 +212,12 @@ extension OrchestraService {
             case .creatingWorktree, .archivedPending:
                 // (4) step the transitional set by kind — `.archivedPending` IS `isTerminal==true` yet MUST
                 //     be stepped by Teardown, so this iterates EXPLICITLY by kind, never via `!isTerminal`.
-                launchReadyTicks[t.id] = nil
+                runtime[t.id]?.launchReadyTicks = 0
                 stepIfEligible(t, now: now)
 
             case .dead, .archivedComplete:
-                launchReadyTicks[t.id] = nil          // terminal — nothing to step; keep the switch exhaustive
+                runtime[t.id]?.launchReadyTicks = 0   // terminal — nothing to step; keep the switch exhaustive
+                stepAttempts[t.id] = nil              // dead cards have no stepper — the backoff is dead weight (the .dead-path leak)
             }
 
             // The delivery arm (B4) — level-triggered, AFTER the phase switch so it reads this tick's
@@ -267,10 +273,10 @@ extension OrchestraService {
 
     /// `tickLaunchReady` is `private` in +Recovery; expose the same behavior to the reconciler.
     private func tickLaunchReadyPublic(_ id: UUID) {
-        guard readinessWaiters[id] != nil else { launchReadyTicks[id] = nil; return }
-        let n = (launchReadyTicks[id] ?? 0) + 1
-        if n >= launchReadyTickThreshold { launchReadyTicks[id] = nil; resolveReadiness(id, true, via: .ticks) }
-        else { launchReadyTicks[id] = n }   // liveness fallback → HOLD the seed lease (B3; production tick path)
+        guard runtime[id]?.readinessWaiter != nil else { runtime[id]?.launchReadyTicks = 0; return }
+        let n = (runtime[id]?.launchReadyTicks ?? 0) + 1
+        if n >= launchReadyTickThreshold { runtime[id]?.launchReadyTicks = 0; resolveReadiness(id, true, via: .ticks) }
+        else { runtime[id]?.launchReadyTicks = n }   // liveness fallback → HOLD the seed lease (B3; production tick path)
     }
 
     // MARK: - orphan-session sweep (fresh off-actor probe, fail-safe)

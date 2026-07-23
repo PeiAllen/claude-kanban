@@ -580,22 +580,54 @@ auto-removed (`ensure` throws `worktreeNeedsManualCleanup`); `release` never rem
 `force`, never removes a tree any non-archived sibling (or in-flight holder) still references, and treats
 a missing tree as an idempotent success rather than an error.
 
-### Teardown duty hygiene: fences outlive the card, timers die with it
+### CardRuntime: card-lifetime actor state in one detachable entry
 
-Two rules govern what `teardownActorDuties` does with a per-card entry, fixed together as the
-opening move of the CardRuntime teardown refactor:
+All of a card's in-memory, card-lifetime state on the `OrchestraService` actor lives in **one
+`CardRuntime` struct** in a single `runtime: [UUID: CardRuntime]` map — timers, debounce tasks,
+delivery accounting, readiness waiters, funnel bookkeeping. Teardown detaches the whole entry, so
+a new per-card field is torn down by construction: the previous design (one `[UUID: X]` dict per
+concern plus a hand-maintained duty list in `teardownActorDuties`) leaked whatever the list didn't
+name, and the list gained three hand-added entries in its final two weeks.
 
-- **Every per-card debounce/loop task is cancelled at teardown.** `diffStatDebounce` joins its
-  `treeStatDebounce`/`childFanoutDebounce` twins — previously its only cleanup was the self-clear at
-  the end of its own debounce body, so an in-flight diffstat survived archive and recomputed against
-  a dead card.
-- **The per-arming generation fences (`remoteWatchGen`/`mergeRequestNudgeGen`) survive teardown.**
-  A fence's uniqueness must span archive→reopen within one process: the stop-path bump is what makes
-  a parked ghost tick (already past its cancellation check, suspended inside its tick body) unable to
-  match ever again. Nil-ing the gens at teardown let a post-reopen re-arm re-seed from 1 — which a
-  pre-archive ghost could match, sending a duplicate reminder, CAS-counting it, and nil-ing the live
-  re-armed task's slot. Cost: two Ints per archived card for the daemon's life, dissolved by the
-  CardRuntime refactor's globally-minted arming tokens.
+The mechanisms that make the wholesale drop safe:
+
+- **The armed-task bag.** The five per-card timer/loop slots (remote watch, merge-request nudge,
+  the three debounces) live in one `tasks: [ArmedSlot: Armed]` bag; the detach iterates and
+  cancels — discarding a struct containing a running `Task` would orphan it, strictly worse than a
+  leak. Every arming carries a **token minted from a process-monotonic counter** (never reused,
+  never reset). Delayed callbacks — a loop's mid-tick ghost gates, every debounce's terminal
+  self-clear — compare their captured token against the slot's current one and no-op when
+  superseded. This replaces the two per-card `?? 0 + 1` generation counters (whose teardown-reset
+  allowed a post-reopen re-seed a pre-archive ghost could match) and extends the same fence to the
+  debounces, whose self-clears were previously unfenced and could nil a newer task's slot.
+- **`ensureRuntime` is the only creator**, gated on the card's `archived` bit — set at archive
+  intent, cleared by reopen. Every other write is update-if-present. The report funnel (which has
+  no archived gate of its own) ensures at entry for live cards, and the ensure gate is what makes
+  a late report for an archived card a no-op instead of a resurrection. The reconcile tick ensures
+  entries for every non-archived card, which is also the boot reconstruction — transitional and
+  `.dead` cards get their entries on the first tick after a daemon restart.
+- **Teardown runs under a persisted lease** — the card's `.archivedPending` phase + the
+  `sessionEpoch` its step was dispatched with, re-verified (`stillOwns`) before mutations and
+  after every suspension. A reopen bumps the epoch, so a stale teardown stands down without
+  touching the reopened card's state; a crash-redrive re-dispatches at the current epoch and
+  proceeds (the lease is persisted, so it authorizes redrives that no in-memory fence could).
+  Durable duties — the card-file sweep, the **watcher-side watch-registry removal** (previously
+  never removed: an archived watcher's key persisted to disk forever), and the dedup-keyed child
+  nudge — run on every redrive, gated on the lease and never on runtime presence.
+- **Deliberately outside the struct**: `inFlightSteps` and `stepAttempts` are reconciler driving
+  state, not card state — the teardown step's own claim is live during teardown, and a failed
+  teardown writes its backoff after step 4 (the re-drive gate needs it; its `.dead`-path residue is
+  cleared in the reconcile terminal arm instead). `watchRegistry` is persisted relational state
+  whose watcher-side removal is a durable duty, not a struct field.
+- **Collaborators are notified, not absorbed.** `TerminalOwnershipStore` gains a non-CAS
+  `clearOwner(cardId:)` used only by the detach: it clears the owner of every window while keeping
+  each slot's epoch (epoch monotonicity is the store's stale-CAS safety; removing a slot would let
+  a reopened card restart at epoch 1 and ABA-match a stale client). The `RolloutTailer` cursor is
+  dropped at teardown, and bring-up seeds a fresh cursor at the rollout's post-kill EOF watermark —
+  a resumed/reopened card never replays rollout history into the seq-gated status funnel, whose
+  `lastSeq` the detach also reset.
+- **`diffStatDebounce` is cancelled at teardown** like its twins (previously its only cleanup was
+  its own self-clear, so an in-flight diffstat survived archive and recomputed against a dead card).
 
 ### One seed, four topologies
 

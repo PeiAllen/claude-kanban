@@ -63,7 +63,7 @@ public struct ConvergeContext: Sendable {
                                         _ expecting: Phase.Kind, _ epoch: Int) async -> ReadinessOutcome
     /// Actor-bound teardown duties Teardown can't reach from the struct: cancel treeStat/child-fanout
     /// debounces + remote watch + re-nudge timer AND the child find+nudge+wake (`lineage`/`derivedCard`/`wake`).
-    public let teardownActorDuties: @Sendable (_ id: UUID) async -> Void
+    public let teardownActorDuties: @Sendable (_ id: UUID, _ expectedEpoch: Int) async -> Void
     /// Emit an activity feed entry (re-materialized / spawn-failed / backoff), closed over the actor.
     public let emitActivity: @Sendable (_ id: UUID, _ kind: ActivityKind, _ text: String) async -> Void
     /// Funnel a delivery receipt (a claimed token's confirm) back to the service actor's `confirmDelivery`
@@ -79,7 +79,7 @@ public struct ConvergeContext: Sendable {
                 transition: @escaping @Sendable (UUID, Phase, Int?, Phase.Kind?, @escaping @Sendable (inout Task) -> Void) async -> TransitionResult,
                 materialize: @escaping @Sendable (UUID) async -> MaterializeOutcome,
                 finishLaunch: @escaping @Sendable (UUID, LaunchFlavor, Phase.Kind, Int) async -> ReadinessOutcome,
-                teardownActorDuties: @escaping @Sendable (UUID) async -> Void,
+                teardownActorDuties: @escaping @Sendable (UUID, Int) async -> Void,
                 emitActivity: @escaping @Sendable (UUID, ActivityKind, String) async -> Void,
                 confirmDelivery: @escaping @Sendable (UUID, UUID) async -> Void,
                 claimSeed: @escaping @Sendable (UUID, Int) async -> ClaimedBatch?) {
@@ -371,7 +371,9 @@ public struct TeardownStepper: PhaseStepper {
         }
         guard await stillArchiving(card.id, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
-        await ctx.teardownActorDuties(card.id)
+        // The card snapshot's sessionEpoch is the LEASE: the duties re-verify phase+epoch on the actor
+        // before each mutation, so a reopen that bumped the epoch makes this whole step a no-op.
+        await ctx.teardownActorDuties(card.id, card.sessionEpoch)
         // 4b · B3 D9: release the card's delivery leases before the terminal flip. B3 introduces HELD
         // relaunchSeed leases; without the release, `confirmDelivery`'s archive-read→confirm await window
         // could DELETE a held message on an archiving card instead of retaining it for a reopen. A released

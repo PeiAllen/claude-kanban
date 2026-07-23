@@ -28,7 +28,7 @@ struct ConfirmDeliveryTests {
         await env.svc.confirmDelivery(token: batch.token, cardId: card.id)
 
         #expect(await inbox.peek(card.id).isEmpty)                                   // the ONLY removal path
-        #expect(await env.svc.outstandingTokens[card.id] == nil)                     // token pruned
+        #expect(await env.svc.runtime[card.id]?.outstandingTokens.isEmpty == true)   // token pruned
         #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince == nil)  // stuck cleared
     }
 
@@ -47,7 +47,7 @@ struct ConfirmDeliveryTests {
         await env.svc.confirmDelivery(token: UUID(), cardId: card.id)   // a stale / unknown token → no-op
 
         #expect(await inbox.peek(card.id).count == 1)                                // message retained
-        #expect(await env.svc.outstandingTokens[card.id] == [batch.token])           // real token still outstanding
+        #expect(await env.svc.runtime[card.id]?.outstandingTokens == [batch.token])  // real token still outstanding
         #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince == stuckAt)  // NOT reset by a no-op
     }
 
@@ -70,7 +70,7 @@ struct ConfirmDeliveryTests {
         let remaining = await inbox.peek(card.id)
         #expect(remaining.count == 1)                                                // retained for a reopen
         #expect(remaining.first?.lease == nil)                                       // lease released
-        #expect(await env.svc.outstandingTokens[card.id] == nil)                     // no longer in flight
+        #expect(await env.svc.outstandingTokenCountForTest(card.id) == 0)            // no longer in flight
         #expect(try #require(await env.svc.store.get(card.id)).deliveryStuckSince == stuckAt)  // release ≠ confirm
     }
 }
