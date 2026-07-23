@@ -217,9 +217,11 @@ that says nothing about the path you actually got wrong.
 
 This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta): the script produces a
 signed `.app` entitled `keychain-access-groups` only, and `devicectl device install app` /
-`device process launch` put it on the phone and start it. Once the phone is set up, **the whole
-build-install loop is wireless**; the cable is needed only for the one-time setup session below
-(Trust This Computer, Developer Mode, and ticking "Connect via network").
+`device process launch` put it on the phone and start it. The Release configuration the lane now
+defaults to is verified for build and install; launching that Release build has not been observed yet
+(the attempt hit the locked-phone refusal below, which says nothing about the build). Once the phone
+is set up, **the whole build-install loop is wireless**; the cable is needed only for the one-time
+setup session below (Trust This Computer, Developer Mode, and ticking "Connect via network").
 
 ### The GUI mints the profile; the script consumes it
 
@@ -298,9 +300,14 @@ the selection logic is testable without a phone in the room.
 
 Three operational consequences of the free tier:
 
-- **The phone must be unlocked** while installing. A locked phone fails the developer-disk-image mount
-  with `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, which reads like a pairing or
-  transport fault and is nothing of the sort.
+- **The phone must be unlocked for both the install and the launch**, and each stage refuses
+  differently: the install fails the developer-disk-image mount with
+  `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, while a launch is denied by
+  SpringBoard with `denied by service delegate (SBMainWorkspace) for reason: Locked` /
+  `FBSOpenApplicationErrorDomain error 7 (0x07)`. Neither names the lock screen as the cause, and they
+  are asymmetric — an install can succeed in full and only the launch be refused, so
+  `FBSOpenApplicationErrorDomain error 7` after a clean install means "unlock the phone", not "the
+  install broke" or "it crashes on launch". Nothing needs rebuilding in that state.
 - **The provisioning profile lasts 7 days**, and renewing it means ⌘R from the GUI (above); there is no
   TestFlight or App Store distribution on a personal team.
 - **Real APNs push is out of scope.** A free Apple ID can't mint a `.p8` or enable the Push

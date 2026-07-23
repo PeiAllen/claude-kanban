@@ -24,17 +24,25 @@
 # VERIFIED ON METAL 2026-07-23 — entirely over Wi-Fi, no cable: this script built `** BUILD SUCCEEDED **`
 # signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, then
 # `devicectl device install app` and `devicectl device process launch --terminate-existing` put it on a
-# network-paired iPhone 16 Pro Max and started it. Still unverified: a bundle id colliding with another
-# Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch), re-signing after the 7-day profile expiry, and the
-# Release configuration specifically — that run predates the Debug→Release default flip below, so what
-# went on metal was a Debug build. Signing and install are configuration-independent, so this is a gap
-# in the evidence rather than a known problem.
+# network-paired iPhone 16 Pro Max and started it. The Release configuration this script now defaults to
+# has since been verified the same way — a clean Release-iphoneos build and a clean wireless install.
+# Still unverified: launching that Release build (the attempt hit the locked-phone refusal in gotcha 1,
+# which says nothing about the build), a bundle id colliding with another Apple ID (the
+# ORCH_IOS_BUNDLE_ID escape hatch), and re-signing after the 7-day profile expiry.
 #
 # ⚠️ THREE GOTCHAS, because each presents as some other, more alarming failure:
 #
-# 1. THE PHONE MUST BE UNLOCKED, or mounting the developer disk image fails with
-#    kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040. It reads like a pairing or transport
-#    fault; it is the lock screen. Unlock to the home screen and re-run.
+# 1. KEEP THE PHONE UNLOCKED FOR BOTH THE INSTALL AND THE LAUNCH. Two different stages refuse a
+#    locked device, with two unrelated-looking errors, and neither one says "unlock your phone":
+#      • install — the developer-disk-image mount fails with
+#        kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which reads like a pairing or
+#        transport fault.
+#      • launch  — SpringBoard denies it: "The request was denied by service delegate
+#        (SBMainWorkspace) for reason: Locked", FBSOpenApplicationErrorDomain error 7 (0x07).
+#    The pair is ASYMMETRIC and that is the trap: the install can succeed completely — the app is
+#    fully on the phone — and only the launch is refused. Seeing FBSOpenApplicationErrorDomain 7
+#    after a clean install invites "the install broke" or "it crashes on launch"; nothing is wrong
+#    and nothing needs rebuilding or reinstalling. Unlock to the home screen and launch again.
 #
 # 2. THIS SCRIPT CANNOT MINT A FREE-TEAM PROFILE — only consume one. `xcodebuild` cannot reach the
 #    keychain-backed session of the Apple ID signed into Xcode from a non-GUI shell, so on a
@@ -175,7 +183,7 @@ if [[ "$INSTALL" == 1 ]]; then
   # A locked phone fails here with kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which
   # reads like a pairing fault — say so up front rather than leaving that to be rediscovered.
   xcrun devicectl device install app --device "$DEVICE" "$APP" \
-    || { echo "hint: is the iPhone unlocked? a locked phone fails the developer-disk-image mount (CoreDeviceError 12040)." >&2; exit 1; }
+    || { echo "hint: is the iPhone unlocked? a locked phone fails the developer-disk-image mount (kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040)." >&2; exit 1; }
   # The trust gate below is per SIGNING IDENTITY, not per app, so it recurs with every fresh 7-day
   # profile — not just the first install. It sits downstream of compile/sign/install, so reaching it
   # means this script SUCCEEDED; say so plainly rather than leaving it to read as a failure.
@@ -188,5 +196,9 @@ if [[ "$INSTALL" == 1 ]]; then
   # untrusted — a successful launch here does NOT prove the home-screen icon works.
   echo "To smoke-test the build without the phone (works even while untrusted, so it proves less):"
   echo "  xcrun devicectl device process launch --device $DEVICE --terminate-existing $BUNDLE_ID"
+  # The install above can succeed on a locked phone's behalf and the LAUNCH still be refused, with an
+  # error naming neither the lock nor the phone. Pre-empt the "so the install was broken?" reading.
+  echo "  (if that says FBSOpenApplicationErrorDomain error 7 / 'denied by service delegate … Locked',"
+  echo "   the install above still succeeded — unlock the phone and launch again, rebuild nothing.)"
 fi
 echo "DONE"

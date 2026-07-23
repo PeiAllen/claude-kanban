@@ -30,9 +30,19 @@ stays in the drawer.
 5. **Remote Login on the Mac.** System Settings ▸ General ▸ Sharing ▸ **Remote Login** ▸ on. (The app
    reaches the daemon by SSH-ing into your Mac over the tailnet and bridging to its socket.)
 
-> **Keep the phone unlocked while installing.** A locked phone fails the developer-disk-image mount
-> with `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040` — it looks like a pairing or
-> network fault, but it's just the lock screen.
+> **Keep the phone unlocked for both the install and the launch.** Two separate stages refuse a
+> locked device, with two errors that look unrelated and mention neither the lock screen nor each
+> other:
+>
+> - **Install** — the developer-disk-image mount fails with `kAMDMobileImageMounterDeviceLocked` /
+>   `CoreDeviceError 12040`. Looks like a pairing or network fault.
+> - **Launch** — SpringBoard refuses: `The request was denied by service delegate (SBMainWorkspace)
+>   for reason: Locked`, `FBSOpenApplicationErrorDomain error 7 (0x07)`.
+>
+> These are asymmetric, which is the part that misleads: the **install can succeed completely** — the
+> app is fully on the phone — and only the launch is denied. If you see
+> `FBSOpenApplicationErrorDomain error 7` after a clean install, nothing is broken and the app does
+> not crash on launch. Unlock the phone and launch again; rebuild and reinstall nothing.
 
 ---
 
@@ -107,7 +117,9 @@ xcrun devicectl device process launch --device <identifier> --terminate-existing
 > **A scripted launch does not prove the install is usable.** `devicectl` starts the app through the
 > developer-disk-image debug path, which is not subject to the Untrusted Developer gate — so it
 > succeeds even while the developer is still untrusted. Use it to smoke-test a build; only tapping
-> the home-screen icon after **A3** proves the app opens the way you'll actually open it.
+> the home-screen icon after **A3** proves the app opens the way you'll actually open it. And if it
+> fails with `FBSOpenApplicationErrorDomain error 7`, that's the lock screen, not the build — the
+> install already succeeded (see the unlock note above).
 
 ### A3. Trust the developer on the phone (every cycle)
 
