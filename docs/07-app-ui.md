@@ -91,6 +91,13 @@ work within scope unchanged (both already read `visibleTasks`). The scope re-res
 `(repo, branch)` after every board change, so it survives the root card being succeeded (planning card →
 orchestrator) and clears to the top level when the branch loses its owner.
 
+**A visible mouse path in.** Because the drill is otherwise keyboard-only (`→`), a root that has a subtree
+carries two pointer affordances into it, both routing through the exact re-scope `→` runs: a **`drill ›`
+chip** that wakes with the card (like the id watermark) at the trailing edge of the L4 subtree line, its
+tooltip naming the key (`Drill into subtree — →`); and **double-clicking the root card** itself (the
+folder-open idiom — single click still selects and enters the terminal). Both are gated on the card
+actually having a lineage child, so the affordance never appears where drilling would no-op.
+
 **Keyboard is three-level.** `j`/`k` are the card axis — card-to-card, treating an expanded card and its
 rows as one unit (a selection on a row steps off the row's visible root). `↑`/`↓` are the row axis, walking
 the peek rows inside the selected card. `→`/`←` are the **scope axis**: `→` drills into the selected root's
@@ -152,8 +159,9 @@ renders the attached-agents accordion as shipped.
   dominates; else **green** when any reviewer is active or being born (an active reviewer keeps the eye
   green even beside one that has concluded — a finished reviewer is *idle*, not attention); else **grey**
   when every attached reviewer has finished its turn. Labelled "N attached" when it's alone on the line.
-  The right side is reserved for the descendants-only attention chip (a later slice).
-  Selecting the card (see [Hierarchy](#hierarchy-roots-peek-and-drill)) replaces this whole summary
+  The trailing edge carries the hover-revealed **`drill ›` chip** on a root that has a subtree (see
+  [Hierarchy](#hierarchy-roots-peek-and-drill)); the descendants-only attention chip lands beside it in a
+  later slice. Selecting the card replaces this whole summary
   with the subordinates as inline peek rows, which is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that

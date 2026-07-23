@@ -205,6 +205,10 @@ shoot "13-diffstat-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INSPECTOR
 shoot "14-swap-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
 shoot "15-swap-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
 
+# 16 — the L4 drill affordance: an unselected root with a live subtree shows the segment bar plus the
+# faint `drill ›` chip at the line's trailing edge (fix/drill-affordance).
+shoot "16-drill-affordance"  env ORCH_SHOW=subtree
+
 # Card anatomy (slice 2a — the four-line card). The `snap` shots are the primary gate: they render
 # through ImageRenderer, so they depend on neither window size, nor cfprefsd, nor Screen Recording,
 # and the ladder one sweeps widths in a single image. The windowed `shoot`s exist only to show the

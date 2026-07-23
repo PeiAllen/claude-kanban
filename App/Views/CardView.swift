@@ -72,10 +72,20 @@ struct CardView: View {
         .opacity(dimmed ? 0.32 : ((isDead || ds.isStale) ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        // Double-click a root that has a subtree to drill in — the folder-open idiom, same re-scope
+        // as `→`. Only attached where it can act: registering a count-2 handler makes SwiftUI stall
+        // every single click to see if a second lands, so leaf cards keep an undelayed select.
+        .drillOnDoubleClick(enabled: model.hasLineageChildren(task)) { enterDrill() }
         .onHover { cardHover = $0 }
         // Clicking a card selects it AND descends into its agent terminal, so the glow, the
         // inspector ring, and the real keyboard first responder all agree after the click.
         .onTapGesture { model.selectAndEnterTerminal(task.id) }
+    }
+
+    /// Re-scope the board to this card's subtree — the shared path `→` and the drill affordances take.
+    private func enterDrill() {
+        model.drillInto(model.cardLevelAnchor(task.id))
+        model.focusZone = .board
     }
 
     /// Dim when a `/` search is active and this card neither matches NOR hosts a matching attached row —
@@ -301,7 +311,33 @@ struct CardView: View {
     @ViewBuilder private var subtreeLine: some View {
         if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
-            SubtreeSegments(root: task).padding(.top, 6)
+            HStack(spacing: 8) {
+                SubtreeSegments(root: task)
+                drillChevron
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    /// The mouse path into the subtree: a "drill ›" chip riding the L4 line's reserved trailing slot,
+    /// shown only on cards that actually have a subtree to enter (`hasLineageChildren` — the same gate
+    /// `→` obeys). Like the id watermark it's a faint watermark at rest — enough to be found, since the
+    /// whole gap is that drill was invisible — and brightens when the pointer is on the card. Its
+    /// tooltip names the key so the click teaches the keyboard, and its slot never reflows the segments.
+    @ViewBuilder private var drillChevron: some View {
+        if model.hasLineageChildren(task) {
+            Button(action: enterDrill) {
+                HStack(spacing: 2) {
+                    Text("drill").font(F.ui(8.5, .semibold)).tracking(0.2)
+                    Image(systemName: "chevron.right").font(F.ui(8, .bold))
+                }
+                .foregroundStyle(theme.text3)
+                .opacity(cardHover ? 1 : 0.4)
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help("Drill into subtree — →")
+            .animation(.easeOut(duration: 0.12), value: cardHover)
         }
     }
 
@@ -324,6 +360,15 @@ struct CardView: View {
 }
 
 // MARK: - Helpers
+
+private extension View {
+    /// Attach double-click-to-drill only where a subtree exists. A count-2 tap gesture forces SwiftUI
+    /// to defer every single click on that view (waiting for a possible second), so we pay that cost
+    /// only on drillable roots and leave leaf cards' single-click selection instant.
+    @ViewBuilder func drillOnDoubleClick(enabled: Bool, _ action: @escaping () -> Void) -> some View {
+        if enabled { self.onTapGesture(count: 2, perform: action) } else { self }
+    }
+}
 
 /// A breathing pulse dot (ccPulse: opacity 1↔.35, scale 1↔.78).
 private struct BreathingDot: View {
