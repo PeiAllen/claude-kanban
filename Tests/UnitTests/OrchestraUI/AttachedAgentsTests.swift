@@ -140,25 +140,48 @@ import Foundation
 
     // MARK: liveness roll-up
 
-    @Test func liveness_greenIncludesBeingBorn_amberOnWaitingOrDead() {
+    @Test func liveness_threeTier_needsAttentionDominates_greenDominatesIdle() {
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x")
         func reviewer(_ id: String, _ phase: Phase) -> Task {
             worktree(id, branch: "r\(id)", access: .readOnly, parentBranch: "feat/x", phase: phase)
         }
+        // Running + being-born → green.
         m.tasks = [target, reviewer("02", .live(.running)),
                    reviewer("03", .launching), reviewer("04", .creatingWorktree)]
-        #expect(m.attachedLiveness(of: target) == .allRunning)
+        #expect(m.attachedLiveness(of: target) == .running)
 
+        // GREEN DOMINATES IDLE: a concluded (humanTurn) reviewer beside a running one stays green —
+        // a finished reviewer is idle, NOT attention. (This is the bug the old test enshrined.)
         m.tasks = [target, reviewer("02", .live(.running)),
                    reviewer("03", .live(.waiting(.humanTurn)))]
+        #expect(m.attachedLiveness(of: target) == .running)
+
+        // All concluded, none running, none blocked → idle (grey), still not amber.
+        m.tasks = [target, reviewer("02", .live(.waiting(.humanTurn))),
+                   reviewer("03", .live(.waiting(.humanTurn)))]
+        #expect(m.attachedLiveness(of: target) == .idle)
+
+        // NEEDS-YOU-NOW DOMINATES: a permission block ambers even beside a running reviewer.
+        m.tasks = [target, reviewer("02", .live(.running)),
+                   reviewer("03", .live(.waiting(.permission)))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
+        // Dead is needs-you-now too.
         m.tasks = [target, reviewer("02", .dead(.sessionVanished))]
         #expect(m.attachedLiveness(of: target) == .needsAttention)
 
+        // None attached → nil (badge hidden).
         m.tasks = [target]
         #expect(m.attachedLiveness(of: target) == nil)
+    }
+
+    @Test func livenessTier_perAgentClassification() {
+        #expect(BoardStore.AttachedLiveness(phase: .live(.running)) == .running)
+        #expect(BoardStore.AttachedLiveness(phase: .launching) == .running)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.humanTurn))) == .idle)
+        #expect(BoardStore.AttachedLiveness(phase: .live(.waiting(.permission))) == .needsAttention)
+        #expect(BoardStore.AttachedLiveness(phase: .dead(.sessionVanished)) == .needsAttention)
     }
 
     // MARK: base BoardStore (iOS) never strands

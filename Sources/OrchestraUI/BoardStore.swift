@@ -345,9 +345,26 @@ public class BoardStore: ObservableObject {
 
     // MARK: attached agents (read-only reviewers embedded behind their target)
 
-    /// Liveness roll-up for a target's attached agents: green when all are running or still being
-    /// born, amber when any needs the human or has died. Drives the target's eye-badge colour.
-    public enum AttachedLiveness: Equatable { case allRunning, needsAttention }
+    /// Eye-tint tier for attached agents — a THREE-tier priority, not a binary. `needsAttention` (a
+    /// reviewer on a permission prompt, or dead) is a distinct warning that DOMINATES everything; `running`
+    /// (any reviewer active or still being born) DOMINATES `idle`; `idle` (a reviewer that finished its
+    /// turn — `humanTurn` — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
+    /// is `idle`, NOT attention: a running sibling keeps the eye green, and only a genuine block (or an
+    /// all-quiet group) changes it.
+    public enum AttachedLiveness: Equatable {
+        case running        // green — active work in progress (dominates idle)
+        case idle           // grey  — all attached agents have finished their turn, none blocked
+        case needsAttention // amber — a reviewer is blocked on a permission prompt or has died
+
+        /// The tier a single agent's phase maps to.
+        public init(phase: Phase) {
+            switch phase {
+            case .dead, .live(.waiting(.permission)): self = .needsAttention
+            case .live(.waiting(.humanTurn)):         self = .idle
+            default:                                  self = .running   // running + being-born
+            }
+        }
+    }
 
     /// Total order for co-located / attached cards: created-time, then id. `createdAt` alone is not a
     /// total order — task dates serialize at second resolution (`Coders.swift`), so equal-timestamp
@@ -405,17 +422,18 @@ public class BoardStore: ObservableObject {
             .sorted(by: attachedBefore)
     }
 
-    /// Liveness roll-up for `target`'s attached agents (green vs amber), or nil when none are
-    /// attached (the badge is hidden). Green covers running AND the being-born phases so a
-    /// freshly-spawned reviewer doesn't flash amber; amber means at least one agent is waiting on the
-    /// human or has died.
+    /// Liveness roll-up for `target`'s attached agents, or nil when none are attached (the badge is
+    /// hidden). Three-tier priority (see `AttachedLiveness`): **needsAttention** if ANY agent is blocked
+    /// on a permission prompt or dead — a genuine block dominates; else **running** if ANY is active or
+    /// being born — an active reviewer keeps the eye green even while a sibling has concluded; else
+    /// **idle** — every attached agent has finished its turn.
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }
-        let needsAttention = agents.contains {
-            switch $0.phase { case .live(.waiting), .dead: return true; default: return false }
-        }
-        return needsAttention ? .needsAttention : .allRunning
+        let tiers = agents.map { AttachedLiveness(phase: $0.phase) }
+        if tiers.contains(.needsAttention) { return .needsAttention }
+        if tiers.contains(.running) { return .running }
+        return .idle
     }
 
     /// True when `target`'s attached rows should be REVEALED — the target itself is selected, or one of

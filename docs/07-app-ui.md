@@ -147,9 +147,12 @@ renders the attached-agents accordion as shipped.
   of everything below it: **stage-coloured segments** (one square per live lineage child, coloured by
   its column — planning purple, implementing blue, in-review teal — so the bar reads left-to-right as
   progression; merged-green and dashed not-started slots appear once the daemon's child-progress
-  counters land) followed by the **attached-agents eye** (`👁 N`, green when every attached agent is
-  running/starting, amber when one waits on the human or died; labelled "N attached" when it's alone
-  on the line). The right side is reserved for the descendants-only attention chip (a later slice).
+  counters land) followed by the **attached-agents eye** (`👁 N`), tinted by a **three-tier** roll-up:
+  **amber** when a reviewer needs the human now — blocked on a permission prompt, or dead — which
+  dominates; else **green** when any reviewer is active or being born (an active reviewer keeps the eye
+  green even beside one that has concluded — a finished reviewer is *idle*, not attention); else **grey**
+  when every attached reviewer has finished its turn. Labelled "N attached" when it's alone on the line.
+  The right side is reserved for the descendants-only attention chip (a later slice).
   Selecting the card (see [Hierarchy](#hierarchy-roots-peek-and-drill)) replaces this whole summary
   with the subordinates as inline peek rows, which is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards

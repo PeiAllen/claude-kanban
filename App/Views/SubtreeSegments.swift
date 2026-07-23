@@ -61,7 +61,7 @@ struct SubtreeSegments: View {
     @ViewBuilder private func eye(compact: Bool) -> some View {
         if let liveness = model.attachedLiveness(of: root) {
             let count = model.attachedAgents(of: root).count
-            let tint = liveness == .allRunning ? theme.green.text : theme.amber.text
+            let tint = theme.eyeTint(liveness)
             HStack(spacing: 3) {
                 Image(systemName: "eye").font(F.ui(8.5))
                 Text(compact ? "\(count)" : "\(count) attached").font(F.mono(10, .medium))

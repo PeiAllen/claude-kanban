@@ -162,6 +162,17 @@ extension Theme {
         case .review: return teal
         }
     }
+
+    /// The attached-agents eye tint for a liveness tier — green (active) · grey (idle/all-concluded) ·
+    /// amber (a reviewer needs the human now / died). The ONE place this mapping lives, shared by the L4
+    /// roll-up eye and the per-row peek eye so both read the same.
+    public func eyeTint(_ liveness: BoardStore.AttachedLiveness) -> Color {
+        switch liveness {
+        case .running:        return green.text
+        case .idle:           return text3
+        case .needsAttention: return amber.text
+        }
+    }
 }
 
 // MARK: - Fonts
