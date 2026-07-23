@@ -96,7 +96,7 @@ struct DeliveryArmTests {
         let env = TestEnv.make(grace: 2)
         await env.svc.setDeliveryBackoff(3600)                  // one charge parks it for the test
         let card = try await idleWithMessage(env)
-        _ = try await env.svc.store.update(card.id) { $0.titleProvisional = false }
+        _ = try await env.svc.store.update(card.id) { $0.awaitingFirstPrompt = false }
         env.adapter.deleteTranscript(for: card.agentSessionId!) // no route ⇒ charge
 
         await env.svc.reconcile()

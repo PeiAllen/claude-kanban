@@ -587,11 +587,22 @@ public actor OrchestraService {
             case (nil, nil):    return nil
             }
         }()
-        // No prompt AND no seed → the card is named off the first prompt the user types (titleProvisional),
-        // showing the branch as a placeholder until then. A prompt or seed seeds the title immediately.
-        let provisional = folded == nil
-        let title = provisional ? (input.branch.isEmpty ? "New agent" : input.branch)
-                                 : titleSeed(from: folded ?? input.prompt)
+        // LIFECYCLE (unchanged): no prompt AND no seed ⇒ nothing to submit, so the card comes up idle and
+        // awaits the user's first prompt. Kept on its OWN predicate, deliberately: this used to double as
+        // "the title is a placeholder", and now that a PROMPTED card can also carry a derived title, tying
+        // the two together would make `deriveLaunchFlavor` land prompted cards `.waiting` and drop their prompt.
+        let awaitingFirstPrompt = folded == nil
+        // NAMING: an explicit `title` pins; otherwise derive one from the card's own identity. The SEED is
+        // never a title source — `CardNaming.derived`'s last arm exists precisely for the seeded card.
+        // The attached target is resolved ONCE, here: the launch needs a concrete `--name` immediately.
+        let explicitTitle = input.title.map(CardNaming.normalize).flatMap { $0.isEmpty ? nil : $0 }
+        let derived = CardNaming.derived(
+            origin: origin, branch: input.branch, cwd: cwd, access: input.access,
+            attachedTargetTitle: (origin != .worktree && input.access == .readOnly)
+                ? attachedTargetTitle(cwd: cwd, excluding: id, among: await store.all()) : nil,
+            prompt: input.prompt)
+        let title = explicitTitle ?? derived.title
+        let titleSource: TitleSource = explicitTitle != nil ? .explicit : derived.source
         // A provisional card is idle awaiting the user's first prompt, so it lands `.waiting`; a real
         // prompt/seed means the agent is working immediately, so `.running`. The launch gets no positional
         // when provisional (a whitespace-only prompt must not be submitted to the agent).
@@ -600,10 +611,10 @@ public actor OrchestraService {
         // then spawn RETURNS. The reconciler's steppers (MaterializeStepper cuts/adopts the worktree + records
         // lineage → LaunchStepper brings the agent up + confirms readiness) drive it `→.launching →.live` off
         // the poll loop. The launch's landing (.running / .waiting) + the prompt are re-derived from the
-        // persisted `titleProvisional`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
+        // persisted `awaitingFirstPrompt`/`initialPrompt` by `deriveLaunchFlavor`, so nothing is lost here.
         let task = Task(
             id: id,
-            title: title, titleProvisional: provisional, desc: "",
+            title: title, titleSource: titleSource, awaitingFirstPrompt: awaitingFirstPrompt, desc: "",
             repo: realRepo, branch: input.branch, cwd: cwd,
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,

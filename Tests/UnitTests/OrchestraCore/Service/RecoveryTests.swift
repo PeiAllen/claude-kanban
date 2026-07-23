@@ -164,7 +164,7 @@ struct RecoveryTests {
         // Intent-only: restart records `.relaunching` with the persist block; the RelaunchStepper blank-launches.
         let intent = try await env.svc.restart(t.id, source: .app)
         #expect(intent.phase.kind == .relaunching)
-        #expect(intent.titleProvisional == true)
+        #expect(intent.awaitingFirstPrompt == true)
         #expect(intent.deadReason == nil)
         #expect(intent.deadDetail == nil)
         let newId = try #require(intent.agentSessionId)
@@ -210,9 +210,9 @@ struct RecoveryTests {
     func recoverRestartsNeverPrompted() async throws {
         let env = TestEnv.make(grace: 1)
         let repo = TestEnv.repo(env.base)
-        // No initial prompt → titleProvisional, and no transcript ever written.
+        // No initial prompt → awaitingFirstPrompt, and no transcript ever written.
         let p = try await env.svc.spawn(SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "fresh"))
-        #expect(p.titleProvisional == true)
+        #expect(p.awaitingFirstPrompt == true)
         env.sessions.setAlive(p.id, false)   // session gone (reboot), no transcript on disk
 
         await env.svc.reconcilePhasesAtBoot()   // provisional → `.relaunching` (blank-restart intent)

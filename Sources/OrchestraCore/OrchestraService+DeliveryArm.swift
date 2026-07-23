@@ -39,7 +39,7 @@ extension OrchestraService {
             return
         }
         // 02 §deliverable-card, literally: a `.dead` card is arm-deliverable only when
-        // `isResumable || titleProvisional`; "dead and not resumable → stuck-eligible DIRECTLY".
+        // `isResumable || awaitingFirstPrompt`; "dead and not resumable → stuck-eligible DIRECTLY".
         // Dispatching it would burn five backed-off wakes (minutes of silence) to reach the same end
         // state, so the contract short-circuits — there is provably no route, and the human is the
         // only thing that can help. "Eligible" is read as bypassing the ATTEMPT budget while keeping
@@ -48,7 +48,7 @@ extension OrchestraService {
         // `restart` reviving the card during that await bumps the epoch, and the flip must not stamp
         // stuck on the now-reviving generation.
         let deadEpoch = t.sessionEpoch
-        if case .dead = t.phase, !(await isResumable(t)), !t.titleProvisional {
+        if case .dead = t.phase, !(await isResumable(t)), !t.awaitingFirstPrompt {
             await deliveryDeadBypassPause?()   // test seam: land a reviving restart in this window
             await flipStuckIfExhausted(t.id, expectedEpoch: deadEpoch, bypassAttemptBudget: true)
             return
@@ -140,7 +140,7 @@ extension OrchestraService {
     /// **`expectedEpoch` fences a concurrent REVIVAL.** The caller decided this card was stuck-eligible
     /// at a specific generation; but `isResumable`/`wake` above the callers both suspend, and a
     /// `restart`/`resume` can legally move the card to `.relaunching` (bump the epoch, set
-    /// `titleProvisional`) or a report can adopt it back to `.live` during that window. Stamping stuck
+    /// `awaitingFirstPrompt`) or a report can adopt it back to `.live` during that window. Stamping stuck
     /// on a card that is now being delivered to leaves a false flag the arm then suppresses on and B5b
     /// would notify about. So the flip proceeds ONLY while the card is still at `expectedEpoch` AND
     /// still in the phase the decision was made for (`.dead` for the direct-dead bypass, else

@@ -58,6 +58,7 @@ enum CLIRunner {
                     fields["branch"] = .string(flags.require("branch"))
                 }
                 let p = JSONValue.object(fields
+                    .merging(optional("title", flags.value("title"))) { a, _ in a }
                     .merging(optional("model", flags.value("model"))) { a, _ in a }
                     .merging(optional("col", flags.value("col"))) { a, _ in a }
                     .merging(optional("seed", flags.value("seed"))) { a, _ in a }
@@ -131,6 +132,16 @@ enum CLIRunner {
                 }
                 let r = try await client.call("trust", .object(["path": .string(path)]))
                 if try r.decode(TrustGrantResult.self).granted { print("trusted \(path)") }
+
+            case "set-title":
+                let ref = flags.positional(0) ?? flags.require("ref")
+                let title = flags.value("title") ?? flags.positionalsFrom(1).joined(separator: " ")
+                if title.trimmingCharacters(in: .whitespaces).isEmpty {
+                    die("set-title needs a title: orchestra set-title <ref> <title...>")
+                }
+                let task = try await client.call("set-title",
+                                                 .object(["ref": .string(ref), "title": .string(title)]))
+                printRef(task)
 
             case "set-parent":
                 let ref = flags.positional(0) ?? flags.require("ref")

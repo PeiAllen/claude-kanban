@@ -47,7 +47,7 @@ final class CommandRegistryCatalogTests: XCTestCase {
     // The canonical set is complete (guards an accidental drop during the move).
     func testCatalogHasAllCommands() {
         XCTAssertEqual(Set(CommandCatalog.all.map(\.name)), [
-            "list", "spawn", "move", "send", "inbox", "inbox-edit", "inbox-remove",
+            "list", "spawn", "move", "set-title", "send", "inbox", "inbox-edit", "inbox-remove",
             "inbox-reorder", "wait", "handoff", "status", "archive", "reopen", "restart",
             "resume", "shell", "inspect", "closeShell", "exec", "sessions", "capture", "send-keys",
             "trustState", "batch-spawn", "trust", "set-parent", "tree", "synced", "shipped",

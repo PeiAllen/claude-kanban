@@ -163,32 +163,72 @@ struct ReportTests {
         let after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.agentSessionId == "brand-new-id")
         #expect(after.priorSessionIds.contains(oldId))
-        #expect(after.titleProvisional == true)   // clear sets provisional
+        #expect(after.awaitingFirstPrompt == true)   // clear sets provisional
         #expect(after.waitReason != nil)          // clear → idle
     }
 
-    @Test("non-empty sessionName updates title + clears provisional; empty is ignored")
+    /// A genuine in-session `/rename` — a reported name that DIFFERS from the one the launch pushed —
+    /// adopts and PINS. It no longer clears `awaitingFirstPrompt`: renaming is not being prompted, and
+    /// that flag now means only "this session has never had a prompt" (it gates the blank relaunch).
+    @Test("a reported name that changed adopts + pins the title; empty is ignored")
     func sessionName() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))  // provisional = true
-        try await env.svc.report(t.id, StatusReport(sessionName: "Renamed Card"))
+        let epoch = try #require(await env.svc.list().first { $0.id == t.id }).sessionEpoch
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
+        try await env.svc.report(t.id, StatusReport(sessionName: "Renamed Card"), observedEpoch: epoch)
         var after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Renamed Card")
-        #expect(after.titleProvisional == false)
+        #expect(after.titleSource == .explicit)      // pinned, exactly like set-title
+        #expect(after.awaitingFirstPrompt == true)   // a rename is not a prompt
         // empty sessionName must not clobber
-        try await env.svc.report(t.id, StatusReport(sessionName: ""))
+        try await env.svc.report(t.id, StatusReport(sessionName: ""), observedEpoch: epoch)
         after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Renamed Card")
     }
 
-    @Test("first prompt after /clear re-titles; a second prompt does not")
+    /// The clobber this PR exists to stop: a live Claude session keeps echoing the `--name` it launched
+    /// with, so a mirror keyed on "differs from the title" re-applied that stale name after every rename.
+    /// The baseline is pre-armed at launch, so the echo is inert no matter how many times it arrives.
+    @Test("a session_name echoing the launched --name never overwrites a newer title")
+    func sessionNameEchoIsNotARename() async throws {
+        let (env, t) = try await spawned()
+        let launched = t.title
+        _ = try await env.svc.setTitle(ref: t.shortId, title: "Reviewer A")
+        let epoch = try #require(await env.svc.list().first { $0.id == t.id }).sessionEpoch
+        for seq in 1...3 {   // every statusline tick still carries the OLD name
+            try await env.svc.report(t.id, StatusReport(seq: UInt64(seq), sessionName: launched),
+                                     observedEpoch: epoch)
+        }
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.title == "Reviewer A")
+        #expect(after.titleSource == .explicit)
+    }
+
+    /// A report from a SUPERSEDED generation cannot rename: `restart` bumps the epoch while the outgoing
+    /// session is still alive and still reporting the name it launched with.
+    @Test("a stale-epoch session_name never renames the card")
+    func staleEpochSessionNameIsIgnored() async throws {
+        let (env, t) = try await spawned()
+        let epoch = try #require(await env.svc.list().first { $0.id == t.id }).sessionEpoch
+        _ = try await env.svc.setTitle(ref: t.shortId, title: "Reviewer A")
+        try await env.svc.report(t.id, StatusReport(sessionName: "Ghost Of A Dead Session"),
+                                 observedEpoch: epoch - 1)
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.title == "Reviewer A")
+    }
+
+    /// The re-title is scoped two ways now: to the FIRST prompt (via `awaitingFirstPrompt`, since the
+    /// prompt hook fires on every turn) and to a card whose title actually came from a prompt.
+    @Test("first prompt after /clear re-titles a prompt-titled card; a second prompt does not")
     func reTitleAfterClear() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))   // provisional
+        // This card is a worktree card, so it is branch-titled — force the prompt-titled case explicitly.
+        _ = try await env.svc.store.update(t.id) { $0.titleSource = .prompt }
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
         try await env.svc.report(t.id, StatusReport(promptText: "Now do something else\nmore"))
         var after = try #require(await env.svc.list().first { $0.id == t.id })
         #expect(after.title == "Now do something else")
-        #expect(after.titleProvisional == false)
+        #expect(after.awaitingFirstPrompt == false)
         #expect(after.phaseDisplay == .running)
         // a later prompt does NOT re-title
         try await env.svc.report(t.id, StatusReport(promptText: "And another thing"))
@@ -196,30 +236,36 @@ struct ReportTests {
         #expect(after.title == "Now do something else")
     }
 
-    @Test("a /rename before a prompt clears provisional so the prompt won't re-title")
-    func renameBeatsPrompt() async throws {
+    /// A branch/attached/explicit title outranks the prompt cutoff that used to win here.
+    @Test("a first prompt never re-titles a branch-titled or pinned card")
+    func firstPromptRespectsTitleSource() async throws {
         let (env, t) = try await spawned()
+        #expect(t.titleSource == .branch)
         try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
-        try await env.svc.report(t.id, StatusReport(sessionName: "Explicit Name"))   // clears provisional
         try await env.svc.report(t.id, StatusReport(promptText: "Should not become the title"))
-        let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.title == "Explicit Name")
+        var after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.title == "b")                  // still the branch
+        #expect(after.awaitingFirstPrompt == false)  // …but the lifecycle flag still cleared
+        // Same for an explicitly pinned title.
+        _ = try await env.svc.setTitle(ref: t.shortId, title: "Reviewer A")
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
+        try await env.svc.report(t.id, StatusReport(promptText: "Nor this"))
+        after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.title == "Reviewer A")
     }
 
-    @Test("a session_name echoing the current title keeps provisional, so re-title still works")
-    func sessionNameEchoKeepsProvisional() async throws {
+    /// A prompt hook from a SUPERSEDED session must not clear the flag on the incoming generation: the
+    /// RelaunchStepper reads it to decide a card with no transcript may still blank-launch, so clearing
+    /// it strands the card `.resumeFailed`.
+    @Test("a stale-epoch prompt does not clear awaitingFirstPrompt")
+    func staleEpochPromptCannotStrandTheRelaunch() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))  // provisional = true
-        let title = try #require(await env.svc.list().first { $0.id == t.id }).title
-        // A statusline echoing the `--name` we launched with (== current title) must NOT clear
-        // provisional, or the next prompt's re-title would be defeated.
-        try await env.svc.report(t.id, StatusReport(seq: 100, sessionName: title))
-        var after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.titleProvisional == true)
-        try await env.svc.report(t.id, StatusReport(promptText: "Fresh task now"))
-        after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.title == "Fresh task now")
-        #expect(after.titleProvisional == false)
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
+        let epoch = try #require(await env.svc.list().first { $0.id == t.id }).sessionEpoch
+        try await env.svc.report(t.id, StatusReport(promptText: "from the dying session"),
+                                 observedEpoch: epoch - 1)
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.awaitingFirstPrompt == true)   // still eligible for the blank relaunch
     }
 
     @Test("no-delta report = no persist, no event (idempotent)")

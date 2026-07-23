@@ -411,13 +411,26 @@ public struct NoteFile: Codable, Sendable, Equatable {
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 
-    /// Short card heading — DERIVED, never typed. Seeded from the prompt's first line at spawn (also
-    /// passed to `claude --name`). The card title is display-authoritative; `session_name` is kept in
-    /// sync best-effort. Re-titled from the first prompt after a restart/`/clear` when `titleProvisional`.
+    /// Short card heading — the naming SSOT. Derived at spawn from the card's own identity (its branch,
+    /// its read-only target, its prompt, or its directory — see `CardNaming.derived`) unless an explicit
+    /// source set it, and pushed to the agent session as `claude --name` at every (re)launch. The card
+    /// title leads; `session_name` follows best-effort.
     public var title: String
-    /// true => `title` is a placeholder eligible to be replaced by the next user prompt. Set by
-    /// `restart` and `SessionStart(clear)`; cleared by the first re-title or an explicit `/rename` mirror.
-    public var titleProvisional: Bool
+    /// WHERE `title` came from, and therefore what may overwrite it. `.explicit` (a `spawn` title, a
+    /// `set-title`, or a mirrored in-session `/rename`) PINS the title against every derived default.
+    /// This is the naming half of what `titleProvisional` used to conflate; the lifecycle half is
+    /// `awaitingFirstPrompt`.
+    public var titleSource: TitleSource
+    /// true => this session has never received a genuine user prompt, so it blank-launches with no
+    /// positional and lands `.waiting`. Set at a promptless spawn, `restart`, a blank `reopen`, and
+    /// `SessionStart(clear)`; cleared by the first prompt. Load-bearing LIFECYCLE state
+    /// (`deriveLaunchFlavor`, the wake ladder, the delivery-stuck gates) — NOT a naming concept.
+    public var awaitingFirstPrompt: Bool
+    /// The last session name we have seen for this card — either the `--name` a launch just pushed or the
+    /// last value the agent reported. The `session_name` mirror is a DELTA against this: a live Claude
+    /// session keeps echoing the name it launched with, so "differs from `title`" would re-apply a stale
+    /// name on every statusline tick and silently undo `set-title`. nil ⇒ never launched/observed.
+    public var lastSessionName: String?
     /// Live blurb of what the agent is doing now — pushed from Pre/PostToolUse hooks; pane-parse fallback.
     public var desc: String
     public var repo: String        // repo root (allowlisted); shown as repo name
@@ -484,7 +497,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public init(
         id: UUID = UUID(),
         title: String,
-        titleProvisional: Bool = false,
+        titleSource: TitleSource = .prompt,
+        awaitingFirstPrompt: Bool = false,
+        lastSessionName: String? = nil,
         desc: String = "",
         repo: String,
         branch: String,
@@ -520,7 +535,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     ) {
         self.id = id
         self.title = title
-        self.titleProvisional = titleProvisional
+        self.titleSource = titleSource
+        self.awaitingFirstPrompt = awaitingFirstPrompt
+        self.lastSessionName = lastSessionName
         self.desc = desc
         self.repo = repo
         self.branch = branch
@@ -565,7 +582,8 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      garbage status can never abort the record). A record that already has `phase` decodes it
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
-        case id, title, titleProvisional, desc, repo, branch, parentBranch, cwd, origin, access
+        case id, title, titleSource, awaitingFirstPrompt, lastSessionName
+        case desc, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
@@ -573,6 +591,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
         case status, waitReason
+        // Decode-only legacy key — `titleProvisional` split into `titleSource` (naming) +
+        // `awaitingFirstPrompt` (lifecycle); a pre-split record carries only its lifecycle half here.
+        case titleProvisional
     }
 
     public init(from decoder: Decoder) throws {
@@ -582,7 +603,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // Everything else is best-effort — a missing/partial field falls back to a safe default so the
         // card is kept, not dropped.
         self.title = try c.decodeIfPresent(String.self, forKey: .title) ?? "(recovered)"
-        self.titleProvisional = try c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
+        // The `titleProvisional` split: a pre-split record carries only the legacy key, whose surviving
+        // meaning is the LIFECYCLE one ("never prompted"). Its naming half defaults to `.prompt` — which
+        // is exactly what every pre-split title was (a prompt/seed cutoff), so those cards keep behaving
+        // as they do today: re-titleable by the first prompt after a restart/clear.
+        self.awaitingFirstPrompt = try c.decodeIfPresent(Bool.self, forKey: .awaitingFirstPrompt)
+            ?? c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
+        self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
@@ -592,6 +619,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // rawValue (a renamed/removed case) must DEFAULT to the same safe value the memberwise init uses,
         // never throw — else one garbage field would drop an otherwise-recoverable record. Only `id` (above)
         // is allowed to throw, and its absence is the sole drop case.
+        self.titleSource = (try? c.decodeIfPresent(TitleSource.self, forKey: .titleSource)) ?? .prompt
         self.origin = (try? c.decodeIfPresent(CardOrigin.self, forKey: .origin)) ?? .worktree
         self.access = (try? c.decodeIfPresent(CardAccess.self, forKey: .access)) ?? .readWrite
         self.agentId = try c.decodeIfPresent(String.self, forKey: .agentId) ?? "claude-code"
@@ -661,7 +689,9 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
-        try c.encode(titleProvisional, forKey: .titleProvisional)
+        try c.encode(titleSource, forKey: .titleSource)
+        try c.encode(awaitingFirstPrompt, forKey: .awaitingFirstPrompt)
+        try c.encodeIfPresent(lastSessionName, forKey: .lastSessionName)
         try c.encode(desc, forKey: .desc)
         try c.encode(repo, forKey: .repo)
         try c.encode(branch, forKey: .branch)
@@ -724,8 +754,15 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // a cutoff a concurrent relaunch just recorded.
         if sessionIdChanged, agentSessionId != nil { sessionDiscoverySince = nil }
         desc = s.desc
-        titleProvisional = s.titleProvisional
+        awaitingFirstPrompt = s.awaitingFirstPrompt
         title = s.title
+        // The naming fields report() mutates travel TOGETHER with `title` or not at all. This overlay is a
+        // WHITELIST, not a whole-object copy: a field absent here is silently discarded on the way to disk.
+        // Omitting `titleSource` would drop the `.explicit` pin a mirrored `/rename` just set (so the next
+        // prompt would re-title over the human's name), and omitting `lastSessionName` would reload a stale
+        // baseline on every report — freezing the mirror's delta in its never-adopt arm forever.
+        titleSource = s.titleSource
+        lastSessionName = s.lastSessionName
         ctxPct = s.ctxPct
         model = s.model
     }
@@ -1186,6 +1223,10 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// each construction site must supply an id explicitly (a bare per-call mint isn't retry-safe).
     public var id: UUID
     public var prompt: String
+    /// An EXPLICIT card title, pinned against every derived default (`TitleSource.explicit`). The one
+    /// field a delegating spawner should always set: a seed is never a title source, so an unnamed
+    /// delegate falls back to its branch, its read-only target, or its directory. nil ⇒ derive one.
+    public var title: String?
     public var repo: String
     public var branch: String
     public var model: String?
@@ -1208,11 +1249,12 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// `WorktreeRegistry.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
     /// carries the field on the model; the spawn threading lands in BT2.
     public var base: String?
-    public init(id: UUID, prompt: String, repo: String = "", branch: String = "", model: String? = nil,
-                startIn: StartIn? = nil, agentId: String? = nil,
+    public init(id: UUID, prompt: String, title: String? = nil, repo: String = "", branch: String = "",
+                model: String? = nil, startIn: StartIn? = nil, agentId: String? = nil,
                 cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                 seed: String? = nil, base: String? = nil) {
         self.id = id
+        self.title = title
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
         self.cwd = cwd; self.access = access; self.scratch = scratch; self.seed = seed
@@ -1223,6 +1265,7 @@ public struct SpawnInput: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(UUID.self, forKey: .id)          // required: no id-less spawn on the wire
         self.prompt = try c.decode(String.self, forKey: .prompt)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.model = try c.decodeIfPresent(String.self, forKey: .model)

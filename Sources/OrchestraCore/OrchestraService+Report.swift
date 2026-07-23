@@ -80,7 +80,7 @@ extension OrchestraService {
                 case "clear":
                     if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
-                    task.titleProvisional = true
+                    task.awaitingFirstPrompt = true
                 case "resume":
                     if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
                     task.desc = ""
@@ -99,9 +99,16 @@ extension OrchestraService {
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
                 resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
-                if task.titleProvisional {
-                    task.title = titleSeed(from: prompt)
-                    task.titleProvisional = false
+                // Generation-fenced, fail-OPEN on nil. `restart` bumps the epoch and re-arms
+                // `awaitingFirstPrompt` while the OUTGOING agent is still alive, so its in-flight prompt hook
+                // could clear the flag on the incoming generation — and then the RelaunchStepper finds
+                // neither a transcript nor permission to blank-launch, and kills the card `.resumeFailed`.
+                // A `nil` epoch (a pre-epoch session) is admitted, so nothing that works today changes.
+                if task.awaitingFirstPrompt, observedEpoch == nil || observedEpoch == task.sessionEpoch {
+                    task.awaitingFirstPrompt = false     // lifecycle: this session has now been prompted
+                    // Naming: only a card whose title came FROM a prompt may be re-titled by one. A branch,
+                    // a 👁 target, or an explicit name all outrank the prompt cutoff that used to win here.
+                    if task.titleSource == .prompt { task.title = titleSeed(from: prompt) }
                 }
                 if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.running) }
             }
@@ -173,12 +180,28 @@ extension OrchestraService {
                         modelOverrideWatch[id] = (watch.requested, watch.left, watch.strikes + 1)
                     }
                 }
-                // session_name (a /rename mirror): apply only a *genuine* change, so a statusline
-                // echoing the `--name` we launched with never prematurely clears `titleProvisional`
-                // (which restart/clear set precisely so the next user prompt re-titles the card).
-                if let name = snap.sessionName, !name.isEmpty, name != task.title {
-                    task.title = name
-                    task.titleProvisional = false
+                // session_name (a /rename mirror) — DELTA-based and generation-fenced.
+                //
+                // Delta, not `name != task.title`: nothing can rename a LIVE Claude session from outside, so
+                // it keeps echoing the `--name` it launched with forever. Comparing against the TITLE meant
+                // that after a `set-title` every subsequent statusline tick looked like a rename back to the
+                // old name — silently undoing it. Comparing against the last name we SAW makes an echo inert
+                // and a genuine `/rename` a one-time event. `lastSessionName` is pre-armed at launch with the
+                // name we pushed, so even the new session's very first report is provably an echo; a nil
+                // baseline (a pre-upgrade card) records without adopting, and heals at the next relaunch.
+                //
+                // Fenced, because `restart` bumps the epoch while the outgoing session stays alive and
+                // reporting: its statusline still carries the OLD name and would otherwise read as a rename
+                // on the incoming generation. Every hook echoes `ORCH_EPOCH` from its session env, so the
+                // predecessor is identifiable. A pre-epoch session reports nil and its mirror stays inert
+                // until it next relaunches — the fail-safe direction, and self-healing.
+                if let name = snap.sessionName, !name.isEmpty, name != task.lastSessionName,
+                   observedEpoch == task.sessionEpoch {
+                    if task.lastSessionName != nil, name != task.title {
+                        task.title = name
+                        task.titleSource = .explicit   // a human's in-session rename PINS, exactly like set-title
+                    }
+                    task.lastSessionName = name
                 }
                 // The agent's observed run-state maps onto a `.live(_)` phase — UNLESS doing so would rip a
                 // card with an OUTSTANDING LAUNCH INTENT out of its being-born phase on the word of a report

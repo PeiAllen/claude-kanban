@@ -80,6 +80,7 @@ public struct CommandRegistry: Sendable {
                 let input = SpawnInput(
                     id: try p.uuid("id"),           // required wire field — clients mint/forward it
                     prompt: try p.string("prompt"),
+                    title: p.optString("title"),
                     repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
                     model: p.optString("model"),
                     startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
@@ -189,6 +190,12 @@ public struct CommandRegistry: Sendable {
                 let t = try await svc.resolveRef(try p.string("ref"))
                 let updated = try await svc.resumeInCard(t.id, seed: try p.string("context"),
                                                          model: p.optString("model"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "set-title": { svc, p, src in
+                let updated = try await svc.setTitle(ref: try p.string("ref"),
+                                                     title: try p.string("title"), source: src)
                 return try JSONValue(encodable: updated)
             },
 
@@ -363,7 +370,9 @@ public struct CommandRegistry: Sendable {
                 for item in arr {
                     inputs.append(SpawnInput(
                         id: try item.uuid("id"),    // required per-item wire field (client stamps when absent)
-                        prompt: try item.string("prompt"), repo: try item.string("repo"),
+                        prompt: try item.string("prompt"),
+                        title: item.optString("title"),   // this loop rebuilds SpawnInput by hand — a field
+                        repo: try item.string("repo"),    // missed here is advertised but silently dropped
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),
                         seed: item.optString("seed"),

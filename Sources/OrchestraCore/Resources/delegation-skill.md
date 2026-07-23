@@ -54,6 +54,10 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   A spawn either cuts a git **worktree** (`repo` + `branch`) *or* runs **freeform** in an existing
   directory (`cwd`, no worktree) — optionally **read-only** (`access: readOnly`: the agent can
   read/search/git but not edit/write/commit).
+  **Pass `title`** whenever you delegate: a seed is never used as a name, so an unnamed card falls back
+  to its branch, its read-only target (`👁 <target>`), or its directory. Rename any card — including your
+  own, as its scope changes — with **`set-title <ref> <title>`**. The agent session's own name follows the
+  card at its next launch; no agent can rename its own live session, which is why this is an Orchestra verb.
 - **`handoff <ref> <context…> [--model <id>]`** — F1 clean-context resume: kill + `--resume` the SAME
   session seeded with `context` (folded together with the card's pending inbox). Same worktree, same
   branch, fresh context window. Hand off to a *new* card instead by spawning with the context as the seed.

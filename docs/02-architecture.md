@@ -432,7 +432,9 @@ Two robustness rules matter:
   coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
 - **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
   `Task.applyReportFields(from:)`, which overlays only the telemetry fields `report()` owns (session
-  ids, `desc`, title/titleProvisional, `ctxPct`, model) onto the task currently in the store. Run-state
+  ids, `desc`, `title`/`titleSource`/`lastSessionName`/`awaitingFirstPrompt`, `ctxPct`, model) onto the
+  task currently in the store. That list is a **whitelist**: a field report() mutates but does not name
+  here is silently discarded on the way to disk, so every new report-owned field must be added to it. Run-state
   and dead metadata are *not* overlaid here — they flow through the `transition()` funnel / `markDead`
   (Stage 2), which is why `status`/`waitReason` no longer appear in this list. Every other field —
   anything a concurrent RPC (e.g. a rename, a move) touched in between — is left alone, so `report()`

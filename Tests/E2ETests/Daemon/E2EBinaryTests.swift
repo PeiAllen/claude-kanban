@@ -127,14 +127,17 @@ struct E2EBinaryTests {
         #expect(spawn.exitCode == 0, "spawn failed (rc=\(spawn.exitCode)) stderr=\(spawn.stderr) stdout=\(spawn.stdout)")
         #expect(spawn.stdout.contains("orchestra://task/"))
 
-        // list shows it
+        // A worktree card is named by its BRANCH, so `list` shows the branch, not the prompt.
         let list = try cli(["list"], ctlSock: fx.ctlSock)
-        #expect(list.stdout.contains("Add the feature"))
+        #expect(list.stdout.contains("feat"))
 
-        // grab the shortId from the spawned card's row (the row that carries the title we just set)
-        let shortId = String(list.stdout.split(whereSeparator: \.isNewline)
-            .first { $0.contains("Add the feature") }?
-            .split(whereSeparator: \.isWhitespace).first ?? "")
+        // Take the shortId from THIS spawn's own `orchestra://task/<ref>` output. Matching a list row by
+        // title would be ambiguous now that titles are branch-derived — the shared fixture has several
+        // cards on `feat`, and the wrong row (or none) silently poisons every assertion below.
+        // `ref()` is `orchestra://task/<shortId>-<title-slug>`; the list renders the bare shortId.
+        let shortId = String(spawn.stdout
+            .components(separatedBy: "orchestra://task/").last?
+            .prefix { !$0.isWhitespace && $0 != "-" } ?? "")
         #expect(!shortId.isEmpty)
 
         // Non-blocking spawn (PR4b Task 3): the card is `.creatingWorktree`/`.launching` until the daemon's
@@ -275,7 +278,7 @@ struct E2EBinaryTests {
         let callResp = lines.first { $0["id"]?.intValue == 3 }
         #expect(callResp?["result"]?["content"] != nil)
         let list = try cli(["list"], ctlSock: fx.ctlSock)
-        #expect(list.stdout.contains("From MCP"))
+        #expect(list.stdout.contains("mcpbranch"))   // the card is named by its branch, not its prompt
     }
 
     @Test("MCP: publish-image renders the shared transcript marker, not raw JSON")

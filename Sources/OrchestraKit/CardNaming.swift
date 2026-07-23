@@ -1,0 +1,59 @@
+import Foundation
+
+/// Where a card's `title` came from — and therefore what is allowed to overwrite it. This is the naming
+/// half of what `titleProvisional` used to conflate; the lifecycle half is `Task.awaitingFirstPrompt`.
+///
+/// `.explicit` PINS: no derived default may replace it. Everything else is derived and may be re-derived.
+/// A legacy record decodes as `.prompt`, which is what every pre-split title actually was (a prompt or
+/// seed cutoff), so those cards keep their existing re-title-on-first-prompt behavior.
+public enum TitleSource: String, Codable, Sendable, Equatable {
+    case branch      // a worktree card, named by its branch
+    case attached    // a read-only card, named "👁 <the card whose dir it borrowed>"
+    case prompt      // derived from the human prompt — or, failing that, the card's directory
+    case explicit    // `spawn(title:)`, `set-title`, or a mirrored in-session `/rename`
+}
+
+/// The naming rules, as pure functions over a card's identity — no store, no clock, no I/O.
+public enum CardNaming {
+    /// Deliberately a glyph and not the word "review": the primitive is read-only ACCESS, not a role.
+    public static let attachedGlyph = "👁"
+
+    /// The longest an explicit title may be. 120, not `titleSeed`'s 60: that cap trims a PROMPT down into
+    /// a heading, while this holds a name a human or an agent deliberately chose.
+    public static let maxTitleChars = 120
+
+    /// The ONE bound on an explicit title, shared by `spawn(title:)` and `set-title` so neither path can
+    /// bypass it — the value ends up in Claude's `--name` argv, so an unbounded title is a tmux argv
+    /// problem, not just an ugly card.
+    public static func normalize(_ raw: String) -> String {
+        String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxTitleChars))
+    }
+
+    /// The derived default title for a fresh card, as a strict ordered chain:
+    ///
+    /// 1. a **worktree** card → its branch (the branch IS that card's identity, so it wins even when a
+    ///    human typed a prompt);
+    /// 2. a **branchless read-only** card with a resolvable target → `"👁 <target title>"`;
+    /// 3. a **human prompt** → its first line, cut down;
+    /// 4. else the **directory** the card runs in.
+    ///
+    /// `prompt` is the HUMAN prompt only — a seed is NEVER a title source, which is exactly why arm 4
+    /// exists. A card spawned with a seed and no title is never `awaitingFirstPrompt` (the seed IS its
+    /// first turn), so no later prompt can re-title it: a bare placeholder there would be permanent, and
+    /// its directory is the one identity it actually has.
+    public static func derived(origin: CardOrigin, branch: String, cwd: String, access: CardAccess,
+                               attachedTargetTitle: String?,
+                               prompt: String) -> (title: String, source: TitleSource) {
+        if origin == .worktree, !branch.isEmpty { return (branch, .branch) }
+        // Origin-gated, not merely order-gated: `SpawnInput` permits a `branch` alongside `cwd`/`scratch`,
+        // and only a worktree may be named by one.
+        if origin != .worktree, access == .readOnly, let target = attachedTargetTitle, !target.isEmpty {
+            return ("\(attachedGlyph) \(target)", .attached)
+        }
+        let typed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { return (titleSeed(from: typed), .prompt) }
+        if origin == .scratch { return ("Scratch", .prompt) }   // its dir is a bare UUID — no signal in it
+        let dir = (cwd as NSString).lastPathComponent
+        return (dir.isEmpty ? "New agent" : dir, .prompt)
+    }
+}
