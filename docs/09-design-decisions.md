@@ -570,14 +570,32 @@ same file, a compile-time guarantee that nothing else can call a git worktree op
   `await` and adopt the first spawn's tree while still unpersisted. A store-only sibling scan in `release`
   would then see no sibling and let the first spawn's rollback remove the tree the second, not-yet-stored
   card just adopted. The registry's in-memory `inflight: [path: Set<cardId>]` — populated by every
-  `ensure` call and drained by `release`'s `defer` — is the reference a store snapshot can't see. (A
-  `store.create` failure between `ensure` succeeding and persistence strands an in-flight entry until
-  restart — fail-safe, never data loss, and restart-healed since the set is in-memory only.)
+  `ensure` call and drained by `release`'s `defer` — is the reference a store snapshot can't see.
+  `release` for a card **absent from the store** still surrenders that card's own holds (a scan, since
+  the keyed `defer` needs the card's cwd): a rollback so hard the card never persisted must not leave a
+  phantom holder that blocks every future sibling release of the path.
 
 Fail-safe arms: a marker-less **clean** dir is pruned and re-created; a marker-less **dirty** dir is never
 auto-removed (`ensure` throws `worktreeNeedsManualCleanup`); `release` never removes a dirty tree without
 `force`, never removes a tree any non-archived sibling (or in-flight holder) still references, and treats
 a missing tree as an idempotent success rather than an error.
+
+### Teardown duty hygiene: fences outlive the card, timers die with it
+
+Two rules govern what `teardownActorDuties` does with a per-card entry, fixed together as the
+opening move of the CardRuntime teardown refactor:
+
+- **Every per-card debounce/loop task is cancelled at teardown.** `diffStatDebounce` joins its
+  `treeStatDebounce`/`childFanoutDebounce` twins — previously its only cleanup was the self-clear at
+  the end of its own debounce body, so an in-flight diffstat survived archive and recomputed against
+  a dead card.
+- **The per-arming generation fences (`remoteWatchGen`/`mergeRequestNudgeGen`) survive teardown.**
+  A fence's uniqueness must span archive→reopen within one process: the stop-path bump is what makes
+  a parked ghost tick (already past its cancellation check, suspended inside its tick body) unable to
+  match ever again. Nil-ing the gens at teardown let a post-reopen re-arm re-seed from 1 — which a
+  pre-archive ghost could match, sending a duplicate reminder, CAS-counting it, and nil-ing the live
+  re-armed task's slot. Cost: two Ints per archived card for the daemon's life, dissolved by the
+  CardRuntime refactor's globally-minted arming tokens.
 
 ### One seed, four topologies
 

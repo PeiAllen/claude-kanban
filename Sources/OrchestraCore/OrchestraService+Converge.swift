@@ -342,8 +342,8 @@ extension OrchestraService {
 
     // MARK: - teardownActorDuties (extracted archive() actor-bound duties; TeardownStepper delegates here)
 
-    /// The archive duties that touch actor-private state: cancel this card's treeStat/child-fanout
-    /// debounces + remote merge-watch + merge-request re-nudge, drop its seq cursor, AND find→nudge→wake
+    /// The archive duties that touch actor-private state: cancel this card's treeStat/child-fanout/
+    /// diffStat debounces + remote merge-watch + merge-request re-nudge, drop its seq cursor, AND find→nudge→wake
     /// its live children (needs `lineage.children`/`derivedCard`/`wake`). The child nudge carries a
     /// `dedupKey` so a crash-then-redrive of Teardown fires it AT MOST ONCE. Session-kill / releaseBorrow /
     /// run-dir reclaim stay in the stepper (reachable via `ctx`).
@@ -355,12 +355,18 @@ extension OrchestraService {
         // Cheap: archives are infrequent, and the mtime grace keeps a just-archived card's file until the
         // next sweep if it launched within the window (fail-safe: err toward keeping).
         await sweepCardFiles()
+        // The gen entries deliberately SURVIVE teardown: each is a per-arming fence whose uniqueness
+        // must span archive→reopen within one process. `stopRemoteWatch`/`stopMergeRequestNudge` bump
+        // them so a parked ghost tick can never match again — but nil-ing them here made a post-reopen
+        // re-arm re-seed from 1, which a pre-archive ghost (suspended past its cancellation check)
+        // COULD match: duplicate reminder, stolen CAS count, live task's slot nilled. Cost of keeping
+        // them: two Ints per archived card, dissolved entirely by the CardRuntime refactor's
+        // globally-minted arming tokens.
         stopRemoteWatch(id)          // BT6: tear down any remote merge-watch
-        remoteWatchGen[id] = nil     // S4: drop its generation entry (bounds the map)
         stopMergeRequestNudge(id)    // O2: tear down any pending merge-request re-nudge loop
-        mergeRequestNudgeGen[id] = nil   // drop its generation entry (bounds the map, as remoteWatchGen does)
         treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil     // S3-5
         childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
+        diffStatDebounce[id]?.cancel(); diffStatDebounce[id] = nil     // the twins' missing sibling
         lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
         clearSpawnPending(id)        // an archived card is never startup-pending — don't let a retry resurrect it
         observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
