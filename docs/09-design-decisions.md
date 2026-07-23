@@ -1457,7 +1457,7 @@ UI/surface change, not a whole axis, so it stays here as history.
 Landing after the forest is **axis 7 — code review on the board** (commit `bf1c7c1`),
 the **first whole extensibility axis built end to end** rather
 than a forest sub-PR — so its [roadmap row](10-roadmap.md) migrates here. It surfaces an agent's changes
-*inside* Orchestra — a diffstat on the card footer and a read-only rendered diff in the inspector — so a
+*inside* Orchestra — a diffstat in the board card's L1 quiet cluster and a read-only rendered diff in the inspector — so a
 glance or quick review no longer requires "View changes → Zed". The build is deliberately **lean** (refined
 at the 2026-07-01 L3 gate): there is **no** structured/machine-readable diff payload and **no** MCP `diff`
 verb — an agent already has a shell in its cwd and runs `git diff` itself, so re-serving it would be dead
@@ -1465,11 +1465,11 @@ weight. Its decisions:
 
 - **Generic `DiffProvider` seam — difftastic default, git fallback.** A `DiffProvider` protocol
   (`Sources/OrchestraCore/Diff/`) has two read-only jobs, both from git: a cheap `DiffStat`
-  (`git diff --numstat`) for the footer, and a rendered **ANSI** diff string for the inspector — produced by
+  (`git diff --numstat`) for the board card, and a rendered **ANSI** diff string for the inspector — produced by
   **difftastic** (`difft`, structural/syntax-aware, `DFT_DISPLAY=inline`) when it is on `PATH`, else git's
   own colored diff (`-c color.ui=always`). Both emit ANSI, so one app-side SGR→`AttributedString` parser
   (`ANSIText`) renders either; `difft` is **never a hard dependency** (`Proc.toolExists` gate). Both jobs key
-  off the same `git diff <range>`, so the footer stat and the inspector render never disagree (untracked,
+  off the same `git diff <range>`, so the board stat and the inspector render never disagree (untracked,
   never-added files show in neither until staged/committed — a documented limitation).
 - **App-only endpoints, not registry commands.** `diffText`/`diffStat` are **server-only built-in
   `ControlServer` methods** (the `openInZed` shape) — the inspector is the only consumer, so they are
@@ -1488,7 +1488,7 @@ weight. Its decisions:
   delta against its parent and falls back to `.branch` only for a card with no parent — and the inspector
   only offers the **Parent** segment once a card carries one. This makes axis 7 the seam
   [axis 5](10-roadmap.md) (the automated PR-review phase) reviews through.
-- **Event-driven refresh off the normalized funnel — adapter-agnostic.** The footer diffstat recomputes on
+- **Event-driven refresh off the normalized funnel — adapter-agnostic.** The board diffstat recomputes on
   real per-card activity, not a timer: `OrchestraService.report()` — the one normalized funnel every adapter
   feeds (it sees a `StatusReport`, never a `tool_name`) — calls a per-card `scheduleDiffStat` debounce
   (~750 ms) after it persists a delta, plus on card selection. `recomputeDiffStat` persists + emits
@@ -1500,11 +1500,12 @@ weight. Its decisions:
 The app side adds the **Agent | Diff** toggle to the [inspector header](07-app-ui.md#the-inspector), the
 `DiffInspectorView` ([in-app diff view](07-app-ui.md#the-in-app-diff-view): baseline toggle + ANSI-rendered
 read-only diff + "Open in Zed"), and the diffstat (`Nf +N −M`, green/red) in two places: the
-[card footer](07-app-ui.md#cards), replacing the model name when a stat exists, and the
+[board card's L1 quiet cluster](07-app-ui.md#cards), beside the lineage glyph and model, and the
 [inspector header](07-app-ui.md#the-inspector) beside the Agent|Diff toggle, where it costs no vertical
-space. That header has no horizontal slack at the default 392pt width, so it degrades in stages
-(captions → icons, then the diffstat's file count, then the diffstat) instead of clipping. Editing stays Zed's job (an explicit non-goal), and **inline
-review comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
+space. The branch tree's compact lineage badge stays beside the branch in the terminal header. That shared
+header has no horizontal slack at the default 392pt width, so it degrades in stages (captions → icons →
+diffstat) instead of clipping. Editing stays Zed's job (an explicit non-goal), and **inline review
+comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
 [chapter 3](03-data-model.md#the-task-card).
 
 Landing after the forest is **reopen — un-finishing a Done card**
