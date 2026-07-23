@@ -194,8 +194,8 @@ spelled out when the inspector is dragged wide; at 392 the button captions drop 
 keep the words) with tighter chips and gutters, and the diffstat sheds its file count to `+214 −38`;
 only at the 320 pt drag minimum does the diffstat drop entirely. Nothing ever clips off the trailing
 edge.
-**Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
-`~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
+**Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
+`~/.claude/open-obsidian-vault.sh` recipe, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
 plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
 since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a

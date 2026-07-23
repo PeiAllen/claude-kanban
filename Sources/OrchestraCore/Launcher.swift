@@ -18,10 +18,9 @@ public struct Launcher: Sendable {
 
     /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with its notes each in its
     /// own tab: the gitignored `notes/` vault (plans + designs, scanned off disk) plus any other markdown
-    /// the branch changed (docs, superpower specs, `.claude/skills`). Uses the same
-    /// `~/.claude/open-obsidian-vault.sh` recipe the `/open-notes`
-    /// Claude command runs (seed a default config, register the vault, launch Obsidian — restarting a
-    /// running instance only when the vault is new).
+    /// the branch changed (docs, superpower specs, `.claude/skills`). Runs the host's
+    /// `~/.claude/open-obsidian-vault.sh` recipe (seed a default config, register the vault, launch
+    /// Obsidian — restarting a running instance only when the vault is new).
     ///
     /// The vault is the worktree root — not `<repo>/notes` — because Obsidian only opens files that
     /// live inside a registered vault, and the changed notes span several top-level dirs. When nothing
