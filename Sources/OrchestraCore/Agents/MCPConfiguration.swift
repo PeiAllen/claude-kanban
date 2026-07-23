@@ -41,6 +41,17 @@ enum MCPConfiguration {
         ].joined(separator: "\n") + "\n"
     }
 
+    /// TOML for the launch-local server in a card profile. Approval is scoped to the generated profile;
+    /// the read-only card additionally hides the shell executor without changing the user's global config.
+    static func codexTOML(command: String, access: CardAccess) -> String {
+        var lines = codexTOML(command: command).split(whereSeparator: \.isNewline).map(String.init)
+        lines.append("default_tools_approval_mode = \"approve\"")
+        if access == .readOnly {
+            lines.append("disabled_tools = [\"exec\"]")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     /// Add the Orchestra server to a Claude user config only when the canonical name is absent. A
     /// malformed or unreadable existing file is left untouched so the optional convenience setting
     /// cannot damage a user's configuration.

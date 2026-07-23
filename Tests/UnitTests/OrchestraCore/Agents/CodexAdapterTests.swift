@@ -158,9 +158,22 @@ struct CodexAdapterArgvTests {
         #expect(lines.contains { $0.hasPrefix("hooks.Stop = ") && $0.contains("_report --event stop --agent codex") })
         #expect(lines.contains("[mcp_servers.orchestra]"))
         #expect(lines.contains("command = \"/abs/orchestra-mcp\""))
+        #expect(lines.contains("default_tools_approval_mode = \"approve\""))
+        #expect(!lines.contains("disabled_tools = [\"exec\"]"))
         let instructions = try #require(lines.first { $0.hasPrefix("developer_instructions = ") })
         #expect(instructions.contains("Orchestra delegation"))
         #expect(instructions.contains("Working in a branch tree"))
+    }
+
+    @Test("read-only launch profile approves Orchestra MCP and disables exec")
+    func readOnlyProfileDisablesExec() throws {
+        let result = try profile(AdapterContext(cwd: "/wt/read-only", access: .readOnly,
+                                                orchestraMCPBin: "/abs/orchestra-mcp"))
+
+        #expect(result.lines.contains("[mcp_servers.orchestra]"))
+        #expect(result.lines.contains("command = \"/abs/orchestra-mcp\""))
+        #expect(result.lines.contains("default_tools_approval_mode = \"approve\""))
+        #expect(result.lines.contains("disabled_tools = [\"exec\"]"))
     }
 
     @Test("trust is explicitly trusted or untrusted in every Codex launch's profile")
