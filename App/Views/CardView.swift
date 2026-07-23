@@ -177,41 +177,11 @@ struct CardView: View {
         .fixedSize()
     }
 
-    /// Lineage status (branch-tree), ONE slot: `↓N` when the parent has advanced past the recorded
-    /// base, a restack glyph when the parent rewrote history, a grey clock while a merge-request
-    /// waits on the parent card. The first two are muted blue — the card's own agent will reconcile
-    /// them — and grey means the wait belongs to someone else. Only `mergeStalled` (nobody answered)
-    /// keeps a warning colour. Hidden when in-sync or untracked.
+    /// Lineage status against the parent branch, in ONE slot. The glyphs and their help text live in
+    /// `TreeBadge`, shared with the inspector header so the two surfaces can't drift.
     @ViewBuilder private var treeGlyph: some View {
         if let ts = task.treeStat {
-            // The give-up flag outranks the tracking state: a stalled card still computes stale/↓N underneath,
-            // but "nobody answered the merge-request" is what the human needs to see first.
-            if ts.mergeStalled {
-                Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
-                    .foregroundStyle(theme.red.text)
-                    .help("Merge-request unanswered — \(ts.nudges) reminders sent and \(task.parentBranch ?? "the parent") "
-                          + "never merged this branch. Merge it yourself, or re-send the merge-request.")
-            } else {
-                switch ts.state {
-                case .stale:
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.down").font(F.ui(8.5))
-                        Text("\(ts.behind)").font(F.mono(10, .medium))
-                    }
-                    .foregroundStyle(theme.blue.text)
-                    .help("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead of this card — the agent will merge it down")
-                case .restackNeeded:
-                    Image(systemName: "arrow.triangle.2.circlepath").font(F.ui(8.5))
-                        .foregroundStyle(theme.blue.text)
-                        .help("Parent branch's history changed (rebased/shipped) — the agent will restack this branch onto it")
-                case .mergeRequested:
-                    Image(systemName: "clock.arrow.circlepath").font(F.ui(8.5))
-                        .foregroundStyle(theme.text3)
-                        .help("Merge requested — waiting for the parent card to squash-merge this branch")
-                case .inSync:
-                    EmptyView()
-                }
-            }
+            TreeBadge(stat: ts, parentBranch: task.parentBranch)
         }
     }
 

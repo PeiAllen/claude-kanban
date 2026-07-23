@@ -114,8 +114,12 @@ selection writes, because the phone presents card details from two different sta
   insertions / red deletions; axis 7), the **treeStat glyph** in a single slot (`↓N` behind the
   parent or a restack arrow, both muted blue because the card's own agent will reconcile them; a
   grey clock while a merge-request waits on the parent card; the red warning triangle only when
-  nobody ever answered it), and the **model** as a dim pill. Absence is information: no glyph means
-  nothing to say.
+  nobody ever answered it), and the **model** as a dim pill. Those glyph colours say *who* the state
+  waits on — blue for "this card's own agent will handle it", grey for "the parent card owes it",
+  and a warning only when nobody answered at all — which is why none of them is amber: saturated
+  amber is reserved board-wide for "needs you". The glyph lives in `TreeBadge`, shared with the
+  [inspector header](#the-inspector) so the two can't drift, and hover names the parent branch.
+  Absence is information: no glyph means nothing to say.
 - **Squish is an ordered drop, not truncation.** When a card runs short of width, `CardL1Layout`
   decides what goes and in what order — **model → treeStat glyph → the pill's state word → the
   diffstat** — and `CardView` hands those rungs to `ViewThatFits`, which picks the first that fits.
@@ -196,25 +200,37 @@ The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
 (`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). Immediately
-right of the toggle sits the card's **branch diffstat** in the board card's quiet-cluster colors — `7f +214 −38`
-— so the change size reads from either tab without costing a row of vertical space. It is absent when
-the daemon has no stat for the card (non-git, or nothing changed yet). It measures the card's *default*
-baseline (parent-relative when stacked, else branch), so switching the [Diff view](#the-in-app-diff-view)'s
-own picker to **Working** legitimately shows a different range in the body below; the tooltip names the
-baseline.
+right of the toggle sits the card's **tree state** — the same [tree badge](#cards) the board card shows,
+chipped so a loose glyph between two filled controls doesn't read as debris, with hover text naming the
+parent branch. It is in *this* row, rather than the terminal header below, because this row is the one
+both tabs share: a stale base is exactly what you want to know while reading the diff, and the terminal
+header unmounts with the Agent tab. Absent, like on the card, when the card is in sync or has no parent.
 
-The **iPhone** card detail carries the same fact in its own language: a diffstat chip in the pinned
-header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf` ordering. That row
-degrades the same way — a big stat next to a long model name would otherwise wrap the mode chip onto two
-lines and push the context gauge's percentage off the trailing edge — so the chip sheds its file count
-first and hides last, leaving its neighbours intact.
+That row is over-subscribed at the default 392 pt inspector width, so it **degrades** rather than
+truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything spelled out
+when the inspector is dragged wide; at 392 the button captions drop to icons alone, tooltips keeping the
+words, with tighter gutters. Nothing ever clips off the trailing edge.
 
-That row is over-subscribed at the default 392 pt inspector width, so it **degrades in stages** rather
-than truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything
-spelled out when the inspector is dragged wide; at 392 the button captions drop to icons alone (tooltips
-keep the words) with tighter chips and gutters, and the diffstat sheds its file count to `+214 −38`;
-only at the 320 pt drag minimum does the diffstat drop entirely. Nothing ever clips off the trailing
-edge.
+The card's **branch diffstat** (`7f +214 −38`, the board card's quiet-cluster colors) sits one row down, in the
+terminal header, **beside the branch it measures**. The action row above is all controls, so numbers
+there had to fight the buttons for space and lost them at the narrower widths; beside the branch they
+sit with the thing they describe. Absent when the daemon has no stat (non-git, or nothing changed yet).
+It measures the card's *default* baseline (parent-relative when stacked, else branch), so switching the
+[Diff view](#the-in-app-diff-view)'s own picker to **Working** legitimately shows a different range in
+the body below; the tooltip names the baseline. Switching to the Diff tab doesn't lose the numbers — that
+body *is* the diff, carrying per-file `+N −M` pills on every section header.
+
+Taking the diffstat in costs the terminal header its own slack, so it degrades too, giving up the most
+redundant thing first: the **repo chip** drops at 392 (the breadcrumb immediately below spells out the
+whole path, so the repo is still on screen), then the diffstat sheds its file count, and only at the
+320 pt drag minimum does it go entirely.
+
+The **iPhone** card detail carries both facts in its own language: a diffstat chip and the same tree
+badge in the pinned header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf`
+ordering. That row degrades the same way — a big stat next to a long model name would otherwise wrap the
+mode chip onto two lines and push the context gauge's percentage off the trailing edge — so the chip
+sheds its file count first and hides last, leaving its neighbours intact.
+
 **Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
 `~/.claude/open-obsidian-vault.sh` recipe, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
@@ -261,9 +277,9 @@ shows an empty state rather than a fabricated diff. Editing stays Zed's job (an 
 The **agent chrome** stacks, top to bottom:
 
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
-2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the read-only eye badge, the
-   shared-worktree badge, the status pill, and an **Inspect** button (opens a read-only shell agent in
-   the worktree);
+2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the branch and its
+   [diffstat](#the-inspector), the read-only eye badge, the shared-worktree badge, the status pill, and
+   an **Inspect** button (opens a read-only shell agent in the worktree);
 3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
    target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);
@@ -521,7 +537,10 @@ background shells and subagents within the turn itself.
 separate system: it speaks the identical JSON-RPC control plane (reaching a remote daemon over SSH, or,
 in development, the Mac's socket directly), so the cards, columns, and telemetry are the same state the
 desktop shows. The screenshot above is the iPhone app driven against the very same isolated daemon that
-produced the other images in this chapter.
+produced the other images in this chapter. Where the desktop puts meaning in a hover tooltip the phone
+has nowhere to put one, so glyph-only indicators — the [tree badge](#cards) on its board cells and in
+its card-detail header, for one — carry the same wording in an **accessibility label** instead, which is
+what VoiceOver reads and what a long-press surfaces.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone

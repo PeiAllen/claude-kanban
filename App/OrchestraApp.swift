@@ -259,8 +259,12 @@ private struct DebugLaunchHook: ViewModifier {
     /// so it never touches the live app/daemon. `ORCH_SHELLS_N` (default 2) sets how many shell tabs
     /// to open: 0 leaves the "New terminal" button showing, ≥1 swaps in the tab ribbon. The agent /
     /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
-    /// `ORCH_SHELL_HEIGHT` overrides the persisted shell-panel height so resize wiring is screenshot-
-    /// able at different sizes.
+    /// `ORCH_TREE` (stale | restack | merge-requested | stalled | in-sync) gives the mock a lineage
+    /// state so the `TreeBadge` on the card footer and in the inspector header has something to render;
+    /// `ORCH_BEHIND` sets the `↓N` count. Sizes that live in preferences — the shell-panel height, the
+    /// inspector width — are NOT set here: the harness passes them as `-shellPanelHeight`/
+    /// `-inspectorWidth` launch arguments, because a `UserDefaults` write from this hook persists into
+    /// the human's live app domain (the isolated $HOME does not cover preferences).
     /// `ORCH_SHOW=image`: pop the transcript image preview over a mock card's inspector with a synthetic
     /// payload, so the popover's chrome can be screenshotted headlessly (no daemon, no published image).
     /// The loader is the only fake — the popover, its theming, and its zoom are the real ones.
@@ -310,9 +314,11 @@ private struct DebugLaunchHook: ViewModifier {
     static func showShells(model: BoardModel) {
         let env = ProcessInfo.processInfo.environment
         let n = Int(env["ORCH_SHELLS_N"] ?? "") ?? 2
-        if let h = env["ORCH_SHELL_HEIGHT"], let hv = Double(h) {
-            UserDefaults.standard.set(hv, forKey: "shellPanelHeight")
-        }
+        // The shell-panel height used to be set here with `UserDefaults.standard.set`, which PERSISTED
+        // it into the human's live `com.orchestra.app` domain — the isolated $HOME the harness launches
+        // under does not isolate preferences (cfprefsd keys them per-UID). The harness now passes
+        // `-shellPanelHeight <pt>` on the command line instead: the NSUserDefaults argument domain
+        // outranks the persistent one for this process and is never written to disk.
         var mock = Task(title: "Wire shell-panel resize + strip swap",
                         repo: DemoConfig.repoRoot, branch: "fix/shells",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
@@ -321,10 +327,27 @@ private struct DebugLaunchHook: ViewModifier {
         // A branch diffstat the daemon would have computed, so the card footer and the inspector
         // header both have something to render (they share the `k files · +N −M` formatting).
         mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
+        // A lineage state so `TreeBadge` has something to render. `stalled` deliberately keeps a live
+        // `stale` underneath, since the flag is supposed to outrank the state. Unknown values abort
+        // rather than defaulting: this hook exists to show WHICH glyph renders.
+        if let want = env["ORCH_TREE"] {
+            mock.parentBranch = "feat/branch-tree"
+            switch want {
+            case "stale":           mock.treeStat = TreeStat(state: .stale,
+                                                             behind: Int(env["ORCH_BEHIND"] ?? "") ?? 3)
+            case "restack":         mock.treeStat = TreeStat(state: .restackNeeded)
+            case "merge-requested": mock.treeStat = TreeStat(state: .mergeRequested)
+            case "stalled":         mock.treeStat = TreeStat(state: .stale, behind: 2, nudges: 3,
+                                                             mergeStalled: true)
+            case "in-sync":         mock.treeStat = TreeStat(state: .inSync)
+            default: fatalError("ORCH_TREE=\(want) is not a tree state — use "
+                                + "stale | restack | merge-requested | stalled | in-sync")
+            }
+        }
         model.tasks = [mock]
         model.selectedId = mock.id
         // ORCH_INSPECTOR=diff opens the Diff pane instead of the agent terminal — the shared header
-        // (diffstat, attached agents) has to read the same from either tab.
+        // (diffstat, tree badge) has to read the same from either tab.
         if env["ORCH_INSPECTOR"] == "diff" { model.inspectorMode = .diff }
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
         model.onboarded = true
