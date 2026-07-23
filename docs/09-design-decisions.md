@@ -1011,6 +1011,55 @@ second stuck cause. It is read independent of the underlying `TreeState`, so a c
 underneath. This is a *second* Needs-You / push surface, not the first: the flag already renders as a card-face
 warning badge (`CardView`/`BoardCardCell`), which stays; B5b adds the queue row and the notification on top.
 
+### Tree counters: daemon-observed child progress
+
+The card face draws a wave-progress bar — how many of an orchestrator's children have merged (`n`) out of
+how many it planned (`m`). Both live on `treeStat` as a second, child-facing dimension alongside the
+parent-facing `state`/`behind`, and both are **daemon-observed**, for one reason: the lineage store is
+**current-state-only**. When a child merges, its lineage entry is *erased* — that is how a merged branch
+leaves the tree — so a client scanning the live card list at any later moment sees only the survivors and
+**cannot reconstruct** how many already landed. The count has to be recorded at the instant of the merge,
+by the only party present then: the daemon.
+
+**The counter increments on a merge-classified lineage-entry removal, and only then.** The rule is exact
+because its whole job is to never double-count. There is one funnel — `BranchLineage.recordMergedChild` —
+through which every merge-classified removal passes: the `shipped` verb today, and any future merge-watch
+detector. It runs under the lineage actor's existing serialization and does two writes as one step: remove
+the child's link, then increment `branch.<parent>.orchestra-merged-count`. **The child link's existence is
+the idempotency guard.** A second observer of the same merge, or a post-restart re-detection (an "is
+ancestor" test is a *level*, not an edge, so it re-fires forever), finds no link and no-ops — the count
+moves exactly once. Merge *classification* stays with the caller: `shipped`'s advanced-past-base gate (and
+a detector's zero-commit-ancestor guard) decide whether a removal is a merge before calling the funnel;
+a non-merge removal (re-parenting, abandoned-branch cleanup) calls plain `clear` and never counts.
+
+The two writes are separate `git config` invocations, so a crash can land between them. The removal is
+done **first**, and the increment only after a strict re-read confirms the link is gone: a crash between
+them therefore leaves the entry removed but the count un-bumped — a bounded **undercount**, which
+re-detection cannot turn into a double-count because the guard already trips. Increment-first would
+double-count on replay; a durable transaction would remove even the undercount but is not worth the
+machinery for a cosmetic bar, so the undercount is the accepted failure mode.
+
+**`plannedChildren`** (`m`) is the orchestrator's declared intent, not an observation: `set-planned` writes
+it to `branch.<b>.orchestra-planned`, and the bar draws a dashed remainder toward it. **`drained`** marks a
+wave finished *by merges* — it is set **only** inside the merge-removal funnel, when that removal leaves the
+parent with zero lineage children, and cleared whenever a new child link appears. It is provenance-bound on
+purpose: were it derived from "zero children remain," re-parenting the last child away (a non-merge removal)
+would falsely raise it. It rides the persisted `treeStat` (so it survives restart) and is nudge **input**
+only — a later client slice reads it to suggest "wave done — move to Review?"; the daemon takes no action.
+
+Because both counter fields ride the same `treeStat` that many parent-facing writers rebuild from scratch
+(`set-parent`, `merge-request`, the remote redirect, the recompute funnel), every such writer carries the
+child dimension forward — the same discipline that carries the merge-request `nudges` — while a dedicated
+`recomputeChildProgress` is their sole authoritative setter. This also lets a **parentless root** broadcast
+its wave counters: it has no parent link, so the parent-facing recompute yields nothing, but the
+child-facing recompute still emits a stat on a neutral `inSync` base.
+
+**`hasPendingDelivery`** is an unrelated broadcast bit sharing the same "daemon knows, client can't" shape:
+true iff the card has a claimable inbox message or a live delivery lease. It is maintained in the per-tick
+delivery reconciler — *before* the deliverability guard — so it arms even for a running card (whose `wake`
+returns before delivering) and disarms when the queue drains, neither of which a wake- or confirm-only hook
+would catch. Stall detection reads it so a card with work still in flight is never mistaken for idle.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session

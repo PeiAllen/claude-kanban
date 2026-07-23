@@ -27,6 +27,48 @@ struct LineageModelTests {
         #expect(back.treeStat == TreeStat(state: .stale, behind: 2, parentIsRemote: false))
     }
 
+    // MARK: child-progress + hasPendingDelivery wire (slice 4) — decode-with-default + explicit encode
+
+    @Test("TreeStat missing the child-progress keys → mergedChildren/plannedChildren/drained default")
+    func treeStatChildFieldsDecodeDefault() throws {
+        // A pre-slice-4 TreeStat on the wire has only the parent-facing keys.
+        let old = JSONValue.object(["state": .string("stale"), "behind": .int(2),
+                                    "parentIsRemote": .bool(false), "nudges": .int(0),
+                                    "mergeStalled": .bool(false)])
+        let s = try old.decode(TreeStat.self)
+        #expect(s.mergedChildren == 0)
+        #expect(s.plannedChildren == 0)
+        #expect(s.drained == false)
+        #expect(s.state == .stale && s.behind == 2)   // old fields still decode
+    }
+
+    @Test("TreeStat round-trips the child-progress dimension")
+    func treeStatChildFieldsRoundTrip() throws {
+        let s = TreeStat(state: .inSync, mergedChildren: 3, plannedChildren: 5, drained: true)
+        #expect(try JSONValue(encodable: s).decode(TreeStat.self) == s)
+    }
+
+    @Test("Task.encode EMITS hasPendingDelivery (the explicit-encoder path must include the new key)")
+    func taskEncodesHasPendingDelivery() throws {
+        let t = Task(title: "t", repo: "/r", branch: "b", cwd: "/r",
+                     model: AgentModel(id: "m"), startIn: .plan, column: .plan, order: 0,
+                     initialPrompt: "p", hasPendingDelivery: true)
+        let jv = try JSONValue(encodable: t)
+        // Task has a hand-rolled encode(to:); a missing encode line would silently drop the bit with no
+        // compile error, so assert it is on the wire AND survives a round-trip.
+        #expect(jv["hasPendingDelivery"]?.boolValue == true)
+        #expect(try jv.decode(Task.self).hasPendingDelivery == true)
+    }
+
+    @Test("Task without hasPendingDelivery on the wire → decodes to false (back-compat, card kept)")
+    func taskDecodesWithoutHasPendingDelivery() throws {
+        // A pre-slice-4 record: only `id` present (Task's sole required field). It must be KEPT with the
+        // new bit defaulted, never dropped.
+        let minimal = JSONValue.object(["id": .string(UUID().uuidString)])
+        let t = try minimal.decode(Task.self)
+        #expect(t.hasPendingDelivery == false)
+    }
+
     @Test("SpawnInput decodes with and without base (back-compat); id is a required wire field")
     func spawnInputBaseDecode() throws {
         // `id` is now a REQUIRED wire field (client-minted; no id-less spawn). `base` stays optional.

@@ -80,9 +80,134 @@ struct ShipChoreoTests {
         // Parent has NOT advanced — nothing merged. Refuse, and leave the lineage intact.
         await #expect(throws: OrchestraError.self) { try await env.svc.shipped(ref: child.ref()) }
         #expect(await BranchLineage(proc: fake).read(repo: repo, branch: "child") != nil)
+        // slice 4: the zero-commit false-positive guard (S2-2) fires BEFORE the removal funnel, so a
+        // no-merge ship never bumps the counter (the guard is the merge-classification for this path).
+        #expect(await BranchLineage(proc: fake).mergedCount(repo: repo, branch: "parent") == 0)
         // Force overrides (a genuinely empty squash).
         _ = try await env.svc.shipped(ref: child.ref(), force: true)
         #expect(await BranchLineage(proc: fake).read(repo: repo, branch: "child") == nil)
+    }
+
+    // slice 4: a merge-classified ship increments the parent's merged-count, broadcasts it on the parent
+    // card's treeStat, and drains the parent when the shipped child was the last one.
+    @Test("shipped counts on the parent + broadcasts mergedChildren + drains when it was the last child")
+    func shippedCountsAndDrains() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        RepoScripts.advanceParent(graph, 1)   // simulate the squash-merge (S2-2 gate)
+
+        try await env.svc.shipped(ref: child.ref())
+
+        #expect(await lin.mergedCount(repo: repo, branch: "parent") == 1)
+        let pStat = try #require(await env.svc.list().first { $0.id == parentCard.id }?.treeStat)
+        #expect(pStat.mergedChildren == 1)
+        #expect(pStat.drained == true)   // the child was the only lineage child → wave done by merges
+    }
+
+    // Provenance: `drained` must NOT set while another live child remains (only the merge-removal that
+    // EMPTIES the lineage drains it), and the count increments exactly once per merge.
+    @Test("shipped does not drain the parent while a sibling remains; counts once")
+    func shippedNoDrainWithSibling() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        try await lin.set(repo: repo, branch: "sibling", link: ParentLink(parent: "parent", base: parentTip))  // stays behind
+        RepoScripts.advanceParent(graph, 1)
+
+        try await env.svc.shipped(ref: child.ref())
+
+        #expect(await lin.mergedCount(repo: repo, branch: "parent") == 1)
+        let pStat = try #require(await env.svc.list().first { $0.id == parentCard.id }?.treeStat)
+        #expect(pStat.mergedChildren == 1)
+        #expect(pStat.drained == false)   // `sibling` still points at parent
+    }
+
+    // Dual-observer / restart re-detection at the service level: re-shipping the same child never
+    // double-counts (its lineage entry is gone the second time).
+    @Test("shipping the same child twice counts once (entry-existence idempotency)")
+    func shippedCountsOnce() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        _ = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        RepoScripts.advanceParent(graph, 1)
+
+        try await env.svc.shipped(ref: child.ref())
+        try await env.svc.shipped(ref: child.ref())   // second observer / re-run — link already gone
+
+        #expect(await BranchLineage(proc: fake).mergedCount(repo: repo, branch: "parent") == 1)
+    }
+
+    // Provenance guard (the sharpest plan-review catch): removing the LAST child by a NON-merge path
+    // (abandoned-branch cleanup / re-parent) must NOT drain the parent, even though childCount hits 0 with
+    // merged>0 — the condition a naive level-derivation would drain on.
+    @Test("a non-merge removal of the last child never drains the parent (provenance, not level-derived)")
+    func nonMergeRemovalNeverDrains() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        try await lin.set(repo: repo, branch: "extra", link: ParentLink(parent: "parent", base: parentTip))
+        RepoScripts.advanceParent(graph, 1)
+        try await env.svc.shipped(ref: child.ref())   // merges `child`: mergedCount 1, `extra` remains → not drained
+        #expect(await env.svc.list().first { $0.id == parentCard.id }?.treeStat?.drained == false)
+
+        // Remove the LAST live child by a NON-merge path, then recompute: childCount is now 0 ∧ merged==1,
+        // yet a plain recompute preserves drained==false — only a merge-removal that empties ever sets it.
+        try await lin.clear(repo: repo, branch: "extra")
+        await env.svc.recomputeChildProgress(parentCard.id)
+        let pStat = try #require(await env.svc.list().first { $0.id == parentCard.id }?.treeStat)
+        #expect(pStat.drained == false)
+        #expect(pStat.mergedChildren == 1)
+    }
+
+    // carryChildProgress at a direct treeStat writer: a card that is BOTH a child (re-pointed by set-parent)
+    // AND a parent (has its own child-progress) must keep its wave counters across the re-point.
+    @Test("carryChildProgress: a set-parent re-point preserves the card's own child-progress")
+    func setParentPreservesChildProgress() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        // `child` has merged 2 of a planned 3 of its OWN children.
+        try await lin.setPlanned(repo: repo, branch: "child", n: 3)
+        for gc in ["gc1", "gc2"] {
+            try await lin.set(repo: repo, branch: gc, link: ParentLink(parent: "child", base: parentTip))
+            _ = await lin.recordMergedChild(repo: repo, child: gc, expectedParent: "child")
+        }
+        await env.svc.recomputeChildProgress(card.id)
+        #expect(await env.svc.list().first { $0.id == card.id }?.treeStat?.mergedChildren == 2)
+
+        // Re-point `child` onto `parent` — the direct TreeStat write carries the child dimension forward.
+        try await env.svc.setParent(ref: card.ref(), parent: "parent")
+        let s = try #require(await env.svc.list().first { $0.id == card.id }?.treeStat)
+        #expect(s.mergedChildren == 2)
+        #expect(s.plannedChildren == 3)
+    }
+
+    // A new child lineage entry under a drained parent clears `drained` (the wave is live again), while
+    // the merged count is preserved across the clear.
+    @Test("adding a child link under a drained parent clears drained; merged count preserved")
+    func newChildClearsDrained() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        RepoScripts.advanceParent(graph, 1)
+        try await env.svc.shipped(ref: child.ref())
+        #expect(await env.svc.list().first { $0.id == parentCard.id }?.treeStat?.drained == true)
+
+        // Re-parent the (still-live) child card back onto `parent`: a fresh lineage child appears.
+        try await env.svc.setParent(ref: child.ref(), parent: "parent")
+        let pStat = try #require(await env.svc.list().first { $0.id == parentCard.id }?.treeStat)
+        #expect(pStat.drained == false)
+        #expect(pStat.mergedChildren == 1)   // carried across the drained-clear
     }
 
     // S2-5 (minimal): archiving a worktree card must nudge its live children — the parent branch is now
@@ -100,6 +225,21 @@ struct ShipChoreoTests {
 
         let msgs = try await env.svc.inboxPeek(child.id)
         #expect(msgs.contains { $0.text.contains("archived") })
+    }
+
+    // slice 4: set-planned broadcasts plannedChildren on a worktree card and rejects a branchless one.
+    @Test("set-planned sets plannedChildren on a worktree card; 0 clears; a branchless card is rejected")
+    func setPlannedSemantics() async throws {
+        let (env, _, _, repo, _) = setup()
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        _ = try await env.svc.setPlanned(ref: card.ref(), n: 5)
+        #expect(await env.svc.list().first { $0.id == card.id }?.treeStat?.plannedChildren == 5)
+        _ = try await env.svc.setPlanned(ref: card.ref(), n: 0)   // clears
+        #expect((await env.svc.list().first { $0.id == card.id }?.treeStat?.plannedChildren ?? 0) == 0)
+
+        // A branchless (freeform cwd) card has no branch to store the count on → rejected.
+        let freeform = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "x", cwd: repo, access: .readWrite))
+        await #expect(throws: OrchestraError.self) { try await env.svc.setPlanned(ref: freeform.ref(), n: 3) }
     }
 
     // S3-5: an archived card must not get a post-archive treeStat rewrite even if a recompute fires.

@@ -39,9 +39,10 @@ extension OrchestraService {
                 let pr: Int? = { if case .pullRequest(let n) = remote { return n }; return nil }()
                 try await lineage.set(repo: t.repo, branch: t.branch,
                     link: ParentLink(parent: remote.canonical, base: oid, prNumber: pr, watch: watch))
+                await onChildLineageAdded(repo: t.repo, parentBranch: remote.canonical)
                 let (updated, rev) = try await store.update(t.id) {
                     $0.parentBranch = remote.canonical
-                    $0.treeStat = TreeStat(state: .inSync, parentIsRemote: true)
+                    $0.treeStat = carryChildProgress(TreeStat(state: .inSync, parentIsRemote: true), from: $0.treeStat)
                 }
                 emit(.taskUpserted(updated), rev: rev)
                 if watch { startRemoteWatch(cardId: t.id) } else { stopRemoteWatch(t.id) }
@@ -72,9 +73,10 @@ extension OrchestraService {
                     }
                 }
                 try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: anchor))
+                await onChildLineageAdded(repo: t.repo, parentBranch: p)
                 let (updated, rev) = try await store.update(t.id) {
                     $0.parentBranch = p
-                    $0.treeStat = TreeStat(state: .restackNeeded)
+                    $0.treeStat = carryChildProgress(TreeStat(state: .restackNeeded), from: $0.treeStat)
                 }
                 emit(.taskUpserted(updated), rev: rev)
                 try? await inbox.enqueue(t.id,
@@ -88,9 +90,13 @@ extension OrchestraService {
                 try await self.mergeBaseOID(repo: repo, "refs/heads/\(branch)", "refs/heads/\(p)", timeout: ctl)
             }
             try await lineage.set(repo: t.repo, branch: t.branch, link: ParentLink(parent: p, base: base))
-            // Nil treeStat so the scheduled recompute computes fresh against the NEW parent (and doesn't
-            // preserve a sticky mergeRequested from the old parent, O2).
-            let (updated, rev) = try await store.update(t.id) { $0.parentBranch = p; $0.treeStat = nil }
+            await onChildLineageAdded(repo: t.repo, parentBranch: p)   // new child under p ⇒ clear p's drained
+            // Nil the parent-facing dimension so the scheduled recompute computes fresh against the NEW
+            // parent (and doesn't preserve a sticky mergeRequested from the old parent, O2), but CARRY
+            // child-progress — re-parenting THIS card doesn't change ITS OWN children.
+            let (updated, rev) = try await store.update(t.id) {
+                $0.parentBranch = p; $0.treeStat = carryChildProgress(nil, from: $0.treeStat)
+            }
             emit(.taskUpserted(updated), rev: rev)
             // S2-7: recompute against the NEW parent (else a badge from the previous parent lingers on an
             // idle card) and tear down any remote watch left from a prior remote parent (adopting a local
@@ -104,7 +110,9 @@ extension OrchestraService {
             try await lineage.clear(repo: t.repo, branch: t.branch)
             // S2-7: clear the badge too (compare `shipped`, which nils both) — else `tree` reports a nil
             // parent alongside a stale non-nil treeStat.
-            let (updated, rev) = try await store.update(t.id) { $0.parentBranch = nil; $0.treeStat = nil }
+            let (updated, rev) = try await store.update(t.id) {
+                $0.parentBranch = nil; $0.treeStat = carryChildProgress(nil, from: $0.treeStat)
+            }
             emit(.taskUpserted(updated), rev: rev)
             emitActivity(.command, updated, source, "cleared parent link")
             return updated
@@ -130,6 +138,7 @@ extension OrchestraService {
             oid = try await revParseOID(repo: repo, ref: "refs/heads/\(base)", timeout: to)
         }
         try await lineage.set(repo: repo, branch: branch, link: ParentLink(parent: base, base: oid))
+        await onChildLineageAdded(repo: repo, parentBranch: base)   // a new child ⇒ the parent is no longer drained
         return base
     }
 
@@ -142,6 +151,7 @@ extension OrchestraService {
         let pr: Int? = { if case .pullRequest(let n) = ref { return n }; return nil }()
         try await lineage.set(repo: repo, branch: branch,
                               link: ParentLink(parent: ref.canonical, base: oid, prNumber: pr, watch: true))
+        await onChildLineageAdded(repo: repo, parentBranch: ref.canonical)
         return ref.canonical
     }
 
@@ -197,7 +207,9 @@ extension OrchestraService {
         // given up on (else a card whose merge finally landed keeps the red "unanswered" badge).
         stopMergeRequestNudge(t.id)
         _ = try? await store.update(t.id) {
-            if $0.treeStat?.state == .mergeRequested || $0.treeStat?.mergeStalled == true { $0.treeStat = nil }
+            if $0.treeStat?.state == .mergeRequested || $0.treeStat?.mergeStalled == true {
+                $0.treeStat = carryChildProgress(nil, from: $0.treeStat)   // drop the merge-request badge, keep child-progress
+            }
         }
         // S2-9: cancel any funnel-scheduled recompute for this card so it can't race this direct recompute
         // across the lineage.read suspension and fire a duplicate stale nudge from the pre-sync base.
@@ -327,7 +339,8 @@ extension OrchestraService {
                 if let card = derivedCard(repo: child.repo, branch: gcBranch, among: active) {
                     if let (saved, rev) = try? await store.update(card.id, {
                         $0.parentBranch = grandparent
-                        $0.treeStat = TreeStat(state: .restackNeeded, parentIsRemote: gpRemote != nil)
+                        $0.treeStat = carryChildProgress(
+                            TreeStat(state: .restackNeeded, parentIsRemote: gpRemote != nil), from: $0.treeStat)
                     }) {
                         emit(.taskUpserted(saved), rev: rev)
                     }
@@ -347,6 +360,9 @@ extension OrchestraService {
                     await wake(card.id)
                 }
             }
+            // The grandparent just GAINED these grandchildren — if a local card owns it and it had drained,
+            // the wave is live again. No-op for a remote grandparent (no local card owns `origin/x`/`pr#N`).
+            if !grandchildren.isEmpty { await onChildLineageAdded(repo: child.repo, parentBranch: grandparent) }
         }
 
         // (d) S1-3: tell the shipped child its branch landed — it is a stopped card that cannot see the
@@ -359,18 +375,39 @@ extension OrchestraService {
             await wake(child.id)
         }
 
-        // (c) clear the shipped child's own lineage → re-run is a no-op; treeStat clears on next recompute.
+        // (c) remove the shipped child's lineage AND increment the parent's merged-count — the ONE merge-
+        // classified removal funnel (slice 4). It re-reads the link under the actor's own lock (subsuming
+        // the old stillSame re-read), so a concurrent `set-parent` that re-pointed this branch mid-flight is
+        // detected (`.linkChanged`) and left alone; a second `shipped` / post-restart re-detection finds no
+        // link (`.absent`) and no-ops the counter — the entry-existence idempotency guard.
         // O2: a pending merge-request is now resolved — stop its re-nudge loop.
         stopMergeRequestNudge(child.id)
-        // S4: re-read before the clear — `shipped` ran (a)–(b) across many suspensions; if a concurrent
-        // `set-parent` re-pointed this branch in the meantime, its FRESH link must not be wiped by our
-        // stale clear. Only clear when the link is still the one we shipped against.
-        let stillSame = await lineage.read(repo: child.repo, branch: child.branch)?.parent == link?.parent
-        guard stillSame else {
-            emitActivity(.command, child, source, "shipped \(child.branch) (link changed mid-flight — kept)")
+        let removal: BranchLineage.MergeRemoval
+        if hadParentLink, let parent = link?.parent {
+            removal = await lineage.recordMergedChild(repo: child.repo, child: child.branch, expectedParent: parent)
+        } else {
+            // A root ship merged to main via the standard flow — no parent branch owns a counter, and the
+            // child has no link to remove. Nothing to count; fall through to the card cleanup.
+            try? await lineage.clear(repo: child.repo, branch: child.branch)
+            removal = .absent
+        }
+        guard removal != .linkChanged else {
+            // `.linkChanged` = the child link was NOT removed: either a concurrent `set-parent` re-pointed it
+            // (the common case) or, rarely, the clear itself lost to an external git-config lock. Either way we
+            // keep the card rather than nil it, so its state still matches git. Accepted rare edge on the
+            // lock case: the (a)/(b) nudges + grandchild retarget above already ran, so if the operator then
+            // archives the child its lineage link can leak → a phantom child that a later `.setIfEmpty` sees,
+            // so the parent's `drained` nudge may not fire. `drained` is nudge-INPUT only (a missed suggestion,
+            // never a wrong action), consistent with the owner-accepted crash-window imprecision.
+            emitActivity(.command, child, source, "shipped \(child.branch) (link not removed — kept)")
             return (await store.get(child.id)) ?? child
         }
-        try? await lineage.clear(repo: child.repo, branch: child.branch)
+        // `.counted` → refresh the PARENT card's wave broadcast: the new merged count, and `drained` iff this
+        // merge left it with zero lineage children (the provenance-bound set — a non-merge removal never does).
+        if removal == .counted, let parent = link?.parent,
+           let parentCard = derivedCard(repo: child.repo, branch: parent, among: await store.all()) {
+            await recomputeChildProgress(parentCard.id, drained: .setIfEmpty)
+        }
         // TRAP (fixed): the old `?? child` fallback always bound, so the emit + activity fired
         // unconditionally even when `store.update` threw (card vanished mid-flight) — but `child` has
         // no rev to emit with. Restructure to emit only on success; on failure (intentional behavior
@@ -445,7 +482,9 @@ extension OrchestraService {
             await reconcileMergeRequest(id, link: link, remotes: remotes)
             return
         }
-        guard carryMergeRequestFields(new, from: current0) != current0 else { return }
+        // Carry BOTH the merge-request fields AND the child-progress dimension so a parent-facing recompute
+        // never wipes a card's own wave counters (and a root with only child-progress keeps its stat).
+        guard carryChildProgress(carryMergeRequestFields(new, from: current0), from: current0) != current0 else { return }
         // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
         // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent
         // synced / fan-out recompute that already transitioned this card cannot make us fire a duplicate
@@ -457,7 +496,7 @@ extension OrchestraService {
             // GIVEN-UP request is deliberately NOT sticky (it's a flag, not a state), so a stalled card keeps
             // tracking its parent instead of going blind to it.
             if cur?.state == .mergeRequested, new?.state != .restackNeeded { return }
-            let merged = carryMergeRequestFields(new, from: cur)
+            let merged = carryChildProgress(carryMergeRequestFields(new, from: cur), from: cur)
             guard merged != cur else { return }               // no delta → no state change, no emit/nudge
             staleEdge = (cur?.state == .inSync && new?.state == .stale)
             restackEdge = (cur?.state != .restackNeeded && new?.state == .restackNeeded)
@@ -500,6 +539,60 @@ extension OrchestraService {
     }
 
     private func clearTreeStatDebounce(_ id: UUID) { treeStatDebounce[id] = nil }
+
+    // MARK: - child-progress maintenance (slice 4)
+
+    /// How `recomputeChildProgress` should treat the parent's `drained` flag. Provenance-bound: `drained`
+    /// means "the wave finished BY MERGES", so it is set only when a merge-classified removal empties the
+    /// lineage (`.setIfEmpty`), cleared when a new child link appears (`.clear`), and otherwise untouched
+    /// (`.preserve`) — a non-merge removal of the last child must never set it.
+    enum DrainedUpdate { case preserve, clear, setIfEmpty }
+
+    /// Refresh a card's CHILD-progress broadcast — `mergedChildren`/`plannedChildren` (read fresh from
+    /// git-config) and, per `op`, `drained`. Independent of the card's OWN parent link, so a ROOT
+    /// orchestrator (no link ⇒ `recomputeTreeStat` returns nil) still broadcasts its wave counters; the
+    /// parent-facing dimension is preserved untouched (a neutral `.inSync` base only when there was no
+    /// stat at all). Persist + emit only on a real change (idempotent). This is the AUTHORITATIVE setter of
+    /// the child fields — every other treeStat writer merely carries them via `carryChildProgress`.
+    func recomputeChildProgress(_ id: UUID, drained op: DrainedUpdate = .preserve) async {
+        guard let t = await store.get(id), t.origin == .worktree, !t.archived else { return }
+        let merged = await lineage.mergedCount(repo: t.repo, branch: t.branch)
+        let planned = await lineage.plannedCount(repo: t.repo, branch: t.branch) ?? 0
+        // STRICT child lookup (nil on a genuine git read failure, [] for a real empty set): used both for the
+        // drain decision and to decide whether a parentless root still has a stat to broadcast. Resolved
+        // OUTSIDE the sync closure (it is async).
+        let kids = await lineage.childrenStrict(repo: t.repo, of: t.branch)
+        let hasLiveChildren = (kids?.isEmpty == false)
+        // `.setIfEmpty` sets `drained` ONLY on a CONFIRMED-empty read (kids == []) — a read failure (nil) must
+        // never drain a wave that may still have siblings. nil ⇒ preserve; a non-nil value is written.
+        let drainedSet: Bool?
+        switch op {
+        case .preserve:  drainedSet = nil
+        case .clear:     drainedSet = false
+        case .setIfEmpty: drainedSet = (kids?.isEmpty == true) ? true : nil
+        }
+        var changed = false
+        let res = try? await store.update(id) { task in
+            let cur = task.treeStat
+            let drained = drainedSet ?? (cur?.drained ?? false)
+            // A parentless root with live children (but 0 merged / no plan) still broadcasts a neutral stat so
+            // the wave bar exists as children spawn; nil only when NEITHER dimension has anything to say.
+            let hasChild = merged > 0 || planned > 0 || drained || hasLiveChildren
+            if cur == nil && !hasChild { return }               // neither dimension ⇒ leave nil
+            var s = cur ?? TreeStat(state: .inSync)              // neutral base for a parentless root
+            s.mergedChildren = merged; s.plannedChildren = planned; s.drained = drained
+            guard s != cur else { return }
+            task.treeStat = s; changed = true
+        }
+        if changed, let (saved, rev) = res { emit(.taskUpserted(saved), rev: rev) }
+    }
+
+    /// A new child lineage entry now points at `parentBranch` — the wave is no longer drained. Clear the
+    /// parent card's flag + refresh its counters. No-op when no live card owns the parent branch.
+    func onChildLineageAdded(repo: String, parentBranch: String) async {
+        guard let parent = derivedCard(repo: repo, branch: parentBranch, among: await store.all()) else { return }
+        await recomputeChildProgress(parent.id, drained: .clear)
+    }
 
     /// Coalescing per-parent trigger for the child fan-out — a one-shot debounce off the report funnel,
     /// like `scheduleTreeStat`. Debounced (not inline on the funnel) so the `git config --get-regexp`
@@ -650,5 +743,26 @@ func carryMergeRequestFields(_ new: TreeStat?, from cur: TreeStat?) -> TreeStat?
     guard var n = new else { return nil }   // no parent link ⇒ no treeStat ⇒ nothing pending to carry
     n.nudges = cur?.nudges ?? 0
     n.mergeStalled = cur?.mergeStalled ?? false
+    return n
+}
+
+/// Preserve the CHILD-progress dimension (`mergedChildren`/`plannedChildren`/`drained`) across any
+/// PARENT-facing treeStat write. The many direct `TreeStat(state:…)` constructions (set-parent,
+/// merge-request, remote redirect, the recompute funnel) only know the parent-facing dimension and would
+/// otherwise reset the child fields to their defaults — so, exactly like `carryMergeRequestFields` carries
+/// `nudges`, this copies the child fields forward from the current stat. `recomputeChildProgress` is the
+/// authoritative setter; every other writer just carries. Unlike the merge-request carry, a nil `new`
+/// (the card lost its parent link / is a root) does NOT drop the stat when there is child-progress to keep:
+/// a root orchestrator has no parent link but must still broadcast its wave counters, so it collapses to a
+/// neutral `.inSync` base carrying only the child dimension. Free fn — runs inside `store.update` closures.
+func carryChildProgress(_ new: TreeStat?, from cur: TreeStat?) -> TreeStat? {
+    let merged = cur?.mergedChildren ?? 0
+    let planned = cur?.plannedChildren ?? 0
+    let drained = cur?.drained ?? false
+    guard var n = new else {
+        if merged == 0 && planned == 0 && !drained { return nil }   // neither dimension ⇒ genuinely no stat
+        return TreeStat(state: .inSync, mergedChildren: merged, plannedChildren: planned, drained: drained)
+    }
+    n.mergedChildren = merged; n.plannedChildren = planned; n.drained = drained
     return n
 }

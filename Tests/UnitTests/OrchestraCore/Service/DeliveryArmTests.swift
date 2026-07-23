@@ -50,6 +50,33 @@ struct DeliveryArmTests {
         #expect(await env.svc.inbox.peek(card.id).map(\.text) == ["queued"])
     }
 
+    // slice 4: `hasPendingDelivery` is maintained in the per-tick reconciler, BEFORE the deliverable
+    // guard — so it arms even for a running card (whose `wake` returns before delivering) and disarms
+    // when the queue drains. Broadcast-only; a later stall-detection slice consumes it.
+    @Test("hasPendingDelivery arms on an enqueue to a RUNNING card, and disarms when the queue drains")
+    func pendingDeliveryArmsAndDisarms() async throws {
+        let env = TestEnv.make(grace: 2)
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 0)
+        let repo = TestEnv.repo(env.base)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))   // stays .running
+        env.adapter.writeTranscript(for: card.agentSessionId!)
+        await env.svc.reconcile()   // graduate past spawnPending so the arm runs next tick
+        #expect(try #require(await env.svc.store.get(card.id)).hasPendingDelivery == false)
+
+        // Enqueue to the still-RUNNING card — its Stop hook owns delivery so `wake`/the arm won't deliver,
+        // but the per-tick refresh still arms the broadcast bit.
+        try await env.svc.inbox.enqueue(card.id, "later")
+        await env.svc.reconcile()
+        #expect(try #require(await env.svc.store.get(card.id)).hasPendingDelivery == true)
+
+        // Drain the queue (remove the last message) → the next tick disarms it.
+        let msg = try #require(await env.svc.inbox.peek(card.id).first)
+        _ = try await env.svc.inbox.remove(msg.id)
+        await env.svc.reconcile()
+        #expect(try #require(await env.svc.store.get(card.id)).hasPendingDelivery == false)
+    }
+
     @Test("the arm never fires on a RUNNING card — its Stop hook owns delivery")
     func armSkipsRunning() async throws {
         let env = TestEnv.make(grace: 2)
