@@ -280,7 +280,7 @@ enum CLIRunner {
             case "open-notes":
                 // Same path as the inspector's "Open notes" button: open the card's worktree as an
                 // Obsidian vault, jumped to the notes its branch changed. Defaults to THIS card via
-                // `ORCHESTRA_TASK_ID`, so `/open-notes` inside a card session just works with no ref.
+                // `ORCHESTRA_TASK_ID`, so `orchestra open-notes` inside a card session works with no ref.
                 let ref = flags.positional(0) ?? flags.value("ref")
                     ?? ProcessInfo.processInfo.environment["ORCHESTRA_TASK_ID"]
                 guard let ref, !ref.isEmpty else {
