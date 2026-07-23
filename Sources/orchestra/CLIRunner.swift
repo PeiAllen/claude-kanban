@@ -153,6 +153,18 @@ enum CLIRunner {
                                                   .object(["ref": .string(noteRef), "note": .string(note)]))
                 printRef(noted)
 
+            case "needs-input":
+                // Set/replace only — there is no clear form, so an empty question is an error rather
+                // than the `set-note`-style erasure.
+                let qRef = flags.positional(0) ?? flags.require("ref")
+                let question = flags.value("question") ?? flags.positionalsFrom(1).joined(separator: " ")
+                if question.trimmingCharacters(in: .whitespaces).isEmpty {
+                    die("needs-input needs a question: orchestra needs-input <ref> <question...>")
+                }
+                let asked = try await client.call("needs-input",
+                                                  .object(["ref": .string(qRef), "question": .string(question)]))
+                printRef(asked)
+
             case "set-parent":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 var params: [String: JSONValue] = ["ref": .string(ref)]

@@ -206,6 +206,12 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: updated)
             },
 
+            "needs-input": { svc, p, src in
+                let updated = try await svc.needsInput(ref: try p.string("ref"),
+                                                       question: try p.string("question"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
             "set-parent": { svc, p, src in
                 let updated = try await svc.setParent(
                     ref: try p.string("ref"),

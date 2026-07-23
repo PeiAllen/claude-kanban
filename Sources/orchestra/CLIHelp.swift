@@ -20,12 +20,17 @@ enum CLIHelp {
                                                  next launch — it can't be renamed mid-session)
       set-note <ref> [text...]                   Set the card's durable note (what this card IS — e.g. its
                                                  wave/layer). Telemetry never overwrites it; empty clears it
+      needs-input <ref> <question...>            Declare you're blocked on a decision only the card's owner
+                                                 can make (set/replace; the daemon clears it when your next
+                                                 turn starts — re-declare if still blocked)
       set-parent <ref> [parent] [--mode adopt|move] [--watch]
                                                  Set/clear a card branch's parent link (omit parent to clear).
                                                  --mode move transplants commits; --watch polls a remote parent (pr#/origin).
       tree [ref] [--repo <r>]                     Lineage snapshot (parent/children/base per card, JSON)
       synced <ref>                                Record you merged/restacked the parent down (clears the stale signal)
-      merge-request <ref>                         Ask your live parent card to squash-merge you up the tree
+      merge-request <ref>                         Declare your work ready (the one ship verb): an owning
+                                                  parent card is nudged to merge you; an unowned target
+                                                  (main / bare / remote / none) is recorded for a human
       shipped <ref> [--force]                     Post-merge bookkeeping (notify child, retarget grandchildren); --force skips the merged-check
       borrow <ref>                                Cut a throwaway worktree to squash-merge into a bare parent (prints its path)
       release <ref>                               Tear down this card's borrow worktree

@@ -22,8 +22,9 @@ extension OrchestraService {
         let remotes = (try? await offActor { self.gitRemotes(repo: child.repo) }) ?? []
         guard RemoteParentRef.parse(link.parent, remotes: remotes) == nil else {
             throw OrchestraError.invalidParams(
-                "parent \(link.parent) is remote — publish a stacked PR instead of borrowing "
-                + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")
+                "parent \(link.parent) is remote — there is no local branch to borrow. Declare your work "
+                + "ready with `orchestra merge-request \(child.shortId)` and stop; a human decides how a "
+                + "remote parent is integrated.")
         }
         let active = await store.all()
         if let owner = derivedCard(repo: child.repo, branch: link.parent, among: active) {

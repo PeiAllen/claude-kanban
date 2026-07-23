@@ -189,6 +189,52 @@ only on a real conclusion (merge/archive/death), never on a delegate finishing i
 `{"phase":{"name":"dead","detail":"completed"}}` record no longer decodes and self-drops (accepted — none
 existed). The `wait`/`watch` subsystem stays but dormant; excising it is deferred.
 
+### Done is DECLARED: `merge-request` and `needs-input`
+
+Because done is not observable (above), the states that matter are **declared** by the agent and recorded
+by the daemon. Two verbs carry that, and both are shaped by the same rule: a declaration an agent could
+retract is one it will forget to retract, so the agent only ever *asserts*, and the daemon owns retirement.
+
+**`merge-request` is the singular ship verb.** One instruction, for every parent kind — *when your work is
+ready, `merge-request` and stop* — and the daemon routes it. A live card owning the parent branch is
+nudged, and re-nudged on a backoff, to squash-merge and run `shipped`; approval is delegated by
+construction inside a launched tree. An **unowned** target — `main`, a bare local branch, a remote parent,
+or no parent link at all — is *recorded and nothing else*: no inbox message, no re-nudge loop, no
+`mergeStalled` escalation, because there is no agent to consume any of it. The human reads the badge and
+integrates however they choose, and **how approval is executed stays outside Orchestra's design** — which
+is why guidance teaches no second path. `borrow` and publishing a stacked PR remain primitives a human can
+direct; taught as ship steps they were a four-way fork the agent had to resolve from `tree` output before
+it could say it was finished, which is exactly the routing decision that is not its business.
+
+Ownership is **derived, never stored** — the oldest live non-archived card on the parent branch — because
+it *changes underneath a pending request*. So one function re-derives it at every edge that can move it:
+the verb, the daemon-boot rebuild, each re-nudge tick, and the treeStat funnel. That last one is
+load-bearing in the unowned → owned direction: without it a request recorded while unowned goes silent the
+moment a card takes the parent branch, because the human's "no owner" predicate stops matching while the
+new owner was never told. In the other direction, an owner archived mid-request does **not** retract the
+declaration — the badge stays and only the loop stops, since the work is still ready and is now a human's
+to land.
+
+**`needs-input` declares a block.** An agent that ends its turn waiting on a decision only the card's
+owner can make is, from the board's side, indistinguishable from an idle card — so it says so, in one
+line, and the card can surface it. The verb is set/replace with **no clear form**; it is scoped to the
+*end* of a turn, so an agent whose harness offers an in-session choices prompt still uses that mid-turn —
+`needs-input` is the complement (the question that outlives the turn, and the only option for a backend
+with no such prompt), never a replacement.
+
+Retirement is keyed to **proof that the question is moot**, never to an intent, and there are exactly two
+proofs. The first is the next turn starting: a landing into `live(.running)` from anywhere that is not
+already running and is not a permission wait — an approval resumes the *same* turn, so a question declared
+earlier in it must survive. The second is a **confirmed** inbox delivery. That second seam is not
+redundant: a Claude card handed an injected answer at Stop resumes the same session with no
+`UserPromptSubmit`, and if it answers in prose it calls no tool either, so it reports `.running` never and
+crosses no phase edge — only the delivery receipt proves the turn happened. It is keyed to the receipt
+rather than the dispatch because the relaunch seed is claimed *before* the launch runs, so a failed launch
+would otherwise erase a question the agent never saw. A completed session replacement also clears it (a
+*landed* relaunch, an id rollover, `/clear`) — generation-fenced, so a dying session's late signal cannot
+erase what the incoming one declared. Nothing else clears it; selection cannot, because glancing at a
+question is not answering it.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's
@@ -1759,7 +1805,8 @@ diffs by default). The load-bearing choices, and what each discarded:
 
 Because the daemon never touches a ref, the whole flow rides the shipped F3 durable inbox: a parent tip
 moving past a child's recorded base fires **one** stale nudge (edge-triggered, `inSync → stale`); a child
-shipping under a live parent enqueues a **merge-request** into the parent card; a `shipped` notifies the
+shipping under a live parent enqueues a **merge-request** into the parent card (an unowned target records
+the request instead — see [done is declared](#done-is-declared-merge-request-and-needs-input)); a `shipped` notifies the
 child and the parent card, retargets grandchildren onto the grandparent, and clears the request. The
 owning agent then does the actual `git merge` / `rebase --onto` / squash in its own worktree and reports
 back with `synced` / `shipped`, which the daemon **verifies** (records the real `merge-base`, gates on the

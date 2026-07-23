@@ -91,6 +91,12 @@ extension OrchestraService {
                 // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
                 // while launching), so this never fires for Claude.
                 if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
+                // The session that declared the question has been replaced, so the question is moot.
+                // Generation-fenced, unlike the id write above: a late rollover from a session we have
+                // already torn down would otherwise erase a question the INCOMING generation declared
+                // after the fact — and `applyReportFields` carries `pendingQuestion`, so that nil would
+                // really land.
+                if attributable { task.pendingQuestion = nil }
             }
 
             // SessionStart source semantics.
@@ -109,6 +115,11 @@ extension OrchestraService {
                     }
                     task.desc = ""
                     task.awaitingFirstPrompt = true
+                    // `/clear` replaces the session's whole context: whatever it was blocked on is gone.
+                    // Fenced like the phase write beside it (and unlike `desc`/`awaitingFirstPrompt`,
+                    // which are harmless either way) — erasing the incoming generation's question on the
+                    // word of the outgoing session's SessionStart is not harmless.
+                    if attributable { task.pendingQuestion = nil }
                 case "resume":
                     if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
                         task.phase = .live(.waiting(.humanTurn))

@@ -57,4 +57,36 @@ extension OrchestraService {
         emitActivity(.command, saved, source, clean.isEmpty ? "cleared its note" : "note → “\(clean)”")
         return saved
     }
+
+    /// `needs-input` — the agent DECLARES that it is blocked on a decision only the card's owner can make.
+    /// Set/replace only: there is deliberately no clear form, because a declaration an agent could retract
+    /// is one it would forget to retract. The daemon retires it instead, at the only events that prove the
+    /// question is moot — the agent's next turn demonstrably starting, or a completed session replacement
+    /// (see `transition` and `confirmDelivery`).
+    ///
+    /// Empty is REJECTED, unlike `set-note`: an empty note means "no note", but an empty question would be
+    /// an amber with nothing to answer.
+    @discardableResult
+    public func needsInput(ref: String, question: String, source: ActivitySource = .daemon) async throws -> Task {
+        let t = try await resolveRef(ref)
+        let clean = CardNaming.normalizeQuestion(question)
+        guard !clean.isEmpty else {
+            throw OrchestraError.invalidParams("needs-input requires a question — one line stating what you need decided")
+        }
+        guard let (saved, rev) = try? await store.update(t.id, { $0.pendingQuestion = clean })
+        else { throw OrchestraError.unknownTask(t.id.uuidString) }
+        emit(.taskUpserted(saved), rev: rev)
+        emitActivity(.command, saved, source, "needs input → “\(clean)”")
+        return saved
+    }
+
+    /// Retire a declared question. Called from the daemon's proof-of-turn seams ONLY (never from a verb):
+    /// `transition`'s turn-start / session-landing edges and `confirmDelivery`'s receipt. Idempotent and
+    /// delta-gated — a card with no question costs one store read and writes nothing.
+    func clearPendingQuestion(_ id: UUID) async {
+        guard let t = await store.get(id), t.pendingQuestion != nil else { return }
+        if let (saved, rev) = try? await store.update(id, { $0.pendingQuestion = nil }) {
+            emit(.taskUpserted(saved), rev: rev)
+        }
+    }
 }

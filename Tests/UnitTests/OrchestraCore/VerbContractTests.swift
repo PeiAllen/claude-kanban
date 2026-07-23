@@ -19,6 +19,8 @@ struct VerbContractTests {
         "move": (.mutation, nonArchived), "trust": (.mutation, nonArchived),
         // `set-title` renames a card: an inline, idempotent field write that never touches `phase`.
         "set-title": (.mutation, nonArchived), "set-note": (.mutation, nonArchived),
+        // `needs-input` is a declaration: an inline field write, never a phase touch.
+        "needs-input": (.mutation, nonArchived),
         // `send` is a CONVERGENCE verb (B5a): the persisted intent is the non-empty inbox row, which the
         // delivery arm drives to empty — not a one-shot mutation. Gate stays non-archived (a send to a
         // dead card persists intent the arm revives).

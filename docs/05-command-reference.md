@@ -15,6 +15,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 |---------|------------|--------------|
 | `list` | `col?` (`plan`/`impl`/`review`) | List cards, optionally filtered by column. Read-only; not logged to the activity feed (it would flood it). |
 | `spawn` | `prompt` (required), `title?`, `note?`, `repo?`, `branch?`, `model?`, `agent?` (`claude-code`/`codex`), `col?` (`plan`/`impl`), `cwd?`, `access?` (`readWrite`/`readOnly`), `scratch?` (bool), `seed?` | Spawn a new agent. Worktree mode (`repo`+`branch`), freeform mode (`cwd`), or scratch mode (`scratch:true`). `title` names the card and **pins** that name; without it the name is derived (branch → read-only target → prompt → directory) and a `seed` is never used as one — see [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot). On readiness the card lands `live(.waiting(.humanTurn))` if it has had no prompt yet, else `live(.running)`. `agent` picks the adapter backend; omit it and Orchestra **infers the agent from `model`** (the adapter that catalogs that model id), else falls back to the configured default agent — this is what makes **Codex** startable from a model-only selection. A `seed` (PR D3) is authored context folded **ahead of** the prompt into the launch turn (bounded by the 10 000-char live-delivery cap) — this is how a **Fork** hands a new card the parent's slice. |
+| `needs-input` | `ref` (required), `question` (required) | **Declare** that the card is blocked on a decision only its owner can make, so the board can surface it — an agent waiting in its own terminal is otherwise an ordinary idle card, and the human never learns they are the blocker. Written to `Task.pendingQuestion` (trimmed to one line, 200 chars max). **Set/replace only — there is no clear form**, and an empty question is rejected: the daemon retires the declaration itself, so a stale one can't outlive its answer. It is cleared at proof the next turn started — a turn-start `.live(.running)` landing, or a **confirmed** inbox delivery (the receipt, not the dispatch — a Claude card handed an injected answer at Stop may answer in prose and never report `.running`) — or by a completed session replacement (a landed relaunch, an id rollover, `/clear`). A permission approval resumes the *same* turn and does **not** clear it. Guidance tells agents to re-declare if they are still blocked when the next turn ends; see [the declaration model](09-design-decisions.md#done-is-declared-merge-request-and-needs-input). |
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `set-title` | `ref` (required), `title` (required) | Rename a card. The title is the board's SSOT for the name and is **pinned** by this verb; the agent session's own name follows at its next (re)launch — a live session cannot be renamed from outside, which is why this is an Orchestra verb rather than an agent command. Trimmed, 120 chars max. |
 | `set-note` | `ref` (required), `note` (required) | Set or clear a card's **durable** note — the one-liner about what the card IS (its wave/layer in a larger plan, say). Distinct from `desc`, the live status blurb telemetry overwrites every tick: a note is authored and survives restart/clear. An empty `note` clears it. Trimmed, 120 chars max. |
@@ -51,8 +52,8 @@ required on every schema, so a new verb must classify itself before it can ship:
   `trustState`, `capture`.
 - **Mutation** — completes inline and returns its result; may hop off-actor (a shell command, a tmux
   attach) but never changes `phase`. `move`, `send`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
-  `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `set-parent`, `synced`, `shipped`,
-  `merge-request`, `borrow`, `release`.
+  `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `needs-input`, `set-parent`,
+  `synced`, `shipped`, `merge-request`, `borrow`, `release`.
 - **Convergence** — the only kind that touches `phase`. The synchronous half persists an **intent** — one
   `transition()` call — and returns immediately; the reconciler's phase-keyed
   [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `spawn`,
@@ -128,6 +129,18 @@ tree-lineage verbs (`set-parent`, `synced`, `shipped`, `merge-request`, `borrow`
   reviewer, a research fork) ends its turn `waiting`, not concluded: it keeps its agent process, worktree,
   tmux session, and branch until someone acts. The daemon never garbage-collects a live-but-idle card, so
   the parent that spawned it must `archive` it once it has taken the result.
+- **`merge-request` never refuses on the shape of the target.** It is the ONE ship verb an agent is
+  taught, for every parent kind, because routing is the daemon's job and not the agent's: a live card
+  owning the parent branch is nudged (and re-nudged) to squash-merge and run `shipped`, while an
+  **unowned** target — `main`, a bare local branch, a remote parent, or no parent link at all (an ordinary
+  root, which records against the repo's default branch) — is **recorded and nothing else**. Unowned means
+  there is no agent to consume the request, so no re-nudge loop is armed and the
+  [`mergeStalled`](09-design-decisions.md#shipped-feature-history) give-up can never fire; the human reads
+  the badge and merges however they choose, which is deliberately outside Orchestra's design. Ownership is
+  **derived, never stored**, and re-derived whenever it can change — so a request recorded while unowned is
+  handed to an owner that appears later, and one whose owner is archived keeps its badge and simply stops
+  being nudged. The badge is sticky either way: an unowned request is retired by `synced` / `shipped` /
+  `set-parent`, or by archiving the card.
 - **`handoff` is the F1 seam's first surface.** As of D1, `handoff` is a thin `Command` that resolves the
   ref and delegates to `OrchestraService.resumeInCard(seed:)` (shipped by C3) — it does **not** start a
   new card. The named card is killed and resumed in a fresh, clean-context process that keeps its session

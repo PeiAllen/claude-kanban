@@ -48,6 +48,7 @@ public enum SessionBrief {
             return "Orchestra orientation: you are card `\(shortId)`, a standalone **\(noun)** card — it "
                 + "runs on its own, not on the Plan → Implementation → Review board, so there's no column "
                 + "to move between.\(mode) Begin on that footing without waiting to be told.\(delegation)"
+                + Self.needsInputNudge(shortId)
                 + (titlePinned ? "" :
                    " Your card is named after what it runs on, so give it a name of its own once the work "
                    + "takes shape — `set-title \(shortId) <title>` — and update it as the work changes.")
@@ -71,5 +72,18 @@ public enum SessionBrief {
             + " Keep a one-line note on what this card IS (its wave/layer in the larger plan, say) — "
             + "`set-note \(shortId) <text>` — and update it when the shape of the work changes; unlike the "
             + "live status line, a note survives restarts."
+            + Self.needsInputNudge(shortId)
+    }
+
+    /// The END-OF-TURN escalation, deliberately scoped that way. Mid-turn, an agent whose harness offers an
+    /// in-session choices prompt should just use it — that blocks the turn and answers itself, and steering
+    /// agents away from it would trade a live question for a slower one. `needs-input` is the complement:
+    /// the question that outlives the turn, and the only option for a backend with no such prompt. It is
+    /// re-declared rather than cleared by the agent, because the daemon retires it automatically at the next
+    /// turn — a declaration an agent could retract is one it would forget to retract.
+    private static func needsInputNudge(_ shortId: String) -> String {
+        " If you END your turn still blocked on a decision only this card's owner can make, declare it — "
+        + "`needs-input \(shortId) \"<one-line question>\"` — so it shows on the board instead of looking "
+        + "idle; re-declare if you're still blocked when your next turn ends."
     }
 }

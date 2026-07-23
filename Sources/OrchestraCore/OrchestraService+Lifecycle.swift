@@ -95,6 +95,27 @@ extension OrchestraService {
                 } else if to.kind == .live, t.agentSessionId != nil {
                     t.sessionDiscoverySince = nil
                 }
+                // A declared `needs-input` question is retired by PROOF that it is moot — never by an
+                // intent. Two proofs live on this edge set:
+                //   · a TURN START — landing `.live(.running)` from anywhere that isn't already running
+                //     and isn't a permission wait. Excluding permission is what makes this "the next
+                //     TURN" and not "the next time it runs": an approval resumes the SAME turn, and a
+                //     question declared earlier in that turn must survive it.
+                //   · a COMPLETED session replacement — landing `.live` out of a bring-up phase. The
+                //     replacement is what makes the question moot (the session that asked it is gone),
+                //     and a blank restart lands `.waiting(.humanTurn)` (PhaseStepper.deriveLaunchFlavor),
+                //     so the turn-start arm alone would miss it.
+                // Deliberately NOT on ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that
+                // intent before any launch runs, so a failed or timed-out bring-up would erase a question
+                // the agent never saw — and that card is now `.dead`, where the human needs the question
+                // more, not less.
+                if t.pendingQuestion != nil {
+                    let turnStart = to == .live(.running)
+                        && from != .live(.running) && from != .live(.waiting(.permission))
+                    let sessionReplaced = to.kind == .live
+                        && [.relaunching, .launching, .creatingWorktree].contains(from.kind)
+                    if turnStart || sessionReplaced { t.pendingQuestion = nil }
+                }
             }
         } catch {
             return .noop   // unknown card raced away between the load and the patch

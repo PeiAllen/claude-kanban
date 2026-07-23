@@ -138,4 +138,31 @@ struct ModelCodableTests {
             Task.self, from: JSONSerialization.data(withJSONObject: shape))
         #expect(legacy.deliveryStuckSince == nil)
     }
+
+    @Test("Task round-trips pendingQuestion; a record without the key decodes to nil")
+    func test_taskCarriesPendingQuestion() throws {
+        var t = Task(title: "x", repo: "/r/app", branch: "feat", cwd: "/wt/app/feat",
+                     model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+                     order: 0, initialPrompt: "go")
+        #expect(t.pendingQuestion == nil)          // defaults to nil, like note
+        t.pendingQuestion = "ship to main or hold for PR 4?"
+
+        let data = try OrchestraJSON.wire.encode(t)
+        let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
+        #expect(back.pendingQuestion == "ship to main or hold for PR 4?")
+
+        // Additive-optional forward-compat: every card persisted before this field decodes to nil rather
+        // than throwing — a throw would make `FailableTask` DROP the whole card.
+        var shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        shape.removeValue(forKey: "pendingQuestion")
+        let legacy = try OrchestraJSON.decoder.decode(
+            Task.self, from: JSONSerialization.data(withJSONObject: shape))
+        #expect(legacy.pendingQuestion == nil)
+
+        // …and a card with no question does not emit the key at all (encodeIfPresent).
+        var plain = t; plain.pendingQuestion = nil
+        let plainShape = try JSONSerialization.jsonObject(
+            with: try OrchestraJSON.wire.encode(plain)) as! [String: Any]
+        #expect(plainShape["pendingQuestion"] == nil)
+    }
 }

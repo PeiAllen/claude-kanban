@@ -919,6 +919,15 @@ public actor OrchestraService {
             didConfirm = (try? await inbox.confirm(token: token)) ?? false   // real removal + ring?
         }
         await deliveryConfirmed(cardId: cardId, token: token, didConfirm: didConfirm)
+        // A confirmed delivery is the OTHER proof that the agent's next turn started, and it is the only
+        // one that covers a Claude card handed an injected answer at Stop: Claude reports `.running` only
+        // for a prompt or a tool call (ClaudeCodeAdapter.parse), and a resume-seeded relaunch lands
+        // `.waiting(.humanTurn)`, so a turn that reads the answer and replies in prose crosses no phase
+        // edge at all. Keyed to the RECEIPT, never to the dispatch: `claimSeed` leases its batch before
+        // `finishLaunch`, so a failed launch would otherwise clear a question no agent ever saw. Codex
+        // reaches the same outcome through its per-turn `.running` report — clearing here rather than in
+        // an adapter keeps the two backends on one rule.
+        if didConfirm { await clearPendingQuestion(cardId) }
     }
 
     /// Completion-only delivery bookkeeping. B3's report-path held-relaunch confirm funnels here too, via

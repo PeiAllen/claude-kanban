@@ -441,6 +441,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// `titleProvisional` fell into. Set only by an explicit source (`spawn(note:)` / `set-note`), never by
     /// telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it back to nil.
     public var note: String?
+    /// The agent's DECLARED open question — "I ended my turn blocked on a decision only you can make".
+    /// Set by `needs-input` (set/replace only; there is no clear form), and cleared by the daemon at the
+    /// only two events that can retire it: proof that the agent's next turn started (a landed turn, or a
+    /// confirmed inbox delivery), and a completed session replacement. It exists because an agent asking a
+    /// question in its own terminal is otherwise indistinguishable from an ordinary idle card — the human
+    /// never learns they are the blocker. nil ⇒ no open question.
+    public var pendingQuestion: String?
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
     public var parentBranch: String?  // stacked-branch parent (stub; nil until stacked-branches sets it) — the `.parent` diff baseline
@@ -510,6 +517,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         lastSessionName: String? = nil,
         desc: String = "",
         note: String? = nil,
+        pendingQuestion: String? = nil,
         repo: String,
         branch: String,
         cwd: String,
@@ -549,6 +557,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = lastSessionName
         self.desc = desc
         self.note = note
+        self.pendingQuestion = pendingQuestion
         self.repo = repo
         self.branch = branch
         self.cwd = cwd
@@ -593,7 +602,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleSource, awaitingFirstPrompt, lastSessionName
-        case desc, note, repo, branch, parentBranch, cwd, origin, access
+        case desc, note, pendingQuestion, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
@@ -622,6 +631,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
         self.note = try c.decodeIfPresent(String.self, forKey: .note)
+        self.pendingQuestion = try c.decodeIfPresent(String.self, forKey: .pendingQuestion)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
@@ -705,6 +715,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(lastSessionName, forKey: .lastSessionName)
         try c.encode(desc, forKey: .desc)
         try c.encodeIfPresent(note, forKey: .note)
+        try c.encodeIfPresent(pendingQuestion, forKey: .pendingQuestion)
         try c.encode(repo, forKey: .repo)
         try c.encode(branch, forKey: .branch)
         try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
@@ -778,6 +789,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // a cutoff a concurrent relaunch just recorded.
         if sessionIdChanged, agentSessionId != nil { sessionDiscoverySince = nil }
         apply(\.desc)
+        // Carried so report()'s session-replacement arms can retire a declared question. Delta-gated like
+        // every field here, so ONLY those deliberate nils propagate — an ordinary telemetry snapshot
+        // observes no change and writes nothing.
+        apply(\.pendingQuestion)
         apply(\.awaitingFirstPrompt)
         apply(\.title)
         apply(\.titleSource)       // the `.explicit` pin a mirrored /rename sets

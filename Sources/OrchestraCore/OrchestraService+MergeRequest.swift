@@ -9,31 +9,42 @@ extension OrchestraService {
     /// by `shipped`/`synced`/`set-parent`. The daemon performs NO git surgery — the parent's agent does
     /// the merge in its own worktree (the owning-agent rule).
     ///
-    /// A REMOTE parent has no local card to ask — the child publishes a stacked PR instead; a BARE local
-    /// parent (no live card) is borrowed. Both are refused here with a guiding message.
+    /// The verb NEVER refuses on the shape of the target — it is the single declaration an agent makes when
+    /// its work is ready, and routing is the daemon's business, not the agent's. Two routes:
+    ///
+    /// - **OWNED** parent (a live card holds the parent branch): the request is enqueued to that card and
+    ///   re-nudged until it merges. Approval is delegated by construction inside a launched tree.
+    /// - **UNOWNED** target — a remote parent (no local card to ask), a bare local branch, or no parent
+    ///   link at all (an ordinary root, whose implicit target is the repo's default branch): the request is
+    ///   RECORDED and nothing else. There is no agent to nudge, so no loop is armed and `mergeStalled` can
+    ///   never fire; the human is the consumer, reads the badge, and grants approval however they choose.
+    ///   How that approval is EXECUTED is deliberately outside Orchestra — the daemon states the fact and
+    ///   stops.
     @discardableResult
     public func mergeRequest(ref: String, source: ActivitySource = .daemon) async throws -> Task {
         let child = try await resolveRef(ref)
         guard child.origin == .worktree else {
             throw OrchestraError.invalidParams("only worktree cards can request a merge")
         }
-        guard let link = await lineage.read(repo: child.repo, branch: child.branch) else {
-            throw OrchestraError.invalidParams(
-                "card has no parent link — nothing to merge up into; set one with "
-                + "`orchestra set-parent \(child.shortId) <branch>`")
+        let link = await lineage.read(repo: child.repo, branch: child.branch)
+        let repo = child.repo, ctl = Duration.seconds(config.controlTimeout)
+        // Sync probes hoist to a GCD hop, per the M1 residual convention (see `recomputeTreeStat`).
+        let (hint, remotes) = await offActorValue {
+            (DiffBaseline.defaultBaseRef(worktree: repo), self.gitRemotes(repo: repo))
         }
-        let remotes = (try? await offActor { self.gitRemotes(repo: child.repo) }) ?? []
-        if RemoteParentRef.parse(link.parent, remotes: remotes) != nil {
-            throw OrchestraError.invalidParams(
-                "parent \(link.parent) is remote — publish a stacked PR instead "
-                + "(`git push -u origin \(child.branch)` then `gh pr create --base <parentHeadRef>`)")
+        // A link-less root declares against the repo's default branch — the same target `shipped` retargets
+        // its children onto. No lineage is written: the badge carries the declaration, and a verb that
+        // silently mutated git config would be the bigger surprise.
+        let target: String
+        if let parent = link?.parent {
+            target = parent
+        } else {
+            target = await offActorValue {
+                await self.defaultBranch(repo: repo, timeout: ctl, baseRefHint: hint, remotes: remotes)
+            }
         }
         let active = await store.all()
-        guard let parentCard = derivedCard(repo: child.repo, branch: link.parent, among: active) else {
-            throw OrchestraError.invalidParams(
-                "parent \(link.parent) has no live card — borrow it and merge in a throwaway worktree "
-                + "(`orchestra borrow \(child.shortId)`), then `orchestra shipped \(child.shortId)`")
-        }
+        let parentCard = mergeParentOwner(repo: child.repo, link: link, remotes: remotes, among: active)
 
         // Dedup: the badge is the pending marker — a re-send while pending refreshes it without re-enqueueing.
         // `resuming` is observed INSIDE the closure and gates BOTH the budget and the enqueue: the snapshot
@@ -52,16 +63,67 @@ extension OrchestraService {
         }) {
             emit(.taskUpserted(saved), rev: rev)
         }
-        if !resuming {
-            try? await inbox.enqueue(parentCard.id,
-                "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
-                + "worktree, then `orchestra shipped \(child.shortId)`")
-            await wake(parentCard.id)
+        if let parentCard {
+            if !resuming {
+                try? await inbox.enqueue(parentCard.id,
+                    "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(target) in your "
+                    + "worktree, then `orchestra shipped \(child.shortId)`")
+                await wake(parentCard.id)
+            }
+            // Always (re-)arm: a re-send after the loop stopped must restart it, not leave the badge un-nudged.
+            startMergeRequestNudge(childId: child.id)
+            emitActivity(.command, child, source, "merge-request → \(target)")
+        } else {
+            // Nothing to nudge, so nothing to arm — and a stray loop from a parent that has since gone
+            // away must not outlive it (the reconcile below is the same rule, applied continuously).
+            stopMergeRequestNudge(child.id)
+            emitActivity(.command, child, source, "merge-request → \(target) (recorded — awaiting a human)")
         }
-        // Always (re-)arm: a re-send after the loop stopped must restart it, not leave the badge un-nudged.
-        startMergeRequestNudge(childId: child.id)
-        emitActivity(.command, child, source, "merge-request → \(link.parent)")
         return (await store.get(child.id)) ?? child
+    }
+
+    /// The merge-target owner, or nil when the target is UNOWNED. Three ways to be unowned, and the verb,
+    /// the boot rebuild, the re-nudge tick and the treeStat funnel must all agree on them: no parent link
+    /// (an ordinary root — its implicit target is the default branch), a remote parent (there is no local
+    /// card to ask), or a local branch no live card holds. `derivedCard` already excludes archived cards,
+    /// which is what makes "the owner archived" resolve to unowned rather than to a dead nudge target.
+    func mergeParentOwner(repo: String, link: ParentLink?, remotes: [String], among cards: [Task]) -> Task? {
+        guard let link, RemoteParentRef.parse(link.parent, remotes: remotes) == nil else { return nil }
+        return derivedCard(repo: repo, branch: link.parent, among: cards)
+    }
+
+    /// Re-route a pending merge-request against the CURRENT ownership of its target — the one place that
+    /// decides whether a request is an agent's problem or a human's, so the answer can never differ between
+    /// the verb, the boot rebuild, a re-nudge tick, and the treeStat funnel.
+    ///
+    /// Ownership is derived, never stored, precisely because it CHANGES under a pending request: the parent
+    /// card can be archived (owned → unowned) or a card can appear on the parent branch later (unowned →
+    /// owned). The second direction is why this hangs off `recomputeTreeStat`: without it a request recorded
+    /// while unowned goes silent the moment an owner appears — the human's badge predicate stops matching
+    /// and the new owner was never told, so the request exists but nobody holds it.
+    ///
+    /// Never enqueues for an already-armed request: the boot rebuild re-arms every pending card WITHOUT
+    /// re-sending (the original request is durable in the parent's inbox), so an enqueue here would
+    /// duplicate it on the first funnel tick after every daemon restart.
+    func reconcileMergeRequest(_ childId: UUID) async {
+        guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
+              child.treeStat?.state == .mergeRequested else { return }
+        let link = await lineage.read(repo: child.repo, branch: child.branch)
+        let repo = child.repo
+        let remotes = await offActorValue { self.gitRemotes(repo: repo) }
+        let owner = mergeParentOwner(repo: child.repo, link: link, remotes: remotes, among: await store.all())
+        guard let owner, let link else {
+            stopMergeRequestNudge(childId)   // unowned: the badge stays, the loop does not
+            return
+        }
+        guard !mergeRequestNudgeActive(childId) else { return }   // already an agent's problem
+        try? await inbox.enqueue(owner.id,
+            "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
+            + "worktree, then `orchestra shipped \(child.shortId)`")
+        await wake(owner.id)
+        startMergeRequestNudge(childId: childId)
+        emitActivity(.command, child, .daemon,
+                     "merge-request → \(link.parent) (an owner appeared — request handed over)")
     }
 
     // MARK: - re-nudge timer (O2: re-ask if the parent agent ignores the request)
@@ -107,11 +169,14 @@ extension OrchestraService {
         guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
               child.treeStat?.state == .mergeRequested,
               let link = await lineage.read(repo: child.repo, branch: child.branch) else { return true }
-        let active = await store.all()
-        guard let parentCard = derivedCard(repo: child.repo, branch: link.parent, among: active) else {
-            // Parent card vanished without shipping — clear the sticky badge so it doesn't linger.
-            _ = try? await store.update(childId) { if $0.treeStat?.state == .mergeRequested { $0.treeStat = nil } }
-            await recomputeTreeStat(childId)
+        let repo = child.repo
+        let remotes = await offActorValue { self.gitRemotes(repo: repo) }
+        guard let parentCard = mergeParentOwner(repo: child.repo, link: link, remotes: remotes,
+                                                among: await store.all()) else {
+            // The owner went away (archived / closed) without shipping. The REQUEST does not go with it:
+            // it is now exactly an unowned request, which is the human's to resolve, so the sticky badge
+            // STAYS and only the loop stops. (Clearing the badge here — the old behavior — silently
+            // retracted a declaration the child never withdrew, and left nobody holding the work.)
             return true
         }
         // Re-check before any side effect: the entry guard is stale by now (we suspended in `store.get`,
@@ -246,7 +311,21 @@ extension OrchestraService {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         // Checked twice over (the give-up already released `.mergeRequested`): "a restart cannot resurrect
         // the spam" should not rest on two fields agreeing.
-        for t in active where t.treeStat?.state == .mergeRequested && t.treeStat?.mergeStalled != true {
+        let pending = active.filter { $0.treeStat?.state == .mergeRequested && $0.treeStat?.mergeStalled != true }
+        guard !pending.isEmpty else { return }
+        // `gitRemotes` is a SYNC fork, and this runs on the daemon's boot path — hoist ONE hop per distinct
+        // repo rather than blocking the actor once per pending card.
+        var remotesByRepo: [String: [String]] = [:]
+        for repo in Set(pending.map(\.repo)) {
+            remotesByRepo[repo] = await offActorValue { self.gitRemotes(repo: repo) }
+        }
+        for t in pending {
+            // Only an OWNED request has a consumer to re-nudge. An unowned one keeps its badge and gets no
+            // timer — and this is self-correcting across a restart: an owner archived while the request was
+            // pending simply comes back unowned here.
+            let link = await lineage.read(repo: t.repo, branch: t.branch)
+            guard mergeParentOwner(repo: t.repo, link: link, remotes: remotesByRepo[t.repo] ?? [],
+                                   among: active) != nil else { continue }
             startMergeRequestNudge(childId: t.id)
         }
     }

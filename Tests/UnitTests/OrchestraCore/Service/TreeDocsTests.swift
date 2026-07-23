@@ -56,13 +56,29 @@ struct TreeDocsTests {
         }
     }
 
-    @Test("both variants document the remote publish + restack path (BT6)")
+    @Test("both variants document the remote RESTACK path (BT6)")
     func remoteGuidancePresent() throws {
         for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
-            #expect(doc.contains("gh pr create --base"))
             #expect(doc.contains("force-with-lease"))
-            #expect(doc.contains("push -u origin"))
             #expect(doc.contains("pr#"))          // canonical remote form documented
+        }
+    }
+
+    /// Slice 3a — `merge-request` is the SINGULAR taught ship verb, so the guidance must offer no second
+    /// path for an agent to pick instead. Publishing a branch and opening a stacked PR remain primitives a
+    /// human may direct; they are not something an agent is taught to do on its own, and `borrow` is not a
+    /// ship instruction. This is a NEGATIVE anchor on purpose: the failure mode is a well-meaning edit
+    /// re-adding "and if the parent is remote, open a PR", which quietly restores the four-way fork.
+    @Test("neither variant teaches a second ship path")
+    func singularShipVerb() throws {
+        for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
+            #expect(!doc.contains("gh pr create"))
+            #expect(!doc.contains("push -u origin"))
+            #expect(!doc.contains("orchestra borrow"))
+            #expect(!doc.contains("merge --squash"))
+            // …and the one verb IS taught, next to the instruction to stop.
+            #expect(doc.contains("orchestra merge-request <you>"))
+            #expect(doc.uppercased().contains("STOP"))
         }
     }
 

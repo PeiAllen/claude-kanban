@@ -45,6 +45,21 @@ struct SessionBriefTests {
 
     /// The brief is re-injected at EVERY SessionStart, so nudging a card whose name was deliberately chosen
     /// would repeatedly invite the agent to overwrite its parent's (or the human's) choice.
+    /// Slice 3a. The nudge is on EVERY variant — a freeform reviewer blocked on a decision is exactly the
+    /// invisible case the declaration exists for — and it is scoped to the END of a turn. That scoping is
+    /// load-bearing, not phrasing: an agent whose harness has an in-session choices prompt should use it
+    /// mid-turn, so orientation must never read as "ask through Orchestra instead".
+    @Test("every variant carries the end-of-turn needs-input nudge, and never steers off the choices box")
+    func needsInputNudgePresent() {
+        for origin in [CardOrigin.worktree, .borrowed, .scratch] {
+            let s = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123", origin: origin)
+            #expect(s.contains("needs-input abc123"))
+            #expect(s.contains("END your turn"))       // end-of-turn scoping, not a mid-turn instruction
+            #expect(s.contains("re-declare"))          // the daemon retires it; the agent re-asserts
+            #expect(!s.lowercased().contains("instead of asking"))
+        }
+    }
+
     @Test("a pinned title suppresses the nudge, in every variant")
     func pinnedTitleSuppressesTheNudge() {
         for origin in [CardOrigin.worktree, .borrowed, .scratch] {
