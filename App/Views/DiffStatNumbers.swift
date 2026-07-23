@@ -12,10 +12,13 @@ import OrchestraCore
 struct DiffStatNumbers: View {
     @Environment(\.theme) var theme: Theme
     let stat: DiffStat
+    /// Drop the file count where horizontal space is the binding constraint (the inspector header) —
+    /// `+N −M` is the part that answers "how big is this", and the count stays in the tooltip.
+    var showFiles: Bool = true
 
     var body: some View {
         HStack(spacing: 5) {
-            Text("\(stat.filesChanged)f").foregroundStyle(theme.text3)
+            if showFiles { Text("\(stat.filesChanged)f").foregroundStyle(theme.text3) }
             Text("+\(stat.insertions)").foregroundStyle(theme.green.text)
             Text("−\(stat.deletions)").foregroundStyle(theme.red.text)
         }
