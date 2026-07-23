@@ -199,33 +199,25 @@ persisted; drag the left edge to resize). A **live** card shows the agent chrome
 the [Recovery panel](#recovery-panel) instead.
 
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
-between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
-**View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
-(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). Immediately
-right of the toggle sits the card's **tree state** — the same [tree badge](#cards) the board card shows,
-chipped so a loose glyph between two filled controls doesn't read as debris, with hover text naming the
-parent branch. It is in *this* row, rather than the terminal header below, because this row is the one
-both tabs share: a stale base is exactly what you want to know while reading the diff, and the terminal
-header unmounts with the Agent tab. Absent, like on the card, when the card is in sync or has no parent.
+between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view). Immediately right
+of that toggle sits the card's **branch diffstat** (`7f +214 −38`, in the board card's quiet-cluster colors), then
+come **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes** (`note.text`),
+an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). The stat stays outside the
+segmented control so its semantic green/red survives the control tint, and it measures the card's *default*
+baseline (parent-relative when stacked, else branch-relative); switching the [Diff view](#the-in-app-diff-view)'s
+own picker to **Working** can legitimately show a different range in the body below, with the tooltip
+naming the baseline.
 
 That row is over-subscribed at the default 392 pt inspector width, so it **degrades** rather than
 truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything spelled out
 when the inspector is dragged wide; at 392 the button captions drop to icons alone, tooltips keeping the
-words, with tighter gutters. Nothing ever clips off the trailing edge.
+words, with tighter gutters; at the 320 pt drag minimum the diffstat yields. Nothing ever clips off the
+trailing edge.
 
-The card's **branch diffstat** (`7f +214 −38`, the board card's quiet-cluster colors) sits one row down, in the
-terminal header, **beside the branch it measures**. The action row above is all controls, so numbers
-there had to fight the buttons for space and lost them at the narrower widths; beside the branch they
-sit with the thing they describe. Absent when the daemon has no stat (non-git, or nothing changed yet).
-It measures the card's *default* baseline (parent-relative when stacked, else branch), so switching the
-[Diff view](#the-in-app-diff-view)'s own picker to **Working** legitimately shows a different range in
-the body below; the tooltip names the baseline. Switching to the Diff tab doesn't lose the numbers — that
-body *is* the diff, carrying per-file `+N −M` pills on every section header.
-
-Taking the diffstat in costs the terminal header its own slack, so it degrades too, giving up the most
-redundant thing first: the **repo chip** drops at 392 (the breadcrumb immediately below spells out the
-whole path, so the repo is still on screen), then the diffstat sheds its file count, and only at the
-320 pt drag minimum does it go entirely.
+The terminal header keeps the card's **tree state** directly after the branch name — the same
+[tree badge](#cards) the board card shows, with hover text naming the parent branch. It is absent when the
+card is in sync or has no parent. The header has enough room for this compact status now that the diffstat
+lives in the shared row; a long repository name yields before the branch or status glyph does.
 
 The **iPhone** card detail carries both facts in its own language: a diffstat chip and the same tree
 badge in the pinned header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf`
@@ -280,7 +272,7 @@ The **agent chrome** stacks, top to bottom:
 
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
 2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the branch and its
-   [diffstat](#the-inspector), the read-only eye badge, the shared-worktree badge, the status pill, and
+   [tree badge](#cards), the read-only eye badge, the shared-worktree badge, the status pill, and
    an **Inspect** button (opens a read-only shell agent in the worktree);
 3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
    target", and a clickable path breadcrumb;
