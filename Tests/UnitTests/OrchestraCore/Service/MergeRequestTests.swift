@@ -187,6 +187,41 @@ struct MergeRequestTests {
         #expect(try await env.svc.inboxPeek(parentCard.id).filter { $0.text.contains("merge-request") }.count == 1)
     }
 
+    /// The production trigger for the handover above. `reopen` un-archives the owner and `spawn` creates
+    /// one, and `derivedCard` counts either the instant it exists — but neither path re-derives the routing
+    /// of requests already aimed at that branch. Making the `.live` LANDING schedule the child fan-out is
+    /// what turns "an owner appeared" into an explicit edge, instead of leaving the handover to depend on
+    /// the new owner happening to file a field-changing report.
+    @Test("reopening the owner hands the request over with no other prompting")
+    func reopenedOwnerTakesOver() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        let sid = try #require(parentCard.agentSessionId)
+        env.adapter.writeTranscript(for: sid)                    // resumable → reopen resumes it
+        try await TestEnv.archiveAndTeardown(env.svc, parentCard.id)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())     // recorded while nobody owns `parent`
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+
+        // The branch outlives the archived card in production (only its worktree is removed), so `ensure`
+        // reports it as pre-existing — which is what stops `materialize` from clearing the "stale" children
+        // links of what it would otherwise take for a brand-new branch.
+        env.worktrees.markBranchExists("parent")
+        _ = try await env.svc.reopen(parentCard.id)
+        _ = try await TestEnv.reconcileToLive(env.svc, parentCard.id)
+
+        // Nothing else is driven here — no report, no manual recompute. The landing's own fan-out is what
+        // has to carry the request to the owner that just came back. Poll on ARMING, which the reconcile
+        // does LAST: polling the inbox instead would let this assertion land in the window between the
+        // enqueue and the arm.
+        try await pollUntil("the reopened owner took over the pending merge-request") {
+            await env.svc.mergeRequestNudgeActive(child.id)
+        }
+        #expect(try await env.svc.inboxPeek(parentCard.id)
+            .filter { $0.text.contains("merge-request") }.count == 1)
+    }
+
     @Test("synced clears an UNOWNED badge, exactly as it clears an owned one")
     func syncedClearsUnownedBadge() async throws {
         let (env, fake, graph, repo, parentTip) = setup()

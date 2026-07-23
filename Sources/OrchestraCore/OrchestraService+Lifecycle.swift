@@ -148,6 +148,14 @@ extension OrchestraService {
         //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
         //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.
         if to.kind == .live { await wakeIfPending(id) }
+        // A card landing `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
+        // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it
+        // exists — but neither path re-derives the routing of requests already aimed at that branch. The
+        // report funnel's fan-out would eventually cover it (a first report changes fields, so it fires),
+        // which makes the handover depend on the new owner happening to report. Doing it here instead makes
+        // "an owner appeared" an explicit edge: the debounce coalesces it with the report-driven fan-out, and
+        // the reconcile inside is a no-op for every child that is not waiting on this branch.
+        if to.kind == .live, updated.origin == .worktree { scheduleChildFanout(id) }
         return .applied
     }
 
