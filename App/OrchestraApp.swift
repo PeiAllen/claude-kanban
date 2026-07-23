@@ -679,21 +679,21 @@ private struct DebugLaunchHook: ViewModifier {
                .impl, .live(.running), 1, desc: "Reproducing the <1s exit path under a fake clock",
                diff: DiffStat(filesChanged: 12, insertions: 412, deletions: 96), ageMinutes: 47),
             // Neither note nor desc: the ref falls back to the identity line.
-            mk("docs-refresh", "chore/docs", .impl, .live(.idle), 2, ageMinutes: 125),
+            mk("docs-refresh", "chore/docs", .impl, .live(.waiting(.humanTurn)), 2, ageMinutes: 125),
             // Waiting + merge-requested (grey clock, NOT amber).
             mk("plan/spawn-hang", "plan/spawn-hang", .review, .live(.waiting(.humanTurn)), 0,
                note: "Startup-abort misclassification fix",
                diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28),
                tree: TreeStat(state: .mergeRequested), ageMinutes: 120),
             // Merge-stalled keeps its warning look; restack rides the same one glyph slot.
-            mk("pr/wake-endpoint", "pr/wake-endpoint", .review, .live(.idle), 1,
+            mk("pr/wake-endpoint", "pr/wake-endpoint", .review, .live(.waiting(.humanTurn)), 1,
                desc: "Wake endpoint + route ladder",
                tree: TreeStat(state: .stale, behind: 2, nudges: 3, mergeStalled: true), ageMinutes: 21),
             mk("pr/codex-clean-restart", "pr/codex-restart", .plan, .live(.running), 0,
                desc: "Codex clean-restart launch path",
                tree: TreeStat(state: .restackNeeded), ageMinutes: 3),
             // A second repo opens the source-prefix gate (unless ORCH_ANATOMY=single-repo).
-            mk("fix/rss-dates", "fix/rss-dates", .plan, .live(.idle), 1, repo: other,
+            mk("fix/rss-dates", "fix/rss-dates", .plan, .live(.waiting(.humanTurn)), 1, repo: other,
                desc: "Feed dates render a day early in Safari",
                diff: DiffStat(filesChanged: 1, insertions: 22, deletions: 6), ageMinutes: 38),
             // A target with two attached reviewers → the labelled eye on L4.
@@ -710,6 +710,10 @@ private struct DebugLaunchHook: ViewModifier {
         ]
         model.onboarded = true
         model.showOnboarding = false
+        // These hooks run with no daemon, and a running card whose connection is down renders STALE
+        // (dimmed to 72%) — correct behaviour, but it would misreport every colour in a fixture whose
+        // whole job is to show what the anatomy looks like on a live board.
+        model.connectionState = .live
         if ProcessInfo.processInfo.environment["ORCH_ANATOMY"] == "expanded" {
             model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
         }

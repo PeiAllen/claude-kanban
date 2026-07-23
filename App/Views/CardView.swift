@@ -192,17 +192,14 @@ struct CardView: View {
     /// the ref rides here only when there is no context line below to carry it.
     private var identityLine: some View {
         HStack(alignment: .lastTextBaseline, spacing: 5) {
-            if let prefix = model.repoPrefix(of: task) {
-                Text("\(prefix) ·")
-                    .font(F.ui(model.density.cardTitle - 1.5))
-                    .foregroundStyle(theme.text3)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            Text(task.title)
+            // The prefix and the title are ONE text run, not two views: as separate views the prefix
+            // got its own truncation ("orchest… live-wake-delivery") and, once the title wrapped,
+            // sat beside the title's LAST line instead of leading its first. Concatenated, they flow
+            // as a single paragraph — the prefix always leads, and only the title's tail is ever lost.
+            (identityPrefix + Text(task.title)
                 .font(F.ui(model.density.cardTitle, .semibold))
+                .foregroundStyle(theme.text))
                 .tracking(-0.135)
-                .foregroundStyle(theme.text)
                 .lineSpacing(model.density.cardTitle * 0.32)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -213,6 +210,14 @@ struct CardView: View {
             }
         }
         .padding(.top, 7)
+    }
+
+    /// `repo · ` ahead of the title, or nothing at all on an unambiguous board.
+    private var identityPrefix: Text {
+        guard let prefix = model.repoPrefix(of: task) else { return Text("") }
+        return Text("\(prefix) · ")
+            .font(F.ui(model.density.cardTitle - 1.5))
+            .foregroundColor(theme.text3)
     }
 
     // MARK: - L3 · context
