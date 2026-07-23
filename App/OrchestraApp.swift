@@ -664,10 +664,7 @@ private struct DebugLaunchHook: ViewModifier {
         model.drillInto(root.id)
         let kids = model.visibleTasks
         renderPNG(framed(VStack(alignment: .leading, spacing: 10) {
-            // Inject theme/model directly on the header too: in the real app the window root injects
-            // `\.theme`, but this standalone snapshot's conditional `DrillHeader` body otherwise falls
-            // back to the light default (near-black title on the dark banner).
-            DrillHeader().environmentObject(model).environment(\.theme, theme)
+            DrillHeader()
             ForEach(kids) { CardView(task: $0) }
         }, width: 820), to: "\(dir)/25-hier-drill.png")
     }

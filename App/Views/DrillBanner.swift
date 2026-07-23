@@ -33,7 +33,7 @@ struct DrillHeader: View {
             ForEach(Array(model.scopePath.enumerated()), id: \.element.id) { idx, node in
                 Text("/").font(F.ui(12)).foregroundStyle(theme.text3)
                 if idx == model.scopePath.count - 1 {
-                    Text(node.title).font(F.ui(12, .semibold)).foregroundStyle(theme.text)   // current
+                    Text(node.title).font(F.ui(12, .semibold)).foregroundStyle(theme.text)
                 } else {
                     Button { model.setDrillScope(node.id) } label: {
                         Text(node.title).font(F.ui(12)).foregroundStyle(theme.accent)
