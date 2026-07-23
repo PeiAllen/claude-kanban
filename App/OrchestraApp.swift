@@ -260,7 +260,7 @@ private struct DebugLaunchHook: ViewModifier {
     /// to open: 0 leaves the "New terminal" button showing, ≥1 swaps in the tab ribbon. The agent /
     /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
     /// `ORCH_TREE` (stale | restack | merge-requested | stalled | in-sync) gives the mock a lineage
-    /// state so the `TreeBadge` on the card footer and in the inspector header has something to render;
+    /// state so the `TreeBadge` on the card's L1 strip and in the inspector header has something to render;
     /// `ORCH_BEHIND` sets the `↓N` count. Sizes that live in preferences — the shell-panel height, the
     /// inspector width — are NOT set here: the harness passes them as `-shellPanelHeight`/
     /// `-inspectorWidth` launch arguments, because a `UserDefaults` write from this hook persists into
@@ -324,8 +324,8 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
-        // A branch diffstat the daemon would have computed, so the card footer and the inspector
-        // header both have something to render (they share the `k files · +N −M` formatting).
+        // A branch diffstat the daemon would have computed, so the card's L1 quiet cluster and the
+        // inspector header both have something to render (they share the `k files · +N −M` formatting).
         mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
         // A lineage state so `TreeBadge` has something to render. `stalled` deliberately keeps a live
         // `stale` underneath, since the flag is supposed to outrank the state. Unknown values abort
@@ -584,8 +584,8 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
-    /// Render a few board cards carrying `diffStat`s (and one without → model-name fallback) so the
-    /// footer diffstat (`Nf +I −D`, axis 7) is visible. `ORCH_SNAPSHOT_CARDS=/path.png`.
+    /// Render a few board cards carrying `diffStat`s (and one without) so the quiet-cluster diffstat
+    /// (`Nf +I −D`, axis 7) is visible on the L1 strip. `ORCH_SNAPSHOT_CARDS=/path.png`.
     static func snapshotCards(to path: String, model: BoardModel) {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
@@ -598,7 +598,7 @@ private struct DebugLaunchHook: ViewModifier {
             return t
         }
         let cards = [
-            mk("Wire the footer diffstat into CardView.meta", branch: "feat/footer-stat",
+            mk("Wire the branch diffstat into the L1 quiet cluster", branch: "feat/quiet-stat",
                phase: .live(.running), stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
             mk("Small tweak to the baseline toggle", branch: "fix/baseline",
                phase: .live(.waiting(.humanTurn)), stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
@@ -633,6 +633,137 @@ private struct DebugLaunchHook: ViewModifier {
             .environmentObject(model)
             .environment(\.theme, theme)
             .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
+    // MARK: - Card anatomy (slice 2a) fixtures
+
+    /// Every card state the four-line anatomy has to survive, as one board. Used windowed
+    /// (`ORCH_SHOW=anatomy`, to see the ladder bite at real column widths) and headless
+    /// (`ORCH_SNAPSHOT_ANATOMY`, for a deterministic gallery). `ORCH_ANATOMY=single-repo` re-homes
+    /// every card into one repo, which shuts the source-prefix gate.
+    static func showAnatomy(model: BoardModel) {
+        let single = ProcessInfo.processInfo.environment["ORCH_ANATOMY"] == "single-repo"
+        let repo = DemoConfig.repoRoot
+        let other = single ? repo : "\(DemoConfig.repoRoot)-site"
+
+        func mk(_ title: String, _ branch: String, _ col: Column, _ phase: Phase, _ order: Int,
+                repo: String = repo, note: String? = nil, desc: String = "",
+                diff: DiffStat? = nil, tree: TreeStat? = nil, ageMinutes: Double = 12,
+                access: CardAccess = .readWrite, parentBranch: String? = nil,
+                origin: CardOrigin = .worktree, cwd: String? = nil) -> Task {
+            var t = Task(title: title, repo: origin == .worktree ? repo : "",
+                         branch: origin == .worktree ? branch : "",
+                         cwd: cwd ?? "\(repo)/.worktrees/\(branch)", origin: origin, access: access,
+                         model: AgentModel(id: "claude-opus-4-8"),
+                         startIn: col == .plan ? .plan : .impl, column: col, order: order,
+                         phase: phase, initialPrompt: title, parentBranch: parentBranch)
+            t.note = note
+            t.desc = desc
+            t.diffStat = diff
+            t.treeStat = tree
+            // Time-in-state is what the pill renders, so the fixture has to set it explicitly —
+            // otherwise every mock card reads "· 0s" and the age half of the pill goes untested.
+            t.phaseChangedAt = Date(timeIntervalSinceNow: -ageMinutes * 60)
+            return t
+        }
+
+        model.tasks = [
+            // The full quiet cluster: diffstat + ↓N + model, with a note.
+            mk("live-wake-delivery", "feat/live-wake", .impl, .live(.running), 0,
+               note: "Wave 2/4 — lease/claim delivery",
+               diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9),
+               tree: TreeStat(state: .stale, behind: 3), ageMinutes: 12),
+            // Desc only (the volatile blurb), no note — and a long title that has to wrap.
+            mk("fix/the-startup-abort-misclassification-that-marks-cards-dead", "fix/startup-abort",
+               .impl, .live(.running), 1, desc: "Reproducing the <1s exit path under a fake clock",
+               diff: DiffStat(filesChanged: 12, insertions: 412, deletions: 96), ageMinutes: 47),
+            // Neither note nor desc: the ref falls back to the identity line.
+            mk("docs-refresh", "chore/docs", .impl, .live(.waiting(.humanTurn)), 2, ageMinutes: 125),
+            // Waiting + merge-requested (grey clock, NOT amber).
+            mk("plan/spawn-hang", "plan/spawn-hang", .review, .live(.waiting(.humanTurn)), 0,
+               note: "Startup-abort misclassification fix",
+               diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28),
+               tree: TreeStat(state: .mergeRequested), ageMinutes: 120),
+            // Merge-stalled keeps its warning look; restack rides the same one glyph slot.
+            mk("pr/wake-endpoint", "pr/wake-endpoint", .review, .live(.waiting(.humanTurn)), 1,
+               desc: "Wake endpoint + route ladder",
+               tree: TreeStat(state: .stale, behind: 2, nudges: 3, mergeStalled: true), ageMinutes: 21),
+            mk("pr/codex-clean-restart", "pr/codex-restart", .plan, .live(.running), 0,
+               desc: "Codex clean-restart launch path",
+               tree: TreeStat(state: .restackNeeded), ageMinutes: 3),
+            // A second repo opens the source-prefix gate (unless ORCH_ANATOMY=single-repo).
+            mk("fix/rss-dates", "fix/rss-dates", .plan, .live(.waiting(.humanTurn)), 1, repo: other,
+               desc: "Feed dates render a day early in Safari",
+               diff: DiffStat(filesChanged: 1, insertions: 22, deletions: 6), ageMinutes: 38),
+            // A target with two attached reviewers → the labelled eye on L4.
+            mk("feat/attached-agents", "feat/attached", .impl, .live(.running), 3,
+               note: "Attached-agents seam", ageMinutes: 8),
+            mk("Claude review", "review/attached-claude", .impl, .live(.running), 4,
+               access: .readOnly, parentBranch: "feat/attached"),
+            mk("Codex review", "review/attached-codex", .impl, .live(.waiting(.humanTurn)), 5,
+               access: .readOnly, parentBranch: "feat/attached"),
+            // A freeform card: no repo, so it is never repo-prefixed on the board (its dir is inspector-only).
+            mk("board-redesign research", "", .plan, .live(.running), 6,
+               desc: "Surveying agent-tree UIs", ageMinutes: 4,
+               origin: .borrowed, cwd: DemoConfig.notesRoot),
+        ]
+        model.onboarded = true
+        model.showOnboarding = false
+        // These hooks run with no daemon, and a running card whose connection is down renders STALE
+        // (dimmed to 72%) — correct behaviour, but it would misreport every colour in a fixture whose
+        // whole job is to show what the anatomy looks like on a live board.
+        model.connectionState = .live
+        if ProcessInfo.processInfo.environment["ORCH_ANATOMY"] == "expanded" {
+            model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
+        }
+    }
+
+    /// The anatomy gallery, headless: every seeded state as a column of cards at one width.
+    /// `ORCH_SNAPSHOT_ANATOMY=/path.png`.
+    static func snapshotAnatomy(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        showAnatomy(model: model)
+        let cards = model.visibleTasks
+        let view = VStack(alignment: .leading, spacing: 8) {
+            ForEach(cards, id: \.id) { CardView(task: $0) }
+        }
+        .frame(width: 320)
+        .padding(14)
+        .background(theme.colBg)
+        .environmentObject(model)
+        .environment(\.theme, theme)
+        .preferredColorScheme(model.darkMode ? .dark : .light)
+        renderPNG(view, to: path)
+    }
+
+    /// The squish ladder, headless and deterministic: ONE card rendered at a sweep of widths, each
+    /// row labelled, so every rung the ladder actually reaches is visible in a single image.
+    /// A fixed handful of widths can silently skip a rung (the treeStat glyph is ~14 pt wide, so
+    /// rung 2's window is narrow), which is exactly what a squish test must not do.
+    /// `ORCH_SNAPSHOT_LADDER=/path.png`.
+    static func snapshotLadder(to path: String, model: BoardModel) {
+        if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
+        let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
+        showAnatomy(model: model)
+        guard let card = model.tasks.first else { return }
+        let widths: [CGFloat] = stride(from: 380, through: 120, by: -20).map { CGFloat($0) }
+        let view = VStack(alignment: .leading, spacing: 6) {
+            ForEach(widths, id: \.self) { w in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(Int(w))")
+                        .font(F.mono(9, .medium)).foregroundStyle(theme.text3)
+                        .frame(width: 26, alignment: .trailing)
+                    CardView(task: card).frame(width: w)
+                }
+            }
+        }
+        .padding(14)
+        .background(theme.colBg)
+        .environmentObject(model)
+        .environment(\.theme, theme)
+        .preferredColorScheme(model.darkMode ? .dark : .light)
         renderPNG(view, to: path)
     }
 
@@ -751,6 +882,14 @@ private struct DebugLaunchHook: ViewModifier {
                 DebugLaunchHook.snapshotAttached(to: path, model: model)
                 exit(0)
             }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_ANATOMY"] {
+                DebugLaunchHook.snapshotAnatomy(to: path, model: model)
+                exit(0)
+            }
+            if let path = ProcessInfo.processInfo.environment["ORCH_SNAPSHOT_LADDER"] {
+                DebugLaunchHook.snapshotLadder(to: path, model: model)
+                exit(0)
+            }
             switch ProcessInfo.processInfo.environment["ORCH_SHOW"] {
             case "spawn":
                 // Seed the agent catalog (no daemon in this hook) so the Spawn sheet's agent picker
@@ -770,6 +909,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
             case "attached": DebugLaunchHook.showAttached(model: model)
+            case "anatomy": DebugLaunchHook.showAnatomy(model: model)
             default: break
             }
         }
