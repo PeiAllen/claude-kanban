@@ -83,6 +83,8 @@ struct MCPConfigurationTests {
         #expect(once.hasPrefix(existing))
         #expect(once.contains("[mcp_servers.orchestra]"))
         #expect(once.contains("command = \"/bin/orchestra-mcp\""))
+        #expect(!once.contains("default_tools_approval_mode"))
+        #expect(!once.contains("disabled_tools"))
     }
 
     @Test("Codex global install creates a missing file and leaves an existing entry byte-identical")
