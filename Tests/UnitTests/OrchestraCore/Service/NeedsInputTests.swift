@@ -171,6 +171,55 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.phase == Phase.live(.running))   // phase still advanced
     }
 
+    /// The persistence regression: after a daemon restart the tailer replays from offset 0, so a stale
+    /// pre-declaration line is re-applied against a RELOADED declaration. If `declaredAt` lost its
+    /// sub-second part on disk (the `.iso8601` rounding trap), a line written 50 ms BEFORE the declaration
+    /// would compare as after it and wrongly clear. Round-tripping the card through the real codec here
+    /// makes the fractional-encoding fix load-bearing: with rounding, this test's stale line clears.
+    @Test("a fractional declaredAt survives a persist/reload, so a stale replay is still kept")
+    func fractionalDeclaredAtSurvivesReload() async throws {
+        let declaredAt = Date(timeIntervalSince1970: 2_000_000.100)   // .100 — lost entirely by ISO rounding
+        let env = TestEnv.make(capabilities: .fileTailStub, now: { declaredAt })
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+
+        // Force the declaration through disk exactly as a restart would — encode, decode, write back.
+        let stored = try #require(await card(env.svc, t.id))
+        let reloaded = try OrchestraJSON.decoder.decode(
+            Task.self, from: try OrchestraJSON.wire.encode(stored))
+        _ = try await env.svc.store.update(t.id) { $0.pendingQuestion = reloaded.pendingQuestion }
+
+        // A rollout line written at .050 — 50 ms BEFORE the declaration — replayed by the fresh tailer.
+        let staleSeq = UInt64(2_000_000.050 * 1_000_000)
+        try await env.svc.report(t.id, StatusReport(seq: staleSeq, run: .running), observedEpoch: epoch)
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")   // .050 < .100 → kept
+    }
+
+    /// The phase-edge guard (the answer to "fileTail `.running` isn't uniquely a turn-start — a
+    /// function_call line reports `.running` too"). A mid-turn line has `before == .live(.running)`, so
+    /// `isTurnStart` is false and it can't clear — only the genuine idle→running edge does.
+    @Test("a mid-turn fileTail running line does not clear a question")
+    func midTurnRunningLineDoesNotClear() async throws {
+        let base = Date(timeIntervalSince1970: 3_000_000)
+        let env = TestEnv.make(capabilities: .fileTailStub, now: { base })
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        // The turn starts (no question yet), card → running.
+        try await env.svc.report(t.id, StatusReport(seq: UInt64(3_000_001 * 1_000_000), run: .running),
+                                 observedEpoch: epoch)
+        // Declared mid-turn (card already running), then a function_call line — another `.running`.
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "mid-turn question?")
+        try await env.svc.report(t.id, StatusReport(seq: UInt64(3_000_002 * 1_000_000), run: .running),
+                                 observedEpoch: epoch)
+
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "mid-turn question?")   // not a turn-start edge
+    }
+
     // MARK: - what DOES clear it
 
     @Test("the next turn starting clears it")

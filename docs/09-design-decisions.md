@@ -251,7 +251,14 @@ evidence is newer. The comparison is a genuine cross-source one — the rollout 
 host's wall clock and the line-write causally precedes the tool call that declares. That comparison lives
 in `report()`, where the evidence timestamp is in scope; the phase funnel, the sole phase writer, is left
 reasoning about phases, not clocks, and handles only the unconditional session-replacement clear. The two
-fields travel as one `PendingQuestion` value so a clear can never drop the text while keeping the stamp.
+fields travel as one `PendingQuestion` value so a clear can never drop the text while keeping the stamp —
+and `declaredAt` is persisted as **fractional Unix seconds**, never through the store's `.iso8601` date
+strategy, which rounds to the whole second. That rounding would be a correctness bug across a restart: the
+rollout tailer replays from offset 0, so a reloaded declaration whose sub-second part was lost could be
+beaten by a pre-declaration line and wrongly cleared. A malformed persisted value drops only the question,
+never the card (a `try?` decode) — the field is new on this branch and only ever lands on `main` as this
+struct, so there is no cross-version migration, just card-preservation against a dev daemon's interim
+state.
 
 ### Terminal bytes bypass the daemon
 

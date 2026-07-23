@@ -145,20 +145,35 @@ struct ModelCodableTests {
                      model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                      order: 0, initialPrompt: "go")
         #expect(t.pendingQuestion == nil)          // defaults to nil, like note
-        let declaredAt = Date(timeIntervalSince1970: 1_700_000_500)   // whole-second → exact round-trip
+        // A FRACTIONAL declaredAt — the fence compares sub-second times, so this must survive disk. A
+        // whole-second value would round-trip even through `.iso8601` and hide the bug; the fraction is
+        // the point.
+        let declaredAt = Date(timeIntervalSince1970: 1_700_000_500.123_456)
         t.pendingQuestion = PendingQuestion(text: "ship to main or hold for PR 4?", declaredAt: declaredAt)
 
         let data = try OrchestraJSON.wire.encode(t)
         let back = try OrchestraJSON.decoder.decode(Task.self, from: data)
-        #expect(back.pendingQuestion == PendingQuestion(text: "ship to main or hold for PR 4?", declaredAt: declaredAt))
-        #expect(back.pendingQuestion?.declaredAt == declaredAt)   // the timestamp travels with the text
+        #expect(back.pendingQuestion?.text == "ship to main or hold for PR 4?")
+        let restored = try #require(back.pendingQuestion?.declaredAt)
+        #expect(abs(restored.timeIntervalSince(declaredAt)) < 0.000_001)   // sub-second, NOT rounded to :00
+        // …and it rides as a number on the wire, not an ISO-8601 string (which would round to the second).
+        let shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect((shape["pendingQuestion"] as? [String: Any])?["declaredAt"] is NSNumber)
+
+        // A legacy interim bare-String value must drop only the question, never the whole card.
+        var stringShape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        stringShape["pendingQuestion"] = "an old string-form question"
+        let salvaged = try OrchestraJSON.decoder.decode(
+            Task.self, from: JSONSerialization.data(withJSONObject: stringShape))
+        #expect(salvaged.pendingQuestion == nil)   // question dropped…
+        #expect(salvaged.id == t.id)               // …but the card survived
 
         // Additive-optional forward-compat: every card persisted before this field decodes to nil rather
         // than throwing — a throw would make `FailableTask` DROP the whole card.
-        var shape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        shape.removeValue(forKey: "pendingQuestion")
+        var absentShape = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        absentShape.removeValue(forKey: "pendingQuestion")
         let legacy = try OrchestraJSON.decoder.decode(
-            Task.self, from: JSONSerialization.data(withJSONObject: shape))
+            Task.self, from: JSONSerialization.data(withJSONObject: absentShape))
         #expect(legacy.pendingQuestion == nil)
 
         // …and a card with no question does not emit the key at all (encodeIfPresent).

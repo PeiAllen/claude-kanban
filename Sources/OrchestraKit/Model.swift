@@ -33,6 +33,30 @@ public struct PendingQuestion: Codable, Sendable, Equatable {
         self.text = text
         self.declaredAt = declaredAt
     }
+
+    private enum CodingKeys: String, CodingKey { case text, declaredAt }
+
+    // `declaredAt` rides as FRACTIONAL Unix seconds, NOT through the encoders' `.iso8601` strategy — the
+    // fence compares sub-second declaration times against a rollout line's µs write time, and `.iso8601`
+    // rounds to whole seconds, so a round-trip through disk would drop the fraction and let a
+    // pre-declaration line beat a reloaded declaration. This is the same reason `Task.sessionDiscoverySince`
+    // is numeric. Decode accepts a legacy `.iso8601` string defensively (whole-second, no fence in that
+    // window — but the card survives).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.text = try c.decode(String.self, forKey: .text)
+        if let seconds = try? c.decode(Double.self, forKey: .declaredAt) {
+            self.declaredAt = Date(timeIntervalSince1970: seconds)
+        } else {
+            self.declaredAt = try c.decode(Date.self, forKey: .declaredAt)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(text, forKey: .text)
+        try c.encode(declaredAt.timeIntervalSince1970, forKey: .declaredAt)
+    }
 }
 
 /// Why a card went `dead` — set alongside `status = .dead`, surfaced by the Recovery panel + CLI/MCP.
@@ -647,7 +671,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
         self.note = try c.decodeIfPresent(String.self, forKey: .note)
-        self.pendingQuestion = try c.decodeIfPresent(PendingQuestion.self, forKey: .pendingQuestion)
+        // `try?`, not a rethrowing `decodeIfPresent`: a malformed value must drop only the QUESTION, never
+        // the whole card (FailableTask drops a card whose init throws). `pendingQuestion` is introduced on
+        // this branch and only ever lands on `main` as this struct — but a dev daemon that persisted the
+        // interim bare-String form and then upgraded would otherwise throw here and lose the card. Same
+        // card-preserving discipline as `TreeStat.state`'s `try?`.
+        self.pendingQuestion = (try? c.decodeIfPresent(PendingQuestion.self, forKey: .pendingQuestion)) ?? nil
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
