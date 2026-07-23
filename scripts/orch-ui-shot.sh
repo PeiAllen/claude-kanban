@@ -16,6 +16,17 @@
 # The agent/shell terminal panes render empty (a mock card has no tmux behind it) — only the chrome
 # (strip swap + panel height) is under test here. Run UNSANDBOXED (xcodebuild needs ~/Library).
 #
+# WHAT THE ISOLATED $HOME DOES *NOT* ISOLATE: preferences. `@AppStorage`/NSUserDefaults reads go
+# through cfprefsd, which is keyed per-USER, not per-HOME — so these shots render at whatever
+# `inspectorWidth` (etc.) the human has dragged their real app to, NEVER the shipped default. A
+# layout bug that only appears at the default width is invisible here and WILL pass this harness.
+# To test an exact width, pass it through the NSUserDefaults *argument* domain, which outranks the
+# stored value without mutating the user's prefs:
+#     "$BIN" -inspectorWidth 392        # the shipped default (App/OrchestraApp.swift)
+#     "$BIN" -inspectorWidth 320        # the drag minimum (InspectorResizer.resolve)
+# and A/B against a mock WITHOUT the element under test, so overflow is attributable. This is how
+# the inspector diffstat was caught clipping the close button at 392 after passing these shots.
+#
 # Usage: scripts/orch-ui-shot.sh [--no-build] [outdir]
 #   default outdir: ./.scratch/ui-shots
 set -euo pipefail
