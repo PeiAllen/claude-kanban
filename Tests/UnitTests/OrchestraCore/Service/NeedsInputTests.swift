@@ -141,33 +141,57 @@ struct NeedsInputTests {
     }
 
     /// The regression this seam exists for. A Claude card handed an injected answer at Stop resumes the
-    /// SAME session with no `UserPromptSubmit`; if its turn is pure prose it calls no tool either, so the
-    /// card never reports `.running` and never crosses a phase edge. Only the delivery RECEIPT proves the
-    /// turn happened — which is why the clear hangs off `confirmDelivery` and not off `.running`.
+    /// SAME session with no `UserPromptSubmit`; if that turn is pure prose it calls no tool either, so the
+    /// card reports `.running` never and crosses no phase edge. Handing back the continuation IS the turn
+    /// starting, so the claim is what retires a question declared in the turn BEFORE it.
     @Test("a delivery-caused turn with no tool call clears it")
     func deliveryTurnClears() async throws {
         let env = TestEnv.make()
         let t = try await liveCard(env.svc, TestEnv.repo(env.base))
         try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
                                  observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
-        try await env.svc.send(t.id, "the answer is: base it on main")
 
-        // Declared AFTER the send, so nothing about the wake can be what clears it.
+        // Declared at the end of turn N — the agent asked, and went idle.
         _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+        try await env.svc.send(t.id, "the answer is: base it on main")
         let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
 
-        // Stop #1 hands the message to the agent as a continuation (dispatch — NOT yet proof).
+        // The Stop hands the answer back as a continuation: turn N+1 is starting, so the question it was
+        // waiting on is retired — with the card never having been `.running`.
         let handed = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
                                               observedEpoch: epoch, stopHookActive: false)
         #expect(handed?.continuation?.contains("base it on main") == true)
-        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
-
-        // Stop #2 proves the continuation ran → the receipt confirms → the question is retired, with the
-        // card never having been `.running`.
-        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
-                                     observedEpoch: epoch, stopHookActive: true)
         #expect(await card(env.svc, t.id)?.phase != Phase.live(.running))
         #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+    }
+
+    /// The regression that made the first version of this seam wrong. The clear used to hang off
+    /// `confirmDelivery`, and a stop-drain batch is confirmed on the Stop that ENDS the continuation turn
+    /// (both agents set `stop_hook_active` there, `HookRPC.stopHookActive`) — which is exactly when an
+    /// agent that has run out of road declares its question. The declaration was erased a beat after it
+    /// was made, on both backends, and the card went idle with nothing to show the human.
+    @Test("a question declared DURING a continuation turn survives that turn's Stop")
+    func declaredDuringContinuationSurvives() async throws {
+        let env = TestEnv.make()
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
+                                 observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
+        try await env.svc.send(t.id, "here is the context you asked for")
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        // Stop #1 hands the message back as a continuation — turn N+1 begins.
+        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
+                                     observedEpoch: epoch, stopHookActive: false)
+
+        // The agent works through turn N+1, gets blocked, and declares at the END of it.
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+
+        // Stop #2 ends the continuation: `stopHookActive` is true, so it CONFIRMS the batch turn N+1 ran.
+        // Nothing new is queued, so no fresh continuation is handed back — no turn is starting, and the
+        // question must still be there for the human to see on the idle card.
+        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
+                                     observedEpoch: epoch, stopHookActive: true)
+        #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
     }
 
     @Test("a landed relaunch clears it — the session that asked is gone")

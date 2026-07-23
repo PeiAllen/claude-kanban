@@ -29,8 +29,11 @@ extension OrchestraService {
         let link = await lineage.read(repo: child.repo, branch: child.branch)
         let repo = child.repo, ctl = Duration.seconds(config.controlTimeout)
         // Sync probes hoist to a GCD hop, per the M1 residual convention (see `recomputeTreeStat`).
+        // `defaultBaseRef` costs two more forks and is only the default-branch hint, so it rides ONLY on the
+        // link-less arm that actually needs it.
+        let needsDefault = (link == nil)
         let (hint, remotes) = await offActorValue {
-            (DiffBaseline.defaultBaseRef(worktree: repo), self.gitRemotes(repo: repo))
+            (needsDefault ? DiffBaseline.defaultBaseRef(worktree: repo) : nil, self.gitRemotes(repo: repo))
         }
         // A link-less root declares against the repo's default branch — the same target `shipped` retargets
         // its children onto. No lineage is written: the badge carries the declaration, and a verb that
@@ -64,14 +67,19 @@ extension OrchestraService {
             emit(.taskUpserted(saved), rev: rev)
         }
         if let parentCard {
+            // Arm BEFORE the enqueue, not after. Arming is synchronous on the actor, so it publishes
+            // "this request has an owner and a loop" with no suspension in between — which is what a
+            // concurrent funnel `reconcileMergeRequest` tests to decide whether the request still needs
+            // handing over. Arming after the enqueue left a window across two awaits in which that
+            // reconcile saw an un-armed `.mergeRequested` card and enqueued a second copy of the same
+            // request. (Always re-arm: a re-send after the loop stopped must restart it.)
+            startMergeRequestNudge(childId: child.id)
             if !resuming {
                 try? await inbox.enqueue(parentCard.id,
                     "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(target) in your "
                     + "worktree, then `orchestra shipped \(child.shortId)`")
                 await wake(parentCard.id)
             }
-            // Always (re-)arm: a re-send after the loop stopped must restart it, not leave the badge un-nudged.
-            startMergeRequestNudge(childId: child.id)
             emitActivity(.command, child, source, "merge-request → \(target)")
         } else {
             // Nothing to nudge, so nothing to arm — and a stray loop from a parent that has since gone
@@ -105,23 +113,27 @@ extension OrchestraService {
     /// Never enqueues for an already-armed request: the boot rebuild re-arms every pending card WITHOUT
     /// re-sending (the original request is durable in the parent's inbox), so an enqueue here would
     /// duplicate it on the first funnel tick after every daemon restart.
-    func reconcileMergeRequest(_ childId: UUID) async {
+    /// `link`/`remotes` are CALL-SCOPED, matching `computeTreeStat`/`defaultBranch`: the only caller is
+    /// `recomputeTreeStat`, which already holds both, and re-deriving them here cost a `lineage.read`
+    /// (four git-config forks) plus a `gitRemotes` fork on every debounced tick of every card wearing a
+    /// pending badge.
+    func reconcileMergeRequest(_ childId: UUID, link: ParentLink?, remotes: [String]) async {
         guard let child = await store.get(childId), !child.archived, child.origin == .worktree,
               child.treeStat?.state == .mergeRequested else { return }
-        let link = await lineage.read(repo: child.repo, branch: child.branch)
-        let repo = child.repo
-        let remotes = await offActorValue { self.gitRemotes(repo: repo) }
         let owner = mergeParentOwner(repo: child.repo, link: link, remotes: remotes, among: await store.all())
         guard let owner, let link else {
             stopMergeRequestNudge(childId)   // unowned: the badge stays, the loop does not
             return
         }
         guard !mergeRequestNudgeActive(childId) else { return }   // already an agent's problem
+        // Arm FIRST — see the note in `mergeRequest`. The guard above and this arm are both synchronous on
+        // the actor, so two concurrent recomputes of the same card cannot both pass the guard and both
+        // enqueue; arming after the awaits below left exactly that window.
+        startMergeRequestNudge(childId: childId)
         try? await inbox.enqueue(owner.id,
             "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
             + "worktree, then `orchestra shipped \(child.shortId)`")
         await wake(owner.id)
-        startMergeRequestNudge(childId: childId)
         emitActivity(.command, child, .daemon,
                      "merge-request → \(link.parent) (an owner appeared — request handed over)")
     }
@@ -268,11 +280,15 @@ extension OrchestraService {
             "merge-request stalled — \(sent) reminder\(sent == 1 ? "" : "s") unanswered; \(link.parent) "
             + "never merged \(child.branch). Merge it yourself, or re-send with "
             + "`orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+        // Deliberately offers no second ship path. `giveUp` is only reachable past the owner check above, so
+        // a live card DOES own the parent here — which is precisely when `borrow` refuses ("parent … has a
+        // live card — merge-request instead", +Borrow). The old text sent the child to run a command that
+        // could not succeed, and re-taught at runtime the four-way fork the guidance deleted.
         try? await inbox.enqueue(childId,
             "merge-request stalled — \(link.parent) ignored \(sent) reminder\(sent == 1 ? "" : "s") and never "
-            + "merged \(child.branch); the daemon has stopped re-asking. Either borrow the parent and merge "
-            + "yourself (`orchestra borrow \(child.shortId)` → merge → `orchestra shipped \(child.shortId)`), "
-            + "or re-send `orchestra merge-request \(child.shortId)` to re-arm the reminders.")
+            + "merged \(child.branch); the daemon has stopped re-asking. Re-send "
+            + "`orchestra merge-request \(child.shortId)` to re-arm the reminders, or stop and report it — "
+            + "a human decides how this lands.")
 
         // The merge-down nudge the funnel could not send: `.mergeRequested` froze it while the request was
         // pending, and writing the true `.stale` state directly crosses no inSync→stale edge, so the funnel

@@ -125,6 +125,28 @@ struct MergeRequestTests {
         #expect(await env.svc.mergeRequestNudgeActive(solo.id) == false)
     }
 
+    /// A REMOTE parent is unowned by construction — there is no local card to ask, whatever cards happen
+    /// to exist. Without this, `mergeParentOwner`'s remote arm is unexercised at the verb, and an edit that
+    /// derived an "owner" for `origin/<b>` / `pr#<N>` would nudge some unrelated same-named card.
+    @Test("a REMOTE parent records the badge and arms no loop")
+    func remoteParentRecords() async throws {
+        let (env, fake, _, repo, _) = setup()
+        // A live card DOES exist on the local `parent` branch — the remote arm must short-circuit before
+        // any branch lookup, so this card is never treated as the owner of a `pr#N` parent.
+        let localParent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        // `pr#N` parses as remote independently of the configured remotes (RemoteParentRef.parse), which is
+        // what makes it usable here — `TestEnv`'s remotes probe reports none.
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                                link: ParentLink(parent: "pr#7", base: "deadbeef", prNumber: 7))
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+        #expect(try await env.svc.inboxPeek(localParent.id).isEmpty)
+    }
+
     @Test("an ARCHIVED parent card counts as unowned — the lookup excludes it")
     func archivedParentIsUnowned() async throws {
         let (env, fake, _, repo, parentTip) = setup()

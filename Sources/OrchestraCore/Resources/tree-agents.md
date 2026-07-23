@@ -31,7 +31,7 @@ When `treeStat` is `restackNeeded` (parent rebased, re-parented via `set-parent 
 **One verb, every parent kind: commit, run `orchestra merge-request <you>`, and STOP.** Routing is the daemon's, not yours — don't resolve the parent first to pick a path. Two outcomes from that one call:
 
 - **A live card owns your parent branch** → the request lands in that agent's inbox and is re-asked until it acts; it squash-merges in its own worktree and calls `orchestra shipped <you>`, which wakes you to verify + archive. You cannot advance a branch checked out in another worktree — never `cd` there to do it yourself.
-- **Nobody owns it** — parent is `main`, a bare local branch, a remote branch/PR, or you have no parent link → the request is RECORDED on your card and a **human** takes it from there, merging however they choose. No agent to wait for: stop.
+- **No live card owns your parent branch** — it is `main`, a bare local branch, a remote branch/PR, or you have no parent link → the request is RECORDED on your card and a **human** takes it from there, merging however they choose. No agent to wait for: stop.
 
 The request is sticky ("merge requested" until it resolves) and re-sending is a no-op refresh. Don't follow it with your own merge, a borrow, or a pull request — a human will direct those if they want them.
 

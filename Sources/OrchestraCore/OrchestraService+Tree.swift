@@ -442,7 +442,7 @@ extension OrchestraService {
             // active — so it is where a request recorded while unowned finds out that an owner has since
             // appeared. Without this the sticky badge would freeze the routing decision too, and the
             // request would be held by nobody: invisible to the human's predicate, never sent to the agent.
-            await reconcileMergeRequest(id)
+            await reconcileMergeRequest(id, link: link, remotes: remotes)
             return
         }
         guard carryMergeRequestFields(new, from: current0) != current0 else { return }

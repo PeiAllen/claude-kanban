@@ -74,6 +74,14 @@ struct RebuildMergeRequestNudgesTests {
         // (c) live worktree card, but not mergeRequested — must be skipped.
         let plain = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "child-plain"))
 
+        // (d) live and pending, with a REAL link — but to a branch no live card owns. Slice 3a: an unowned
+        // request has no agent to re-nudge, so the rebuild must not arm it. Distinct from (b), whose card
+        // has no lineage link at all and so cannot tell the unowned skip apart from the archived filter.
+        let unowned = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "u", repo: repo, branch: "child-unowned"))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child-unowned",
+                                                link: ParentLink(parent: "bare-branch", base: parentTip))
+        _ = try await env.svc.store.update(unowned.id) { $0.treeStat = TreeStat(state: .mergeRequested) }
+
         await env.svc.rebuildMergeRequestNudges()
 
         // Checked immediately, before any tick: the interval keeps the default 300s, so the armed `live`
@@ -81,6 +89,7 @@ struct RebuildMergeRequestNudgesTests {
         #expect(await env.svc.mergeRequestNudgeActive(live.id) == true)
         #expect(await env.svc.mergeRequestNudgeActive(archived.id) == false)
         #expect(await env.svc.mergeRequestNudgeActive(plain.id) == false)
+        #expect(await env.svc.mergeRequestNudgeActive(unowned.id) == false)
     }
 
     @Test("a rebuilt timer still stops on shipped (the clear path works post-rebuild)")

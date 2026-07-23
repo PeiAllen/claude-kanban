@@ -225,15 +225,21 @@ with no such prompt), never a replacement.
 Retirement is keyed to **proof that the question is moot**, never to an intent, and there are exactly two
 proofs. The first is the next turn starting: a landing into `live(.running)` from anywhere that is not
 already running and is not a permission wait — an approval resumes the *same* turn, so a question declared
-earlier in it must survive. The second is a **confirmed** inbox delivery. That second seam is not
-redundant: a Claude card handed an injected answer at Stop resumes the same session with no
-`UserPromptSubmit`, and if it answers in prose it calls no tool either, so it reports `.running` never and
-crosses no phase edge — only the delivery receipt proves the turn happened. It is keyed to the receipt
-rather than the dispatch because the relaunch seed is claimed *before* the launch runs, so a failed launch
-would otherwise erase a question the agent never saw. A completed session replacement also clears it (a
-*landed* relaunch, an id rollover, `/clear`) — generation-fenced, so a dying session's late signal cannot
-erase what the incoming one declared. Nothing else clears it; selection cannot, because glancing at a
-question is not answering it.
+earlier in it must survive. The second is a queued inbox batch being **handed back as a Stop
+continuation**, which is not redundant with the first: a Claude card given an injected answer that way
+resumes the same session with no `UserPromptSubmit`, and if it replies in prose it calls no tool either,
+so it reports `.running` never and crosses no phase edge.
+
+That second seam is keyed to the **claim** — the moment the payload is handed over — and the distinction
+is load-bearing in both directions. Keying it to the delivery *receipt* instead is wrong, because a
+stop-drain batch is confirmed on the Stop that **ends** the continuation turn, which is precisely when an
+agent that has run out of road declares its question: the receipt would erase the declaration a beat after
+it was made, on both backends. And the opposite rule — clear on any dispatch — is wrong for the relaunch
+path, where the seed is leased *before* the launch runs, so a failed launch would erase a question no
+agent ever saw. The relaunch path needs no seam of its own: its `.live` landing out of `.relaunching` is a
+completed session replacement, which is the third clear (alongside an id rollover and `/clear`), and those
+are generation-fenced so a dying session's late signal cannot erase what the incoming one declared.
+Nothing else clears it; selection cannot, because glancing at a question is not answering it.
 
 ### Terminal bytes bypass the daemon
 

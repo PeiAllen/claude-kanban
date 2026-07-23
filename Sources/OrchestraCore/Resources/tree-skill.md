@@ -41,9 +41,9 @@ merges you, and how, is the daemon's routing — not your decision, and not some
   it acts. It squash-merges in its own worktree and calls `orchestra shipped <you>`, which wakes you to
   verify and archive. You cannot advance a branch that is checked out in another worktree, so never `cd`
   into the parent's worktree to do it yourself.
-- **Nobody owns it** — your parent is `main`, a bare local branch, a remote branch or PR, or you have no
-  parent link at all → the request is RECORDED on your card and a **human** takes it from there, merging
-  however they choose. There is no agent to wait for: stop, and let them come back to you.
+- **No live card owns your parent branch** — it is `main`, a bare local branch, a remote branch or PR, or
+  you have no parent link at all → the request is RECORDED on your card and a **human** takes it from
+  there, merging however they choose. There is no agent to wait for: stop, and let them come back to you.
 
 Either way the request is sticky (your card reads "merge requested" until it resolves) and re-sending is
 a no-op refresh rather than a second request. Do not follow it with a merge of your own, a borrow, or a

@@ -255,9 +255,9 @@ public enum CommandCatalog {
 
         CommandSchema(name: "borrow",
                       summary: "Cut a throwaway worktree checking out this card's BARE parent branch (no "
-                          + "live card owns it) so you can squash-merge into it, then `shipped`. Returns the "
-                          + "worktree path. Refuses a remote parent (publish a PR) or a live-card parent "
-                          + "(send a merge-request).",
+                          + "live card owns it). Returns the worktree path. A human-directed primitive, NOT "
+                          + "a way to ship: to declare your own work ready, use `merge-request` and stop. "
+                          + "Refuses a remote parent, and refuses one a live card owns.",
                       params: schema(["ref": refProp()], required: ["ref"]),
                       kind: .mutation, phaseGate: gLiveDead),
 

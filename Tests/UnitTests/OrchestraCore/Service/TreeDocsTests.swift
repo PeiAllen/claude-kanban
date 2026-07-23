@@ -82,4 +82,22 @@ struct TreeDocsTests {
         }
     }
 
+    /// The resource docs are not the only agent-facing surface, and the impl review found the other two
+    /// still teaching the deleted fork: the MCP tool descriptions (every agent reads them on `tools/list`)
+    /// and the merge-request give-up message (a durable inbox nudge). The give-up one was worse than stale
+    /// — `giveUp` is only reachable while a live card OWNS the parent, which is exactly when `borrow`
+    /// refuses, so it handed the agent a command that could not succeed.
+    @Test("the agent-facing command surface teaches no second ship path either")
+    func catalogTeachesOneShipVerb() throws {
+        for schema in CommandCatalog.all {
+            #expect(!schema.summary.contains("gh pr"), "\(schema.name) summary")
+            #expect(!schema.summary.contains("push -u origin"), "\(schema.name) summary")
+            #expect(!schema.summary.lowercased().contains("publish a pr"), "\(schema.name) summary")
+        }
+        // `borrow` stays documented as a primitive, but never as a way to ship.
+        let borrow = try #require(CommandCatalog.all.first { $0.name == "borrow" })
+        #expect(borrow.summary.contains("merge-request"))
+        #expect(!borrow.summary.contains("squash-merge into it"))
+    }
+
 }
