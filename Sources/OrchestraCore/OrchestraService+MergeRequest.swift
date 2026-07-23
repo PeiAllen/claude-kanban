@@ -330,10 +330,16 @@ extension OrchestraService {
     // MARK: - startup rebuild (mirrors rebuildRemoteWatches — the in-memory timer dies on restart)
 
     /// Daemon-startup reconstruction: for every LIVE (non-archived) worktree card left in the
-    /// `mergeRequested` waiting state, re-arm its re-nudge timer. The durable state (child `treeStat` +
-    /// the parent's inbox request) survives a restart; the in-memory timer does not. We do NOT re-enqueue
-    /// the original request here — the timer's own tick does the re-prodding, and every existing stop
-    /// condition (shipped / re-parent / archive / state change) keeps working identically.
+    /// `mergeRequested` waiting state, re-derive its routing. The durable state (child `treeStat`, and the
+    /// parent's inbox request when one was sent) survives a restart; the in-memory timer does not.
+    ///
+    /// This ROUTES rather than blind-arming. Blind arming assumed the parent's original request is already
+    /// in its inbox, which stopped being true once a request could be recorded while unowned: such a
+    /// request has never been sent to anyone, so arming alone left the owner to be greeted by a "reminder
+    /// N/M" for something it never received. Routing through the shared reconcile sends the ask when there
+    /// is an owner and stops the loop when there isn't, and the handover's dedup key keeps a still-pending
+    /// original from being duplicated. Every existing stop condition (shipped / re-parent / archive /
+    /// state change) keeps working identically.
     public func rebuildMergeRequestNudges() async {
         let active = await store.all().filter { !$0.archived && $0.origin == .worktree }
         // Checked twice over (the give-up already released `.mergeRequested`): "a restart cannot resurrect
