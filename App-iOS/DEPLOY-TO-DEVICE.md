@@ -122,6 +122,10 @@ in place — just run the cycle again: ⌘R from Xcode (A1), `--install` (A2), T
 A paid membership raises the 7 days to a year. Either way there is no TestFlight or App Store
 distribution on a personal team.
 
+(This renewal round-trip hasn't been run end to end on this lane yet — the lane was verified from a
+first install. It's how free teams are documented to behave, but treat day eight as expected rather
+than proven, and expect to fall back to plain ⌘R if the scripted step surprises you.)
+
 ### "No Accounts: Add a new account in Accounts settings"
 
 If the script fails with that, plus `No profiles for 'com.orchestra.ios' were found`, **you are not

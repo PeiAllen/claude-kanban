@@ -205,15 +205,21 @@ capability requires a **paid** membership, so a free-account device signing **fa
 `aps-environment` is present at all. The default `App-iOS/OrchestraiOS.entitlements` hardcodes it (for
 the paid lane); the free lane signs with `App-iOS/OrchestraiOS-nopush.entitlements` instead —
 identical but with `aps-environment` stripped, keeping only `keychain-access-groups`. So a free-team
-device build sets `CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements` and your personal
-team. (The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane
-keeps `aps-environment` for real push.)
+device build sets `CODE_SIGN_ENTITLEMENTS=OrchestraiOS-nopush.entitlements` and your personal team.
+(The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane keeps
+`aps-environment` for real push.)
 
-This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta), **entirely over Wi-Fi with
-no cable**: the script produces a signed `.app` entitled `keychain-access-groups` only, and
-`devicectl device install app` / `device process launch` put it on the phone and start it. Pairing the
-phone once (Xcode ▸ Window ▸ Devices and Simulators ▸ **Connect via network**) is the only step that
-wants a cable.
+That value is a **bare basename, with no `App-iOS/` prefix** — Xcode resolves `CODE_SIGN_ENTITLEMENTS`
+relative to `$(SRCROOT)`, which for this project *is* `App-iOS/`. Adding the prefix double-nests it to
+`App-iOS/App-iOS/…`, which doesn't exist, and signing then falls back to the target's default
+`OrchestraiOS.entitlements` — which carries `aps-environment`, so free-team signing fails with an error
+that says nothing about the path you actually got wrong.
+
+This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta): the script produces a
+signed `.app` entitled `keychain-access-groups` only, and `devicectl device install app` /
+`device process launch` put it on the phone and start it. Once the phone is set up, **the whole
+build-install loop is wireless**; the cable is needed only for the one-time setup session below
+(Trust This Computer, Developer Mode, and ticking "Connect via network").
 
 ### The GUI mints the profile; the script consumes it
 
@@ -240,6 +246,10 @@ Step 3 is an expected manual step, **not a failure**. iOS's "Untrusted Developer
 identity and sits downstream of compile, sign, and install — so a run that ends by asking you to trust
 the team has succeeded, and there is nothing to debug. Each fresh 7-day profile is a new signing
 identity, so it recurs; it is not one-time setup. (A paid membership stretches the cycle to a year.)
+
+The 7-day limit and this renewal procedure are how free personal teams work, but note the expiry
+round-trip has not itself been exercised on this lane yet — the on-metal verification above was a
+first install, so day-eight re-signing is expected-to-work rather than observed.
 
 Note that `devicectl device process launch` starts the app through the developer-disk-image debug
 path, which the trust gate does not cover: it succeeds even while the developer is untrusted. A

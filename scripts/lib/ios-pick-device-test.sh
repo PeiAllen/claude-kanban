@@ -76,6 +76,31 @@ err="$(payload "$ipad" | $PICK 2>&1 >/dev/null)"
 contains "iPad only: rejected as not an iPhone" "$err" "no physical iPhone"
 contains "iPad only: still lists what it did see" "$err" "Allen’s iPad"
 
+# Each of the three identity predicates gets a row that trips ONLY that one. Without this, deleting
+# `reality == physical` or `platform == iOS` from the picker leaves every other assertion green — the
+# checks would be free variables the suite silently stopped defending.
+# Realistic: a booted Simulator, which is an iOS iPhone in every respect except that it isn't one.
+simulator='{"identifier":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+ "deviceProperties":{"name":"iPhone 16 Pro Max Simulator"},
+ "connectionProperties":{"transportType":"localNetwork","pairingState":"paired"},
+ "hardwareProperties":{"platform":"iOS","reality":"simulator","deviceType":"iPhone",
+   "marketingName":"iPhone 16 Pro Max"}}'
+# Synthetic on purpose — no real device is a physical iPhone on a non-iOS platform. It exists solely
+# to isolate the `platform` predicate, which no realistic row can trip on its own (an Apple Watch or
+# Mac would be rejected by deviceType first, proving nothing about this check).
+foreign_platform='{"identifier":"FFFFFFFF-0000-1111-2222-333333333333",
+ "deviceProperties":{"name":"Not an iOS device"},
+ "connectionProperties":{"transportType":"wired","pairingState":"paired"},
+ "hardwareProperties":{"platform":"macOS","reality":"physical","deviceType":"iPhone"}}'
+out="$(payload "$simulator" | $PICK 2>/dev/null)"; rc=$?
+check "simulator is not a device candidate" "$rc" "1"
+check "simulator: nothing on stdout" "$out" ""
+out="$(payload "$foreign_platform" | $PICK 2>/dev/null)"; rc=$?
+check "non-iOS platform rejected" "$rc" "1"
+# …and a real phone is still found with all three decoys present.
+out="$(payload "$ipad" "$simulator" "$foreign_platform" "$(device_json localNetwork paired)" | $PICK 2>/dev/null)"
+check "real iPhone found among iPad+simulator+foreign rows" "$out" "$IPHONE_ID"
+
 echo "4. several iPhones — refuses to guess, and says what it saw"
 out="$(payload "$(device_json localNetwork paired)" "$second_iphone" | $PICK 2>/dev/null)"; rc=$?
 check "ambiguous: exit nonzero" "$rc" "1"
@@ -135,6 +160,26 @@ check "real iPhone still picked alongside a ghost row" "$out" "$IPHONE_ID"
 echo "7. stdout carries the identifier and nothing else"
 out="$(payload "$(device_json localNetwork paired)" | $PICK 2>/dev/null | wc -l | tr -d ' ')"
 check "exactly one stdout line" "$out" "1"
+
+# The script feeds a --json FILE (devicectl --json-output writes a path), so exercise that path too —
+# every case above uses stdin, which is not how this is actually called in production.
+echo "8. --json FILE, the form build-ios-device.sh actually uses"
+# Private per-run dir under the repo's gitignored .scratch/, NOT $TMPDIR: this test runs on the merge
+# gate, and an agent sandbox may deny writes to the ambient temp dir while cwd is always writable. A
+# test must fail for the reason it is testing, never because of where it put a scratch file.
+SCRATCH="$(mkdir -p .scratch && mktemp -d .scratch/ios-pick-device-test.XXXXXX)"
+trap 'rm -rf "$SCRATCH"' EXIT
+TMP="$SCRATCH/devices.json"
+payload "$(device_json localNetwork paired)" > "$TMP"
+check "reads a file" "$($PICK --json "$TMP" 2>/dev/null)" "$IPHONE_ID"
+check "file + attached --device=" "$($PICK --json "$TMP" --device=allen 2>/dev/null)" "$IPHONE_ID"
+# The caller passes the selector attached precisely so a leading-dash name cannot be read as a flag.
+printf '{"result":{"devices":[{"identifier":"D1","deviceProperties":{"name":"-phone"},
+ "hardwareProperties":{"platform":"iOS","reality":"physical","deviceType":"iPhone"}}]}}' > "$TMP"
+check "leading-dash selector via attached form" "$($PICK --json "$TMP" --device=-phone 2>/dev/null)" "D1"
+out="$($PICK --json /nonexistent/devices.json 2>/dev/null)"; rc=$?
+check "missing file: exit nonzero" "$rc" "1"
+check "missing file: nothing on stdout" "$out" ""
 
 echo
 echo "passed: $PASS   failed: $FAIL"

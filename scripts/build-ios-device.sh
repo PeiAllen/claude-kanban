@@ -72,10 +72,17 @@ while [[ "${1:-}" == --* ]]; do
     # order-independent (last one wins) instead of silently letting --debug beat a later --release.
     --release) CONFIG="Release"; shift ;;
     --device) DEVICE_SELECTOR="${2:-}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }; shift 2 ;;
-    --device=*) DEVICE_SELECTOR="${1#*=}"; shift ;;
+    # Same emptiness check as the spaced form. Without it `--device=` reads as an empty selector,
+    # which would silently CLEAR an ORCH_IOS_DEVICE override and fall through to auto-selection —
+    # so a typo'd explicit flag would install to whatever phone happened to be around.
+    --device=*) DEVICE_SELECTOR="${1#*=}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device= needs a value" >&2; exit 1; }; shift ;;
     *) echo "error: unknown option '$1'" >&2; exit 1 ;;
   esac
 done
+# The loop above only consumes --flags, so anything left is a typo ('install' for '--install') that
+# would otherwise be discarded in silence — and silently building the wrong thing is the failure mode
+# this script keeps getting bitten by.
+[ $# -eq 0 ] || { echo "error: unexpected argument '$1' (options start with --)" >&2; exit 1; }
 
 # --- resolve the team id (never committed) --------------------------------------------------------
 LOCAL_XCCONFIG="App-iOS/DeviceSigning.local.xcconfig"
@@ -148,8 +155,10 @@ if [[ "$INSTALL" == 1 ]]; then
     || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
   # Array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and an
   # unquoted conditional expansion would word-split it into two arguments.
+  # ATTACHED form (--device=x, not --device x): a selector that starts with a dash arrives as its own
+  # argv token and argparse would read it as an option and abort. Attached values are never reparsed.
   PICK_ARGS=(--json "$DEVICES_JSON")
-  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=(--device "$DEVICE_SELECTOR"); fi
+  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=("--device=$DEVICE_SELECTOR"); fi
   # `set -e` aborts here if the picker can't choose one device; it has already explained why on stderr.
   DEVICE="$(scripts/lib/ios-pick-device.py "${PICK_ARGS[@]}")"
 
