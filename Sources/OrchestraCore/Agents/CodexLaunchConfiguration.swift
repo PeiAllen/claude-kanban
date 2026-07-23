@@ -61,7 +61,7 @@ enum CodexLaunchConfiguration {
         if let instructions = AgentGuidance.developerInstructions(for: agentId) {
             lines.append("developer_instructions = \(TOMLOverride.string(instructions))")
         }
-        lines.append(contentsOf: MCPConfiguration.codexTOML(command: context.orchestraMCPBin)
+        lines.append(contentsOf: MCPConfiguration.codexTOML(command: context.orchestraMCPBin, access: context.access)
             .split(whereSeparator: \.isNewline)
             .map(String.init))
         return lines.joined(separator: "\n") + "\n"
