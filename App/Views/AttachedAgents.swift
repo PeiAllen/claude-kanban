@@ -6,8 +6,8 @@ import OrchestraCore
 /// (reviewers / fork inspectors / browse-only borrows) embedded behind it. `👁 N`, tinted by the
 /// roll-up liveness of those agents (green = all running/being-born, amber = one needs the human or
 /// died). It is purely informational: the attached agents are reached by **selecting the target**,
-/// which expands them as inline rows inside the card (see `AttachedAgentRow`) — no popover. Shown on
-/// the CardView footer and in the shared inspector header.
+/// which expands them as inline rows inside the card (see `AttachedAgentRow`) — no popover. Shown in
+/// the CardView footer.
 struct AttachedAgentsBadge: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
