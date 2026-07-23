@@ -22,27 +22,24 @@
 #                                                                        # often need a unique one)
 #
 # VERIFIED ON METAL 2026-07-23 — entirely over Wi-Fi, no cable: this script built `** BUILD SUCCEEDED **`
-# signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, then
-# `devicectl device install app` and `devicectl device process launch --terminate-existing` put it on a
-# network-paired iPhone 16 Pro Max and started it. The Release configuration this script now defaults to
-# has since been verified the same way — a clean Release-iphoneos build and a clean wireless install.
-# Still unverified: launching that Release build (the attempt hit the locked-phone refusal in gotcha 1,
-# which says nothing about the build), a bundle id colliding with another Apple ID (the
-# ORCH_IOS_BUNDLE_ID escape hatch), and re-signing after the 7-day profile expiry.
+# signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, and
+# `devicectl device install app` put it on a network-paired iPhone 16 Pro Max. Verified for both
+# configurations — the Release build this script now defaults to gave a clean Release-iphoneos build and
+# a clean wireless install too. A successful install is the whole of what this lane claims: devicectl
+# reports `App installed:` with the bundle id and installation URL, and that IS the verification.
+# Still unverified: a bundle id colliding with another Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch)
+# and re-signing after the 7-day profile expiry.
 #
 # ⚠️ THREE GOTCHAS, because each presents as some other, more alarming failure:
 #
-# 1. KEEP THE PHONE UNLOCKED FOR BOTH THE INSTALL AND THE LAUNCH. Two different stages refuse a
-#    locked device, with two unrelated-looking errors, and neither one says "unlock your phone":
-#      • install — the developer-disk-image mount fails with
-#        kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which reads like a pairing or
-#        transport fault.
-#      • launch  — SpringBoard denies it: "The request was denied by service delegate
-#        (SBMainWorkspace) for reason: Locked", FBSOpenApplicationErrorDomain error 7 (0x07).
-#    The pair is ASYMMETRIC and that is the trap: the install can succeed completely — the app is
-#    fully on the phone — and only the launch is refused. Seeing FBSOpenApplicationErrorDomain 7
-#    after a clean install invites "the install broke" or "it crashes on launch"; nothing is wrong
-#    and nothing needs rebuilding or reinstalling. Unlock to the home screen and launch again.
+# 1. THE PHONE MUST BE UNLOCKED FOR THE INSTALL, or the developer-disk-image mount fails with
+#    kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040. It reads like a pairing or transport
+#    fault; it is the lock screen. Unlock to the home screen and re-run.
+#    (Aside, for anyone running `devicectl device process launch` BY HAND — this script never does:
+#    a locked phone refuses that too, but with a completely different error, "denied by service
+#    delegate (SBMainWorkspace) for reason: Locked" / FBSOpenApplicationErrorDomain error 7 (0x07),
+#    and it refuses AFTER a successful install. That combination reads as a broken install or a crash
+#    on launch; it is neither. Unlock and open the app normally — rebuild and reinstall nothing.)
 #
 # 2. THIS SCRIPT CANNOT MINT A FREE-TEAM PROFILE — only consume one. `xcodebuild` cannot reach the
 #    keychain-backed session of the Apple ID signed into Xcode from a non-GUI shell, so on a
@@ -57,7 +54,8 @@
 # 3. ENDING AT "trust the developer on the phone" IS SUCCESS, NOT FAILURE. iOS's Untrusted Developer
 #    gate is a per-signing-identity consent step downstream of compile/sign/install, so reaching it
 #    means everything this script does worked. It is manual, it is on the device, and because each
-#    fresh 7-day profile is a new signing identity it recurs EVERY cycle — it is not first-install-only.
+#    profile renewal it has been observed to come back, it is NOT first-install-only — expect it every
+#    cycle rather than being surprised by it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
@@ -79,7 +77,18 @@ while [[ "${1:-}" == --* ]]; do
     # Release still gets Release, and selecting rather than ignoring keeps the two flags
     # order-independent (last one wins) instead of silently letting --debug beat a later --release.
     --release) CONFIG="Release"; shift ;;
-    --device) DEVICE_SELECTOR="${2:-}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }; shift 2 ;;
+    # Reject a separated value that is itself an option. `--device --install` would otherwise swallow
+    # the --install as the selector and shift past it, leaving INSTALL=0 and no leftover argument to
+    # trip the check below — so the script does a full build, installs nothing, and prints DONE as if
+    # it had. A selector deliberately starting with a dash goes through the attached form
+    # (`--device=--weird-name`), which is unambiguous.
+    --device)
+      DEVICE_SELECTOR="${2:-}"
+      [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }
+      case "$DEVICE_SELECTOR" in
+        --*) echo "error: --device got the option '$DEVICE_SELECTOR' as its value; use --device=$DEVICE_SELECTOR if that really is the device name" >&2; exit 1 ;;
+      esac
+      shift 2 ;;
     # Same emptiness check as the spaced form. Without it `--device=` reads as an empty selector,
     # which would silently CLEAR an ORCH_IOS_DEVICE override and fall through to auto-selection —
     # so a typo'd explicit flag would install to whatever phone happened to be around.
@@ -187,18 +196,14 @@ if [[ "$INSTALL" == 1 ]]; then
   # The trust gate below is per SIGNING IDENTITY, not per app, so it recurs with every fresh 7-day
   # profile — not just the first install. It sits downstream of compile/sign/install, so reaching it
   # means this script SUCCEEDED; say so plainly rather than leaving it to read as a failure.
+  # The lane deliberately ENDS HERE. devicectl's own "App installed:" line is the verification, and a
+  # scripted `process launch` would add nothing: it starts the app over the developer-disk-image debug
+  # path, which the Untrusted Developer gate does not cover, so it succeeds in exactly the case where
+  # tapping the icon fails — false confidence precisely where the risk is. It is also intrusive:
+  # --terminate-existing kills a running instance, and this is someone's personal phone in active use.
   echo "installed."
   echo "NEXT (manual, and needed again after every new 7-day profile — this is not an error):"
   echo "  on the iPhone, Settings ▸ General ▸ VPN & Device Management ▸ your Apple ID ▸ Trust,"
-  echo "  then tap the app icon. Until you do, iOS shows \"Untrusted Developer\" and refuses to launch."
-  # Deliberately not offered as a substitute for the above: devicectl launches via the developer disk
-  # image, a debug path the trust gate does not cover, so it works even while the developer is
-  # untrusted — a successful launch here does NOT prove the home-screen icon works.
-  echo "To smoke-test the build without the phone (works even while untrusted, so it proves less):"
-  echo "  xcrun devicectl device process launch --device $DEVICE --terminate-existing $BUNDLE_ID"
-  # The install above can succeed on a locked phone's behalf and the LAUNCH still be refused, with an
-  # error naming neither the lock nor the phone. Pre-empt the "so the install was broken?" reading.
-  echo "  (if that says FBSOpenApplicationErrorDomain error 7 / 'denied by service delegate … Locked',"
-  echo "   the install above still succeeded — unlock the phone and launch again, rebuild nothing.)"
+  echo "  then open the app yourself. Until you trust it, iOS shows \"Untrusted Developer\"."
 fi
 echo "DONE"

@@ -30,19 +30,9 @@ stays in the drawer.
 5. **Remote Login on the Mac.** System Settings ▸ General ▸ Sharing ▸ **Remote Login** ▸ on. (The app
    reaches the daemon by SSH-ing into your Mac over the tailnet and bridging to its socket.)
 
-> **Keep the phone unlocked for both the install and the launch.** Two separate stages refuse a
-> locked device, with two errors that look unrelated and mention neither the lock screen nor each
-> other:
->
-> - **Install** — the developer-disk-image mount fails with `kAMDMobileImageMounterDeviceLocked` /
->   `CoreDeviceError 12040`. Looks like a pairing or network fault.
-> - **Launch** — SpringBoard refuses: `The request was denied by service delegate (SBMainWorkspace)
->   for reason: Locked`, `FBSOpenApplicationErrorDomain error 7 (0x07)`.
->
-> These are asymmetric, which is the part that misleads: the **install can succeed completely** — the
-> app is fully on the phone — and only the launch is denied. If you see
-> `FBSOpenApplicationErrorDomain error 7` after a clean install, nothing is broken and the app does
-> not crash on launch. Unlock the phone and launch again; rebuild and reinstall nothing.
+> **Keep the phone unlocked while installing.** A locked phone fails the developer-disk-image mount
+> with `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040` — it looks like a pairing or
+> network fault, but it's just the lock screen.
 
 ---
 
@@ -108,18 +98,19 @@ the substring specific enough to be unambiguous — with an iPad also paired, `-
 both and is rejected rather than guessed. The device is picked *before* the build, so a typo costs
 seconds rather than a full build.
 
-To launch it without touching the phone:
+**The lane ends at install, on purpose.** `devicectl` prints `App installed:` with the bundle id and
+installation URL — that *is* the confirmation, and there is nothing further to run. Then do **A3** and
+open the app yourself.
 
-```sh
-xcrun devicectl device process launch --device <identifier> --terminate-existing com.orchestra.ios
-```
+There's a `devicectl device process launch` you could run by hand, but don't reach for it as a check:
+it starts the app over the developer-disk-image debug path, which the Untrusted Developer gate doesn't
+cover, so it succeeds in exactly the situation where tapping the icon fails — false confidence, right
+where the actual risk is. It also passes `--terminate-existing`, which kills a running instance and
+can yank the board out from under you mid-session on your own phone.
 
-> **A scripted launch does not prove the install is usable.** `devicectl` starts the app through the
-> developer-disk-image debug path, which is not subject to the Untrusted Developer gate — so it
-> succeeds even while the developer is still untrusted. Use it to smoke-test a build; only tapping
-> the home-screen icon after **A3** proves the app opens the way you'll actually open it. And if it
-> fails with `FBSOpenApplicationErrorDomain error 7`, that's the lock screen, not the build — the
-> install already succeeded (see the unlock note above).
+> If you do run it manually and it fails with `denied by service delegate (SBMainWorkspace) for
+> reason: Locked` / `FBSOpenApplicationErrorDomain error 7 (0x07)`, that's the lock screen refusing
+> the launch — the install already succeeded. Unlock and open the app normally; rebuild nothing.
 
 ### A3. Trust the developer on the phone (every cycle)
 
@@ -127,10 +118,10 @@ On the iPhone: Settings ▸ General ▸ **VPN & Device Management** ▸ your App
 
 Until you do, tapping the icon shows **"Untrusted Developer"** and iOS refuses to launch the app.
 
-**This is an expected manual step, not an error.** It's a per-signing-identity consent gate that sits
-*downstream* of compile, sign, and install, so a build or install run that ends by telling you to
-trust the team has **succeeded** — there is nothing to debug. And because every new 7-day profile is
-a new signing identity, the prompt returns each cycle; it isn't one-time setup.
+**This is an expected manual step, not an error.** It's a consent gate that sits *downstream* of
+compile, sign, and install, so a build or install run that ends by telling you to trust the team has
+**succeeded** — there is nothing to debug. And it is not one-time setup: after a profile renewal the
+prompt has been observed to come back, so expect it each cycle rather than being surprised by it.
 
 ### When the week is up
 

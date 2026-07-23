@@ -215,13 +215,11 @@ relative to `$(SRCROOT)`, which for this project *is* `App-iOS/`. Adding the pre
 `OrchestraiOS.entitlements` — which carries `aps-environment`, so free-team signing fails with an error
 that says nothing about the path you actually got wrong.
 
-This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta): the script produces a
-signed `.app` entitled `keychain-access-groups` only, and `devicectl device install app` /
-`device process launch` put it on the phone and start it. The Release configuration the lane now
-defaults to is verified for build and install; launching that Release build has not been observed yet
-(the attempt hit the locked-phone refusal below, which says nothing about the build). Once the phone
-is set up, **the whole build-install loop is wireless**; the cable is needed only for the one-time
-setup session below (Trust This Computer, Developer Mode, and ticking "Connect via network").
+This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta) in both configurations: the
+script produces a signed `.app` entitled `keychain-access-groups` only, and `devicectl device install
+app` puts it on the phone. Once the phone is set up, **the whole build-install loop is wireless**; the
+cable is needed only for the one-time setup session below (Trust This Computer, Developer Mode, and
+ticking "Connect via network").
 
 ### The GUI mints the profile; the script consumes it
 
@@ -244,19 +242,25 @@ So the free-tier cycle is three steps, repeated roughly weekly, and only the mid
 3. **Trust the developer on the phone** — Settings ▸ General ▸ **VPN & Device Management** ▸ the Apple
    ID ▸ **Trust**. Manual, on the device, and required **every cycle**.
 
-Step 3 is an expected manual step, **not a failure**. iOS's "Untrusted Developer" gate is per signing
-identity and sits downstream of compile, sign, and install — so a run that ends by asking you to trust
-the team has succeeded, and there is nothing to debug. Each fresh 7-day profile is a new signing
-identity, so it recurs; it is not one-time setup. (A paid membership stretches the cycle to a year.)
+Step 3 is an expected manual step, **not a failure**. iOS's "Untrusted Developer" gate sits downstream
+of compile, sign, and install — so a run that ends by asking you to trust the team has succeeded, and
+there is nothing to debug. It is also not one-time setup: after a profile renewal the prompt has been
+observed to return, so plan for it each cycle. (A paid membership stretches the cycle to a year.)
 
 The 7-day limit and this renewal procedure are how free personal teams work, but note the expiry
 round-trip has not itself been exercised on this lane yet — the on-metal verification above was a
 first install, so day-eight re-signing is expected-to-work rather than observed.
 
-Note that `devicectl device process launch` starts the app through the developer-disk-image debug
-path, which the trust gate does not cover: it succeeds even while the developer is untrusted. A
-scripted launch therefore smoke-tests the build but does **not** prove the app opens from the home
-screen — only step 3 does that.
+The lane deliberately stops at install. `devicectl device install app` reports `App installed:` with
+the bundle id and installation URL, and that is the verification — step 3 and opening the app are
+yours. A scripted `devicectl device process launch` is **not** part of the flow and shouldn't be used
+as a check: it starts the app over the developer-disk-image debug path, which the trust gate does not
+cover, so it succeeds precisely when tapping the icon would fail. It also passes `--terminate-existing`,
+killing a running instance on what is someone's personal phone — the same reason we never drive the
+user's live Mac app. (If you do run it by hand on a locked phone it is refused with
+`denied by service delegate (SBMainWorkspace) for reason: Locked` /
+`FBSOpenApplicationErrorDomain error 7 (0x07)`, *after* a successful install — that is the lock
+screen, not a broken build.)
 
 ### Release by default
 
@@ -296,18 +300,15 @@ of after a full signed build.
 
 `scripts/lib/ios-pick-device.py` holds that policy and `scripts/lib/ios-pick-device-test.sh` pins it
 against captured `devicectl` JSON — network-paired, cable-attached, none, several, bad override — so
-the selection logic is testable without a phone in the room.
+the selection logic is testable without a phone in the room. `scripts/build-ios-device-test.sh` covers
+the option loop, where a malformed flag must abort rather than be absorbed into something
+plausible-looking and wrong. Both run on the merge gate via `scripts/test.sh --all`.
 
 Three operational consequences of the free tier:
 
-- **The phone must be unlocked for both the install and the launch**, and each stage refuses
-  differently: the install fails the developer-disk-image mount with
-  `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, while a launch is denied by
-  SpringBoard with `denied by service delegate (SBMainWorkspace) for reason: Locked` /
-  `FBSOpenApplicationErrorDomain error 7 (0x07)`. Neither names the lock screen as the cause, and they
-  are asymmetric — an install can succeed in full and only the launch be refused, so
-  `FBSOpenApplicationErrorDomain error 7` after a clean install means "unlock the phone", not "the
-  install broke" or "it crashes on launch". Nothing needs rebuilding in that state.
+- **The phone must be unlocked** while installing, or the developer-disk-image mount fails with
+  `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, which reads like a pairing or
+  transport fault and is nothing of the sort.
 - **The provisioning profile lasts 7 days**, and renewing it means ⌘R from the GUI (above); there is no
   TestFlight or App Store distribution on a personal team.
 - **Real APNs push is out of scope.** A free Apple ID can't mint a `.p8` or enable the Push
