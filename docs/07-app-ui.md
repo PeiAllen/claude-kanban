@@ -163,7 +163,7 @@ renders the attached-agents accordion as shipped.
   dominates; else **green** when any reviewer is active or being born (an active reviewer keeps the eye
   green even beside one that has concluded — a finished reviewer is *idle*, not attention); else **grey**
   when every attached reviewer has finished its turn. Labelled "N attached" when it's alone on the line.
-  The trailing edge carries the hover-revealed **`drill ›` chip** on a root that has a subtree (see
+  The trailing edge carries the faint, hover-brightening **`drill ›` chip** on a root that has a subtree (see
   [Hierarchy](#hierarchy-roots-peek-and-drill)); the descendants-only attention chip lands beside it in a
   later slice. Selecting the card replaces this whole summary
   with the subordinates as inline peek rows, which is how they're reached.

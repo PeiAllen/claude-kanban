@@ -83,8 +83,14 @@ struct CardView: View {
     }
 
     /// Re-scope the board to this card's subtree — the shared path `→` and the drill affordances take.
+    /// Select the root first: `→` only ever fires with the root already selected (you selected it to
+    /// press the key), but a chip-click / double-click suppresses the card's own select, so without this
+    /// a mouse-drill would re-scope while the inspector still showed a now-out-of-scope card and no board
+    /// card was selected. Selecting the anchor keeps parity and lights the banner's "you're here" border.
     private func enterDrill() {
-        model.drillInto(model.cardLevelAnchor(task.id))
+        let anchor = model.cardLevelAnchor(task.id)
+        model.selectedId = anchor
+        model.drillInto(anchor)
         model.focusZone = .board
     }
 
