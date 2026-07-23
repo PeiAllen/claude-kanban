@@ -22,6 +22,13 @@ own cards (the board itself doesn't scroll), with a minimum column width of ~210
 shows its label, a count chip, and a **+** button to spawn a card directly into that column; an empty
 column shows a "No agents here" placeholder.
 
+**The columns are self-similar across zoom levels.** At the top level they read as **macro-phases** —
+carried by a header subtitle: Plan *being designed*, Implementation *orchestration running*, Review
+*awaiting your approval* — and hold only **root cards** (see [Hierarchy](#hierarchy-roots-peek-and-drill)):
+one card per root branch plus standalone cards, with every descendant embedded behind its root. Drilling
+into a root re-scopes the same three columns to that root's subtree, where they read at card scale again
+(the subtitles drop). The scope is pure app-local view state; the daemon knows nothing about it.
+
 **Drag-and-drop** moves cards between columns: a card is `.draggable` by its UUID, columns are
 `.dropDestination`s that highlight when targeted, and a drop calls `move(id, to:)`.
 
@@ -40,65 +47,63 @@ wrap in an adaptive grid (270–360 pt columns) that reflows with the window. It
 a drag handle (drag up to grow), and its height persists across launches. It lives *inside* the board
 view so the inspector overlay renders on top of it.
 
-### Attached agents
+### Hierarchy: roots, peek, and drill
 
-A read-only sub-card (a review agent, fork inspector, or a borrow opened just to browse) is not a board
-citizen of its own — it's **embedded behind the card it hangs off of** and surfaced as a collapsed row
-*inside* that card. This keeps the board about the work rather than the agents watching it. A card is
-*attached* when it is `.readOnly` **and** a live target card is derivable — no new model field, purely
-inferred client-side from what the card already carries:
+Related cards group under one root, derived — never stored — from two relations the cards already carry:
 
-- a **worktree** reviewer (spawned with `base: <branch-under-review>`, so its `parentBranch` names the
-  reviewed branch) attaches to the live card on that branch (`BoardTree.parentCard`);
-- a **branchless** `.borrowed` reviewer attaches to the `.worktree` card whose directory it borrowed (a
-  `cwd` match). (A `.scratch` card runs in its own freshly-made unique dir that no worktree card shares,
-  so it never matches and stays a freeform citizen.)
+- **Lineage** (the citizenship axis): a worktree card's `parentBranch` resolves to the live card owning
+  that branch (`BoardTree.lineageParent` → `parentCard`, same repo, any column). This links a PR card to
+  the orchestrator that spawned it.
+- **Attachment**: a `.readOnly` card hangs off a target — a **worktree** reviewer (spawned with
+  `base: <branch>`) off the card on that branch; a **branchless** `.borrowed` reviewer off the `.worktree`
+  card whose directory it borrowed (a `cwd` match; a `.scratch` card's unique dir never matches).
 
-A reviewer can itself be reviewed; such a chain **flattens** onto the first non-attached ancestor
-(`attachedRoot`), so every reviewer in a lineage renders as a flat sibling row under the one real board
-card — a nested reviewer never hides behind an embedded intermediate.
+The **unified subordinate hop** is `hierarchyParent = attachTarget ?? lineageParent`; climbing it reaches
+the **root** (`hierarchyRoot`). A card with no links is its own root. A malformed lineage (a cycle) has no
+real root, so the climb returns nil and the members render as ordinary citizens — the board is never
+stranded on a cycle.
 
-Attached cards are pulled out of the columns and the freeform dock (they no longer show as separate
-cards). This is a **desktop projection over `visibleTasks`**, the single set the columns, dock, spatial
-keyboard navigation (`hjkl` / go-to / carry), link-hints, and tree indentation all read, so a hidden card
-leaves *render and spatial navigation together* — it can never be a phantom `hjkl`/hint target that isn't
-drawn. They surface **inline**: when the target — or one of its attached rows — is selected, the card
-**expands** to list its attached agents as compact rows (status dot · short id · title) within the card's
-own frame (an accordion; the card grows), collapsing again once the selection leaves the group. Clicking a
-row selects that agent, opening its inspector and terminal like any card; the row stays visible while
-selected, so Esc out of that agent's terminal lands back on the row rather than into the void.
+**Top level shows roots only.** `BoardUX.isEmbedded` (a desktop projection over `visibleTasks` — the one
+set the columns, freeform dock, `hjkl`/go-to/carry navigation, and link-hints all read, so a hidden card
+leaves render and navigation together) embeds a card when it is a **non-root descendant of the current
+scope**: at the top level, everything whose lineage parent isn't nil. Read-only attached reviewers are a
+special case — they **always** embed (behind their target, in every scope), so a reviewer is never a
+column card even when its target is the scope. Read-write PR children embed too, but as **lineage
+descendants**, not reviewers.
 
-**Keyboard navigation is two-level.** `j`/`k` stay the card axis — they move card-to-card, treating an
-expanded card and its rows as one unit (a selection on a row steps off the row's visible target, never
-into it) — while `↑`/`↓` are the row axis, walking the reviewer rows *inside* the selected card (main card
-→ rows, clamped at both ends; they never move between cards, and do nothing from an empty selection).
-`Return` / `i` act on whichever row or card is focused.
+**Peek — select a root to reveal its subordinates as inline rows.** When a root (or any descendant) is
+selected, the card expands its `peekRows` inside its own frame, replacing the L4 summary: **lineage
+children first, then attached reviewers**, each a five-zone row — a status **dot** (the child's own phase)
+· **title** · **note/desc** (dim, truncates first) · **action slot** (a compact diffstat) · **chip slot**
+(a stage-tinted column chip — plan/impl/review — for a lineage child; the **eye** for an attached
+reviewer, which has no workflow column). Selecting a child that itself has subordinates expands them one
+level deeper (indented); the reveal follows the selection's ancestry, so a deep grandchild's whole path
+opens. Clicking a row selects that card, opening its inspector/terminal; the row stays visible while
+selected, so Esc out of its terminal lands back on the row rather than into the void.
 
-Three **fail-safes** guarantee a card is never stranded. If **no live target is derivable** (the parent
-was archived, no dir matches), the card is not attached and renders exactly as today. While a **`/`
-search** is active, a reviewer stays a subcard — it is never promoted to a standalone column/dock card —
-and a **match is surfaced in place**: its target auto-expands to reveal the matching row (highlighted;
-non-matching rows dim like non-matching cards), and the match joins the `n`/`N` cycle, so selecting it
-reveals its target and lands on the row. And **read-write cards are never embedded**, whatever their
-lineage. The iPhone companion consumes the same shared derivation and `expandedRows` seam but owns its
-own presentation: it embeds attached agents too (`IOSBoardModel` overrides `isEmbedded`), and reveals
-them **tap-driven** rather than on selection — the `👁 N` indicator on a target's board card gains a
-chevron and toggles the accordion, expanding the reviewers as rows inside the card's own frame. It has
-to differ here because on the phone `selectedId` drives full-screen navigation (tapping a card *pushes*
-its detail), so the desktop's selection-reveal would fire exactly when the board is off-screen. Tapping
-a target's card body still opens its detail (unchanged); tapping a revealed row opens that agent's
-detail; and the card-detail header carries the same `👁 N` toggle + inline list. There is no `/` search
-on the phone board, so no search fail-safe is needed there.
+**Drill — enter a root to re-scope the board to its subtree.** A **breadcrumb** (`‹ All projects /
+<root>`, each ancestor a click to re-scope) and a **banner** sit above the columns; the banner is the
+root's own status pill + identity + note/desc + ref + its **own** live-children segment bar (no subtree
+rollup — the descendants are the board below and report their own state) + an **open agent ↗** action
+(the root left the columns to become the banner, so this reaches its terminal). The columns now hold the
+root's direct children; drilling is recursive for deeper subtrees, and drag-drop plus the freeform dock
+work within scope unchanged (both already read `visibleTasks`). The scope re-resolves by the root's
+`(repo, branch)` after every board change, so it survives the root card being succeeded (planning card →
+orchestrator) and clears to the top level when the branch loses its owner.
 
-Going back **up** the lineage, the phone's card-detail header carries a tappable **parent chip**
-(`⤴ <parent title>`) that pushes the parent's detail. It is generic across card kinds rather than
-reviewer-specific — one rule, `attachedTarget ?? parentCard`, resolves an embedded reviewer to the card
-it reviews (including the branchless borrowed case, which has no `parentBranch`) and any ordinary
-stacked child card to its lineage parent — and it self-hides on a root card. It is the *only* way up
-from an embedded reviewer, whose board-cell parent chip never renders precisely because an embedded
-card is never drawn as a board cell. Both it and the attached rows are `NavigationLink`s rather than
-selection writes, because the phone presents card details from two different stacks (the Board tab off
-`selectedId`, the Needs You tab off its own route), and a selection write is a dead tap in the latter.
+**Keyboard is three-level.** `j`/`k` are the card axis — card-to-card, treating an expanded card and its
+rows as one unit (a selection on a row steps off the row's visible root). `↑`/`↓` are the row axis, walking
+the peek rows inside the selected card. `→`/`←` are the **scope axis**: `→` drills into the selected root's
+subtree (no-op unless it has a lineage child), `←` pops out one level; all four arrows are board-context
+only, so a focused terminal keeps them for the pty. `Return`/`i` act on whichever row or card is focused.
+
+**Fail-safes.** A card with no derivable links renders as an ordinary citizen. During a `/` **search** an
+embedded card is never promoted to a standalone card; instead the match surfaces **in place** — its root
+auto-reveals the path to it (over the full subtree, so deep matches are found), the hit joins the `n`/`N`
+cycle ordered right after its root, and non-matches dim. The iPhone companion consumes the same shared
+derivation and `expandedRows` seam but owns its presentation (tap-driven reveal, a parent chip
+`attachedTarget ?? parentCard` for up-navigation); its roots/peek/drill are a later slice, so it still
+renders the attached-agents accordion as shipped.
 
 ## Cards
 
@@ -138,13 +143,15 @@ selection writes, because the phone presents card details from two different sta
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
   It is a watermark at rest and lights up when the pointer is anywhere on the card. The context
   truncates before the ref gives up any room.
-- **L4 — the subtree line.** When a card has [attached agents](#attached-agents) and isn't expanded,
-  a divider and the **attached-agents summary**: an eye glyph with a labelled count (`👁 2
-  attached`), **green** when every attached agent is running or still starting up, **amber** when
-  any is waiting on the human or has died. It's a glance-only indicator; selecting the card replaces
-  it with the attached agents themselves as inline rows (see [Attached agents](#attached-agents)),
-  which is how they're reached. The inspector does not repeat this badge; its terminal-header eye
-  opens a fresh read-only inspect shell instead.
+- **L4 — the subtree line.** When a card has subordinates and isn't expanded, a divider and a summary
+  of everything below it: **stage-coloured segments** (one square per live lineage child, coloured by
+  its column — planning purple, implementing blue, in-review teal — so the bar reads left-to-right as
+  progression; merged-green and dashed not-started slots appear once the daemon's child-progress
+  counters land) followed by the **attached-agents eye** (`👁 N`, green when every attached agent is
+  running/starting, amber when one waits on the human or died; labelled "N attached" when it's alone
+  on the line). The right side is reserved for the descendants-only attention chip (a later slice).
+  Selecting the card (see [Hierarchy](#hierarchy-roots-peek-and-drill)) replaces this whole summary
+  with the subordinates as inline peek rows, which is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
   don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row
@@ -362,8 +369,9 @@ the inode alive for its open descriptors.
 ![Keyboard navigation: selection movement, link-hints, search, and the command palette](images/keyboard.gif)
 
 The board is **fully keyboard-navigable** with a vim-flavored scheme built for a vim user — bare-key
-selection (`hjkl` card-to-card, and `↑`/`↓` to step into a selected card's [attached-agent
-rows](#attached-agents)), spatial pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f`
+selection (`hjkl` card-to-card, `↑`/`↓` to step into a selected card's [peek
+rows](#hierarchy-roots-peek-and-drill), and `→`/`←` to drill into / out of a root's subtree), spatial
+pane focus, `g`-go-to sequences, single-key verbs, `/` search, `f`
 link-hints, a `:` command palette, and standard `⌘` accelerators — designed so it never fights the live
 agent terminals the inspector embeds. Everything below flows from resolving one tension — the inspector embeds live SwiftTerm
 terminals, so vim's `hjkl` collide head-on with terminal input, where every keystroke must reach the
@@ -417,6 +425,8 @@ The shipped bindings:
 | Keys | Action |
 |---|---|
 | `h` `j` `k` `l` | Move the **selection** within the focused pane (columns ↔, cards ↕) — which opens the inspector for that card and auto-scrolls the column to keep it centered (a `ScrollViewReader` in `BoardView`) |
+| `↑` / `↓` | Walk the **peek rows** inside the selected card (its subordinates); clamped at both ends, never crossing cards |
+| `→` / `←` | **Drill** into the selected root's subtree / pop out one scope level (the scope axis; board context only, so a terminal keeps the arrows) |
 | `g g` / `G` | First / last card in the column |
 | `⌃o` / `⌃i` | Previous / next visited card (browser-style history); works from the board or a terminal and preserves that mode |
 | `Enter` | Move keyboard focus **into** the inspector (the selection already opened it) |
