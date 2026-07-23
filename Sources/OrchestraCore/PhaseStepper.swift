@@ -120,8 +120,8 @@ func landing(of flavor: LaunchFlavor) -> RunState {
 /// (never-prompted) card lands `.waiting` with no positional.
 func deriveLaunchFlavor(_ card: Task, _ adapter: any Adapter) -> LaunchFlavor {
     if transcriptExists(card, adapter) { return .resume(seed: card.pendingSeed) }
-    let land: RunState = card.titleProvisional ? .waiting(.humanTurn) : .running
-    let prompt: String? = card.titleProvisional ? nil : (card.initialPrompt.isEmpty ? nil : card.initialPrompt)
+    let land: RunState = card.awaitingFirstPrompt ? .waiting(.humanTurn) : .running
+    let prompt: String? = card.awaitingFirstPrompt ? nil : (card.initialPrompt.isEmpty ? nil : card.initialPrompt)
     return .blank(landing: land, prompt: prompt)
 }
 
@@ -266,7 +266,7 @@ public struct RelaunchStepper: PhaseStepper {
         let flavor: LaunchFlavor
         if transcriptExists(fresh, adapter) {
             flavor = .resume(seed: batch?.payload)
-        } else if fresh.titleProvisional {
+        } else if fresh.awaitingFirstPrompt {
             if let payload = batch?.payload, !payload.isEmpty {
                 flavor = .blank(landing: .running, prompt: payload)   // a prompt IS submitted → running
             } else {

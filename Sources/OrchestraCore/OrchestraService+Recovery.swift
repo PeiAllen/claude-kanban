@@ -159,7 +159,7 @@ extension OrchestraService {
     }
 
     /// Start a NEW blank session for a (dead or live) card in the SAME worktree. Fresh id, no prompt
-    /// re-handed; status → waiting, titleProvisional → true. Never touches worktree contents.
+    /// re-handed; status → waiting, awaitingFirstPrompt → true. Never touches worktree contents.
     ///
     /// INTENT-ONLY (PR4b Task 4): `transition(→ .relaunching, mutate:)` carries the real persist block
     /// (fresh id, rolled prior ids, provisional, cleared dead/desc) atomically with the phase write, then
@@ -190,7 +190,7 @@ extension OrchestraService {
         _ = await transition(id, to: .relaunching, mutate: {
             $0.agentSessionId = freshId
             $0.priorSessionIds = prior
-            $0.titleProvisional = true
+            $0.awaitingFirstPrompt = true
             $0.deadReason = nil
             $0.deadDetail = nil
             $0.deadResource = nil
@@ -250,7 +250,7 @@ extension OrchestraService {
                 $0.archived = false
                 $0.agentSessionId = freshId
                 $0.priorSessionIds = prior
-                $0.titleProvisional = true
+                $0.awaitingFirstPrompt = true
                 $0.desc = ""
                 $0.deadReason = nil
                 $0.deadDetail = nil
@@ -434,7 +434,37 @@ extension OrchestraService {
            let spec = spawnRelaunch[id],
            let adapter = try? registry.get(spec.adapterId) {
             spawnAttempts[id] = attempt + 1
-            try? adapter.prepareToLaunch(spec.ctx)
+            // Re-name the stored context from the LIVE card: a `set-title` between the aborted launch and
+            // this retry must reach the agent, and the same value has to arm the session-name mirror or the
+            // retried session's first report reads as a rename. Every other field is deliberately reused —
+            // the retry is the SAME launch, into the same session id and cwd.
+            var ctx = spec.ctx
+            ctx.name = live.title          // the freshly re-read card, not the reconcile-tick snapshot `t`
+            // Arm the session-name mirror with what this retry is about to push, for the same reason
+            // `bringUp` pre-arms: a `set-title` landing between the `ensure` below and the retried
+            // session's first statusline would otherwise see the pushed name differ from both the
+            // baseline and the new title, read as a rename, and clobber it.
+            if !live.title.isEmpty {
+                _ = try? await store.update(id) { t in
+                    // Guarded INSIDE the closure, like `bringUp`'s sibling: `store.update` suspends,
+                    // and a restart that won the race has already armed the baseline with ITS title —
+                    // overwriting that with ours re-opens the clobber this arming exists to prevent.
+                    guard t.sessionEpoch == live.sessionEpoch else { return }
+                    t.lastSessionName = live.title
+                }
+            }
+            // …and that store hop is a SUSPENSION POINT inside the window the race guard above was written
+            // to cover (this function is deliberately built around having exactly one). Re-assert the guard
+            // so the destructive kill+ensure below still runs on a card that is ours: a restart landing in
+            // the new window would otherwise be overwritten by a retry re-`ensure`ing the OLD argv (old
+            // `--session-id`) under a generation that no longer exists.
+            guard spawnPending[id] != nil, let stillOurs = await store.get(id),
+                  !stillOurs.archived, !stillOurs.phase.isTerminal,
+                  stillOurs.sessionEpoch == live.sessionEpoch else {
+                clearSpawnPending(id)
+                return
+            }
+            try? adapter.prepareToLaunch(ctx)
             // Stamp the card's generation, exactly as `finishLaunch` does. An UNSTAMPED retry session is a
             // session the epoch machinery cannot see: `stampedEpoch` reads nil for it, so adopt and
             // `reconcilePhasesAtBoot` can never epoch-match it (the next daemon boot tears a perfectly
@@ -442,7 +472,7 @@ extension OrchestraService {
             // report with `observedEpoch == nil`, which skips the funnel's generation fence entirely — a
             // stale report from it can then land `.live` on a card a newer relaunch already owns.
             let env = withEpoch(adapter.env, live.sessionEpoch)
-            let argv = adapter.start(spec.ctx)
+            let argv = adapter.start(ctx)
             let launchTask = t
             do {
                 try await offActor { [sessions] in
@@ -451,8 +481,8 @@ extension OrchestraService {
                     try? sessions.setRemainOnExit(name, window: "agent", on: true)
                 }
                 spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
-                emitActivity(.recovered, t, .daemon,
-                             "restarted “\(t.title)” after a startup abort (retry \(attempt + 1))")
+                emitActivity(.recovered, stillOurs, .daemon,
+                             "restarted “\(stillOurs.title)” after a startup abort (retry \(attempt + 1))")
                 return
             } catch {
                 clearSpawnPending(id)

@@ -17,8 +17,9 @@ struct OrchestraServiceTests {
             SpawnInput(id: UUID(), prompt: "Add OAuth login flow\nwith refresh", repo: repo, branch: "feat", startIn: .plan),
             source: .app)
 
-        #expect(task.title == "Add OAuth login flow")     // first line seeds the title
-        #expect(task.titleProvisional == false)
+        #expect(task.title == "feat")                     // a worktree card is named by its BRANCH…
+        #expect(task.titleSource == .branch)              // …even when a human typed a prompt
+        #expect(task.awaitingFirstPrompt == false)
         #expect(task.desc == "")
         #expect(task.initialPrompt == "Add OAuth login flow\nwith refresh")
         #expect(task.column == .plan)
@@ -126,7 +127,7 @@ struct OrchestraServiceTests {
         let repo = TestEnv.repo(env.base)
 
         let blank = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "   ", repo: repo, branch: "feat-x"))
-        #expect(blank.titleProvisional == true)
+        #expect(blank.awaitingFirstPrompt == true)
         #expect(blank.title == "feat-x")       // branch-name placeholder
         #expect(blank.waitReason != nil)       // idle, awaiting the first user prompt
         // No junk prompt is handed to the launch (a whitespace prompt must not be submitted).
@@ -138,7 +139,7 @@ struct OrchestraServiceTests {
         // A real prompt still spawns running + non-provisional.
         let real = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "Do the thing", repo: repo, branch: "feat-y"))
         #expect(real.phaseDisplay == .running)
-        #expect(real.titleProvisional == false)
+        #expect(real.awaitingFirstPrompt == false)
     }
 
     @Test("exec runs in the worktree and returns output without throwing on non-zero exit")

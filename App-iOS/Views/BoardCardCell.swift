@@ -35,8 +35,9 @@ struct BoardCardCell: View {
                 .foregroundStyle(theme.text)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-            if !task.desc.isEmpty {
-                Text(task.desc)
+            // `note ?? desc` — the authored line wins over the volatile status blurb (Task.cardLine).
+            if !task.cardLine.isEmpty {
+                Text(task.cardLine)
                     .font(.subheadline)
                     .foregroundStyle(task.waitReason != nil ? theme.amber.text : theme.text2)
                     .lineLimit(2)

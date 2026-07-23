@@ -34,8 +34,45 @@ struct CommandsTests {
         ])
         let result = try await spawn.run(env.svc, params, .mcp)
         let task = try result.decode(Task.self)
-        #expect(task.title == "Do the thing")
+        #expect(task.title == "feat")            // a worktree card is named by its branch
         #expect(task.ref().hasPrefix("orchestra://task/"))
+    }
+
+    /// `spawn`'s explicit title, through the REGISTRY — the layer that parses the param.
+    @Test("spawn's explicit title pins the card name")
+    func spawnExplicitTitle() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let spawn = try #require(CommandRegistry().command("spawn"))
+        let result = try await spawn.run(env.svc, .object([
+            "id": .string(UUID().uuidString),
+            "prompt": .string("Do the thing"),
+            "title": .string("  Reviewer A  "),
+            "repo": .string(repo),
+            "branch": .string("feat"),
+        ]), .mcp)
+        let task = try result.decode(Task.self)
+        #expect(task.title == "Reviewer A")      // normalized, and it outranks the branch
+        #expect(task.titleSource == .explicit)
+    }
+
+    /// `batch-spawn` rebuilds each `SpawnInput` BY HAND, so a field the loop forgets is advertised on the
+    /// wire and silently dropped. `svc.batchSpawn` only forwards already-built inputs — this has to run
+    /// through the registry to catch that.
+    @Test("batch-spawn carries each item's explicit title")
+    func batchSpawnPerItemTitle() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let batch = try #require(CommandRegistry().command("batch-spawn"))
+        let result = try await batch.run(env.svc, .object(["tasks": .array([
+            .object(["id": .string(UUID().uuidString), "prompt": .string("one"),
+                     "title": .string("Card One"), "repo": .string(repo), "branch": .string("feat-1")]),
+            .object(["id": .string(UUID().uuidString), "prompt": .string("two"),
+                     "repo": .string(repo), "branch": .string("feat-2")]),
+        ])]), .mcp)
+        let spawned = try result.decode(BatchSpawnResult.self).spawned
+        #expect(spawned.first { $0.branch == "feat-1" }?.title == "Card One")
+        #expect(spawned.first { $0.branch == "feat-2" }?.title == "feat-2")   // unnamed → its branch
     }
 
     @Test("move/status/exec dispatch by ref")

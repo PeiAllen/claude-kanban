@@ -27,14 +27,31 @@
 # and A/B against a mock WITHOUT the element under test, so overflow is attributable. This is how
 # the inspector diffstat was caught clipping the close button at 392 after passing these shots.
 #
-# Usage: scripts/orch-ui-shot.sh [--no-build] [outdir]
+# Usage: scripts/orch-ui-shot.sh [--no-build] [--only <glob>] [outdir]
+#   --no-build     reuse the last build — pass it whenever no app source changed since the last run
+#   --only <glob>  shoot only the shots whose name matches (a shell glob, quoted):
+#                      scripts/orch-ui-shot.sh --no-build --only '1[1-9]-*'
+#                      scripts/orch-ui-shot.sh --only '*-tree-*'
 #   default outdir: ./.scratch/ui-shots
+#
+# USE `--only`. Every shot is a full launch/screenshot/kill of the app, because the mock state is
+# injected at process start — so the whole list is ~19 app windows flashing up and dying, once per
+# pass. Re-verifying one change against the two or three shots it touches costs a few seconds and
+# nothing visible; re-running the list costs a couple of minutes of the human's screen blinking. Shoot
+# the subset your change can affect.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/lib/wm-float.sh"
 
 BUILD=1
-[[ "${1:-}" == "--no-build" ]] && { BUILD=0; shift; }
+ONLY=""
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --no-build) BUILD=0; shift ;;
+    --only)     ONLY="${2:-}"; shift 2 ;;
+    *)          echo "error: unknown option '$1'" >&2; exit 1 ;;
+  esac
+done
 OUT="${1:-./.scratch/ui-shots}"
 mkdir -p "$OUT"
 
@@ -98,6 +115,8 @@ SWIFT
 
 shoot() { # name  env VAR=VAL…  [-- binary args…]
   local name="$1"; shift
+  # Unquoted on the right of `!=` so it is matched as a GLOB, not compared as a literal.
+  [[ -n "$ONLY" && "$name" != $ONLY ]] && return 0
   # Everything before `--` launches the process (the `env VAR=VAL` prefix); everything after it is
   # passed to the binary, i.e. the NSUserDefaults argument domain — see the isolation note above.
   local launch=() args=() seen=0 a

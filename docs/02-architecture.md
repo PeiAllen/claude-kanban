@@ -431,12 +431,18 @@ Two robustness rules matter:
 - **Monotonic seq guard.** Every snapshot report carries a sequence number; the daemon drops or
   coalesces stale ones so a slow `ctxPct` can't land after a fresher value.
 - **Field-delta writes, not whole-object replace.** `report()`'s persisted write goes through
-  `Task.applyReportFields(from:)`, which overlays only the telemetry fields `report()` owns (session
-  ids, `desc`, title/titleProvisional, `ctxPct`, model) onto the task currently in the store. Run-state
-  and dead metadata are *not* overlaid here — they flow through the `transition()` funnel / `markDead`
-  (Stage 2), which is why `status`/`waitReason` no longer appear in this list. Every other field —
-  anything a concurrent RPC (e.g. a rename, a move) touched in between — is left alone, so `report()`
-  can never clobber a change it doesn't own.
+  `Task.applyReportFields(from:changedFrom:)`, which overlays only the telemetry fields `report()` owns
+  (session ids, `desc`, `title`/`titleSource`/`lastSessionName`/`awaitingFirstPrompt`, `ctxPct`, model)
+  onto the task currently in the store. That list is a **whitelist**: a field report() mutates but does
+  not name here is silently discarded on the way to disk, so every new report-owned field must be added
+  to it. Run-state and dead metadata are *not* overlaid here — they flow through the `transition()`
+  funnel / `markDead` (Stage 2), which is why `status`/`waitReason` no longer appear in this list.
+  Being on the list is **not** enough to be written, though: `report()` reads the card, suspends, and
+  writes back, so the overlay applies a field only when the report actually *changed* it
+  (`changedFrom` is the snapshot it started from). Without that second test, an owned field with a
+  second writer — `set-title` renaming a card, a `restart` re-arming `awaitingFirstPrompt` — would be
+  restored to the stale value report happened to read, silently and with no self-heal. So every other
+  field, and every unchanged owned field, is left exactly as a concurrent RPC left it.
 
 Polling (`tmux capture-pane`) exists only as a *fallback* when the push channel is silent.
 

@@ -26,7 +26,9 @@ orchestra spawn --prompt "Audit the auth flow" --cwd ~/Documents/Projects/api --
 orchestra spawn --prompt "Prototype a CSV parser" --scratch
 
 # fork: a new card seeded with the parent's slice (PR D3)
-orchestra spawn --prompt "Explore the caching angle" --repo ~/Documents/Projects/api --branch feat/cache --seed "context from the parent card…"
+orchestra spawn --prompt "Explore the caching angle" --repo ~/Documents/Projects/api --branch feat/cache --title "Cache probe" --seed "context from the parent card…"
+
+orchestra set-title 9f76e0 "Cache probe — write path"   # rename a card (its session name follows at next launch)
 
 orchestra list                       # all cards
 orchestra list --col review          # one column

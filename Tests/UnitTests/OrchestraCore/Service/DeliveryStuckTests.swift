@@ -23,7 +23,7 @@ struct DeliveryStuckTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: branch))
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
-        _ = try await env.svc.store.update(card.id) { $0.titleProvisional = false }
+        _ = try await env.svc.store.update(card.id) { $0.awaitingFirstPrompt = false }
         await env.svc.reconcile()   // graduate (no message yet ⇒ no charge)
         return card
     }

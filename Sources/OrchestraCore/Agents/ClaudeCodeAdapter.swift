@@ -231,8 +231,8 @@ public struct ClaudeCodeAdapter: Adapter {
         cardFile!.path(token: CardFileSpec.cwdHash(cwd))
     }
 
-    /// In the plan column we hand `--permission-mode auto` so planning workflows (e.g. `/layered-plan`)
-    /// can actually read/write design docs while the user steers; impl just starts normally.
+    /// In the plan column we hand `--permission-mode auto` so a planning workflow can actually
+    /// read/write design docs while the user steers; impl just starts normally.
     private func startInFlags(_ startIn: StartIn?) -> [String] {
         guard let s = startIn else { return [] }
         return s == .plan ? ["--permission-mode", "auto"] : []

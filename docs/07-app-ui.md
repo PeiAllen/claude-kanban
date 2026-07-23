@@ -143,8 +143,10 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
 `SpawnSheet` is the modal that creates a card. It has **three modes** (a chip toggle): **Worktree**,
 **Freeform**, **Scratch**.
 
-- **Initial prompt** — an optional multiline field; if non-empty it becomes the card title, otherwise
-  the card spawns nameless and the first prompt names it.
+- **Initial prompt** — an optional multiline field. It no longer names the card: a worktree card is
+  titled by its **branch**, a read-only freeform card by its target (`👁 <target>`), and only a freeform
+  card with no target falls back to the prompt's first line (then to its directory). Rename any card with
+  `set-title` — see [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot).
 - **Worktree mode** — a **repository** combo box (fuzzy-searchable, populated by scanning `reposRoot`
   for `.git` dirs, ordered by newest local commit so the repo list matches the branch list's recency —
   `RepoScanner.orderByMostRecentCommit`, the one discovery seam both the macOS sheet and the iOS picker
@@ -213,8 +215,9 @@ badge in the pinned header's chip row, beside the mode and model chips, in the b
 ordering. That row degrades the same way — a big stat next to a long model name would otherwise wrap the
 mode chip onto two lines and push the context gauge's percentage off the trailing edge — so the chip
 sheds its file count first and hides last, leaving its neighbours intact.
-**Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
-`~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
+
+**Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
+`~/.claude/open-obsidian-vault.sh` recipe, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
 plumbing. It seeds one tab per note: the gitignored `notes/` vault (plans + designs, scanned off disk,
 since git can't see ignored files) plus any other markdown the branch changed (docs, specs), capped so a

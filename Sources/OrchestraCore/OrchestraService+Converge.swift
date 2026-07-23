@@ -214,6 +214,23 @@ extension OrchestraService {
             try? await offActor { try? a.prepareToLaunch(c) }
             argv = resumeArgv
         }
+        // PRE-ARM THE SESSION-NAME MIRROR with the `--name` this argv just captured. It has to happen HERE,
+        // before the session can exist: `ensure` returns the moment tmux has the session, so the new agent
+        // can emit its first statusline before any later write lands — and if a `set-title` arrived while
+        // this launch was in flight (it changes neither phase nor epoch), that first report would compare the
+        // LAUNCHED name against a stale baseline and the NEW title, look exactly like a rename, and overwrite
+        // the name the human just set. Arming first makes the new generation's opening report provably an
+        // echo. The predecessor cannot exploit the early write: report()'s mirror admits only
+        // current-generation reports, and the outgoing session reports under the old epoch.
+        // Guarded on the epoch we are launching, because `store.update` suspends: a newer relaunch that won
+        // the race owns the baseline, and ours would be stale.
+        if !task.title.isEmpty,
+           let (named, namedRev) = try? await store.update(id, { t in
+               guard t.sessionEpoch == expectedEpoch else { return }   // superseded under us — drop the write
+               t.lastSessionName = task.title
+           }) {
+            emit(.taskUpserted(named), rev: namedRev)
+        }
         // RE-VERIFY OWNERSHIP IMMEDIATELY BEFORE THE DESTRUCTIVE HOP. The entry fence is a check, not a
         // lease: everything above suspends the actor (trust resolve, `prepareToLaunch`, the resume transcript
         // stat), and the launch-timeout `markDead` runs OUTSIDE the `bringingUp` gate — deliberately, since

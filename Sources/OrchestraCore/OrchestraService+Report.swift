@@ -34,6 +34,25 @@ extension OrchestraService {
         // (and the fences stand a stale one down anyway), so a report must be free to move it again.
         let beingBorn = task.phase.kind == .launching || task.phase.kind == .relaunching
         let bringUpOwnsLanding = beingBorn && inFlightSteps.contains(id)
+        // A report we cannot attribute to the CURRENT generation of a still-being-born card. Not the same
+        // test as `bringUpOwnsLanding`: that one needs the stepper to have already CLAIMED the card, and
+        // `restart` bumps the epoch and returns long before that claim exists. In that gap the outgoing
+        // session is still alive and still reporting, so its hooks — including a delayed prompt, and
+        // including a pre-epoch session's UNSTAMPED ones — could otherwise land the incoming generation
+        // `.live` (no stepper ever visits a `.live` card, so the relaunch is silently dropped and the old
+        // session keeps running) or clear `awaitingFirstPrompt` out from under it. Fail-CLOSED, unlike the
+        // rest of report(): a report that cannot prove its generation may not move a card that is being born.
+        let staleGeneration = beingBorn && observedEpoch != task.sessionEpoch
+        // …and a report that is PROVABLY from another generation — stamped, and stamped with a different
+        // epoch — is stale no matter what phase the card is in. The two terms are separate because they
+        // fence different things and neither subsumes the other: `staleGeneration` alone would admit the
+        // outgoing session's stamped prompt once the relaunch has already landed `.live` (the card is no
+        // longer being born, so it clears `awaitingFirstPrompt` on a generation that was never prompted and
+        // re-titles from the DEAD session's prompt), while this term alone would admit an unstamped report
+        // onto a card mid-restart. An UNSTAMPED report on a live card stays admitted — that is the whole
+        // pre-epoch-session compatibility case.
+        let provablyOtherGeneration = observedEpoch != nil && observedEpoch != task.sessionEpoch
+        let attributable = !staleGeneration && !provablyOtherGeneration
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
@@ -77,12 +96,23 @@ extension OrchestraService {
             // SessionStart source semantics.
             if let src = ev.sessionSource {
                 switch src {
+                // The PHASE writes below carry the same fence as the prompt path: a SessionStart from the
+                // session a restart is replacing would otherwise land the incoming generation `.live` — no
+                // stepper visits a `.live` card, so the relaunch is dropped and the old session keeps
+                // running. Only the phase writes are fenced: `resolveReadiness` must still fire for an
+                // unstamped resume, and the `desc`/`awaitingFirstPrompt` writes are harmless either way.
+                // Nothing legitimate is blocked — an incoming session's SessionStart is epoch-stamped (and
+                // `bringUpOwnsLanding` anyway), and a genuine `/clear` arrives on a `.live` card.
                 case "clear":
-                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
+                        task.phase = .live(.waiting(.humanTurn))
+                    }
                     task.desc = ""
-                    task.titleProvisional = true
+                    task.awaitingFirstPrompt = true
                 case "resume":
-                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
+                        task.phase = .live(.waiting(.humanTurn))
+                    }
                     task.desc = ""
                     resolveReadiness(id, true, observedEpoch: observedEpoch)   // confirm a pending RELAUNCH's inline readiness wait (epoch-fenced)
                 case "startup":
@@ -99,11 +129,21 @@ extension OrchestraService {
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
                 resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
-                if task.titleProvisional {
-                    task.title = titleSeed(from: prompt)
-                    task.titleProvisional = false
+                // Both writes below are generation-fenced (see `staleGeneration`): a delayed prompt from the
+                // session a `restart` is replacing must neither clear the incoming generation's
+                // `awaitingFirstPrompt` — the RelaunchStepper would then find neither a transcript nor
+                // permission to blank-launch, and strand the card `.resumeFailed` — nor land it `.live`,
+                // which drops the relaunch entirely and leaves the old session running. A card that is NOT
+                // being born is unaffected, so an ordinary prompt still re-titles and still lands `.running`.
+                if task.awaitingFirstPrompt, attributable {
+                    task.awaitingFirstPrompt = false     // lifecycle: this session has now been prompted
+                    // Naming: only a card whose title came FROM a prompt may be re-titled by one. A branch,
+                    // a 👁 target, or an explicit name all outrank the prompt cutoff that used to win here.
+                    if task.titleSource == .prompt { task.title = titleSeed(from: prompt) }
                 }
-                if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.running) }
+                if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
+                    task.phase = .live(.running)
+                }
             }
             // (`ev.transcriptPath` is carried for completeness but not persisted — the path is
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
@@ -173,12 +213,30 @@ extension OrchestraService {
                         modelOverrideWatch[id] = (watch.requested, watch.left, watch.strikes + 1)
                     }
                 }
-                // session_name (a /rename mirror): apply only a *genuine* change, so a statusline
-                // echoing the `--name` we launched with never prematurely clears `titleProvisional`
-                // (which restart/clear set precisely so the next user prompt re-titles the card).
-                if let name = snap.sessionName, !name.isEmpty, name != task.title {
-                    task.title = name
-                    task.titleProvisional = false
+                // session_name (a /rename mirror) — DELTA-based and generation-fenced.
+                //
+                // Delta, not `name != task.title`: nothing can rename a LIVE Claude session from outside, so
+                // it keeps echoing the `--name` it launched with forever. Comparing against the TITLE meant
+                // that after a `set-title` every subsequent statusline tick looked like a rename back to the
+                // old name — silently undoing it. Comparing against the last name we SAW makes an echo inert
+                // and a genuine `/rename` a one-time event. `lastSessionName` is pre-armed at launch with the
+                // name we pushed, so even the new session's very first report is provably an echo; a nil
+                // baseline (a pre-upgrade card) records without adopting, and heals at the next relaunch.
+                //
+                // Fenced, because `restart` bumps the epoch while the outgoing session stays alive and
+                // reporting: its statusline still carries the OLD name and would otherwise read as a rename
+                // on the incoming generation. Every hook echoes `ORCH_EPOCH` from its session env, so the
+                // predecessor is identifiable. A pre-epoch session reports nil and its mirror stays inert
+                // until it next relaunches — the fail-safe direction, and self-healing.
+                if let name = snap.sessionName, !name.isEmpty, name != task.lastSessionName,
+                   observedEpoch == task.sessionEpoch {
+                    if task.lastSessionName != nil, name != task.title {
+                        // Normalized like every other write to `title`: this value is a session name we did
+                        // not author, it PINS as `.explicit`, and it becomes the next launch's `--name` argv.
+                        task.title = CardNaming.normalize(name)
+                        task.titleSource = .explicit   // a human's in-session rename PINS, exactly like set-title
+                    }
+                    task.lastSessionName = name
                 }
                 // The agent's observed run-state maps onto a `.live(_)` phase — UNLESS doing so would rip a
                 // card with an OUTSTANDING LAUNCH INTENT out of its being-born phase on the word of a report
@@ -205,8 +263,9 @@ extension OrchestraService {
                 // card `.live` before the stepper ever claims its seed, stranding the delivery. Dropping the
                 // `owesLaunch` term makes the invariant complete: the stepper (or the adopt path) lands a
                 // being-born card; a non-current-generation report never does.
-                let mayLandBringUp = !(beingBorn && observedEpoch != task.sessionEpoch)
-                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
+                // The SAME predicate the event half applies (hoisted to `staleGeneration` above), so the two
+                // halves cannot drift apart on what counts as an attributable report.
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
                     task.phase = .live(run)
                 }
             }
@@ -229,7 +288,9 @@ extension OrchestraService {
         if task != before {
             // Telemetry-origin: bump rev + memory + emit SYNCHRONOUSLY, but COALESCE the tasks.json write
             // (bug #13). The phase write via `transition()` below stays IMMEDIATE and force-flushes this.
-            let (saved, rev) = try await store.update(id, debounceFlush: true) { $0.applyReportFields(from: task) }
+            let (saved, rev) = try await store.update(id, debounceFlush: true) {
+                $0.applyReportFields(from: task, changedFrom: before)
+            }
             emit(.taskUpserted(saved), rev: rev)
             didChange = true
         }

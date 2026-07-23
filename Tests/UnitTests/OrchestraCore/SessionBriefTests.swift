@@ -27,6 +27,36 @@ struct SessionBriefTests {
         #expect(!rw.lowercased().contains("read-only"))
     }
 
+    /// Every card starts with a DERIVED name, and no agent can rename its own live session — so the brief
+    /// has to point at `set-title`, in every variant. Worded per origin: only a worktree card is named
+    /// after a branch, so the freeform/scratch branch must not claim that.
+    @Test("every variant points at set-title, and only worktree cards mention the branch")
+    func namingNudge() {
+        for origin in [CardOrigin.worktree, .borrowed, .scratch] {
+            for access in [CardAccess.readWrite, .readOnly] {
+                let s = SessionBrief.sentence(column: .impl, access: access, shortId: "abc123", origin: origin)
+                #expect(s.contains("set-title abc123"), "missing the rename hint for \(origin)/\(access)")
+                if origin != .worktree {
+                    #expect(!s.contains("named after its branch"), "branch framing leaked into \(origin)")
+                }
+            }
+        }
+    }
+
+    /// The brief is re-injected at EVERY SessionStart, so nudging a card whose name was deliberately chosen
+    /// would repeatedly invite the agent to overwrite its parent's (or the human's) choice.
+    @Test("a pinned title suppresses the nudge, in every variant")
+    func pinnedTitleSuppressesTheNudge() {
+        for origin in [CardOrigin.worktree, .borrowed, .scratch] {
+            let s = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123",
+                                          origin: origin, titlePinned: true)
+            #expect(!s.contains("set-title"), "the rename nudge survived a pinned title for \(origin)")
+            #expect(!s.contains("name it for the work"))
+            // The rest of the orientation is untouched.
+            #expect(s.contains("abc123"))
+        }
+    }
+
     // MARK: freeform (non-worktree) cards — no lifecycle column, no self-move hint
 
     @Test("freeform cards get no column framing and no move hint")
