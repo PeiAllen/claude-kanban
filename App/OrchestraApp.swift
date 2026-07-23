@@ -709,7 +709,8 @@ private struct DebugLaunchHook: ViewModifier {
             mk("live-wake-delivery", "feat/live-wake", .impl, .live(.running), 0,
                note: "Wave 2/4 — lease/claim delivery",
                diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9),
-               tree: TreeStat(state: .stale, behind: 3), ageMinutes: 12),
+               tree: TreeStat(state: .stale, behind: 3, mergedChildren: 4, plannedChildren: 10),
+               ageMinutes: 12),
             // Desc only (the volatile blurb), no note — and a long title that has to wrap.
             mk("fix/the-startup-abort-misclassification-that-marks-cards-dead", "fix/startup-abort",
                .impl, .live(.running), 1, desc: "Reproducing the <1s exit path under a fake clock",

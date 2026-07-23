@@ -10,12 +10,11 @@ public enum SegStyle: Equatable {
     case todo
 }
 
-/// The pure segment model for a card's subtree bar. Deliberately takes the merged/planned counts as
-/// OPTIONAL parameters rather than reading `TreeStat`: those fields do not exist on this branch yet (the
-/// sibling daemon card owns them), so naming them would not compile. The `SubtreeSegments` view passes
-/// `nil` today — the designed DEGRADED MODE: the bar shows one slot per LIVE lineage child, coloured by
-/// its column, and grows as children spawn. When the counters land, the view passes them through and the
-/// same function prepends green merged slots and pads dashed planned slots — no other change needed.
+/// The pure segment model for a card's subtree bar. Takes the merged/planned counts as OPTIONAL
+/// parameters (the `SubtreeSegments` view maps `TreeStat.mergedChildren`/`plannedChildren`, treating 0 as
+/// "unset" → nil): a non-nil `merged` prepends that many green slots, a non-nil `planned` pads dashed
+/// slots up to the planned total. `nil` counters ⇒ one slot per LIVE lineage child, the bar growing as
+/// children spawn. Kept pure and parameterized so the slot math is unit-tested without a `TreeStat`.
 public enum StageSegment {
     /// Rank a column along the workflow so the bar reads left-to-right as progression.
     private static func rank(_ c: Column) -> Int {

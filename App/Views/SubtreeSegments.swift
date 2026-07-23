@@ -8,10 +8,10 @@ import OrchestraKit
 /// by the attached-agents eye. The right side is intentionally left empty: the descendants-only attention
 /// chip lands there in slice 3b.
 ///
-/// Merged (green) and not-started (dashed) slots require the daemon's `mergedChildren`/`plannedChildren`
-/// counters, which don't exist on this branch — so `SubtreeSegments` passes `nil` and renders the LIVE
-/// children only (the bar grows as children spawn). When the counters land, feed them to
-/// `StageSegment.segments` and the same view draws green + dashed slots with no structural change.
+/// Merged (green) and not-started (dashed) slots come from the daemon's `mergedChildren`/`plannedChildren`
+/// counters on `TreeStat`: a positive `mergedChildren` prepends that many green slots, a positive
+/// `plannedChildren` pads dashed placeholders up to the planned total. When neither is set (both 0) the
+/// bar falls back to the live-children-only mode and simply grows as children spawn.
 struct SubtreeSegments: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
@@ -22,7 +22,13 @@ struct SubtreeSegments: View {
     }
 
     var body: some View {
-        let styles = StageSegment.segments(liveChildren: liveChildren)   // counters nil → live-only (degraded)
+        // The daemon's child-progress counters (merged/planned) now exist on TreeStat: merged prepends
+        // green slots, a set plannedChildren pads dashed placeholders. 0 means "unset" → nil, so the bar
+        // falls back to the live-children-only mode (grows as children spawn) rather than padding to 0.
+        let ts = root.treeStat
+        let merged = (ts?.mergedChildren).flatMap { $0 > 0 ? $0 : nil }
+        let planned = (ts?.plannedChildren).flatMap { $0 > 0 ? $0 : nil }
+        let styles = StageSegment.segments(liveChildren: liveChildren, merged: merged, planned: planned)
         HStack(spacing: 8) {
             if !styles.isEmpty {
                 HStack(spacing: 2) {
