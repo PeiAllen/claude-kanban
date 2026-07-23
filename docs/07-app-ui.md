@@ -84,8 +84,12 @@ selected, so Esc out of its terminal lands back on the row rather than into the 
 **Drill — enter a root to re-scope the board to its subtree.** A **breadcrumb** (`‹ All projects /
 <root>`, each ancestor a click to re-scope) and a **banner** sit above the columns; the banner is the
 root's own status pill + identity + note/desc + ref + its **own** live-children segment bar (no subtree
-rollup — the descendants are the board below and report their own state) + an **open agent ↗** action
-(the root left the columns to become the banner, so this reaches its terminal). The columns now hold the
+rollup — the descendants are the board below and report their own state). The banner **is** the root card
+laid flat: clicking the box selects the root and opens its agent (the same select-and-open a column card's
+click runs — the root left the columns to become the banner, so this is how you reach it), and while that
+selection is on the root the box wears the **accent border** a selected card wears, so "you're looking at
+the parent" reads at a glance. Its hosted reviewer rows sit below the box and keep their own clicks. The
+columns now hold the
 root's direct children; drilling is recursive for deeper subtrees, and drag-drop plus the freeform dock
 work within scope unchanged (both already read `visibleTasks`). The scope re-resolves by the root's
 `(repo, branch)` after every board change, so it survives the root card being succeeded (planning card →

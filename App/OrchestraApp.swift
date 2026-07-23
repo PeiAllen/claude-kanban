@@ -799,6 +799,8 @@ private struct DebugLaunchHook: ViewModifier {
         case "expanded": model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
         case "peek":     model.selectedId = liveWake                       // reveal the root's peek rows
         case "drill":    if let id = liveWake { model.drillInto(id) }      // scope the board to its subtree
+        case "drill-selected":                                            // drilled AND the banner is the open card
+            if let id = liveWake { model.drillInto(id); model.selectedId = id }
         default:         break
         }
     }
