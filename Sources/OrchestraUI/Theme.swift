@@ -101,6 +101,13 @@ public struct Theme: Sendable {
                                 : SemColor(dot: Color(hex: 0xFF3B30), text: Color(hex: 0xC9302C), tint: Color(r: 255, g: 59, b: 48, a: 0.12)) }
     public var blue: SemColor   { dark ? SemColor(dot: Color(hex: 0x0A84FF), text: Color(hex: 0x79B6FF), tint: Color(r: 10, g: 132, b: 255, a: 0.20))
                                 : SemColor(dot: Color(hex: 0x007AFF), text: Color(hex: 0x0061CC), tint: Color(r: 0, g: 122, b: 255, a: 0.12)) }
+    // Workflow-STAGE hues (slice 2b): the subtree segments and peek column chips read planning=purple,
+    // implementing=blue, in-review=teal — teal (not amber) for review so saturated amber keeps its one
+    // meaning (needs you). Merged is `green`; not-started is a dashed outline (no fill).
+    public var purple: SemColor { dark ? SemColor(dot: Color(hex: 0xB48EE8), text: Color(hex: 0xC7ADEF), tint: Color(r: 180, g: 142, b: 232, a: 0.18))
+                                : SemColor(dot: Color(hex: 0x9A6FD8), text: Color(hex: 0x6E3FB0), tint: Color(r: 154, g: 111, b: 216, a: 0.14)) }
+    public var teal: SemColor   { dark ? SemColor(dot: Color(hex: 0x56C5B8), text: Color(hex: 0x7FD4CA), tint: Color(r: 86, g: 197, b: 184, a: 0.18))
+                                : SemColor(dot: Color(hex: 0x2FA497), text: Color(hex: 0x1E7268), tint: Color(r: 47, g: 164, b: 151, a: 0.14)) }
 
     // Card drop shadow
     public var shadowCard: Color { dark ? Color(r: 0, g: 0, b: 0, a: 0.34) : Color(r: 20, g: 20, b: 40, a: 0.06) }
@@ -144,6 +151,17 @@ extension Theme {
     /// Typed convenience over the string form — delegates to `PhaseDisplayKey.label`, the ONE place
     /// `phaseDisplay → label` text lives (shared by the GUI, the CLI, and `DisplayState.label`).
     public func statusLabel(_ key: PhaseDisplayKey) -> String { key.label }
+
+    /// The workflow-STAGE hue for a card's column (slice 2b): planning=purple, implementing=blue,
+    /// in-review=teal. The ONE place `column → stage color` lives, shared by the L4 subtree segments and
+    /// the peek-row column chips so a stage always reads the same colour wherever it appears.
+    public func stageColor(_ column: Column) -> SemColor {
+        switch column {
+        case .plan:   return purple
+        case .impl:   return blue
+        case .review: return teal
+        }
+    }
 }
 
 // MARK: - Fonts

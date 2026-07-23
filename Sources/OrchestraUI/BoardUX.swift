@@ -84,20 +84,68 @@ public final class BoardUX: BoardStore {
         selectedId = BoardNavigator.end(visibleTasks, selected: cardLevelAnchor(selectedId), first: first)
     }
 
-    /// Desktop reveal gate: a target expands its rows when it (or one of its rows) is selected, OR when a
-    /// `/` search is active and one of its rows matches — so a matching reviewer surfaces in place rather
-    /// than as a standalone card. Both the render and the `↑`/`↓` walk read this, so they never disagree.
+    /// Desktop reveal gate (slice 2b): a root expands its subordinate rows when it (or one of its
+    /// descendants) is selected — `revealsPeek`, generic over lineage children AND attached reviewers,
+    /// not attached-only — OR when a `/` search is active and a descendant matches (so the match surfaces
+    /// in place). Both the render and the `↑`/`↓` walk read this, so they never disagree.
     override func showsInlineRows(_ target: Task) -> Bool {
-        revealsAttached(target) || revealsSearchMatchRow(target)
+        revealsPeek(target) || revealsSearchMatchRow(target)
     }
 
     /// The `↑`/`↓` walk sequence — a SINGLE group, never crossing cards: the anchor card followed by
-    /// its own revealed rows. `expandedRows` carries the `showsInlineRows` gate, so a card with no
-    /// revealed rows yields a 1-element list ⇒ arrows clamp/no-op. Empty when nothing is selected.
+    /// its own revealed peek rows (lineage children + attached reviewers, flattened). `expandedRows`
+    /// carries the `showsInlineRows` gate, so a card with no revealed rows yields a 1-element list ⇒
+    /// arrows clamp/no-op. Empty when nothing is selected.
     func groupSequence() -> [UUID] {
         guard let anchorId = cardLevelAnchor(selectedId),
               let anchor = tasks.first(where: { $0.id == anchorId }) else { return [] }
         return [anchorId] + expandedRows(for: anchor).map(\.id)
+    }
+
+    // MARK: peek rows (slice 2b) — the generalized inline-row reveal
+
+    /// The ids on the path from the current selection up to its forest root (the selection plus its
+    /// hierarchy ancestors), cycle-safe — the `insert(_).inserted` guard also breaks a malformed cycle.
+    /// A subtree in the peek list expands exactly when its node is in this set.
+    private func selectionAncestry() -> Set<UUID> {
+        guard let sel = selectedId, var cur = tasks.first(where: { $0.id == sel }) else { return [] }
+        var set: Set<UUID> = [cur.id]
+        while let p = hierarchyParent(of: cur), set.insert(p.id).inserted { cur = p }
+        return set
+    }
+
+    /// `target`'s peek rows should be revealed: it has subordinates AND it is on the selection's ancestry
+    /// (itself selected, or an ancestor of the selected card — including a selected attached reviewer or a
+    /// selected deep descendant). Generic replacement for the attached-only `revealsAttached`.
+    public func revealsPeek(_ target: Task) -> Bool {
+        guard !subordinates(of: target).isEmpty else { return false }
+        return selectionAncestry().contains(target.id)
+    }
+
+    /// The subordinate rows to render inside `target`, each with an indent DEPTH. Direct children at
+    /// depth 0; a child expands its OWN subordinates one level deeper iff it is on the selection path (or,
+    /// under `/` search, on the path to a match). A stable pre-order flatten, cycle-safe — so
+    /// `groupSequence`/`moveRow` walk the list and the depth only drives indentation.
+    public func peekRows(of target: Task) -> [(task: Task, depth: Int)] {
+        guard showsInlineRows(target) else { return [] }
+        let expand = selectionAncestry().union(searchExpansionAncestry())
+        var rows: [(task: Task, depth: Int)] = []
+        var visited: Set<UUID> = [target.id]
+        func add(_ node: Task, _ depth: Int) {
+            for child in subordinates(of: node) where visited.insert(child.id).inserted {
+                rows.append((task: child, depth: depth))
+                if expand.contains(child.id) { add(child, depth + 1) }
+            }
+        }
+        add(target, 0)
+        return rows
+    }
+
+    /// Desktop replaces the base attached-only `expandedRows` with the full subordinate set (lineage +
+    /// attached), so `groupSequence` and any `[Task]` consumer walk the whole peek group. iOS keeps the
+    /// base (attached-only) — it has no scope/peek yet (slice 5).
+    override public func expandedRows(for target: Task) -> [Task] {
+        peekRows(of: target).map(\.task)
     }
 
     /// `↑`/`↓` — walk within the selected card's attached-row group only (never between cards; that
@@ -291,8 +339,11 @@ public final class BoardUX: BoardStore {
         var ids: [UUID] = []
         for card in orderedVisibleCards {
             if matchesSearch(card, query: q) { ids.append(card.id) }
-            for agent in attachedAgents(of: card) where matchesSearch(agent, query: q) {
-                ids.append(agent.id)                       // embedded reviewer hit, surfaced under its root
+            // Any DESCENDANT (embedded lineage child or attached reviewer, at any depth) matching the
+            // query surfaces under its visible root — a deep grandchild match is reachable via n/N and
+            // its ancestor path auto-expands (`searchExpansionAncestry`).
+            for d in descendants(of: card) where matchesSearch(d, query: q) {
+                ids.append(d.id)
             }
         }
         return ids
@@ -323,11 +374,25 @@ public final class BoardUX: BoardStore {
         return lineageParent(of: task)?.id != drillScope             // 3
     }
 
-    /// A `/` search is active and one of `target`'s attached rows matches it — the target then reveals
-    /// those rows (so the hit shows in place) and stays undimmed. Pure over task fields.
+    /// A `/` search is active and some DESCENDANT of `target` (any depth) matches it — the target then
+    /// reveals the path to the hit (so it shows in place) and stays undimmed. Pure over task fields.
     public func revealsSearchMatchRow(_ target: Task) -> Bool {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return false }
-        return attachedAgents(of: target).contains { matchesSearch($0, query: q) }
+        return descendants(of: target).contains { matchesSearch($0, query: q) }
+    }
+
+    /// Under `/` search, the ancestor ids of every matching card — so a deep match's path auto-expands in
+    /// `peekRows` (the root reveals, and each intermediate node expands down to the match). Empty when no
+    /// search is active. Cycle-safe.
+    private func searchExpansionAncestry() -> Set<UUID> {
+        guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
+        var set: Set<UUID> = []
+        for t in tasks where !t.archived && matchesSearch(t, query: q) {
+            var cur = t
+            guard set.insert(cur.id).inserted else { continue }
+            while let p = hierarchyParent(of: cur), set.insert(p.id).inserted { cur = p }
+        }
+        return set
     }
     /// A search filter is active (a non-empty committed query).
     public var searchActive: Bool {

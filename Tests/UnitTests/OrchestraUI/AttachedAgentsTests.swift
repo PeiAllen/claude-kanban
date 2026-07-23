@@ -455,4 +455,80 @@ import Foundation
         #expect(m.cardLevelAnchor(r1.id) == c.id)            // both climb to the visible root
         #expect(m.cardLevelAnchor(r2.id) == c.id)
     }
+
+    // MARK: peek rows — generalized reveal over lineage children (slice 2b)
+
+    @Test func rootWithOnlyReadWriteChildRevealsOnSelection() {
+        // The MAJOR fix: the old reveal only recognised attached agents, so a root whose only subordinate
+        // is a read-write lineage child stayed collapsed. Now selecting it reveals the child as a peek row.
+        let m = BoardModel(platform: .noop)
+        let root = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-pr", access: .readWrite, parentBranch: "feat/x", column: .plan)
+        m.tasks = [root, child]
+        #expect(!m.revealsPeek(root))                        // nothing selected → collapsed
+        m.selectedId = root.id
+        #expect(m.revealsPeek(root))
+        #expect(m.peekRows(of: root).map(\.task.id) == [child.id])
+        #expect(m.peekRows(of: root).first?.depth == 0)
+    }
+
+    @Test func peekExpandsSelectedChildOneLevelDeeper() {
+        // Selecting a grandchild expands the path to it: the child row (depth 0) followed by the
+        // grandchild (depth 1) — the "reveals them one level down when selected" recursion.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let grand = worktree("03", branch: "feat/x-g", parentBranch: "feat/x-c", column: .review)
+        m.tasks = [root, child, grand]
+        m.selectedId = grand.id
+        let rows = m.peekRows(of: root)
+        #expect(rows.map(\.task.id) == [child.id, grand.id])
+        #expect(rows.map(\.depth) == [0, 1])
+    }
+
+    @Test func groupSequenceWalksPeekRows() {
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let rev   = worktree("05", branch: "review/x", access: .readOnly, parentBranch: "feat/x", column: .impl)
+        m.tasks = [root, child, rev]
+        m.selectedId = root.id
+        #expect(m.groupSequence() == [root.id, child.id, rev.id])   // anchor + lineage-then-attached rows
+    }
+
+    @Test func selectedChildStaysOnVisibleRow() {
+        // Esc-out-of-terminal-lands-on-row: an embedded child, once selected, remains a revealed row and
+        // the card-axis anchor is its visible root, so `j`/`k` step off the root, not into the void.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        m.tasks = [root, child]
+        m.selectedId = child.id
+        #expect(m.peekRows(of: root).map(\.task.id).contains(child.id))   // row still drawn
+        #expect(m.cardLevelAnchor(child.id) == root.id)                  // card-axis anchor is the root
+    }
+
+    // MARK: search reveals subordinates in place (slice 2b, Task 5)
+
+    @Test func searchMatchOnDeepGrandchildRevealsAncestorPath() {
+        // R → C → G, no selection. Searching G's title surfaces G (not just C) and auto-expands the path.
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x-c", parentBranch: "feat/x", column: .impl)
+        let grand = worktree("03", branch: "feat/x-g", parentBranch: "feat/x-c", column: .review)
+        m.tasks = [root, child, grand]
+        m.searchQuery = "card-03"                            // matches ONLY the grandchild
+        #expect(m.searchMatchIds.contains(grand.id))         // deep match reachable via n/N
+        #expect(m.revealsSearchMatchRow(root))               // root reveals the path
+        #expect(m.peekRows(of: root).map(\.task.id) == [child.id, grand.id])   // path expanded to the match
+    }
+
+    @Test func searchMatchIdsOrderChildAfterRoot() {
+        let m = BoardModel(platform: .noop)
+        let root  = worktree("01", branch: "match-root", column: .impl)
+        let child = worktree("02", branch: "match-child", parentBranch: "match-root", column: .impl)
+        m.tasks = [root, child]
+        m.searchQuery = "match-"                             // matches both branch names
+        #expect(m.searchMatchIds == [root.id, child.id])     // child ordered right after its root
+    }
 }
