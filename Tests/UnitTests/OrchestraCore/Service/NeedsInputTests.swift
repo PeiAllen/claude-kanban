@@ -152,6 +152,25 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.pendingQuestion == nil)                   // a genuine new turn → cleared
     }
 
+    /// A fileTail `.running` with no evidence timestamp (`seq == 0` — a rollout line whose timestamp was
+    /// absent/unparseable) cannot prove the turn-start is fresh, so it must KEEP the question rather than
+    /// fall through to an unconditional clear that silently disables the fence for that line. (Claude's
+    /// seq-less `.running` still clears — it is hooksPush, not lag-prone.)
+    @Test("a fileTail turn-start with no evidence timestamp keeps the question")
+    func fileTailUnstampedTurnStartKeeps() async throws {
+        let env = TestEnv.make(capabilities: .fileTailStub)
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "which base?")
+        // seq defaults to 0 → no evidence time on a lag-prone agent → unprovable → keep.
+        try await env.svc.report(t.id, StatusReport(run: .running), observedEpoch: epoch)
+
+        #expect(await card(env.svc, t.id)?.pendingQuestion?.text == "which base?")
+        #expect(await card(env.svc, t.id)?.phase == Phase.live(.running))   // phase still advanced
+    }
+
     // MARK: - what DOES clear it
 
     @Test("the next turn starting clears it")

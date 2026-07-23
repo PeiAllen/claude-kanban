@@ -160,11 +160,12 @@ extension OrchestraService {
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
         }
 
-        // The `needs-input` turn-start fence: when a report is a fileTail agent's turn-start `.running`,
-        // capture the ROLLOUT LINE'S OWN write time (its `seq`, stamped in epoch µs by `CodexAdapter`).
-        // That is the clock a declaration's `declaredAt` is compared against below — a line written before
-        // a declaration must not retire it, however late the poll delivers it. nil for a hooksPush agent
-        // (Claude has no polling lag, so its turn-start clears unconditionally) and for a seq-less hook.
+        // The `needs-input` turn-start fence. A LAG-PRONE agent (fileTail: its turn-start is a rollout line
+        // the daemon POLLS, so a line written before a declaration can be applied after it) must prove a
+        // turn-start is fresh before it may retire a question; a hooksPush agent (Claude, synchronous, no
+        // lag) never needs to. `turnStartEvidenceAt` is the rollout line's OWN write time (its `seq`,
+        // stamped in epoch µs by `CodexAdapter`), the clock `declaredAt` is compared against below.
+        let lagProneAgent = (try? registry.get(task.agentId))?.capabilities.telemetry == .fileTail
         var turnStartEvidenceAt: Date? = nil
 
         // --- Snapshot half (seq-gated as a unit) ---
@@ -173,8 +174,7 @@ extension OrchestraService {
         // apply. The cursor is monotonic — it never moves backward.
         if let snap = patch.snapshot {
             let lastSeq = lastSeqStore[id] ?? 0
-            if snap.run == .running, snap.seq > 0,
-               (try? registry.get(task.agentId))?.capabilities.telemetry == .fileTail {
+            if snap.run == .running, snap.seq > 0, lagProneAgent {
                 turnStartEvidenceAt = Date(timeIntervalSince1970: Double(snap.seq) / 1_000_000)
             }
             // Permission-fence for fileTail agents (Codex): a `PermissionRequest` hook arrives as a
@@ -357,11 +357,19 @@ extension OrchestraService {
             // The next turn STARTING retires a declared question — the waiting→running edge, which only
             // `report()` produces (steppers land from bring-up phases; those are the session-replacement
             // clear inside `transition`). Permission→running is excluded: an approval resumes the SAME
-            // turn, so `from` must be the genuine idle wait. Fenced on the evidence clock: a fileTail
-            // turn-start whose line predates the declaration is a stale late poll, not a new turn, so it
-            // must not clear. hooksPush agents carry no evidence time and clear unconditionally (no lag).
+            // turn, so `from` must be the genuine idle wait.
+            //
+            // The clear rule, by whether the agent's turn-start can arrive late:
+            //   · hooksPush (Claude): no lag → clear unconditionally.
+            //   · fileTail (Codex) WITH an evidence time: clear only if the line was written AFTER the
+            //     declaration (a line predating it is a stale late poll, not a new turn).
+            //   · fileTail WITHOUT an evidence time (a rollout line whose timestamp was absent/unparseable,
+            //     so `seq == 0`): freshness is UNPROVABLE → keep. Codex always stamps in practice, so this
+            //     is defensive — but "retire only on proof" means an unprovable turn-start must not clear,
+            //     rather than silently disabling the fence for that line.
             let isTurnStart = targetPhase == .live(.running) && before.phase == .live(.waiting(.humanTurn))
             let evidenceAt = turnStartEvidenceAt
+            let lagProne = lagProneAgent
             let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
                 t.deadReason = targetDeadReason
                 t.deadDetail = targetDeadDetail
@@ -370,7 +378,7 @@ extension OrchestraService {
                     if let landingAdapter { consumeModelReseat(&t, landingAdapter) }
                 }
                 if isTurnStart, let pq = t.pendingQuestion,
-                   evidenceAt.map({ $0 > pq.declaredAt }) ?? true {
+                   evidenceAt.map({ $0 > pq.declaredAt }) ?? !lagProne {
                     t.pendingQuestion = nil
                 }
             }
