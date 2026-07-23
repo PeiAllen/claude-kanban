@@ -1431,9 +1431,10 @@ The app side adds the **Agent | Diff** toggle to the [inspector header](07-app-u
 read-only diff + "Open in Zed"), and the diffstat (`Nf +N −M`, green/red) in two places: the
 [card footer](07-app-ui.md#cards), replacing the model name when a stat exists, and the
 [inspector header](07-app-ui.md#the-inspector) beside the Agent|Diff toggle, where it costs no vertical
-space. That header has no horizontal slack at the default 392pt width, so it degrades in stages
-(captions → icons, then the diffstat's file count, then the diffstat) instead of clipping. Editing stays Zed's job (an explicit non-goal), and **inline
-review comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
+space. The branch tree's compact lineage badge stays beside the branch in the terminal header. That shared
+header has no horizontal slack at the default 392pt width, so it degrades in stages (captions → icons →
+diffstat) instead of clipping. Editing stays Zed's job (an explicit non-goal), and **inline review
+comments/approvals remain [axis 5](10-roadmap.md)**. The two new `Task` fields are recorded in
 [chapter 3](03-data-model.md#the-task-card).
 
 Landing after the forest is **reopen — un-finishing a Done card**

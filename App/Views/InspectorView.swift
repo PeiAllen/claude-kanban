@@ -78,10 +78,11 @@ private struct HeaderBar: View {
     var body: some View {
         // Over-subscribed at the shipped 392pt width: spelled out in full it overflows and clips the
         // close button. So it degrades — captions drop to icons (each button keeps a tooltip with the
-        // words), which is the only thing left to give now that the diffstat lives one row down.
+        // words), then the diffstat yields at the 320pt drag minimum rather than clipping controls.
         ViewThatFits(in: .horizontal) {
-            row(compact: false)
-            row(compact: true)
+            row(compact: false, showStat: true)
+            row(compact: true, showStat: true)
+            row(compact: true, showStat: false)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -91,7 +92,7 @@ private struct HeaderBar: View {
         }
     }
 
-    @ViewBuilder private func row(compact: Bool) -> some View {
+    @ViewBuilder private func row(compact: Bool, showStat: Bool) -> some View {
         // Compact tightens the gaps as well as the buttons — a few points either way decides the rung.
         HStack(spacing: compact ? 4 : 6) {
             // Agent terminal vs the read-only in-app diff (axis 7).
@@ -104,16 +105,13 @@ private struct HeaderBar: View {
             .fixedSize()
             .help(diffTabHelp)
 
-            // Branch-sync state, in THIS row rather than the terminal header below, because this row is
-            // the one both tabs share — a stale base is what you want to know while reading the diff,
-            // and the terminal header unmounts with the Agent tab. Chipped because a loose glyph
-            // between filled controls reads as debris.
-            if let tree = task.treeStat, TreeBadge.renders(tree) {
-                TreeBadge(stat: tree, parentBranch: task.parentBranch)
+            // The change-size readout belongs beside the tab that opens those changes. It stays outside
+            // the segmented control so its semantic green/red survives AppKit's segment tint.
+            if showStat, let stat = task.diffStat, stat.filesChanged > 0 {
+                DiffStatNumbers(stat: stat, showFiles: !compact)
+                    .lineLimit(1)
                     .fixedSize()
-                    .padding(.horizontal, compact ? 6 : 9)
-                    .frame(height: 29)
-                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.chip))
+                    .help(diffTabHelp)
             }
 
             Button {
@@ -493,27 +491,16 @@ private struct TerminalHeader: View {
         }
     }
     private var repoName: String { (task.repo as NSString).lastPathComponent }
-    /// The baseline the daemon measured `diffStat` against — parent-relative for a stacked card, else
-    /// branch-relative. Named in the hover text because the Diff pane's own picker can be switched to
-    /// Working, at which point the body legitimately disagrees with these numbers.
-    private var baseline: DiffBase { task.parentBranch != nil ? .parent : .branch }
-
     var body: some View {
-        // Taking the diffstat in cost this row its slack — at 392 it overflowed, truncating everything
-        // to stubs and wrapping the status pill onto two lines. So it degrades, most redundant thing
-        // first: the repo chip goes at 392 (the breadcrumb below still spells out the whole path), then
-        // the file count, then the numbers at the 320pt minimum.
+        // The diffstat lives in the shared Agent|Diff header. This row only needs the compact branch-sync
+        // badge, so it first yields the redundant repo chip when a long name would crowd the status pill.
         ViewThatFits(in: .horizontal) {
-            row(repo: true, stat: .full)
-            row(repo: false, stat: .full)
-            row(repo: false, stat: .compact)
-            row(repo: false, stat: .hidden)
+            row(repo: true)
+            row(repo: false)
         }
     }
 
-    private enum StatSize { case full, compact, hidden }
-
-    @ViewBuilder private func row(repo: Bool, stat: StatSize) -> some View {
+    @ViewBuilder private func row(repo: Bool) -> some View {
         HStack(spacing: 7) {
             HStack(spacing: 5) {
                 Circle().fill(modelColor).frame(width: 6, height: 6)
@@ -546,15 +533,10 @@ private struct TerminalHeader: View {
                     .truncationMode(.middle)
                     .help(task.branch)
 
-                // Beside the branch it measures, not up in the action row: that row is all controls, so
-                // the numbers fought the buttons for space and lost at narrow widths. The Diff tab
-                // doesn't lose them — its body IS the diff, with per-file `+N −M` pills.
-                if stat != .hidden, let s = task.diffStat, s.filesChanged > 0 {
-                    DiffStatNumbers(stat: s, showFiles: stat == .full)
-                        .lineLimit(1)
+                // Keep the lineage state with the branch it describes rather than beside the Diff tab.
+                if let tree = task.treeStat, TreeBadge.renders(tree) {
+                    TreeBadge(stat: tree, parentBranch: task.parentBranch)
                         .fixedSize()
-                        .help(diffStatHelp(s)
-                              + " — measured against \(diffBaselineLabel(baseline, parentBranch: task.parentBranch))")
                 }
             } else {
                 // Freeform (borrowed/scratch) card: no repo/branch — show the borrowed dir instead.

@@ -193,16 +193,16 @@ shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=ter
 shoot "9-takeover-placeholder"       env ORCH_SHOW=takeover
 shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 
-# Tree state (`ORCH_TREE=stale|restack|merge-requested|stalled|in-sync`) in the shared inspector
-# header. `stalled` is the one worth looking at — the warning has to win over the live `stale`
-# underneath it — and `in-sync` is here because it must render NOTHING. 13 checks the badge surviving
-# the swap to the Diff tab; 14/15 pin the width, since every other shot renders at whatever width the
-# human last dragged this app to (see the preferences note at the top) and so can't show which
-# `ViewThatFits` rung real users get.
+# Tree state (`ORCH_TREE=stale|restack|merge-requested|stalled|in-sync`) belongs beside the branch in
+# the Agent terminal header. `stalled` is the one worth looking at — the warning has to win over the
+# live `stale` underneath it — and `in-sync` is here because it must render NOTHING. 13 checks the
+# diffstat beside the Agent|Diff selector on the Diff tab; 14/15 pin the width, since every other shot
+# renders at whatever width the human last dragged this app to (see the preferences note at the top) and
+# so can't show which `ViewThatFits` rung real users get.
 shoot "11-tree-stale"        env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3
 shoot "12-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
-shoot "13-tree-diff-tab"     env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
-shoot "14-tree-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
-shoot "15-tree-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
+shoot "13-diffstat-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INSPECTOR=diff
+shoot "14-swap-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
+shoot "15-swap-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

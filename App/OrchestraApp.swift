@@ -260,7 +260,7 @@ private struct DebugLaunchHook: ViewModifier {
     /// to open: 0 leaves the "New terminal" button showing, ≥1 swaps in the tab ribbon. The agent /
     /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
     /// `ORCH_TREE` (stale | restack | merge-requested | stalled | in-sync) gives the mock a lineage
-    /// state so the `TreeBadge` on the card footer and in the inspector header has something to render;
+    /// state so the `TreeBadge` on the card footer and beside the branch in the terminal header renders;
     /// `ORCH_BEHIND` sets the `↓N` count. Sizes that live in preferences — the shell-panel height, the
     /// inspector width — are NOT set here: the harness passes them as `-shellPanelHeight`/
     /// `-inspectorWidth` launch arguments, because a `UserDefaults` write from this hook persists into
@@ -324,8 +324,8 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
-        // A branch diffstat the daemon would have computed, so the card footer and the inspector
-        // header both have something to render (they share the `k files · +N −M` formatting).
+        // A branch diffstat the daemon would have computed, so the card footer and the shared
+        // Agent|Diff header both have something to render (they share the `k files · +N −M` formatting).
         mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
         // A lineage state so `TreeBadge` has something to render. `stalled` deliberately keeps a live
         // `stale` underneath, since the flag is supposed to outrank the state. Unknown values abort
@@ -347,7 +347,7 @@ private struct DebugLaunchHook: ViewModifier {
         model.tasks = [mock]
         model.selectedId = mock.id
         // ORCH_INSPECTOR=diff opens the Diff pane instead of the agent terminal — the shared header
-        // (diffstat, tree badge) has to read the same from either tab.
+        // keeps the diffstat visible there, while the tree badge stays with the Agent tab's branch.
         if env["ORCH_INSPECTOR"] == "diff" { model.inspectorMode = .diff }
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
         model.onboarded = true
