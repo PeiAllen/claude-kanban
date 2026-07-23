@@ -72,28 +72,22 @@ public actor OrchestraService {
     let lineage: BranchLineage
     /// The isolated remote-parent tier (BT6): hardened `fetch`/`lsRemoteTip` for remote bases + watch.
     let remoteParents: RemoteParents
-    /// Per-card remote watch loops, cancellation-keyed (the `diffStatDebounce` state pattern). A watched
-    /// remote-parent card polls its PR/branch tip and runs the merge-detection ladder.
-    var remoteWatch: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    /// Per-card watch generation — bumped on every start/stop so a cancelled loop's terminal cleanup can't
-    /// null out a newer loop installed by a restart (see `startRemoteWatch`).
-    var remoteWatchGen: [UUID: Int] = [:]
+    // MARK: - Per-card runtime state (CardRuntime)
+
+    /// ALL card-lifetime in-memory state, one entry per non-archived card — see `CardRuntime`. Created
+    /// only by `ensureRuntime(for:)` (gated on `!archived`), detached wholesale by `detachCardRuntime`
+    /// at teardown. Everything that was a per-card `[UUID: X]` on this actor lives inside the entry;
+    /// the deliberate exceptions are `inFlightSteps`/`stepAttempts` (reconciler driving state) and
+    /// `watchRegistry` (persisted relational state).
+    var runtime: [UUID: CardRuntime] = [:]
+    /// Process-monotonic token mint for the arming fences (`CardRuntime.Armed`). Never reused, never
+    /// reset — uniqueness across archive→reopen within one process is the fence guarantee.
+    var runtimeTokenSeq: UInt64 = 0
+
     /// Injectable poll cadence — short values in tests avoid real 60s/300s sleeps. (active, idle).
     var remoteWatchIntervals: (active: Duration, idle: Duration) = (.seconds(60), .seconds(300))
     /// The `gh` boundary (FakeGh in tests). Default: the real capability-probing client.
     var gh: any GhClient = GhProbe()
-    /// S3-1: per-card once-latch for the persistent remote-parent warnings (gone / PR-closed-unmerged),
-    /// so a condition that is true every idle tick surfaces ONCE, not every 5 minutes. Cleared when the
-    /// tip moves (condition may have changed) or the card is re-parented / leaves the remote tier.
-    var remoteWarnLatch: Set<UUID> = []
-    /// O2: per-child re-nudge loops for a pending `merge-request` (keyed on the child card). Re-asks the
-    /// parent card on a timer until the child leaves the `mergeRequested` state.
-    var mergeRequestNudge: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    /// Per-child generation token for the re-nudge loop, exactly like `remoteWatchGen`: a re-arm bumps it,
-    /// so a loop cancelled mid-tick can neither nudge nor evict the loop that replaced it. Without this a
-    /// superseded loop's terminal cleanup nulls the LIVE task's slot, orphaning it (uncancellable, invisible
-    /// to `mergeRequestNudgeActive`) and letting two loops double-nudge the same parent.
-    var mergeRequestNudgeGen: [UUID: Int] = [:]
     /// Injectable re-nudge cadence — short in tests to avoid a real 5-min sleep. The BASE of the geometric
     /// backoff (`nudgeDelay`), not a fixed interval.
     var mergeRequestNudgeInterval: Duration = .seconds(300)
@@ -118,13 +112,8 @@ public actor OrchestraService {
     /// Durable backing for `watchRegistry`. Reloaded at boot (`reloadWatchRegistry`), written through on
     /// every mutation. Injected in tests so each temp dir gets its own file.
     let watchStore: WatchRegistryStore
-    /// Watchers with a live CLI `orchestra wait` process. A native-reinvoke card only defers wake to
-    /// wait-exit when this is present; MCP/tool watches register interest without a CLI process.
-    var activeWaitProcesses: [UUID: Int] = [:]
-    /// Consecutive auto-injects per card since the last genuine user prompt — the F3 loop guard.
-    /// `stop_hook_active` is informational on both agents, so Orchestra enforces the cap itself.
-    var injectCounts: [UUID: Int] = [:]
-    /// Break a runaway Stop→inject→Stop loop after this many consecutive auto-injects (reset by a real prompt).
+    /// Break a runaway Stop→inject→Stop loop after this many consecutive auto-injects (reset by a real
+    /// prompt). The per-card count lives in `CardRuntime.injectCount`.
     public let maxConsecutiveInjects = 25
 
     // MARK: - Delivery tracking (declared here with `confirmDelivery`, the first reference — first-reference
@@ -133,24 +122,9 @@ public actor OrchestraService {
 
     /// Per-card delivery retry accounting for the arm (B4): attempts charged + when the next is eligible
     /// (backoff). Reset to nil ONLY on a confirmed delivery (`deliveryConfirmed`) and by `send` (B5a).
+    /// Lives in `CardRuntime.deliveryAttempt`; the outstanding-token shadow and the ref-counted re-arm
+    /// fence (see `CardRuntime.reArming` for the rationale) live there too.
     struct DeliveryAttempt: Sendable { var count: Int = 0; var nextEligible: Date = .distantPast }
-    var deliveryAttempts: [UUID: DeliveryAttempt] = [:]
-    /// Per-card set of delivery tokens dispatched but not yet confirmed. The arm (B4) charges expiry
-    /// exactly once per token by intersecting this with the inbox's live leases; `confirmDelivery` removes
-    /// a token once it is no longer in flight (confirmed OR released).
-    var outstandingTokens: [UUID: Set<UUID>] = [:]
-    /// Cards whose editor-driven stuck re-arm (`reArmIfStuck`) is IN FLIGHT — a mutual-exclusion fence the
-    /// stuck flip consults. The re-arm clears `deliveryStuckSince` (a suspending TaskStore hop) and only
-    /// THEN zeros `deliveryAttempts`; during that gap the durable flag is nil while the budget is still
-    /// spent, so a concurrent `flipStuckIfExhausted` would re-stamp stuck and wedge the card (nil-flag +
-    /// attempts-0 the arm never re-drives). Holding the card here across BOTH mutations makes the flip
-    /// no-op for the whole window; once it lifts, attempts are already 0 so no flip fires anyway.
-    ///
-    /// REFERENCE-COUNTED, not a bare set: two overlapping editor ops on the SAME card (a rapid
-    /// remove+edit) both re-arm it, and a plain `Set` would let the second op's `defer` remove the shared
-    /// member — lifting the fence while the first op is still between its clear and its budget reset. The
-    /// count holds the fence up until the LAST in-flight re-arm exits.
-    var reArmingCards: [UUID: Int] = [:]
 
     // Event fan-out.
     private var subscribers: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
@@ -167,57 +141,15 @@ public actor OrchestraService {
         let running: Bool
         let observedAt: Date
     }
-    /// Reconcile-tick-maintained cache of each non-archived card's session state, keyed by card id.
-    /// Populated every tick (`reconcile()`), evicted on teardown and on any user-driven shell op
-    /// (`openShell`/`closeShell`/`inspect`) so a stale entry never masks a real change.
-    var observedSessions: [UUID: ObservedSession] = [:]
     // Ephemeral, daemon-authoritative agent-terminal ownership (UI coordination — never persisted).
+    // Teardown clears a card's owners via `clearOwner` (epoch-preserving tombstone) in the detach.
     var terminalOwnership = TerminalOwnershipStore()
-    // Last owner event BROADCAST per card, compared owner-visible-fields-only so a 10s heartbeat that
-    // changed nothing but `updatedAt` doesn't re-emit and re-render the whole board hierarchy (#4).
-    private var lastEmittedOwnerSig: [UUID: OwnerEmitSig] = [:]
-    // Per-card monotonic seq guard for snapshot reports.
-    var lastSeqStore: [UUID: UInt64] = [:]
-    // Pending inline-readiness waiters (resolved by the readiness signal — SessionStart(resume) for a
-    // `.sessionStartHook` agent — or a timeout). Keyed by card id but TOKEN-tagged: two overlapping
-    // relaunches for the same id must never silently clobber (and thus LEAK) the earlier continuation —
-    // the displaced waiter is resolved `.superseded`, and a stale timeout is ignored unless its token
-    // still owns the slot. See `awaitReadiness`/`resolveReadiness`.
-    var readinessWaiters: [UUID: (token: UInt64, expectedEpoch: Int, cont: CheckedContinuation<ReadinessOutcome, Never>)] = [:]
-    // Monotonic tag minted per awaitReadiness so a timeout only fires for the waiter it was scheduled for.
+    // Monotonic tag minted per awaitReadiness so a timeout only fires for the waiter it was scheduled
+    // for (finer-grained than the arming tokens: it fences supersession WITHIN one bring-up). The
+    // waiter itself lives in `CardRuntime.readinessWaiter`; early confirmations in
+    // `CardRuntime.pendingReadiness`; the N=3 tick counter in `CardRuntime.launchReadyTicks`.
     var readinessTokenSeq: UInt64 = 0
-    // A readiness signal can arrive BEFORE `awaitReadiness` registers its waiter, because a relaunch's
-    // off-actor session bring-up frees this reentrant actor to service `report()` mid-revival. We remember
-    // such early confirmations here so the waiter consumes them instead of losing the wakeup and timing
-    // out. Cleared at the start of each relaunch attempt so a late callback from a prior, already-failed
-    // attempt can't spuriously confirm a future one. The stored value is the signal's `observedEpoch`
-    // (nil for an unstamped signal), so `awaitReadiness` epoch-checks an early signal on consume — a
-    // stale predecessor signal that lands in the register window can't confirm the new generation (B3 D6).
-    var pendingReadiness: [UUID: Int?] = [:]
-    // Universal N=3 readiness fallback (2.6). Per-card count of consecutive liveness ticks a being-born
-    // card (`.launching`/`.relaunching`) has had a LIVE session AND a still-pending inline readiness waiter.
-    // At `launchReadyTickThreshold` we `resolveReadiness` the waiter — a safety net WITHIN the grace window
-    // for a lost/absent readiness signal (Codex `codex resume` writes no rollout; a missed SessionStart
-    // hook; any `.relaunchLiveness`-shaped agent). `N × 2s(pollInterval) < grace`, so it fires before the
-    // await's timeout would fail the verb. Reset when the card leaves the being-born phase.
-    var launchReadyTicks: [UUID: Int] = [:]
     let launchReadyTickThreshold = 3
-    // Cards with a delivery dispatch currently in flight — the ONE wake-vs-wake guard (B4). Inserted
-    // SYNCHRONOUSLY (no suspension between the last guard and the insert) so a concurrent `send`, arm
-    // tick, or `wakeIfPending` sees the claim and defers instead of double-driving. This subsumes the
-    // retired `relaunchClaimed`: its wake-claim role is here, and its relaunch-single-winner role is
-    // the funnel's `.relaunching` epoch bump. Cleared when the wake's ladder returns.
-    var deliveriesInFlight: Set<UUID> = []
-    // Startup-abort confirmation (spawn only) — FOLDED from `spawn-startup-abort-classification` into the
-    // convergence architecture. A freshly-launched card (armed in `finishLaunch`) is tracked here with a
-    // grace DEADLINE until it proves it survived launch; the reconcile/liveness pass inspects its agent
-    // pane and classifies an immediate exit as `.spawnExitedImmediately` (with captured stderr + bounded
-    // retry) rather than the generic `.sessionVanished`. Cleared on graduation / give-up / markDead /
-    // resume / restart / teardown. `spawnRelaunch` carries the launch spec so a retry re-`ensure`s the
-    // SAME session + cwd (no double-create, no worktree churn).
-    var spawnPending: [UUID: Date] = [:]
-    var spawnAttempts: [UUID: Int] = [:]
-    var spawnRelaunch: [UUID: (adapterId: String, ctx: AdapterContext)] = [:]
     /// Armed by a `--model` re-seat (restart/handoff/resume), consumed by the first model-bearing report
     /// AFTER the relaunch lands, to answer one question: did the vendor actually honor `--model`? (It does
     /// — both CLIs were probed — so this is a tripwire for a vendor that changes its mind, not the
@@ -237,21 +169,12 @@ public actor OrchestraService {
     /// matters, since it is the one carrying context across (the escalation path).
     /// `strikes` exists because the file-tailer can surface one last pre-kill rollout line after the
     /// landing; a vendor that truly ignored the flag misreports on every tick and so strikes out at once.
-    var modelOverrideWatch: [UUID: (requested: String, left: String, strikes: Int)] = [:]
+    /// (Field lives in `CardRuntime.modelOverrideWatch`; the tripwire semantics comment above still governs.)
     /// Non-persisted tuning (short in tests). `spawnGraceSeconds` = how long a spawned card is watched for
     /// an immediate exit before it graduates to normal monitoring; `maxStartupRetries` = bounded
     /// auto-respawns of a transient startup abort before giving up.
     var spawnGraceSeconds: Int = 4
     var maxStartupRetries: Int = 1
-    // Per-card coalescing debounce for the diffstat recompute (code-review-on-board). A one-shot per
-    // activity burst off the normalized `report()` funnel — NOT a periodic poll.
-    var diffStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    // Per-card coalescing debounce for the TreeStat recompute (branch-tree, BT4). Twin of
-    // `diffStatDebounce` — a one-shot per activity burst off the `report()` funnel, not a poll.
-    var treeStatDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
-    // Per-parent coalescing debounce for the child fan-out (branch-tree, BT4). Keeps the `git config
-    // --get-regexp` child lookup OFF the hot report path — one lookup per activity burst, not per report.
-    var childFanoutDebounce: [UUID: _Concurrency.Task<Void, Never>] = [:]
 
     // MARK: - Stage-4 reconciler driving discipline (PR4b Task 2)
     /// Cards with a phase-step currently dispatched off-actor. At most ONE step in flight per card — set
@@ -802,7 +725,7 @@ public actor OrchestraService {
         // A fresh send re-arms the WHOLE retry budget before its opportunistic wake: reset attempts and
         // clear any stuck flag (contract §stuck-cleared-with-owners — `send` is one of the three clear
         // owners), else a stuck cold card would get exactly one doomed wake instead of a full retry budget.
-        deliveryAttempts[t.id] = nil
+        runtime[t.id]?.deliveryAttempt = nil
         await clearStuckIfSet(t.id)
         await wake(t.id)
         return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)
@@ -851,18 +774,18 @@ public actor OrchestraService {
     /// (`payloadForStop`'s Stop-drain claim; the relaunch-seed claim). The arm charges expiry once
     /// per token by intersecting this set with the inbox's live leases; `deliveryConfirmed` prunes it.
     func markDispatched(_ cardId: UUID, token: UUID) {
-        outstandingTokens[cardId, default: []].insert(token)
+        runtime[cardId]?.outstandingTokens.insert(token)
     }
 
     /// Test-only: how many delivery tokens are outstanding for a card (the arm's expiry-charge set). Used to
     /// pin that a handoff-only (0-message) batch leaves NO phantom token behind.
-    func outstandingTokenCountForTest(_ cardId: UUID) -> Int { outstandingTokens[cardId]?.count ?? 0 }
+    func outstandingTokenCountForTest(_ cardId: UUID) -> Int { runtime[cardId]?.outstandingTokens.count ?? 0 }
 
     /// Test-only: charged delivery attempts for a card (the arm's retry budget).
-    func deliveryAttemptCountForTest(_ cardId: UUID) -> Int { deliveryAttempts[cardId]?.count ?? 0 }
+    func deliveryAttemptCountForTest(_ cardId: UUID) -> Int { runtime[cardId]?.deliveryAttempt?.count ?? 0 }
 
     /// Test-only: re-arm a card's retry budget the way `send`/`deliveryConfirmed` do.
-    func resetDeliveryAttemptsForTest(_ id: UUID) { deliveryAttempts[id] = nil }
+    func resetDeliveryAttemptsForTest(_ id: UUID) { runtime[id]?.deliveryAttempt = nil }
 
     /// Test seam: pin the delivery-retry backoff (mirrors `stepBackoffOverrideSeconds`) so an arm
     /// test's window is load-proof.
@@ -898,6 +821,12 @@ public actor OrchestraService {
     /// the budget is still spent. A race test lands a concurrent `flipStuckIfExhausted` here and proves the
     /// `reArmingCards` fence keeps it from re-stamping stuck. Nil in production.
     var reArmPause: (@Sendable () async -> Void)? = nil
+    /// Test seam: pause teardown's child-nudge loop between its enqueue/wake awaits and the child
+    /// side-effect trio, so a test can land a reopen in exactly that window. Nil in production.
+    var teardownNudgePause: (@Sendable () async -> Void)? = nil
+    func setTeardownNudgePauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        teardownNudgePause = pause
+    }
     func setReArmPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
         reArmPause = pause
     }
@@ -927,10 +856,9 @@ public actor OrchestraService {
     /// release (it is no longer in flight); but a stale-token no-op / archive release must NOT reset the
     /// retry budget or clear the stuck flag — that happens only on a genuine confirmation.
     func deliveryConfirmed(cardId: UUID, token: UUID, didConfirm: Bool) async {
-        outstandingTokens[cardId]?.remove(token)
-        if outstandingTokens[cardId]?.isEmpty == true { outstandingTokens[cardId] = nil }
+        runtime[cardId]?.outstandingTokens.remove(token)
         guard didConfirm else { return }
-        deliveryAttempts[cardId] = nil                          // a real confirm re-arms the whole retry budget
+        runtime[cardId]?.deliveryAttempt = nil                  // a real confirm re-arms the whole retry budget
         // Clear any stuck flag (contract: every confirmed delivery clears deliveryStuckSince). A FRESH read
         // catches a flip that landed during the inbox await; skip-if-nil avoids a spurious emit on the hot
         // path. The narrow get-vs-update window is closed from the OTHER side by B4's arm: a stuck flip
@@ -985,14 +913,29 @@ public actor OrchestraService {
     /// "no `await` between helper-return and reset" only covered the reset gap, NOT the TaskStore hop
     /// inside `clearStuckIfSet` where the flag actually flips.)
     func reArmIfStuck(_ cardId: UUID) async {
-        reArmingCards[cardId, default: 0] += 1
+        // The fence must ENGAGE even when this is the daemon's first touch of the card: `stuck` is a
+        // persisted field, so a human inbox edit can land in the post-restart window before the first
+        // reconcile tick has ensured the entry — an update-if-present increment would silently no-op
+        // and leave the clear→reset window unprotected (the payloadForStop class of migration bug).
+        guard let card = await store.get(cardId) else { return }   // unknown card: nothing to re-arm
+        ensureRuntime(for: card)
+        // Epoch-scoped count: the fence belongs to THIS card generation. A stale re-arm whose entry
+        // was detached and recreated mid-op (archive→reopen) must neither decrement a successor's
+        // held fence nor drive the count negative — the epoch mismatch makes its defer a no-op.
+        let fenceEpoch = card.sessionEpoch
+        if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
+            runtime[cardId]?.reArming = (fenceEpoch, cur.count + 1)
+        } else {
+            runtime[cardId]?.reArming = (fenceEpoch, 1)   // stale-epoch residue is discarded, not inherited
+        }
         defer {
-            if let n = reArmingCards[cardId], n > 1 { reArmingCards[cardId] = n - 1 }
-            else { reArmingCards[cardId] = nil }
+            if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
+                runtime[cardId]?.reArming = cur.count > 1 ? (fenceEpoch, cur.count - 1) : nil
+            }
         }
         guard await clearStuckIfSet(cardId) else { return }
         await reArmPause?()   // test seam: land a concurrent flip in the flag-cleared, budget-not-yet-reset window
-        deliveryAttempts[cardId] = nil
+        runtime[cardId]?.deliveryAttempt = nil
     }
 
     /// Claim the cold-delivery `relaunchSeed` batch for a relaunch (the RelaunchStepper's `ctx.claimSeed`):
@@ -1035,6 +978,10 @@ public actor OrchestraService {
         // 1. Epoch fence.
         guard let card = await store.get(cardId), let epoch = observedEpoch, epoch == card.sessionEpoch
         else { return nil }
+        // The inject loop-guard MUST persist its count: an update-if-present write against a missing
+        // entry (daemon restarted mid-session; this transport path may be the card's first touch) would
+        // silently pin the count at 0 and the maxConsecutiveInjects breaker would never trip.
+        ensureRuntime(for: card)
         // 2. Confirm the prior continuation's stopDrain lease iff THIS Stop proves it ran.
         if stopHookActive,
            let token = await inbox.peek(cardId).first(where: {
@@ -1049,8 +996,8 @@ public actor OrchestraService {
         //    stopHookActive Stop's `.first` confirm would then remove the WRONG (older) batch, dropping it.
         //    Loop-guard (injectCounts/maxConsecutiveInjects) semantics preserved from drainForStop.
         let pending = await inbox.peek(cardId)
-        if pending.isEmpty { injectCounts[cardId] = 0; return nil }   // natural end → reset
-        let count = injectCounts[cardId] ?? 0
+        if pending.isEmpty { runtime[cardId]?.injectCount = 0; return nil }   // natural end → reset
+        let count = runtime[cardId]?.injectCount ?? 0
         if count >= maxConsecutiveInjects { return nil }              // loop guard tripped; keep counter high
         guard let batch = try? await inbox.claim(cardId, route: .stopDrain, epoch: epoch,
                                                  budget: StopDrain.maxPayloadChars,
@@ -1090,12 +1037,12 @@ public actor OrchestraService {
         // its `.live` landing out of `.relaunching` is a completed session replacement, which `transition`
         // already treats as proof.
         await clearPendingQuestion(cardId)
-        injectCounts[cardId] = count + 1
+        runtime[cardId]?.injectCount = count + 1
         return batch.payload
     }
 
     /// Reset a card's consecutive-inject guard — called on a genuine user prompt (UserPromptSubmit).
-    func resetInjectCount(_ cardId: UUID) { injectCounts[cardId] = 0 }
+    func resetInjectCount(_ cardId: UUID) { runtime[cardId]?.injectCount = 0 }
 
     // MARK: - SessionStart orientation
 
@@ -1222,7 +1169,7 @@ public actor OrchestraService {
         let win = try window.map { try sessions.ensureShellWindow(name, window: $0, cwd: t.cwd) }
             ?? sessions.newShellWindow(name, cwd: t.cwd)
         await emitShells(t)
-        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
+        runtime[t.id]?.observedSession = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -1267,7 +1214,7 @@ public actor OrchestraService {
         let cmd = argv.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: " ")
         try sessions.sendKeys(session, text: cmd, window: win)
         await emitShells(t)
-        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
+        runtime[t.id]?.observedSession = nil   // user-driven change — next snapshot live-shells fresh
         return ShellTab(window: win, label: win, pwd: t.cwd)
     }
 
@@ -1275,7 +1222,7 @@ public actor OrchestraService {
         let t = try await require(id)
         try sessions.closeShellWindow(sessions.sessionName(t.id), window: window)
         await emitShells(t)
-        observedSessions[t.id] = nil   // user-driven change — next snapshot live-shells fresh
+        runtime[t.id]?.observedSession = nil   // user-driven change — next snapshot live-shells fresh
     }
 
     public func exec(_ id: UUID, _ cmd: String, timeout: Duration? = nil) async throws -> ExecResult {
@@ -1315,7 +1262,7 @@ public actor OrchestraService {
             // or a STALE entry (session changed since capture) falls back to one live shell so nothing is
             // mis-shown; the trade is up-to-one-tick staleness on the hit path, self-healed by the next
             // tick / live `shellsChanged` events.
-            if let obs = observedSessions[card.id], obs.observedAt >= card.phaseChangedAt {
+            if let obs = runtime[card.id]?.observedSession, obs.observedAt >= card.phaseChangedAt {
                 // Agent identity is an fs read (non-tmux) — hop it off-actor like 5.1.3 so the hit path
                 // stays fully off the tmux path. A nil `sessionInfo` (early-life, before the session id
                 // binds) MUST serve the SAME fallback `AgentSessionInfo` `sessions(_:)` builds below, or
@@ -1363,7 +1310,7 @@ public actor OrchestraService {
     /// The owner-visible identity of a snapshot — everything a client renders EXCEPT `updatedAt`. Two
     /// snapshots with the same signature look identical to every consumer, so re-broadcasting one is pure
     /// churn (a whole-hierarchy re-render on the 10s heartbeat cadence — #4 / Lens-3 LOW).
-    private struct OwnerEmitSig: Equatable {
+    struct OwnerEmitSig: Equatable {
         let kind: AgentTerminalOwnerKind?
         let clientId: String?
         let epoch: Int
@@ -1378,8 +1325,8 @@ public actor OrchestraService {
     /// epoch, still fresh) is suppressed — which is exactly the "emit on heartbeat, skip if unchanged" of #4.
     private func emitOwnerIfChanged(_ state: AgentTerminalOwnerState) {
         let sig = OwnerEmitSig(state)
-        guard lastEmittedOwnerSig[state.cardId] != sig else { return }
-        lastEmittedOwnerSig[state.cardId] = sig
+        guard runtime[state.cardId]?.lastEmittedOwnerSig != sig else { return }
+        runtime[state.cardId]?.lastEmittedOwnerSig = sig    // update-if-present: archived cards never re-emit
         emit(.agentTerminalOwner(state), rev: lastRev)
     }
 
@@ -1616,7 +1563,7 @@ public actor OrchestraService {
             finishLaunch: { [self] id, flavor, expecting, epoch in
                 await finishLaunch(id, flavor: flavor, expecting: expecting, epoch: epoch)
             },
-            teardownActorDuties: { [self] id in await teardownActorDuties(id) },
+            teardownActorDuties: { [self] id, epoch in await teardownActorDuties(id, expectedEpoch: epoch) },
             emitActivity: { [self] id, kind, text in
                 let task = await store.get(id)
                 await emitActivity(kind, task, .daemon, text)

@@ -457,7 +457,16 @@ public actor WorktreeRegistry {
     /// tree is a no-op success. Never throws in a way that escalates to data loss.
     @discardableResult
     public func release(cardId: UUID, cards: [Task], force: Bool) async throws -> ReleaseOutcome {
-        guard let card = cards.first(where: { $0.id == cardId }) else { return .noop }   // unknown ⇒ no-op
+        guard let card = cards.first(where: { $0.id == cardId }) else {
+            // Unknown ⇒ no-op — but still surrender any in-flight hold this id took during `ensure`.
+            // The keyed `defer` below can't run here (its key is `card.cwd`), and a hold that nothing
+            // drops blocks every future sibling release of that path via the `inflightSibling` guard.
+            for (path, holders) in inflight where holders.contains(cardId) {
+                inflight[path]?.remove(cardId)
+                if inflight[path]?.isEmpty == true { inflight[path] = nil }
+            }
+            return .noop
+        }
         let wt = card.cwd
         let canon = PathResolver.canonical(wt)
         defer { inflight[canon]?.remove(cardId); if inflight[canon]?.isEmpty == true { inflight[canon] = nil } }

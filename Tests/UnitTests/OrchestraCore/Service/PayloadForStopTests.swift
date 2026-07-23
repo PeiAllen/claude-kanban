@@ -190,11 +190,11 @@ struct PayloadForStopTests {
         let c = try await Self.liveCard(env.svc, env.base)
         try await env.svc.inbox.enqueue(c.id, "one")
         _ = await env.svc.payloadForStop(c.id, observedEpoch: c.epoch, stopHookActive: false)   // count → 1
-        #expect(await env.svc.injectCounts[c.id] == 1)
+        #expect(await env.svc.runtime[c.id]?.injectCount == 1)
         // Confirm it away, so the inbox is genuinely lease-free empty, then a Stop resets the counter.
         _ = await env.svc.payloadForStop(c.id, observedEpoch: c.epoch, stopHookActive: true)
         #expect(await env.svc.inbox.peek(c.id).isEmpty)
-        #expect(await env.svc.injectCounts[c.id] == 0)
+        #expect(await env.svc.runtime[c.id]?.injectCount == 0)
     }
 
     @Test("delivers whole-messages-to-fit under the 10k budget, deferring the overflow across turns, never losing one")

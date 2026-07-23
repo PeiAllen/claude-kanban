@@ -36,8 +36,8 @@ extension OrchestraService {
         // — and the last of those is the arm's own duty, so a stuck card still runs `clearStuckIfDrained`
         // (a no-op unless its queue actually drained) before standing down.
         if t.deliveryStuckSince != nil { await clearStuckIfDrained(t.id); return }
-        if let attempt = deliveryAttempts[t.id], now() < attempt.nextEligible { return }
-        guard !deliveriesInFlight.contains(t.id) else { return }
+        if let attempt = runtime[t.id]?.deliveryAttempt, now() < attempt.nextEligible { return }
+        guard runtime[t.id]?.deliveryClaim == nil else { return }
         guard await inbox.hasClaimable(t.id, epoch: t.sessionEpoch, now: now()) else {
             await clearStuckIfDrained(t.id)
             return
@@ -119,14 +119,14 @@ extension OrchestraService {
     /// Charge the arm's retry budget for every dispatched token that is no longer live and was never
     /// confirmed — exactly ONCE per token.
     ///
-    /// `outstandingTokens[cardId]` is the ledger of tokens we dispatched; a token disappears from it on
+    /// `CardRuntime.outstandingTokens` is the ledger of tokens we dispatched; a token disappears from it on
     /// `deliveryConfirmed` (confirm OR release — no longer in flight). So a token still in the set whose
     /// lease is no longer live in the inbox was, by construction, a delivery that was dispatched and
     /// died: expired, or re-owned by a later claim. We charge it and REMOVE it, so an expired lease
     /// sitting across many ticks costs one attempt, and a fresh claim (a new token) re-arms the
     /// accounting.
     func chargeExpiredTokens(_ t: Task) async {
-        guard let outstanding = outstandingTokens[t.id], !outstanding.isEmpty else { return }
+        guard let outstanding = runtime[t.id]?.outstandingTokens, !outstanding.isEmpty else { return }
         // Ask the Inbox per token, through the TOKEN-scoped, EXPIRY-aware predicate. Presence alone is
         // the wrong test: a stale-epoch held relaunchSeed lease still carries its token, and since the
         // post-claim epoch fence it can never confirm — a presence test would leave it outstanding forever.
@@ -141,11 +141,11 @@ extension OrchestraService {
         // RESURRECT it, then we'd charge a delivery that actually succeeded) or a new dispatch may have
         // added one (the snapshot would DISCARD it). Subtract from what is there NOW, and charge only
         // tokens still present at this instant.
-        let current = outstandingTokens[t.id] ?? []
+        let current = runtime[t.id]?.outstandingTokens ?? []
         let chargeable = dead.intersection(current)
         guard !chargeable.isEmpty else { return }
         let remaining = current.subtracting(chargeable)
-        outstandingTokens[t.id] = remaining.isEmpty ? nil : remaining
+        runtime[t.id]?.outstandingTokens = remaining
         for _ in chargeable { chargeDeliveryAttempt(t.id) }
     }
 
@@ -191,8 +191,8 @@ extension OrchestraService {
             // not yet reset (checked FIRST, ahead of the bypass, so even the dead-unresumable path is fenced).
             // Cheap synchronous actor-local read; `budgetSpent()` is re-evaluated at every guard/compensate
             // checkpoint, so a re-arm starting mid-flip aborts the pending stamp too.
-            if reArmingCards[id] != nil { return false }
-            return bypassAttemptBudget || (deliveryAttempts[id]?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
+            if (runtime[id]?.reArming?.count ?? 0) > 0 { return false }
+            return bypassAttemptBudget || (runtime[id]?.deliveryAttempt?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
         }
         guard budgetSpent() else { return }
         let oldest = await inbox.peek(id).map(\.createdAt).min()

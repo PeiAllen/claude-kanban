@@ -17,6 +17,7 @@ extension OrchestraService {
     /// remote base survives a restart). Mirrors today's inline spawn body (`OrchestraService.swift`).
     func materialize(_ id: UUID) async -> MaterializeOutcome {
         guard let card = await store.get(id) else { return .failed(detail: "unknown card \(id)") }
+        ensureRuntime(for: card)   // the spawn-path create site (A1): a being-born card gets its entry here
         // Scratch dirs are materialized synchronously (mkdir) — ensure the dir exists, then advance.
         if card.origin == .scratch {
             try? FileManager.default.createDirectory(atPath: card.cwd, withIntermediateDirectories: true)
@@ -150,7 +151,7 @@ extension OrchestraService {
         let grace = config.revivalGraceSeconds
         let env = withEpoch(adapter.env, epoch)   // stamp the current generation into the session env
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
-        pendingReadiness.removeValue(forKey: id)   // start clean so only THIS bring-up's signal can confirm it
+        runtime[id]?.pendingReadiness = nil   // start clean so only THIS bring-up's signal can confirm it
 
         let argv: [String]
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a
@@ -317,15 +318,19 @@ extension OrchestraService {
         if expecting == .launching, let ctx = armCtx {   // still-owned `.launching` (re-verified above)
             let name = sessions.sessionName(id)
             try? await offActor { [sessions] in try sessions.setRemainOnExit(name, window: "agent", on: true) }
-            spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
-            spawnAttempts[id] = 0
-            spawnRelaunch[id] = (adapter.id, ctx)
+            runtime[id]?.spawnPending = Date().addingTimeInterval(Double(spawnGraceSeconds))
+            runtime[id]?.spawnAttempts = 0
+            runtime[id]?.spawnRelaunch = (adapter.id, ctx)
         }
         // B3: stamp the post-kill watermark + rollout path on the held relaunchSeed lease (fileTail resume
         // only). Done AFTER the ensure + the ownership re-check (a superseded bring-up returned above, so its
         // watermark never lands), and BEFORE readiness — so a rollout line tailed during the readiness wait is
         // fenced. A no-op when there is no held lease (a handoff-only or seedless relaunch).
         if let watermarkPath, let capturedWatermark {
+            // Seed the tail cursor at the same watermark: teardown `forget`s the cursor, and without a
+            // seed the next tail would re-read the rollout from byte 0 — replaying historic lines into
+            // the seq-gated status funnel (whose lastSeq the detach also reset).
+            await tailer.seedCursor(id, at: UInt64(max(0, capturedWatermark)))
             try? await inbox.setTailWatermark(cardId: id, epoch: expectedEpoch,
                                               watermark: capturedWatermark, path: watermarkPath)
         }
@@ -342,33 +347,44 @@ extension OrchestraService {
 
     // MARK: - teardownActorDuties (extracted archive() actor-bound duties; TeardownStepper delegates here)
 
-    /// The archive duties that touch actor-private state: cancel this card's treeStat/child-fanout
-    /// debounces + remote merge-watch + merge-request re-nudge, drop its seq cursor, AND find→nudge→wake
-    /// its live children (needs `lineage.children`/`derivedCard`/`wake`). The child nudge carries a
-    /// `dedupKey` so a crash-then-redrive of Teardown fires it AT MOST ONCE. Session-kill / releaseBorrow /
-    /// run-dir reclaim stay in the stepper (reachable via `ctx`).
-    func teardownActorDuties(_ id: UUID) async {
-        guard let t = await store.get(id) else { return }
-        // The archived card's launch-config file is now orphaned (TeardownStepper step 1 killed its session
-        // before delegating here). A full sweep — keep-set from all live cards — reclaims it AND is safe for
-        // the shared-cwd case for free; a per-card targeted delete would need its own live-sibling check.
-        // Cheap: archives are infrequent, and the mtime grace keeps a just-archived card's file until the
-        // next sweep if it launched within the window (fail-safe: err toward keeping).
+    /// Step 4 of teardown, in two halves with different redrive contracts, authorized by the LEASE —
+    /// the card's persisted `.archivedPending` phase + the `sessionEpoch` the step was dispatched with.
+    /// A reopen bumps the epoch at `.creatingWorktree`, so a stale teardown that lost the race stands
+    /// down without mutating anything; a crash-redrive re-dispatches with the CURRENT epoch and
+    /// proceeds (the lease is persisted state — an in-memory fence could not authorize it).
+    ///
+    /// 1. `detachCardRuntime` — the in-memory half: cancel the armed-task bag, resume any readiness
+    ///    waiter `.superseded`, tombstone terminal ownership, drop `runtime[id]`. No-op-safe when absent.
+    /// 2. Durable duties — idempotent, re-run on every redrive, gated on the lease and NEVER on runtime
+    ///    presence: the card-file sweep, the watcher-side watch-registry removal (persisted), and the
+    ///    child find→nudge→wake (dedup-keyed, so a redrive fires it AT MOST ONCE).
+    /// Session-kill / releaseBorrow / run-dir reclaim stay in the stepper (reachable via `ctx`).
+    func teardownActorDuties(_ id: UUID, expectedEpoch: Int) async {
+        guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
+        // Tailer cursor drop is a cross-actor await, so it runs BEFORE the synchronous detach and the
+        // lease is re-checked after it. (Bring-up seeds a fresh cursor at the session's rollout EOF, so
+        // even a forget that races a reopen cannot cause a history replay — see the seed in
+        // `pollTelemetry`/`finishLaunch`.)
+        await tailer.forget(id)
+        guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
+        detachCardRuntime(id)   // in-memory half — synchronous on the actor
+        // Durable: the archived card's launch-config file is now orphaned (step 1 killed its session).
+        // A full keep-set sweep reclaims it and is shared-cwd-safe for free; mtime grace errs to keeping.
         await sweepCardFiles()
-        stopRemoteWatch(id)          // BT6: tear down any remote merge-watch
-        remoteWatchGen[id] = nil     // S4: drop its generation entry (bounds the map)
-        stopMergeRequestNudge(id)    // O2: tear down any pending merge-request re-nudge loop
-        mergeRequestNudgeGen[id] = nil   // drop its generation entry (bounds the map, as remoteWatchGen does)
-        treeStatDebounce[id]?.cancel(); treeStatDebounce[id] = nil     // S3-5
-        childFanoutDebounce[id]?.cancel(); childFanoutDebounce[id] = nil
-        lastSeqStore[id] = nil       // the agent is gone; don't leak its seq cursor
-        clearSpawnPending(id)        // an archived card is never startup-pending — don't let a retry resurrect it
-        observedSessions[id] = nil   // PR5 actor-hygiene Task 5.2: drop the boardSnapshot session cache entry
-        // B4 delivery-tracking hygiene: an archived card is never re-scanned, so its retry-accounting and
-        // outstanding-token entries are pruned nowhere else (confirm/expiry only fire while it is live) —
-        // drop both here or they leak one entry per card for the daemon's lifetime.
-        deliveryAttempts[id] = nil
-        outstandingTokens[id] = nil
+        // Re-fence after the sweep's suspension: the PERSISTED watcher-key removal below must never
+        // run for a card a reopen just took back (it would silently drop the reopened card's watches).
+        guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
+        // Durable: the watcher side of the PERSISTED watch registry — the child side is removed at
+        // `concludeCard`, but nothing else ever removes an archived watcher's own key from disk.
+        // Load-before-mutate + conditional save is the same protocol as every registry mutation (the
+        // control server accepts RPCs before boot's reload; a bare save would clobber the file).
+        ensureWatchRegistryLoaded()
+        if watchRegistry.removeValue(forKey: id) != nil, !watchRegistryLoadFailed {
+            watchStore.save(watchRegistry)
+        }
+        // Re-fence after the suspensions above before the store-derived child nudge below.
+        guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch),
+              let t = await store.get(id) else { return }
         // S2-5: a worktree card's branch goes bare on archive — nudge its live children (deterministic,
         // oldest) so a stopped child re-evaluates its ship path instead of waiting on a dead inbox.
         guard t.origin == .worktree else { return }
@@ -377,6 +393,9 @@ extension OrchestraService {
         let active = await store.all().filter { $0.id != id }
         for cb in childBranches {
             guard let card = derivedCard(repo: t.repo, branch: cb, among: active) else { continue }
+            // Per-iteration lease check: each pass suspends (enqueue + wake), and a reopen mid-loop
+            // must stop the remaining "parent archived" nudges — the parent is coming back.
+            guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
             try? await inbox.enqueue(
                 card.id,
                 "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship",
@@ -397,7 +416,13 @@ extension OrchestraService {
             // Then schedule the CHILD's own recompute — not this card's fan-out debounce, which the
             // teardown above just cancelled — so the request re-routes to whoever owns the branch now, or
             // becomes an unowned request the human sees when nobody does.
+            await teardownNudgePause?()   // test seam: land a reopen inside the enqueue/wake window
+            // Re-fence AFTER the enqueue/wake suspensions: the trio below mutates the CHILD on the
+            // premise that the parent is gone — a reopen that landed during those awaits makes the
+            // premise false, and a stale teardown must not stop a live child's nudge loop over it.
+            guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
             stopMergeRequestNudge(card.id)
+            ensureRuntime(for: card)   // the child may be untouched since a daemon restart
             scheduleTreeStat(card.id)
         }
     }

@@ -71,4 +71,12 @@ public actor RolloutTailer {
 
     /// Drop a card's cursor (on death/archive) so a later id reusing the path re-reads from 0.
     public func forget(_ cardId: UUID) { offsets[cardId] = nil }
+
+    /// Bring-up cursor seed: start tailing at `offset` UNLESS a cursor already exists (an existing
+    /// cursor means continuous tailing — never skip forward over unread lines). With teardown's
+    /// `forget`, this is what makes a resumed/reopened card start at its rollout's current EOF instead
+    /// of replaying the file from byte 0 into the status funnel.
+    public func seedCursor(_ cardId: UUID, at offset: UInt64) {
+        if offsets[cardId] == nil { offsets[cardId] = offset }
+    }
 }

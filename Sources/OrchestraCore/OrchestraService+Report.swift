@@ -10,6 +10,10 @@ extension OrchestraService {
     public func report(_ id: UUID, _ patch: StatusReport, observedEpoch: Int? = nil,
                        tail: (path: String, startOffset: Int64)? = nil) async throws {
         guard var task = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }
+        // The funnel is the one high-frequency path with no archived gate of its own: `ensureRuntime`'s
+        // `!archived` gate is what keeps a late report for an archived card from resurrecting its entry
+        // (A1), while a live card's first post-restart report creates it here.
+        ensureRuntime(for: task)
         let before = task
         // Set when a re-seat is judged to have been IGNORED by the vendor; emitted after the write below, so
         // the warning rides a card whose `model` already shows what is really running.
@@ -173,7 +177,7 @@ extension OrchestraService {
         // treated as already-applied); hook snapshots (seq==0) are naturally ordered and always
         // apply. The cursor is monotonic — it never moves backward.
         if let snap = patch.snapshot {
-            let lastSeq = lastSeqStore[id] ?? 0
+            let lastSeq = runtime[id]?.lastSeq ?? 0
             if snap.run == .running, snap.seq > 0, lagProneAgent {
                 turnStartEvidenceAt = Date(timeIntervalSince1970: Double(snap.seq) / 1_000_000)
             }
@@ -190,7 +194,7 @@ extension OrchestraService {
             // its reports, which is exactly why this is capability-gated, not global).
             let effectiveSeq = fencedSeq(for: snap, taskAgentId: task.agentId, lastSeq: lastSeq)
             let allowed = effectiveSeq == 0 || effectiveSeq > lastSeq
-            if effectiveSeq > lastSeq { lastSeqStore[id] = effectiveSeq }
+            if effectiveSeq > lastSeq { runtime[id]?.lastSeq = effectiveSeq }
             if allowed {
                 if let c = snap.ctxPct { task.ctxPct = max(0, min(100, c)) }
                 if let d = snap.desc { task.desc = d }
@@ -221,18 +225,18 @@ extension OrchestraService {
                 // never raw `==`: the vendor answers `claude-haiku-4-5-20251001` where the table says
                 // `claude-haiku-4-5`. One warning, then the watch is dropped — never a per-tick drumbeat.
                 if let mid = snap.modelId, !mid.isEmpty,
-                   task.pendingModel == nil, let watch = modelOverrideWatch[id] {
+                   task.pendingModel == nil, let watch = runtime[id]?.modelOverrideWatch {
                     if modelHonored(reported: mid, requested: watch.requested, agentId: task.agentId) {
-                        modelOverrideWatch[id] = nil          // re-seat confirmed by the agent itself
+                        runtime[id]?.modelOverrideWatch = nil // re-seat confirmed by the agent itself
                     } else if !modelHonored(reported: mid, requested: watch.left, agentId: task.agentId) {
                         // Neither the model we asked for NOR the one we left — the session deliberately
                         // switched to a third model (`/model`). Not a vendor fault; stop watching.
-                        modelOverrideWatch[id] = nil
+                        runtime[id]?.modelOverrideWatch = nil
                     } else if watch.strikes >= 1 {
-                        modelOverrideWatch[id] = nil
+                        runtime[id]?.modelOverrideWatch = nil
                         modelReseatIgnored = (watch.requested, mid)   // emitted below, once the write lands
                     } else {
-                        modelOverrideWatch[id] = (watch.requested, watch.left, watch.strikes + 1)
+                        runtime[id]?.modelOverrideWatch = (watch.requested, watch.left, watch.strikes + 1)
                     }
                 }
                 // session_name (a /rename mirror) — DELTA-based and generation-fenced.

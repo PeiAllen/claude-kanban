@@ -67,6 +67,18 @@ struct TerminalOwnershipStore: Sendable {
         return state(key, ref, now: now)
     }
 
+    /// Archive-teardown tombstone: clear the owner of EVERY window of `cardId`, keeping each slot's
+    /// epoch. Deliberately NOT CAS-gated — archive is authoritative (no client legitimately holds a
+    /// dead card's terminal) — and deliberately NOT a slot removal: the epoch's monotonicity is what
+    /// makes a stale release/heartbeat safe (see the type comment), and removing the slot would let a
+    /// reopened card (same UUID) restart at epoch 1, ABA-matching a stale client's held epoch.
+    /// Residue: one `Int` per archived (card, window), accepted.
+    mutating func clearOwner(cardId: UUID) {
+        for (key, slot) in slots where key.cardId == cardId && slot.owner != nil {
+            slots[key] = Slot(owner: nil, epoch: slot.epoch)
+        }
+    }
+
     /// Refresh the owner's `updatedAt` ONLY if the caller holds the current epoch AND clientId. Throws
     /// on CAS miss (owner changed / was taken over). Returns the refreshed (fresh) state.
     mutating func heartbeat(cardId: UUID, ref: String, clientId: String, epoch: Int, now: Date,
