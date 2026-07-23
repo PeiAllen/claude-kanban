@@ -19,10 +19,24 @@ public final class IOSBoardModel: BoardStore {
     /// Embed attached read-only agents behind their target (dropping them from `visibleTasks` → the pager
     /// columns, freeform dock, and tree indentation). REQUIRED, not just cosmetic: `expandedRows`' own doc
     /// warns that the base never embeds, so drawing inline rows WITHOUT embedding would render each
-    /// reviewer twice — once as a full board card, once as a row. Embedding is the fix. No `/`-search on
-    /// iOS (BoardTab is a plain pager), so — unlike desktop's `BoardUX` — no search exemption: `isAttached`
-    /// alone is the gate. The base `isEmbedded == false` still governs the not-attached cases.
-    override func isEmbedded(_ task: Task) -> Bool { isAttached(task) }
+    /// reviewer twice — once as a full board card, once as a row. Embedding is the fix. Gate on
+    /// `attachedRoot != nil`, NOT `isAttached`, matching `BoardUX` — the fail-open cycle guard: a malformed
+    /// read-only cycle (R1↔R2) has `isAttached == true` but `attachedRoot == nil`; embedding it would hide
+    /// every member behind another hidden member AND supply no root to list it as a row, stranding them.
+    /// `attachedRoot == nil` keeps such a card a normal board citizen (reachable). No `/`-search on iOS
+    /// (BoardTab is a plain pager), so — unlike `BoardUX` — no search exemption is folded in.
+    override func isEmbedded(_ task: Task) -> Bool { attachedRoot(of: task) != nil }
+
+    /// Reap expand ids whose card has left the board OR is no longer a target (its reviewers all left), so
+    /// a removed/archived target doesn't leak its id (unbounded without a later toggle) and a target that
+    /// lost then regained reviewers doesn't silently reopen from stale "expanded" memory. Runs on every
+    /// live event — the toggle-time `formIntersection` only fires on a toggle. Cheap (the set is tiny).
+    override func apply(_ event: Event) {
+        super.apply(event)
+        expandedAttachedTargets = expandedAttachedTargets.filter { id in
+            tasks.first(where: { $0.id == id }).map { attachedLiveness(of: $0) != nil } ?? false
+        }
+    }
 
     /// iOS reveals the inline rows via an explicit TAP toggle, NOT `selectedId`. The shared
     /// `revealsAttached` (which the base `showsInlineRows` uses) is `selectedId`-based, but on iOS

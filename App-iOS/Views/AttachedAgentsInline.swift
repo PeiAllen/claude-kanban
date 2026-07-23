@@ -70,33 +70,45 @@ struct AttachedAgentsRows: View {
     }
 }
 
-/// One attached-agent row (status dot · shortId · title · ›). Tap → open that agent's detail (nil→B
-/// selection on the board — the proven `parentChip` push path). Highlighted while it IS the current
-/// selection, so returning from its detail lands back on the visible row.
-struct AttachedAgentRow: View {
-    @EnvironmentObject private var model: BoardModel
+/// The visual for one attached-agent row (status dot · shortId · title · ›), highlighted when it is the
+/// current selection. Shared by the board row (a `Button` that selects) and the detail-header row (a
+/// `NavigationLink` that pushes) so the two can't drift.
+struct AttachedAgentRowLabel: View {
     @Environment(\.theme) private var theme: Theme
     let agent: Task
+    var isSelected: Bool = false
 
-    private var isSelected: Bool { model.selectedId == agent.id }
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(theme.statusColor(agent.phaseDisplay).dot).frame(width: 6, height: 6)
+            Text(agent.shortId)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(theme.text3)
+            Text(agent.title)
+                .font(.subheadline)
+                .foregroundStyle(theme.text)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(theme.text3)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .background(isSelected ? theme.accent.opacity(0.16) : Color.clear)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The BOARD row: a `Button` that selects the agent. On the board that's correct — the Board tab's
+/// `navigationDestination(item: selectedCardBinding)` observes `selectedId` and pushes the agent's detail
+/// (nil→B, the proven `parentChip` path). NOTE: this selection path is Board-tab-specific — the
+/// card-DETAIL list uses a `NavigationLink` instead (see `CardDetailHeader`), because that detail can be
+/// presented from the Needs You tab too, whose stack does NOT observe `selectedId`.
+struct AttachedAgentRow: View {
+    @EnvironmentObject private var model: BoardModel
+    let agent: Task
 
     var body: some View {
         Button { model.selectedId = agent.id } label: {
-            HStack(spacing: 10) {
-                Circle().fill(theme.statusColor(agent.phaseDisplay).dot).frame(width: 6, height: 6)
-                Text(agent.shortId)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(theme.text3)
-                Text(agent.title)
-                    .font(.subheadline)
-                    .foregroundStyle(theme.text)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(theme.text3)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(isSelected ? theme.accent.opacity(0.16) : Color.clear)
-            .contentShape(Rectangle())
+            AttachedAgentRowLabel(agent: agent, isSelected: model.selectedId == agent.id)
         }
         .buttonStyle(.plain)
     }

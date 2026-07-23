@@ -45,14 +45,22 @@ struct CardDetailHeader: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            // The revealed attached agents (gated by `showsInlineRows` = the tap-expand state). Tapping a
-            // row selects that agent → the detail navigates to it (`navigationDestination(item:)` replace).
+            // The revealed attached agents (gated by `showsInlineRows` = the tap-expand state). Each row is
+            // a `NavigationLink` that PUSHES the agent's detail onto whatever stack this detail is in —
+            // NOT a `selectedId` write. The card detail is presented from BOTH the Board tab
+            // (`navigationDestination(item: selectedCardBinding)`, selectedId-driven) AND the Needs You tab
+            // (its own `$route`, NOT selectedId); a selectedId write would be a dead tap on Needs You and a
+            // phantom push onto the offscreen Board stack. A NavigationLink is stack-relative, so it's
+            // correct from either — and it PUSHES (Back returns to this card) rather than replacing.
             let rows = model.expandedRows(for: task)
             if !rows.isEmpty {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, agent in
                         if idx > 0 { Rectangle().fill(theme.hair).frame(height: 0.5) }
-                        AttachedAgentRow(agent: agent)
+                        NavigationLink { CardDetailView(taskId: agent.id) } label: {
+                            AttachedAgentRowLabel(agent: agent)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.winBg))

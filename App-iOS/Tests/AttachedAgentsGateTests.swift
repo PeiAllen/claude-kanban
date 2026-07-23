@@ -91,6 +91,21 @@ final class AttachedAgentsGateTests: XCTestCase {
         XCTAssertTrue(model.cards(in: .impl).contains { $0.id == reviewer.id })
     }
 
+    /// Fail-safe (malformed lineage): a read-only R1↔R2 cycle has `isAttached == true` for both but no
+    /// real `attachedRoot` — the gate must key on `attachedRoot != nil` (like `BoardUX`), NOT `isAttached`,
+    /// or both members would be hidden AND rooted nowhere → unreachable. They must stay board citizens.
+    func testMalformedCycleNotEmbedded_reachable() {
+        let model = BoardModel(platform: .ios)
+        let r1 = worktree("02", branch: "r1", access: .readOnly, parentBranch: "r2", column: .impl)
+        let r2 = worktree("03", branch: "r2", access: .readOnly, parentBranch: "r1", column: .impl)
+        model.tasks = [r1, r2]
+
+        XCTAssertTrue(model.isAttached(r1))   // isAttached is true (attachedTarget resolves)...
+        XCTAssertNil(model.attachedRoot(of: r1))   // ...but there is no real root (cycle → fail open)
+        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == r1.id })   // so both stay on the board
+        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == r2.id })
+    }
+
     /// The liveness roll-up that colours the badge: green all-running/being-born, amber on waiting/dead,
     /// nil when none attached.
     func testLivenessRollUp() {
@@ -133,6 +148,23 @@ final class AttachedAgentsGateTests: XCTestCase {
         // ...and collapses.
         model.toggleAttachedExpanded(target)
         XCTAssertFalse(model.isAttachedExpanded(target))
+        XCTAssertTrue(model.expandedRows(for: target).isEmpty)
+    }
+
+    /// A stale expand id never renders rows: `showsInlineRows` also requires current agents, so a target
+    /// that was expanded then lost all its reviewers shows nothing even if its id lingers in the set (the
+    /// read-time guard; the `apply`-time reap clears the id itself on the next live event).
+    func testStaleExpandIdShowsNoRows() {
+        let model = BoardModel(platform: .ios)
+        let target = worktree("01", branch: "feat/x")
+        let reviewer = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
+        model.tasks = [target, reviewer]
+        model.toggleAttachedExpanded(target)
+        XCTAssertEqual(model.expandedRows(for: target).map(\.id), [reviewer.id])
+
+        // The reviewer leaves → target is no longer a target. Even though its id is still in the set,
+        // no rows render (and toggling would not re-open it either).
+        model.tasks = [target]
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
     }
 

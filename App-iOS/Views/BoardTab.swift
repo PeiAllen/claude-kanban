@@ -244,12 +244,14 @@ private struct MovableCard: View {
                     .overlay(alignment: .topTrailing) {
                         AttachedExpandToggle(task: task).padding(.top, 10).padding(.trailing, 12)
                     }
+                    // Move menu on the HEADER only — long-pressing an attached-agent ROW below must not
+                    // surface the target card's "Move to…" menu.
+                    .contextMenu { moveMenu }
                 if !expandedRows.isEmpty {
                     AttachedAgentsRows(target: task)
                 }
             }
             .offset(x: dragX)
-            .contextMenu { moveMenu }
         } else {
             BoardCardCell(task: task)
                 .contentShape(Rectangle())
