@@ -53,8 +53,55 @@ private struct HeaderBar: View {
 
     private var ds: DisplayState { displayState(phase: task.phase, connection: model.connectionState) }
 
+    /// The card's diffstat rides directly beside the Agent|Diff toggle — `+214 −38`, in the board
+    /// card's green/red — so the change size reads from BOTH tabs without spending a row of vertical
+    /// space on it. It sits NEXT TO the toggle rather than inside the Diff segment because a
+    /// segmented control pads every segment generously: the same digits cost roughly twice the width
+    /// as a segment title, enough to push the row past the 392pt default, and NSSegmentedControl
+    /// renders its titles in the control's own tint, which would flatten the green/red away.
+    ///
+    /// The stat is measured against the card's DEFAULT baseline (parent-relative when stacked, else
+    /// branch); the Diff pane's own picker can be switched to Working, at which point the body below
+    /// legitimately disagrees with these numbers. The tooltip names the baseline — there is no room
+    /// for it inline, and it would drown the numbers if there were.
+    private var baseline: DiffBase { task.parentBranch != nil ? .parent : .branch }
+
+    private var diffTabHelp: String {
+        guard let stat = task.diffStat, stat.filesChanged > 0 else {
+            return "The card's changes, read-only, in the inspector."
+        }
+        return diffStatHelp(stat)
+            + " — measured against \(diffBaselineLabel(baseline, parentBranch: task.parentBranch)); "
+            + "the Diff tab's own baseline picker can show a different range."
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
+        // This row is over-subscribed at the shipped 392pt inspector width — spelled out in full it
+        // overflows and clips the trailing close button, which is what it used to do (truncating the
+        // captions to unreadable stubs, "Z \" and "▤ (", on the way). So it degrades in stages, each
+        // giving up the least useful thing left, and nothing ever clips:
+        //   1. everything spelled out — what a widened inspector shows;
+        //   2. captions dropped, icons + tight padding, diffstat kept — the 392pt default;
+        //   3. diffstat dropped too — only at the 320pt drag minimum, where it cannot fit at all.
+        // The icons carry the meaning the captions did, and every button has a tooltip with the words.
+        ViewThatFits(in: .horizontal) {
+            row(compact: false, showStat: true)
+            row(compact: true, showStat: true)
+            row(compact: true, showStat: false)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        // The `I` keyboard verb pulses this to open the Inbox popover.
+        .onChange(of: model.requestInboxOpen) { _, open in
+            if open { showInbox = true; model.requestInboxOpen = false }
+        }
+    }
+
+    @ViewBuilder private func row(compact: Bool, showStat: Bool) -> some View {
+        // Compact tightens the gaps as well as the chips: at 392 the stat-bearing variant lands a few
+        // points over the frame with 6pt gutters, and those few points are the whole difference
+        // between showing the numbers and dropping them.
+        HStack(spacing: compact ? 4 : 6) {
             // Agent terminal vs the read-only in-app diff (axis 7).
             Picker("", selection: $mode) {
                 Text("Agent").tag(InspectorMode.agent)
@@ -63,19 +110,37 @@ private struct HeaderBar: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
+            .help(diffTabHelp)
+
+            if showStat, let stat = task.diffStat, stat.filesChanged > 0 {
+                // Chipped, not bare: everything else in this row is a filled control, so loose
+                // monospace digits between the toggle and the buttons read as debris rather than as
+                // a readout. The chip is the row's own `theme.chip` — the same fill the close button
+                // and the segmented control sit on — so it belongs without competing.
+                DiffStatNumbers(stat: stat, showFiles: !compact)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, compact ? 6 : 9)
+                    .frame(height: 29)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.chip))
+                    .help(diffTabHelp)
+            }
 
             Button {
                 _Concurrency.Task { await model.openInZed(task.id) }
             } label: {
                 HStack(spacing: 6) {
                     ZedBadge(size: 16, corner: 4, glyph: 9)
-                    Text("View changes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                    if !compact {
+                        Text("View changes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                    }
                 }
-                .padding(.horizontal, 11)
+                .padding(.horizontal, compact ? 7 : 11)
                 .frame(height: 29)
                 .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
+            .help("Open the worktree in Zed with a branch-vs-base diff")
 
             // Open the card's worktree as an Obsidian vault, jumped to the notes its branch changed.
             Button {
@@ -83,9 +148,11 @@ private struct HeaderBar: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "note.text").font(F.ui(13, .semibold)).foregroundColor(theme.text)
-                    Text("Open notes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                    if !compact {
+                        Text("Open notes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                    }
                 }
-                .padding(.horizontal, 11)
+                .padding(.horizontal, compact ? 7 : 11)
                 .frame(height: 29)
                 .surface(theme.card, corner: 8, hair: theme.hair)
             }
@@ -94,7 +161,7 @@ private struct HeaderBar: View {
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.phaseDisplay != .dead {
-                inboxAction
+                inboxAction(compact: compact)
                     .disabled(!ds.validActions.contains(.send))
 
                 Button {
@@ -102,22 +169,17 @@ private struct HeaderBar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "checkmark").font(F.ui(10, .semibold))
-                        Text("Archive").font(F.ui(12, .medium))
+                        if !compact { Text("Archive").font(F.ui(12, .medium)) }
                     }
                     .foregroundColor(theme.text2)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, compact ? 7 : 10)
                     .frame(height: 29)
                     .surface(theme.card, corner: 8, hair: theme.hair)
                 }
                 .buttonStyle(.plain)
                 .disabled(!ds.validActions.contains(.archive))
+                .help("Archive this card")
             }
-
-            // Attached-agents badge lives in this shared header (not AgentChrome's terminal header) so it
-            // stays visible in BOTH Agent and Diff modes — a glance-only count + liveness indicator now.
-            // The read-only sub-cards are reached on the BOARD (selecting this target expands its rows
-            // inline, beside the inspector) and via the ↑/↓ row axis — not through this badge.
-            AttachedAgentsBadge(task: task)
 
             Spacer(minLength: 0)
 
@@ -131,36 +193,31 @@ private struct HeaderBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        // The `I` keyboard verb pulses this to open the Inbox popover.
-        .onChange(of: model.requestInboxOpen) { _, open in
-            if open { showInbox = true; model.requestInboxOpen = false }
+            .help("Close the inspector")
         }
     }
 
     // MARK: - Card actions
 
     /// Inbox (F3): view/reorder/edit/remove/append the card's durable queued messages.
-    private var inboxAction: some View {
-        actionButton("Inbox", systemImage: "tray.full", isOn: $showInbox) {
+    private func inboxAction(compact: Bool) -> some View {
+        actionButton("Inbox", systemImage: "tray.full", compact: compact, isOn: $showInbox) {
             InboxEditorView(task: task)
                 .environmentObject(model)
                 .environment(\.theme, theme)
         }
     }
 
-    private func actionButton<Content: View>(_ label: String, systemImage: String,
+    private func actionButton<Content: View>(_ label: String, systemImage: String, compact: Bool,
                                              isOn: Binding<Bool>,
                                              @ViewBuilder _ popover: @escaping () -> Content) -> some View {
         Button { isOn.wrappedValue.toggle() } label: {
             HStack(spacing: 5) {
                 Image(systemName: systemImage).font(F.ui(10, .semibold))
-                Text(label).font(F.ui(12, .medium))
+                if !compact { Text(label).font(F.ui(12, .medium)) }
             }
             .foregroundColor(theme.text2)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, compact ? 7 : 10)
             .frame(height: 29)
             .surface(theme.card, corner: 8, hair: theme.hair)
         }

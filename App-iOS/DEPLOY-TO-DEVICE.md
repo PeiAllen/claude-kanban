@@ -5,8 +5,11 @@ to your Mac's live daemon over Tailscale. No paid Apple Developer membership req
 notifications are the only thing the free tier can't do — out of scope; the board, terminals, and
 takeover all work without it.)
 
-There are two halves: **(A) get the app onto the phone** (Xcode signing) and **(B) make it connect**
+There are two halves: **(A) get the app onto the phone** (Apple signing) and **(B) make it connect**
 (Tailscale SSH to your Mac's daemon). Do A once, then B once.
+
+After the one-time pairing, **everything here is wireless** — installs go over Wi-Fi and the cable
+stays in the drawer.
 
 ---
 
@@ -17,18 +20,39 @@ There are two halves: **(A) get the app onto the phone** (Xcode signing) and **(
 2. **iPhone in Developer Mode.** Plug the iPhone into the Mac with a cable, unlock it, tap **Trust
    This Computer**. Then on the phone: Settings ▸ Privacy & Security ▸ **Developer Mode** ▸ on ▸
    restart when prompted (iOS 16+).
-3. **Tailscale on both devices, same tailnet.** Install the Tailscale app on the iPhone and log into
+3. **Pair over the network.** Still with the cable in, open Xcode ▸ Window ▸ **Devices and
+   Simulators**, select the phone, and tick **Connect via network**. Now unplug — every step below
+   works over Wi-Fi. Confirm with `xcrun devicectl list devices`; the phone shows as
+   `available (paired)`, which is the normal, healthy state for a network-paired device.
+4. **Tailscale on both devices, same tailnet.** Install the Tailscale app on the iPhone and log into
    the same tailnet as the Mac. (This is how the phone reaches the Mac — there's no shared filesystem
    like the Simulator has.)
-4. **Remote Login on the Mac.** System Settings ▸ General ▸ Sharing ▸ **Remote Login** ▸ on. (The app
+5. **Remote Login on the Mac.** System Settings ▸ General ▸ Sharing ▸ **Remote Login** ▸ on. (The app
    reaches the daemon by SSH-ing into your Mac over the tailnet and bridging to its socket.)
+
+> **Keep the phone unlocked while installing.** A locked phone fails the developer-disk-image mount
+> with `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040` — it looks like a pairing or
+> network fault, but it's just the lock screen.
 
 ---
 
-## A. Build & install (Xcode GUI)
+## A. Build & install
+
+Signing on a free team has one hard constraint that shapes this whole section: **`xcodebuild` cannot
+create a provisioning profile from a shell — only use one that already exists.** That, plus the 7-day
+life of a free-team certificate, makes this a **three-step cycle you repeat roughly weekly**:
+
+1. **⌘R once from the Xcode GUI** (A1) — mints the 7-day profile. The CLI cannot do this.
+2. **Scripted wireless build + install** (A2) — good for that profile's whole lifetime, no cable.
+3. **Trust the developer on the phone** (A3) — manual, on the phone, and needed **every cycle**.
+
+Only step 2 is automatable; steps 1 and 3 are the price of the free tier. A paid membership stretches
+the cycle from a week to a year.
+
+### A1. Mint the profile — ⌘R from Xcode (once per cycle)
 
 ```sh
-cd <repo>                       # the mobile-impl-orchestration worktree
+cd <repo>
 xcodegen generate --spec App-iOS/project.yml --project App-iOS
 open App-iOS/OrchestraiOS.xcodeproj
 ```
@@ -44,19 +68,86 @@ In Xcode:
      signing should resolve with no manual capability edits.
 4. **Run:** ⌘R. Xcode creates the development certificate + provisioning profile on the fly and
    installs to the phone.
-5. **Trust the developer on the phone** (first install only): the app installs but iOS blocks launch
-   until you approve it — iPhone ▸ Settings ▸ General ▸ **VPN & Device Management** ▸ your Apple ID ▸
-   **Trust**. Then tap the app icon (or ⌘R again).
 
-> **7-day expiry (free team):** free-team apps stop launching ~7 days after signing. To keep using it,
-> just ⌘R from Xcode again to re-sign. (A paid membership raises this to a year.)
+The app is now on the phone, but iOS will refuse to launch it until you do **A3**.
+
+### A2. Every install after that — the scripted lane
+
+With a profile on disk, the script does the whole thing over Wi-Fi, unattended:
+
+```sh
+ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install
+```
+
+(Or drop `DEVELOPMENT_TEAM = XXXXXXXXXX` into the gitignored `App-iOS/DeviceSigning.local.xcconfig`
+and omit the env var. Your team id is in Xcode ▸ Settings ▸ Accounts ▸ your Apple ID ▸ team.)
+
+This builds **Release**, because a build on your actual phone is one you're going to *use* — Debug's
+unoptimized Swift is felt as UI lag while scrolling the board and rendering terminals. Add `--debug`
+on the rare occasion you want the unoptimized build to attach a debugger or get usable symbols.
+
+It prints the phone it chose. If you have **more than one** iPhone paired it refuses to guess and
+lists them — name the one you want, by identifier, udid, or any part of its name:
+
+```sh
+scripts/build-ios-device.sh --install --device 'Allen’s iPhone'   # or: export ORCH_IOS_DEVICE=…
+```
+
+A `--device` you pass explicitly is matched against every paired device, not only iPhones, so make
+the substring specific enough to be unambiguous — with an iPad also paired, `--device Allen` matches
+both and is rejected rather than guessed. The device is picked *before* the build, so a typo costs
+seconds rather than a full build.
+
+**The lane ends at install, on purpose.** `devicectl` prints `App installed:` with the bundle id and
+installation URL — that *is* the confirmation, and there is nothing further to run. Then do **A3** and
+open the app yourself.
+
+There's a `devicectl device process launch` you could run by hand, but don't reach for it as a check:
+it starts the app over the developer-disk-image debug path, which the Untrusted Developer gate doesn't
+cover, so it succeeds in exactly the situation where tapping the icon fails — false confidence, right
+where the actual risk is. It also passes `--terminate-existing`, which kills a running instance and
+can yank the board out from under you mid-session on your own phone.
+
+> If you do run it manually and it fails with `denied by service delegate (SBMainWorkspace) for
+> reason: Locked` / `FBSOpenApplicationErrorDomain error 7 (0x07)`, that's the lock screen refusing
+> the launch — the install already succeeded. Unlock and open the app normally; rebuild nothing.
+
+### A3. Trust the developer on the phone (every cycle)
+
+On the iPhone: Settings ▸ General ▸ **VPN & Device Management** ▸ your Apple ID ▸ **Trust**.
+
+Until you do, tapping the icon shows **"Untrusted Developer"** and iOS refuses to launch the app.
+
+**This is an expected manual step, not an error.** It's a consent gate that sits *downstream* of
+compile, sign, and install, so a build or install run that ends by telling you to trust the team has
+**succeeded** — there is nothing to debug. And it is not one-time setup: after a profile renewal the
+prompt has been observed to come back, so expect it each cycle rather than being surprised by it.
+
+### When the week is up
+
+Free-team certificates expire ~7 days after signing and the app stops launching. Nothing renews them
+in place — just run the cycle again: ⌘R from Xcode (A1), `--install` (A2), Trust on the phone (A3).
+A paid membership raises the 7 days to a year. Either way there is no TestFlight or App Store
+distribution on a personal team.
+
+(This renewal round-trip hasn't been run end to end on this lane yet — the lane was verified from a
+first install. It's how free teams are documented to behave, but treat day eight as expected rather
+than proven, and expect to fall back to plain ⌘R if the scripted step surprises you.)
+
+### "No Accounts: Add a new account in Accounts settings"
+
+If the script fails with that, plus `No profiles for 'com.orchestra.ios' were found`, **you are not
+signed out** — this is the constraint at the top of section A. `xcodebuild` can't reach the
+keychain-backed session of the Apple ID in Xcode from a non-GUI shell, so a missing profile surfaces
+as a missing account. The fix is ⌘R from the GUI (A1), not re-adding your Apple ID.
 
 ### If signing fails on the bundle id
+
 `com.orchestra.ios` may already be registered to another team. If Xcode says the bundle identifier is
 unavailable, change it to something unique to you in **Signing & Capabilities ▸ Bundle Identifier**,
 e.g. `com.<yourname>.orchestra`. If you do, also update the keychain group in
 `App-iOS/OrchestraiOS-nopush.entitlements` (the `keychain-access-groups` string) to match your new id,
-then re-run `xcodegen generate` and ⌘R. Alternatively use the scripted lane:
+then re-run `xcodegen generate` and ⌘R. Pass the same id to the scripted lane afterwards:
 `ORCH_IOS_BUNDLE_ID=com.<yourname>.orchestra scripts/build-ios-device.sh --install`.
 
 ---

@@ -116,8 +116,8 @@ selection writes, because the phone presents card details from two different sta
   — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
   starting up, **amber** when any is waiting on the human or has died. It's a glance-only indicator;
   selecting the card expands its attached agents as inline rows (see [Attached agents](#attached-agents)),
-  which is how they're reached. The same badge also sits in the shared inspector header (visible in both
-  Agent and Diff modes).
+  which is how they're reached. The inspector does not repeat this badge; its terminal-header eye opens
+  a fresh read-only inspect shell instead.
 - The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
@@ -174,7 +174,26 @@ the [Recovery panel](#recovery-panel) instead.
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
-(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
+(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). Immediately
+right of the toggle sits the card's **branch diffstat** in the board card's footer colors — `7f +214 −38`
+— so the change size reads from either tab without costing a row of vertical space. It is absent when
+the daemon has no stat for the card (non-git, or nothing changed yet). It measures the card's *default*
+baseline (parent-relative when stacked, else branch), so switching the [Diff view](#the-in-app-diff-view)'s
+own picker to **Working** legitimately shows a different range in the body below; the tooltip names the
+baseline.
+
+The **iPhone** card detail carries the same fact in its own language: a diffstat chip in the pinned
+header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf` ordering. That row
+degrades the same way — a big stat next to a long model name would otherwise wrap the mode chip onto two
+lines and push the context gauge's percentage off the trailing edge — so the chip sheds its file count
+first and hides last, leaving its neighbours intact.
+
+That row is over-subscribed at the default 392 pt inspector width, so it **degrades in stages** rather
+than truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything
+spelled out when the inspector is dragged wide; at 392 the button captions drop to icons alone (tooltips
+keep the words) with tighter chips and gutters, and the diffstat sheds its file count to `+214 −38`;
+only at the 320 pt drag minimum does the diffstat drop entirely. Nothing ever clips off the trailing
+edge.
 **Open notes** opens the card's **worktree** as an **Obsidian vault** — the host's
 `~/.claude/open-obsidian-vault.sh` recipe, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
@@ -223,8 +242,7 @@ The **agent chrome** stacks, top to bottom:
 1. a **context bar** — a 2 px fill showing `ctxPct`, green→amber→red;
 2. a **terminal header** of chips — model (colored dot), repo/borrowed dir, the read-only eye badge, the
    shared-worktree badge, the status pill, and an **Inspect** button (opens a read-only shell agent in
-   the worktree); (the [attached-agents badge](#attached-agents) lives one level up, in the shared
-   inspector header, so it also shows in Diff mode);
+   the worktree);
 3. a **breadcrumb strip** — "Copy chat link" (the short `orchestra://task/<shortId>` URI), "Copy tmux
    target", and a clickable path breadcrumb;
 4. the **agent terminal** (SwiftTerm);

@@ -205,14 +205,112 @@ capability requires a **paid** membership, so a free-account device signing **fa
 `aps-environment` is present at all. The default `App-iOS/OrchestraiOS.entitlements` hardcodes it (for
 the paid lane); the free lane signs with `App-iOS/OrchestraiOS-nopush.entitlements` instead —
 identical but with `aps-environment` stripped, keeping only `keychain-access-groups`. So a free-team
-device build sets `CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlements` and your personal
-team. (The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane
-keeps `aps-environment` for real push.)
+device build sets `CODE_SIGN_ENTITLEMENTS=OrchestraiOS-nopush.entitlements` and your personal team.
+(The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane keeps
+`aps-environment` for real push.)
 
-Two operational consequences of the free tier:
+That value is a **bare basename, with no `App-iOS/` prefix** — Xcode resolves `CODE_SIGN_ENTITLEMENTS`
+relative to `$(SRCROOT)`, which for this project *is* `App-iOS/`. Adding the prefix double-nests it to
+`App-iOS/App-iOS/…`, which doesn't exist, and signing then falls back to the target's default
+`OrchestraiOS.entitlements` — which carries `aps-environment`, so free-team signing fails with an error
+that says nothing about the path you actually got wrong.
 
-- **The provisioning profile lasts 7 days.** Re-deploy from Xcode weekly (cable or Wi-Fi to the Mac);
-  there is no TestFlight or App Store distribution on a personal team.
+This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta) in both configurations: the
+script produces a signed `.app` entitled `keychain-access-groups` only, and `devicectl device install
+app` puts it on the phone. Once the phone is set up, **the whole build-install loop is wireless**; the
+cable is needed only for the one-time setup session below (Trust This Computer, Developer Mode, and
+ticking "Connect via network").
+
+### The GUI mints the profile; the script consumes it
+
+**`xcodebuild` cannot create a free-team provisioning profile from a non-GUI shell** — it can only use
+one that already exists on disk. Signing a bundle that has no profile yet fails with:
+
+```
+No Accounts: Add a new account in Accounts settings
+No profiles for 'com.orchestra.ios' were found
+```
+
+**even when the Apple ID is correctly signed into Xcode.** The CLI can't reach that account's
+keychain-backed session, so it reports the absence as "no account" — which reliably invites the wrong
+diagnosis. Read it as *"there is no profile on disk yet"*, not *"you are signed out"*.
+
+So the free-tier cycle is three steps, repeated roughly weekly, and only the middle one is automatable:
+
+1. **⌘R from the Xcode GUI.** Mints the 7-day development certificate and profile. The CLI cannot.
+2. **`scripts/build-ios-device.sh --install`**, unattended and wireless, for that profile's lifetime.
+3. **Trust the developer on the phone** — Settings ▸ General ▸ **VPN & Device Management** ▸ the Apple
+   ID ▸ **Trust**. Manual, on the device, and required **every cycle**.
+
+Step 3 is an expected manual step, **not a failure**. iOS's "Untrusted Developer" gate sits downstream
+of compile, sign, and install — so a run that ends by asking you to trust the team has succeeded, and
+there is nothing to debug. It is also not one-time setup: after a profile renewal the prompt has been
+observed to return, so plan for it each cycle. (A paid membership stretches the cycle to a year.)
+
+The 7-day limit and this renewal procedure are how free personal teams work, but note the expiry
+round-trip has not itself been exercised on this lane yet — the on-metal verification above was a
+first install, so day-eight re-signing is expected-to-work rather than observed.
+
+The lane deliberately stops at install. `devicectl device install app` reports `App installed:` with
+the bundle id and installation URL, and that is the verification — step 3 and opening the app are
+yours. A scripted `devicectl device process launch` is **not** part of the flow and shouldn't be used
+as a check: it starts the app over the developer-disk-image debug path, which the trust gate does not
+cover, so it succeeds precisely when tapping the icon would fail. It also passes `--terminate-existing`,
+killing a running instance on what is someone's personal phone — the same reason we never drive the
+user's live Mac app. (If you do run it by hand on a locked phone it is refused with
+`denied by service delegate (SBMainWorkspace) for reason: Locked` /
+`FBSOpenApplicationErrorDomain error 7 (0x07)`, *after* a successful install — that is the lock
+screen, not a broken build.)
+
+### Release by default
+
+The device lane builds **Release**; `--debug` opts into the unoptimized build when you actually want
+a debugger attached or usable symbols. This is the opposite of the Simulator lane
+(`scripts/ios-live.sh`, which defaults to Debug) and the two are deliberately not harmonized. A build
+that lands on a real phone is there to be *used*, and Debug's `-Onone` Swift is felt directly as UI
+lag in SwiftUI diffing and terminal rendering; the Simulator lane is a tight edit-run loop where a
+faster build beats a faster app. Each lane is optimized for what it is for.
+
+### Picking the device
+
+`--install` selects the target from `devicectl list devices --json-output`, which is the only interface
+Apple supports for scripts (`devicectl`'s own help says so). It matches on device **identity** —
+`platform` / `reality` / `deviceType` — and deliberately never on connection state: a phone is the same
+phone whether it is `wired` on a cable or `localNetwork` across the room, and the human-facing State
+column renders a network-paired iPhone as `available (paired)`, so no allowlist of state words can be
+right. If the device is genuinely unusable, `devicectl device install` diagnoses it far more precisely
+than a status string could.
+
+With more than one iPhone available the script **refuses to guess** and lists the candidates rather
+than installing over the wrong phone's build. Name the one you want with `--device` (an identifier, a
+udid, or any part of the device name) or export `ORCH_IOS_DEVICE` to make it stick:
+
+```sh
+scripts/build-ios-device.sh --install --device 'Allen’s iPhone'
+```
+
+An explicit `--device` is matched against **every** device devicectl knows about, not just the
+iPhones the automatic path considers — naming a device is treated as intent, so it is honored
+verbatim. The flip side is that a short substring can be ambiguous across device *kinds*: with an
+"Allen's iPad" also paired, `--device Allen` matches both and is rejected rather than guessed. Give
+enough of the name to be unambiguous, or paste the identifier.
+
+Selection happens **before** the build, so a bad selector or an absent phone fails in seconds instead
+of after a full signed build.
+
+`scripts/lib/ios-pick-device.py` holds that policy and `scripts/lib/ios-pick-device-test.sh` pins it
+against captured `devicectl` JSON — network-paired, cable-attached, none, several, bad override — so
+the selection logic is testable without a phone in the room. `scripts/build-ios-device-test.sh` covers
+the option loop, where a malformed flag must abort rather than be absorbed into something
+plausible-looking and wrong. Both run on the merge gate via `scripts/test.sh --all`.
+
+Three operational consequences of the free tier:
+
+- **The phone must be unlocked** while installing, or the developer-disk-image mount fails with
+  `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, which reads like a pairing or
+  transport fault and is nothing of the sort.
+- **The provisioning profile lasts 7 days**, and renewing it means ⌘R from the GUI (above); there is no
+  TestFlight or App Store distribution on a personal team.
 - **Real APNs push is out of scope.** A free Apple ID can't mint a `.p8` or enable the Push
   capability, so Orchestra's own push notifications don't work on this lane — "needs you" alerts come
   via the Claude and Codex mobile apps' own notifications instead. Board, terminals, and takeover need
@@ -226,6 +324,7 @@ Two operational consequences of the free tier:
 | `scripts/test.sh` | Tiered `swift test` (unit by default; `--contract` / `--e2e` / `--all`) with the CLT swift-testing flags. |
 | `scripts/lint-tests.sh` | Re-clumping guards: no sleeps / ambient paths / real forks / `makeReal` in the unit tier. Runs on `--all`. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
+| `scripts/build-ios-device.sh` | Build the iOS app signed for a **real iPhone** on a free personal team (no-push entitlements). **Release by default** (`--debug` opts out); `--install` also installs it over Wi-Fi, `--device` picks among several phones. Needs a profile minted once by ⌘R in the Xcode GUI — see [above](#building-the-ios-app-for-a-real-device-free-personal-team). |
 | `scripts/build-and-launch-app.sh` | Build & install the bundle, then **refresh the live instance**: quit + relaunch the app and restart the daemon on the new binary. Needed because `build-app.sh` only replaces the bundle on disk — the running app and the KeepAlive daemon keep executing the old code until they restart. Agent tmux sessions are left running (a code refresh, not a state reset — use `reset-state.sh` for a full teardown). `--debug` passes through; `--run` is dropped (it manages the relaunch itself). |
 | `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |
 | `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |
