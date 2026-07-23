@@ -1,84 +1,103 @@
+import Foundation
 import XCTest
 @testable import OrchestraCore
 import OrchestraKit
+import TestSupport
 
 /// PR5 (Stage 5.1) — the actor-hygiene gate suite. Each `test_actorNotBlockedBy*` proves a specific
 /// blocking subprocess/file-IO site was moved off the single `OrchestraService` actor: it starts the
 /// slow op, waits for a **deterministic entered-gate signal** (the slow op has demonstrably started —
-/// never a race against a fixed sleep), then asserts a concurrent `list()` RPC still returns fast. On
-/// unfixed (on-actor) code the concurrent RPC queues behind the slow op and the `< 2.0s` assertion fails
-/// — it can never false-pass.
+/// never a race against a fixed sleep), then asserts a concurrent `list()` RPC returns *before the test
+/// releases that operation*. This is an ordering assertion, not a latency budget: under a loaded parallel
+/// suite, a correct continuation may be scheduled much later than two seconds. On unfixed on-actor code,
+/// the `list()` call cannot reach its completion latch because the test deliberately withholds the release.
 final class ActorHygieneTests: XCTestCase {
     func test_actorNotBlockedByExec() async throws {
         let (service, cardId, cwd) = try await ActorHygieneSupport.liveCardWorktree()
         let marker = "\(cwd)/.exec-entered"
-        let slow = _Concurrency.Task { try await service.exec(cardId, "touch '\(marker)'; sleep 5") }
-        // Wait until the subprocess has ENTERED (marker exists) — up to 3s, polling.
-        try await ActorHygieneSupport.waitForFile(marker, timeout: 3.0)
-        let start = Date()
-        _ = await service.list()                         // must return while `sleep 5` is still running
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor exec")
-        _ = try await slow.value                          // drain
+        let release = "\(cwd)/.exec-release"
+        let slow = _Concurrency.Task {
+            try await service.exec(cardId, "touch '\(marker)'; while [ ! -e '\(release)' ]; do sleep 1; done")
+        }
+        try await pollUntil("the exec subprocess starts") {
+            FileManager.default.fileExists(atPath: marker)
+        }
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the exec subprocess",
+            release: { try Data().write(to: URL(fileURLWithPath: release)) },
+            waitForSlow: { _ = try await slow.value }
+        )
     }
 
     func test_actorNotBlockedByDiff() async throws {
         let (service, cardId, _) = try await ActorHygieneSupport.liveCardWorktree()
-        let gate = ActorHygieneSupport.Gate()
+        let gate = SyncGate()
         await service._setDiffProviderForTest(ActorHygieneSupport.BlockingDiffProvider(gate: gate))
         let slow = _Concurrency.Task { _ = await service.recomputeDiffStat(cardId) }
-        gate.waitUntilEntered()                              // provider is now parked inside the hop
-        let start = Date()
-        _ = await service.list()
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor diff")
-        gate.open(); _ = await slow.value
+        await gate.reached()                                  // provider is now parked inside the hop
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the diff provider",
+            release: { gate.release() },
+            waitForSlow: { await slow.value }
+        )
     }
 
     func test_actorNotBlockedByPollTelemetry() async throws {
-        let gate = ActorHygieneSupport.Gate()
+        let gate = SyncGate()
         let (service, _) = try await ActorHygieneSupport.liveCard(adapter: ActorHygieneSupport.BlockingTelemetryAdapter(gate: gate))
         let slow = _Concurrency.Task { await service.pollTelemetry() }
-        gate.waitUntilEntered()                              // adapter.sessionInfo is now parked inside the hop
-        let start = Date()
-        _ = await service.list()
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor pollTelemetry")
-        gate.open(); await slow.value
+        await gate.reached()                                  // adapter.sessionInfo is now parked inside the hop
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the telemetry adapter",
+            release: { gate.release() },
+            waitForSlow: { await slow.value }
+        )
     }
 
     func test_actorNotBlockedByTreeStatRecompute() async throws {
-        let gate = ActorHygieneSupport.Gate()
+        let gate = SyncGate()
         let (service, cardId) = try await ActorHygieneSupport.liveCardWorktreeWithParent()
-        await service._setTreeProbeForTest { gate.markEntered(); gate.blockUntilOpen() }
+        await service._setTreeProbeForTest { gate.parkBlocking(timeout: .seconds(120)) }
         let slow = _Concurrency.Task { await service.recomputeTreeStat(cardId) }
-        gate.waitUntilEntered()                              // compute is now parked inside the offActor hop
-        let start = Date()
-        _ = await service.list()
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() blocked behind on-actor treeStat recompute")
-        gate.open(); await slow.value
+        await gate.reached()                                  // compute is now parked inside the offActor hop
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the tree-stat probe",
+            release: { gate.release() },
+            waitForSlow: { await slow.value }
+        )
     }
 
     func test_actorNotBlockedByLivenessList() async throws {
         let (service, stub) = try await ActorHygieneSupport.liveCardWithSlowListSessions()
-        stub.listSleepMs = 4000
+        stub.blockList = true
         // `reconcile()`'s `sessions.list()` is ALREADY off-actor (PR4b) — this locks that invariant.
         let slow = _Concurrency.Task { await service.reconcile() }
-        stub.enteredGate.waitUntilEntered()               // list() has genuinely started (now sleeping)
-        let start = Date()
-        _ = await service.list()                         // must return while the stub `list()` is still sleeping
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() RPC blocked behind on-actor reconcile liveness list")
-        await slow.value
+        await stub.listGate.reached()                     // list() has genuinely started and is held
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the reconcile liveness snapshot",
+            release: { stub.listGate.release() },
+            waitForSlow: { await slow.value }
+        )
     }
 
     func test_reconcileLivenessNotBlockedByList() async throws {
         let (service, stub) = try await ActorHygieneSupport.liveCardWithSlowListSessions()
-        stub.listSleepMs = 4000
+        stub.blockList = true
         // The legacy test-retained `reconcileLiveness()` — still driven by SpawnPhase/Recovery/
         // WakeMergeWatch tests — must hop its `sessions.list()` off-actor too.
         let slow = _Concurrency.Task { await service.reconcileLiveness() }
-        stub.enteredGate.waitUntilEntered()               // list() has genuinely started (now sleeping)
-        let start = Date()
-        _ = await service.list()                         // must return while the stub `list()` is still sleeping
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0, "list() RPC blocked behind on-actor reconcileLiveness list")
-        await slow.value
+        await stub.listGate.reached()                     // list() has genuinely started and is held
+        try await ActorHygieneSupport.assertListReturnsBeforeRelease(
+            service,
+            whileBlockedBy: "the reconcileLiveness snapshot",
+            release: { stub.listGate.release() },
+            waitForSlow: { await slow.value }
+        )
     }
 
     func test_gitRemotesInvalidatesOnConfigChange() async throws {
@@ -205,7 +224,7 @@ enum ActorHygieneSupport {
     /// Build a real `OrchestraService` wired to a `SlowListSessionStub` (instead of the real tmux-backed
     /// `SessionManager`), and a `.live` card seeded directly into the store. No real git repo needed —
     /// the liveness-list gate tests (5.1.5) never touch git. Returns the service and the injected stub so
-    /// the test can arm `listSleepMs` before driving `reconcile()`/`reconcileLiveness()`.
+    /// the test can arm its deterministic list gate before driving `reconcile()`/`reconcileLiveness()`.
     static func liveCardWithSlowListSessions() async throws -> (service: OrchestraService, sessions: SlowListSessionStub) {
         let base = IntegrationSupport.tempDir("actor-hygiene-list")
         let cwd = base + "/cwd"
@@ -230,71 +249,52 @@ enum ActorHygieneSupport {
         return (service, stub)
     }
 
-    /// Poll `FileManager.fileExists` on a short loop until `path` appears, or throw once `timeout`
-    /// elapses. Used as the "entered" signal for tests whose slow op is a real subprocess (rather than
-    /// one wired to a `Gate`, e.g. `exec`'s `touch` marker).
-    static func waitForFile(_ path: String, timeout: TimeInterval) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !FileManager.default.fileExists(atPath: path) {
-            if Date() >= deadline {
-                throw OrchestraError.io("timed out waiting for file: \(path)")
-            }
-            try await _Concurrency.Task.sleep(nanoseconds: 20_000_000)   // 20ms poll
-        }
+    /// Signal that an async `list()` call really returned. The lock makes this safe to read from
+    /// `pollUntil`'s cooperative task without turning the test's ordering assertion into another race.
+    private final class CompletionLatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var signaled = false
+
+        func signal() { lock.withLock { signaled = true } }
+        var isSignaled: Bool { lock.withLock { signaled } }
     }
 
-    /// A deterministic "has the blocking stub genuinely entered its blocking section" rendezvous for the
-    /// gate tests (5.1.2–5.1.5) that inject a blocking stub (`DiffProvider`/adapter/tree probe) instead of
-    /// shelling a real `sleep`. `NSCondition`-backed, `@unchecked Sendable` (all mutable state is guarded
-    /// by the condition's own lock).
-    ///
-    /// - `markEntered()`: the blocking stub calls this the moment it is inside its blocking section.
-    /// - `waitUntilEntered()`: the test blocks (synchronously — called from a plain closure, not `async`)
-    ///   until `entered` is true.
-    /// - `blockUntilOpen(timeout:)`: the blocking stub parks here until `open()` — or `timeout` elapses.
-    ///   The timeout is REQUIRED: on unfixed (on-actor) code, the concurrent `list()` RPC in the test is
-    ///   queued behind the actor and never reaches the `gate.open()` call, so without a bound the stub
-    ///   would park forever and the test would hang to the XCTest timeout instead of failing cleanly via
-    ///   the `< 2.0s` assertion.
-    /// - `open()`: releases any `blockUntilOpen` waiter.
-    final class Gate: @unchecked Sendable {
-        private let cond = NSCondition()
-        private var _entered = false
-        private var _open = false
-
-        var entered: Bool {
-            cond.lock(); defer { cond.unlock() }
-            return _entered
+    /// Proves the actor can serve `list()` while `what` remains deliberately blocked. The timeout is only
+    /// a diagnostic backstop for a genuinely wedged implementation, never a claim about how quickly a
+    /// loaded machine schedules a correct continuation. On either path we release and drain the slow task
+    /// so a failed assertion cannot strand a blocking test double or subprocess in the test process.
+    static func assertListReturnsBeforeRelease(
+        _ service: OrchestraService,
+        whileBlockedBy what: String,
+        release: () throws -> Void,
+        waitForSlow: () async throws -> Void
+    ) async throws {
+        let listReturned = CompletionLatch()
+        let fast = _Concurrency.Task {
+            _ = await service.list()
+            listReturned.signal()
+        }
+        var released = false
+        func releaseSlow() throws {
+            guard !released else { return }
+            try release()
+            released = true
         }
 
-        func markEntered() {
-            cond.lock()
-            _entered = true
-            cond.signal()
-            cond.broadcast()
-            cond.unlock()
-        }
-
-        func waitUntilEntered() {
-            cond.lock()
-            while !_entered { cond.wait() }
-            cond.unlock()
-        }
-
-        func blockUntilOpen(timeout: TimeInterval = 10) {
-            cond.lock()
-            let deadline = Date().addingTimeInterval(timeout)
-            while !_open {
-                if !cond.wait(until: deadline) { break }   // deadline reached without a signal — self-release
+        do {
+            try await pollUntil("list() returns while \(what) remains blocked", timeout: .seconds(60)) {
+                listReturned.isSignaled
             }
-            cond.unlock()
-        }
-
-        func open() {
-            cond.lock()
-            _open = true
-            cond.broadcast()
-            cond.unlock()
+            try releaseSlow()
+            _ = await fast.value
+            try await waitForSlow()
+        } catch {
+            if !released { try? releaseSlow() }
+            if released {
+                _ = await fast.value
+                try? await waitForSlow()
+            }
+            throw error
         }
     }
 
@@ -302,18 +302,16 @@ enum ActorHygieneSupport {
     /// entered (proving the call genuinely reached the hop) then park until the test opens it — a
     /// deterministic stand-in for a slow real `git diff`.
     final class BlockingDiffProvider: DiffProvider, @unchecked Sendable {
-        private let gate: Gate
-        init(gate: Gate) { self.gate = gate }
+        private let gate: SyncGate
+        init(gate: SyncGate) { self.gate = gate }
 
         func stat(worktree: String, base: DiffBase, parentBranch: String?) throws -> DiffStat? {
-            gate.markEntered()
-            gate.blockUntilOpen()
+            gate.parkBlocking(timeout: .seconds(120))
             return nil
         }
 
         func render(worktree: String, base: DiffBase, parentBranch: String?) throws -> String {
-            gate.markEntered()
-            gate.blockUntilOpen()
+            gate.parkBlocking(timeout: .seconds(120))
             return ""
         }
     }
@@ -330,39 +328,42 @@ enum ActorHygieneSupport {
         let bin = "fake-agent"
         let enabled = true
         let capabilities = AgentCapabilities.codex
-        private let gate: Gate
-        init(gate: Gate) { self.gate = gate }
+        private let gate: SyncGate
+        init(gate: SyncGate) { self.gate = gate }
 
         func models() -> [AgentModel] { [AgentModel(id: "m1")] }
         func newSessionId() -> String? { nil }
         func start(_ ctx: AdapterContext) -> [String] { [bin] }
         func resume(_ ctx: AdapterContext) -> [String]? { nil }
         func sessionInfo(_ ctx: AdapterContext, current: String?, prior: [String]) -> AgentSessionInfo? {
-            gate.markEntered()
-            gate.blockUntilOpen()
+            gate.parkBlocking(timeout: .seconds(120))
             return nil
         }
     }
 
-    /// A minimal `SessionManaging` stub for the 5.1.5 liveness-list gate tests: `list()` honors an
-    /// injectable sleep (mirrors `Tests/OrchestraCoreTests/Stubs.swift`'s `StubSessions.listSleepMs`,
-    /// duplicated here because `IntegrationTests` doesn't depend on the `OrchestraCoreTests` target).
+    /// A minimal `SessionManaging` stub for the 5.1.5 liveness-list gate tests. Its `list()` call can be
+    /// held at a `SyncGate`, which proves ordering without guessing how long a slow `tmux list-sessions`
+    /// should take. This remains local because `ContractTests` doesn't depend on `OrchestraCoreTests`.
     /// Every other member is a lock-guarded no-op/empty-return — `reconcile()`/`reconcileLiveness()` only
     /// call `sessionName` and `list()`.
     final class SlowListSessionStub: SessionManaging, @unchecked Sendable {
         private let lock = NSLock()
         private var alive: Set<String> = []
-        /// Set by the test BEFORE driving `reconcile()`/`reconcileLiveness()` to simulate a slow
-        /// `tmux list-sessions`.
-        var listSleepMs: UInt32 = 0
-        /// Signaled the moment `list()` is about to sleep — the deterministic "entered" rendezvous (see
-        /// `Gate`'s doc comment). Required here (unlike `reconcile()`'s own gate tests) because
+        private var shouldBlockList = false
+        /// Set by the test BEFORE driving `reconcile()`/`reconcileLiveness()` to hold the real liveness
+        /// snapshot at a deterministic point.
+        var blockList: Bool {
+            get { lock.withLock { shouldBlockList } }
+            set { lock.withLock { shouldBlockList = newValue } }
+        }
+        /// Signaled only once `list()` is held — the deterministic "entered" rendezvous. Required here
+        /// because
         /// `reconcileLiveness()`'s UNFIXED call is synchronous with no intervening `await` before it: a
         /// plain "spawn the Task then immediately race a concurrent RPC" is a genuine ordering race (the
         /// concurrent RPC can win the actor's queue before the slow call ever starts), which would let the
         /// on-actor bug slip through as a false-pass. Waiting for this gate makes the RPC start only once
         /// the slow call has demonstrably begun, mirroring every other test in this file.
-        let enteredGate = Gate()
+        let listGate = SyncGate()
 
         func sessionName(_ id: UUID) -> String { "orchestra-\(id.uuidString.lowercased())" }
         func ensure(_ task: Task, argv: [String], env: [String: String]) throws -> (name: String, created: Bool) {
@@ -374,9 +375,7 @@ enum ActorHygieneSupport {
         func newShellWindow(_ name: String, cwd: String) throws -> String { "shell-1" }
         func windows(_ name: String) throws -> [TmuxTarget] { [] }
         func list() throws -> [SessionInfo] {
-            let ms = listSleepMs
-            enteredGate.markEntered()
-            if ms > 0 { usleep(ms * 1000) }
+            if blockList { listGate.parkBlocking(timeout: .seconds(120)) }
             lock.lock(); let names = alive; lock.unlock()
             return names.map { SessionInfo(name: $0, running: true) }
         }
