@@ -467,6 +467,36 @@ public class BoardStore: ObservableObject {
     /// navigation (and, under search, re-appears in every one of them together).
     public var visibleTasks: [Task] { tasks.filter { !isEmbedded($0) } }
 
+    // MARK: source prefix (ambiguity-driven disclosure on the identity line)
+
+    /// True when the board holds more than one repo — the only case where a card's identity line is
+    /// ambiguous without naming where it lives. Single-repo boards show no prefix at all.
+    ///
+    /// Derived over `tasks`, not `visibleTasks`, and the two are equal here by construction: an
+    /// embedded card can never contribute a repo of its own, because a worktree reviewer embeds
+    /// behind its lineage parent — which `BoardTree.parentCard` resolves within the SAME repo — and
+    /// a branchless reviewer is `origin != .worktree`, which this filter drops anyway. Reading
+    /// `visibleTasks` would pay a per-card `isEmbedded` derivation in a property every card renders.
+    public var showsRepoPrefix: Bool {
+        var first: String?
+        for task in tasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
+            guard let first else { first = task.repo; continue }
+            if first != task.repo { return true }
+        }
+        return false
+    }
+
+    /// The muted prefix for a card's identity line, or nil while the board is unambiguous. A
+    /// worktree card names its repo; a freeform card has no repo, so it names the directory it runs
+    /// in — under the SAME gate, so a single-repo board stays prefixless either way and the full
+    /// path keeps its home in the inspector.
+    public func repoPrefix(of task: Task) -> String? {
+        guard showsRepoPrefix else { return nil }
+        let path = task.origin == .worktree ? task.repo : task.cwd
+        guard !path.isEmpty else { return nil }
+        return (path as NSString).lastPathComponent
+    }
+
     /// Indent level of `task` within its column's branch tree (0 for roots), capped at
     /// `BoardTree.maxIndent`. The card views multiply this by a per-surface step for the leading inset.
     public func treeDepth(of task: Task) -> Int {
