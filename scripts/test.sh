@@ -32,6 +32,11 @@ if [[ $want_all == 0 ]]; then
   [[ $want_e2e == 0 ]]      && TIER_ARGS+=(--skip '^E2ETests\.')
 else
   scripts/lint-tests.sh    # the merge-gate run enforces the re-clumping guards
+  # Shell-script tests too: `swift test` cannot see these, so without an explicit call the merge gate
+  # would pass with the logic they cover deleted. They are pure (fixture text in, no forks, no
+  # sleeps, no hardware) and finish in well under a second, so the gate pays nothing to include them.
+  scripts/lib/ios-pick-device-test.sh
+  scripts/build-ios-device-test.sh
 fi
 # --- build-arg filtering: the existing selector loop, but over PASS not "$@" --------------
 BUILD_ARGS=()
