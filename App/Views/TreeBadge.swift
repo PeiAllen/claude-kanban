@@ -2,17 +2,18 @@ import SwiftUI
 import OrchestraUI
 import OrchestraCore
 
-/// A card's lineage state against its parent branch, as one compact glyph. Shared by the board
-/// card's quiet cluster and the inspector header so the two can't drift on glyph or colour. `inSync`
-/// renders nothing, and the call sites render nothing for a nil `treeStat`: absence IS the in-sync
-/// signal.
+/// A card's lineage state against its parent branch, as one compact glyph. Shared by the DESKTOP
+/// board card's quiet cluster and the desktop inspector header so the two can't drift on glyph or
+/// colour. `inSync` renders nothing, and the call sites render nothing for a nil `treeStat`: absence
+/// IS the in-sync signal. (The iOS client has its own `TreeBadge` — its palette migrates with the
+/// phone's card anatomy in a later slice.)
 ///
 /// The colours say WHO the state is waiting on, which is the only thing you'd act on. Muted blue —
 /// behind the parent, or needing a restack — means the card's own agent reconciles it without you.
 /// Grey means the wait belongs to someone else (the parent card owes this branch a merge). Only the
-/// stalled case, where nobody ever answered, keeps a warning colour. None of them may be amber:
-/// saturated amber is reserved board-wide for "needs YOU", and a card whose agent is about to merge
-/// its parent down is precisely not that.
+/// stalled case, where nobody ever answered, keeps a warning colour. None of them is amber: on the
+/// desktop board, saturated amber is being reserved for "needs YOU", and a card whose agent is about
+/// to merge its parent down is precisely not that.
 struct TreeBadge: View {
     @Environment(\.theme) var theme: Theme
     let stat: TreeStat

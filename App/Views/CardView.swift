@@ -295,7 +295,7 @@ struct CardView: View {
         if model.attachedLiveness(of: task) != nil, model.expandedRows(for: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             HStack(spacing: 0) {
-                AttachedAgentsBadge(task: task, labeled: true)
+                AttachedAgentsBadge(task: task)
                 Spacer(minLength: 0)
             }
             .padding(.top, 6)

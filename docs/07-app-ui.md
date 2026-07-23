@@ -116,10 +116,11 @@ selection writes, because the phone presents card details from two different sta
   grey clock while a merge-request waits on the parent card; the red warning triangle only when
   nobody ever answered it), and the **model** as a dim pill. Those glyph colours say *who* the state
   waits on — blue for "this card's own agent will handle it", grey for "the parent card owes it",
-  and a warning only when nobody answered at all — which is why none of them is amber: saturated
-  amber is reserved board-wide for "needs you". The glyph lives in `TreeBadge`, shared with the
-  [inspector header](#the-inspector) so the two can't drift, and hover names the parent branch.
-  Absence is information: no glyph means nothing to say.
+  and a warning only when nobody answered at all — which is why none of them is amber: on the desktop
+  board, saturated amber is being reserved for "needs you". The glyph lives in `TreeBadge`, shared
+  with the desktop [inspector header](#the-inspector) so the two can't drift, and hover names the
+  parent branch. Absence is information: no glyph means nothing to say. (The iPhone client keeps its
+  own tree-badge palette until the phone's card anatomy migrates in a later slice.)
 - **Squish is an ordered drop, not truncation.** When a card runs short of width, `CardL1Layout`
   decides what goes and in what order — **model → treeStat glyph → the pill's state word → the
   diffstat** — and `CardView` hands those rungs to `ViewThatFits`, which picks the first that fits.
