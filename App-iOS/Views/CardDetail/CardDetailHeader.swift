@@ -31,6 +31,8 @@ struct CardDetailHeader: View {
             HStack(spacing: 8) {
                 if task.origin != .worktree { ModeAccessChips(origin: task.origin, access: task.access) }
                 ModelChip(model: task.model)
+                // Jump UP the lineage. Generic across card kinds — not reviewer-specific.
+                ParentChip(task: task)
                 // The attached-agents affordance in the detail (parity with the board accordion): the
                 // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
                 // this card is a target). Same tap-expand state as the board, so it stays consistent.
@@ -107,6 +109,44 @@ private struct DetailStatusPill: View {
         .padding(.horizontal, 10).padding(.vertical, 4)
         .background(Capsule().fill(sem.tint))
         .fixedSize()
+    }
+}
+
+/// The card's PARENT as a tappable chip (`⤴ <parent title>`) — the "go up the lineage" affordance, and
+/// the mirror of the attached-agents accordion that goes down it. Deliberately **generic across card
+/// kinds**, not reviewer-specific: one rule, `attachedTarget ?? parentCard`, resolves
+///  • an embedded read-only reviewer → the card it reviews (`attachedTarget` — which also covers the
+///    branchless `.borrowed` reviewer that has no `parentBranch` and so no lineage parent), and
+///  • any ordinary stacked child card (spawned with `base:`) → its lineage parent (`parentCard`).
+/// For a worktree reviewer the two coincide, so the fallback is only ever load-bearing for the other two.
+/// It resolves ONE hop (a nested reviewer goes to its immediate target, not the flattened root), which is
+/// what "parent" means here. This is the only way back up from an embedded reviewer: its board-cell
+/// `parentChip` never renders, because an embedded card is never drawn as a board cell.
+///
+/// A `NavigationLink` (not a `selectedId` write) so it pushes onto whatever stack this detail is in — the
+/// Board tab presents card details off `selectedId` but the Needs You tab presents them off its own
+/// `$route`, and a `selectedId` write is a dead tap there. Self-hides when no parent is derivable.
+private struct ParentChip: View {
+    @EnvironmentObject private var model: BoardModel
+    @Environment(\.theme) private var theme: Theme
+    let task: Task
+
+    var body: some View {
+        if let parent = model.attachedTarget(of: task) ?? model.parentCard(of: task) {
+            NavigationLink { CardDetailView(taskId: parent.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.turn.left.up").font(.caption2)
+                    Text(parent.title).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.system(.caption2, design: .monospaced).weight(.medium))
+                .foregroundStyle(theme.accent)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(theme.chip))
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: 170, alignment: .leading)
+            .accessibilityLabel("Open parent card: \(parent.title)")
+        }
     }
 }
 
