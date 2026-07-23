@@ -50,6 +50,7 @@ struct OrchestraiOSApp: App {
                 }
                 #if DEBUG
                 .task { DebugSupport.exportPubkey() }
+                .task { await DebugSupport.applyLaunchHook(model: model) }
                 #endif
         }
     }
