@@ -313,13 +313,19 @@ private struct DebugLaunchHook: ViewModifier {
         if let h = env["ORCH_SHELL_HEIGHT"], let hv = Double(h) {
             UserDefaults.standard.set(hv, forKey: "shellPanelHeight")
         }
-        let mock = Task(title: "Wire shell-panel resize + strip swap",
+        var mock = Task(title: "Wire shell-panel resize + strip swap",
                         repo: DemoConfig.repoRoot, branch: "fix/shells",
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
+        // A branch diffstat the daemon would have computed, so the card footer and the inspector
+        // header both have something to render (they share the `k files · +N −M` formatting).
+        mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
         model.tasks = [mock]
         model.selectedId = mock.id
+        // ORCH_INSPECTOR=diff opens the Diff pane instead of the agent terminal — the shared header
+        // (diffstat, attached agents) has to read the same from either tab.
+        if env["ORCH_INSPECTOR"] == "diff" { model.inspectorMode = .diff }
         // No daemon in this hook → suppress the first-run onboarding cover so the inspector is visible.
         model.onboarded = true
         model.showOnboarding = false
@@ -480,6 +486,9 @@ private struct DebugLaunchHook: ViewModifier {
                         initialPrompt: "Wire the KeyboardController to the command palette and add hjkl navigation across columns.")
         card.deadReason = .sessionVanished
         card.agentSessionId = "mock-session"   // surfaces the "Try resume" button too
+        // The panel's whole claim is "your work is preserved" — give it work to have preserved, so
+        // the snapshot covers the diffstat line under the worktree path.
+        card.diffStat = DiffStat(filesChanged: 12, insertions: 486, deletions: 91)
         let view = RecoveryView(task: card)
             .environmentObject(model)
             .environment(\.theme, theme)

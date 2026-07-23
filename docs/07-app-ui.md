@@ -174,7 +174,26 @@ the [Recovery panel](#recovery-panel) instead.
 The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that swaps the inspector body
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
-(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X).
+(`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). Immediately
+right of the toggle sits the card's **branch diffstat** in the board card's footer colors — `7f +214 −38`
+— so the change size reads from either tab without costing a row of vertical space. It is absent when
+the daemon has no stat for the card (non-git, or nothing changed yet). It measures the card's *default*
+baseline (parent-relative when stacked, else branch), so switching the [Diff view](#the-in-app-diff-view)'s
+own picker to **Working** legitimately shows a different range in the body below; the tooltip names the
+baseline.
+
+The **iPhone** card detail carries the same fact in its own language: a diffstat chip in the pinned
+header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf` ordering. That row
+degrades the same way — a big stat next to a long model name would otherwise wrap the mode chip onto two
+lines and push the context gauge's percentage off the trailing edge — so the chip sheds its file count
+first and hides last, leaving its neighbours intact.
+
+That row is over-subscribed at the default 392 pt inspector width, so it **degrades in stages** rather
+than truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything
+spelled out when the inspector is dragged wide; at 392 the button captions drop to icons alone (tooltips
+keep the words) with tighter chips and gutters, and the diffstat sheds its file count to `+214 −38`;
+only at the 320 pt drag minimum does the diffstat drop entirely. Nothing ever clips off the trailing
+edge.
 **Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
 `~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
