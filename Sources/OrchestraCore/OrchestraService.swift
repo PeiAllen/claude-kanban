@@ -821,6 +821,12 @@ public actor OrchestraService {
     /// the budget is still spent. A race test lands a concurrent `flipStuckIfExhausted` here and proves the
     /// `reArmingCards` fence keeps it from re-stamping stuck. Nil in production.
     var reArmPause: (@Sendable () async -> Void)? = nil
+    /// Test seam: pause teardown's child-nudge loop between its enqueue/wake awaits and the child
+    /// side-effect trio, so a test can land a reopen in exactly that window. Nil in production.
+    var teardownNudgePause: (@Sendable () async -> Void)? = nil
+    func setTeardownNudgePauseForTest(_ pause: @escaping @Sendable () async -> Void) {
+        teardownNudgePause = pause
+    }
     func setReArmPauseForTest(_ pause: @escaping @Sendable () async -> Void) {
         reArmPause = pause
     }

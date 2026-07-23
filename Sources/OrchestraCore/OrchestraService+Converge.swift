@@ -416,6 +416,11 @@ extension OrchestraService {
             // Then schedule the CHILD's own recompute — not this card's fan-out debounce, which the
             // teardown above just cancelled — so the request re-routes to whoever owns the branch now, or
             // becomes an unowned request the human sees when nobody does.
+            await teardownNudgePause?()   // test seam: land a reopen inside the enqueue/wake window
+            // Re-fence AFTER the enqueue/wake suspensions: the trio below mutates the CHILD on the
+            // premise that the parent is gone — a reopen that landed during those awaits makes the
+            // premise false, and a stale teardown must not stop a live child's nudge loop over it.
+            guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
             stopMergeRequestNudge(card.id)
             ensureRuntime(for: card)   // the child may be untouched since a daemon restart
             scheduleTreeStat(card.id)

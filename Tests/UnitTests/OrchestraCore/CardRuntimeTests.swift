@@ -111,6 +111,39 @@ struct CardRuntimeTests {
         #expect(await env.svc.watchRegistry[card.id] == nil)
     }
 
+    // The child-effect trio (stop the child's nudge loop + schedule its tree stat) runs AFTER the
+    // per-child enqueue/wake suspensions — a reopen landing inside that window makes the "parent
+    // archived" premise false, and the stale teardown must not stop a live child's nudge loop.
+    @Test("lease: a reopen inside the child-nudge window aborts the child side effects")
+    func reopenInsideChildNudgeWindowAbortsTrio() async throws {
+        let fake = FakeProc()
+        GitConfigEmulator().install(on: fake)
+        let graph = RepoScripts.withChild(on: fake)
+        let env = TestEnv.make(proc: fake)
+        let repo = TestEnv.repo(env.base)
+        let parent = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                                link: ParentLink(parent: "parent", base: graph.tip("parent")!))
+        _ = try await env.svc.mergeRequest(ref: child.ref())            // arms the child's nudge loop
+        #expect(await env.svc.mergeRequestNudgeActive(child.id))
+
+        // Land the reopen exactly between the child enqueue/wake awaits and the side-effect trio.
+        let svc = env.svc, pid = parent.id
+        await env.svc.setTeardownNudgePauseForTest { _ = try? await svc.reopen(pid) }
+
+        try await env.svc.archive(parent.id)
+        await env.svc.reconcile()                                       // dispatches the teardown step
+        try await pollUntil {                                           // wait for the step to settle
+            await env.svc.list(includeArchived: true)
+                .first { $0.id == pid }?.phase.kind == .creatingWorktree
+        }
+
+        #expect(await env.svc.mergeRequestNudgeActive(child.id))        // trio aborted — loop untouched
+    }
+
     // The lease end-to-end: `.archivedPending` is RE-ENTERABLE (archive → reopen → archive again),
     // so a phase-only stepper fence would let a stale step — dispatched for the FIRST archive —
     // complete the SECOND archive's teardown (releaseAll + final flip) with none of its duties
