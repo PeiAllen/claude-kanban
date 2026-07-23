@@ -3,9 +3,9 @@ import Foundation
 @testable import OrchestraUI
 @testable import OrchestraKit
 
-/// The identity line's source prefix: shown only while the board is ambiguous (>1 repo), naming a
-/// worktree card's repo and a freeform card's directory. Mirrors `BoardStore.showsRepoPrefix` /
-/// `repoPrefix(of:)`.
+/// The identity line's repo prefix: shown only while the board is ambiguous (>1 repo), naming a
+/// worktree card's repo by the shortest suffix that distinguishes it. Freeform cards are never
+/// prefixed. Mirrors `BoardStore.showsRepoPrefix` / `repoPrefix(of:)`.
 @Suite @MainActor struct BoardStoreSourcePrefixTests {
 
     private func worktreeCard(_ title: String, repo: String, branch: String = "feat/x",
@@ -30,7 +30,7 @@ import Foundation
         #expect(model.repoPrefix(of: model.tasks[0]) == nil)
     }
 
-    /// Two repos ⇒ every card names its source: the repo's last path component.
+    /// Two repos with distinct basenames ⇒ each card names its repo by that basename.
     @Test func test_multiRepoBoardPrefixesWithRepoName() {
         let model = TestModel.make()
         let a = worktreeCard("a", repo: "/code/orchestra")
@@ -39,6 +39,20 @@ import Foundation
         #expect(model.showsRepoPrefix)
         #expect(model.repoPrefix(of: a) == "orchestra")
         #expect(model.repoPrefix(of: b) == "site")
+    }
+
+    /// Two repos that SHARE a basename must not both render "client" — the prefix would open the gate
+    /// and still leave L2 ambiguous. It grows leftward to the shortest suffix that distinguishes them.
+    @Test func test_basenameCollisionGrowsThePrefixUntilUnique() {
+        let model = TestModel.make()
+        let a = worktreeCard("a", repo: "/work/alpha/client")
+        let b = worktreeCard("b", repo: "/work/beta/client")
+        let c = worktreeCard("c", repo: "/code/orchestra")   // distinct basename — stays a basename
+        model.tasks = [a, b, c]
+        #expect(model.showsRepoPrefix)
+        #expect(model.repoPrefix(of: a) == "alpha/client")
+        #expect(model.repoPrefix(of: b) == "beta/client")
+        #expect(model.repoPrefix(of: c) == "orchestra")
     }
 
     /// A freeform card never gets a board prefix — not even when the gate is open. Gating its cwd on

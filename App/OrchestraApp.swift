@@ -260,7 +260,7 @@ private struct DebugLaunchHook: ViewModifier {
     /// to open: 0 leaves the "New terminal" button showing, ≥1 swaps in the tab ribbon. The agent /
     /// shell terminals render empty (no tmux behind a mock card) — only the chrome is under test.
     /// `ORCH_TREE` (stale | restack | merge-requested | stalled | in-sync) gives the mock a lineage
-    /// state so the `TreeBadge` on the card footer and in the inspector header has something to render;
+    /// state so the `TreeBadge` on the card's L1 strip and in the inspector header has something to render;
     /// `ORCH_BEHIND` sets the `↓N` count. Sizes that live in preferences — the shell-panel height, the
     /// inspector width — are NOT set here: the harness passes them as `-shellPanelHeight`/
     /// `-inspectorWidth` launch arguments, because a `UserDefaults` write from this hook persists into
@@ -324,8 +324,8 @@ private struct DebugLaunchHook: ViewModifier {
                         cwd: "\(DemoConfig.repoRoot)/.worktrees/fix-shells",
                         model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
                         order: 0, phase: .live(.running), ctxPct: 62, initialPrompt: "demo")
-        // A branch diffstat the daemon would have computed, so the card footer and the inspector
-        // header both have something to render (they share the `k files · +N −M` formatting).
+        // A branch diffstat the daemon would have computed, so the card's L1 quiet cluster and the
+        // inspector header both have something to render (they share the `k files · +N −M` formatting).
         mock.diffStat = DiffStat(filesChanged: 7, insertions: 214, deletions: 38)
         // A lineage state so `TreeBadge` has something to render. `stalled` deliberately keeps a live
         // `stale` underneath, since the flag is supposed to outrank the state. Unknown values abort
@@ -584,8 +584,8 @@ private struct DebugLaunchHook: ViewModifier {
         renderPNG(view, to: path)
     }
 
-    /// Render a few board cards carrying `diffStat`s (and one without → model-name fallback) so the
-    /// footer diffstat (`Nf +I −D`, axis 7) is visible. `ORCH_SNAPSHOT_CARDS=/path.png`.
+    /// Render a few board cards carrying `diffStat`s (and one without) so the quiet-cluster diffstat
+    /// (`Nf +I −D`, axis 7) is visible on the L1 strip. `ORCH_SNAPSHOT_CARDS=/path.png`.
     static func snapshotCards(to path: String, model: BoardModel) {
         if let d = ProcessInfo.processInfo.environment["ORCH_SNAP_DARK"] { model.darkMode = d == "1" }
         let theme = Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent)
@@ -598,7 +598,7 @@ private struct DebugLaunchHook: ViewModifier {
             return t
         }
         let cards = [
-            mk("Wire the footer diffstat into CardView.meta", branch: "feat/footer-stat",
+            mk("Wire the branch diffstat into the L1 quiet cluster", branch: "feat/quiet-stat",
                phase: .live(.running), stat: DiffStat(filesChanged: 6, insertions: 214, deletions: 37)),
             mk("Small tweak to the baseline toggle", branch: "fix/baseline",
                phase: .live(.waiting(.humanTurn)), stat: DiffStat(filesChanged: 1, insertions: 3, deletions: 1)),
@@ -703,7 +703,7 @@ private struct DebugLaunchHook: ViewModifier {
                access: .readOnly, parentBranch: "feat/attached"),
             mk("Codex review", "review/attached-codex", .impl, .live(.waiting(.humanTurn)), 5,
                access: .readOnly, parentBranch: "feat/attached"),
-            // A freeform card: no repo, so its prefix (when the gate is open) is its directory.
+            // A freeform card: no repo, so it is never repo-prefixed on the board (its dir is inspector-only).
             mk("board-redesign research", "", .plan, .live(.running), 6,
                desc: "Surveying agent-tree UIs", ageMinutes: 4,
                origin: .borrowed, cwd: DemoConfig.notesRoot),

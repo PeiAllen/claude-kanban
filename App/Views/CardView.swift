@@ -116,7 +116,10 @@ struct CardView: View {
     /// against labels rendered at different instants. Live cards tick every second (seconds are
     /// meaningful there); everything else ticks once a minute, which is all its age can change.
     private var statusStrip: some View {
-        TimelineView(.periodic(from: .now, by: (isRunning || isWaiting) ? 1 : 60)) { ctx in
+        // Cadence follows the AGE, not the phase: 1 Hz while the stamp still reads in seconds, then
+        // once a minute. Keying it off `isRunning || isWaiting` left a just-spawned or just-dead card
+        // frozen at "· 0s" for its whole first minute — its age is in seconds too.
+        TimelineView(.periodic(from: .now, by: ageRefreshInterval(task.phaseChangedAt))) { ctx in
             ViewThatFits(in: .horizontal) {
                 strip(CardL1Layout.rung(dropping: 0), now: ctx.date)
                 strip(CardL1Layout.rung(dropping: 1), now: ctx.date)
