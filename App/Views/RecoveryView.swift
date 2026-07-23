@@ -72,6 +72,14 @@ struct RecoveryView: View {
                         Text(task.cwd)
                             .font(F.mono(10.5)).foregroundColor(theme.text3).lineLimit(1)
                             .truncationMode(.middle)
+                        // How MUCH work is preserved. A dead card renders no HeaderBar (this panel
+                        // replaces the whole inspector), so without this the sentence above is the
+                        // one place that claims work survived while showing none of its size.
+                        if let stat = task.diffStat, stat.filesChanged > 0 {
+                            DiffStatNumbers(stat: stat)
+                                .lineLimit(1)
+                                .help(diffStatHelp(stat))
+                        }
 
                         HStack(spacing: 6) {
                             Button {

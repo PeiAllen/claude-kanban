@@ -16,6 +16,17 @@
 # The agent/shell terminal panes render empty (a mock card has no tmux behind it) — only the chrome
 # (strip swap + panel height) is under test here. Run UNSANDBOXED (xcodebuild needs ~/Library).
 #
+# WHAT THE ISOLATED $HOME DOES *NOT* ISOLATE: preferences. `@AppStorage`/NSUserDefaults reads go
+# through cfprefsd, which is keyed per-USER, not per-HOME — so these shots render at whatever
+# `inspectorWidth` (etc.) the human has dragged their real app to, NEVER the shipped default. A
+# layout bug that only appears at the default width is invisible here and WILL pass this harness.
+# To test an exact width, pass it through the NSUserDefaults *argument* domain, which outranks the
+# stored value without mutating the user's prefs:
+#     "$BIN" -inspectorWidth 392        # the shipped default (App/OrchestraApp.swift)
+#     "$BIN" -inspectorWidth 320        # the drag minimum (InspectorResizer.resolve)
+# and A/B against a mock WITHOUT the element under test, so overflow is attributable. This is how
+# the inspector diffstat was caught clipping the close button at 392 after passing these shots.
+#
 # Usage: scripts/orch-ui-shot.sh [--no-build] [outdir]
 #   default outdir: ./.scratch/ui-shots
 set -euo pipefail
@@ -137,19 +148,22 @@ shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 
 # Tree state in the shared inspector header (`ORCH_TREE`): every badge the board card can show, plus
 # the Diff tab — the badge lives in the shared header precisely so it survives that swap. `in-sync`
-# and the unset case must render NOTHING; they are shot because "no badge" is the assertion.
+# and the unset case must render NOTHING; they are shot because "no badge" is the assertion. Shot 16
+# doubles as the Diff-tab check for the whole shared header (diffstat + tree badge).
 shoot "11-tree-stale"        env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3
 shoot "12-tree-restack"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=restack
 shoot "13-tree-merge-req"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=merge-requested
 shoot "14-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
 shoot "15-tree-in-sync"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=in-sync
 shoot "16-tree-stale-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
-# The same badge with the inspector PINNED to its shipped 392pt default, A/B against the identical
-# mock without it. The shots above render at whatever width the human last dragged this app to (see
-# the preferences note at the top), so they cannot show whether the header row still fits at the
-# width most people actually run — and that row is over-full enough that the answer isn't obvious.
-# `↓12` is the widest the badge ever gets.
-shoot "17-tree-stale-392"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 392
-shoot "18-no-tree-392"       env ORCH_SHOW=shells ORCH_SHELLS_N=0 -- -inspectorWidth 392
+# The header row PINNED to the widths that decide its `ViewThatFits` rung, because every shot above
+# renders at whatever width the human last dragged this app to (see the preferences note at the top)
+# and so can't tell you which rung real users get. The two 392pt shots are the interesting pair: at the
+# shipped default the shared chip holds the diffstat AND a one-digit badge, but a two-digit `↓12` is
+# ~15pt more than the row's remaining slack and drops the ladder a rung, trading the diffstat away.
+# That is the intended give — see the chip comment in InspectorView — and 17-vs-18 is the evidence.
+shoot "17-tree-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3 -- -inspectorWidth 392
+shoot "18-tree-392-2digit"   env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 392
+shoot "19-tree-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 320
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

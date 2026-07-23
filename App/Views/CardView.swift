@@ -302,15 +302,10 @@ struct CardView: View {
     /// cards carry no `diffStat`, so they fall back to the model name rather than fabricate a stat.
     @ViewBuilder private var meta: some View {
         if let stat = task.diffStat, stat.filesChanged > 0 {
-            HStack(spacing: 5) {
-                Text("\(stat.filesChanged)f").foregroundStyle(theme.text3)
-                Text("+\(stat.insertions)").foregroundStyle(theme.green.text)
-                Text("−\(stat.deletions)").foregroundStyle(theme.red.text)
-            }
-            .font(F.mono(10.5, .medium))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .help("\(stat.filesChanged) files changed · +\(stat.insertions) −\(stat.deletions)")
+            DiffStatNumbers(stat: stat)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(diffStatHelp(stat))
         } else if !task.model.id.isEmpty {
             Text(task.model.displayName)
                 .font(F.mono(10.5, .medium))

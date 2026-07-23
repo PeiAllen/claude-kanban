@@ -19,6 +19,11 @@ struct TreeBadge: View {
     let stat: TreeStat
     let parentBranch: String?
 
+    /// Whether this badge draws anything at all — false for an in-sync card, which renders `EmptyView`.
+    /// A caller that puts the badge on its own surface (the inspector header chips it) has to know that
+    /// BEFORE laying out, or an in-sync card gets an empty chip where the design says "show nothing".
+    static func renders(_ stat: TreeStat) -> Bool { stat.mergeStalled || stat.state != .inSync }
+
     /// Sentence subject for the two help strings that open on the parent: "Parent branch feat/x" when
     /// the name is known, a bare "The parent branch" when it isn't. The other two mention the parent
     /// mid-sentence and interpolate it themselves, since neither reads as a subject.

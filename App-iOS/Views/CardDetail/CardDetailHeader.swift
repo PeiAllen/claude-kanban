@@ -28,25 +28,19 @@ struct CardDetailHeader: View {
                 DetailStatusPill(status: ds.statusKey, label: ds.label, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
 
-            HStack(spacing: 8) {
-                if task.origin != .worktree { ModeAccessChips(origin: task.origin, access: task.access) }
-                ModelChip(model: task.model)
-                // Jump UP the lineage. Generic across card kinds — not reviewer-specific.
-                ParentChip(task: task)
-                // ...and the state of that lineage, the same glyph the board cell carries. It belongs
-                // beside the parent chip (which says WHO the parent is, not whether this branch is
-                // current with it), and in this header rather than a tab, because the header is pinned
-                // above all of them — so branch-sync status reads from Diff and Terminal alike, without
-                // going back to the board. Nothing renders while the card is in sync or untracked.
-                if let ts = task.treeStat {
-                    TreeBadge(stat: ts, parentBranch: task.parentBranch)
-                }
-                // The attached-agents affordance in the detail (parity with the board accordion): the
-                // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
-                // this card is a target). Same tap-expand state as the board, so it stays consistent.
-                AttachedExpandToggle(task: task)
-                Spacer(minLength: 6)
-                if task.ctxPct > 0 { CtxGauge(pct: task.ctxPct, theme: theme) }
+            // A freeform card with a big diffstat and a long model name overruns this row on a phone —
+            // the mode chip wraps to two lines and the context gauge loses its percentage off the
+            // trailing edge. So the diffstat gives ground before its neighbours do: full chip, then
+            // without the file count, then gone. (The desktop inspector header degrades the same way.)
+            //
+            // The tree badge inside the row is NOT part of that ladder: it is one glyph plus at most a
+            // couple of digits, and it is the row's only signal that this branch has fallen behind its
+            // parent — the diffstat can shrink to buy that room, which is exactly what the rungs below
+            // do before anything else gives.
+            ViewThatFits(in: .horizontal) {
+                chipRow(stat: .full)
+                chipRow(stat: .compact)
+                chipRow(stat: .hidden)
             }
 
             Text(breadcrumb)
@@ -87,6 +81,33 @@ struct CardDetailHeader: View {
 
     private var breadcrumb: String {
         cardBreadcrumb(repo: task.repo, branch: task.branch, cwd: task.cwd, origin: task.origin)
+    }
+
+    @ViewBuilder private func chipRow(stat: DiffStatChip.Size) -> some View {
+        HStack(spacing: 8) {
+            if task.origin != .worktree { ModeAccessChips(origin: task.origin, access: task.access) }
+            ModelChip(model: task.model)
+            // How big the card's change is, in the same chip language as its neighbours — the desktop
+            // shows this in its inspector header for the same reason: the Diff tab is a tab away, and
+            // "how much changed" is a decision you make before opening it.
+            DiffStatChip(task: task, size: stat)
+            // Jump UP the lineage. Generic across card kinds — not reviewer-specific.
+            ParentChip(task: task)
+            // ...and the state of that lineage, the same glyph the board cell carries. It belongs
+            // beside the parent chip (which says WHO the parent is, not whether this branch is current
+            // with it), and in this header rather than a tab, because the header is pinned above all of
+            // them — so branch-sync status reads from Diff and Terminal alike, without going back to
+            // the board. Nothing renders while the card is in sync or untracked.
+            if let ts = task.treeStat {
+                TreeBadge(stat: ts, parentBranch: task.parentBranch)
+            }
+            // The attached-agents affordance in the detail (parity with the board accordion): the
+            // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
+            // this card is a target). Same tap-expand state as the board, so it stays consistent.
+            AttachedExpandToggle(task: task)
+            Spacer(minLength: 6)
+            if task.ctxPct > 0 { CtxGauge(pct: task.ctxPct, theme: theme) }
+        }
     }
 }
 
@@ -154,6 +175,41 @@ private struct ParentChip: View {
             .buttonStyle(.plain)
             .frame(maxWidth: 170, alignment: .leading)
             .accessibilityLabel("Open parent card: \(parent.title)")
+        }
+    }
+}
+
+/// The card's branch diffstat as a chip — `+214 −38 7f`, the board cell's ordering and colors
+/// (`BoardCardCell.meta`) so the list and the detail read as one fact. Self-hides when the daemon has
+/// no stat: non-git card, or nothing changed yet. Not tappable — the Diff tab is one tab away and this
+/// is a glance, not a control.
+///
+/// The numbers measure the card's DEFAULT baseline (parent-relative when stacked, else branch), which
+/// is also what the Diff tab opens on; switch that tab's baseline picker to Working and it will
+/// legitimately show a different range than this chip.
+private struct DiffStatChip: View {
+    /// How much of the stat this row can afford — `+N −M` is the part worth keeping longest, and the
+    /// file count is the first thing to go (it is also in the accessibility label either way).
+    enum Size { case full, compact, hidden }
+
+    let task: Task
+    var size: Size = .full
+    @Environment(\.theme) private var theme: Theme
+
+    var body: some View {
+        if size != .hidden, let s = task.diffStat, s.filesChanged > 0 {
+            HStack(spacing: 4) {
+                Text("+\(s.insertions)").foregroundStyle(theme.green.text)
+                Text("−\(s.deletions)").foregroundStyle(theme.red.text)
+                if size == .full { Text("\(s.filesChanged)f").foregroundStyle(theme.text3) }
+            }
+            .font(.system(.caption2, design: .monospaced).weight(.medium))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(theme.chip))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(s.filesChanged) files changed, \(s.insertions) added, \(s.deletions) removed")
         }
     }
 }

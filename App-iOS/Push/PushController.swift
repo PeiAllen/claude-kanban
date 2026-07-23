@@ -84,6 +84,11 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        #if DEBUG
+        // The headless UI-verification hook (ORCH_IOS_SHOW) screenshots whatever is on screen, and a
+        // system permission alert sits on top of it. Skip the prompt for those runs only.
+        if ProcessInfo.processInfo.environment["ORCH_IOS_SHOW"] != nil { return true }
+        #endif
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             guard granted else { return }
             DispatchQueue.main.async { application.registerForRemoteNotifications() }
