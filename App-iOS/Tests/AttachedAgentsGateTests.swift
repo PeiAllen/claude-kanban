@@ -151,10 +151,13 @@ final class AttachedAgentsGateTests: XCTestCase {
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
     }
 
-    /// A stale expand id never renders rows: `showsInlineRows` also requires current agents, so a target
-    /// that was expanded then lost all its reviewers shows nothing even if its id lingers in the set (the
-    /// read-time guard; the `apply`-time reap clears the id itself on the next live event).
-    func testStaleExpandIdShowsNoRows() {
+    /// Two independent guarantees when a target stops being a target:
+    /// (1) the read-time guard — `showsInlineRows` also requires current agents, so no rows render even
+    ///     while the id still sits in the set; and
+    /// (2) the REAP itself actually drops the id, so it can't leak or silently re-open later. Asserting
+    ///     only (1) would not prove (2) — `tasks` assignment alone bypasses both reap paths, which is
+    ///     exactly why `refresh()` (a wholesale `tasks` replace) needs its own override.
+    func testStaleExpandIdShowsNoRows_andIsReaped() {
         let model = BoardModel(platform: .ios)
         let target = worktree("01", branch: "feat/x")
         let reviewer = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
@@ -162,10 +165,29 @@ final class AttachedAgentsGateTests: XCTestCase {
         model.toggleAttachedExpanded(target)
         XCTAssertEqual(model.expandedRows(for: target).map(\.id), [reviewer.id])
 
-        // The reviewer leaves → target is no longer a target. Even though its id is still in the set,
-        // no rows render (and toggling would not re-open it either).
+        // The reviewer leaves → target is no longer a target. (1) nothing renders...
         model.tasks = [target]
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
+        // ...(2) and the reap drops the id, so a returning reviewer does NOT silently re-open the card.
+        model.reapExpandedAttachedTargets()
+        XCTAssertFalse(model.expandedAttachedTargets.contains(target.id))
+        model.tasks = [target, reviewer]
+        XCTAssertTrue(model.expandedRows(for: target).isEmpty)   // stays collapsed until a fresh tap
+    }
+
+    /// A card removed entirely (not just de-targeted) is reaped too — the path a reconnect `refresh()`
+    /// wholesale-replace takes, which never routes through `apply`.
+    func testRemovedCardIsReaped() {
+        let model = BoardModel(platform: .ios)
+        let target = worktree("01", branch: "feat/x")
+        let reviewer = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
+        model.tasks = [target, reviewer]
+        model.toggleAttachedExpanded(target)
+        XCTAssertTrue(model.expandedAttachedTargets.contains(target.id))
+
+        model.tasks = []                       // card gone (snapshot replace)
+        model.reapExpandedAttachedTargets()
+        XCTAssertTrue(model.expandedAttachedTargets.isEmpty)
     }
 
     /// The expand set is per-card and reaped when a card leaves the board (no leak).

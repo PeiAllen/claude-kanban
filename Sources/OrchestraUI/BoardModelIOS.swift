@@ -27,15 +27,28 @@ public final class IOSBoardModel: BoardStore {
     /// (BoardTab is a plain pager), so — unlike `BoardUX` — no search exemption is folded in.
     override func isEmbedded(_ task: Task) -> Bool { attachedRoot(of: task) != nil }
 
-    /// Reap expand ids whose card has left the board OR is no longer a target (its reviewers all left), so
-    /// a removed/archived target doesn't leak its id (unbounded without a later toggle) and a target that
-    /// lost then regained reviewers doesn't silently reopen from stale "expanded" memory. Runs on every
-    /// live event — the toggle-time `formIntersection` only fires on a toggle. Cheap (the set is tiny).
-    override func apply(_ event: Event) {
-        super.apply(event)
+    /// Drop expand ids whose card has left the board OR is no longer a target (its reviewers all left), so
+    /// a removed/archived target can't leak its id and a target that lost then regained reviewers doesn't
+    /// silently reopen from stale "expanded" memory. Cheap (the set is tiny). Public so the reap itself is
+    /// directly testable — asserting the render guard alone would not prove the id was actually dropped.
+    public func reapExpandedAttachedTargets() {
         expandedAttachedTargets = expandedAttachedTargets.filter { id in
             tasks.first(where: { $0.id == id }).map { attachedLiveness(of: $0) != nil } ?? false
         }
+    }
+
+    /// Reap after a live event. Covers the streaming path.
+    override func apply(_ event: Event) {
+        super.apply(event)
+        reapExpandedAttachedTargets()
+    }
+
+    /// Reap after a wholesale reconcile. REQUIRED in addition to `apply`: `BoardStore.refresh()` assigns
+    /// `tasks` directly from the snapshot (and the legacy list) and never routes through `apply`, so a card
+    /// removed while we were disconnected would otherwise keep its expand id across the reconnect.
+    override public func refresh() async {
+        await super.refresh()
+        reapExpandedAttachedTargets()
     }
 
     /// iOS reveals the inline rows via an explicit TAP toggle, NOT `selectedId`. The shared
