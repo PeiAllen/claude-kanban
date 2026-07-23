@@ -99,7 +99,7 @@ struct WakeLadderTests {
         let card = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "b"))
         try await env.svc.report(card.id, StatusReport(run: .waiting(.humanTurn)))
-        _ = try await env.svc.store.update(card.id) { $0.titleProvisional = false }
+        _ = try await env.svc.store.update(card.id) { $0.awaitingFirstPrompt = false }
         try await env.svc.send(card.id, "hello")
 
         #expect(try #require(await env.svc.store.get(card.id)).phase.kind == .live)   // no relaunch

@@ -37,6 +37,28 @@ struct StartupAbortTests {
         #expect(after.deadDetail?.contains("usage limit") == true)
     }
 
+    /// The retry re-launches from a STORED `AdapterContext`, so a `set-title` between the aborted launch
+    /// and the retry must still reach the agent — otherwise the card comes back up under the name the
+    /// aborted launch happened to capture, and the session-name mirror is armed with the wrong baseline.
+    @Test("a startup-abort retry launches with the CURRENT card title")
+    func retryUsesTheCurrentTitle() async throws {
+        let env = TestEnv.make(grace: 1)
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnStartupPending(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-retry"))
+        await env.svc.setStartupConfirmation(graceSeconds: 0, maxRetries: 1)
+        _ = try await env.svc.setTitle(ref: t.shortId, title: "Reviewer A")
+        env.sessions.setPaneDead(t.id)
+
+        await env.svc.reconcileLiveness()                  // detect abort → retry
+
+        let argv = try #require(env.sessions.ensureArgv[env.sessions.sessionName(t.id)])
+        let i = try #require(argv.firstIndex(of: "--name"))
+        #expect(argv[i + 1] == "Reviewer A")
+        let after = try #require(await env.svc.list(includeArchived: true).first { $0.id == t.id })
+        #expect(after.lastSessionName == "Reviewer A")     // the mirror baseline follows the retry
+    }
+
     /// (ii) Auto-retry fires; the retry stays up → the card ends ALIVE (not dead), with exactly one extra launch.
     @Test("startup abort then healthy retry → alive, one bounded re-spawn, no worktree churn")
     func retryRecovers() async throws {

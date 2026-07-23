@@ -8,7 +8,10 @@ public struct AdapterContext: Sendable {
     public let startIn: StartIn?
     public let sessionId: String?   // seeded id for `start`; target id for `resume`
     public let prompt: String?      // initial prompt (launch positional arg); nil on restart/resume
-    public let name: String?        // card title -> `claude --name`
+    /// Card title -> `claude --name`. A `var` so a RETRIED launch (the startup-abort arm re-launches from
+    /// a stored context) can refresh it from the live card — a `set-title` between the two must not come
+    /// back up under the name the aborted launch happened to capture.
+    public var name: String?
     public let orchestraBin: String // absolute path of the `orchestra` binary the agent's hooks call (agent-agnostic)
     public let orchestraMCPBin: String // absolute path of the bundled `orchestra-mcp` server
     public let access: CardAccess   // readWrite | readOnly — gates the read-only launch flags

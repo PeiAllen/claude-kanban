@@ -34,7 +34,8 @@ struct ControlRoundTripTests {
             "prompt": .string("Build the thing"), "repo": .string(repo), "branch": .string("feat"),
         ]))
         let task = try spawnRes.decode(Task.self)
-        #expect(task.title == "Build the thing")
+        #expect(task.title == "feat")               // a worktree card is named by its branch
+        #expect(task.titleSource == .branch)
 
         // status
         let stRes = try await client.call("status", .object(["ref": .string(task.shortId)]))
@@ -93,8 +94,11 @@ struct ControlRoundTripTests {
         // First client spawns (producing a .spawned activity into the ring).
         let c1 = TestEnv.controlClient(path, source: .cli)
         try c1.connect()
+        // Explicit `title` through the RPC — it both names the card (a worktree card is otherwise named
+        // by its branch) and pins that name, which is what the replayed activity text carries.
         _ = try await c1.call("spawn", .object(["id": .string(UUID().uuidString), 
-            "prompt": .string("Earlier card"), "repo": .string(repo), "branch": .string("b")]))
+            "prompt": .string("do the thing"), "title": .string("Earlier card"),
+            "repo": .string(repo), "branch": .string("b")]))
         // the .spawned activity is appended to the replay ring synchronously inside the handled
         // `spawn` call, so it is durably in the ring by the time the RPC returns — no settling wait
         c1.close()

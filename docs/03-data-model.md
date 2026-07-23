@@ -12,9 +12,12 @@ A `Task` is the single persisted record behind every card. Its fields:
 | Field | Type | Purpose |
 |-------|------|---------|
 | `id` | `UUID` | Identity. The tmux session is `orchestra-<id>`. |
-| `title` | `String` | Display-authoritative title (derived from the first prompt). |
-| `titleProvisional` | `Bool` | If `true`, the next real prompt may replace the title. |
-| `desc` | `String` | Live one-line blurb pushed by the agent's hooks (pane-parse fallback). |
+| `title` | `String` | The card's name, and the **SSOT** for it — derived at spawn from the card's own identity (branch → read-only target → prompt → directory) unless an explicit source set it. Pushed to the agent session as `--name` at every (re)launch. See [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot). |
+| `titleSource` | `TitleSource` | Where `title` came from: `branch` \| `attached` \| `prompt` \| `explicit`. `explicit` (a `spawn` title, `set-title`, or a mirrored in-session `/rename`) **pins** the title against every derived default. |
+| `awaitingFirstPrompt` | `Bool` | If `true`, this session has never received a genuine user prompt: it blank-launches with no positional and lands `waiting`. Set by a promptless spawn, `restart`, a blank `reopen`, and `SessionStart(clear)`; cleared by the first prompt. Lifecycle state, not a naming concept. |
+| `lastSessionName` | `String?` | The last session name seen for this card — the `--name` a launch pushed, or the last value the agent reported. The `session_name` mirror is a **delta** against this, so a live session echoing its launch name can't overwrite a newer title. |
+| `desc` | `String` | **Volatile** one-line blurb of what the agent is doing now, pushed by its hooks (pane-parse fallback). The report pipeline overwrites it every snapshot and `restart`/`/clear` blank it. |
+| `note` | `String?` | **Durable** authored one-liner about what this card IS — e.g. `Wave 2/4 — lease/claim delivery`. Set only by `spawn(note:)` / `set-note`, never by telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it. See [desc vs note](09-design-decisions.md#desc-vs-note-volatile-status-vs-durable-narrative). |
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
 | `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |

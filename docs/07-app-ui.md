@@ -135,8 +135,10 @@ Colors come from the theme's **semantic palette** — green (running), amber (wa
 `SpawnSheet` is the modal that creates a card. It has **three modes** (a chip toggle): **Worktree**,
 **Freeform**, **Scratch**.
 
-- **Initial prompt** — an optional multiline field; if non-empty it becomes the card title, otherwise
-  the card spawns nameless and the first prompt names it.
+- **Initial prompt** — an optional multiline field. It no longer names the card: a worktree card is
+  titled by its **branch**, a read-only freeform card by its target (`👁 <target>`), and only a freeform
+  card with no target falls back to the prompt's first line (then to its directory). Rename any card with
+  `set-title` — see [card naming](09-design-decisions.md#card-naming-the-title-is-the-ssot).
 - **Worktree mode** — a **repository** combo box (fuzzy-searchable, populated by scanning `reposRoot`
   for `.git` dirs, ordered by newest local commit so the repo list matches the branch list's recency —
   `RepoScanner.orderByMostRecentCommit`, the one discovery seam both the macOS sheet and the iOS picker

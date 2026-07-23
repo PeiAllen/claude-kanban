@@ -220,7 +220,7 @@ extension OrchestraService {
         let resumable = await isResumable(card)
         guard let reg = await reguard(t.id, epoch: epoch) else { return }
         card = reg
-        if resumable || card.titleProvisional {
+        if resumable || card.awaitingFirstPrompt {
             // The one wake VISIBLE to the human: a cold delivery tears the session down and brings it
             // back. Say so — an unexplained restart in the terminal reads as a crash. The in-place
             // routes (D's channel push, E1's app-server turn injection) emit nothing. Emit ONLY once

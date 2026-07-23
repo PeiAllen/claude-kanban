@@ -87,6 +87,74 @@ only such a report may **consume** the intent. The daemon happened to be safe al
 `reconcile()` runs before `pollTelemetry()` in the same tick — an ordering coincidence, not a guarantee.
 The fence makes the invariant explicit and fails safe: when in doubt, don't land, and don't consume.
 
+### Card naming: the title is the SSOT
+
+The **card title leads and the agent session's name follows.** A card is named at spawn from its own
+identity, by a strict ordered chain: a **worktree** card takes its **branch** (that branch *is* the card's
+identity, so it wins even when a human typed a prompt); a **read-only branchless** card takes
+`👁 <the title of the worktree card whose directory it borrowed>` — a glyph rather than the word "review",
+because the primitive is read-only *access*, not a role; otherwise the **prompt's** first line; and failing
+all of those, the **directory** the card runs in. A **seed is never a title source**, which is the point of
+the change: delegated cards used to be named after the first 60 characters of whatever context their parent
+handed them, which is exactly when a good name matters most.
+
+The last arm exists because a seeded card is never `awaitingFirstPrompt` — the seed *is* its first turn — so
+a placeholder there could never be replaced by a later prompt. Its directory is the one identity it has.
+
+Three **explicit** sources outrank every default and **pin** the title against re-derivation: `spawn`'s
+`title` parameter, the `set-title` verb, and a human's in-session `/rename` mirrored back. `set-title` is an
+Orchestra verb rather than an agent command because **neither Claude nor Codex can rename its own live
+session** — the naming primitive has to live where the board is.
+
+Two mechanisms make the round trip safe:
+
+- **Push** — every launch and resume passes the card's *current* title as `claude --name`, including the
+  startup-abort retry, which re-launches from a stored context and so must have its name refreshed from the
+  live card rather than reusing whatever the aborted launch captured.
+- **Mirror** — the `session_name` a statusline reports is adopted only when it is a **delta** against the
+  last name we saw, and only from the **current generation**. Both halves are load-bearing. Nothing can
+  rename a *live* Claude session from outside (the SDK's rename touches disk only), so a session keeps
+  echoing the name it launched with forever: a mirror keyed on "differs from the title" re-applied that
+  stale name on the next statusline tick and silently undid every `set-title`. And because `restart` bumps
+  the epoch while the outgoing session is still alive and still reporting its old name, the predecessor
+  would otherwise look like a rename of the incoming generation. The baseline is armed at launch, before
+  the session can report, so even a card renamed *during* a bring-up survives its new session's first tick.
+  A session launched by a pre-epoch daemon reports no epoch and so keeps its mirror inert until it next
+  relaunches — the fail-safe direction, and self-healing.
+
+Drift between a live session's name and its card is therefore accepted and heals at the next relaunch.
+
+**Codex push is deferred.** The app-server `thread/name/set` call that would push a title into a live Codex
+thread is not built, because app-server integration has not merged; Codex cards are named on the board and
+gain session-name push when that lands. Nothing here is Claude-specific by design — the mirror is inert for
+Codex simply because Codex reports no session name.
+
+Splitting `titleProvisional` was the precondition for all of it. That one flag meant both "the title is a
+default" and "this card has never had its first genuine prompt", and only the second meaning is
+load-bearing: `deriveLaunchFlavor` reads it to blank-launch a card with no positional, and the wake ladder
+and delivery-stuck gates read it as "there is still a route to revive this card." Naming moved to
+`titleSource`, the lifecycle flag was renamed to `awaitingFirstPrompt`, and both are now generation-fenced
+where they are mutated — a stale prompt hook from a superseded session could otherwise clear the flag on the
+incoming generation and strand the card `.resumeFailed`.
+
+### `desc` vs `note`: volatile status vs durable narrative
+
+A card carries two one-liners because they answer different questions and have different lifetimes.
+`desc` is what the agent is doing **this second** — the report pipeline overwrites it on every snapshot,
+and `restart`/`/clear` blank it. `note` is what the card **is**: "Wave 2/4 — lease/claim delivery". It is
+written only by an explicit source (`spawn(note:)` / `set-note`), telemetry never touches it, and it
+survives restart, clear, and handoff.
+
+Overloading `desc` with both was the obvious shortcut and the wrong one — it is the same two-meanings
+trap `titleProvisional` fell into, where one field meant both "a default title" and "never prompted", and
+only untangling them made either meaning safe to reason about. Narrative in `desc` would be erased by the
+next tool call, which is precisely when a human scanning the board most wants it.
+
+Clients render `note ?? desc` on the card's second line (`Task.cardLine`, defined on the model so the Mac
+and iOS boards cannot drift). The authored line wins: `desc` is blank between turns and after a restart
+anyway, so falling back to it only when there is no note costs nothing and gains a board that still says
+what each card is for when every agent is idle.
+
 ### The Stage-2 wire break: `status` → `phase`
 
 Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.

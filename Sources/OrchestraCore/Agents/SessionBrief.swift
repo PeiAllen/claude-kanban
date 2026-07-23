@@ -19,7 +19,12 @@ public enum SessionBrief {
     /// a `column` value, but the board ignores it (it files those into the freeform dock by origin), and
     /// the daemon *rejects* their `move`s — so handing them the column/self-move text would provoke doomed
     /// self-moves. Keying orientation off `origin` here keeps it from drifting away from the move guard.
-    public static func sentence(column: Column, access: CardAccess, shortId: String, origin: CardOrigin) -> String {
+    /// `titlePinned` suppresses the naming nudge: a card named by `spawn --title`, `set-title`, or a human's
+    /// `/rename` carries `titleSource == .explicit`, and this sentence is re-injected at EVERY SessionStart —
+    /// so nudging there would repeatedly invite an agent to overwrite the name its parent (or the human)
+    /// deliberately chose. A derived name is a placeholder worth improving; a chosen one is not.
+    public static func sentence(column: Column, access: CardAccess, shortId: String, origin: CardOrigin,
+                                titlePinned: Bool = false) -> String {
         // Access is orthogonal to origin: a read-only freeform investigation card is common.
         let mode = access == .readOnly
             ? " You are **read-only**: read, search, and run read-only git freely, but make no edits, "
@@ -38,9 +43,16 @@ public enum SessionBrief {
                   + "`main` and don't hand-roll your own branch — `spawn` a plan/implementation card (a "
                   + "worktree card cuts its own branch) to do the work on a tracked branch."
                 : ""
+            // Naming nudge, worded for THIS branch: a branchless card is named after its read-only target
+            // or its directory, so it must not be told it "starts named after its branch".
             return "Orchestra orientation: you are card `\(shortId)`, a standalone **\(noun)** card — it "
                 + "runs on its own, not on the Plan → Implementation → Review board, so there's no column "
                 + "to move between.\(mode) Begin on that footing without waiting to be told.\(delegation)"
+                + (titlePinned ? "" :
+                   " Your card is named after what it runs on, so give it a name of its own once the work "
+                   + "takes shape — `set-title \(shortId) <title>` — and update it as the work changes.")
+                + " Keep a one-line note on what this card IS — `set-note \(shortId) <text>` — and update it "
+                + "when the shape of the work changes; unlike the live status line, a note survives restarts."
         }
 
         let lane: String
@@ -53,5 +65,11 @@ public enum SessionBrief {
             + "Begin on that footing without waiting to be told. As your work changes phase, keep your "
             + "column honest by moving yourself with the `move` tool (`move \(shortId) --col plan|impl|review`) "
             + "— e.g. plan→impl once you start building, impl→review once it's ready to look at."
+            + (titlePinned ? "" :
+               " Your card starts named after its branch, so name it for the work once that takes shape — "
+               + "`set-title \(shortId) <title>` — and update it as the work changes.")
+            + " Keep a one-line note on what this card IS (its wave/layer in the larger plan, say) — "
+            + "`set-note \(shortId) <text>` — and update it when the shape of the work changes; unlike the "
+            + "live status line, a note survives restarts."
     }
 }

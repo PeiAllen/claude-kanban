@@ -19,7 +19,7 @@ struct StepperConvergeRemoteContractTests {
                             scratchRoot: base + "/scratch", runtimeStateDir: base + "/state")
         let cwd = WorktreeRegistry(config: config, borrowsPath: base + "/b.json", markersDir: base + "/m")
             .path(repo: repo, branch: branch)
-        let t = Task(title: branch, titleProvisional: true, repo: repo, branch: branch, cwd: cwd,
+        let t = Task(title: branch, awaitingFirstPrompt: true, repo: repo, branch: branch, cwd: cwd,
                      origin: .worktree, agentId: "claude-code", model: AgentModel(id: "m1"), startIn: .impl,
                      column: .impl, order: 0, phase: .creatingWorktree, sessionEpoch: 1,
                      spawnBase: spawnBase, agentSessionId: nil, initialPrompt: branch)

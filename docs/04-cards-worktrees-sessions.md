@@ -621,7 +621,7 @@ of being marked dead.
   (PR D1) drives and the idle-wake path for a resume-seed agent; forks instead `spawn` a fresh card carrying
   a `SpawnInput.seed`.
 - **`restart(id, model:)`.** Also **intent-only**: it enters `.relaunching` with the real persist block
-  applied atomically (fresh `agentSessionId`, old id rolled onto `priorSessionIds`, `titleProvisional=true`,
+  applied atomically (fresh `agentSessionId`, old id rolled onto `priorSessionIds`, `awaitingFirstPrompt=true`,
   cleared dead/desc) and returns; the same `RelaunchStepper` then launches a blank session in the *same*
   worktree and finalizes `→ .live` epoch-fenced. Never touches worktree contents. The "Start new session"
   Recovery button — distinct from the seeded, id-preserving `resumeInCard`.
