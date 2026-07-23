@@ -32,6 +32,11 @@ struct CardDetailHeader: View {
             // the mode chip wraps to two lines and the context gauge loses its percentage off the
             // trailing edge. So the diffstat gives ground before its neighbours do: full chip, then
             // without the file count, then gone. (The desktop inspector header degrades the same way.)
+            //
+            // The tree badge inside the row is NOT part of that ladder: it is one glyph plus at most a
+            // couple of digits, and it is the row's only signal that this branch has fallen behind its
+            // parent — the diffstat can shrink to buy that room, which is exactly what the rungs below
+            // do before anything else gives.
             ViewThatFits(in: .horizontal) {
                 chipRow(stat: .full)
                 chipRow(stat: .compact)
@@ -88,6 +93,14 @@ struct CardDetailHeader: View {
             DiffStatChip(task: task, size: stat)
             // Jump UP the lineage. Generic across card kinds — not reviewer-specific.
             ParentChip(task: task)
+            // ...and the state of that lineage, the same glyph the board cell carries. It belongs
+            // beside the parent chip (which says WHO the parent is, not whether this branch is current
+            // with it), and in this header rather than a tab, because the header is pinned above all of
+            // them — so branch-sync status reads from Diff and Terminal alike, without going back to
+            // the board. Nothing renders while the card is in sync or untracked.
+            if let ts = task.treeStat {
+                TreeBadge(stat: ts, parentBranch: task.parentBranch)
+            }
             // The attached-agents affordance in the detail (parity with the board accordion): the
             // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
             // this card is a target). Same tap-expand state as the board, so it stays consistent.
