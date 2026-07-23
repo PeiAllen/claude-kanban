@@ -3,34 +3,6 @@ import OrchestraUI
 import OrchestraCore
 import OrchestraKit
 
-/// A glance indicator on a target card for its **attached agents** — the read-only sub-cards
-/// (reviewers / fork inspectors / browse-only borrows) embedded behind it. `👁 N`, tinted by the
-/// roll-up liveness of those agents (green = all running/being-born, amber = one needs the human or
-/// died). It is purely informational: the attached agents are reached by **selecting the target**,
-/// which expands them as inline rows inside the card (see `AttachedAgentRow`) — no popover. It is the
-/// card's whole subtree line (L4), so the count is spelled out ("👁 2 attached"): alone on its own
-/// line, a bare glyph and a digit would read as debris rather than a summary of what hangs off the card.
-struct AttachedAgentsBadge: View {
-    @EnvironmentObject var model: BoardModel
-    @Environment(\.theme) var theme: Theme
-    let task: OrchestraCore.Task
-
-    var body: some View {
-        // Hidden unless this card actually has attached agents (nil liveness ⇒ none).
-        if let liveness = model.attachedLiveness(of: task) {
-            let count = model.attachedAgents(of: task).count
-            let tint = liveness == .allRunning ? theme.green.text : theme.amber.text
-            HStack(spacing: 3) {
-                Image(systemName: "eye").font(F.ui(8.5))
-                Text("\(count) attached").font(F.mono(10, .medium))
-            }
-            .foregroundStyle(tint)
-            .help(count == 1 ? "1 attached agent — select this card to expand it"
-                             : "\(count) attached agents — select this card to expand them")
-        }
-    }
-}
-
 /// One compact PEEK ROW for a subordinate, rendered INSIDE its root card while the root (or one of its
 /// descendants) is selected. Five zones (slice 2b, actionability-first): the child's OWN status **dot** ·
 /// **title** · **desc/note** (dim, lowest precedence, truncates first) · **action slot** (a compact

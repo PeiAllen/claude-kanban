@@ -288,17 +288,14 @@ struct CardView: View {
 
     // MARK: - L4 · subtree line
 
-    /// The card's subordinates, summarised. Today that is only the attached-agents eye, labelled so
-    /// the section reads as intentional rather than as a stray glyph. It gives way to the rows
-    /// themselves once the card expands — the summary and the detail never show at once.
+    /// The card's subordinates, summarised: stage-coloured segments (one per live lineage child) plus the
+    /// attached-agents eye (`SubtreeSegments`). Shown whenever the card has any subordinate — a lineage
+    /// child OR an attached reviewer — and isn't currently expanded; it gives way to the peek rows once
+    /// the card (or a descendant) is selected, so the summary and the detail never show at once.
     @ViewBuilder private var subtreeLine: some View {
-        if model.attachedLiveness(of: task) != nil, model.expandedRows(for: task).isEmpty {
+        if !model.subordinates(of: task).isEmpty, model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
-            HStack(spacing: 0) {
-                AttachedAgentsBadge(task: task)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 6)
+            SubtreeSegments(root: task).padding(.top, 6)
         }
     }
 
