@@ -29,14 +29,17 @@ final class KeybindingsTests: XCTestCase {
         XCTAssertEqual(map(KeyChord("\u{F701}"), .board), .moveRow(.down))
     }
 
-    func test_board_leftRightArrows_unbound() {
-        // ←/→ stay unbound so they pass through to the pty (terminal send-keys) as today.
-        XCTAssertNil(map(KeyChord("\u{F702}"), .board))
-        XCTAssertNil(map(KeyChord("\u{F703}"), .board))
+    func test_board_leftRightArrows_drillScope() {
+        // ←/→ are the SCOPE axis on the board (slice 2b): → drills into the selected root's subtree,
+        // ← pops out one scope level. Board context only (see the pass-through test below).
+        XCTAssertEqual(map(KeyChord("\u{F703}"), .board), .drillIn)
+        XCTAssertEqual(map(KeyChord("\u{F702}"), .board), .drillOut)
     }
 
     func test_arrows_passThrough_outsideBoard() {
-        for ch: Character in ["\u{F700}", "\u{F701}"] {
+        // ALL four arrows — the ↑/↓ row axis AND the ←/→ scope axis — are board-only, so a focused
+        // terminal / field / overlay keeps them for the pty (send-keys) and text navigation.
+        for ch: Character in ["\u{F700}", "\u{F701}", "\u{F702}", "\u{F703}"] {
             XCTAssertNil(map(KeyChord(ch), .terminal))
             XCTAssertNil(map(KeyChord(ch), .field))
             XCTAssertNil(map(KeyChord(ch), .overlay))

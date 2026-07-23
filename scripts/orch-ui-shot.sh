@@ -229,4 +229,13 @@ shoot "20-anatomy-board-wide"   env ORCH_SHOW=anatomy -- -inspectorWidth 392
 shoot "21-anatomy-board-narrow" env ORCH_SHOW=anatomy -- -inspectorWidth 760
 shoot "22-anatomy-expanded"     env ORCH_SHOW=anatomy ORCH_ANATOMY=expanded -- -inspectorWidth 392
 
+# Board hierarchy (slice 2b): roots-only top level with zoom subtitles + L4 stage segments (single-repo
+# to isolate the hierarchy from the prefix), peek (the root selected → its subordinates as five-zone
+# rows replacing L4), and drill (breadcrumb + banner + the subtree scoped into the columns; the repo
+# prefix drops, single-repo by construction).
+echo "▶ capturing board hierarchy…"
+shoot "23-hier-toplevel" env ORCH_SHOW=anatomy ORCH_ANATOMY=single-repo -- -inspectorWidth 392
+shoot "24-hier-peek"     env ORCH_SHOW=anatomy ORCH_ANATOMY=peek        -- -inspectorWidth 392
+shoot "25-hier-drill"    env ORCH_SHOW=anatomy ORCH_ANATOMY=drill       -- -inspectorWidth 392
+
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

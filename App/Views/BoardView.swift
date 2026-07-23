@@ -20,6 +20,11 @@ struct BoardView: View {
         // region docks at the BOTTOM of the board (full board width) for non-worktree cards — like a
         // terminal panel. It lives inside the board, so the inspector overlay renders on top of it.
         VStack(spacing: 0) {
+            // Drill chrome (slice 2b): when scoped to a root's subtree, a breadcrumb + banner sit above
+            // the columns. Absent at the top level, so the default board is unchanged.
+            if model.drillScope != nil {
+                DrillHeader()
+            }
             HStack(alignment: .top, spacing: 14) {
                 ForEach(Self.columns, id: \.0) { col, label in
                     ColumnView(column: col, label: label)
@@ -81,15 +86,32 @@ private struct ColumnView: View {
 
     // MARK: Header
 
+    /// Zoom-level subtitle (slice 2b) — the macro-phase reading of the column at PROJECT scale, shown
+    /// only at the top level (`drillScope == nil`). Inside a drill the columns are card-scale again
+    /// (a root's children), so the subtitle drops.
+    private var subtitle: String? {
+        guard model.drillScope == nil else { return nil }
+        switch column {
+        case .plan:   return "being designed"
+        case .impl:   return "orchestration running"
+        case .review: return "awaiting your approval"
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(F.ui(12.5, .semibold))
-                .tracking(-0.0625)
-                .foregroundStyle(theme.text)
-            countBadge
-            Spacer(minLength: 4)
-            addButton
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(F.ui(12.5, .semibold))
+                    .tracking(-0.0625)
+                    .foregroundStyle(theme.text)
+                countBadge
+                Spacer(minLength: 4)
+                addButton
+            }
+            if let subtitle {
+                Text(subtitle).font(F.ui(10)).foregroundStyle(theme.text3)
+            }
         }
         .padding(.top, 13)
         .padding(.horizontal, 13)

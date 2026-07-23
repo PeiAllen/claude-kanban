@@ -345,9 +345,26 @@ public class BoardStore: ObservableObject {
 
     // MARK: attached agents (read-only reviewers embedded behind their target)
 
-    /// Liveness roll-up for a target's attached agents: green when all are running or still being
-    /// born, amber when any needs the human or has died. Drives the target's eye-badge colour.
-    public enum AttachedLiveness: Equatable { case allRunning, needsAttention }
+    /// Eye-tint tier for attached agents — a THREE-tier priority, not a binary. `needsAttention` (a
+    /// reviewer on a permission prompt, or dead) is a distinct warning that DOMINATES everything; `running`
+    /// (any reviewer active or still being born) DOMINATES `idle`; `idle` (a reviewer that finished its
+    /// turn — `humanTurn` — with nothing else live) is the quiet floor. Crucially a *concluded* reviewer
+    /// is `idle`, NOT attention: a running sibling keeps the eye green, and only a genuine block (or an
+    /// all-quiet group) changes it.
+    public enum AttachedLiveness: Equatable {
+        case running        // green — active work in progress (dominates idle)
+        case idle           // grey  — all attached agents have finished their turn, none blocked
+        case needsAttention // amber — a reviewer is blocked on a permission prompt or has died
+
+        /// The tier a single agent's phase maps to.
+        public init(phase: Phase) {
+            switch phase {
+            case .dead, .live(.waiting(.permission)): self = .needsAttention
+            case .live(.waiting(.humanTurn)):         self = .idle
+            default:                                  self = .running   // running + being-born
+            }
+        }
+    }
 
     /// Total order for co-located / attached cards: created-time, then id. `createdAt` alone is not a
     /// total order — task dates serialize at second resolution (`Coders.swift`), so equal-timestamp
@@ -405,17 +422,18 @@ public class BoardStore: ObservableObject {
             .sorted(by: attachedBefore)
     }
 
-    /// Liveness roll-up for `target`'s attached agents (green vs amber), or nil when none are
-    /// attached (the badge is hidden). Green covers running AND the being-born phases so a
-    /// freshly-spawned reviewer doesn't flash amber; amber means at least one agent is waiting on the
-    /// human or has died.
+    /// Liveness roll-up for `target`'s attached agents, or nil when none are attached (the badge is
+    /// hidden). Three-tier priority (see `AttachedLiveness`): **needsAttention** if ANY agent is blocked
+    /// on a permission prompt or dead — a genuine block dominates; else **running** if ANY is active or
+    /// being born — an active reviewer keeps the eye green even while a sibling has concluded; else
+    /// **idle** — every attached agent has finished its turn.
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }
-        let needsAttention = agents.contains {
-            switch $0.phase { case .live(.waiting), .dead: return true; default: return false }
-        }
-        return needsAttention ? .needsAttention : .allRunning
+        let tiers = agents.map { AttachedLiveness(phase: $0.phase) }
+        if tiers.contains(.needsAttention) { return .needsAttention }
+        if tiers.contains(.running) { return .running }
+        return .idle
     }
 
     /// True when `target`'s attached rows should be REVEALED — the target itself is selected, or one of
@@ -441,15 +459,16 @@ public class BoardStore: ObservableObject {
     }
 
     /// The card-axis anchor for a selection: the nearest VISIBLE ancestor when the selection is an
-    /// embedded (hidden) attached row — climb `attachedTarget` while the current card `isEmbedded`. So
-    /// `j`/`k` from a row step off its visible target instead of falling through to first-Plan, while a
+    /// embedded (hidden) row — climb `hierarchyParent` (attach target OR lineage parent) while the
+    /// current card `isEmbedded`. So `j`/`k` from a peek row (an attached reviewer OR a non-root lineage
+    /// child) steps off its visible ancestor instead of falling through to first-Plan, while a
     /// `/`-search-un-embedded reviewer (now visible, `isEmbedded == false`) anchors to ITSELF, keeping
     /// its own board slot. Identity on the base store (nothing is embedded there). Cycle-guarded.
     public func cardLevelAnchor(_ id: UUID?) -> UUID? {
         guard let id, var current = tasks.first(where: { $0.id == id }) else { return id }
         var visited: Set<UUID> = []
         while isEmbedded(current), visited.insert(current.id).inserted,
-              let target = attachedTarget(of: current) {
+              let target = hierarchyParent(of: current) {
             current = target
         }
         return current.id
@@ -469,16 +488,17 @@ public class BoardStore: ObservableObject {
 
     // MARK: source prefix (ambiguity-driven disclosure on the identity line)
 
-    /// The distinct repos of the board's active (non-archived) worktree cards, in first-seen order.
+    /// The distinct repos of the board's currently-VISIBLE (non-archived) worktree cards, in first-seen
+    /// order — the input to the identity-line repo prefix.
     ///
-    /// Derived over `tasks`, not `visibleTasks`, and the two are equal here by construction: an
-    /// embedded card can never contribute a repo of its own, because a worktree reviewer embeds
-    /// behind its lineage parent — which `BoardTree.parentCard` resolves within the SAME repo — and
-    /// a branchless reviewer is `origin != .worktree`, which this filter drops anyway. Reading
-    /// `visibleTasks` would pay a per-card `isEmbedded` derivation in a property every card renders.
+    /// Derived over `visibleTasks`, not all `tasks`, so the prefix is SCOPE-aware (slice 2b): inside a
+    /// drill the board is one root's subtree, single-repo by construction (cross-repo lineage/attach links
+    /// are impossible), so the count is 1 and the prefix drops. At the top level every repo still has a
+    /// visible root, so a multi-repo board keeps the prefix. The cost is a per-card `isEmbedded` derivation
+    /// in a property every card renders — negligible at board sizes, and the scope-awareness needs it.
     private var activeWorktreeRepos: [String] {
         var seen = Set<String>(), out: [String] = []
-        for task in tasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
+        for task in visibleTasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
             if seen.insert(task.repo).inserted { out.append(task.repo) }
         }
         return out
