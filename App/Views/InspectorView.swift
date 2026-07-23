@@ -113,12 +113,6 @@ private struct HeaderBar: View {
                 .disabled(!ds.validActions.contains(.archive))
             }
 
-            // Attached-agents badge lives in this shared header (not AgentChrome's terminal header) so it
-            // stays visible in BOTH Agent and Diff modes — a glance-only count + liveness indicator now.
-            // The read-only sub-cards are reached on the BOARD (selecting this target expands its rows
-            // inline, beside the inspector) and via the ↑/↓ row axis — not through this badge.
-            AttachedAgentsBadge(task: task)
-
             Spacer(minLength: 0)
 
             Button {
