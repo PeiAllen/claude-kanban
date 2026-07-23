@@ -23,6 +23,8 @@ struct InspectorView: View {
                         // the board; the binding routes to the selected card's entry.
                         HeaderBar(task: t, mode: Binding(get: { model.inspectorMode },
                                                          set: { model.inspectorMode = $0 }))
+                        // Above the mode switch, so the change size reads the same from either tab.
+                        InspectorDiffStat(task: t)
                         if model.inspectorMode == .diff {
                             DiffInspectorView(task: t)
                         } else {
@@ -113,11 +115,6 @@ private struct HeaderBar: View {
                 .disabled(!ds.validActions.contains(.archive))
             }
 
-            // Change size at a glance, same formatting as the board card's footer meta. Lives in this
-            // shared header for the same reason the badge below does — you can read it from the Diff tab
-            // too, so you know how big the change is without scrolling the diff or going back to the board.
-            InspectorDiffStat(task: task)
-
             // Attached-agents badge lives in this shared header (not AgentChrome's terminal header) so it
             // stays visible in BOTH Agent and Diff modes — a glance-only count + liveness indicator now.
             // The read-only sub-cards are reached on the BOARD (selecting this target expands its rows
@@ -176,25 +173,53 @@ private struct HeaderBar: View {
     }
 }
 
-/// The selected card's branch diffstat (`k files · +N −M`) in the inspector's shared header, rendered
-/// exactly like the board card's footer meta so the two read as the same fact in two places. Absent
-/// (rather than a `0f +0 −0` placeholder) when the daemon has no stat for this card — non-git, or
-/// nothing changed yet — because "no diff" and "a diff of nothing" are the same thing to a reader.
+/// The selected card's branch diffstat (`k files · +N −M`) in the inspector, on its own slim strip
+/// between the action row and the body — so it reads the same from the Agent and the Diff tab, the
+/// numbers the board card's footer shows, without going back to the board.
+///
+/// It gets a strip rather than a slot in `HeaderBar` because that row has **no** horizontal slack at
+/// the shipped 392pt default (`inspectorWidth`, OrchestraApp.swift): its buttons already truncate
+/// their labels there, and adding ~70pt of pill overflowed the frame and clipped the close button off
+/// the trailing edge (measured at 392 and at the 320pt drag minimum). Making the pill compressible
+/// instead would have fixed the clipping by degrading it to "…" at the default width — the feature
+/// erased to save the row. A strip costs one thin line of vertical space, only when a stat exists.
+///
+/// It names its **baseline**, which the bare numbers can't: this stat is computed against the card's
+/// default baseline (parent-relative when stacked, else branch-relative), while the Diff tab's own
+/// picker is free to switch to Working. Unlabelled, the strip and the diff below it would show
+/// different totals with nothing to explain why.
+///
+/// Absent (rather than a `0f +0 −0` placeholder) when the daemon has no stat — non-git card, or
+/// nothing changed yet: `GitDiffProvider.stat` returns nil for an empty diff, so nil and zero
+/// coincide. (A binary-only change is the one stat that reads `1f +0 −0` — numstat has no line
+/// counts for binaries — and that is true rather than a placeholder.)
 private struct InspectorDiffStat: View {
     @Environment(\.theme) var theme: Theme
     let task: Task
 
+    /// The baseline the daemon measured this stat against — it defaults to `.parent` for a card with a
+    /// parent branch, else `.branch`. Mirrors `DiffInspectorView`'s initial selection, so the strip and
+    /// a freshly-opened Diff tab agree.
+    private var base: DiffBase { task.parentBranch != nil ? .parent : .branch }
+
     var body: some View {
         if let stat = task.diffStat, stat.filesChanged > 0 {
             HStack(spacing: 5) {
-                Text("\(stat.filesChanged)f").foregroundStyle(theme.text3)
-                Text("+\(stat.insertions)").foregroundStyle(theme.green.text)
-                Text("−\(stat.deletions)").foregroundStyle(theme.red.text)
+                // The one flexible element: a long "Parent (<branch>)" truncates before the numbers,
+                // which are the point of the strip and stay whole down to the 320pt drag minimum.
+                Text("vs \(diffBaselineLabel(base, parentBranch: task.parentBranch))")
+                    .foregroundStyle(theme.text3)
+                    .truncationMode(.tail)
+                DiffStatNumbers(stat: stat).layoutPriority(1)
+                Spacer(minLength: 0)
             }
             .font(F.mono(10.5, .medium))
             .lineLimit(1)
-            .fixedSize()
-            .help("\(stat.filesChanged) files changed · +\(stat.insertions) −\(stat.deletions)")
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .help(diffStatHelp(stat)
+                  + " — measured against \(diffBaselineLabel(base, parentBranch: task.parentBranch)); "
+                  + "the Diff tab's baseline picker can show a different range.")
         }
     }
 }

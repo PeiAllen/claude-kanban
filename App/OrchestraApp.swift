@@ -486,6 +486,9 @@ private struct DebugLaunchHook: ViewModifier {
                         initialPrompt: "Wire the KeyboardController to the command palette and add hjkl navigation across columns.")
         card.deadReason = .sessionVanished
         card.agentSessionId = "mock-session"   // surfaces the "Try resume" button too
+        // The panel's whole claim is "your work is preserved" — give it work to have preserved, so
+        // the snapshot covers the diffstat line under the worktree path.
+        card.diffStat = DiffStat(filesChanged: 12, insertions: 486, deletions: 91)
         let view = RecoveryView(task: card)
             .environmentObject(model)
             .environment(\.theme, theme)
