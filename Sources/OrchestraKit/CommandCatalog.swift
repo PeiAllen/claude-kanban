@@ -114,6 +114,19 @@ public enum CommandCatalog {
                                      required: ["ref", "note"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
+        CommandSchema(name: "needs-input",
+                      summary: "Declare that you are blocked on a decision only this card's owner can "
+                          + "make, so the board can surface it — an agent waiting in its own terminal is "
+                          + "otherwise indistinguishable from an idle one. Use it when you END a turn "
+                          + "still blocked; if your harness has an in-session choices prompt, that is the "
+                          + "better tool for a mid-turn question. Set/replace only: the daemon clears the "
+                          + "declaration itself once your next turn starts, so re-declare if you are still "
+                          + "blocked when that turn ends.",
+                      params: schema(["ref": refProp(),
+                                      "question": strProp("The one-line question (trimmed; 200 chars max)")],
+                                     required: ["ref", "question"]),
+                      kind: .mutation, phaseGate: gNonArchived),
+
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
                       params: schema(["ref": refProp(), "col": colProp()], required: ["ref", "col"]),
                       kind: .mutation, phaseGate: gNonArchived),
@@ -231,17 +244,20 @@ public enum CommandCatalog {
                       kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "merge-request",
-                      summary: "Ask this card's LIVE parent card to squash-merge it up the tree: the daemon "
-                          + "composes the request, nudges the parent card, and marks this card 'merge "
-                          + "requested' (a waiting badge) until the parent runs `shipped`. Dedups re-sends.",
+                      summary: "Declare this card's work ready to integrate — the ONE ship verb, for every "
+                          + "parent kind. The daemon routes it: a live card owning the parent branch is "
+                          + "nudged to squash-merge and run `shipped`; an unowned target (main, a bare "
+                          + "branch, a remote parent, or no parent link) is RECORDED for a human, who "
+                          + "merges however they choose. Either way the card is marked 'merge requested' "
+                          + "until it resolves, and re-sends dedup. Call it and stop.",
                       params: schema(["ref": refProp()], required: ["ref"]),
                       kind: .mutation, phaseGate: gLiveDead),
 
         CommandSchema(name: "borrow",
                       summary: "Cut a throwaway worktree checking out this card's BARE parent branch (no "
-                          + "live card owns it) so you can squash-merge into it, then `shipped`. Returns the "
-                          + "worktree path. Refuses a remote parent (publish a PR) or a live-card parent "
-                          + "(send a merge-request).",
+                          + "live card owns it). Returns the worktree path. A human-directed primitive, NOT "
+                          + "a way to ship: to declare your own work ready, use `merge-request` and stop. "
+                          + "Refuses a remote parent, and refuses one a live card owns.",
                       params: schema(["ref": refProp()], required: ["ref"]),
                       kind: .mutation, phaseGate: gLiveDead),
 

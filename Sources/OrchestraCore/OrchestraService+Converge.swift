@@ -382,6 +382,23 @@ extension OrchestraService {
                 "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship",
                 dedupKey: "\(card.id.uuidString.lowercased())|parent-archived:\(t.branch)")
             await wake(card.id)
+            // Archiving this card CHANGES OWNERSHIP of the parent branch for each of these children, and in
+            // one direction the `.live`-landing hook cannot see: co-located siblings are permitted and
+            // `derivedCard` picks the oldest, so archiving the owner promotes an already-live sibling with
+            // no transition to fan out from.
+            //
+            // The child's re-nudge loop is INVALIDATED first. Ownership is derived, never stored, so an
+            // armed loop carries no record of whom it is arming against — and the reconcile treats "armed"
+            // as "already an agent's problem" and returns. Left armed, the request would keep re-nudging a
+            // card that is gone and never reach the sibling that now owns the branch (the re-nudge tick
+            // would notice, but only after a backoff measured in minutes). Stopping it here applies the
+            // same rule that tick applies, immediately.
+            //
+            // Then schedule the CHILD's own recompute — not this card's fan-out debounce, which the
+            // teardown above just cancelled — so the request re-routes to whoever owns the branch now, or
+            // becomes an unowned request the human sees when nobody does.
+            stopMergeRequestNudge(card.id)
+            scheduleTreeStat(card.id)
         }
     }
 }

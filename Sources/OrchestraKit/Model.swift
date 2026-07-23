@@ -20,6 +20,45 @@ public enum WaitReason: String, Codable, Sendable {
     case humanTurn    // agent genuinely finished its turn / idle, waiting on the human
 }
 
+/// A `needs-input` declaration: the one-line question, and WHEN it was declared. The two travel as one
+/// value so they can't drift — every clear nils the pair by construction, and nothing can carry the text
+/// without its timestamp. `declaredAt` exists for the fileTail turn-start fence (see `OrchestraService`'s
+/// report path): a Codex turn-start report arrives by a polled rollout tail, so a line WRITTEN before the
+/// declaration can be APPLIED after it; the daemon retires the question only when the turn-start evidence
+/// is newer than `declaredAt`, so a stale late line can't erase a question it predates.
+public struct PendingQuestion: Codable, Sendable, Equatable {
+    public var text: String
+    public var declaredAt: Date
+    public init(text: String, declaredAt: Date) {
+        self.text = text
+        self.declaredAt = declaredAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case text, declaredAt }
+
+    // `declaredAt` rides as FRACTIONAL Unix seconds, NOT through the encoders' `.iso8601` strategy — the
+    // fence compares sub-second declaration times against a rollout line's µs write time, and `.iso8601`
+    // rounds to whole seconds, so a round-trip through disk would drop the fraction and let a
+    // pre-declaration line beat a reloaded declaration. This is the same reason `Task.sessionDiscoverySince`
+    // is numeric. Decode accepts a legacy `.iso8601` string defensively (whole-second, no fence in that
+    // window — but the card survives).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.text = try c.decode(String.self, forKey: .text)
+        if let seconds = try? c.decode(Double.self, forKey: .declaredAt) {
+            self.declaredAt = Date(timeIntervalSince1970: seconds)
+        } else {
+            self.declaredAt = try c.decode(Date.self, forKey: .declaredAt)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(text, forKey: .text)
+        try c.encode(declaredAt.timeIntervalSince1970, forKey: .declaredAt)
+    }
+}
+
 /// Why a card went `dead` — set alongside `status = .dead`, surfaced by the Recovery panel + CLI/MCP.
 public enum DeadReason: String, Codable, Sendable {
     case agentExited       // SessionEnd reason exit/logout — the agent quit (mid-life, usually resumable)
@@ -441,6 +480,14 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// `titleProvisional` fell into. Set only by an explicit source (`spawn(note:)` / `set-note`), never by
     /// telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it back to nil.
     public var note: String?
+    /// The agent's DECLARED open question — "I ended my turn blocked on a decision only you can make".
+    /// Set by `needs-input` (set/replace only; there is no clear form), and cleared by the daemon at the
+    /// only events that can retire it: proof that the agent's next turn started (a landed turn-start, or a
+    /// continuation handed back at Stop), and a completed session replacement. It exists because an agent
+    /// asking a question in its own terminal is otherwise indistinguishable from an ordinary idle card —
+    /// the human never learns they are the blocker. Carries its own `declaredAt` for the fileTail
+    /// turn-start fence (see `PendingQuestion`). nil ⇒ no open question.
+    public var pendingQuestion: PendingQuestion?
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
     public var parentBranch: String?  // stacked-branch parent (stub; nil until stacked-branches sets it) — the `.parent` diff baseline
@@ -510,6 +557,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         lastSessionName: String? = nil,
         desc: String = "",
         note: String? = nil,
+        pendingQuestion: PendingQuestion? = nil,
         repo: String,
         branch: String,
         cwd: String,
@@ -549,6 +597,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = lastSessionName
         self.desc = desc
         self.note = note
+        self.pendingQuestion = pendingQuestion
         self.repo = repo
         self.branch = branch
         self.cwd = cwd
@@ -593,7 +642,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleSource, awaitingFirstPrompt, lastSessionName
-        case desc, note, repo, branch, parentBranch, cwd, origin, access
+        case desc, note, pendingQuestion, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
@@ -622,6 +671,12 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
         self.note = try c.decodeIfPresent(String.self, forKey: .note)
+        // `try?`, not a rethrowing `decodeIfPresent`: a malformed value must drop only the QUESTION, never
+        // the whole card (FailableTask drops a card whose init throws). `pendingQuestion` is introduced on
+        // this branch and only ever lands on `main` as this struct — but a dev daemon that persisted the
+        // interim bare-String form and then upgraded would otherwise throw here and lose the card. Same
+        // card-preserving discipline as `TreeStat.state`'s `try?`.
+        self.pendingQuestion = (try? c.decodeIfPresent(PendingQuestion.self, forKey: .pendingQuestion)) ?? nil
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
@@ -705,6 +760,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(lastSessionName, forKey: .lastSessionName)
         try c.encode(desc, forKey: .desc)
         try c.encodeIfPresent(note, forKey: .note)
+        try c.encodeIfPresent(pendingQuestion, forKey: .pendingQuestion)
         try c.encode(repo, forKey: .repo)
         try c.encode(branch, forKey: .branch)
         try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
@@ -778,6 +834,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // a cutoff a concurrent relaunch just recorded.
         if sessionIdChanged, agentSessionId != nil { sessionDiscoverySince = nil }
         apply(\.desc)
+        // Carried so report()'s session-replacement arms can retire a declared question. Delta-gated like
+        // every field here, so ONLY those deliberate nils propagate — an ordinary telemetry snapshot
+        // observes no change and writes nothing.
+        apply(\.pendingQuestion)
         apply(\.awaitingFirstPrompt)
         apply(\.title)
         apply(\.titleSource)       // the `.explicit` pin a mirrored /rename sets

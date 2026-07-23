@@ -52,15 +52,15 @@ struct TreeErrorWordingTests {
         }
     }
 
-    @Test("merge-request / borrow with no parent link name the runnable set-parent recovery")
+    /// `merge-request` deliberately does NOT appear here any more: it is the one declaration every card
+    /// makes when its work is ready, so it never refuses on the shape of the target — a link-less root
+    /// records against the default branch (see `MergeRequestTests`). `borrow` is a different kind of verb
+    /// (it asks the daemon to cut a worktree for a specific parent) and still needs a real link.
+    @Test("borrow with no parent link names the runnable set-parent recovery")
     func noParentLinkWording() async throws {
         let (env, _, _, repo) = TreeStatTests.setup()
         let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
 
-        await #expect { _ = try await env.svc.mergeRequest(ref: card.ref()) } throws: { error in
-            guard case let OrchestraError.invalidParams(m) = error else { return false }
-            return m.contains("orchestra set-parent \(card.shortId)")
-        }
         await #expect { _ = try await env.svc.borrow(ref: card.ref()) } throws: { error in
             guard case let OrchestraError.invalidParams(m) = error else { return false }
             return m.contains("orchestra set-parent \(card.shortId)")

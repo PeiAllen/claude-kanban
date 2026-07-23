@@ -27,6 +27,11 @@ public enum CardNaming {
     /// so tuning one must not silently retune the other.
     public static let maxNoteChars = 120
 
+    /// The longest a declared `needs-input` question may be. Wider than a note because a question has to
+    /// carry enough to be answerable without opening the card, and it never reaches argv — but still ONE
+    /// line: the surface that renders it is a card row, not a transcript.
+    public static let maxQuestionChars = 200
+
     /// The ONE bound on a card title — every write goes through it, not just the explicit ones. The value
     /// ends up in Claude's `--name` argv, so an unbounded title is a tmux argv problem rather than merely
     /// an ugly card, and the derived arms can exceed the cap on their own: a branch name is arbitrary, and
@@ -38,6 +43,14 @@ public enum CardNaming {
     /// The same trim, bounded by the NOTE cap. Separate entry point so the two bounds stay independent.
     public static func normalizeNote(_ raw: String) -> String {
         String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxNoteChars))
+    }
+
+    /// The same trim, bounded by the QUESTION cap. Newlines collapse to spaces first: the declaration is a
+    /// one-line summary by contract, and an agent pasting a wrapped paragraph must not break the row that
+    /// renders it.
+    public static func normalizeQuestion(_ raw: String) -> String {
+        let flat = raw.split(whereSeparator: \.isNewline).joined(separator: " ")
+        return String(flat.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestionChars))
     }
 
     /// The derived default title for a fresh card, as a strict ordered chain:

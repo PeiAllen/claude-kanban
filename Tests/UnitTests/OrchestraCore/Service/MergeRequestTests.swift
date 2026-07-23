@@ -83,4 +83,246 @@ struct MergeRequestTests {
         try await env.svc.shipped(ref: child.ref())
         #expect(await treeState(env.svc, child.id) == nil)     // cleared with the lineage
     }
+
+    // MARK: - unowned targets: accept and RECORD (slice 3a)
+    //
+    // `merge-request` is the single declaration a card makes when its work is ready, so it never refuses
+    // on the shape of the target. With no owning agent to consume the request the daemon records the same
+    // sticky badge and stops: no inbox message (there is no one to send it to), no re-nudge loop, and so
+    // no `mergeStalled` escalation either. The human reads the badge and merges however they choose.
+
+    /// The `parent` branch exists in the graph and is linked, but NO card owns it.
+    private func unownedChild(_ env: TreeStatTests.Env, _ fake: FakeProc, _ repo: String,
+                              _ parentTip: String) async throws -> Task {
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                                link: ParentLink(parent: "parent", base: parentTip))
+        return child
+    }
+
+    @Test("a BARE local parent records the badge, nudges nobody, and arms no loop")
+    func bareLocalParentRecords() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let child = try await unownedChild(env, fake, repo, parentTip)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+        // Nothing was enqueued anywhere — not to the child (that would re-invoke an agent told to STOP),
+        // and there is no parent card to enqueue to.
+        #expect(try await env.svc.inboxPeek(child.id).isEmpty)
+    }
+
+    @Test("a card with NO parent link records against the default branch instead of refusing")
+    func linklessRootRecords() async throws {
+        let (env, _, _, repo) = TreeStatTests.setup()
+        let solo = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "solo", repo: repo, branch: "solo"))
+
+        _ = try await env.svc.mergeRequest(ref: solo.ref())
+
+        #expect(await treeState(env.svc, solo.id) == .mergeRequested)
+        #expect(await env.svc.mergeRequestNudgeActive(solo.id) == false)
+    }
+
+    /// A REMOTE parent is unowned by construction — there is no local card to ask, whatever cards happen
+    /// to exist. Without this, `mergeParentOwner`'s remote arm is unexercised at the verb, and an edit that
+    /// derived an "owner" for `origin/<b>` / `pr#<N>` would nudge some unrelated same-named card.
+    @Test("a REMOTE parent records the badge and arms no loop")
+    func remoteParentRecords() async throws {
+        let (env, fake, _, repo, _) = setup()
+        // A live card DOES exist on the local `parent` branch — the remote arm must short-circuit before
+        // any branch lookup, so this card is never treated as the owner of a `pr#N` parent.
+        let localParent = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        // `pr#N` parses as remote independently of the configured remotes (RemoteParentRef.parse), which is
+        // what makes it usable here — `TestEnv`'s remotes probe reports none.
+        try await BranchLineage(proc: fake).set(repo: repo, branch: "child",
+                                                link: ParentLink(parent: "pr#7", base: "deadbeef", prNumber: 7))
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+        #expect(try await env.svc.inboxPeek(localParent.id).isEmpty)
+    }
+
+    @Test("an ARCHIVED parent card counts as unowned — the lookup excludes it")
+    func archivedParentIsUnowned() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = true }
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+        #expect(try await env.svc.inboxPeek(parentCard.id).isEmpty)   // never nudge an archived card
+    }
+
+    @Test("an owner disappearing mid-flight keeps the badge and stops the loop (owned → unowned)")
+    func ownerLossKeepsTheBadge() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        await env.svc.setMergeRequestNudgeInterval(.milliseconds(30))
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)
+
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = true }
+
+        // The next tick finds no owner: the loop stops, but the DECLARATION stands — it is now the
+        // human's to resolve, not something the daemon may retract on the child's behalf.
+        try await pollUntil("the nudge loop observed the owner loss and stopped") {
+            await env.svc.mergeRequestNudgeActive(child.id) == false
+        }
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+    }
+
+    /// The real owner-gain path: the parent card is ARCHIVED when the request is made (so it records
+    /// unowned), and comes back — a `reopen`. Spawning a fresh card onto the parent branch cannot be the
+    /// scenario: a spawn that CREATES the branch deliberately clears stale children links first
+    /// (`+Converge`), so there would be no request left to hand over.
+    @Test("an owner APPEARING later takes the request over — exactly once")
+    func ownerGainHandsOver() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = true }
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())          // recorded, unowned
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+        #expect(try await env.svc.inboxPeek(parentCard.id).isEmpty)
+
+        // The owner comes back. The funnel recompute is what notices.
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = false }
+        await env.svc.recomputeTreeStat(child.id)
+
+        let requests = try await env.svc.inboxPeek(parentCard.id).filter { $0.text.contains("merge-request") }
+        #expect(requests.count == 1)
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+
+        // Idempotent: a second funnel pass must not re-send to an owner that already holds it.
+        await env.svc.recomputeTreeStat(child.id)
+        #expect(try await env.svc.inboxPeek(parentCard.id).filter { $0.text.contains("merge-request") }.count == 1)
+    }
+
+    /// The production trigger for the handover above. `reopen` un-archives the owner and `spawn` creates
+    /// one, and `derivedCard` counts either the instant it exists — but neither path re-derives the routing
+    /// of requests already aimed at that branch. Making the `.live` LANDING schedule the child fan-out is
+    /// what turns "an owner appeared" into an explicit edge, instead of leaving the handover to depend on
+    /// the new owner happening to file a field-changing report.
+    @Test("reopening the owner hands the request over with no other prompting")
+    func reopenedOwnerTakesOver() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        let sid = try #require(parentCard.agentSessionId)
+        env.adapter.writeTranscript(for: sid)                    // resumable → reopen resumes it
+        try await TestEnv.archiveAndTeardown(env.svc, parentCard.id)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())     // recorded while nobody owns `parent`
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == false)
+
+        // The branch outlives the archived card in production (only its worktree is removed), so `ensure`
+        // reports it as pre-existing — which is what stops `materialize` from clearing the "stale" children
+        // links of what it would otherwise take for a brand-new branch.
+        env.worktrees.markBranchExists("parent")
+        _ = try await env.svc.reopen(parentCard.id)
+        _ = try await TestEnv.reconcileToLive(env.svc, parentCard.id)
+
+        // Nothing else is driven here — no report, no manual recompute. The landing's own fan-out is what
+        // has to carry the request to the owner that just came back. Poll on ARMING, which the reconcile
+        // does LAST: polling the inbox instead would let this assertion land in the window between the
+        // enqueue and the arm.
+        try await pollUntil("the reopened owner took over the pending merge-request") {
+            await env.svc.mergeRequestNudgeActive(child.id)
+        }
+        #expect(try await env.svc.inboxPeek(parentCard.id)
+            .filter { $0.text.contains("merge-request") }.count == 1)
+    }
+
+    /// Co-located siblings are permitted and `derivedCard` picks the OLDEST, so archiving the owner
+    /// promotes an already-live sibling — an ownership change with no `.live` transition to hang the
+    /// landing hook on. Teardown therefore schedules each affected child's own recompute.
+    @Test("archiving the owner hands the request to a live co-located sibling")
+    func siblingTakesOverOnArchive() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let ownerA = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "parent"))
+        let siblingB = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+
+        _ = try await env.svc.mergeRequest(ref: child.ref())          // routed to A (oldest)
+        #expect(try await env.svc.inboxPeek(ownerA.id).contains { $0.text.contains("merge-request") })
+        #expect(try await env.svc.inboxPeek(siblingB.id).isEmpty)
+
+        try await TestEnv.archiveAndTeardown(env.svc, ownerA.id)      // B is now the derived owner
+
+        try await pollUntil("the surviving sibling took the request over") {
+            (try? await env.svc.inboxPeek(siblingB.id))?
+                .contains(where: { $0.text.contains("merge-request") }) == true
+        }
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+        // Exactly one — the handover's dedup key is what keeps a re-route from stacking copies.
+        #expect(try await env.svc.inboxPeek(siblingB.id)
+            .filter { $0.text.contains("merge-request") }.count == 1)
+    }
+
+    /// A request RECORDED while unowned whose owner appears just before a daemon restart: boot used to
+    /// arm a re-nudge loop for a parent that had never been told, so its first contact was a
+    /// "reminder N/M" for a request it never received. The rebuild routes through the same reconcile as
+    /// every other path instead.
+    @Test("the boot rebuild hands over a request whose owner appeared while the daemon was down")
+    func rebuildHandsOverNewlyOwnedRequest() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = true }
+        _ = try await env.svc.mergeRequest(ref: child.ref())          // recorded, unowned — nobody told
+        #expect(try await env.svc.inboxPeek(parentCard.id).isEmpty)
+
+        // The owner comes back, and the daemon restarts before any funnel tick routes the request.
+        _ = try await env.svc.store.update(parentCard.id) { $0.archived = false }
+        await env.svc.rebuildMergeRequestNudges()
+
+        let msgs = try await env.svc.inboxPeek(parentCard.id)
+        #expect(msgs.filter { $0.text.contains("merge-request") }.count == 1)
+        #expect(!msgs.contains { $0.text.contains("reminder") })      // never a reminder for an unsent ask
+        #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)
+    }
+
+    @Test("synced clears an UNOWNED badge, exactly as it clears an owned one")
+    func syncedClearsUnownedBadge() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+        #expect(await treeState(env.svc, child.id) == .mergeRequested)
+
+        RepoScripts.advanceParent(graph, 1)
+        _ = try await env.svc.synced(ref: child.ref())
+        #expect(await treeState(env.svc, child.id) != .mergeRequested)
+    }
+
+    @Test("shipped clears an UNOWNED badge")
+    func shippedClearsUnownedBadge() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        RepoScripts.advanceParent(graph, 1)
+        try await env.svc.shipped(ref: child.ref())
+        #expect(await treeState(env.svc, child.id) == nil)
+    }
+
+    @Test("re-parenting clears an UNOWNED badge")
+    func setParentClearsUnownedBadge() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let child = try await unownedChild(env, fake, repo, parentTip)
+        _ = try await env.svc.mergeRequest(ref: child.ref())
+
+        _ = try await env.svc.setParent(ref: child.ref(), parent: nil)
+        #expect(await treeState(env.svc, child.id) == nil)
+    }
 }

@@ -436,7 +436,15 @@ extension OrchestraService {
         // recompute): skip when nothing changed / a sticky mergeRequested badge holds. This read may be
         // stale under a concurrent recompute, but the store.update closure below is the authority.
         let current0 = await store.get(id)?.treeStat
-        if current0?.state == .mergeRequested, new?.state != .restackNeeded { return }
+        if current0?.state == .mergeRequested, new?.state != .restackNeeded {
+            // The funnel is the only thing that runs when the WORLD AROUND a frozen request changes —
+            // `scheduleChildFanout` fires it off the report funnel whenever a card on the parent branch is
+            // active — so it is where a request recorded while unowned finds out that an owner has since
+            // appeared. Without this the sticky badge would freeze the routing decision too, and the
+            // request would be held by nobody: invisible to the human's predicate, never sent to the agent.
+            await reconcileMergeRequest(id, link: link, remotes: remotes)
+            return
+        }
         guard carryMergeRequestFields(new, from: current0) != current0 else { return }
         // S2-9: compute the change gate AND the nudge edges INSIDE the store.update closure, against the
         // value that closure observes. TaskStore is an actor, so its updates serialize — a concurrent

@@ -31,20 +31,33 @@ When `treeStat` is `restackNeeded` (the parent was rebased, re-parented via `set
 3. If it conflicts, resolve and `git rebase --continue`; if it goes wrong, `git rebase --abort` and report — never leave the branch half-restacked.
 4. `orchestra synced <you>`.
 
-## Ship — merge your branch up the tree
+## Ship — declare your work ready
 
-Do NOT blindly ship to main. Resolve the parent via `orchestra tree` and take the matching path:
+**One verb, every parent kind: commit your work, run `orchestra merge-request <you>`, and STOP.** Who
+merges you, and how, is the daemon's routing — not your decision, and not something to work out from
+`orchestra tree` first. Two things happen from that one call:
 
-- **Parent has a live card** → you cannot advance a branch checked out in another worktree, and the owning agent must merge it. `orchestra merge-request <you>` (the daemon composes the request, nudges the parent card, and shows you a "merge requested" badge while you wait) and **stop** — the parent's agent squash-merges in its own worktree and calls `orchestra shipped <you>`, which wakes you to verify + archive. Do not `cd` into the parent's worktree.
-- **Bare local parent (no card owns it)** → let Orchestra own the throwaway worktree: `orchestra borrow <you>` prints a fresh `orch-borrow-*` checkout of the parent branch. `cd` there, `git merge --squash <you>` and commit. **On conflict:** resolve and commit, or `git merge --abort` and report — never leave the borrow half-merged. Then `orchestra shipped <you>` followed by `orchestra release <you>` (the daemon also sweeps the borrow on your archive / at its next startup, so a crash can't strand it).
-  - **If `borrow` fails with "parent … is already borrowed"** a sibling is landing into the same parent right now (exactly-one-borrower). **Do NOT retry in a loop or `cd` into its worktree.** STOP and wait — when it ships, the parent advances and you get a stale nudge; then `git merge <parent>` the parent down, `orchestra synced <you>`, and retry your own ship.
-- **Parent is `main`** → **you do not merge to `main` yourself.** Commit your work, move your card to Review (`orchestra move <you> --col review`), and report that the branch is ready — a human reviews and merges every main-bound branch, and may come back to you with further instructions. **If `orchestra tree <you>` shows you have children**, run `orchestra shipped <you>` once that merge lands, so the daemon retargets them onto `main` and nudges each to restack — otherwise a stacked child sits on your merged branch showing `inSync` until someone re-points it. You don't need to prove the merge with git first: `shipped` refuses when nothing actually merged. No children ⇒ skip `shipped`.
-- **Remote parent (`origin/<branch>` or `pr#<N>`)** → do NOT merge locally. **Publish** your branch as a stacked PR:
-  1. `git push -u origin <your-branch>`
-  2. `gh pr create --base <parentHeadRef>` — target the PARENT's head branch (the branch behind the parent PR / `origin/<branch>`), NOT `main`, so your PR shows only your commits.
-  Do NOT call `orchestra shipped`. Orchestra watches the parent PR; when it merges, it redirects your card onto the parent's base and nudges you to restack.
+- **A live card owns your parent branch** → the request lands in that agent's inbox and is re-asked until
+  it acts. It squash-merges in its own worktree and calls `orchestra shipped <you>`, which wakes you to
+  verify and archive. You cannot advance a branch that is checked out in another worktree, so never `cd`
+  into the parent's worktree to do it yourself.
+- **No live card owns your parent branch** — it is `main`, a bare local branch, a remote branch or PR, or
+  you have no parent link at all → the request is RECORDED on your card and a **human** takes it from
+  there, merging however they choose. There is no agent to wait for: stop, and let them come back to you.
 
-`orchestra shipped <you>` always retargets any children of yours onto the grandparent. When a **parent agent** runs it for you it also wakes you with "your branch landed" — verify, then archive as usual. When you call it on yourself there's no such wake (you already know), and on the `main` path you stay parked in Review rather than archiving yourself.
+Either way the request is sticky (your card reads "merge requested" until it resolves) and re-sending is
+a no-op refresh rather than a second request. Do not follow it with a merge of your own, a borrow, or a
+pull request — if a human wants one of those they will direct it.
+
+**If your branch is merged and `orchestra tree <you>` shows you have children**, run
+`orchestra shipped <you>` once that merge lands: the daemon then retargets them onto your parent and
+nudges each to restack. Otherwise a stacked child sits on your merged branch showing `inSync` until
+someone re-points it. You don't need to prove the merge with git first — `shipped` refuses when nothing
+actually merged. No children ⇒ nothing to do.
+
+`orchestra shipped <you>` always retargets any children of yours onto the grandparent. When a **parent
+agent** runs it for you it also wakes you with "your branch landed" — verify, then archive as usual.
+When you call it on yourself there is no such wake, because you already know.
 
 ## Restack after a REMOTE parent merges
 
@@ -52,6 +65,6 @@ When your remote parent (`origin/…` / `pr#N`) merges, Orchestra redirects your
 
 1. **Commit your WIP first** (never autostash).
 2. `git rebase --onto <new-base> <recorded-base>` — `<recorded-base>` is the anchor in the nudge / `orchestra tree`; only YOUR commits move (squash-proof — no phantom conflicts).
-3. `git push --force-with-lease` — **never a bare `--force`** (force-with-lease refuses to clobber an unseen remote update).
+3. **If your branch is already published**, `git push --force-with-lease` — **never a bare `--force`** (force-with-lease refuses to clobber an unseen remote update). If it isn't published, skip this: publishing is a human's call, not a step you take on your own.
 4. `orchestra synced <you>`.
-5. Orchestra best-effort repairs your PR's base; if it didn't, `gh pr edit <your-pr> --base <new-base>`.
+5. If your branch has a PR, Orchestra best-effort repairs its base; if it didn't, `gh pr edit <your-pr> --base <new-base>`.

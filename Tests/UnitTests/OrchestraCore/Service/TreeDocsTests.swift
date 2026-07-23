@@ -56,14 +56,48 @@ struct TreeDocsTests {
         }
     }
 
-    @Test("both variants document the remote publish + restack path (BT6)")
+    @Test("both variants document the remote RESTACK path (BT6)")
     func remoteGuidancePresent() throws {
         for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
-            #expect(doc.contains("gh pr create --base"))
             #expect(doc.contains("force-with-lease"))
-            #expect(doc.contains("push -u origin"))
             #expect(doc.contains("pr#"))          // canonical remote form documented
         }
+    }
+
+    /// Slice 3a — `merge-request` is the SINGULAR taught ship verb, so the guidance must offer no second
+    /// path for an agent to pick instead. Publishing a branch and opening a stacked PR remain primitives a
+    /// human may direct; they are not something an agent is taught to do on its own, and `borrow` is not a
+    /// ship instruction. This is a NEGATIVE anchor on purpose: the failure mode is a well-meaning edit
+    /// re-adding "and if the parent is remote, open a PR", which quietly restores the four-way fork.
+    @Test("neither variant teaches a second ship path")
+    func singularShipVerb() throws {
+        for doc in [try #require(TreeDocs.load(.claudeSkill)), try #require(TreeDocs.load(.codexAgents))] {
+            #expect(!doc.contains("gh pr create"))
+            #expect(!doc.contains("push -u origin"))
+            #expect(!doc.contains("orchestra borrow"))
+            #expect(!doc.contains("merge --squash"))
+            // …and the one verb IS taught, next to the instruction to stop.
+            #expect(doc.contains("orchestra merge-request <you>"))
+            #expect(doc.uppercased().contains("STOP"))
+        }
+    }
+
+    /// The resource docs are not the only agent-facing surface, and the impl review found the other two
+    /// still teaching the deleted fork: the MCP tool descriptions (every agent reads them on `tools/list`)
+    /// and the merge-request give-up message (a durable inbox nudge). The give-up one was worse than stale
+    /// — `giveUp` is only reachable while a live card OWNS the parent, which is exactly when `borrow`
+    /// refuses, so it handed the agent a command that could not succeed.
+    @Test("the agent-facing command surface teaches no second ship path either")
+    func catalogTeachesOneShipVerb() throws {
+        for schema in CommandCatalog.all {
+            #expect(!schema.summary.contains("gh pr"), "\(schema.name) summary")
+            #expect(!schema.summary.contains("push -u origin"), "\(schema.name) summary")
+            #expect(!schema.summary.lowercased().contains("publish a pr"), "\(schema.name) summary")
+        }
+        // `borrow` stays documented as a primitive, but never as a way to ship.
+        let borrow = try #require(CommandCatalog.all.first { $0.name == "borrow" })
+        #expect(borrow.summary.contains("merge-request"))
+        #expect(!borrow.summary.contains("squash-merge into it"))
     }
 
 }

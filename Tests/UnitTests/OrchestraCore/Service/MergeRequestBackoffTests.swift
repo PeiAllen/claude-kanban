@@ -238,7 +238,11 @@ struct MergeRequestCapTests {
             .filter { $0.text.hasPrefix("merge-request:") }.count == 1)  // dedup held: no second request
 
         // Now stall it, and re-send: the escape hatch clears the flag, resets the budget, re-arms the loop,
-        // and re-prods the parent at t=0.
+        // and re-prods the parent at t=0. "Re-prods" is the WAKE, not a second copy of the ask — the
+        // original request is still sitting unread in the parent's inbox, and the handover's dedup key
+        // (slice 3a) is what keeps a re-send from stacking an identical message on top of it. Stacking
+        // helped nobody: the parent has one pending request either way, and the meaningful part of the
+        // escape hatch is the re-armed loop.
         await env.svc.setMergeRequestNudgeInterval(.seconds(300))        // no tick can race the assertions
         _ = try await env.svc.store.update(child.id) {
             $0.treeStat?.mergeStalled = true; $0.treeStat?.state = .inSync
@@ -249,7 +253,7 @@ struct MergeRequestCapTests {
         #expect(ts?.mergeStalled == false && ts?.state == .mergeRequested && ts?.nudges == 0)
         #expect(await env.svc.mergeRequestNudgeActive(child.id) == true)
         #expect(try await env.svc.inboxPeek(parent.id)
-            .filter { $0.text.hasPrefix("merge-request:") }.count == 2)
+            .filter { $0.text.hasPrefix("merge-request:") }.count == 1)
     }
 
     /// The generation fence (mirrors `remoteWatchGen`). `cancel()` is cooperative and the tick has no

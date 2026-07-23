@@ -91,6 +91,12 @@ extension OrchestraService {
                 // only a `.discovered` agent binds a new id mid-launch (a `.seeded` agent's id never rolls
                 // while launching), so this never fires for Claude.
                 if before.phase.kind == .launching { resolveReadiness(id, true, observedEpoch: observedEpoch) }
+                // The session that declared the question has been replaced, so the question is moot.
+                // Generation-fenced, unlike the id write above: a late rollover from a session we have
+                // already torn down would otherwise erase a question the INCOMING generation declared
+                // after the fact — and `applyReportFields` carries `pendingQuestion`, so that nil would
+                // really land.
+                if attributable { task.pendingQuestion = nil }
             }
 
             // SessionStart source semantics.
@@ -109,6 +115,11 @@ extension OrchestraService {
                     }
                     task.desc = ""
                     task.awaitingFirstPrompt = true
+                    // `/clear` replaces the session's whole context: whatever it was blocked on is gone.
+                    // Fenced like the phase write beside it (and unlike `desc`/`awaitingFirstPrompt`,
+                    // which are harmless either way) — erasing the incoming generation's question on the
+                    // word of the outgoing session's SessionStart is not harmless.
+                    if attributable { task.pendingQuestion = nil }
                 case "resume":
                     if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
                         task.phase = .live(.waiting(.humanTurn))
@@ -149,12 +160,23 @@ extension OrchestraService {
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
         }
 
+        // The `needs-input` turn-start fence. A LAG-PRONE agent (fileTail: its turn-start is a rollout line
+        // the daemon POLLS, so a line written before a declaration can be applied after it) must prove a
+        // turn-start is fresh before it may retire a question; a hooksPush agent (Claude, synchronous, no
+        // lag) never needs to. `turnStartEvidenceAt` is the rollout line's OWN write time (its `seq`,
+        // stamped in epoch µs by `CodexAdapter`), the clock `declaredAt` is compared against below.
+        let lagProneAgent = (try? registry.get(task.agentId))?.capabilities.telemetry == .fileTail
+        var turnStartEvidenceAt: Date? = nil
+
         // --- Snapshot half (seq-gated as a unit) ---
         // Stamped statusLine reports (seq>0) are coalesced/dropped when stale (an equal seq is
         // treated as already-applied); hook snapshots (seq==0) are naturally ordered and always
         // apply. The cursor is monotonic — it never moves backward.
         if let snap = patch.snapshot {
             let lastSeq = lastSeqStore[id] ?? 0
+            if snap.run == .running, snap.seq > 0, lagProneAgent {
+                turnStartEvidenceAt = Date(timeIntervalSince1970: Double(snap.seq) / 1_000_000)
+            }
             // Permission-fence for fileTail agents (Codex): a `PermissionRequest` hook arrives as a
             // seq==0 push ("naturally ordered, always apply") but does NOT advance the cursor — leaving
             // `.waiting/.permission` open to being clobbered by a rollout line the agent wrote µs before
@@ -332,12 +354,32 @@ extension OrchestraService {
                 && (before.phase.kind == .relaunching || before.phase.kind == .launching)
                 && observedEpoch == task.sessionEpoch
             let landingAdapter = try? registry.get(task.agentId)
+            // The next turn STARTING retires a declared question — the waiting→running edge, which only
+            // `report()` produces (steppers land from bring-up phases; those are the session-replacement
+            // clear inside `transition`). Permission→running is excluded: an approval resumes the SAME
+            // turn, so `from` must be the genuine idle wait.
+            //
+            // The clear rule, by whether the agent's turn-start can arrive late:
+            //   · hooksPush (Claude): no lag → clear unconditionally.
+            //   · fileTail (Codex) WITH an evidence time: clear only if the line was written AFTER the
+            //     declaration (a line predating it is a stale late poll, not a new turn).
+            //   · fileTail WITHOUT an evidence time (a rollout line whose timestamp was absent/unparseable,
+            //     so `seq == 0`): freshness is UNPROVABLE → keep. Codex always stamps in practice, so this
+            //     is defensive — but "retire only on proof" means an unprovable turn-start must not clear,
+            //     rather than silently disabling the fence for that line.
+            let isTurnStart = targetPhase == .live(.running) && before.phase == .live(.waiting(.humanTurn))
+            let evidenceAt = turnStartEvidenceAt
+            let lagProne = lagProneAgent
             let result = await transition(id, to: targetPhase, observedEpoch: observedEpoch) { t in
                 t.deadReason = targetDeadReason
                 t.deadDetail = targetDeadDetail
                 if landsFromBringUp {
                     t.pendingSeed = nil
                     if let landingAdapter { consumeModelReseat(&t, landingAdapter) }
+                }
+                if isTurnStart, let pq = t.pendingQuestion,
+                   evidenceAt.map({ $0 > pq.declaredAt }) ?? !lagProne {
+                    t.pendingQuestion = nil
                 }
             }
             if result == .applied {

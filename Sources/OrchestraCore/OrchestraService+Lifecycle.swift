@@ -95,6 +95,24 @@ extension OrchestraService {
                 } else if to.kind == .live, t.agentSessionId != nil {
                     t.sessionDiscoverySince = nil
                 }
+                // A declared `needs-input` question is retired by PROOF that it is moot — never an intent.
+                // THIS seam handles only a COMPLETED SESSION REPLACEMENT: a `.live` landing out of a
+                // bring-up phase, where the session that asked the question is provably gone. It is
+                // unconditional and correct precisely because it is a replacement (a blank restart even
+                // lands `.waiting(.humanTurn)`, which the turn-start rule would miss). Deliberately NOT on
+                // ENTRY to `.relaunching`/`.creatingWorktree`: `resume` persists that intent before any
+                // launch runs, so a failed bring-up would erase a question the agent never saw — and that
+                // card is now `.dead`, where the human needs the question more, not less.
+                //
+                // The OTHER proof — the next turn STARTING (waiting→running) — lives in `report()`, where
+                // the turn-start evidence's own timestamp is in scope: a Codex turn-start arrives by a
+                // polled rollout tail, so a line written before a declaration can be applied after it, and
+                // only `report()` can compare the two clocks. Keeping that comparison out of here leaves the
+                // sole-phase-writer reasoning about phases, not clocks.
+                if t.pendingQuestion != nil,
+                   to.kind == .live, [.relaunching, .launching, .creatingWorktree].contains(from.kind) {
+                    t.pendingQuestion = nil
+                }
             }
         } catch {
             return .noop   // unknown card raced away between the load and the patch
@@ -127,6 +145,17 @@ extension OrchestraService {
         //     was provisioning. `wakeIfPending` gates on `hasClaimable`, so a card holding a `.ticks`
         //     relaunchSeed lease is left alone (B3 D5) and a `.live(.running)` entry falls through.
         if to.kind == .live { await wakeIfPending(id) }
+        // A card ENTERING `.live` may be the OWNER a pending merge-request has been waiting for: `spawn`
+        // creates the card and `reopen` un-archives it, and `derivedCard` counts either the instant it
+        // exists — but neither path re-derives the routing of requests already aimed at that branch. The
+        // report funnel's fan-out would eventually cover it (a first report changes fields, so it fires),
+        // which makes the handover depend on the new owner happening to report. Doing it here instead makes
+        // "an owner appeared" an explicit edge: the debounce coalesces it with the report-driven fan-out, and
+        // the reconcile inside is a no-op for every child that is not waiting on this branch.
+        // Scoped to the ENTRY edge (`from.kind != .live`): ordinary running↔waiting churn stays inside
+        // `.live` and changes no ownership, and the report funnel already fans those out — matching on them
+        // here would only churn a debounce task per status flip.
+        if from.kind != .live, to.kind == .live, updated.origin == .worktree { scheduleChildFanout(id) }
         return .applied
     }
 

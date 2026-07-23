@@ -183,6 +183,26 @@ struct E2EBinaryTests {
         #expect(!r.stderr.contains("unknown command"))
     }
 
+    /// Slice 3a. Catalog parity is a unit test, but it cannot prove the CLI *switch* routes the verb or
+    /// that the daemon dispatches it end-to-end — that is binary + daemon wiring, so it lives here.
+    @Test("CLI: needs-input is a routed verb that reaches the daemon and sets the field")
+    func cliNeedsInputRouted() async throws {
+        let fx = try await E2EFixture.shared.get()
+        // No ref/question → the case runs and dies on the missing ref, never the `default:` branch.
+        let bare = try cli(["needs-input"], ctlSock: fx.ctlSock)
+        #expect(bare.exitCode != 0)
+        #expect(!bare.stdout.contains("unknown command"))
+        #expect(!bare.stderr.contains("unknown command"))
+
+        // …and the full round-trip through the real daemon: declare, then read it back off `status`.
+        let spawned = try cli(["spawn", "--prompt", "q", "--repo", fx.repo, "--branch", "needsinput"],
+                              ctlSock: fx.ctlSock)
+        let ref = try #require(spawned.stdout.split(whereSeparator: { $0.isWhitespace }).last.map(String.init))
+        _ = try cli(["needs-input", ref, "ship", "to", "main", "or", "hold?"], ctlSock: fx.ctlSock)
+        let status = try cli(["status", ref], ctlSock: fx.ctlSock)
+        #expect(status.stdout.contains("ship to main or hold?"))   // positionals joined, field broadcast
+    }
+
     @Test("CLI: `orchestra trust <path>` with a non-tty stdin fails closed with actionable text")
     func cliTrustNonInteractiveFails() async throws {
         let fx = try await E2EFixture.shared.get()
@@ -256,11 +276,18 @@ struct E2EBinaryTests {
         let mcp = binary("orchestra-mcp")
         try #expect(Bool(FileManager.default.fileExists(atPath: mcp)))
 
+        // A card spawned up front, so the `needs-input` call below has a REAL ref (refs are UUID/shortId,
+        // never a branch name) — the declaration verb has to survive the MCP hop by ref like any other.
+        let seeded = try cli(["spawn", "--prompt", "q", "--repo", fx.repo, "--branch", "mcpask"],
+                             ctlSock: fx.ctlSock)
+        let mcpRef = try #require(seeded.stdout.split(whereSeparator: { $0.isWhitespace }).last.map(String.init))
+
         let requests = [
             #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
             #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
             #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"spawn","arguments":{"prompt":"From MCP","repo":"\#(fx.repo)","branch":"mcpbranch"}}}"#,
+            #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"needs-input","arguments":{"ref":"\#(mcpRef)","question":"which base?"}}}"#,
         ].joined(separator: "\n") + "\n"
 
         let out = try await runMCP(mcp, stdin: requests, ctlSock: fx.ctlSock)
@@ -279,6 +306,12 @@ struct E2EBinaryTests {
         #expect(callResp?["result"]?["content"] != nil)
         let list = try cli(["list"], ctlSock: fx.ctlSock)
         #expect(list.stdout.contains("mcpbranch"))   // the card is named by its branch, not its prompt
+
+        // tools/call needs-input (id 4): a declaration verb round-trips over MCP by ref, and the field is
+        // broadcast back on the card it names.
+        #expect(lines.first { $0["id"]?.intValue == 4 }?["result"]?["content"] != nil)
+        let after = try cli(["status", mcpRef], ctlSock: fx.ctlSock)
+        #expect(after.stdout.contains("which base?"))
     }
 
     @Test("MCP: publish-image renders the shared transcript marker, not raw JSON")

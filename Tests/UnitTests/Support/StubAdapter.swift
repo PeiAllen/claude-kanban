@@ -16,6 +16,15 @@ extension AgentCapabilities {
         wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
         readOnlyEnforcement: .sandboxed, authMode: .subscription,
         terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
+
+    /// `.stub` but with `fileTail` telemetry — for the tests that exercise the Codex-shaped polling-lag
+    /// paths (the `needs-input` turn-start fence, the permission seq-fence) without standing up a real
+    /// Codex adapter. Readiness stays `.relaunchLiveness` so spawn/resume still land synchronously.
+    static let fileTailStub = AgentCapabilities(
+        sessionId: .seeded, telemetry: .fileTail, contextUsage: .percent,
+        wakeTransport: .nativeReinvoke, inboxDrain: .stopHook,
+        readOnlyEnforcement: .sandboxed, authMode: .subscription,
+        terminalImagePaste: .controlV, readinessConfirmation: .relaunchLiveness)
 }
 
 final class StubAdapter: Adapter, @unchecked Sendable {
