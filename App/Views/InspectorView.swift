@@ -113,6 +113,11 @@ private struct HeaderBar: View {
                 .disabled(!ds.validActions.contains(.archive))
             }
 
+            // Change size at a glance, same formatting as the board card's footer meta. Lives in this
+            // shared header for the same reason the badge below does — you can read it from the Diff tab
+            // too, so you know how big the change is without scrolling the diff or going back to the board.
+            InspectorDiffStat(task: task)
+
             // Attached-agents badge lives in this shared header (not AgentChrome's terminal header) so it
             // stays visible in BOTH Agent and Diff modes — a glance-only count + liveness indicator now.
             // The read-only sub-cards are reached on the BOARD (selecting this target expands its rows
@@ -167,6 +172,29 @@ private struct HeaderBar: View {
         .buttonStyle(.plain)
         .popover(isPresented: isOn, arrowEdge: .bottom) {
             popover().environment(\.theme, theme)
+        }
+    }
+}
+
+/// The selected card's branch diffstat (`k files · +N −M`) in the inspector's shared header, rendered
+/// exactly like the board card's footer meta so the two read as the same fact in two places. Absent
+/// (rather than a `0f +0 −0` placeholder) when the daemon has no stat for this card — non-git, or
+/// nothing changed yet — because "no diff" and "a diff of nothing" are the same thing to a reader.
+private struct InspectorDiffStat: View {
+    @Environment(\.theme) var theme: Theme
+    let task: Task
+
+    var body: some View {
+        if let stat = task.diffStat, stat.filesChanged > 0 {
+            HStack(spacing: 5) {
+                Text("\(stat.filesChanged)f").foregroundStyle(theme.text3)
+                Text("+\(stat.insertions)").foregroundStyle(theme.green.text)
+                Text("−\(stat.deletions)").foregroundStyle(theme.red.text)
+            }
+            .font(F.mono(10.5, .medium))
+            .lineLimit(1)
+            .fixedSize()
+            .help("\(stat.filesChanged) files changed · +\(stat.insertions) −\(stat.deletions)")
         }
     }
 }

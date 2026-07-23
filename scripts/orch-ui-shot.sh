@@ -112,4 +112,8 @@ shoot "8-focus-agent-shells" env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_FOCUS=ter
 shoot "9-takeover-placeholder"       env ORCH_SHOW=takeover
 shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 
+# The Diff tab, to check the SHARED header (diffstat, attached-agents badge) still reads the same
+# once the body swaps away from the agent terminal.
+shoot "11-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INSPECTOR=diff
+
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
