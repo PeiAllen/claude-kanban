@@ -6,12 +6,17 @@ import OrchestraCore
 /// (reviewers / fork inspectors / browse-only borrows) embedded behind it. `👁 N`, tinted by the
 /// roll-up liveness of those agents (green = all running/being-born, amber = one needs the human or
 /// died). It is purely informational: the attached agents are reached by **selecting the target**,
-/// which expands them as inline rows inside the card (see `AttachedAgentRow`) — no popover. Shown in
-/// the CardView footer.
+/// which expands them as inline rows inside the card (see `AttachedAgentRow`) — no popover. Shown on
+/// the card's subtree line (L4).
+///
+/// `labeled` spells the count out ("👁 2 attached"). Alone on the subtree line, a bare glyph and a
+/// digit read as debris; the word makes the section legible as a summary of what hangs off the card.
+/// The compact form stays for surfaces that pair it with other content (the inspector header).
 struct AttachedAgentsBadge: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
     let task: OrchestraCore.Task
+    var labeled: Bool = false
 
     var body: some View {
         // Hidden unless this card actually has attached agents (nil liveness ⇒ none).
@@ -20,7 +25,7 @@ struct AttachedAgentsBadge: View {
             let tint = liveness == .allRunning ? theme.green.text : theme.amber.text
             HStack(spacing: 3) {
                 Image(systemName: "eye").font(F.ui(8.5))
-                Text("\(count)").font(F.mono(10, .medium))
+                Text(labeled ? "\(count) attached" : "\(count)").font(F.mono(10, .medium))
             }
             .foregroundStyle(tint)
             .help(count == 1 ? "1 attached agent — select this card to expand it"

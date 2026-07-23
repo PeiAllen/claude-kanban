@@ -82,11 +82,21 @@ for w in infos where (w[kCGWindowOwnerPID as String] as? Int) == want {
 SWIFT
 }
 
-shoot() { # name  env...
+# shoot NAME env VAR=… [-- BINARY ARGS…]
+# Anything after `--` is passed to the BINARY, not the env prefix. That matters for
+# `-inspectorWidth`: @AppStorage reads go through cfprefsd, which is keyed per-USER and NOT isolated
+# by $HOME, so without an explicit width these shots render at whatever the human last dragged their
+# real app to. The NSUserDefaults argument domain outranks the stored value without mutating it.
+shoot() { # name  env…  [-- binary args…]
   local name="$1"; shift
+  local env_args=() bin_args=() seen_sep=0
+  for a in "$@"; do
+    if [[ "$a" == "--" ]]; then seen_sep=1; continue; fi
+    if [[ "$seen_sep" == 1 ]]; then bin_args+=("$a"); else env_args+=("$a"); fi
+  done
   pkill -f "$BIN" 2>/dev/null || true
   sleep 0.5
-  HOME="$ISO_HOME" "$@" "$BIN" >/dev/null 2>&1 &
+  HOME="$ISO_HOME" "${env_args[@]}" "$BIN" "${bin_args[@]}" >/dev/null 2>&1 &
   local pid=$!
   # Give SwiftUI time to lay out + the DEBUG hook to inject the mock card.
   local wid=""
@@ -126,5 +136,24 @@ shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 # The Diff tab, to check the SHARED header (diffstat, attached-agents badge) still reads the same
 # once the body swaps away from the agent terminal.
 shoot "11-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INSPECTOR=diff
+
+# Card anatomy (slice 2a). The two headless snapshots are the primary gate — ImageRenderer, so they
+# are deterministic and independent of window size, cfprefsd, and Screen Recording. The windowed
+# board shots exist to show the ladder biting at REAL column widths, which a fixed-width render can't.
+snap() { # name  env…
+  local name="$1"; shift
+  HOME="$ISO_HOME" "$@" "$BIN" >/dev/null 2>&1 || true
+  [[ -f "$OUT/$name.png" ]] && echo "  ✓ $OUT/$name.png" || echo "  ✗ $name: not rendered"
+}
+
+echo "▶ capturing card anatomy…"
+snap "12-anatomy-gallery"     env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/12-anatomy-gallery.png" ORCH_SNAP_DARK=1
+snap "13-anatomy-gallery-light" env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/13-anatomy-gallery-light.png" ORCH_SNAP_DARK=0
+snap "14-squish-ladder"       env ORCH_SNAPSHOT_LADDER="$PWD/$OUT/14-squish-ladder.png" ORCH_SNAP_DARK=1
+snap "15-anatomy-single-repo" env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/15-anatomy-single-repo.png" ORCH_SNAP_DARK=1 ORCH_ANATOMY=single-repo
+# Windowed: the anatomy on a real board. Narrow forces the ladder down by squeezing the columns.
+shoot "16-anatomy-board-wide"   env ORCH_SHOW=anatomy -- -inspectorWidth 392
+shoot "17-anatomy-board-narrow" env ORCH_SHOW=anatomy -- -inspectorWidth 760
+shoot "18-anatomy-expanded"     env ORCH_SHOW=anatomy ORCH_ANATOMY=expanded -- -inspectorWidth 392
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
