@@ -441,15 +441,16 @@ public class BoardStore: ObservableObject {
     }
 
     /// The card-axis anchor for a selection: the nearest VISIBLE ancestor when the selection is an
-    /// embedded (hidden) attached row — climb `attachedTarget` while the current card `isEmbedded`. So
-    /// `j`/`k` from a row step off its visible target instead of falling through to first-Plan, while a
+    /// embedded (hidden) row — climb `hierarchyParent` (attach target OR lineage parent) while the
+    /// current card `isEmbedded`. So `j`/`k` from a peek row (an attached reviewer OR a non-root lineage
+    /// child) steps off its visible ancestor instead of falling through to first-Plan, while a
     /// `/`-search-un-embedded reviewer (now visible, `isEmbedded == false`) anchors to ITSELF, keeping
     /// its own board slot. Identity on the base store (nothing is embedded there). Cycle-guarded.
     public func cardLevelAnchor(_ id: UUID?) -> UUID? {
         guard let id, var current = tasks.first(where: { $0.id == id }) else { return id }
         var visited: Set<UUID> = []
         while isEmbedded(current), visited.insert(current.id).inserted,
-              let target = attachedTarget(of: current) {
+              let target = hierarchyParent(of: current) {
             current = target
         }
         return current.id
@@ -478,7 +479,11 @@ public class BoardStore: ObservableObject {
     /// `visibleTasks` would pay a per-card `isEmbedded` derivation in a property every card renders.
     private var activeWorktreeRepos: [String] {
         var seen = Set<String>(), out: [String] = []
-        for task in tasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
+        // Over `visibleTasks`, not all `tasks`, so the prefix is SCOPE-aware: inside a drill the board is
+        // one root's subtree (single-repo by construction — cross-repo links are impossible), so the count
+        // is 1 and the prefix drops. At top level every repo still has a visible root, so a multi-repo
+        // board keeps the prefix.
+        for task in visibleTasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
             if seen.insert(task.repo).inserted { out.append(task.repo) }
         }
         return out

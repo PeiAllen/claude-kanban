@@ -238,13 +238,22 @@ import Foundation
         #expect(m.revealsAttached(a))                                       // …reveals its target's rows
     }
 
-    @Test func readWrite_unaffected_byEmbedding() {
+    @Test func readWriteChild_isNeverAttached_butEmbedsAsNonRootAtTopLevel() {
+        // A read-write lineage child is NEVER an attached agent — attachment is a read-only relation, so
+        // the target has no reviewers to embed. (This is the invariant the old readWrite_unaffected test
+        // protected.) What CHANGED in slice 2b: the roots-only top level now embeds the child as a
+        // non-root DESCENDANT (revealed via peek under its root), not as a column citizen — so it leaves
+        // `cards(in:)` but stays reachable through its visible root (`cardLevelAnchor`). Full scope
+        // behaviour is covered in BoardHierarchyScopeTests.
         let m = BoardModel(platform: .noop)
         let target = worktree("01", branch: "feat/x", column: .impl)
         let rw = worktree("02", branch: "feat/x2", access: .readWrite, parentBranch: "feat/x", column: .impl)
         m.tasks = [target, rw]
-        #expect(!m.isEmbedded(rw))
-        #expect(m.cards(in: .impl).contains { $0.id == rw.id })
+        #expect(!m.isAttached(rw))                                  // not a reviewer
+        #expect(m.attachedAgents(of: target).isEmpty)              // target embeds no attached agents
+        #expect(m.isEmbedded(rw))                                  // roots-only: the child embeds…
+        #expect(!m.cards(in: .impl).contains { $0.id == rw.id })   // …so it isn't a column card…
+        #expect(m.cardLevelAnchor(rw.id) == target.id)            // …but it's reachable via its root
     }
 
     // MARK: nested chain — flatten via attachedRoot (Codex BLOCKER)
