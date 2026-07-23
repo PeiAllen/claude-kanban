@@ -108,6 +108,29 @@ check "bad JSON: exit nonzero" "$rc" "1"
 check "bad JSON: no identifier" "$out" ""
 out="$(echo '{}' | $PICK 2>/dev/null)"; rc=$?
 check "no result key: exit nonzero" "$rc" "1"
+# A non-object envelope (a failed/truncated devicectl run) must be diagnosed, not traceback.
+out="$(echo '[]' | $PICK 2>/dev/null)"; rc=$?
+check "top-level array: exit nonzero" "$rc" "1"
+err="$(echo '[]' | $PICK 2>&1 >/dev/null)"
+contains "top-level array: diagnosed, not a traceback" "$err" "not an object"
+check "no traceback leaked" "$(echo '[]' | $PICK 2>&1 >/dev/null | grep -c Traceback)" "0"
+out="$(echo '{"result":{"devices":null}}' | $PICK 2>/dev/null)"; rc=$?
+check "null devices: exit nonzero" "$rc" "1"
+
+# An identifier is what `devicectl device install --device` consumes. A row without one must never
+# be selected: it would exit 0 having printed an empty line, and the caller would install to ''.
+echo "6b. a device with no identifier is never selected"
+ghost='{"identifier":null,"deviceProperties":{"name":"Ghost"},
+ "hardwareProperties":{"platform":"iOS","reality":"physical","deviceType":"iPhone"}}'
+out="$(payload "$ghost" | $PICK 2>/dev/null)"; rc=$?
+check "identifier-less sole iPhone: exit nonzero" "$rc" "1"
+check "identifier-less sole iPhone: nothing on stdout" "$out" ""
+out="$(payload "$ghost" | $PICK --device Ghost 2>/dev/null)"; rc=$?
+check "identifier-less via override: exit nonzero" "$rc" "1"
+check "identifier-less via override: nothing on stdout" "$out" ""
+# …and it must not mask a real phone sitting alongside it.
+out="$(payload "$ghost" "$(device_json localNetwork paired)" | $PICK 2>/dev/null)"
+check "real iPhone still picked alongside a ghost row" "$out" "$IPHONE_ID"
 
 echo "7. stdout carries the identifier and nothing else"
 out="$(payload "$(device_json localNetwork paired)" | $PICK 2>/dev/null | wc -l | tr -d ' ')"

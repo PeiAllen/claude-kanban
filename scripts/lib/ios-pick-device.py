@@ -55,8 +55,13 @@ class Device(object):
         self.dev_mode = props.get("developerModeStatus") or "?"
 
     def is_target_iphone(self):
+        # The identifier is what `devicectl device install --device` consumes, so a row without one
+        # is not a candidate however well it matches otherwise. Without this guard an identifier-less
+        # row selects "successfully" and prints an empty line, and the caller installs to --device ''
+        # — the silent-empty-value failure this whole selector exists to make impossible.
         return (
-            self.platform == PLATFORM
+            bool(self.identifier)
+            and self.platform == PLATFORM
             and self.reality == REALITY
             and self.device_type == DEVICE_TYPE
         )
@@ -108,8 +113,14 @@ If the iPhone should be there, check in this order — the first two are the usu
 
 
 def select(payload, selector=None):
-    """Return (identifier, note) or (None, exit_code) — the whole policy, so the test covers it."""
-    devices = [Device(d) for d in (payload.get("result") or {}).get("devices") or []]
+    """Return (device, 0) or (None, exit_code) — the whole policy, so the test covers it."""
+    # Be defensive about the envelope: a devicectl that failed, or a truncated/!dict file, must
+    # produce a diagnosis rather than an AttributeError traceback.
+    if not isinstance(payload, dict):
+        return None, _fail("devicectl JSON is not an object (got %s)" % type(payload).__name__)
+    result = payload.get("result")
+    raw_devices = (result or {}).get("devices") if isinstance(result, dict) else None
+    devices = [Device(d) for d in (raw_devices or []) if isinstance(d, dict)]
 
     # An explicit override is matched against EVERY device, not just the iPhones the automatic path
     # would consider: if a human names a device, honor it verbatim rather than second-guessing it.
@@ -126,6 +137,12 @@ def select(payload, selector=None):
                 "--device/ORCH_IOS_DEVICE '%s' is ambiguous — it matches:" % selector,
                 hits,
                 "Narrow it, or pass the full identifier from the first column.",
+            )
+        # Same guard as the automatic path: matching a device by name says nothing about whether it
+        # has the identifier the install actually needs.
+        if not hits[0].identifier:
+            return None, _fail(
+                "device '%s' has no identifier — devicectl cannot install to it." % hits[0].name
             )
         return hits[0], 0
 
