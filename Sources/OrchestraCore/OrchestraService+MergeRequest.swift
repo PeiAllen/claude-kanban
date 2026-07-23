@@ -60,9 +60,9 @@ extension OrchestraService {
             // A re-send always clears `mergeStalled` — that IS the escape hatch out of the give-up (it
             // re-arms the reminders). It resets the budget too, EXCEPT when merely re-sending an
             // already-pending request, where the running budget is preserved (see above).
-            $0.treeStat = TreeStat(state: .mergeRequested,
+            $0.treeStat = carryChildProgress(TreeStat(state: .mergeRequested,
                                    nudges: resuming ? ($0.treeStat?.nudges ?? 0) : 0,
-                                   mergeStalled: false)
+                                   mergeStalled: false), from: $0.treeStat)
         }) {
             emit(.taskUpserted(saved), rev: rev)
         }
@@ -278,11 +278,11 @@ extension OrchestraService {
         if let (saved, rev) = try? await store.update(childId, { t in
             guard !t.archived, t.treeStat?.state == .mergeRequested,
                   (t.treeStat?.nudges ?? 0) == prior else { return }   // superseded under us — drop the write
-            t.treeStat = TreeStat(state: fresh?.state ?? .inSync,
+            t.treeStat = carryChildProgress(TreeStat(state: fresh?.state ?? .inSync,
                                   behind: fresh?.behind ?? 0,
                                   parentIsRemote: fresh?.parentIsRemote ?? false,
                                   nudges: sent,
-                                  mergeStalled: true)
+                                  mergeStalled: true), from: t.treeStat)
             flagged = true
         }), flagged {
             emit(.taskUpserted(saved), rev: rev)

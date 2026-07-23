@@ -409,10 +409,31 @@ public struct TreeStat: Codable, Sendable, Equatable {
     ///    make any older binary silently lose the whole card. An unknown *key* is ignored; a rawValue is fatal.
     public var mergeStalled: Bool
 
+    // MARK: - child-progress dimension (BT slice 4)
+    // The three fields above describe this card vs ITS PARENT. The three below describe it vs ITS
+    // CHILDREN — the wave-progress bar. They ride the SAME struct but are an orthogonal dimension: many
+    // parent-facing writers construct a fresh `TreeStat(state:…)`, so `carryChildProgress` copies these
+    // forward at every write (the same discipline `carryMergeRequestFields` uses for `nudges`). The
+    // authoritative setter is `recomputeChildProgress` (reads the git-config counters).
+
+    /// Children merged into this branch and cleared from the lineage — the `n` of the `n/m` bar. Sourced
+    /// from `branch.<self>.orchestra-merged-count`; the client can't reconstruct it after branch cleanup.
+    public var mergedChildren: Int
+    /// The orchestrator's DECLARED plan size (`set-planned`) — the `m` that draws the dashed remainder.
+    /// 0 = unset (the bar just grows as children spawn). Sourced from `branch.<self>.orchestra-planned`.
+    public var plannedChildren: Int
+    /// The wave is done VIA MERGES: the last lineage child left by a merge-classified removal, and none
+    /// remain. Set ONLY in the merge-removal path and cleared on any new child link; NUDGE INPUT ONLY
+    /// (no attention, no behavior). Provenance-bound — a non-merge removal of the last child must NOT set
+    /// it — so it rides the persisted stat rather than being level-derived from `childCount==0`.
+    public var drained: Bool
+
     public init(state: TreeState, behind: Int = 0, parentIsRemote: Bool = false,
-                nudges: Int = 0, mergeStalled: Bool = false) {
+                nudges: Int = 0, mergeStalled: Bool = false,
+                mergedChildren: Int = 0, plannedChildren: Int = 0, drained: Bool = false) {
         self.state = state; self.behind = behind; self.parentIsRemote = parentIsRemote
         self.nudges = nudges; self.mergeStalled = mergeStalled
+        self.mergedChildren = mergedChildren; self.plannedChildren = plannedChildren; self.drained = drained
     }
 
     // Hand-rolled: a synthesized decode would throw `keyNotFound` on the new fields for every card persisted
@@ -425,6 +446,9 @@ public struct TreeStat: Codable, Sendable, Equatable {
         self.parentIsRemote = try c.decodeIfPresent(Bool.self, forKey: .parentIsRemote) ?? false
         self.nudges = try c.decodeIfPresent(Int.self, forKey: .nudges) ?? 0
         self.mergeStalled = try c.decodeIfPresent(Bool.self, forKey: .mergeStalled) ?? false
+        self.mergedChildren = try c.decodeIfPresent(Int.self, forKey: .mergedChildren) ?? 0
+        self.plannedChildren = try c.decodeIfPresent(Int.self, forKey: .plannedChildren) ?? 0
+        self.drained = try c.decodeIfPresent(Bool.self, forKey: .drained) ?? false
     }
 }
 
@@ -542,6 +566,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     public var ctxPct: Double      // context-window usage 0...100 (gauge); 0/absent => gauge hidden
     public var diffStat: DiffStat? // daemon-maintained branch diffstat for the footer; nil = none / non-git / uncomputed
     public var treeStat: TreeStat? // daemon-maintained child lineage status (BT4+); nil = none / uncomputed
+    /// One-bit snapshot: the card has queued inbox deliveries or a live delivery lease (`hasClaimable ∨
+    /// hasLiveLease`). Broadcast-only, maintained in the per-tick delivery reconciler — a later stall-
+    /// detection slice reads it to keep a card with pending work from ambering. Never authoritative state.
+    public var hasPendingDelivery: Bool
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
     public var initialPrompt: String  // the spawn prompt, persisted verbatim (title seed + Recovery panel)
@@ -586,6 +614,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         parentBranch: String? = nil,
         diffStat: DiffStat? = nil,
         treeStat: TreeStat? = nil,
+        hasPendingDelivery: Bool = false,
         archived: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -626,6 +655,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.parentBranch = parentBranch
         self.diffStat = diffStat
         self.treeStat = treeStat
+        self.hasPendingDelivery = hasPendingDelivery
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -646,7 +676,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
-        case ctxPct, diffStat, treeStat, agentSessionId, priorSessionIds, initialPrompt, archived
+        case ctxPct, diffStat, treeStat, hasPendingDelivery, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
         case status, waitReason
@@ -701,6 +731,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // `try?`-guarded like the enum fields above (it contains one): a garbage `TreeState` rawValue must
         // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
         self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
+        self.hasPendingDelivery = try c.decodeIfPresent(Bool.self, forKey: .hasPendingDelivery) ?? false
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
@@ -786,6 +817,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(ctxPct, forKey: .ctxPct)
         try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encodeIfPresent(treeStat, forKey: .treeStat)
+        try c.encode(hasPendingDelivery, forKey: .hasPendingDelivery)
         try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
         try c.encode(priorSessionIds, forKey: .priorSessionIds)
         try c.encode(initialPrompt, forKey: .initialPrompt)

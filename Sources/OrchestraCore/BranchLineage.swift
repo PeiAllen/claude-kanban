@@ -46,6 +46,20 @@ public actor BranchLineage {
     private static let kWatch  = "orchestra-parent-watch"
     private static let allSuffixes = [kParent, kBase, kPr, kWatch]
 
+    // Child-progress counters (slice 4). Stored on the PARENT branch, NOT on the child link — so they are
+    // deliberately OUT of `allSuffixes`: `clear`/`recordMergedChild` remove a CHILD's link keys and must
+    // never wipe a parent's own counter. Neither suffix ends in `.orchestra-parent`, so the `_children`
+    // regex can't match them either.
+    private static let kMergedCount = "orchestra-merged-count"   // int; children merged + reaped, the `n`
+    private static let kPlanned     = "orchestra-planned"        // int; declared plan size, the `m` (unset = none)
+
+    /// Outcome of the one merge-classified removal funnel — `recordMergedChild`.
+    public enum MergeRemoval: Sendable, Equatable {
+        case absent        // no child link — already reaped; the idempotency no-op (dual-observer / re-detect)
+        case linkChanged   // the child now points at a DIFFERENT parent (concurrent re-parent) — don't touch
+        case counted       // the link was removed and the parent's merged-count incremented
+    }
+
     private func key(_ branch: String, _ suffix: String) -> String { "branch.\(branch).\(suffix)" }
 
     private func get(_ repo: String, _ branch: String, _ suffix: String) async -> String? {
@@ -66,6 +80,20 @@ public actor BranchLineage {
     private func unset(_ repo: String, _ branch: String, _ suffix: String) async {
         _ = try? await proc.run(["git", "-C", repo, "config", "--unset", key(branch, suffix)],
                                 cwd: nil, env: [:], timeout: .seconds(120))
+    }
+
+    /// `--unset` one key, DISTINGUISHING outcomes by exit code so a caller can tell "did the key actually
+    /// go?" from "the write failed": 0 = removed, 5 = key already absent, anything else = a genuine failure
+    /// (a lock / IO error). `recordMergedChild` needs this because the failure-swallowing `unset` above,
+    /// paired with a nil-conflating `get` re-read, could read a FAILED clear as "removed" and count while the
+    /// link survived — then count AGAIN on retry.
+    private enum UnsetOutcome { case removed, absent, failed }
+    private func unsetChecked(_ repo: String, _ branch: String, _ suffix: String) async -> UnsetOutcome {
+        guard let r = try? await proc.run(["git", "-C", repo, "config", "--unset", key(branch, suffix)],
+                                          cwd: nil, env: [:], timeout: .seconds(120)) else { return .failed }
+        if r.ok { return .removed }
+        if r.exitCode == 5 { return .absent }
+        return .failed
     }
 
     // MARK: CRUD
@@ -137,14 +165,71 @@ public actor BranchLineage {
         try await setKey(repo, branch, Self.kBase, oid)
     }
 
+    // MARK: child-progress counters (slice 4)
+
+    /// The merged-children count stored on `branch` (the `n`). 0 when unset/garbage.
+    private func _mergedCount(repo: String, branch: String) async -> Int {
+        (await get(repo, branch, Self.kMergedCount)).flatMap(Int.init) ?? 0
+    }
+
+    /// The declared plan size on `branch` (the `m`), or nil when unset.
+    private func _plannedCount(repo: String, branch: String) async -> Int? {
+        (await get(repo, branch, Self.kPlanned)).flatMap(Int.init)
+    }
+
+    /// Set (or clear) the declared plan size. `n <= 0` clears it (unset), matching the verb's "0/absent
+    /// clears" contract; a positive `n` writes it.
+    private func _setPlanned(repo: String, branch: String, n: Int) async throws {
+        if n <= 0 { await unset(repo, branch, Self.kPlanned) }
+        else { try await setKey(repo, branch, Self.kPlanned, String(n)) }
+    }
+
+    /// The ONE merge-classified removal funnel (slice 4). Removes `child`'s lineage link AND increments
+    /// `expectedParent`'s merged-count — the counter's only writer. The child link's existence is the
+    /// idempotency guard, so both the `shipped` verb and a future merge-watch detector can call this and
+    /// the SECOND caller (or a post-restart re-detection — "is ancestor" is a level, not an edge) no-ops.
+    /// Merge CLASSIFICATION is the caller's job (shipped's advanced-past-base gate; a detector's zero-commit
+    /// ancestor guard) — this trusts that the removal it's being asked to record IS a merge.
+    ///
+    /// CLEAR-FIRST, then a strict RE-READ before counting: removing the `orchestra-parent` marker first
+    /// means a crash between the two writes leaves the entry GONE (re-detection → `.absent` → no-op) — a
+    /// bounded UNDERcount, never a double-count. Increment-first would double-count on replay. If the clear
+    /// doesn't take (a lock/IO failure — the marker survives the re-read), we do NOT count and report the
+    /// link as still present, so a later observer retries.
+    private func _recordMergedChild(repo: String, child: String, expectedParent: String) async -> MergeRemoval {
+        guard let link = await _read(repo: repo, branch: child) else { return .absent }
+        guard link.parent == expectedParent else { return .linkChanged }
+        // Remove the `orchestra-parent` marker with a CHECKED unset: only a DEFINITE removal (exit 0) counts.
+        // A lock/IO failure keeps the link → `.linkChanged` (retry later, don't count); an already-absent
+        // marker (exit 5 — an external race after our read) → `.absent` (idempotent: someone else removed it).
+        // This is exit-code truth, not a nil-conflating `get` re-read — which is what closes the double-count
+        // window (a failed clear read as "removed" would count while the link survived, then count again).
+        switch await unsetChecked(repo, child, Self.kParent) {
+        case .failed: return .linkChanged
+        case .absent: return .absent
+        case .removed: break
+        }
+        for suffix in [Self.kBase, Self.kPr, Self.kWatch] { await unset(repo, child, suffix) }  // best-effort satellites
+        // Increment the PARENT's counter. A failure here is the accepted crash-window off-by-one (undercount)
+        // — the marker is already gone, so re-detection is `.absent` and never recounts.
+        let current = await _mergedCount(repo: repo, branch: expectedParent)
+        try? await setKey(repo, expectedParent, Self.kMergedCount, String(current + 1))
+        return .counted
+    }
+
     // MARK: tree queries
 
-    /// Child branch names whose recorded parent is `parent` — a fan-out over all lineage keys.
-    private func _children(repo: String, of parent: String) async -> [String] {
+    /// Child branch names whose recorded parent is `parent` — a fan-out over all lineage keys. `nil` ONLY
+    /// when the git read genuinely FAILED (distinct from a legitimately empty child set): the `drained`
+    /// decision must not read a transient `--get-regexp` failure as "no children remain" and drain a wave
+    /// that still has siblings. `git config --get-regexp` exits 1 when nothing matches (a real empty), 0
+    /// with matches, and anything else on a genuine error.
+    private func _childrenStrict(repo: String, of parent: String) async -> [String]? {
         let pattern = "^branch\\..*\\.\(Self.kParent)$"
         guard let r = try? await proc.run(["git", "-C", repo, "config", "--get-regexp", pattern],
-                                          cwd: nil, env: [:], timeout: .seconds(120)), r.ok
-        else { return [] }
+                                          cwd: nil, env: [:], timeout: .seconds(120)) else { return nil }
+        if r.exitCode == 1 { return [] }        // no matching keys → a genuine empty child set
+        guard r.ok else { return nil }          // any other non-zero → unknown; don't trust it as empty
         var out: [String] = []
         for line in r.stdout.split(separator: "\n") {
             let parts = line.split(separator: " ", maxSplits: 1)
@@ -157,6 +242,13 @@ public actor BranchLineage {
             if !child.isEmpty { out.append(child) }
         }
         return out
+    }
+
+    /// Non-strict twin: a read failure reads as an empty child set. Every existing caller
+    /// (`shipped` retarget, `tree`, the fan-out) is fine with that — only the `drained` decision needs the
+    /// strict variant above.
+    private func _children(repo: String, of parent: String) async -> [String] {
+        await _childrenStrict(repo: repo, of: parent) ?? []
     }
 
     /// The parent chain above `branch`, nearest first (cycle-safe via a visited set).
@@ -196,8 +288,30 @@ public actor BranchLineage {
         await opAcquire(); defer { opRelease() }
         return await _children(repo: repo, of: parent)
     }
+    /// Strict twin — nil ONLY on a genuine git read failure (vs `[]` for a real empty set). The `drained`
+    /// decision uses this so a transient read failure can't be read as "no children remain".
+    public func childrenStrict(repo: String, of parent: String) async -> [String]? {
+        await opAcquire(); defer { opRelease() }
+        return await _childrenStrict(repo: repo, of: parent)
+    }
     public func ancestors(repo: String, of branch: String) async -> [String] {
         await opAcquire(); defer { opRelease() }
         return await _ancestors(repo: repo, of: branch)
+    }
+    public func mergedCount(repo: String, branch: String) async -> Int {
+        await opAcquire(); defer { opRelease() }
+        return await _mergedCount(repo: repo, branch: branch)
+    }
+    public func plannedCount(repo: String, branch: String) async -> Int? {
+        await opAcquire(); defer { opRelease() }
+        return await _plannedCount(repo: repo, branch: branch)
+    }
+    public func setPlanned(repo: String, branch: String, n: Int) async throws {
+        await opAcquire(); defer { opRelease() }
+        try await _setPlanned(repo: repo, branch: branch, n: n)
+    }
+    public func recordMergedChild(repo: String, child: String, expectedParent: String) async -> MergeRemoval {
+        await opAcquire(); defer { opRelease() }
+        return await _recordMergedChild(repo: repo, child: child, expectedParent: expectedParent)
     }
 }

@@ -26,6 +26,10 @@ extension OrchestraService {
         // merely a wasted dispatch.
         guard let t = await store.get(snapshot.id), !t.archived else { return }
         await chargeExpiredTokens(t)
+        // Maintain the broadcast-only `hasPendingDelivery` bit BEFORE the guards below (`deliverable`
+        // returns for a running card that may still have queued work, `hasClaimable` returns when the queue
+        // drained) — the level-triggered home that catches enqueue-to-running, inbox-remove, and lease expiry.
+        await refreshPendingDelivery(t.id)
         guard deliverable(t) else { return }
         // A stuck card is STABLE: no re-claiming, no lease churn, so the human's clear/retry window
         // (the inbox editor) is never raced. Only a `send`, a confirm, or an EMPTIED inbox re-arms it
@@ -83,6 +87,31 @@ extension OrchestraService {
         if await store.get(t.id)?.deliveryStuckSince != nil { return }
         await wake(t.id)
         await flipStuckIfExhausted(t.id, expectedEpoch: liveEpoch)
+    }
+
+    /// Maintain the broadcast-only `hasPendingDelivery` bit: true iff the card has a claimable inbox
+    /// message OR a live delivery lease (a delivery mid-flight). Delta-gated — writes + emits only on a
+    /// real flip — so it is cheap to call every tick. The predicate only goes false when a message is
+    /// actually consumed, so the per-tick reconciler is a sufficient level-triggered home: it survives
+    /// enqueue-to-a-running-card (`wake` returns before delivering), inbox-remove, and time-based lease
+    /// expiry, none of which a wake/confirm-only hook catches. Broadcast-only — nothing behavioral reads
+    /// it in this slice; a later stall-detection slice consumes it. Twin of `clearPendingQuestion`.
+    func refreshPendingDelivery(_ id: UUID) async {
+        guard let t = await store.get(id), !t.archived else { return }
+        // Two awaits, not a short-circuit `||` — the RHS of `||` is an autoclosure that can't suspend.
+        let claimable = await inbox.hasClaimable(id, epoch: t.sessionEpoch, now: now())
+        let liveLease = await inbox.hasLiveLease(id, epoch: t.sessionEpoch, now: now())
+        let pending = claimable || liveLease
+        guard t.hasPendingDelivery != pending else { return }
+        if let (saved, rev) = try? await store.update(id, { $0.hasPendingDelivery = pending }) {
+            emit(.taskUpserted(saved), rev: rev)
+        }
+    }
+
+    /// Boot sweep: re-derive `hasPendingDelivery` for every live card after the inbox is reloaded, so the
+    /// persisted bit reflects the on-disk queue rather than whatever was last written before shutdown.
+    public func refreshAllPendingDelivery() async {
+        for t in await store.all() where !t.archived { await refreshPendingDelivery(t.id) }
     }
 
     // MARK: - attempt accounting

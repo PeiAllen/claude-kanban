@@ -212,6 +212,12 @@ public struct CommandRegistry: Sendable {
                 return try JSONValue(encodable: updated)
             },
 
+            "set-planned": { svc, p, src in
+                let updated = try await svc.setPlanned(ref: try p.string("ref"),
+                                                       n: p.optInt("n") ?? 0, source: src)
+                return try JSONValue(encodable: updated)
+            },
+
             "set-parent": { svc, p, src in
                 let updated = try await svc.setParent(
                     ref: try p.string("ref"),
