@@ -122,16 +122,19 @@ private struct HeaderBar: View {
             // Branch-sync state (`↓N` / restack / merge-requested / stalled), the same glyph the board
             // card carries — in this SHARED header, so it reads from the Agent and the Diff tab alike.
             // Nothing renders when the card is in sync or untracked, so the row is unchanged for the
-            // cards this doesn't apply to. It sits with the badges, after where a diffstat readout
-            // goes and before the trailing close button.
+            // cards this doesn't apply to. It sits with the other badges, before the trailing close
+            // button.
             //
-            // Width: measured at the shipped 392pt default (`inspectorWidth`) and at the 320pt drag
-            // minimum. It fits at 392 with the close button intact. At 320 the row ALREADY overflows
-            // without it — every child is at its minimum there (the action buttons have truncated
-            // their labels to a single glyph) and the close button renders half-cut, so this badge
-            // costs that button its remaining half rather than causing the clipping. Fixing that
-            // wants the row itself to collapse to icon-only below a width threshold, which is a
-            // change to every control in it, not to this badge.
+            // Width, measured (shots 17/18 A/B it against the same mock without the badge): this row
+            // is over-full well before the badge. Already at the shipped 392pt default, every action
+            // button has truncated its label to a single glyph — but the close button still renders
+            // whole, with or without this. At the 320pt drag minimum the row overflows outright: the
+            // close button is half-cut WITHOUT the badge, and the badge costs it the other half. So
+            // the badge is not what breaks that width, but it isn't free there either. The cheap
+            // containment would be a `ViewThatFits` that drops this one element when the row can't
+            // afford it; that was left out deliberately, since hiding branch-sync state exactly when
+            // the inspector is narrow removes the signal in the case it was added for. The real fix
+            // is the row collapsing to icon-only below a threshold, which is every control in it.
             if let ts = task.treeStat {
                 TreeBadge(stat: ts, parentBranch: task.parentBranch)
             }

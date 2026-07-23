@@ -96,42 +96,11 @@ struct BoardCardCell: View {
     }
 
     /// Lineage status (branch-tree): `↓N` when the parent advanced (stale), a restack glyph when a
-    /// restack is needed. Mirrors the desktop `treeBadge`; hidden when in-sync / untracked.
+    /// restack is needed. Mirrors the desktop `treeBadge`; hidden when in-sync / untracked. The glyphs
+    /// themselves live in `TreeBadge`, shared with the card-detail header.
     @ViewBuilder private var treeBadge: some View {
         if let ts = task.treeStat {
-            // S3-3: the phone has no hover tooltip — carry the meaning in an accessibility label so the
-            // otherwise-cryptic glyphs (↓N / restack / waiting) are legible to VoiceOver + long-press.
-            // The give-up flag outranks the tracking state (see CardView).
-            if ts.mergeStalled {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(theme.red.text)
-                    .accessibilityLabel("Merge-request unanswered after \(ts.nudges) reminders — "
-                                        + "the parent branch never merged this")
-            } else {
-                switch ts.state {
-                case .stale:
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.down")
-                        Text("\(ts.behind)")
-                    }
-                    .font(.system(.caption2, design: .monospaced).weight(.medium))
-                    .foregroundStyle(theme.amber.text)
-                    .accessibilityLabel("Parent branch is \(ts.behind) commit\(ts.behind == 1 ? "" : "s") ahead")
-                case .restackNeeded:
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.caption2)
-                        .foregroundStyle(theme.red.text)
-                        .accessibilityLabel("Parent history changed — restack needed")
-                case .mergeRequested:
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.caption2)
-                        .foregroundStyle(theme.amber.text)
-                        .accessibilityLabel("Merge requested — waiting for the parent card")
-                case .inSync:
-                    EmptyView()
-                }
-            }
+            TreeBadge(stat: ts, parentBranch: task.parentBranch)
         }
     }
 

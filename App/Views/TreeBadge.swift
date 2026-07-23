@@ -19,8 +19,9 @@ struct TreeBadge: View {
     let stat: TreeStat
     let parentBranch: String?
 
-    /// "Parent branch feat/x" when we know the name, else a bare "The parent branch" — both read as a
-    /// sentence subject, so the help strings below don't need two phrasings.
+    /// Sentence subject for the two help strings that open on the parent: "Parent branch feat/x" when
+    /// the name is known, a bare "The parent branch" when it isn't. The other two mention the parent
+    /// mid-sentence and interpolate it themselves, since neither reads as a subject.
     private var parentSubject: String {
         parentBranch.map { "Parent branch \($0)" } ?? "The parent branch"
     }
@@ -31,7 +32,9 @@ struct TreeBadge: View {
         if stat.mergeStalled {
             Image(systemName: "exclamationmark.triangle.fill").font(F.ui(8.5))
                 .foregroundStyle(theme.red.text)
-                .help("Merge-request unanswered — \(stat.nudges) reminders sent and "
+                // `nudges` really can be 0 here: `giveUp` is also reached with an already-exhausted
+                // budget, which gives up without sending anything.
+                .help("Merge-request unanswered — \(stat.nudges) reminder\(stat.nudges == 1 ? "" : "s") sent and "
                       + "\(parentBranch ?? "the parent") never merged this branch. "
                       + "Merge it yourself, or re-send the merge-request.")
         } else {

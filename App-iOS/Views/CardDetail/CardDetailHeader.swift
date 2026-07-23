@@ -33,6 +33,14 @@ struct CardDetailHeader: View {
                 ModelChip(model: task.model)
                 // Jump UP the lineage. Generic across card kinds — not reviewer-specific.
                 ParentChip(task: task)
+                // ...and the state of that lineage, the same glyph the board cell carries. It belongs
+                // beside the parent chip (which says WHO the parent is, not whether this branch is
+                // current with it), and in this header rather than a tab, because the header is pinned
+                // above all of them — so branch-sync status reads from Diff and Terminal alike, without
+                // going back to the board. Nothing renders while the card is in sync or untracked.
+                if let ts = task.treeStat {
+                    TreeBadge(stat: ts, parentBranch: task.parentBranch)
+                }
                 // The attached-agents affordance in the detail (parity with the board accordion): the
                 // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
                 // this card is a target). Same tap-expand state as the board, so it stays consistent.

@@ -112,6 +112,14 @@ selection writes, because the phone presents card details from two different sta
   read-only **eye badge** for `.readOnly` cards, and — for a git card the daemon has diffed — a **branch
   diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
   there is no stat (non-git / zero-change / not-yet-computed).
+- A card with a parent branch also carries a **tree badge** (`TreeBadge`) for its lineage state against
+  that parent: amber **`↓N`** while the parent has advanced past the recorded base, a red **restack**
+  arrow once that base is no longer an ancestor (the parent rebased or shipped), an amber **clock**
+  while a `merge-request` waits on the parent card, and a red
+  **warning triangle** once that request has been given up on. The warning outranks the state beneath
+  it, so a stalled card shows it whatever its lineage is doing. Hover names the parent branch. Nothing
+  renders while the card is in sync or has no parent — absence is the in-sync signal. The same badge
+  sits in the [shared inspector header](#the-inspector) (both Agent and Diff modes).
 - When a card has [attached agents](#attached-agents), the footer also shows an **attached-agents badge**
   — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
   starting up, **amber** when any is waiting on the human or has died. It's a glance-only indicator;
@@ -175,10 +183,9 @@ The **header bar** leads with an **Agent | Diff** segmented toggle (axis 7) that
 between the agent terminal and the read-only in-app [Diff view](#the-in-app-diff-view), then has
 **View changes** (opens the worktree in Zed with a branch-vs-base diff), **Open notes**
 (`note.text`), an **Inbox** editor, **Archive** (non-dead cards only), and a **close** (X). It also
-carries the card's **tree state** — the same `TreeBadge` glyph (`↓N` / restack / merge-requested /
-merge-stalled) the [board card](#cards) shows, absent when the card is in sync or has no parent,
-with hover text naming the parent branch — in this shared header, so branch-sync status reads from
-the Diff tab as well as the Agent tab.
+carries the card's **tree state** — the same `TreeBadge` glyph the [board card](#cards) shows, with
+hover text naming the parent branch — in this shared header, so branch-sync status reads from the
+Diff tab as well as the Agent tab.
 **Open notes** opens the card's **worktree** as an **Obsidian vault** — the same
 `~/.claude/open-obsidian-vault.sh` recipe as the `/open-notes` command, wired through the
 [`openNotes` verb](05-command-reference.md#server-only-built-in-methods) on the existing `openInZed`
@@ -486,7 +493,10 @@ background shells and subagents within the turn itself.
 separate system: it speaks the identical JSON-RPC control plane (reaching a remote daemon over SSH, or,
 in development, the Mac's socket directly), so the cards, columns, and telemetry are the same state the
 desktop shows. The screenshot above is the iPhone app driven against the very same isolated daemon that
-produced the other images in this chapter.
+produced the other images in this chapter. Board cells and the card-detail **pinned header** carry the
+same [tree badge](#cards) the desktop does (its own `TreeBadge`, phone-styled) — in the header because
+that stays pinned above every tab, so branch-sync status reads from Diff and Terminal alike. With no
+hover to put a tooltip in, the phone carries the same wording in an **accessibility label** instead.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone

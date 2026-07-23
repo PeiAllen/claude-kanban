@@ -54,8 +54,15 @@ APP="$(/usr/bin/find "$DD/Build/Products/Debug" -maxdepth 1 -name 'Orchestra.app
 BIN="$APP/Contents/MacOS/Orchestra"
 [[ -x "$BIN" ]] || { echo "error: built binary not found at $BIN (run without --no-build)"; exit 1; }
 
-# Fresh isolated HOME so the app's @AppStorage/onboarding prefs land in a throwaway domain, never
-# the user's real ~/Library.
+# Fresh isolated HOME for everything that IS keyed to $HOME (the app's own state dir, caches).
+#
+# It does NOT isolate preferences, and nothing can: cfprefsd resolves a domain per-UID, so an
+# `@AppStorage` write from this app lands in the human's real `com.orchestra.app` no matter what
+# $HOME says. Measured: a run of this script left `shellPanelHeight = 420` — the constant the
+# "4-panel-tall" shot used — in the live domain, next to fractional drag-written neighbours.
+# So the harness never WRITES a preference. Anything it needs to control goes through the
+# NSUserDefaults **argument domain** (`"$BIN" -someKey value`, the args after `--` in `shoot`),
+# which outranks the persistent domain for the launched process only and is never stored.
 rm -rf "$ISO_HOME"; mkdir -p "$ISO_HOME"
 
 # Find the launched app's window id (tiny Swift one-shot via CGWindowList) — capture by id so we
@@ -78,11 +85,20 @@ for w in infos where (w[kCGWindowOwnerPID as String] as? Int) == want {
 SWIFT
 }
 
-shoot() { # name  env...
+shoot() { # name  env VAR=VAL…  [-- binary args…]
   local name="$1"; shift
+  # Everything before `--` launches the process (the `env VAR=VAL` prefix); everything after it is
+  # passed to the binary, i.e. the NSUserDefaults argument domain — see the isolation note above.
+  local launch=() args=() seen=0 a
+  for a in "$@"; do
+    if [[ "$a" == "--" ]]; then seen=1; continue; fi
+    if [[ "$seen" == 1 ]]; then args+=("$a"); else launch+=("$a"); fi
+  done
   pkill -f "$BIN" 2>/dev/null || true
   sleep 0.5
-  HOME="$ISO_HOME" "$@" "$BIN" >/dev/null 2>&1 &
+  # `${arr[@]+…}` guards the empty-array expansion, which is an unbound-variable error under
+  # `set -u` in the bash 3.2 that ships with macOS.
+  HOME="$ISO_HOME" "${launch[@]}" "$BIN" ${args[@]+"${args[@]}"} >/dev/null 2>&1 &
   local pid=$!
   # Give SwiftUI time to lay out + the DEBUG hook to inject the mock card.
   local wid=""
@@ -104,8 +120,8 @@ shoot() { # name  env...
 echo "▶ capturing inspector states…"
 shoot "1-no-shells"     env ORCH_SHOW=shells ORCH_SHELLS_N=0
 shoot "2-shells-ribbon" env ORCH_SHOW=shells ORCH_SHELLS_N=2
-shoot "3-panel-short"   env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_SHELL_HEIGHT=110
-shoot "4-panel-tall"    env ORCH_SHOW=shells ORCH_SHELLS_N=2 ORCH_SHELL_HEIGHT=420
+shoot "3-panel-short"   env ORCH_SHOW=shells ORCH_SHELLS_N=2 -- -shellPanelHeight 110
+shoot "4-panel-tall"    env ORCH_SHOW=shells ORCH_SHELLS_N=2 -- -shellPanelHeight 420
 # Inspector focus ring: board zone (plain hairline) vs terminal zone (accent ring + glow).
 shoot "5-focus-board"   env ORCH_SHOW=shells ORCH_SHELLS_N=0
 shoot "6-focus-terminal" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_FOCUS=terminal
@@ -128,5 +144,12 @@ shoot "13-tree-merge-req"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=merg
 shoot "14-tree-stalled"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stalled
 shoot "15-tree-in-sync"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=in-sync
 shoot "16-tree-stale-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_INSPECTOR=diff
+# The same badge with the inspector PINNED to its shipped 392pt default, A/B against the identical
+# mock without it. The shots above render at whatever width the human last dragged this app to (see
+# the preferences note at the top), so they cannot show whether the header row still fits at the
+# width most people actually run — and that row is over-full enough that the answer isn't obvious.
+# `↓12` is the widest the badge ever gets.
+shoot "17-tree-stale-392"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=12 -- -inspectorWidth 392
+shoot "18-no-tree-392"       env ORCH_SHOW=shells ORCH_SHELLS_N=0 -- -inspectorWidth 392
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
