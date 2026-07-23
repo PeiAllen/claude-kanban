@@ -252,6 +252,17 @@ final class BoardTreeTests: XCTestCase {
         XCTAssertEqual(BoardTree.subordinates([root, mid, leaf], of: root).map(\.id), [mid.id])
     }
 
+    func test_subordinates_excludesCyclicMembers() {
+        // A↔B cycle: each fails open to an ordinary citizen (hierarchyRoot nil), so neither is listed as
+        // the other's subordinate — else it would double-render (a card AND a peek row) and duplicate in
+        // the n/N search cycle.
+        let a = card("01", .impl, order: 0, parent: "02")
+        let b = card("02", .impl, order: 1, parent: "01")
+        XCTAssertTrue(BoardTree.subordinates([a, b], of: a).isEmpty)
+        XCTAssertTrue(BoardTree.subordinates([a, b], of: b).isEmpty)
+        XCTAssertTrue(BoardTree.descendants([a, b], of: a).isEmpty)
+    }
+
     // descendants — full subtree (for search), cycle-safe
 
     func test_descendants_walksFullSubtree() {

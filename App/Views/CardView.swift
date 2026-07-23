@@ -288,12 +288,18 @@ struct CardView: View {
 
     // MARK: - L4 · subtree line
 
-    /// The card's subordinates, summarised: stage-coloured segments (one per live lineage child) plus the
-    /// attached-agents eye (`SubtreeSegments`). Shown whenever the card has any subordinate — a lineage
-    /// child OR an attached reviewer — and isn't currently expanded; it gives way to the peek rows once
-    /// the card (or a descendant) is selected, so the summary and the detail never show at once.
+    /// The card's subordinates, summarised: stage-coloured segments (one per live lineage child, plus the
+    /// merged-green / dashed-planned slots the daemon counters carry) and the attached-agents eye
+    /// (`SubtreeSegments`). Shown whenever the card has a live subordinate OR non-zero progress counters —
+    /// so a root that has already SHIPPED all its children (no live subordinate, but `mergedChildren > 0`)
+    /// keeps its progress bar — and isn't currently expanded; it gives way to the peek rows once the card
+    /// (or a descendant) is selected, so the summary and the detail never show at once.
+    private var hasProgressCounters: Bool {
+        guard let ts = task.treeStat else { return false }
+        return ts.mergedChildren > 0 || ts.plannedChildren > 0
+    }
     @ViewBuilder private var subtreeLine: some View {
-        if !model.subordinates(of: task).isEmpty, model.peekRows(of: task).isEmpty {
+        if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             SubtreeSegments(root: task).padding(.top, 6)
         }

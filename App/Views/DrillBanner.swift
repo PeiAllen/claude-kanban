@@ -16,6 +16,16 @@ struct DrillHeader: View {
             VStack(alignment: .leading, spacing: 8) {
                 breadcrumb
                 banner(root)
+                // The root's OWN attached reviewers are embedded in its drill (the root is this banner,
+                // not a peekable card), so host them here as interactive rows — otherwise they'd be
+                // unreachable in their target's drill. Its lineage children are the board columns below.
+                let rows = model.drillHostedRows()
+                if !rows.isEmpty {
+                    VStack(spacing: 2) {
+                        ForEach(rows, id: \.task.id) { PeekRow(task: $0.task, depth: $0.depth) }
+                    }
+                    .padding(.leading, 4)
+                }
             }
             .padding(.horizontal, 16).padding(.top, 12)
         }

@@ -129,9 +129,13 @@ public enum BoardTree {
 
     /// The DIRECT children of `parent` (one `hierarchyParent` hop away), read-write (lineage) first
     /// then read-only (attached), each group stable by `(createdAt, id)`. Peek renders these as rows.
+    /// A child caught in a lineage CYCLE (`hierarchyRoot == nil`) is excluded: it fails open to an
+    /// ordinary board citizen (rendered in its own right), so listing it here too would double-render it
+    /// (a card AND a peek row) and duplicate it in the `n`/`N` search cycle.
     public static func subordinates(_ tasks: [Task], of parent: Task) -> [Task] {
         let kids = tasks.filter { !$0.archived && $0.id != parent.id
-                                  && hierarchyParent(tasks, of: $0)?.id == parent.id }
+                                  && hierarchyParent(tasks, of: $0)?.id == parent.id
+                                  && hierarchyRoot(tasks, of: $0) != nil }
         func byAge(_ a: Task, _ b: Task) -> Bool {
             (a.createdAt, a.id.uuidString) < (b.createdAt, b.id.uuidString)
         }

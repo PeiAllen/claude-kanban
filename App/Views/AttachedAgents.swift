@@ -52,7 +52,11 @@ struct PeekRow: View {
     /// column chip. The stage hue matches the L4 subtree segments (`theme.stageColor`).
     @ViewBuilder private var chip: some View {
         if isAttached {
-            Image(systemName: "eye").font(F.ui(9)).foregroundColor(theme.green.text)
+            // Liveness-tinted eye (per spec): amber when this reviewer waits on the human or has died,
+            // green while it runs/starts — the same green/amber split as the L4 roll-up eye.
+            let needsAttention: Bool = { switch task.phase { case .live(.waiting), .dead: return true; default: return false } }()
+            Image(systemName: "eye").font(F.ui(9))
+                .foregroundColor(needsAttention ? theme.amber.text : theme.green.text)
         } else {
             let c = theme.stageColor(task.column)
             Text(stageLabel).font(F.ui(9, .medium)).tracking(0.3)

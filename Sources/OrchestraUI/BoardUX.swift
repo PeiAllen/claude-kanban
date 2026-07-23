@@ -337,6 +337,9 @@ public final class BoardUX: BoardStore {
     public var searchMatchIds: [UUID] {
         guard let q = searchQuery?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return [] }
         var ids: [UUID] = []
+        // In a drill, the scope root is the banner (not a visible card), so its OWN attached reviewers —
+        // hosted as banner rows — would otherwise be unreachable by search. Surface their matches first.
+        for r in drillHostedRows() where matchesSearch(r.task, query: q) { ids.append(r.task.id) }
         for card in orderedVisibleCards {
             if matchesSearch(card, query: q) { ids.append(card.id) }
             // Any DESCENDANT (embedded lineage child or attached reviewer, at any depth) matching the
@@ -460,6 +463,15 @@ public final class BoardUX: BoardStore {
     /// The card the board is scoped to right now (the `DrillBanner`'s subject), or `nil` at top level.
     public var drillScopeCard: Task? { drillScope.flatMap { id in tasks.first { $0.id == id } } }
 
+    /// The rows the `DrillHeader` hosts inline (slice 2b): the drilled root's OWN direct subordinates that
+    /// are embedded in its scope — i.e. its attached reviewers (its lineage children are the board
+    /// columns). The root became the banner rather than a peekable card, so hosting them here is the only
+    /// way they stay reachable in their target's drill (the reachability invariant). Empty at top level.
+    public func drillHostedRows() -> [(task: Task, depth: Int)] {
+        guard let root = drillScopeCard else { return [] }
+        return subordinates(of: root).filter { isEmbedded($0) }.map { (task: $0, depth: 0) }
+    }
+
     /// Re-resolve `drillScope` from its durable `(repo, branch)` key after any change to `tasks`. Root
     /// identity follows the BRANCH across card succession (planning card → orchestrator), so when the
     /// scoped card is replaced by its successor we retarget to the new owner rather than losing the drill;
@@ -467,9 +479,12 @@ public final class BoardUX: BoardStore {
     /// the board never strands on a scope whose banner card is gone. Public so the reap is directly tested.
     public func reapDrillScope() {
         guard let key = drillScopeKey else { drillScope = nil; return }
-        let owner = tasks.first {
+        // Deterministic winner among co-located cards (oldest by (createdAt, id)) — the same total order
+        // `BoardTree.parentCard` uses — so a handoff window where two live cards briefly share a
+        // (repo, branch) can't flip the banner target across snapshots.
+        let owner = tasks.filter {
             !$0.archived && $0.origin == .worktree && $0.repo == key.repo && $0.branch == key.branch
-        }
+        }.min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
         drillScope = owner?.id
         if owner == nil { drillScopeKey = nil }
     }

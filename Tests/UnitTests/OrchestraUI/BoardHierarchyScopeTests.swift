@@ -67,6 +67,34 @@ import Foundation
         #expect(m.visibleTasks.map(\.id) == [child.id])         // only the lineage child is a column card
     }
 
+    @Test func drillHostsRootsAttachedReviewers() {
+        // Impl-review BLOCKER: the drilled root's OWN attached reviewer is embedded (not a column card)
+        // AND the root is the banner (not a peekable card) — so the banner must host it, or it strands.
+        let m = TestModel.make()
+        let root = card("01"), child = card("02", .plan, parent: "01")
+        let reviewer = card("05", .impl, parent: "01", access: .readOnly)   // attached reviewer of root
+        m.tasks = [root, child, reviewer]
+        m.drillInto(root.id)
+        #expect(m.visibleTasks.map(\.id) == [child.id])                     // reviewer is NOT a column card
+        #expect(m.drillHostedRows().map(\.task.id) == [reviewer.id])        // …the banner hosts it instead
+    }
+
+    @Test func drillHostedRowsEmptyAtTopLevel() {
+        let m = TestModel.make()
+        m.tasks = [card("01")]
+        #expect(m.drillHostedRows().isEmpty)
+    }
+
+    @Test func searchReachesDrillHostedReviewer() {
+        let m = TestModel.make()
+        let root = card("01", branch: "feat/x"), child = card("02", .plan, parent: "feat/x")
+        let reviewer = card("05", .impl, branch: "review-match", parent: "feat/x", access: .readOnly)
+        m.tasks = [root, child, reviewer]
+        m.drillInto(root.id)
+        m.searchQuery = "review-match"
+        #expect(m.searchMatchIds.contains(reviewer.id))                     // banner-hosted, reachable via n/N
+    }
+
     @Test func drillIntoReviewerOnlyRootIsNoOp() {
         let m = TestModel.make()
         let root = card("01")

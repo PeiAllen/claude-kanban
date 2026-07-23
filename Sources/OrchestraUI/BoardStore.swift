@@ -470,19 +470,16 @@ public class BoardStore: ObservableObject {
 
     // MARK: source prefix (ambiguity-driven disclosure on the identity line)
 
-    /// The distinct repos of the board's active (non-archived) worktree cards, in first-seen order.
+    /// The distinct repos of the board's currently-VISIBLE (non-archived) worktree cards, in first-seen
+    /// order — the input to the identity-line repo prefix.
     ///
-    /// Derived over `tasks`, not `visibleTasks`, and the two are equal here by construction: an
-    /// embedded card can never contribute a repo of its own, because a worktree reviewer embeds
-    /// behind its lineage parent — which `BoardTree.parentCard` resolves within the SAME repo — and
-    /// a branchless reviewer is `origin != .worktree`, which this filter drops anyway. Reading
-    /// `visibleTasks` would pay a per-card `isEmbedded` derivation in a property every card renders.
+    /// Derived over `visibleTasks`, not all `tasks`, so the prefix is SCOPE-aware (slice 2b): inside a
+    /// drill the board is one root's subtree, single-repo by construction (cross-repo lineage/attach links
+    /// are impossible), so the count is 1 and the prefix drops. At the top level every repo still has a
+    /// visible root, so a multi-repo board keeps the prefix. The cost is a per-card `isEmbedded` derivation
+    /// in a property every card renders — negligible at board sizes, and the scope-awareness needs it.
     private var activeWorktreeRepos: [String] {
         var seen = Set<String>(), out: [String] = []
-        // Over `visibleTasks`, not all `tasks`, so the prefix is SCOPE-aware: inside a drill the board is
-        // one root's subtree (single-repo by construction — cross-repo links are impossible), so the count
-        // is 1 and the prefix drops. At top level every repo still has a visible root, so a multi-repo
-        // board keeps the prefix.
         for task in visibleTasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
             if seen.insert(task.repo).inserted { out.append(task.repo) }
         }
