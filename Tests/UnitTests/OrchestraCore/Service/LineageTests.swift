@@ -236,6 +236,29 @@ struct LineageTests {
         #expect(await lin.mergedCount(repo: "/repo", branch: "p") == 0)
     }
 
+    @Test("a marker-unset failure does NOT count and keeps the link — no double-count window on retry")
+    func clearFailureNeverCounts() async throws {
+        let fake = FakeProc()
+        // Fail the `orchestra-parent` MARKER unset (the removal that gates the count). Before the emulator.
+        fake.on(["git"]) { argv in
+            if argv.count >= 6, argv[3] == "config", argv[4] == "--unset",
+               argv[5] == "branch.c.orchestra-parent" {
+                return ProcResult(stdout: "", stderr: "fatal: could not lock config file", exitCode: 255)
+            }
+            return nil
+        }
+        GitConfigEmulator().install(on: fake)
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: "/repo", branch: "c", link: ParentLink(parent: "p", base: "b"))
+        // Checked unset → exit 255 is a genuine failure → .linkChanged, NOT counted, link survives.
+        #expect(await lin.recordMergedChild(repo: "/repo", child: "c", expectedParent: "p") == .linkChanged)
+        #expect(await lin.read(repo: "/repo", branch: "c")?.parent == "p")
+        #expect(await lin.mergedCount(repo: "/repo", branch: "p") == 0)
+        // A retry under the same failure still doesn't count — the double-count window is closed.
+        #expect(await lin.recordMergedChild(repo: "/repo", child: "c", expectedParent: "p") == .linkChanged)
+        #expect(await lin.mergedCount(repo: "/repo", branch: "p") == 0)
+    }
+
     @Test("counter keys are NOT lineage-link keys: clear leaves a parent's merged-count intact")
     func clearDoesNotWipeCounters() async throws {
         let (_, lin, repo) = env()

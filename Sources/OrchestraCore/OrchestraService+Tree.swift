@@ -392,7 +392,14 @@ extension OrchestraService {
             removal = .absent
         }
         guard removal != .linkChanged else {
-            emitActivity(.command, child, source, "shipped \(child.branch) (link changed mid-flight — kept)")
+            // `.linkChanged` = the child link was NOT removed: either a concurrent `set-parent` re-pointed it
+            // (the common case) or, rarely, the clear itself lost to an external git-config lock. Either way we
+            // keep the card rather than nil it, so its state still matches git. Accepted rare edge on the
+            // lock case: the (a)/(b) nudges + grandchild retarget above already ran, so if the operator then
+            // archives the child its lineage link can leak → a phantom child that a later `.setIfEmpty` sees,
+            // so the parent's `drained` nudge may not fire. `drained` is nudge-INPUT only (a missed suggestion,
+            // never a wrong action), consistent with the owner-accepted crash-window imprecision.
+            emitActivity(.command, child, source, "shipped \(child.branch) (link not removed — kept)")
             return (await store.get(child.id)) ?? child
         }
         // `.counted` → refresh the PARENT card's wave broadcast: the new merged count, and `drained` iff this
@@ -551,19 +558,26 @@ extension OrchestraService {
         guard let t = await store.get(id), t.origin == .worktree, !t.archived else { return }
         let merged = await lineage.mergedCount(repo: t.repo, branch: t.branch)
         let planned = await lineage.plannedCount(repo: t.repo, branch: t.branch) ?? 0
-        // Resolve the drained decision OUTSIDE the sync closure — `.setIfEmpty` needs an async child lookup.
-        // nil ⇒ preserve the current value; a non-nil value is written.
+        // STRICT child lookup (nil on a genuine git read failure, [] for a real empty set): used both for the
+        // drain decision and to decide whether a parentless root still has a stat to broadcast. Resolved
+        // OUTSIDE the sync closure (it is async).
+        let kids = await lineage.childrenStrict(repo: t.repo, of: t.branch)
+        let hasLiveChildren = (kids?.isEmpty == false)
+        // `.setIfEmpty` sets `drained` ONLY on a CONFIRMED-empty read (kids == []) — a read failure (nil) must
+        // never drain a wave that may still have siblings. nil ⇒ preserve; a non-nil value is written.
         let drainedSet: Bool?
         switch op {
         case .preserve:  drainedSet = nil
         case .clear:     drainedSet = false
-        case .setIfEmpty: drainedSet = (await lineage.children(repo: t.repo, of: t.branch).isEmpty) ? true : nil
+        case .setIfEmpty: drainedSet = (kids?.isEmpty == true) ? true : nil
         }
         var changed = false
         let res = try? await store.update(id) { task in
             let cur = task.treeStat
             let drained = drainedSet ?? (cur?.drained ?? false)
-            let hasChild = merged > 0 || planned > 0 || drained
+            // A parentless root with live children (but 0 merged / no plan) still broadcasts a neutral stat so
+            // the wave bar exists as children spawn; nil only when NEITHER dimension has anything to say.
+            let hasChild = merged > 0 || planned > 0 || drained || hasLiveChildren
             if cur == nil && !hasChild { return }               // neither dimension ⇒ leave nil
             var s = cur ?? TreeStat(state: .inSync)              // neutral base for a parentless root
             s.mergedChildren = merged; s.plannedChildren = planned; s.drained = drained

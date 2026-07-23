@@ -148,6 +148,10 @@ extension OrchestraService {
         do {
             try await lineage.set(repo: t.repo, branch: t.branch,
                 link: ParentLink(parent: newRef.canonical, base: anchor, prNumber: nil, watch: keepWatching))
+            // Uphold the "every lineage add clears the parent's drained" invariant. In practice a no-op here
+            // (`newRef` is a remote canonical `origin/<gp>` no local card's branch equals), but calling it
+            // keeps the invariant total so a future local redirect target can't silently skip the clear.
+            await onChildLineageAdded(repo: t.repo, parentBranch: newRef.canonical)
         } catch {
             emitActivity(.warning, t, .daemon,
                 "remote redirect: could not retarget \(t.branch) → \(grandparent) — re-point it manually with "

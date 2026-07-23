@@ -143,6 +143,53 @@ struct ShipChoreoTests {
         #expect(await BranchLineage(proc: fake).mergedCount(repo: repo, branch: "parent") == 1)
     }
 
+    // Provenance guard (the sharpest plan-review catch): removing the LAST child by a NON-merge path
+    // (abandoned-branch cleanup / re-parent) must NOT drain the parent, even though childCount hits 0 with
+    // merged>0 — the condition a naive level-derivation would drain on.
+    @Test("a non-merge removal of the last child never drains the parent (provenance, not level-derived)")
+    func nonMergeRemovalNeverDrains() async throws {
+        let (env, fake, graph, repo, parentTip) = setup()
+        let parentCard = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "p", repo: repo, branch: "parent"))
+        let child = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: repo, branch: "child", link: ParentLink(parent: "parent", base: parentTip))
+        try await lin.set(repo: repo, branch: "extra", link: ParentLink(parent: "parent", base: parentTip))
+        RepoScripts.advanceParent(graph, 1)
+        try await env.svc.shipped(ref: child.ref())   // merges `child`: mergedCount 1, `extra` remains → not drained
+        #expect(await env.svc.list().first { $0.id == parentCard.id }?.treeStat?.drained == false)
+
+        // Remove the LAST live child by a NON-merge path, then recompute: childCount is now 0 ∧ merged==1,
+        // yet a plain recompute preserves drained==false — only a merge-removal that empties ever sets it.
+        try await lin.clear(repo: repo, branch: "extra")
+        await env.svc.recomputeChildProgress(parentCard.id)
+        let pStat = try #require(await env.svc.list().first { $0.id == parentCard.id }?.treeStat)
+        #expect(pStat.drained == false)
+        #expect(pStat.mergedChildren == 1)
+    }
+
+    // carryChildProgress at a direct treeStat writer: a card that is BOTH a child (re-pointed by set-parent)
+    // AND a parent (has its own child-progress) must keep its wave counters across the re-point.
+    @Test("carryChildProgress: a set-parent re-point preserves the card's own child-progress")
+    func setParentPreservesChildProgress() async throws {
+        let (env, fake, _, repo, parentTip) = setup()
+        let card = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "c", repo: repo, branch: "child"))
+        let lin = BranchLineage(proc: fake)
+        // `child` has merged 2 of a planned 3 of its OWN children.
+        try await lin.setPlanned(repo: repo, branch: "child", n: 3)
+        for gc in ["gc1", "gc2"] {
+            try await lin.set(repo: repo, branch: gc, link: ParentLink(parent: "child", base: parentTip))
+            _ = await lin.recordMergedChild(repo: repo, child: gc, expectedParent: "child")
+        }
+        await env.svc.recomputeChildProgress(card.id)
+        #expect(await env.svc.list().first { $0.id == card.id }?.treeStat?.mergedChildren == 2)
+
+        // Re-point `child` onto `parent` — the direct TreeStat write carries the child dimension forward.
+        try await env.svc.setParent(ref: card.ref(), parent: "parent")
+        let s = try #require(await env.svc.list().first { $0.id == card.id }?.treeStat)
+        #expect(s.mergedChildren == 2)
+        #expect(s.plannedChildren == 3)
+    }
+
     // A new child lineage entry under a drained parent clears `drained` (the wave is live again), while
     // the merged count is preserved across the clear.
     @Test("adding a child link under a drained parent clears drained; merged count preserved")
