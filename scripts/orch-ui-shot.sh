@@ -1,20 +1,17 @@
 #!/bin/bash
-# Headless visual-check harness for the Orchestra inspector's shell strip.
+# Headless visual-check harness for the Orchestra app's inspector — a TOOL for looking at UI you just
+# changed, not a regression suite (see "the shot list" below).
 #
 # Builds a Debug app bundle to a throwaway DerivedData dir, then launches it with an ISOLATED HOME +
-# an ISOLATED tmux socket (ORCHESTRA_TMUX_SOCKET) and the DEBUG `ORCH_SHOW=shells` hook (a mock
-# running card + N shell tabs — no daemon, so the live app/daemon are never touched). The isolated
-# tmux socket matters: the app's terminal panes attach via `tmux -L <socket>`, so without the
-# override a mock card would spawn orphan `<uuid>__agent`/`__shell-N` view sessions on the user's
-# LIVE `-L orchestra` server. Pointing it at a throwaway socket keeps that litter on a server we
-# kill on teardown. Each launch is screenshotted by window id (never foregrounds the user's screen)
-# and then killed. Produces a set of PNGs that show:
-#   1. no shells          → full-width "New terminal" button
-#   2. shells open        → tab ribbon (the button is gone; closing the last shell brings it back)
-#   3/4. shells, 2 heights → the resizable shell panel at a short vs tall height (resize wiring)
+# an ISOLATED tmux socket (ORCHESTRA_TMUX_SOCKET) and one of the DEBUG `ORCH_SHOW=…` hooks (a mock
+# card — no daemon, so the live app/daemon are never touched). The isolated tmux socket matters: the
+# app's terminal panes attach via `tmux -L <socket>`, so without the override a mock card would spawn
+# orphan `<uuid>__agent`/`__shell-N` view sessions on the user's LIVE `-L orchestra` server. Pointing
+# it at a throwaway socket keeps that litter on a server we kill on teardown. Each launch is
+# screenshotted by window id (never foregrounds the user's screen) and then killed.
 #
-# The agent/shell terminal panes render empty (a mock card has no tmux behind it) — only the chrome
-# (strip swap + panel height) is under test here. Run UNSANDBOXED (xcodebuild needs ~/Library).
+# The agent/shell terminal panes render empty (a mock card has no tmux behind it) — only the chrome is
+# ever visible here. Run UNSANDBOXED (xcodebuild needs ~/Library).
 #
 # WHAT THE ISOLATED $HOME DOES *NOT* ISOLATE: preferences. `@AppStorage`/NSUserDefaults reads go
 # through cfprefsd, which is keyed per-USER, not per-HOME — so these shots render at whatever
@@ -34,11 +31,21 @@
 #                      scripts/orch-ui-shot.sh --only '*-tree-*'
 #   default outdir: ./.scratch/ui-shots
 #
-# USE `--only`. Every shot is a full launch/screenshot/kill of the app, because the mock state is
-# injected at process start — so the whole list is ~19 app windows flashing up and dying, once per
-# pass. Re-verifying one change against the two or three shots it touches costs a few seconds and
-# nothing visible; re-running the list costs a couple of minutes of the human's screen blinking. Shoot
-# the subset your change can affect.
+# THE SHOT LIST AT THE BOTTOM IS A MENU, NOT A SUITE. Each `shoot` line is an example invocation some
+# past UI PR appended and left behind — the shell strip, the focus rings, the phone-takeover
+# placeholder, the diffstat, the tree badge. Nothing diffs the PNGs against a baseline, nothing
+# asserts, and they land in gitignored `.scratch/`; a human (or the agent that made the change) looks
+# at them. Running the whole list proves nothing about the shots your change can't reach.
+#
+# So: **run only the shots your change affects, with `--only`, and append your own** for whatever you
+# just built. Every shot is a full launch/screenshot/kill of the app — the mock state is injected at
+# process start, so a variant cannot be shot without relaunching — which makes a full pass ~19 app
+# windows flashing up and dying on the human's screen, for a couple of minutes, every time. The
+# per-change subset costs seconds and nothing visible.
+#
+# Whether an existing shot still renders correctly is worth knowing when you touched what it shows —
+# then shoot it. `git log -p -- scripts/orch-ui-shot.sh` tells you which PR each line came from if you
+# need to know what one was meant to demonstrate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/lib/wm-float.sh"
@@ -147,7 +154,10 @@ shoot() { # name  env VAR=VAL…  [-- binary args…]
   sleep 0.3
 }
 
+# ── The menu. Each block was appended by the PR that built the thing it shows; see the header. Pick
+#    yours with `--only`, add yours at the end, leave the rest alone.
 echo "▶ capturing inspector states…"
+# The shell strip: the "New terminal" button swaps to the tab ribbon, and the panel is resizable.
 shoot "1-no-shells"     env ORCH_SHOW=shells ORCH_SHELLS_N=0
 shoot "2-shells-ribbon" env ORCH_SHOW=shells ORCH_SHELLS_N=2
 shoot "3-panel-short"   env ORCH_SHOW=shells ORCH_SHELLS_N=2 -- -shellPanelHeight 110
@@ -167,8 +177,8 @@ shoot "10-takeover-placeholder-stale" env ORCH_SHOW=takeover ORCH_STALE=1
 
 # Tree state in the shared inspector header (`ORCH_TREE`): every badge the board card can show, plus
 # the Diff tab — the badge lives in the shared header precisely so it survives that swap. `in-sync`
-# and the unset case must render NOTHING; they are shot because "no badge" is the assertion. Shot 16
-# doubles as the Diff-tab check for the whole shared header (diffstat + tree badge).
+# is here because it must render NOTHING, and an empty slot is only worth looking at next to the
+# filled ones. Shot 16 shows the badge surviving the swap to the Diff tab.
 shoot "11-tree-stale"        env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale ORCH_BEHIND=3
 shoot "12-tree-restack"      env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=restack
 shoot "13-tree-merge-req"    env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=merge-requested
