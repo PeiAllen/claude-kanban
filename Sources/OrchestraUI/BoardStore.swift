@@ -467,6 +467,51 @@ public class BoardStore: ObservableObject {
     /// navigation (and, under search, re-appears in every one of them together).
     public var visibleTasks: [Task] { tasks.filter { !isEmbedded($0) } }
 
+    // MARK: source prefix (ambiguity-driven disclosure on the identity line)
+
+    /// The distinct repos of the board's active (non-archived) worktree cards, in first-seen order.
+    ///
+    /// Derived over `tasks`, not `visibleTasks`, and the two are equal here by construction: an
+    /// embedded card can never contribute a repo of its own, because a worktree reviewer embeds
+    /// behind its lineage parent — which `BoardTree.parentCard` resolves within the SAME repo — and
+    /// a branchless reviewer is `origin != .worktree`, which this filter drops anyway. Reading
+    /// `visibleTasks` would pay a per-card `isEmbedded` derivation in a property every card renders.
+    private var activeWorktreeRepos: [String] {
+        var seen = Set<String>(), out: [String] = []
+        for task in tasks where !task.archived && task.origin == .worktree && !task.repo.isEmpty {
+            if seen.insert(task.repo).inserted { out.append(task.repo) }
+        }
+        return out
+    }
+
+    /// True when the board holds more than one repo — the only case where a card's identity line is
+    /// ambiguous without naming where it lives. Single-repo boards show no prefix at all.
+    public var showsRepoPrefix: Bool { activeWorktreeRepos.count > 1 }
+
+    /// The muted repo prefix for a worktree card's identity line, or nil while the board is
+    /// unambiguous. It is the shortest trailing path suffix that distinguishes this repo from the
+    /// board's others — usually the basename ("orchestra"), but `/work/a/client` and `/work/b/client`
+    /// grow leftward to "a/client" / "b/client" rather than both collapsing to "client", or the
+    /// prefix would open the gate and still leave L2 ambiguous.
+    ///
+    /// A freeform card never gets one: it carries no repo, and gating its cwd on the *worktree* cards'
+    /// repo count is two unrelated facts — a scratch card would sprout a prefix only because two real
+    /// repos happen to share the board. A freeform card's location joins the other per-card facts this
+    /// anatomy moves off the board (repo·branch, parent, siblings): its full path lives in the
+    /// inspector, and its title is its board identity.
+    public func repoPrefix(of task: Task) -> String? {
+        guard task.origin == .worktree, !task.repo.isEmpty else { return nil }
+        let repos = activeWorktreeRepos
+        guard repos.count > 1 else { return nil }
+        let mine = task.repo.split(separator: "/").map(String.init)
+        let others = repos.filter { $0 != task.repo }.map { $0.split(separator: "/").map(String.init) }
+        var k = 1
+        while k < mine.count, others.contains(where: { $0.suffix(k).elementsEqual(mine.suffix(k)) }) {
+            k += 1
+        }
+        return mine.suffix(k).joined(separator: "/")
+    }
+
     /// Indent level of `task` within its column's branch tree (0 for roots), capped at
     /// `BoardTree.maxIndent`. The card views multiply this by a per-surface step for the leading inset.
     public func treeDepth(of task: Task) -> Int {

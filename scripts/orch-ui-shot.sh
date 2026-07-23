@@ -205,4 +205,28 @@ shoot "13-tree-diff-tab"     env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stal
 shoot "14-tree-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
 shoot "15-tree-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
 
+# Card anatomy (slice 2a — the four-line card). The `snap` shots are the primary gate: they render
+# through ImageRenderer, so they depend on neither window size, nor cfprefsd, nor Screen Recording,
+# and the ladder one sweeps widths in a single image. The windowed `shoot`s exist only to show the
+# anatomy on a REAL board, where the column width and the tree indent are what they actually are.
+#
+# `snap NAME env VAR=VAL…` — the DEBUG hook writes the PNG itself and exits, so there is no window to
+# capture and no process to reap. Honours `--only` like `shoot` does.
+snap() { # name  env VAR=VAL…
+  local name="$1"; shift
+  [[ -n "$ONLY" && "$name" != $ONLY ]] && return 0
+  HOME="$ISO_HOME" "$@" "$BIN" >/dev/null 2>&1 || true
+  [[ -f "$OUT/$name.png" ]] && echo "  ✓ $OUT/$name.png" || echo "  ✗ $name: not rendered"
+}
+
+echo "▶ capturing card anatomy…"
+snap "16-anatomy-gallery"       env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/16-anatomy-gallery.png" ORCH_SNAP_DARK=1
+snap "17-anatomy-gallery-light" env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/17-anatomy-gallery-light.png" ORCH_SNAP_DARK=0
+snap "18-squish-ladder"         env ORCH_SNAPSHOT_LADDER="$PWD/$OUT/18-squish-ladder.png" ORCH_SNAP_DARK=1
+snap "19-anatomy-single-repo"   env ORCH_SNAPSHOT_ANATOMY="$PWD/$OUT/19-anatomy-single-repo.png" ORCH_SNAP_DARK=1 ORCH_ANATOMY=single-repo
+# Windowed: narrow squeezes the columns, which is what drives the ladder down in real use.
+shoot "20-anatomy-board-wide"   env ORCH_SHOW=anatomy -- -inspectorWidth 392
+shoot "21-anatomy-board-narrow" env ORCH_SHOW=anatomy -- -inspectorWidth 760
+shoot "22-anatomy-expanded"     env ORCH_SHOW=anatomy ORCH_ANATOMY=expanded -- -inspectorWidth 392
+
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"

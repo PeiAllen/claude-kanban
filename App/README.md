@@ -71,7 +71,7 @@ swiftc -typecheck \
 | `Theme.swift` | Light/Dark + accent/density tokens (exact prototype values), fonts, semantic palette |
 | `Views/ToolbarView.swift` | MCP chip · Done · Activity · Light/Dark · New agent |
 | `Views/BoardView.swift` | 3 columns (Plan/Implementation/Review) + drag-and-drop |
-| `Views/CardView.swift` | status pill (+ running shimmer / pulse) · title · desc · repo·branch · meta |
+| `Views/CardView.swift` | the four-line board card — L1 status strip (pill + quiet cluster, squish ladder) · L2 identity · L3 context + ref · L4 attached-agents eye (see [docs/07](../docs/07-app-ui.md#cards)) |
 | `Views/InspectorView.swift` | header · context bar · terminal header · breadcrumb · agent terminal · prompt · shell strip |
 | `Views/RecoveryView.swift` | the `dead`-card panel: why-line · Originally asked · Start new / Archive / Try resume |
 | `Views/AgentTerminalView.swift` | SwiftTerm `LocalProcessTerminalView` running `tmux attach` (with a no-SwiftTerm fallback) |

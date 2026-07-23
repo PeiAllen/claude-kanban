@@ -102,32 +102,49 @@ selection writes, because the phone presents card details from two different sta
 
 ## Cards
 
-`CardView` shows, top to bottom: a **status pill**, the **title** (up to 2 lines), an optional
-**description** (the live agent blurb), and a footer.
+`CardView` is four lines, each rendered only when it has content, all flush left:
 
-- The **status pill** shows the status and a live age for `running`/`waiting` cards (a `TimelineView`
-  ticking every second, e.g. "Running · 3m"), with a **breathing dot** for active statuses. Running
-  cards also get a 2 px **shimmer bar** sweeping across the top.
-- The **footer** carries the repo · branch (worktree cards) or borrowed dir name (freeform), a
-  read-only **eye badge** for `.readOnly` cards, and — for a git card the daemon has diffed — a **branch
-  diffstat** (`Nf +N −M`, green insertions / red deletions; axis 7), falling back to the model name when
-  there is no stat (non-git / zero-change / not-yet-computed).
-- A card with a parent branch also carries a **tree badge** (`TreeBadge`) for its lineage state against
-  that parent: amber **`↓N`** while the parent has advanced past the recorded base, a red **restack**
-  arrow once that base is no longer an ancestor (the parent rebased or shipped), an amber **clock**
-  while a `merge-request` waits on the parent card, and a red
-  **warning triangle** once that request has been given up on. The warning outranks the state beneath
-  it, so a stalled card shows it whatever its lineage is doing. Hover names the parent branch. Nothing
-  renders while the card is in sync or has no parent — absence is the in-sync signal. The same badge
-  sits in the [shared inspector header](#the-inspector) (both Agent and Diff modes).
-- When a card has [attached agents](#attached-agents), the footer also shows an **attached-agents badge**
-  — an eye glyph with the count (`👁 N`), **green** when every attached agent is running or still
-  starting up, **amber** when any is waiting on the human or has died. It's a glance-only indicator;
-  selecting the card expands its attached agents as inline rows (see [Attached agents](#attached-agents)),
-  which is how they're reached. The inspector does not repeat this badge; its terminal-header eye opens
-  a fresh read-only inspect shell instead.
-- The **top-right card-reference badge** displays `#<shortId>` and copies the self-identifying
+- **L1 — the status strip.** The **status pill** (tinted wash, state word, **time-in-state**, and a
+  **breathing dot** for active statuses) reports the card's OWN lifecycle. The age is time *in this
+  state* — it comes from `phaseChangedAt`, not from when the card was last touched, so "Waiting ·
+  10h" keeps counting while telemetry ticks underneath it. A `TimelineView` refreshes it every
+  second for live cards and every minute otherwise; running cards also get a 2 px **shimmer bar**
+  sweeping across the top. Right-aligned on the same line is the **quiet cluster** — the facts you'd
+  act on from the board, in priority order: the **branch diffstat** (`Nf +N −M`, muted green
+  insertions / red deletions; axis 7), the **treeStat glyph** in a single slot (`↓N` behind the
+  parent or a restack arrow, both muted blue because the card's own agent will reconcile them; a
+  grey clock while a merge-request waits on the parent card; the red warning triangle only when
+  nobody ever answered it), and the **model** as a dim pill. Those glyph colours say *who* the state
+  waits on — blue for "this card's own agent will handle it", grey for "the parent card owes it",
+  and a warning only when nobody answered at all — which is why none of them is amber: on the desktop
+  board, saturated amber is being reserved for "needs you". The glyph lives in `TreeBadge`, shared
+  with the desktop [inspector header](#the-inspector) so the two can't drift, and hover names the
+  parent branch. Absence is information: no glyph means nothing to say. (The iPhone client keeps its
+  own tree-badge palette until the phone's card anatomy migrates in a later slice.)
+- **Squish is an ordered drop, not truncation.** When a card runs short of width, `CardL1Layout`
+  decides what goes and in what order — **model → treeStat glyph → the pill's state word → the
+  diffstat** — and `CardView` hands those rungs to `ViewThatFits`, which picks the first that fits.
+  The pill never wraps, and its dot and time-in-state never drop: fully squished, L1 is "● 47m",
+  with the state still legible in the dot's colour. The size of a change outlives the label naming
+  the agent that made it.
+- **L2 — identity, uncontested.** The card's title on its own line (up to 2 lines), so nothing
+  competes with the name for width. A muted **source prefix** precedes it only when the board is
+  ambiguous — i.e. holds more than one repo — naming a worktree card's repo; single-repo boards
+  show no prefix at all. A freeform card carries no repo and is never prefixed: its directory, like
+  the other per-card facts this anatomy moves off the board, lives in the inspector.
+- **L3 — context.** `note ?? desc`: the durable authored note when one is set, else the live agent
+  blurb, on one truncating line. The **card reference** (`#<shortId>`) sits at this line's right
+  end — or at the identity line's end when there's no context — and copies the self-identifying
   `orchestra://task/<shortId>` URI when clicked; `y i` copies the same value for the selected card.
+  It is a watermark at rest and lights up when the pointer is anywhere on the card. The context
+  truncates before the ref gives up any room.
+- **L4 — the subtree line.** When a card has [attached agents](#attached-agents) and isn't expanded,
+  a divider and the **attached-agents summary**: an eye glyph with a labelled count (`👁 2
+  attached`), **green** when every attached agent is running or still starting up, **amber** when
+  any is waiting on the human or has died. It's a glance-only indicator; selecting the card replaces
+  it with the attached agents themselves as inline rows (see [Attached agents](#attached-agents)),
+  which is how they're reached. The inspector does not repeat this badge; its terminal-header eye
+  opens a fresh read-only inspect shell instead.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
   don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row
@@ -196,7 +213,7 @@ truncating captions into unreadable stubs (`ViewThatFits`, widest variant first)
 when the inspector is dragged wide; at 392 the button captions drop to icons alone, tooltips keeping the
 words, with tighter gutters. Nothing ever clips off the trailing edge.
 
-The card's **branch diffstat** (`7f +214 −38`, the board card's footer colors) sits one row down, in the
+The card's **branch diffstat** (`7f +214 −38`, the board card's quiet-cluster colors) sits one row down, in the
 terminal header, **beside the branch it measures**. The action row above is all controls, so numbers
 there had to fight the buttons for space and lost them at the narrower widths; beside the branch they
 sit with the thing they describe. Absent when the daemon has no stat (non-git, or nothing changed yet).
