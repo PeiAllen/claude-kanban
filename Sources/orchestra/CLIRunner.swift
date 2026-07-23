@@ -165,6 +165,14 @@ enum CLIRunner {
                                                   .object(["ref": .string(qRef), "question": .string(question)]))
                 printRef(asked)
 
+            case "set-planned":
+                // Absent or 0 clears the declared plan count; a positive n declares it.
+                let plRef = flags.positional(0) ?? flags.require("ref")
+                let n = (flags.value("n") ?? flags.positional(1)).flatMap(Int.init) ?? 0
+                let planned = try await client.call("set-planned",
+                                                    .object(["ref": .string(plRef), "n": .int(n)]))
+                printRef(planned)
+
             case "set-parent":
                 let ref = flags.positional(0) ?? flags.require("ref")
                 var params: [String: JSONValue] = ["ref": .string(ref)]

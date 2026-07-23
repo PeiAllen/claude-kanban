@@ -62,6 +62,9 @@ cost. Don't over-fuss it; move when you cross a real phase boundary, not on ever
   larger plan, say. It is NOT the live status line (which telemetry overwrites every tick and a
   restart blanks): a note is authored and survives. If you orchestrate or plan, narrate the shape
   of the work there and update it as that shape changes; spawners may pass `note:` up front.
+  **`set-planned <ref> <n>`** declares how many child cards your wave will fan out — the target the
+  progress bar fills toward (dashed until they spawn). Set it once your plan is approved and update it
+  when the plan changes; `0` clears it. Same authored-narration family as `set-note`.
 - **`handoff <ref> <context…> [--model <id>]`** — F1 clean-context resume: kill + `--resume` the SAME
   session seeded with `context` (folded together with the card's pending inbox). Same worktree, same
   branch, fresh context window. Hand off to a *new* card instead by spawning with the context as the seed.

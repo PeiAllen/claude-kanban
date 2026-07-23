@@ -22,7 +22,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `repo` | `String` | Allowlisted repo root (worktree cards). Context-only for borrowed cards. |
 | `branch` | `String` | Working branch (worktree cards). |
 | `parentBranch` | `String?` | Stacked-branch parent — the `.parent` [diff baseline](#classifying-enums). A **cache** derived from the git-config lineage store: `set-parent`, `spawn --base`, and converge write it; nil means the card has no parent link. |
-| `treeStat` | `TreeStat?` | Daemon-maintained child-lineage status for the branch tree (`synced` / `restackNeeded` / …); nil = none or not yet computed. |
+| `treeStat` | `TreeStat?` | Daemon-maintained branch-tree status, carrying **two orthogonal dimensions**. Parent-facing: this card vs ITS parent — `state` (`inSync` / `stale` / `restackNeeded` / `mergeRequested`), `behind`, `parentIsRemote`, plus the merge-request `nudges`/`mergeStalled`. Child-facing (the wave-progress bar): `mergedChildren` (the `n` — children merged and reaped, from the git-config counter), `plannedChildren` (the `m` — the orchestrator's declared plan size via [`set-planned`](05-command-reference.md#registry-commands), 0 = unset), and `drained` (the wave finished by merges — the last lineage child left by a merge-classified removal and none remain; nudge input only). A parentless root with children still carries a stat (neutral `inSync` base) so its counters broadcast. nil = neither dimension has anything to report. See [the tree counters](09-design-decisions.md#tree-counters-daemon-observed-child-progress). |
 | `cwd` | `String` | **The one directory** the agent and its shells run in. |
 | `origin` | `CardOrigin` | `worktree` \| `scratch` \| `borrowed` — how `cwd` came to be. |
 | `access` | `CardAccess` | `readWrite` \| `readOnly`. |
@@ -40,6 +40,7 @@ A `Task` is the single persisted record behind every card. Its fields:
 | `deadDetail` | `String?` | Extra detail (e.g. for `resumeFailed`/`spawnFailed`). |
 | `ctxPct` | `Double` | Context-window usage, 0–100 (Claude pushes it via the statusLine; Codex derives it from the rollout tail ÷ its offline model window). |
 | `diffStat` | `DiffStat?` | Daemon-maintained branch diffstat (`{filesChanged, insertions, deletions}`) for the card footer and the inspector header (axis 7), measured against the card's default baseline — parent-relative when it has a parent branch, else branch-relative. Nil for a non-git / zero-change / not-yet-computed card. |
+| `hasPendingDelivery` | `Bool` | Broadcast-only snapshot bit: the card has a claimable inbox message or a live delivery lease (`hasClaimable ∨ hasLiveLease`). Maintained in the per-tick delivery reconciler (so it arms even for a running card, whose `wake` returns before delivering, and disarms when the queue drains). Consumed by stall detection — a card with pending work in flight is not idle. Never authoritative state. |
 | `agentSessionId` | `String?` | The agent-native session id (current). |
 | `priorSessionIds` | `[String]` | Superseded session ids (after `/clear`, resume rollover, etc.). |
 | `initialPrompt` | `String` | The spawn prompt, persisted verbatim. |

@@ -19,6 +19,7 @@ UUID, or an `orchestra://task/<shortId>-<slug>` URI.
 | `move` | `ref` (required), `col` (required: `plan`/`impl`/`review`) | Move a card to a column (auto-orders within it). |
 | `set-title` | `ref` (required), `title` (required) | Rename a card. The title is the board's SSOT for the name and is **pinned** by this verb; the agent session's own name follows at its next (re)launch — a live session cannot be renamed from outside, which is why this is an Orchestra verb rather than an agent command. Trimmed, 120 chars max. |
 | `set-note` | `ref` (required), `note` (required) | Set or clear a card's **durable** note — the one-liner about what the card IS (its wave/layer in a larger plan, say). Distinct from `desc`, the live status blurb telemetry overwrites every tick: a note is authored and survives restart/clear. An empty `note` clears it. Trimmed, 120 chars max. |
+| `set-planned` | `ref` (required), `n?` | Declare how many child cards this card's approved plan fans out — the target `m` of the `n/m` [wave-progress bar](03-data-model.md#the-card), broadcast on `treeStat.plannedChildren`. `n = 0` or absent clears it. Stored on the card's branch git-config (`branch.<b>.orchestra-planned`); **worktree cards only** (a branchless card is rejected). Same authored-narration family as `set-note` — set it once the plan is approved and update it as the plan changes. |
 | `send` | `ref` (required), `message` (required) | Queue a message to the card's durable **inbox** (F3), then **wake** the card (F2) so an *idle* agent drains it now rather than at its next unprompted turn. Content still rides the inbox (Stop-hook delivery / session seed / resume seed), never typed into tmux — `wake` only starts a turn. A message over the shared `StopDrain.maxMessageChars` cap (the ~10 000-char delivery budget after the operator-relayed header) is **rejected** with `invalidParams` at enqueue — put large content in a worktree file and reference it — so any accepted message delivers whole. The source is retained for the inbox API and editor, but omitted from the model-facing delivery string. Also the **append** action of the app's [inbox editor](07-app-ui.md#the-inspector). |
 | `inbox` | `ref` (required) | List a card's pending [inbox](03-data-model.md#the-inbox-store-f3) messages (`{id, cardId, text, source?, dedupKey?, createdAt, lease?}`) in FIFO order, including their source metadata. Read-only (`Inbox.peek`); backs the [inbox editor](07-app-ui.md#the-inspector)'s list. |
 | `inbox-edit` | `ref` (required), `id` (required: message UUID), `text` (required) | Edit the text of one queued message in place (`Inbox.update`); `id`/`cardId`/`source`/`dedupKey`/`createdAt` are preserved. |
@@ -52,8 +53,8 @@ required on every schema, so a new verb must classify itself before it can ship:
   `trustState`, `capture`.
 - **Mutation** — completes inline and returns its result; may hop off-actor (a shell command, a tmux
   attach) but never changes `phase`. `move`, `send`, `inbox-edit`/`-remove`/`-reorder`, `wait`, `shell`,
-  `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `needs-input`, `set-parent`,
-  `synced`, `shipped`, `merge-request`, `borrow`, `release`.
+  `inspect`, `closeShell`, `exec`, `send-keys`, `trust`, `set-title`, `set-note`, `needs-input`, `set-planned`,
+  `set-parent`, `synced`, `shipped`, `merge-request`, `borrow`, `release`.
 - **Convergence** — the only kind that touches `phase`. The synchronous half persists an **intent** — one
   `transition()` call — and returns immediately; the reconciler's phase-keyed
   [`PhaseStepper`s](02-architecture.md#the-convergence-model) drive the card the rest of the way. `spawn`,

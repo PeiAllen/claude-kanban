@@ -66,6 +66,7 @@ _Concurrency.Task {
     await service.sweepCardFiles()         // reap orphaned per-card launch-config files (backlog + crash residue)
     await service.redriveArchivedWorktreeReleases()   // finish interrupted removals for archivedComplete cards
     await service.reloadWatchRegistry()    // carry #4: durable watch registry + terminal-at-reload delivery
+    await service.refreshAllPendingDelivery()   // slice 4: re-derive hasPendingDelivery from the reloaded inbox
     await service.rebuildRemoteWatches()   // BT6: restart remote merge-watches from live cards' lineage
     await service.rebuildMergeRequestNudges()   // re-arm merge-request re-nudge timers from live cards' state
 }

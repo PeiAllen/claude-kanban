@@ -58,6 +58,23 @@ extension OrchestraService {
         return saved
     }
 
+    /// `set-planned` — an orchestrator DECLARES its wave's plan size (the `m` of the card's `n/m` progress
+    /// bar): how many child cards the approved plan fans out. `n <= 0` (or absent at the verb) clears it.
+    /// Stored on the branch's git-config (`branch.<b>.orchestra-planned`) and broadcast on
+    /// `treeStat.plannedChildren`. Worktree-only: the count lives on the card's BRANCH, which a
+    /// freeform/scratch card has none of (mirrors `set-parent`'s worktree gate).
+    @discardableResult
+    public func setPlanned(ref: String, n: Int, source: ActivitySource = .daemon) async throws -> Task {
+        let t = try await resolveRef(ref)
+        guard t.origin == .worktree else {
+            throw OrchestraError.invalidParams("only worktree cards have a branch to plan against")
+        }
+        try await lineage.setPlanned(repo: t.repo, branch: t.branch, n: n)
+        await recomputeChildProgress(t.id)   // broadcast the new plannedChildren
+        emitActivity(.command, t, source, n > 0 ? "planned \(n) children" : "cleared planned count")
+        return (await store.get(t.id)) ?? t
+    }
+
     /// `needs-input` — the agent DECLARES that it is blocked on a decision only the card's owner can make.
     /// Set/replace only: there is deliberately no clear form, because a declaration an agent could retract
     /// is one it would forget to retract. The daemon retires it instead, at the only events that prove the
