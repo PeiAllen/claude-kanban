@@ -200,6 +200,12 @@ private struct InspectorDiffStat: View {
     /// The baseline the daemon measured this stat against — it defaults to `.parent` for a card with a
     /// parent branch, else `.branch`. Mirrors `DiffInspectorView`'s initial selection, so the strip and
     /// a freshly-opened Diff tab agree.
+    ///
+    /// Deliberately the same `!= nil` test the pane uses, not the daemon's stricter `!pb.isEmpty`
+    /// (`resolvedParentRef`): an empty-string `parentBranch` would label this "vs Parent" while the
+    /// daemon measured `.branch`. Matching the pane keeps the two client surfaces consistent with each
+    /// other, which is the point of naming the baseline at all; if that edge ever becomes reachable,
+    /// fix both call sites together rather than splitting them.
     private var base: DiffBase { task.parentBranch != nil ? .parent : .branch }
 
     var body: some View {
