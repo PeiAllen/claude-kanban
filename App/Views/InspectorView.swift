@@ -78,16 +78,18 @@ private struct HeaderBar: View {
     var body: some View {
         // This row is over-subscribed at the shipped 392pt inspector width — spelled out in full it
         // overflows and clips the trailing close button, which is what it used to do (truncating the
-        // captions to unreadable stubs, "Z \" and "▤ (", on the way). So it degrades in stages, each
-        // giving up the least useful thing left, and nothing ever clips:
-        //   1. everything spelled out — what a widened inspector shows;
-        //   2. captions dropped, icons + tight padding, diffstat kept — the 392pt default;
-        //   3. diffstat dropped too — only at the 320pt drag minimum, where it cannot fit at all.
-        // The icons carry the meaning the captions did, and every button has a tooltip with the words.
+        // captions to unreadable stubs, "Z \" and "▤ (", on the way). So it degrades: everything
+        // spelled out when the inspector is dragged wide, and at 392 the captions drop to icons alone
+        // with tighter gutters. The icons carry the meaning the captions did, and every button has a
+        // tooltip with the words. Nothing ever clips.
+        //
+        // There used to be a third rung that dropped the diffstat, because this row also carried it and
+        // could not hold everything at 392. The diffstat now lives beside the branch it measures, in
+        // the terminal header, which has the slack this row never had — so the only thing left here
+        // that can give is the captions.
         ViewThatFits(in: .horizontal) {
-            row(compact: false, showStat: true)
-            row(compact: true, showStat: true)
-            row(compact: true, showStat: false)
+            row(compact: false)
+            row(compact: true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -97,10 +99,8 @@ private struct HeaderBar: View {
         }
     }
 
-    @ViewBuilder private func row(compact: Bool, showStat: Bool) -> some View {
-        // Compact tightens the gaps as well as the chips: at 392 the stat-bearing variant lands a few
-        // points over the frame with 6pt gutters, and those few points are the whole difference
-        // between showing the numbers and dropping them.
+    @ViewBuilder private func row(compact: Bool) -> some View {
+        // Compact tightens the gaps as well as the buttons — a few points either way decides the rung.
         HStack(spacing: compact ? 4 : 6) {
             // Agent terminal vs the read-only in-app diff (axis 7).
             Picker("", selection: $mode) {
@@ -112,39 +112,22 @@ private struct HeaderBar: View {
             .fixedSize()
             .help(diffTabHelp)
 
-            // The branch readout: how much changed, and how far behind its parent the branch has
-            // fallen. Chipped, not bare — everything else in this row is a filled control, so loose
-            // monospace digits between the toggle and the buttons read as debris rather than as a
-            // readout. The chip is the row's own `theme.chip`, the same fill the close button and the
-            // segmented control sit on, so it belongs without competing.
+            // Branch-sync state (`↓N` / restack / merge-requested / stalled) — the same glyph the board
+            // card carries, in THIS row rather than the terminal header below it, because this row is
+            // the one both tabs share: a stale base is exactly what you want to know while reading the
+            // diff, and the terminal header unmounts with the Agent tab.
             //
-            // ONE chip holding both, not one each. Two chips pay two paddings and two gutters — about
-            // 40pt — and this row has only a few points of slack at the 392pt default, so a separate
-            // tree chip dropped the ladder a full rung and cost the diffstat its place at the width
-            // most people run. Shared, both survive there (measured: shot 17). Sharing the surface is
-            // also the truer grouping: both describe the state of this branch, and neither is an action.
-            //
-            // The tree badge rides every rung, including the narrowest, because it is one glyph and at
-            // most a couple of digits and because hiding branch-sync state exactly when the inspector is
-            // narrow would drop the signal in the case it exists for. So the diffstat is what gives: a
-            // two-digit `↓12` is still ~15pt more than the slack, and at the default width that trades
-            // the diffstat away (shot 18) — only for a card that HAS a parent and has fallen ≥10 commits
-            // behind it, which is the moment the lineage fact outranks the change size.
-            let stat = (showStat && (task.diffStat?.filesChanged ?? 0) > 0) ? task.diffStat : nil
-            let tree = task.treeStat.flatMap { TreeBadge.renders($0) ? $0 : nil }
-            if stat != nil || tree != nil {
-                // Each half carries its OWN hover text — the diffstat's baseline, the badge's parent
-                // branch. A `help` on the shared chip would replace both with one message.
-                HStack(spacing: compact ? 5 : 7) {
-                    if let stat {
-                        DiffStatNumbers(stat: stat, showFiles: !compact).lineLimit(1).help(diffTabHelp)
-                    }
-                    if let tree { TreeBadge(stat: tree, parentBranch: task.parentBranch) }
-                }
-                .fixedSize()
-                .padding(.horizontal, compact ? 6 : 9)
-                .frame(height: 29)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.chip))
+            // Chipped, not bare: everything else here is a filled control, so a loose glyph between the
+            // toggle and the buttons reads as debris — the same reason the diffstat was chipped before
+            // it moved. The glyph and its semantic colour are the board card's; only the surface is new.
+            // `renders` is checked BEFORE laying out because an in-sync badge draws nothing, and an
+            // empty chip is not what "show nothing" means.
+            if let tree = task.treeStat, TreeBadge.renders(tree) {
+                TreeBadge(stat: tree, parentBranch: task.parentBranch)
+                    .fixedSize()
+                    .padding(.horizontal, compact ? 6 : 9)
+                    .frame(height: 29)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.chip))
             }
 
             Button {
@@ -524,29 +507,79 @@ private struct TerminalHeader: View {
         }
     }
     private var repoName: String { (task.repo as NSString).lastPathComponent }
+    /// The baseline the daemon measured `diffStat` against — parent-relative for a stacked card, else
+    /// branch-relative. Named in the hover text because the Diff pane's own picker can be switched to
+    /// Working, at which point the body legitimately disagrees with these numbers.
+    private var baseline: DiffBase { task.parentBranch != nil ? .parent : .branch }
 
     var body: some View {
+        // Taking the diffstat in cost this row its slack: at the 392pt default, model chip + repo chip +
+        // branch + numbers + status pill overflowed, and everything truncated to stubs (`opus…`,
+        // `or…tra`, `fix…ells`) with the pill wrapping onto two lines. So it degrades, giving up the
+        // most redundant thing first rather than shrinking everything at once:
+        //   1. everything — a widened inspector;
+        //   2. the repo chip drops — the breadcrumb directly below spells out the whole path anyway,
+        //      so the repo is still on screen; this is the 392pt default, numbers intact;
+        //   3. the diffstat sheds its file count;
+        //   4. and then goes, at the 320pt drag minimum.
+        ViewThatFits(in: .horizontal) {
+            row(repo: true, stat: .full)
+            row(repo: false, stat: .full)
+            row(repo: false, stat: .compact)
+            row(repo: false, stat: .hidden)
+        }
+    }
+
+    private enum StatSize { case full, compact, hidden }
+
+    @ViewBuilder private func row(repo: Bool, stat: StatSize) -> some View {
         HStack(spacing: 7) {
             HStack(spacing: 5) {
                 Circle().fill(modelColor).frame(width: 6, height: 6)
                 Text(task.model.displayName).font(F.mono(9.5, .semibold)).foregroundColor(modelColor)
             }
+            .fixedSize()
             .padding(.horizontal, 6)
             .frame(height: 18)
             .background(theme.chip)
             .clipShape(RoundedRectangle(cornerRadius: 5))
 
             if task.origin == .worktree {
-                Text(repoName)
-                    .font(F.mono(10, .semibold))
-                    .foregroundColor(theme.text2)
-                    .lineLimit(1)
-                    .padding(.vertical, 2).padding(.horizontal, 6)
-                    .frame(maxWidth: 140, alignment: .leading)
-                    .background(theme.chip)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                // No width cap at all. A `maxWidth` frame on a Text ACCEPTS the whole proposal rather
+                // than hugging, so the old `.frame(maxWidth: 140)` — inside the background — painted
+                // every repo chip 140pt wide, leaving a slab of empty fill after a short name that read
+                // as a broken box; moving the cap outside the background only moved the empty space out
+                // of the chip and left the same gap before the branch. A single-line Text already
+                // shrinks and truncates when the row runs out of room, which is all the cap was for.
+                if repo {
+                    Text(repoName)
+                        .font(F.mono(10, .semibold))
+                        .foregroundColor(theme.text2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .fixedSize()
+                        .padding(.vertical, 2).padding(.horizontal, 6)
+                        .background(theme.chip)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .help(task.repo)
+                }
 
                 Text(task.branch).font(F.mono(11)).foregroundColor(theme.text2).lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(task.branch)
+
+                // The branch diffstat, beside the branch it measures rather than up in the shared action
+                // row. That row is all controls, so the numbers had to fight the buttons for space
+                // through a `ViewThatFits` rung and lost them at the narrower widths; here they sit with
+                // the thing they describe. The Diff tab doesn't lose them by the move — its body IS the
+                // diff, with per-file `+N −M` pills on every section header.
+                if stat != .hidden, let s = task.diffStat, s.filesChanged > 0 {
+                    DiffStatNumbers(stat: s, showFiles: stat == .full)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .help(diffStatHelp(s)
+                              + " — measured against \(diffBaselineLabel(baseline, parentBranch: task.parentBranch))")
+                }
             } else {
                 // Freeform (borrowed/scratch) card: no repo/branch — show the borrowed dir instead.
                 HStack(spacing: 4) {
@@ -555,9 +588,10 @@ private struct TerminalHeader: View {
                 }
                 .foregroundColor(theme.text2)
                 .padding(.vertical, 2).padding(.horizontal, 6)
-                .frame(maxWidth: 200, alignment: .leading)
                 .background(theme.chip)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                // No width cap, same as the repo chip above: the frame made the fill 200pt wide for
+                // every directory instead of hugging its name. The Text truncates on its own.
                 .help(task.cwd)
             }
 
@@ -609,6 +643,9 @@ private struct StatusPill: View {
         .padding(.leading, 7).padding(.trailing, 8).padding(.vertical, 3)
         .background(sem.tint)
         .clipShape(Capsule())
+        // Never let a tight row wrap the label — "Running" broke onto two lines inside the capsule
+        // before the header learned to degrade, and a two-line pill is worse than a shorter row.
+        .fixedSize()
     }
 }
 
