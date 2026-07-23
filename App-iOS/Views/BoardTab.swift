@@ -205,32 +205,53 @@ private struct MovableCard: View {
     @EnvironmentObject var model: BoardModel
     @State private var dragX: CGFloat = 0
 
+    /// Attached read-only agents to reveal inside this card right now (empty unless it's a target whose
+    /// accordion is expanded — `IOSBoardModel.showsInlineRows` gates it). Non-empty ⇒ square the card's
+    /// bottom + draw the connected rows block.
+    private var expandedRows: [Task] { model.expandedRows(for: task) }
+
     var body: some View {
         if task.origin == .worktree {
-            BoardCardCell(task: task)
-                .offset(x: dragX)
-                .contentShape(Rectangle())
-                // Tap-to-open and the tap-and-hold → drag-to-adjacent move (design §2/§3) are both
-                // driven by a UIKit recognizer overlay, NOT SwiftUI gestures. A SwiftUI
-                // `LongPressGesture.sequenced(before: DragGesture)` — even attached with
-                // `.simultaneousGesture` — holds the gesture arena during its pending window and
-                // starves the parent ScrollView's vertical pan and the paged TabView's horizontal
-                // swipe, so a plain swipe starting on a card did nothing (empirically verified on a
-                // Simulator with injected touches — the earlier `.simultaneousGesture` fix did not
-                // actually let swipes through). A native `UILongPressGestureRecognizer` set to
-                // recognize *simultaneously* with those parent pans does not starve them: a quick
-                // swipe exceeds the press's allowable movement before the 0.3s gate, so the press
-                // fails and the scroll/pager takes the touch; only a deliberate hold-then-drag fires
-                // the press and moves the card. The overlay is the touch target, so it also carries
-                // the tap (an underlying SwiftUI `.onTapGesture` would be shadowed by it).
-                .overlay(
-                    LongPressMoveGesture(
-                        onTap: { model.selectedId = task.id },
-                        onChanged: { dx in dragX = min(130, max(-130, dx)) },
-                        onEnded: { dx in commitMove(dx) }
+            // The header (move-gesture surface) + the inline accordion, as ONE visual card. The rows are
+            // siblings BELOW the gestured header — NOT under the move-gesture overlay — so their taps
+            // land (the overlay shadows nested taps). The `👁 N`/chevron toggle rides ABOVE the overlay
+            // (top-trailing) so ITS tap wins too (idb-verified for the corner-overlay case).
+            VStack(spacing: 0) {
+                BoardCardCell(task: task, expanded: !expandedRows.isEmpty)
+                    .contentShape(Rectangle())
+                    // Tap-to-open and the tap-and-hold → drag-to-adjacent move (design §2/§3) are both
+                    // driven by a UIKit recognizer overlay, NOT SwiftUI gestures. A SwiftUI
+                    // `LongPressGesture.sequenced(before: DragGesture)` — even attached with
+                    // `.simultaneousGesture` — holds the gesture arena during its pending window and
+                    // starves the parent ScrollView's vertical pan and the paged TabView's horizontal
+                    // swipe, so a plain swipe starting on a card did nothing (empirically verified on a
+                    // Simulator with injected touches — the earlier `.simultaneousGesture` fix did not
+                    // actually let swipes through). A native `UILongPressGestureRecognizer` set to
+                    // recognize *simultaneously* with those parent pans does not starve them: a quick
+                    // swipe exceeds the press's allowable movement before the 0.3s gate, so the press
+                    // fails and the scroll/pager takes the touch; only a deliberate hold-then-drag fires
+                    // the press and moves the card. The overlay is the touch target, so it also carries
+                    // the tap (an underlying SwiftUI `.onTapGesture` would be shadowed by it).
+                    .overlay(
+                        LongPressMoveGesture(
+                            onTap: { model.selectedId = task.id },
+                            onChanged: { dx in dragX = min(130, max(-130, dx)) },
+                            onEnded: { dx in commitMove(dx) }
+                        )
                     )
-                )
-                .contextMenu { moveMenu }
+                    // The eye/chevron expand toggle — above the gesture overlay so its tap reveals the
+                    // rows instead of opening the card. Self-hides unless this card is a target.
+                    .overlay(alignment: .topTrailing) {
+                        AttachedExpandToggle(task: task).padding(.top, 10).padding(.trailing, 12)
+                    }
+                    // Move menu on the HEADER only — long-pressing an attached-agent ROW below must not
+                    // surface the target card's "Move to…" menu.
+                    .contextMenu { moveMenu }
+                if !expandedRows.isEmpty {
+                    AttachedAgentsRows(target: task)
+                }
+            }
+            .offset(x: dragX)
         } else {
             BoardCardCell(task: task)
                 .contentShape(Rectangle())

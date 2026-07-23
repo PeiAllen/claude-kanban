@@ -80,8 +80,25 @@ search** is active, a reviewer stays a subcard — it is never promoted to a sta
 and a **match is surfaced in place**: its target auto-expands to reveal the matching row (highlighted;
 non-matching rows dim like non-matching cards), and the match joins the `n`/`N` cycle, so selecting it
 reveals its target and lands on the row. And **read-write cards are never embedded**, whatever their
-lineage. The iPhone companion consumes the same shared reveal predicates but owns its own presentation
-(its base store never embeds).
+lineage. The iPhone companion consumes the same shared derivation and `expandedRows` seam but owns its
+own presentation: it embeds attached agents too (`IOSBoardModel` overrides `isEmbedded`), and reveals
+them **tap-driven** rather than on selection — the `👁 N` indicator on a target's board card gains a
+chevron and toggles the accordion, expanding the reviewers as rows inside the card's own frame. It has
+to differ here because on the phone `selectedId` drives full-screen navigation (tapping a card *pushes*
+its detail), so the desktop's selection-reveal would fire exactly when the board is off-screen. Tapping
+a target's card body still opens its detail (unchanged); tapping a revealed row opens that agent's
+detail; and the card-detail header carries the same `👁 N` toggle + inline list. There is no `/` search
+on the phone board, so no search fail-safe is needed there.
+
+Going back **up** the lineage, the phone's card-detail header carries a tappable **parent chip**
+(`⤴ <parent title>`) that pushes the parent's detail. It is generic across card kinds rather than
+reviewer-specific — one rule, `attachedTarget ?? parentCard`, resolves an embedded reviewer to the card
+it reviews (including the branchless borrowed case, which has no `parentBranch`) and any ordinary
+stacked child card to its lineage parent — and it self-hides on a root card. It is the *only* way up
+from an embedded reviewer, whose board-cell parent chip never renders precisely because an embedded
+card is never drawn as a board cell. Both it and the attached rows are `NavigationLink`s rather than
+selection writes, because the phone presents card details from two different stacks (the Board tab off
+`selectedId`, the Needs You tab off its own route), and a selection write is a dead tap in the latter.
 
 ## Cards
 
