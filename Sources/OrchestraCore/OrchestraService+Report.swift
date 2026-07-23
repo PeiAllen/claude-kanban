@@ -34,6 +34,15 @@ extension OrchestraService {
         // (and the fences stand a stale one down anyway), so a report must be free to move it again.
         let beingBorn = task.phase.kind == .launching || task.phase.kind == .relaunching
         let bringUpOwnsLanding = beingBorn && inFlightSteps.contains(id)
+        // A report we cannot attribute to the CURRENT generation of a still-being-born card. Not the same
+        // test as `bringUpOwnsLanding`: that one needs the stepper to have already CLAIMED the card, and
+        // `restart` bumps the epoch and returns long before that claim exists. In that gap the outgoing
+        // session is still alive and still reporting, so its hooks — including a delayed prompt, and
+        // including a pre-epoch session's UNSTAMPED ones — could otherwise land the incoming generation
+        // `.live` (no stepper ever visits a `.live` card, so the relaunch is silently dropped and the old
+        // session keeps running) or clear `awaitingFirstPrompt` out from under it. Fail-CLOSED, unlike the
+        // rest of report(): a report that cannot prove its generation may not move a card that is being born.
+        let staleGeneration = beingBorn && observedEpoch != task.sessionEpoch
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
@@ -99,18 +108,21 @@ extension OrchestraService {
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
                 resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
-                // Generation-fenced, fail-OPEN on nil. `restart` bumps the epoch and re-arms
-                // `awaitingFirstPrompt` while the OUTGOING agent is still alive, so its in-flight prompt hook
-                // could clear the flag on the incoming generation — and then the RelaunchStepper finds
-                // neither a transcript nor permission to blank-launch, and kills the card `.resumeFailed`.
-                // A `nil` epoch (a pre-epoch session) is admitted, so nothing that works today changes.
-                if task.awaitingFirstPrompt, observedEpoch == nil || observedEpoch == task.sessionEpoch {
+                // Both writes below are generation-fenced (see `staleGeneration`): a delayed prompt from the
+                // session a `restart` is replacing must neither clear the incoming generation's
+                // `awaitingFirstPrompt` — the RelaunchStepper would then find neither a transcript nor
+                // permission to blank-launch, and strand the card `.resumeFailed` — nor land it `.live`,
+                // which drops the relaunch entirely and leaves the old session running. A card that is NOT
+                // being born is unaffected, so an ordinary prompt still re-titles and still lands `.running`.
+                if task.awaitingFirstPrompt, !staleGeneration {
                     task.awaitingFirstPrompt = false     // lifecycle: this session has now been prompted
                     // Naming: only a card whose title came FROM a prompt may be re-titled by one. A branch,
                     // a 👁 target, or an explicit name all outrank the prompt cutoff that used to win here.
                     if task.titleSource == .prompt { task.title = titleSeed(from: prompt) }
                 }
-                if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.running) }
+                if task.phase.kind != .dead, !bringUpOwnsLanding, !staleGeneration {
+                    task.phase = .live(.running)
+                }
             }
             // (`ev.transcriptPath` is carried for completeness but not persisted — the path is
             // re-derived from the live session id in `Adapter.sessionInfo` whenever it's needed.)
@@ -230,8 +242,9 @@ extension OrchestraService {
                 // card `.live` before the stepper ever claims its seed, stranding the delivery. Dropping the
                 // `owesLaunch` term makes the invariant complete: the stepper (or the adopt path) lands a
                 // being-born card; a non-current-generation report never does.
-                let mayLandBringUp = !(beingBorn && observedEpoch != task.sessionEpoch)
-                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, mayLandBringUp {
+                // The SAME predicate the event half applies (hoisted to `staleGeneration` above), so the two
+                // halves cannot drift apart on what counts as an attributable report.
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, !staleGeneration {
                     task.phase = .live(run)
                 }
             }

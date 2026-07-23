@@ -197,8 +197,8 @@ private struct AttentionRow: View {
                         .foregroundStyle(task.ctxPct >= NeedsYouQueue.contextNearFullThreshold ? sem.text : theme.text3)
                 }
             }
-            if !task.desc.isEmpty {
-                Text(task.desc)
+            if !task.cardLine.isEmpty {
+                Text(task.cardLine)
                     .font(.subheadline).foregroundStyle(theme.text2)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }

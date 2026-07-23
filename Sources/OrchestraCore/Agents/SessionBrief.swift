@@ -51,6 +51,8 @@ public enum SessionBrief {
                 + (titlePinned ? "" :
                    " Your card is named after what it runs on, so give it a name of its own once the work "
                    + "takes shape — `set-title \(shortId) <title>` — and update it as the work changes.")
+                + " Keep a one-line note on what this card IS — `set-note \(shortId) <text>` — and update it "
+                + "when the shape of the work changes; unlike the live status line, a note survives restarts."
         }
 
         let lane: String
@@ -66,5 +68,8 @@ public enum SessionBrief {
             + (titlePinned ? "" :
                " Your card starts named after its branch, so name it for the work once that takes shape — "
                + "`set-title \(shortId) <title>` — and update it as the work changes.")
+            + " Keep a one-line note on what this card IS (its wave/layer in the larger plan, say) — "
+            + "`set-note \(shortId) <text>` — and update it when the shape of the work changes; unlike the "
+            + "live status line, a note survives restarts."
     }
 }

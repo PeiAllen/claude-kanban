@@ -473,8 +473,8 @@ extension OrchestraService {
                     try? sessions.setRemainOnExit(name, window: "agent", on: true)
                 }
                 spawnPending[id] = Date().addingTimeInterval(Double(spawnGraceSeconds))
-                emitActivity(.recovered, t, .daemon,
-                             "restarted “\(t.title)” after a startup abort (retry \(attempt + 1))")
+                emitActivity(.recovered, stillOurs, .daemon,
+                             "restarted “\(stillOurs.title)” after a startup abort (retry \(attempt + 1))")
                 return
             } catch {
                 clearSpawnPending(id)

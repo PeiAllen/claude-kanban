@@ -137,6 +137,24 @@ and delivery-stuck gates read it as "there is still a route to revive this card.
 where they are mutated — a stale prompt hook from a superseded session could otherwise clear the flag on the
 incoming generation and strand the card `.resumeFailed`.
 
+### `desc` vs `note`: volatile status vs durable narrative
+
+A card carries two one-liners because they answer different questions and have different lifetimes.
+`desc` is what the agent is doing **this second** — the report pipeline overwrites it on every snapshot,
+and `restart`/`/clear` blank it. `note` is what the card **is**: "Wave 2/4 — lease/claim delivery". It is
+written only by an explicit source (`spawn(note:)` / `set-note`), telemetry never touches it, and it
+survives restart, clear, and handoff.
+
+Overloading `desc` with both was the obvious shortcut and the wrong one — it is the same two-meanings
+trap `titleProvisional` fell into, where one field meant both "a default title" and "never prompted", and
+only untangling them made either meaning safe to reason about. Narrative in `desc` would be erased by the
+next tool call, which is precisely when a human scanning the board most wants it.
+
+Clients render `note ?? desc` on the card's second line (`Task.cardLine`, defined on the model so the Mac
+and iOS boards cannot drift). The authored line wins: `desc` is blank between turns and after a restart
+anyway, so falling back to it only when there is no note costs nothing and gains a board that still says
+what each card is for when every agent is idle.
+
 ### The Stage-2 wire break: `status` → `phase`
 
 Stage 2 is a **deliberate clean break** in the wire and on-disk model, not a compatibility layer.

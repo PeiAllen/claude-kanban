@@ -81,6 +81,7 @@ public struct CommandRegistry: Sendable {
                     id: try p.uuid("id"),           // required wire field — clients mint/forward it
                     prompt: try p.string("prompt"),
                     title: p.optString("title"),
+                    note: p.optString("note"),
                     repo: p.optString("repo") ?? "", branch: p.optString("branch") ?? "",
                     model: p.optString("model"),
                     startIn: p.optString("col").flatMap(StartIn.init(rawValue:)),
@@ -196,6 +197,12 @@ public struct CommandRegistry: Sendable {
             "set-title": { svc, p, src in
                 let updated = try await svc.setTitle(ref: try p.string("ref"),
                                                      title: try p.string("title"), source: src)
+                return try JSONValue(encodable: updated)
+            },
+
+            "set-note": { svc, p, src in
+                let updated = try await svc.setNote(ref: try p.string("ref"),
+                                                    note: try p.string("note"), source: src)
                 return try JSONValue(encodable: updated)
             },
 
@@ -372,7 +379,8 @@ public struct CommandRegistry: Sendable {
                         id: try item.uuid("id"),    // required per-item wire field (client stamps when absent)
                         prompt: try item.string("prompt"),
                         title: item.optString("title"),   // this loop rebuilds SpawnInput by hand — a field
-                        repo: try item.string("repo"),    // missed here is advertised but silently dropped
+                        note: item.optString("note"),    // missed here is advertised but silently dropped
+                        repo: try item.string("repo"),
                         branch: try item.string("branch"), model: item.optString("model"),
                         startIn: item.optString("col").flatMap(StartIn.init(rawValue:)),
                         seed: item.optString("seed"),

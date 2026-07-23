@@ -432,7 +432,15 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// name on every statusline tick and silently undo `set-title`. nil ⇒ never launched/observed.
     public var lastSessionName: String?
     /// Live blurb of what the agent is doing now — pushed from Pre/PostToolUse hooks; pane-parse fallback.
+    /// VOLATILE: the report pipeline overwrites it on every snapshot and `restart`/`/clear` blank it. Durable
+    /// narrative belongs in `note`, which the pipeline never touches.
     public var desc: String
+    /// A durable, human/agent-authored one-liner about what this card IS — "Wave 2/4 — lease/claim delivery".
+    /// The counterpart to `desc`: `desc` is the volatile mirror of what the agent is doing THIS SECOND, so it
+    /// cannot hold narrative that must outlive a turn; overloading it with both meanings is the same trap
+    /// `titleProvisional` fell into. Set only by an explicit source (`spawn(note:)` / `set-note`), never by
+    /// telemetry, and survives restart/clear/handoff. nil ⇒ none; an empty `set-note` clears it back to nil.
+    public var note: String?
     public var repo: String        // repo root (allowlisted); shown as repo name
     public var branch: String      // working branch
     public var parentBranch: String?  // stacked-branch parent (stub; nil until stacked-branches sets it) — the `.parent` diff baseline
@@ -501,6 +509,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         awaitingFirstPrompt: Bool = false,
         lastSessionName: String? = nil,
         desc: String = "",
+        note: String? = nil,
         repo: String,
         branch: String,
         cwd: String,
@@ -539,6 +548,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.awaitingFirstPrompt = awaitingFirstPrompt
         self.lastSessionName = lastSessionName
         self.desc = desc
+        self.note = note
         self.repo = repo
         self.branch = branch
         self.cwd = cwd
@@ -583,7 +593,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     //      directly — no migration. Encode stays synthesized (no `status`/`waitReason` on the wire).
     private enum CodingKeys: String, CodingKey {
         case id, title, titleSource, awaitingFirstPrompt, lastSessionName
-        case desc, repo, branch, parentBranch, cwd, origin, access
+        case desc, note, repo, branch, parentBranch, cwd, origin, access
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
@@ -611,6 +621,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
             ?? c.decodeIfPresent(Bool.self, forKey: .titleProvisional) ?? false
         self.lastSessionName = try c.decodeIfPresent(String.self, forKey: .lastSessionName)
         self.desc = try c.decodeIfPresent(String.self, forKey: .desc) ?? ""
+        self.note = try c.decodeIfPresent(String.self, forKey: .note)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.parentBranch = try c.decodeIfPresent(String.self, forKey: .parentBranch)
@@ -693,6 +704,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encode(awaitingFirstPrompt, forKey: .awaitingFirstPrompt)
         try c.encodeIfPresent(lastSessionName, forKey: .lastSessionName)
         try c.encode(desc, forKey: .desc)
+        try c.encodeIfPresent(note, forKey: .note)
         try c.encode(repo, forKey: .repo)
         try c.encode(branch, forKey: .branch)
         try c.encodeIfPresent(parentBranch, forKey: .parentBranch)
@@ -773,6 +785,13 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         apply(\.ctxPct)
         apply(\.model)
     }
+
+    /// The card's second line, for every client: the authored `note` when there is one, else the live
+    /// `desc`. Defined once here so the Mac and iOS boards cannot drift on the rule. A note is what the
+    /// card IS and outlives every turn, so it outranks a status blurb that is true for one tool call —
+    /// and `desc` is blank between turns and after a restart anyway, which is exactly when a human
+    /// scanning the board most needs to know what a card is for.
+    public var cardLine: String { note ?? desc }
 
     // MARK: - Derived phase views (non-wire; computed from `phase` on demand)
 
@@ -1234,6 +1253,8 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// field a delegating spawner should always set: a seed is never a title source, so an unnamed
     /// delegate falls back to its branch, its read-only target, or its directory. nil ⇒ derive one.
     public var title: String?
+    /// A durable one-liner about what this card IS (see `Task.note`). Telemetry never touches it.
+    public var note: String?
     public var repo: String
     public var branch: String
     public var model: String?
@@ -1256,12 +1277,13 @@ public struct SpawnInput: Codable, Sendable, Equatable {
     /// `WorktreeRegistry.ensure`, recording lineage at spawn). nil ⇒ today's HEAD behavior. BT1 only
     /// carries the field on the model; the spawn threading lands in BT2.
     public var base: String?
-    public init(id: UUID, prompt: String, title: String? = nil, repo: String = "", branch: String = "",
+    public init(id: UUID, prompt: String, title: String? = nil, note: String? = nil,
+                repo: String = "", branch: String = "",
                 model: String? = nil, startIn: StartIn? = nil, agentId: String? = nil,
                 cwd: String? = nil, access: CardAccess = .readWrite, scratch: Bool = false,
                 seed: String? = nil, base: String? = nil) {
         self.id = id
-        self.title = title
+        self.title = title; self.note = note
         self.prompt = prompt; self.repo = repo; self.branch = branch
         self.model = model; self.startIn = startIn; self.agentId = agentId
         self.cwd = cwd; self.access = access; self.scratch = scratch; self.seed = seed
@@ -1273,6 +1295,7 @@ public struct SpawnInput: Codable, Sendable, Equatable {
         self.id = try c.decode(UUID.self, forKey: .id)          // required: no id-less spawn on the wire
         self.prompt = try c.decode(String.self, forKey: .prompt)
         self.title = try c.decodeIfPresent(String.self, forKey: .title)
+        self.note = try c.decodeIfPresent(String.self, forKey: .note)
         self.repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         self.branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
         self.model = try c.decodeIfPresent(String.self, forKey: .model)

@@ -202,6 +202,81 @@ struct SetTitleTests {
         #expect(after.desc == "working")            // …while what report DID change still lands
     }
 
+    // MARK: - the durable note
+
+    @Test("set-note sets, updates, and clears a durable note")
+    func setNoteRoundTrip() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-n"))
+        #expect(t.note == nil)
+
+        let noted = try await env.svc.setNote(ref: t.shortId, note: "  Wave 2/4 — lease/claim delivery ",
+                                              source: .mcp)
+        #expect(noted.note == "Wave 2/4 — lease/claim delivery")   // normalized
+        let updated = try await env.svc.setNote(ref: t.shortId, note: "Wave 3/4 — Claude channels")
+        #expect(updated.note == "Wave 3/4 — Claude channels")
+        // An EMPTY note CLEARS it — the only way to remove one, so it must not error like `set-title` does.
+        let cleared = try await env.svc.setNote(ref: t.shortId, note: "   ")
+        #expect(cleared.note == nil)
+    }
+
+    @Test("spawn carries an explicit note")
+    func spawnCarriesNote() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", note: "Wave 1/4 — the funnel",
+                                repo: repo, branch: "feat-o"))
+        #expect(t.note == "Wave 1/4 — the funnel")
+    }
+
+    /// The whole reason `note` exists rather than overloading `desc`: `desc` is the volatile status mirror
+    /// that telemetry overwrites and a restart blanks, so it can never hold narrative that must outlive a
+    /// turn. `note` must survive both, and the report pipeline must never touch it.
+    @Test("a note survives telemetry and restart; desc does not")
+    func noteOutlivesDescChurn() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", note: "Wave 2/4", repo: repo, branch: "feat-p"))
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
+
+        // Telemetry churns `desc` and must leave `note` alone.
+        try await env.svc.report(t.id, StatusReport(desc: "Editing Model.swift"), observedEpoch: epoch)
+        var after = try #require(await env.svc.store.get(t.id))
+        #expect(after.desc == "Editing Model.swift")
+        #expect(after.note == "Wave 2/4")
+        #expect(after.cardLine == "Wave 2/4")        // the note wins the card's second line
+
+        // `/clear` blanks `desc`; the note is untouched.
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"), observedEpoch: epoch)
+        after = try #require(await env.svc.store.get(t.id))
+        #expect(after.desc.isEmpty)
+        #expect(after.note == "Wave 2/4")
+        #expect(after.cardLine == "Wave 2/4")        // …and still carries the card's second line
+
+        // A restart re-arms the lifecycle flag and blanks desc; the note still survives.
+        _ = try await env.svc.restart(t.id)
+        after = try #require(await env.svc.store.get(t.id))
+        #expect(after.desc.isEmpty)
+        #expect(after.note == "Wave 2/4")
+    }
+
+    @Test("cardLine falls back to desc when there is no note")
+    func cardLineFallsBackToDesc() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-q"))
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
+        try await env.svc.report(t.id, StatusReport(desc: "Running tests"), observedEpoch: epoch)
+        let after = try #require(await env.svc.store.get(t.id))
+        #expect(after.note == nil)
+        #expect(after.cardLine == "Running tests")
+    }
+
     private func nameFlag(_ argv: [String]?) -> String? {
         guard let argv, let i = argv.firstIndex(of: "--name"), i + 1 < argv.count else { return nil }
         return argv[i + 1]

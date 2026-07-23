@@ -51,6 +51,10 @@ phase boundary, not on every step.
   to its branch, its read-only target (`👁 <target>`), or its directory. Rename any card — including your
   own, as its scope changes — with **`set-title <ref> <title>`**. The agent session's own name follows the
   card at its next launch; no agent can rename its own live session, which is why this is an Orchestra verb.
+  **`set-note <ref> <text>`** keeps a durable one-liner on what a card IS — its wave/layer in a
+  larger plan, say. It is NOT the live status line (which telemetry overwrites every tick and a
+  restart blanks): a note is authored and survives. If you orchestrate or plan, narrate the shape
+  of the work there and update it as that shape changes; spawners may pass `note:` up front.
 - **`handoff <ref> <context…> [--model <id>]`** — clean-context resume: restart the SAME session seeded
   with `context` (folded with the card's pending inbox). Same worktree, same branch, fresh context. Hand
   off to a *new* card instead by spawning with the context as the seed.

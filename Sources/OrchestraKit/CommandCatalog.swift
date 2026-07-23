@@ -61,6 +61,9 @@ public enum CommandCatalog {
                       summary: "Spawn a new agent. Free text: `prompt`, and `title` (the card's name — "
                           + "pass it when you delegate).",
                       params: schema([
+                          "note": strProp("A durable one-liner about what this card IS — e.g. \"Wave 2/4 — "
+                              + "lease/claim delivery\". Unlike the live status blurb, telemetry never "
+                              + "overwrites it and it survives restart/clear. Change it later with `set-note`."),
                           "title": strProp("Card title — the board's name for this card. Pass it whenever "
                               + "you delegate: a seed is NEVER used as a name, so an unnamed card falls back "
                               + "to its branch (worktree), its read-only target (👁), its prompt, or its "
@@ -98,6 +101,17 @@ public enum CommandCatalog {
                       params: schema(["ref": refProp(),
                                       "title": strProp("New card title (trimmed; 120 chars max)")],
                                      required: ["ref", "title"]),
+                      kind: .mutation, phaseGate: gNonArchived),
+
+        CommandSchema(name: "set-note",
+                      summary: "Set (or clear) a card's durable note — the one-liner about what this card "
+                          + "IS, e.g. its wave/layer in a larger plan. Distinct from the live status blurb, "
+                          + "which telemetry overwrites every tick: a note is authored, and survives "
+                          + "restart/clear. Keep yours current as the shape of the work changes. Send an "
+                          + "empty `note` to clear it.",
+                      params: schema(["ref": refProp(),
+                                      "note": strProp("New note (trimmed; 120 chars max). Empty clears it.")],
+                                     required: ["ref", "note"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
@@ -345,13 +359,29 @@ public enum CommandCatalog {
                       kind: .query, phaseGate: gAll),
 
         CommandSchema(name: "batch-spawn", summary: "Spawn many agents at once (one per entry).",
+                      // The item schema is DECLARED, not just described in prose: a bare `type: array` makes a
+                      // typed MCP client expose `tasks` as an array of STRINGS, so a caller cannot express the
+                      // per-item fields at all (and each string then fails the handler's `item.uuid`/
+                      // `item.string`). The handler's required set is mirrored here.
                       params: schema(["tasks": .object([
                           "type": .string("array"),
-                          "description": .string("Array of spawn params {prompt, repo, branch, title?, model?, "
-                              + "col?, base?, id?}. Per-item `title` names that card — pass it, since a fan-out "
-                              + "of unnamed cards is named off its shared branch. "
-                              + "Per-item `id` is a client-minted UUID for idempotent retry — reuse "
-                              + "the same per-item ids when re-issuing a batch; omit to have them minted."),
+                          "description": .string("One spawn per entry. Per-item `title` names that card — pass "
+                              + "it, since a fan-out of unnamed cards is all named off its shared branch."),
+                          "items": schema([
+                              "prompt": strProp("Initial prompt — what this agent should start working on"),
+                              "repo": strProp("Repository root (allowlisted)"),
+                              "branch": strProp("Working branch for this card"),
+                              "title": strProp("Card title — the board's name for this card (pinned; a seed is "
+                                  + "never used as a name). Omit to derive one from the branch."),
+                              "note": strProp("A durable one-liner about what this card IS; telemetry never "
+                                  + "overwrites it."),
+                              "model": strProp("Model id (from the adapter's list)"),
+                              "col": colProp(startInOnly: true),
+                              "seed": strProp("Fork/fan-out context this card opens on, folded ahead of `prompt`."),
+                              "base": strProp("Parent branch to create this card's branch ON TOP OF."),
+                              "id": strProp("Client-minted UUID for idempotent retry — reuse the same per-item "
+                                  + "ids when re-issuing a batch; omit to have them minted."),
+                          ], required: ["prompt", "repo", "branch"]),
                       ])], required: ["tasks"]),
                       kind: .convergence, phaseGate: gAll),
 

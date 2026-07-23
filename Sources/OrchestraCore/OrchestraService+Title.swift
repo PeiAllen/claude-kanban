@@ -1,9 +1,11 @@
 import Foundation
 import OrchestraKit
 
-/// Card naming: the daemon half of `CardNaming`. The card title is the SSOT — derived from the card's own
-/// identity at spawn, pinned by any explicit source, and pushed to the agent session as `--name` at every
-/// (re)launch. See `CardNaming` for the rules themselves and `docs/09-design-decisions.md` for the why.
+/// The card's AUTHORED metadata — the two fields a human or an agent sets deliberately, as opposed to the
+/// telemetry the report pipeline pushes. `title` is the naming SSOT (derived from the card's own identity at
+/// spawn, pinned by any explicit source, pushed to the session as `--name` at every relaunch); `note` is a
+/// durable one-liner about what the card IS. Both are invisible to `report()`. See `CardNaming` for the
+/// naming rules and `docs/09-design-decisions.md` for the why.
 extension OrchestraService {
 
     /// The `.worktree` card that owns `cwd` — the daemon-side twin of `BoardStore.attachedTarget`'s
@@ -38,6 +40,21 @@ extension OrchestraService {
         }) else { throw OrchestraError.unknownTask(t.id.uuidString) }
         emit(.taskUpserted(saved), rev: rev)
         emitActivity(.command, saved, source, "renamed → “\(clean)”")
+        return saved
+    }
+
+    /// Set (or clear) the card's durable note — the one-liner about what this card IS, which outlives every
+    /// turn because the report pipeline never touches it. An empty/whitespace `note` CLEARS it back to nil,
+    /// which is the only way to remove one; that is why this verb does not reject an empty string the way
+    /// `set-title` does (a card must always have a name, but need not have a note).
+    @discardableResult
+    public func setNote(ref: String, note: String, source: ActivitySource = .daemon) async throws -> Task {
+        let t = try await resolveRef(ref)
+        let clean = CardNaming.normalize(note)
+        guard let (saved, rev) = try? await store.update(t.id, { $0.note = clean.isEmpty ? nil : clean })
+        else { throw OrchestraError.unknownTask(t.id.uuidString) }
+        emit(.taskUpserted(saved), rev: rev)
+        emitActivity(.command, saved, source, clean.isEmpty ? "cleared its note" : "note → “\(clean)”")
         return saved
     }
 }

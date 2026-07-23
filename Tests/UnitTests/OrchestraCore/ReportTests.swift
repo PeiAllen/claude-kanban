@@ -254,18 +254,53 @@ struct ReportTests {
         #expect(after.title == "Reviewer A")
     }
 
-    /// A prompt hook from a SUPERSEDED session must not clear the flag on the incoming generation: the
-    /// RelaunchStepper reads it to decide a card with no transcript may still blank-launch, so clearing
-    /// it strands the card `.resumeFailed`.
-    @Test("a stale-epoch prompt does not clear awaitingFirstPrompt")
+    /// A prompt hook from the session a `restart` is REPLACING must not touch the incoming generation. It
+    /// arrives while the card is `.relaunching` — the outgoing agent is still alive and still reporting —
+    /// and it can do two kinds of damage: clearing `awaitingFirstPrompt` leaves the RelaunchStepper with
+    /// neither a transcript nor permission to blank-launch (`.resumeFailed`), and landing the card `.live`
+    /// drops the relaunch entirely, because no stepper visits a `.live` card and the old session keeps
+    /// running. Fenced on being-born + epoch, the same predicate the snapshot half uses.
+    @Test("a stale-epoch prompt cannot strand or hijack a card mid-restart")
     func staleEpochPromptCannotStrandTheRelaunch() async throws {
         let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
-        let epoch = try #require(await env.svc.list().first { $0.id == t.id }).sessionEpoch
+        let relaunching = try await env.svc.restart(t.id)      // intent-only: bumps the epoch, → .relaunching
+        #expect(relaunching.phase.kind == .relaunching)
+        #expect(relaunching.awaitingFirstPrompt == true)
+
         try await env.svc.report(t.id, StatusReport(promptText: "from the dying session"),
-                                 observedEpoch: epoch - 1)
+                                 observedEpoch: relaunching.sessionEpoch - 1)
+
         let after = try #require(await env.svc.list().first { $0.id == t.id })
-        #expect(after.awaitingFirstPrompt == true)   // still eligible for the blank relaunch
+        #expect(after.awaitingFirstPrompt == true)     // still eligible for the blank relaunch
+        #expect(after.phase.kind == .relaunching)      // …and the relaunch was not dropped
+    }
+
+    /// An UNSTAMPED prompt (a pre-epoch session, whose hooks send no epoch at all) is fenced the same way
+    /// while a card is being born — the documented migration behavior, and the fail-safe direction.
+    @Test("a nil-epoch prompt cannot hijack a card mid-restart either")
+    func nilEpochPromptIsFencedWhileBeingBorn() async throws {
+        let (env, t) = try await spawned()
+        let relaunching = try await env.svc.restart(t.id)
+        try await env.svc.report(t.id, StatusReport(promptText: "from a pre-upgrade session"),
+                                 observedEpoch: nil)
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.awaitingFirstPrompt == true)
+        #expect(after.phase.kind == .relaunching)
+        #expect(relaunching.sessionEpoch == after.sessionEpoch)
+    }
+
+    /// …while an ordinary prompt to a card that is NOT being born is unaffected by the fence, epoch or no
+    /// epoch. Narrowing that would break every normal turn.
+    @Test("a live card's prompt still lands, with no epoch")
+    func livePromptIsNotFenced() async throws {
+        let (env, t) = try await spawned()
+        _ = try await env.svc.store.update(t.id) { $0.titleSource = .prompt }
+        try await env.svc.report(t.id, StatusReport(sessionSource: "clear"))
+        try await env.svc.report(t.id, StatusReport(promptText: "a normal turn"), observedEpoch: nil)
+        let after = try #require(await env.svc.list().first { $0.id == t.id })
+        #expect(after.awaitingFirstPrompt == false)
+        #expect(after.title == "a normal turn")
+        #expect(after.phaseDisplay == .running)
     }
 
     @Test("no-delta report = no persist, no event (idempotent)")

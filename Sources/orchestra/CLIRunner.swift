@@ -59,6 +59,7 @@ enum CLIRunner {
                 }
                 let p = JSONValue.object(fields
                     .merging(optional("title", flags.value("title"))) { a, _ in a }
+                    .merging(optional("note", flags.value("note"))) { a, _ in a }
                     .merging(optional("model", flags.value("model"))) { a, _ in a }
                     .merging(optional("col", flags.value("col"))) { a, _ in a }
                     .merging(optional("seed", flags.value("seed"))) { a, _ in a }
@@ -142,6 +143,15 @@ enum CLIRunner {
                 let task = try await client.call("set-title",
                                                  .object(["ref": .string(ref), "title": .string(title)]))
                 printRef(task)
+
+            case "set-note":
+                // An EMPTY note is meaningful here — it is how a note is cleared — so unlike `set-title`
+                // this accepts one rather than erroring.
+                let noteRef = flags.positional(0) ?? flags.require("ref")
+                let note = flags.value("note") ?? flags.positionalsFrom(1).joined(separator: " ")
+                let noted = try await client.call("set-note",
+                                                  .object(["ref": .string(noteRef), "note": .string(note)]))
+                printRef(noted)
 
             case "set-parent":
                 let ref = flags.positional(0) ?? flags.require("ref")

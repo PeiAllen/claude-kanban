@@ -185,8 +185,9 @@ struct CardView: View {
     // MARK: - Description
 
     @ViewBuilder private var description: some View {
-        if !task.desc.isEmpty {
-            Text(task.desc)
+        // `note ?? desc` — the authored line wins over the volatile status blurb (Task.cardLine).
+        if !task.cardLine.isEmpty {
+            Text(task.cardLine)
                 .font(F.ui(11.5))
                 .foregroundStyle(isWaiting ? theme.amber.text : theme.text2)
                 .lineLimit(2)
