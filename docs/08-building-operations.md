@@ -229,12 +229,22 @@ No profiles for 'com.orchestra.ios' were found
 keychain-backed session, so it reports the absence as "no account" — which reliably invites the wrong
 diagnosis. Read it as *"there is no profile on disk yet"*, not *"you are signed out"*.
 
-So the free-tier cycle has two speeds, and only the first needs a human:
+So the free-tier cycle is three steps, repeated roughly weekly, and only the middle one is automatable:
 
-1. **Once per profile — ⌘R from the Xcode GUI.** This mints the 7-day development certificate and
-   profile. It is the only step that cannot be scripted.
-2. **Thereafter — `scripts/build-ios-device.sh --install`**, unattended, until the profile expires
-   ~7 days later. Then ⌘R once more. (A paid membership stretches this to a year.)
+1. **⌘R from the Xcode GUI.** Mints the 7-day development certificate and profile. The CLI cannot.
+2. **`scripts/build-ios-device.sh --install`**, unattended and wireless, for that profile's lifetime.
+3. **Trust the developer on the phone** — Settings ▸ General ▸ **VPN & Device Management** ▸ the Apple
+   ID ▸ **Trust**. Manual, on the device, and required **every cycle**.
+
+Step 3 is an expected manual step, **not a failure**. iOS's "Untrusted Developer" gate is per signing
+identity and sits downstream of compile, sign, and install — so a run that ends by asking you to trust
+the team has succeeded, and there is nothing to debug. Each fresh 7-day profile is a new signing
+identity, so it recurs; it is not one-time setup. (A paid membership stretches the cycle to a year.)
+
+Note that `devicectl device process launch` starts the app through the developer-disk-image debug
+path, which the trust gate does not cover: it succeeds even while the developer is untrusted. A
+scripted launch therefore smoke-tests the build but does **not** prove the app opens from the home
+screen — only step 3 does that.
 
 ### Picking the device
 

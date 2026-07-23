@@ -41,6 +41,11 @@
 #    existing profile. So the free-tier cycle is: ⌘R once from the Xcode GUI to mint the 7-day
 #    profile, after which this scripted lane works unattended until it expires. See
 #    App-iOS/DEPLOY-TO-DEVICE.md and docs/08-building-operations.md (§Building the iOS app for a real device).
+#
+# 3. ENDING AT "trust the developer on the phone" IS SUCCESS, NOT FAILURE. iOS's Untrusted Developer
+#    gate is a per-signing-identity consent step downstream of compile/sign/install, so reaching it
+#    means everything this script does worked. It is manual, it is on the device, and because each
+#    fresh 7-day profile is a new signing identity it recurs EVERY cycle — it is not first-install-only.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
@@ -139,8 +144,17 @@ if [[ "$INSTALL" == 1 ]]; then
   # reads like a pairing fault — say so up front rather than leaving that to be rediscovered.
   xcrun devicectl device install app --device "$DEVICE" "$APP" \
     || { echo "hint: is the iPhone unlocked? a locked phone fails the developer-disk-image mount (CoreDeviceError 12040)." >&2; exit 1; }
-  echo "installed. Launch it from the home screen, or:"
+  # The trust gate below is per SIGNING IDENTITY, not per app, so it recurs with every fresh 7-day
+  # profile — not just the first install. It sits downstream of compile/sign/install, so reaching it
+  # means this script SUCCEEDED; say so plainly rather than leaving it to read as a failure.
+  echo "installed."
+  echo "NEXT (manual, and needed again after every new 7-day profile — this is not an error):"
+  echo "  on the iPhone, Settings ▸ General ▸ VPN & Device Management ▸ your Apple ID ▸ Trust,"
+  echo "  then tap the app icon. Until you do, iOS shows \"Untrusted Developer\" and refuses to launch."
+  # Deliberately not offered as a substitute for the above: devicectl launches via the developer disk
+  # image, a debug path the trust gate does not cover, so it works even while the developer is
+  # untrusted — a successful launch here does NOT prove the home-screen icon works.
+  echo "To smoke-test the build without the phone (works even while untrusted, so it proves less):"
   echo "  xcrun devicectl device process launch --device $DEVICE --terminate-existing $BUNDLE_ID"
-  echo "First install only: trust the developer profile on the iPhone in Settings ▸ General ▸ VPN & Device Management."
 fi
 echo "DONE"

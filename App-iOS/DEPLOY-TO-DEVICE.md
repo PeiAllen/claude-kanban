@@ -39,10 +39,17 @@ stays in the drawer.
 ## A. Build & install
 
 Signing on a free team has one hard constraint that shapes this whole section: **`xcodebuild` cannot
-create a provisioning profile from a shell — only use one that already exists.** So you mint the
-profile from the Xcode GUI once, and script every install after that.
+create a provisioning profile from a shell — only use one that already exists.** That, plus the 7-day
+life of a free-team certificate, makes this a **three-step cycle you repeat roughly weekly**:
 
-### A1. Mint the profile — ⌘R from Xcode (once per 7 days)
+1. **⌘R once from the Xcode GUI** (A1) — mints the 7-day profile. The CLI cannot do this.
+2. **Scripted wireless build + install** (A2) — good for that profile's whole lifetime, no cable.
+3. **Trust the developer on the phone** (A3) — manual, on the phone, and needed **every cycle**.
+
+Only step 2 is automatable; steps 1 and 3 are the price of the free tier. A paid membership stretches
+the cycle from a week to a year.
+
+### A1. Mint the profile — ⌘R from Xcode (once per cycle)
 
 ```sh
 cd <repo>
@@ -61,9 +68,8 @@ In Xcode:
      signing should resolve with no manual capability edits.
 4. **Run:** ⌘R. Xcode creates the development certificate + provisioning profile on the fly and
    installs to the phone.
-5. **Trust the developer on the phone** (first install only): the app installs but iOS blocks launch
-   until you approve it — iPhone ▸ Settings ▸ General ▸ **VPN & Device Management** ▸ your Apple ID ▸
-   **Trust**. Then tap the app icon (or ⌘R again).
+
+The app is now on the phone, but iOS will refuse to launch it until you do **A3**.
 
 ### A2. Every install after that — the scripted lane
 
@@ -89,11 +95,28 @@ To launch it without touching the phone:
 xcrun devicectl device process launch --device <identifier> --terminate-existing com.orchestra.ios
 ```
 
-### The 7-day expiry (free team)
+> **A scripted launch does not prove the install is usable.** `devicectl` starts the app through the
+> developer-disk-image debug path, which is not subject to the Untrusted Developer gate — so it
+> succeeds even while the developer is still untrusted. Use it to smoke-test a build; only tapping
+> the home-screen icon after **A3** proves the app opens the way you'll actually open it.
 
-Free-team certificates expire ~7 days after signing, and the app stops launching. The scripted lane
-can't renew them — **⌘R once from Xcode (A1) mints a fresh profile**, and `--install` works
-unattended again for another week. A paid membership raises this to a year.
+### A3. Trust the developer on the phone (every cycle)
+
+On the iPhone: Settings ▸ General ▸ **VPN & Device Management** ▸ your Apple ID ▸ **Trust**.
+
+Until you do, tapping the icon shows **"Untrusted Developer"** and iOS refuses to launch the app.
+
+**This is an expected manual step, not an error.** It's a per-signing-identity consent gate that sits
+*downstream* of compile, sign, and install, so a build or install run that ends by telling you to
+trust the team has **succeeded** — there is nothing to debug. And because every new 7-day profile is
+a new signing identity, the prompt returns each cycle; it isn't one-time setup.
+
+### When the week is up
+
+Free-team certificates expire ~7 days after signing and the app stops launching. Nothing renews them
+in place — just run the cycle again: ⌘R from Xcode (A1), `--install` (A2), Trust on the phone (A3).
+A paid membership raises the 7 days to a year. Either way there is no TestFlight or App Store
+distribution on a personal team.
 
 ### "No Accounts: Add a new account in Accounts settings"
 
