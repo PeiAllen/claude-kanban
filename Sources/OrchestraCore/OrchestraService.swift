@@ -907,8 +907,16 @@ public actor OrchestraService {
     /// "no `await` between helper-return and reset" only covered the reset gap, NOT the TaskStore hop
     /// inside `clearStuckIfSet` where the flag actually flips.)
     func reArmIfStuck(_ cardId: UUID) async {
+        // The fence must ENGAGE even when this is the daemon's first touch of the card: `stuck` is a
+        // persisted field, so a human inbox edit can land in the post-restart window before the first
+        // reconcile tick has ensured the entry — an update-if-present increment would silently no-op
+        // and leave the clear→reset window unprotected (the payloadForStop class of migration bug).
+        if let card = await store.get(cardId) { ensureRuntime(for: card) }
         runtime[cardId]?.reArming += 1
-        defer { runtime[cardId]?.reArming -= 1 }   // update-if-present: a mid-op detach lifts the fence, and post-archive flips are phase-gated
+        // Guarded decrement: a mid-op detach lifts the fence (post-archive flips are phase-gated), and
+        // the guard keeps a detach→re-ensure interleaving from driving the count negative — a poisoned
+        // fence would stay disengaged for the NEXT re-arm.
+        defer { if let n = runtime[cardId]?.reArming, n > 0 { runtime[cardId]?.reArming = n - 1 } }
         guard await clearStuckIfSet(cardId) else { return }
         await reArmPause?()   // test seam: land a concurrent flip in the flag-cleared, budget-not-yet-reset window
         runtime[cardId]?.deliveryAttempt = nil
