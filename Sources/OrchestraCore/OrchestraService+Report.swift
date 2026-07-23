@@ -198,7 +198,9 @@ extension OrchestraService {
                 if let name = snap.sessionName, !name.isEmpty, name != task.lastSessionName,
                    observedEpoch == task.sessionEpoch {
                     if task.lastSessionName != nil, name != task.title {
-                        task.title = name
+                        // Normalized like every other write to `title`: this value is a session name we did
+                        // not author, it PINS as `.explicit`, and it becomes the next launch's `--name` argv.
+                        task.title = CardNaming.normalize(name)
                         task.titleSource = .explicit   // a human's in-session rename PINS, exactly like set-title
                     }
                     task.lastSessionName = name
@@ -252,7 +254,9 @@ extension OrchestraService {
         if task != before {
             // Telemetry-origin: bump rev + memory + emit SYNCHRONOUSLY, but COALESCE the tasks.json write
             // (bug #13). The phase write via `transition()` below stays IMMEDIATE and force-flushes this.
-            let (saved, rev) = try await store.update(id, debounceFlush: true) { $0.applyReportFields(from: task) }
+            let (saved, rev) = try await store.update(id, debounceFlush: true) {
+                $0.applyReportFields(from: task, changedFrom: before)
+            }
             emit(.taskUpserted(saved), rev: rev)
             didChange = true
         }

@@ -133,6 +133,75 @@ struct SetTitleTests {
         #expect(t.lastSessionName == "feat-g")
     }
 
+    /// …and it arms it BEFORE `ensure`, which is the whole point: `ensure` returns the moment the session
+    /// exists, so a baseline written after it could lose the race to that session's first statusline.
+    /// Asserting the final value can't see the difference — park inside `ensure` and read the store there.
+    @Test("the baseline is armed BEFORE the session is created, not after")
+    func baselineIsArmedBeforeEnsure() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let gate = SyncGate()
+        env.sessions.ensureGate = gate
+
+        let id = UUID()
+        _ = try await env.svc.spawn(SpawnInput(id: id, prompt: "x", repo: repo, branch: "feat-h"))
+        // Drive the reconciler off to the side: its LaunchStepper parks inside the off-actor `ensure`, so
+        // the tick that gets there never returns until we release — the actor itself stays free to serve
+        // the `store.get` below, which is exactly the observation we need.
+        let driver = _Concurrency.Task { while !_Concurrency.Task.isCancelled { await env.svc.reconcile() } }
+        defer { driver.cancel() }
+        await gate.reached()                       // provably parked INSIDE the off-actor ensure
+        env.sessions.ensureGate = nil
+        // The session now exists as far as tmux is concerned; the baseline must ALREADY be on the card.
+        let mid = try #require(await env.svc.store.get(id))
+        #expect(mid.lastSessionName == "feat-h")
+        gate.release()
+    }
+
+    /// The daemon-side attached-target resolver exists BECAUSE `createdAt` is not a total order (task dates
+    /// serialize at second resolution), so co-located worktree cards need a deterministic winner.
+    @Test("the 👁 target is the oldest co-located worktree card, deterministically")
+    func attachedTargetPicksTheOldestSibling() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let first = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "a", repo: repo, branch: "feat/shared"))
+        // A co-located sibling on the SAME branch/cwd — permitted, and same-second `createdAt`.
+        let second = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "b", repo: repo, branch: "feat/shared"))
+        #expect(second.cwd == first.cwd)
+        _ = try await env.svc.setTitle(ref: first.shortId, title: "The First One")
+        _ = try await env.svc.setTitle(ref: second.shortId, title: "The Second One")
+
+        let reviewer = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "review", cwd: first.cwd, access: .readOnly))
+        // (createdAt, id) ordering — the same total order BoardStore.attachedTarget uses.
+        let expected = [first, second]
+            .min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+        #expect(reviewer.title == "👁 \(expected?.id == first.id ? "The First One" : "The Second One")")
+    }
+
+    /// The whole reason `applyReportFields` is a delta and not a blanket copy: `set-title` is a second
+    /// writer of `title`, and report() reads the card, suspends, then writes back.
+    @Test("a rename landing inside report()'s window is not reverted by it")
+    func setTitleSurvivesAConcurrentReport() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "feat-i"))
+        // A report that changes only `desc` — it carries the STALE title in its snapshot.
+        let epoch = try #require(await env.svc.store.get(t.id)).sessionEpoch
+        async let reporting: Void = try env.svc.report(t.id, StatusReport(desc: "working"),
+                                                       observedEpoch: epoch)
+        _ = try await env.svc.setTitle(ref: t.shortId, title: "Reviewer A")
+        try await reporting
+
+        let after = try #require(await env.svc.store.get(t.id))
+        #expect(after.title == "Reviewer A")        // report must not restore the name it happened to read
+        #expect(after.titleSource == .explicit)
+        #expect(after.desc == "working")            // …while what report DID change still lands
+    }
+
     private func nameFlag(_ argv: [String]?) -> String? {
         guard let argv, let i = argv.firstIndex(of: "--name"), i + 1 < argv.count else { return nil }
         return argv[i + 1]

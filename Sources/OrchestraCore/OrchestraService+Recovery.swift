@@ -439,8 +439,23 @@ extension OrchestraService {
             // retried session's first report reads as a rename. Every other field is deliberately reused —
             // the retry is the SAME launch, into the same session id and cwd.
             var ctx = spec.ctx
-            ctx.name = t.title
-            if !t.title.isEmpty { _ = try? await store.update(id) { $0.lastSessionName = t.title } }
+            ctx.name = live.title          // the freshly re-read card, not the reconcile-tick snapshot `t`
+            // Arm the session-name mirror with what this retry is about to push, for the same reason
+            // `bringUp` pre-arms: a `set-title` landing between the `ensure` below and the retried
+            // session's first statusline would otherwise see the pushed name differ from both the
+            // baseline and the new title, read as a rename, and clobber it.
+            if !live.title.isEmpty { _ = try? await store.update(id) { $0.lastSessionName = live.title } }
+            // …and that store hop is a SUSPENSION POINT inside the window the race guard above was written
+            // to cover (this function is deliberately built around having exactly one). Re-assert the guard
+            // so the destructive kill+ensure below still runs on a card that is ours: a restart landing in
+            // the new window would otherwise be overwritten by a retry re-`ensure`ing the OLD argv (old
+            // `--session-id`) under a generation that no longer exists.
+            guard spawnPending[id] != nil, let stillOurs = await store.get(id),
+                  !stillOurs.archived, !stillOurs.phase.isTerminal,
+                  stillOurs.sessionEpoch == live.sessionEpoch else {
+                clearSpawnPending(id)
+                return
+            }
             try? adapter.prepareToLaunch(ctx)
             // Stamp the card's generation, exactly as `finishLaunch` does. An UNSTAMPED retry session is a
             // session the epoch machinery cannot see: `stampedEpoch` reads nil for it, so adopt and

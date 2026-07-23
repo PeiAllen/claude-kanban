@@ -745,26 +745,33 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// NOTE: `phase`/`deadReason`/`deadDetail` are deliberately NOT overlaid here — the `transition()`
     /// funnel is the sole writer of those (Stage 2 convergence); `report()` routes the phase change
     /// through it separately, so a whole-object overlay must never clobber a concurrent funnel write.
-    public mutating func applyReportFields(from s: Task) {
+    /// `s` is report()'s MUTATED copy and `before` is the snapshot it started from, so `s.x != before.x`
+    /// is exactly "report changed x". Applying only those keeps a field a CONCURRENT writer touched during
+    /// report()'s window — it reads the card, suspends, then writes back — instead of restoring the stale
+    /// value report happened to read. That matters as soon as a field has a second writer: `set-title`
+    /// (and a `restart` re-arming `awaitingFirstPrompt`) can land between report's `store.get` and its
+    /// `store.update`, and a blanket copy would silently revert the rename with no error and no self-heal
+    /// — `lastSessionName` would be reverted in lockstep, so the next statusline would match the restored
+    /// baseline and the mirror would stay inert. Same hazard `pendingModel` avoids by staying out of this
+    /// overlay entirely; these fields can't leave, because report genuinely owns them too.
+    public mutating func applyReportFields(from s: Task, changedFrom before: Task) {
+        func apply<V: Equatable>(_ key: WritableKeyPath<Task, V>) {
+            if s[keyPath: key] != before[keyPath: key] { self[keyPath: key] = s[keyPath: key] }
+        }
         let sessionIdChanged = agentSessionId != s.agentSessionId
-        agentSessionId = s.agentSessionId
-        priorSessionIds = s.priorSessionIds
+        apply(\.agentSessionId)
+        apply(\.priorSessionIds)
         // The cutoff belongs to lifecycle transitions, not ordinary telemetry. A report clears it only
         // when it actually binds or rolls the session id; otherwise a stale telemetry snapshot could erase
         // a cutoff a concurrent relaunch just recorded.
         if sessionIdChanged, agentSessionId != nil { sessionDiscoverySince = nil }
-        desc = s.desc
-        awaitingFirstPrompt = s.awaitingFirstPrompt
-        title = s.title
-        // The naming fields report() mutates travel TOGETHER with `title` or not at all. This overlay is a
-        // WHITELIST, not a whole-object copy: a field absent here is silently discarded on the way to disk.
-        // Omitting `titleSource` would drop the `.explicit` pin a mirrored `/rename` just set (so the next
-        // prompt would re-title over the human's name), and omitting `lastSessionName` would reload a stale
-        // baseline on every report — freezing the mirror's delta in its never-adopt arm forever.
-        titleSource = s.titleSource
-        lastSessionName = s.lastSessionName
-        ctxPct = s.ctxPct
-        model = s.model
+        apply(\.desc)
+        apply(\.awaitingFirstPrompt)
+        apply(\.title)
+        apply(\.titleSource)       // the `.explicit` pin a mirrored /rename sets
+        apply(\.lastSessionName)   // the mirror's delta baseline
+        apply(\.ctxPct)
+        apply(\.model)
     }
 
     // MARK: - Derived phase views (non-wire; computed from `phase` on demand)

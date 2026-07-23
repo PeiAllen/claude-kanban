@@ -351,14 +351,36 @@ struct ReportTests {
         var current = sample()
         current.column = .impl             // concurrent write to a field report does NOT own
         current.ctxPct = 0
-        var snapshot = current
-        snapshot.column = .plan            // report's stale view of the unowned field
+        var before = current               // what report READ before it suspended
+        before.column = .plan              // report's stale view of the unowned field
+        var snapshot = before
         snapshot.ctxPct = 42               // report's owned field, freshly computed
 
-        current.applyReportFields(from: snapshot)
+        current.applyReportFields(from: snapshot, changedFrom: before)
 
         #expect(current.ctxPct == 42)      // owned field applied
         #expect(current.column == .impl)   // unowned field PRESERVED — not clobbered
+    }
+
+    /// The delta half: an owned field report did NOT change must also survive, because `set-title` is a
+    /// second writer of exactly those fields and lands inside report()'s read→write window.
+    @Test("applyReportFields leaves an owned field report didn't change to a concurrent writer")
+    func test_reportPreservesAConcurrentRename() throws {
+        var current = sample()
+        current.title = "Reviewer A"        // a `set-title` that landed while report was suspended
+        current.titleSource = .explicit
+        var before = current
+        before.title = "feat"               // report's stale read
+        before.titleSource = .branch
+        before.lastSessionName = "feat"
+        var snapshot = before
+        snapshot.desc = "working"           // the ONLY field this report actually changed
+
+        current.applyReportFields(from: snapshot, changedFrom: before)
+
+        #expect(current.title == "Reviewer A")        // the rename survives
+        #expect(current.titleSource == .explicit)
+        #expect(current.desc == "working")            // …and report's own change still lands
     }
 
     @Test("a status-only report preserves a concurrent launch cutoff, while session binding clears it")
@@ -368,16 +390,18 @@ struct ReportTests {
         current.sessionDiscoverySince = cutoff
 
         // This snapshot began before a relaunch recorded the cutoff, so ordinary telemetry must not erase it.
-        var statusOnly = current
-        statusOnly.sessionDiscoverySince = nil
+        var before = current
+        before.sessionDiscoverySince = nil          // report's read predates the cutoff
+        var statusOnly = before
         statusOnly.desc = "Running"
-        current.applyReportFields(from: statusOnly)
+        current.applyReportFields(from: statusOnly, changedFrom: before)
         #expect(current.sessionDiscoverySince == cutoff)
 
+        let beforeBind = current
         var binding = current
         binding.agentSessionId = "fresh-session"
         binding.sessionDiscoverySince = nil
-        current.applyReportFields(from: binding)
+        current.applyReportFields(from: binding, changedFrom: beforeBind)
         #expect(current.agentSessionId == "fresh-session")
         #expect(current.sessionDiscoverySince == nil)
     }

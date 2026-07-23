@@ -43,6 +43,20 @@ struct SessionBriefTests {
         }
     }
 
+    /// The brief is re-injected at EVERY SessionStart, so nudging a card whose name was deliberately chosen
+    /// would repeatedly invite the agent to overwrite its parent's (or the human's) choice.
+    @Test("a pinned title suppresses the nudge, in every variant")
+    func pinnedTitleSuppressesTheNudge() {
+        for origin in [CardOrigin.worktree, .borrowed, .scratch] {
+            let s = SessionBrief.sentence(column: .impl, access: .readWrite, shortId: "abc123",
+                                          origin: origin, titlePinned: true)
+            #expect(!s.contains("set-title"), "the rename nudge survived a pinned title for \(origin)")
+            #expect(!s.contains("name it for the work"))
+            // The rest of the orientation is untouched.
+            #expect(s.contains("abc123"))
+        }
+    }
+
     // MARK: freeform (non-worktree) cards — no lifecycle column, no self-move hint
 
     @Test("freeform cards get no column framing and no move hint")

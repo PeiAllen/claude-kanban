@@ -22,9 +22,10 @@ public enum CardNaming {
     /// a heading, while this holds a name a human or an agent deliberately chose.
     public static let maxTitleChars = 120
 
-    /// The ONE bound on an explicit title, shared by `spawn(title:)` and `set-title` so neither path can
-    /// bypass it — the value ends up in Claude's `--name` argv, so an unbounded title is a tmux argv
-    /// problem, not just an ugly card.
+    /// The ONE bound on a card title — every write goes through it, not just the explicit ones. The value
+    /// ends up in Claude's `--name` argv, so an unbounded title is a tmux argv problem rather than merely
+    /// an ugly card, and the derived arms can exceed the cap on their own: a branch name is arbitrary, and
+    /// `"👁 <target>"` is longer than its target by construction.
     public static func normalize(_ raw: String) -> String {
         String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxTitleChars))
     }
@@ -44,16 +45,16 @@ public enum CardNaming {
     public static func derived(origin: CardOrigin, branch: String, cwd: String, access: CardAccess,
                                attachedTargetTitle: String?,
                                prompt: String) -> (title: String, source: TitleSource) {
-        if origin == .worktree, !branch.isEmpty { return (branch, .branch) }
+        if origin == .worktree, !branch.isEmpty { return (normalize(branch), .branch) }
         // Origin-gated, not merely order-gated: `SpawnInput` permits a `branch` alongside `cwd`/`scratch`,
         // and only a worktree may be named by one.
         if origin != .worktree, access == .readOnly, let target = attachedTargetTitle, !target.isEmpty {
-            return ("\(attachedGlyph) \(target)", .attached)
+            return (normalize("\(attachedGlyph) \(target)"), .attached)
         }
         let typed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !typed.isEmpty { return (titleSeed(from: typed), .prompt) }
+        if !typed.isEmpty { return (titleSeed(from: typed), .prompt) }   // already ≤60
         if origin == .scratch { return ("Scratch", .prompt) }   // its dir is a bare UUID — no signal in it
-        let dir = (cwd as NSString).lastPathComponent
+        let dir = normalize((cwd as NSString).lastPathComponent)
         return (dir.isEmpty ? "New agent" : dir, .prompt)
     }
 }
