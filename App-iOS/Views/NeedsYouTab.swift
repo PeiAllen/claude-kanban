@@ -197,8 +197,13 @@ private struct AttentionRow: View {
                         .foregroundStyle(task.ctxPct >= NeedsYouQueue.contextNearFullThreshold ? sem.text : theme.text3)
                 }
             }
-            if !task.cardLine.isEmpty {
-                Text(task.cardLine)
+            // Precedence FLIPS here, deliberately. Everywhere else the authored note wins because
+            // `desc` is blank between turns — but a Needs-You row is by construction mid-turn and
+            // blocked, and `desc` is the agent's own "may I run this?" text. Showing the note there
+            // would hide the very question the human opened this tab to answer.
+            let line = task.desc.isEmpty ? (task.note ?? "") : task.desc
+            if !line.isEmpty {
+                Text(line)
                     .font(.subheadline).foregroundStyle(theme.text2)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }

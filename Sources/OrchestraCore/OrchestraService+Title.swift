@@ -50,7 +50,7 @@ extension OrchestraService {
     @discardableResult
     public func setNote(ref: String, note: String, source: ActivitySource = .daemon) async throws -> Task {
         let t = try await resolveRef(ref)
-        let clean = CardNaming.normalize(note)
+        let clean = CardNaming.normalizeNote(note)
         guard let (saved, rev) = try? await store.update(t.id, { $0.note = clean.isEmpty ? nil : clean })
         else { throw OrchestraError.unknownTask(t.id.uuidString) }
         emit(.taskUpserted(saved), rev: rev)

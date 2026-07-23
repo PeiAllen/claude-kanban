@@ -615,7 +615,7 @@ public actor OrchestraService {
         let task = Task(
             id: id,
             title: title, titleSource: titleSource, awaitingFirstPrompt: awaitingFirstPrompt, desc: "",
-            note: input.note.map(CardNaming.normalize).flatMap { $0.isEmpty ? nil : $0 },
+            note: input.note.map(CardNaming.normalizeNote).flatMap { $0.isEmpty ? nil : $0 },
             repo: realRepo, branch: input.branch, cwd: cwd,
             origin: origin, access: input.access,
             agentId: adapter.id, model: model, startIn: startIn,

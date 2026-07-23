@@ -43,6 +43,16 @@ extension OrchestraService {
         // session keeps running) or clear `awaitingFirstPrompt` out from under it. Fail-CLOSED, unlike the
         // rest of report(): a report that cannot prove its generation may not move a card that is being born.
         let staleGeneration = beingBorn && observedEpoch != task.sessionEpoch
+        // …and a report that is PROVABLY from another generation — stamped, and stamped with a different
+        // epoch — is stale no matter what phase the card is in. The two terms are separate because they
+        // fence different things and neither subsumes the other: `staleGeneration` alone would admit the
+        // outgoing session's stamped prompt once the relaunch has already landed `.live` (the card is no
+        // longer being born, so it clears `awaitingFirstPrompt` on a generation that was never prompted and
+        // re-titles from the DEAD session's prompt), while this term alone would admit an unstamped report
+        // onto a card mid-restart. An UNSTAMPED report on a live card stays admitted — that is the whole
+        // pre-epoch-session compatibility case.
+        let provablyOtherGeneration = observedEpoch != nil && observedEpoch != task.sessionEpoch
+        let attributable = !staleGeneration && !provablyOtherGeneration
 
         // --- Event-ordered half (never seq-gated) ---
         if let ev = patch.event {
@@ -86,12 +96,23 @@ extension OrchestraService {
             // SessionStart source semantics.
             if let src = ev.sessionSource {
                 switch src {
+                // The PHASE writes below carry the same fence as the prompt path: a SessionStart from the
+                // session a restart is replacing would otherwise land the incoming generation `.live` — no
+                // stepper visits a `.live` card, so the relaunch is dropped and the old session keeps
+                // running. Only the phase writes are fenced: `resolveReadiness` must still fire for an
+                // unstamped resume, and the `desc`/`awaitingFirstPrompt` writes are harmless either way.
+                // Nothing legitimate is blocked — an incoming session's SessionStart is epoch-stamped (and
+                // `bringUpOwnsLanding` anyway), and a genuine `/clear` arrives on a `.live` card.
                 case "clear":
-                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
+                        task.phase = .live(.waiting(.humanTurn))
+                    }
                     task.desc = ""
                     task.awaitingFirstPrompt = true
                 case "resume":
-                    if task.phase.kind != .dead, !bringUpOwnsLanding { task.phase = .live(.waiting(.humanTurn)) }
+                    if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
+                        task.phase = .live(.waiting(.humanTurn))
+                    }
                     task.desc = ""
                     resolveReadiness(id, true, observedEpoch: observedEpoch)   // confirm a pending RELAUNCH's inline readiness wait (epoch-fenced)
                 case "startup":
@@ -114,13 +135,13 @@ extension OrchestraService {
                 // permission to blank-launch, and strand the card `.resumeFailed` — nor land it `.live`,
                 // which drops the relaunch entirely and leaves the old session running. A card that is NOT
                 // being born is unaffected, so an ordinary prompt still re-titles and still lands `.running`.
-                if task.awaitingFirstPrompt, !staleGeneration {
+                if task.awaitingFirstPrompt, attributable {
                     task.awaitingFirstPrompt = false     // lifecycle: this session has now been prompted
                     // Naming: only a card whose title came FROM a prompt may be re-titled by one. A branch,
                     // a 👁 target, or an explicit name all outrank the prompt cutoff that used to win here.
                     if task.titleSource == .prompt { task.title = titleSeed(from: prompt) }
                 }
-                if task.phase.kind != .dead, !bringUpOwnsLanding, !staleGeneration {
+                if task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
                     task.phase = .live(.running)
                 }
             }
@@ -244,7 +265,7 @@ extension OrchestraService {
                 // being-born card; a non-current-generation report never does.
                 // The SAME predicate the event half applies (hoisted to `staleGeneration` above), so the two
                 // halves cannot drift apart on what counts as an attributable report.
-                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, !staleGeneration {
+                if let run = snap.run, task.phase.kind != .dead, !bringUpOwnsLanding, attributable {
                     task.phase = .live(run)
                 }
             }

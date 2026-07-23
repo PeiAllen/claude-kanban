@@ -254,12 +254,13 @@ struct ReportTests {
         #expect(after.title == "Reviewer A")
     }
 
-    /// A prompt hook from the session a `restart` is REPLACING must not touch the incoming generation. It
-    /// arrives while the card is `.relaunching` — the outgoing agent is still alive and still reporting —
-    /// and it can do two kinds of damage: clearing `awaitingFirstPrompt` leaves the RelaunchStepper with
-    /// neither a transcript nor permission to blank-launch (`.resumeFailed`), and landing the card `.live`
-    /// drops the relaunch entirely, because no stepper visits a `.live` card and the old session keeps
-    /// running. Fenced on being-born + epoch, the same predicate the snapshot half uses.
+    /// A prompt hook from the session a `restart` is REPLACING must not touch the incoming generation.
+    ///
+    /// Honest about what this pins: a STAMPED stale epoch was already fenced before this PR, and the
+    /// `.relaunching` assertion holds regardless because `transition()` drops a stamped-stale phase write on
+    /// its own epoch fence. So this case is a guard, not the proof. The two that fail if the fence is
+    /// reverted are `nilEpochPromptIsFencedWhileBeingBorn` (the unstamped hijack) and
+    /// `staleEpochPromptOnALiveCardIsIgnored` (the stamped-stale case once the relaunch has landed).
     @Test("a stale-epoch prompt cannot strand or hijack a card mid-restart")
     func staleEpochPromptCannotStrandTheRelaunch() async throws {
         let (env, t) = try await spawned()
@@ -287,6 +288,26 @@ struct ReportTests {
         #expect(after.awaitingFirstPrompt == true)
         #expect(after.phase.kind == .relaunching)
         #expect(relaunching.sessionEpoch == after.sessionEpoch)
+    }
+
+    /// The window a being-born-only fence would MISS: the relaunch has already landed `.live`, so the card
+    /// is no longer being born — but the session it replaced is still winding down, and its stamped prompt
+    /// hook is still in flight. Admitting it clears `awaitingFirstPrompt` on a generation that was never
+    /// prompted and re-titles the card from a DEAD session's prompt, in the PR whose thesis is title
+    /// integrity. This is why the fence is two terms, not one.
+    @Test("a stamped stale-epoch prompt is ignored even after the card is live")
+    func staleEpochPromptOnALiveCardIsIgnored() async throws {
+        let (env, t) = try await spawned()
+        _ = try await env.svc.store.update(t.id) { $0.titleSource = .prompt; $0.awaitingFirstPrompt = true }
+        let live = try #require(await env.svc.store.get(t.id))
+        #expect(live.phase.kind == .live)          // NOT being born
+
+        try await env.svc.report(t.id, StatusReport(promptText: "from the session it replaced"),
+                                 observedEpoch: live.sessionEpoch - 1)
+
+        let after = try #require(await env.svc.store.get(t.id))
+        #expect(after.awaitingFirstPrompt == true)   // the new generation was never prompted
+        #expect(after.title == t.title)              // …and was not renamed by a dead session
     }
 
     /// …while an ordinary prompt to a card that is NOT being born is unaffected by the fence, epoch or no

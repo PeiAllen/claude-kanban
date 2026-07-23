@@ -22,12 +22,22 @@ public enum CardNaming {
     /// a heading, while this holds a name a human or an agent deliberately chose.
     public static let maxTitleChars = 120
 
+    /// The longest a card note may be. Equal to `maxTitleChars` today, and deliberately a SEPARATE constant:
+    /// the title cap is tuned for what is safe in Claude's `--name` argv, and a note never reaches argv —
+    /// so tuning one must not silently retune the other.
+    public static let maxNoteChars = 120
+
     /// The ONE bound on a card title — every write goes through it, not just the explicit ones. The value
     /// ends up in Claude's `--name` argv, so an unbounded title is a tmux argv problem rather than merely
     /// an ugly card, and the derived arms can exceed the cap on their own: a branch name is arbitrary, and
     /// `"👁 <target>"` is longer than its target by construction.
     public static func normalize(_ raw: String) -> String {
         String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxTitleChars))
+    }
+
+    /// The same trim, bounded by the NOTE cap. Separate entry point so the two bounds stay independent.
+    public static func normalizeNote(_ raw: String) -> String {
+        String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxNoteChars))
     }
 
     /// The derived default title for a fresh card, as a strict ordered chain:

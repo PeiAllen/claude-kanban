@@ -444,7 +444,15 @@ extension OrchestraService {
             // `bringUp` pre-arms: a `set-title` landing between the `ensure` below and the retried
             // session's first statusline would otherwise see the pushed name differ from both the
             // baseline and the new title, read as a rename, and clobber it.
-            if !live.title.isEmpty { _ = try? await store.update(id) { $0.lastSessionName = live.title } }
+            if !live.title.isEmpty {
+                _ = try? await store.update(id) { t in
+                    // Guarded INSIDE the closure, like `bringUp`'s sibling: `store.update` suspends,
+                    // and a restart that won the race has already armed the baseline with ITS title —
+                    // overwriting that with ours re-opens the clobber this arming exists to prevent.
+                    guard t.sessionEpoch == live.sessionEpoch else { return }
+                    t.lastSessionName = live.title
+                }
+            }
             // …and that store hop is a SUSPENSION POINT inside the window the race guard above was written
             // to cover (this function is deliberately built around having exactly one). Re-assert the guard
             // so the destructive kill+ensure below still runs on a card that is ours: a restart landing in

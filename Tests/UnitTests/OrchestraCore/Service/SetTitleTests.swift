@@ -181,9 +181,14 @@ struct SetTitleTests {
         #expect(reviewer.title == "👁 \(expected?.id == first.id ? "The First One" : "The Second One")")
     }
 
-    /// The whole reason `applyReportFields` is a delta and not a blanket copy: `set-title` is a second
-    /// writer of `title`, and report() reads the card, suspends, then writes back.
-    @Test("a rename landing inside report()'s window is not reverted by it")
+    /// An INTEGRATION check, not the proof. Nothing here forces `setTitle` to land inside report()'s
+    /// read→write window — if it wins the race, report simply reads the already-renamed card and the
+    /// assertion holds under a blanket overlay too. `TaskStore` has no rendezvous seam to pin that ordering,
+    /// so the deterministic pin lives at the model level instead, in
+    /// `ReportTests.test_reportPreservesAConcurrentRename`, which DOES fail if the delta is reverted. What
+    /// this one still guarantees is worth keeping: whichever order the two land in, the rename survives and
+    /// report's own field still applies.
+    @Test("a rename and a concurrent report both land, in either order")
     func setTitleSurvivesAConcurrentReport() async throws {
         let env = TestEnv.make()
         let repo = TestEnv.repo(env.base)
