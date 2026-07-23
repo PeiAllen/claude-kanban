@@ -33,7 +33,7 @@ extension OrchestraService {
         // (a no-op unless its queue actually drained) before standing down.
         if t.deliveryStuckSince != nil { await clearStuckIfDrained(t.id); return }
         if let attempt = runtime[t.id]?.deliveryAttempt, now() < attempt.nextEligible { return }
-        guard runtime[t.id]?.deliveryInFlight != true else { return }
+        guard runtime[t.id]?.deliveryClaim == nil else { return }
         guard await inbox.hasClaimable(t.id, epoch: t.sessionEpoch, now: now()) else {
             await clearStuckIfDrained(t.id)
             return
@@ -162,7 +162,7 @@ extension OrchestraService {
             // not yet reset (checked FIRST, ahead of the bypass, so even the dead-unresumable path is fenced).
             // Cheap synchronous actor-local read; `budgetSpent()` is re-evaluated at every guard/compensate
             // checkpoint, so a re-arm starting mid-flip aborts the pending stamp too.
-            if (runtime[id]?.reArming ?? 0) > 0 { return false }
+            if (runtime[id]?.reArming?.count ?? 0) > 0 { return false }
             return bypassAttemptBudget || (runtime[id]?.deliveryAttempt?.count ?? 0) >= Self.deliveryStuckAttemptThreshold
         }
         guard budgetSpent() else { return }

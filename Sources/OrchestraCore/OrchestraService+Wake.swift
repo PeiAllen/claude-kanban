@@ -182,11 +182,15 @@ extension OrchestraService {
     /// claiming at a stale epoch would lease a batch into a provably-dead session.
     func wake(_ id: UUID) async {
         guard let t = await store.get(id), !t.archived, deliverable(t),
-              runtime[id]?.deliveryInFlight != true else { return }
+              runtime[id]?.deliveryClaim == nil else { return }
         ensureRuntime(for: t)
-        runtime[id]?.deliveryInFlight = true   // SYNCHRONOUS claim — no await since the guard
+        let claim = nextRuntimeToken()
+        runtime[id]?.deliveryClaim = claim     // SYNCHRONOUS claim — no await since the guard
         await deliver(t)
-        runtime[id]?.deliveryInFlight = false
+        // Compare-and-swap release: if the entry was detached and recreated while `deliver` was
+        // suspended (archive→reopen), a successor wake may hold its OWN claim — releasing that
+        // would admit a concurrent delivery. A mismatch means this wake no longer owns anything.
+        if runtime[id]?.deliveryClaim == claim { runtime[id]?.deliveryClaim = nil }
     }
 
     /// Is this card a legal delivery target right now? `.live(.waiting(.humanTurn))` — never

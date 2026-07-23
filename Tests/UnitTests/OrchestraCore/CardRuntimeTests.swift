@@ -110,4 +110,36 @@ struct CardRuntimeTests {
         #expect(await env.svc.runtime[card.id] == nil)
         #expect(await env.svc.watchRegistry[card.id] == nil)
     }
+
+    // The lease end-to-end: `.archivedPending` is RE-ENTERABLE (archive → reopen → archive again),
+    // so a phase-only stepper fence would let a stale step — dispatched for the FIRST archive —
+    // complete the SECOND archive's teardown (releaseAll + final flip) with none of its duties
+    // run. The whole stale step must stand down on the epoch.
+    @Test("lease: a stale-snapshot TeardownStepper stands down after reopen→re-archive")
+    func staleStepperSnapshotStandsDown() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let card = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "x", repo: repo, branch: "restep"))
+
+        try await env.svc.archive(card.id)                        // archive #1 (intent)
+        let stale = try #require(await env.svc.store.get(card.id))   // the step's dispatched snapshot
+        _ = try await env.svc.reopen(card.id)                     // epoch bump, .creatingWorktree
+        try await env.svc.archive(card.id)                        // archive #2: .archivedPending again
+
+        // The stale step (snapshot from archive #1) runs in full — it must do NOTHING: no duty, no
+        // releaseAll side effects it owns, and above all no final flip of archive #2.
+        try await TeardownStepper().step(stale, env.svc.convergeContext())
+        let now = try #require(await env.svc.store.get(card.id))
+        #expect(now.phase.kind == .archivedPending)               // archive #2 NOT flipped complete
+        #expect(await env.svc.runtime[card.id] != nil)            // archive #2's duties still pending
+
+        // The legitimate redrive (current epoch) completes archive #2 with its duties.
+        try await pollUntil {
+            await env.svc.reconcile()
+            return await env.svc.list(includeArchived: true)
+                .first { $0.id == card.id }?.phase.kind == .archivedComplete
+        }
+        #expect(await env.svc.runtime[card.id] == nil)
+    }
 }

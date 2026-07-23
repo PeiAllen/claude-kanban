@@ -32,7 +32,9 @@ extension OrchestraService {
     /// Non-`.worktree` cards resolve to `nil`. Returns the current stat.
     @discardableResult
     public func recomputeDiffStat(_ id: UUID, base: DiffBase? = nil) async -> DiffStat? {
-        guard let t = await store.get(id) else { return nil }
+        // Archived gate: cancellation is cooperative, so a debounce cancelled just past its sleep
+        // check still lands here — it must not fork git for, or write a stat onto, a dead card.
+        guard let t = await store.get(id), !t.archived else { return nil }
         var newStat: DiffStat? = nil
         if t.origin == .worktree {
             do {

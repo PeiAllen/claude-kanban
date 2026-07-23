@@ -911,12 +911,22 @@ public actor OrchestraService {
         // persisted field, so a human inbox edit can land in the post-restart window before the first
         // reconcile tick has ensured the entry — an update-if-present increment would silently no-op
         // and leave the clear→reset window unprotected (the payloadForStop class of migration bug).
-        if let card = await store.get(cardId) { ensureRuntime(for: card) }
-        runtime[cardId]?.reArming += 1
-        // Guarded decrement: a mid-op detach lifts the fence (post-archive flips are phase-gated), and
-        // the guard keeps a detach→re-ensure interleaving from driving the count negative — a poisoned
-        // fence would stay disengaged for the NEXT re-arm.
-        defer { if let n = runtime[cardId]?.reArming, n > 0 { runtime[cardId]?.reArming = n - 1 } }
+        guard let card = await store.get(cardId) else { return }   // unknown card: nothing to re-arm
+        ensureRuntime(for: card)
+        // Epoch-scoped count: the fence belongs to THIS card generation. A stale re-arm whose entry
+        // was detached and recreated mid-op (archive→reopen) must neither decrement a successor's
+        // held fence nor drive the count negative — the epoch mismatch makes its defer a no-op.
+        let fenceEpoch = card.sessionEpoch
+        if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
+            runtime[cardId]?.reArming = (fenceEpoch, cur.count + 1)
+        } else {
+            runtime[cardId]?.reArming = (fenceEpoch, 1)   // stale-epoch residue is discarded, not inherited
+        }
+        defer {
+            if let cur = runtime[cardId]?.reArming, cur.epoch == fenceEpoch {
+                runtime[cardId]?.reArming = cur.count > 1 ? (fenceEpoch, cur.count - 1) : nil
+            }
+        }
         guard await clearStuckIfSet(cardId) else { return }
         await reArmPause?()   // test seam: land a concurrent flip in the flag-cleared, budget-not-yet-reset window
         runtime[cardId]?.deliveryAttempt = nil

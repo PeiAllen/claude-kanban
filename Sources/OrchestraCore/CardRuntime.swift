@@ -84,10 +84,16 @@ struct CardRuntime {
     /// Delivery tokens dispatched but not yet confirmed (in-memory shadow of the durable inbox
     /// leases; teardown drops this in the same step sequence that `releaseAll`s the leases).
     var outstandingTokens: Set<UUID> = []
-    /// Wake-vs-wake single-winner claim (held synchronously across the wake ladder).
-    var deliveryInFlight: Bool = false
-    /// Reference-counted mutual-exclusion fence for the editor-driven stuck re-arm.
-    var reArming: Int = 0
+    /// Wake-vs-wake single-winner claim (held synchronously across the wake ladder). A TOKEN, not a
+    /// Bool: the claiming wake clears it compare-and-swap on its own token, so a stale wake whose
+    /// entry was detached-and-recreated (archive→reopen while `deliver` was suspended) cannot release
+    /// a successor wake's claim and admit a concurrent delivery.
+    var deliveryClaim: UInt64?
+    /// Epoch-scoped, reference-counted mutual-exclusion fence for the editor-driven stuck re-arm.
+    /// The epoch pins the count to one card generation: a stale re-arm's deferred decrement (its
+    /// entry detached and recreated across archive→reopen mid-op) mismatches and no-ops instead of
+    /// releasing a successor's held fence.
+    var reArming: (epoch: Int, count: Int)?
 
     // MARK: - Watch / wait
 

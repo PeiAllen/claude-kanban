@@ -371,6 +371,9 @@ extension OrchestraService {
         // Durable: the archived card's launch-config file is now orphaned (step 1 killed its session).
         // A full keep-set sweep reclaims it and is shared-cwd-safe for free; mtime grace errs to keeping.
         await sweepCardFiles()
+        // Re-fence after the sweep's suspension: the PERSISTED watcher-key removal below must never
+        // run for a card a reopen just took back (it would silently drop the reopened card's watches).
+        guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
         // Durable: the watcher side of the PERSISTED watch registry — the child side is removed at
         // `concludeCard`, but nothing else ever removes an archived watcher's own key from disk.
         // Load-before-mutate + conditional save is the same protocol as every registry mutation (the
@@ -390,6 +393,9 @@ extension OrchestraService {
         let active = await store.all().filter { $0.id != id }
         for cb in childBranches {
             guard let card = derivedCard(repo: t.repo, branch: cb, among: active) else { continue }
+            // Per-iteration lease check: each pass suspends (enqueue + wake), and a reopen mid-loop
+            // must stop the remaining "parent archived" nudges — the parent is coming back.
+            guard await stillOwns(id, expecting: .archivedPending, epoch: expectedEpoch) else { return }
             try? await inbox.enqueue(
                 card.id,
                 "parent card \(t.branch) archived — the parent branch is now bare; re-run your ship",

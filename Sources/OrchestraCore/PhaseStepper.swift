@@ -325,18 +325,23 @@ public struct TeardownStepper: PhaseStepper {
     /// already owns: the agent execs in a directory that no longer exists and its pane dies on the spot.
     /// So re-verify ownership before each duty and stand down the moment the card leaves the intent — the
     /// same single-winner discipline `finishLaunch` applies to ITS destructive `kill`+`ensure` hop.
-    private func stillArchiving(_ id: UUID, _ ctx: ConvergeContext) async -> Bool {
-        (await ctx.store.get(id))?.phase.kind == .archivedPending
+    /// Phase alone is NOT enough: `archivedPending` can be re-entered — reopen (epoch bump) then
+    /// archive again — and a phase-only fence would let THIS stale step complete the NEW archive's
+    /// teardown (releaseAll + final flip) while holding `inFlightSteps`, so the new archive's duties
+    /// never run. The dispatched snapshot's `sessionEpoch` is the lease; both must match.
+    private func stillArchiving(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
+        guard let now = await ctx.store.get(card.id) else { return false }
+        return now.phase.kind == .archivedPending && now.sessionEpoch == card.sessionEpoch
     }
 
     public func step(_ card: Task, _ ctx: ConvergeContext) async throws {
-        guard await stillArchiving(card.id, ctx) else { return }
+        guard await stillArchiving(card, ctx) else { return }
         // 1 · kill the agent session (idempotent — a gone session is a no-op).
         try? ctx.sessions.kill(ctx.sessions.sessionName(card.id))
-        guard await stillArchiving(card.id, ctx) else { return }
+        guard await stillArchiving(card, ctx) else { return }
         // 2 · release any bare-parent borrow the card left open (idempotent).
         try? await ctx.worktrees.releaseBorrow(borrowerCardId: card.id)
-        guard await stillArchiving(card.id, ctx) else { return }
+        guard await stillArchiving(card, ctx) else { return }
         // 3 · origin-aware run-dir reclaim, matching today's `archive()` switch.
         switch card.origin {
         case .worktree:
@@ -363,13 +368,13 @@ public struct TeardownStepper: PhaseStepper {
             let conservative = await ctx.worktrees.conservativeMode
             // Re-fence AFTER that actor hop: the `rm -rf` is the point of no return, so it takes the
             // LAST possible ownership check (a reopen landing during the hop must not lose its cwd).
-            guard await stillArchiving(card.id, ctx), !conservative,
+            guard await stillArchiving(card, ctx), !conservative,
                   card.cwd.hasPrefix(ctx.scratchRoot + "/") else { break }
             try? FileManager.default.removeItem(atPath: card.cwd)
         case .borrowed:
             break   // Orchestra never deletes a borrowed dir.
         }
-        guard await stillArchiving(card.id, ctx) else { return }
+        guard await stillArchiving(card, ctx) else { return }
         // 4 · actor-private duties: cancel debounces/remote-watch/re-nudge + child find→nudge→wake (dedup).
         // The card snapshot's sessionEpoch is the LEASE: the duties re-verify phase+epoch on the actor
         // before each mutation, so a reopen that bumped the epoch makes this whole step a no-op.
@@ -379,12 +384,12 @@ public struct TeardownStepper: PhaseStepper {
         // could DELETE a held message on an archiving card instead of retaining it for a reopen. A released
         // lease makes a late `confirm(token)` a token-no-op, so the message stays durable; a reopen redelivers.
         try? await ctx.inbox.releaseAll(card.id)
-        // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase. The
-        // `expecting: .archivedPending` fence self-guards a reopen that won `releaseAll`'s suspension (a legal
-        // edge straight out of `archivedPending`): it brings the card back at a NEW epoch, so this transition
-        // stands down rather than flipping a live card to archived.
-        guard await stillArchiving(card.id, ctx) else { return }
-        _ = await ctx.transition(card.id, .archived(teardownComplete: true), nil, .archivedPending) { t in t.archived = true }
+        // 5 · the final flip — companion-writing the `archived` Bool mirror atomically with the phase,
+        // fenced on BOTH the expected phase and the dispatched epoch (see `stillArchiving`).
+        guard await stillArchiving(card, ctx) else { return }
+        // Epoch-fenced flip: `expecting: .archivedPending` alone is defeated by reopen→re-archive
+        // (phase matches again at a NEWER epoch); the observedEpoch makes the funnel drop a stale flip.
+        _ = await ctx.transition(card.id, .archived(teardownComplete: true), card.sessionEpoch, .archivedPending) { t in t.archived = true }
     }
     public func verify(_ card: Task, _ ctx: ConvergeContext) async -> Bool {
         (await ctx.store.get(card.id))?.phase.kind == .archivedComplete
