@@ -23,6 +23,8 @@ enum CLIHelp {
       needs-input <ref> <question...>            Declare you're blocked on a decision only the card's owner
                                                  can make (set/replace; the daemon clears it when your next
                                                  turn starts — re-declare if still blocked)
+      set-planned <ref> [n]                      Declare how many children this card's plan fans out (the `m`
+                                                 of the n/m wave bar); 0 or absent clears it. Worktree cards only
       set-parent <ref> [parent] [--mode adopt|move] [--watch]
                                                  Set/clear a card branch's parent link (omit parent to clear).
                                                  --mode move transplants commits; --watch polls a remote parent (pr#/origin).

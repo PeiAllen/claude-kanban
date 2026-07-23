@@ -127,6 +127,16 @@ public enum CommandCatalog {
                                      required: ["ref", "question"]),
                       kind: .mutation, phaseGate: gNonArchived),
 
+        CommandSchema(name: "set-planned",
+                      summary: "Declare how many child cards this card's approved plan will fan out — the "
+                          + "target `m` of the `n/m` wave-progress bar (the bar shows dashed remainder until "
+                          + "they spawn). Set it once your plan is approved and update it when the plan "
+                          + "changes; send 0 (or omit `n`) to clear it. Worktree cards only.",
+                      params: schema(["ref": refProp(),
+                                      "n": intProp("Planned child count; 0 or absent clears it.")],
+                                     required: ["ref"]),
+                      kind: .mutation, phaseGate: gNonArchived),
+
         CommandSchema(name: "move", summary: "Move a card to a column (plan/impl/review).",
                       params: schema(["ref": refProp(), "col": colProp()], required: ["ref", "col"]),
                       kind: .mutation, phaseGate: gNonArchived),

@@ -160,6 +160,98 @@ struct LineageTests {
         #expect(await lin.children(repo: repo, of: "p").isEmpty)
     }
 
+    // MARK: child-progress counters (slice 4)
+
+    @Test("mergedCount defaults to 0; setPlanned/plannedCount round-trip; n<=0 clears")
+    func plannedAndMergedBasics() async throws {
+        let (_, lin, repo) = env()
+        #expect(await lin.mergedCount(repo: repo, branch: "p") == 0)
+        #expect(await lin.plannedCount(repo: repo, branch: "p") == nil)
+        try await lin.setPlanned(repo: repo, branch: "p", n: 4)
+        #expect(await lin.plannedCount(repo: repo, branch: "p") == 4)
+        try await lin.setPlanned(repo: repo, branch: "p", n: 0)   // 0 clears
+        #expect(await lin.plannedCount(repo: repo, branch: "p") == nil)
+        try await lin.setPlanned(repo: repo, branch: "p", n: 7)
+        try await lin.setPlanned(repo: repo, branch: "p", n: -1)  // negative also clears
+        #expect(await lin.plannedCount(repo: repo, branch: "p") == nil)
+    }
+
+    @Test("recordMergedChild removes the child link and increments the parent's merged-count")
+    func recordMergedChildCounts() async throws {
+        let (_, lin, repo) = env()
+        try await lin.set(repo: repo, branch: "c", link: ParentLink(parent: "p", base: "b"))
+        #expect(await lin.recordMergedChild(repo: repo, child: "c", expectedParent: "p") == .counted)
+        #expect(await lin.read(repo: repo, branch: "c") == nil)          // link removed
+        #expect(await lin.mergedCount(repo: repo, branch: "p") == 1)
+    }
+
+    @Test("dual-observer / restart re-detection: a 2nd recordMergedChild finds no link → .absent, no double-count")
+    func recordMergedChildIdempotent() async throws {
+        let (_, lin, repo) = env()
+        try await lin.set(repo: repo, branch: "c", link: ParentLink(parent: "p", base: "b"))
+        #expect(await lin.recordMergedChild(repo: repo, child: "c", expectedParent: "p") == .counted)
+        // The second observer (shipped + a future merge-watch, or a post-restart "is ancestor" re-detection):
+        // the entry-existence guard trips — no link → .absent → the count is NOT bumped again.
+        #expect(await lin.recordMergedChild(repo: repo, child: "c", expectedParent: "p") == .absent)
+        #expect(await lin.mergedCount(repo: repo, branch: "p") == 1)
+    }
+
+    @Test("recordMergedChild against a re-parented child (parent mismatch) → .linkChanged, no count")
+    func recordMergedChildLinkChanged() async throws {
+        let (_, lin, repo) = env()
+        try await lin.set(repo: repo, branch: "c", link: ParentLink(parent: "pNew", base: "b"))
+        #expect(await lin.recordMergedChild(repo: repo, child: "c", expectedParent: "pOld") == .linkChanged)
+        #expect(await lin.read(repo: repo, branch: "c")?.parent == "pNew")   // fresh link untouched
+        #expect(await lin.mergedCount(repo: repo, branch: "pOld") == 0)
+    }
+
+    @Test("a NON-merge removal (plain clear — re-parent / abandoned-branch cleanup) never bumps the counter")
+    func plainClearNeverCounts() async throws {
+        let (_, lin, repo) = env()
+        try await lin.set(repo: repo, branch: "c", link: ParentLink(parent: "p", base: "b"))
+        try await lin.clear(repo: repo, branch: "c")   // the non-merge removal path
+        #expect(await lin.mergedCount(repo: repo, branch: "p") == 0)
+    }
+
+    @Test("clear-first crash window: an increment failure after removal → bounded undercount, never a double-count")
+    func crashWindowUndercountNeverDouble() async throws {
+        let fake = FakeProc()
+        // Fail ONLY the merged-count WRITE (argv[4] is the key, argv[5] the value) — a crash between the
+        // clear and the bump. Registered BEFORE the emulator so it short-circuits that one write.
+        fake.on(["git"]) { argv in
+            if argv.count >= 6, argv[3] == "config",
+               argv[4] == "branch.p.orchestra-merged-count", argv[5] != "--get" {
+                return ProcResult(stdout: "", stderr: "fatal: could not lock config file", exitCode: 255)
+            }
+            return nil
+        }
+        GitConfigEmulator().install(on: fake)
+        let lin = BranchLineage(proc: fake)
+        try await lin.set(repo: "/repo", branch: "c", link: ParentLink(parent: "p", base: "b"))
+        _ = await lin.recordMergedChild(repo: "/repo", child: "c", expectedParent: "p")
+        #expect(await lin.read(repo: "/repo", branch: "c") == nil)   // clear-first: the removal DID land
+        // Re-detection finds no entry → .absent → it CANNOT recount. The only crash outcome is a bounded
+        // undercount (count stuck at 0), never the double-count an increment-first ordering would produce.
+        #expect(await lin.recordMergedChild(repo: "/repo", child: "c", expectedParent: "p") == .absent)
+        #expect(await lin.mergedCount(repo: "/repo", branch: "p") == 0)
+    }
+
+    @Test("counter keys are NOT lineage-link keys: clear leaves a parent's merged-count intact")
+    func clearDoesNotWipeCounters() async throws {
+        let (_, lin, repo) = env()
+        // p has a merged child (count 1) AND its own parent link.
+        try await lin.set(repo: repo, branch: "c", link: ParentLink(parent: "p", base: "b"))
+        _ = await lin.recordMergedChild(repo: repo, child: "c", expectedParent: "p")
+        try await lin.set(repo: repo, branch: "p", link: ParentLink(parent: "gp", base: "b"))
+        try await lin.setPlanned(repo: repo, branch: "p", n: 3)
+        // Clearing p's OWN lineage link must not touch its child-progress counters (they live on the same
+        // branch config but are deliberately out of `allSuffixes`).
+        try await lin.clear(repo: repo, branch: "p")
+        #expect(await lin.read(repo: repo, branch: "p") == nil)
+        #expect(await lin.mergedCount(repo: repo, branch: "p") == 1)
+        #expect(await lin.plannedCount(repo: repo, branch: "p") == 3)
+    }
+
     // MARK: canonical parse
 
     // O4/S4: `BranchLineage.classify` was deleted (dead + disagreed with RemoteParentRef.parse).

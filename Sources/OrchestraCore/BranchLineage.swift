@@ -46,6 +46,20 @@ public actor BranchLineage {
     private static let kWatch  = "orchestra-parent-watch"
     private static let allSuffixes = [kParent, kBase, kPr, kWatch]
 
+    // Child-progress counters (slice 4). Stored on the PARENT branch, NOT on the child link — so they are
+    // deliberately OUT of `allSuffixes`: `clear`/`recordMergedChild` remove a CHILD's link keys and must
+    // never wipe a parent's own counter. Neither suffix ends in `.orchestra-parent`, so the `_children`
+    // regex can't match them either.
+    private static let kMergedCount = "orchestra-merged-count"   // int; children merged + reaped, the `n`
+    private static let kPlanned     = "orchestra-planned"        // int; declared plan size, the `m` (unset = none)
+
+    /// Outcome of the one merge-classified removal funnel — `recordMergedChild`.
+    public enum MergeRemoval: Sendable, Equatable {
+        case absent        // no child link — already reaped; the idempotency no-op (dual-observer / re-detect)
+        case linkChanged   // the child now points at a DIFFERENT parent (concurrent re-parent) — don't touch
+        case counted       // the link was removed and the parent's merged-count incremented
+    }
+
     private func key(_ branch: String, _ suffix: String) -> String { "branch.\(branch).\(suffix)" }
 
     private func get(_ repo: String, _ branch: String, _ suffix: String) async -> String? {
@@ -137,6 +151,47 @@ public actor BranchLineage {
         try await setKey(repo, branch, Self.kBase, oid)
     }
 
+    // MARK: child-progress counters (slice 4)
+
+    /// The merged-children count stored on `branch` (the `n`). 0 when unset/garbage.
+    private func _mergedCount(repo: String, branch: String) async -> Int {
+        (await get(repo, branch, Self.kMergedCount)).flatMap(Int.init) ?? 0
+    }
+
+    /// The declared plan size on `branch` (the `m`), or nil when unset.
+    private func _plannedCount(repo: String, branch: String) async -> Int? {
+        (await get(repo, branch, Self.kPlanned)).flatMap(Int.init)
+    }
+
+    /// Set (or clear) the declared plan size. `n <= 0` clears it (unset), matching the verb's "0/absent
+    /// clears" contract; a positive `n` writes it.
+    private func _setPlanned(repo: String, branch: String, n: Int) async throws {
+        if n <= 0 { await unset(repo, branch, Self.kPlanned) }
+        else { try await setKey(repo, branch, Self.kPlanned, String(n)) }
+    }
+
+    /// The ONE merge-classified removal funnel (slice 4). Removes `child`'s lineage link AND increments
+    /// `expectedParent`'s merged-count — the counter's only writer. The child link's existence is the
+    /// idempotency guard, so both the `shipped` verb and a future merge-watch detector can call this and
+    /// the SECOND caller (or a post-restart re-detection — "is ancestor" is a level, not an edge) no-ops.
+    /// Merge CLASSIFICATION is the caller's job (shipped's advanced-past-base gate; a detector's zero-commit
+    /// ancestor guard) — this trusts that the removal it's being asked to record IS a merge.
+    ///
+    /// CLEAR-FIRST, then a strict RE-READ before counting: removing the `orchestra-parent` marker first
+    /// means a crash between the two writes leaves the entry GONE (re-detection → `.absent` → no-op) — a
+    /// bounded UNDERcount, never a double-count. Increment-first would double-count on replay. If the clear
+    /// doesn't take (a lock/IO failure — the marker survives the re-read), we do NOT count and report the
+    /// link as still present, so a later observer retries.
+    private func _recordMergedChild(repo: String, child: String, expectedParent: String) async -> MergeRemoval {
+        guard let link = await _read(repo: repo, branch: child) else { return .absent }
+        guard link.parent == expectedParent else { return .linkChanged }
+        for suffix in Self.allSuffixes { await unset(repo, child, suffix) }
+        guard await get(repo, child, Self.kParent) == nil else { return .linkChanged }  // clear didn't take → keep, don't count
+        let current = await _mergedCount(repo: repo, branch: expectedParent)
+        try? await setKey(repo, expectedParent, Self.kMergedCount, String(current + 1))
+        return .counted
+    }
+
     // MARK: tree queries
 
     /// Child branch names whose recorded parent is `parent` — a fan-out over all lineage keys.
@@ -199,5 +254,21 @@ public actor BranchLineage {
     public func ancestors(repo: String, of branch: String) async -> [String] {
         await opAcquire(); defer { opRelease() }
         return await _ancestors(repo: repo, of: branch)
+    }
+    public func mergedCount(repo: String, branch: String) async -> Int {
+        await opAcquire(); defer { opRelease() }
+        return await _mergedCount(repo: repo, branch: branch)
+    }
+    public func plannedCount(repo: String, branch: String) async -> Int? {
+        await opAcquire(); defer { opRelease() }
+        return await _plannedCount(repo: repo, branch: branch)
+    }
+    public func setPlanned(repo: String, branch: String, n: Int) async throws {
+        await opAcquire(); defer { opRelease() }
+        try await _setPlanned(repo: repo, branch: branch, n: n)
+    }
+    public func recordMergedChild(repo: String, child: String, expectedParent: String) async -> MergeRemoval {
+        await opAcquire(); defer { opRelease() }
+        return await _recordMergedChild(repo: repo, child: child, expectedParent: expectedParent)
     }
 }
