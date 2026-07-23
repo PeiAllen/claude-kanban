@@ -31,7 +31,10 @@ struct PeekRow: View {
                 }
                 Spacer(minLength: 6)
                 if let stat = task.diffStat, stat.filesChanged > 0 {
-                    DiffStatNumbers(stat: stat)                                                       // action slot: compact diff
+                    // `.fixedSize()` for the same reason as the chip below: a long `.layoutPriority(1)`
+                    // title claims the row's width, and a starved diffstat wraps its `+N −M` numbers
+                    // char-by-char into a tall stack that inflates the row. It must hold its footprint.
+                    DiffStatNumbers(stat: stat).fixedSize()                                           // action slot: compact diff
                 }
                 chip                                                                                  // chip slot
             }
@@ -60,6 +63,12 @@ struct PeekRow: View {
             let c = theme.stageColor(task.column)
             Text(stageLabel).font(F.ui(9, .medium)).tracking(0.3)
                 .foregroundColor(c.text)
+                // The chip is a FIXED compact horizontal label — it must reserve its own width and
+                // render on one line. Without this, the `.layoutPriority(1)` title (a long wrapping-prone
+                // prompt-title) claims the whole row and the chip is squeezed to ~one character, where a
+                // plain Text wraps char-by-char ("P/L/A/N") into a tall pill that sets the ROW height —
+                // the peek-row-layout bug. `fixedSize` keeps the chip rigid so the title truncates instead.
+                .lineLimit(1).fixedSize()
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(c.tint))
         }
