@@ -17,6 +17,16 @@ public func relativeAge(_ date: Date, now: Date = Date()) -> String {
     return "\(h / 24)d"
 }
 
+/// How often a live `relativeAge` stamp needs re-rendering: every second while it still reads in
+/// seconds (the first minute), once a minute after that. `relativeAge` never shows a unit finer than
+/// minutes past 60s, so a faster tick beyond the first minute is wasted board-wide re-layout, and a
+/// slower tick *during* it freezes a card at "· 0s" until the next minute boundary. Phase-independent
+/// on purpose: a being-born or dead card ages in seconds exactly like a running one, so keying the
+/// cadence off the phase (rather than the age) is what left non-live cards stale for their first minute.
+public func ageRefreshInterval(_ date: Date, now: Date = Date()) -> TimeInterval {
+    now.timeIntervalSince(date) < 60 ? 1 : 60
+}
+
 /// Center content in the available space — `VStack { Spacer; content; Spacer }` filling the frame.
 /// The empty/loading-state centering helper that four card panes had each copied verbatim
 /// (desktop `DiffInspectorView`, iOS `NotesPage`/`DiffTab`/`TerminalTab`).
