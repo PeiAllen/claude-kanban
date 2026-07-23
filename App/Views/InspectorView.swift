@@ -113,9 +113,16 @@ private struct HeaderBar: View {
             .help(diffTabHelp)
 
             if showStat, let stat = task.diffStat, stat.filesChanged > 0 {
+                // Chipped, not bare: everything else in this row is a filled control, so loose
+                // monospace digits between the toggle and the buttons read as debris rather than as
+                // a readout. The chip is the row's own `theme.chip` — the same fill the close button
+                // and the segmented control sit on — so it belongs without competing.
                 DiffStatNumbers(stat: stat, showFiles: !compact)
                     .lineLimit(1)
                     .fixedSize()
+                    .padding(.horizontal, compact ? 6 : 9)
+                    .frame(height: 29)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.chip))
                     .help(diffTabHelp)
             }
 

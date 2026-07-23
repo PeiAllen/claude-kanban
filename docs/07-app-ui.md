@@ -182,6 +182,12 @@ baseline (parent-relative when stacked, else branch), so switching the [Diff vie
 own picker to **Working** legitimately shows a different range in the body below; the tooltip names the
 baseline.
 
+The **iPhone** card detail carries the same fact in its own language: a diffstat chip in the pinned
+header's chip row, beside the mode and model chips, in the board cell's `+N −M Nf` ordering. That row
+degrades the same way — a big stat next to a long model name would otherwise wrap the mode chip onto two
+lines and push the context gauge's percentage off the trailing edge — so the chip sheds its file count
+first and hides last, leaving its neighbours intact.
+
 That row is over-subscribed at the default 392 pt inspector width, so it **degrades in stages** rather
 than truncating captions into unreadable stubs (`ViewThatFits`, widest variant first): everything
 spelled out when the inspector is dragged wide; at 392 the button captions drop to icons alone (tooltips
