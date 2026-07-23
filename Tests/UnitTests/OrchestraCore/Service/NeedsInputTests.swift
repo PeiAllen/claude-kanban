@@ -194,6 +194,35 @@ struct NeedsInputTests {
         #expect(await card(env.svc, t.id)?.pendingQuestion == "which base?")
     }
 
+    /// The full re-declare cycle the guidance promises, end to end: ask, get answered, ask again. Q1 is
+    /// retired by the delivery that answers it, and Q2 — raised while working through that answer — must
+    /// outlive the Stop that closes the same turn. The two clears are one beat apart, which is exactly why
+    /// keying them to the claim rather than the receipt matters.
+    @Test("Q1 → delivery → Q2 → Stop: Q1 is retired and Q2 stands")
+    func reDeclareCycleKeepsTheNewQuestion() async throws {
+        let env = TestEnv.make()
+        let t = try await liveCard(env.svc, TestEnv.repo(env.base))
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)),
+                                 observedEpoch: try #require(await card(env.svc, t.id)).sessionEpoch)
+
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "Q1: which base?")
+        try await env.svc.send(t.id, "answer: base it on main")
+        let epoch = try #require(await card(env.svc, t.id)).sessionEpoch
+
+        // The claim opens the answering turn → Q1 is moot.
+        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
+                                     observedEpoch: epoch, stopHookActive: false)
+        #expect(await card(env.svc, t.id)?.pendingQuestion == nil)
+
+        // Working through the answer raises a NEW block, declared before that turn ends.
+        _ = try await env.svc.needsInput(ref: t.shortId, question: "Q2: squash or keep history?")
+
+        // The Stop closing that turn confirms Q1's delivery. It must not touch Q2.
+        _ = await env.svc.handleHook(t.shortId, event: .stop, report: nil, source: nil,
+                                     observedEpoch: epoch, stopHookActive: true)
+        #expect(await card(env.svc, t.id)?.pendingQuestion == "Q2: squash or keep history?")
+    }
+
     @Test("a landed relaunch clears it — the session that asked is gone")
     func landedRelaunchClears() async throws {
         let env = TestEnv.make()

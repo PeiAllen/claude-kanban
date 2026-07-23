@@ -75,9 +75,8 @@ extension OrchestraService {
             // request. (Always re-arm: a re-send after the loop stopped must restart it.)
             startMergeRequestNudge(childId: child.id)
             if !resuming {
-                try? await inbox.enqueue(parentCard.id,
-                    "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(target) in your "
-                    + "worktree, then `orchestra shipped \(child.shortId)`")
+                try? await inbox.enqueue(parentCard.id, Self.handoverText(child: child, parent: target),
+                                         dedupKey: Self.handoverDedupKey(child.id))
                 await wake(parentCard.id)
             }
             emitActivity(.command, child, source, "merge-request → \(target)")
@@ -88,6 +87,19 @@ extension OrchestraService {
             emitActivity(.command, child, source, "merge-request → \(target) (recorded — awaiting a human)")
         }
         return (await store.get(child.id)) ?? child
+    }
+
+    /// The ONE wording of the request, so the verb and the funnel handover can't drift — and the ONE dedup
+    /// key, which is what makes the handover idempotent across every route that can send it (the verb, a
+    /// funnel reconcile, the boot rebuild). `Inbox.enqueue` drops a same-key message while one is still
+    /// PENDING for that card, so a re-route can never stack a second copy on an owner that hasn't read the
+    /// first; once the owner has drained it, a later route legitimately re-asks.
+    static func handoverText(child: Task, parent: String) -> String {
+        "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(parent) in your "
+        + "worktree, then `orchestra shipped \(child.shortId)`"
+    }
+    static func handoverDedupKey(_ childId: UUID) -> String {
+        "merge-request:\(childId.uuidString.lowercased())"
     }
 
     /// The merge-target owner, or nil when the target is UNOWNED. Three ways to be unowned, and the verb,
@@ -130,9 +142,8 @@ extension OrchestraService {
         // the actor, so two concurrent recomputes of the same card cannot both pass the guard and both
         // enqueue; arming after the awaits below left exactly that window.
         startMergeRequestNudge(childId: childId)
-        try? await inbox.enqueue(owner.id,
-            "merge-request: squash-merge \(child.branch) (\(child.shortId)) into \(link.parent) in your "
-            + "worktree, then `orchestra shipped \(child.shortId)`")
+        try? await inbox.enqueue(owner.id, Self.handoverText(child: child, parent: link.parent),
+                                 dedupKey: Self.handoverDedupKey(childId))
         await wake(owner.id)
         emitActivity(.command, child, .daemon,
                      "merge-request → \(link.parent) (an owner appeared — request handed over)")
@@ -336,13 +347,16 @@ extension OrchestraService {
             remotesByRepo[repo] = await offActorValue { self.gitRemotes(repo: repo) }
         }
         for t in pending {
-            // Only an OWNED request has a consumer to re-nudge. An unowned one keeps its badge and gets no
-            // timer — and this is self-correcting across a restart: an owner archived while the request was
-            // pending simply comes back unowned here.
+            // Route through the SAME reconcile every other path uses, rather than blind-arming. Blind
+            // arming assumed the parent's original request is already in its inbox — true for a request
+            // that was owned when it was made, and false for one RECORDED while unowned whose owner
+            // appeared just before the daemon restarted: boot would arm a loop for a parent that had never
+            // been told, so its first contact would be a "reminder N/M" for a request it never received.
+            // The reconcile hands over when there is an owner and stops the loop when there isn't (an owner
+            // archived while the request was pending comes back unowned here, self-correcting), and the
+            // handover's dedup key keeps a still-pending original from being duplicated.
             let link = await lineage.read(repo: t.repo, branch: t.branch)
-            guard mergeParentOwner(repo: t.repo, link: link, remotes: remotesByRepo[t.repo] ?? [],
-                                   among: active) != nil else { continue }
-            startMergeRequestNudge(childId: t.id)
+            await reconcileMergeRequest(t.id, link: link, remotes: remotesByRepo[t.repo] ?? [])
         }
     }
 
