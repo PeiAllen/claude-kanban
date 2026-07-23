@@ -14,27 +14,46 @@
 #
 # Usage:
 #   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed .app for a device
-#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to a connected iPhone
+#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to the paired iPhone
+#   scripts/build-ios-device.sh --install --device 'Allen'             # pick one of several iPhones
+#                                                                        # (or export ORCH_IOS_DEVICE)
 #   ORCH_IOS_BUNDLE_ID=com.you.orchestra scripts/build-ios-device.sh   # override bundle id (free teams
 #                                                                        # often need a unique one)
 #
-# ⚠️ NOT YET VERIFIED ON METAL. The path/parsing bugs below were fixed by static reasoning + `xcodegen
-# generate` (project resolves, entitlements path resolves SRCROOT-relative). The signing + install steps
-# themselves — `xcodebuild ... -destination generic/platform=iOS -allowProvisioningUpdates` producing a
-# free-team-signed .app, and `devicectl device install` onto a paired iPhone — have NOT been run: this
-# needs a real device + an Apple ID logged into Xcode. Do that end-to-end before calling the lane "done".
-# Expected free-team gotchas to confirm on-device: bundle id may need to be unique per Apple ID
-# (ORCH_IOS_BUNDLE_ID), and the dev cert/profile expires every 7 days (re-run this script to resign).
+# VERIFIED ON METAL 2026-07-23 — entirely over Wi-Fi, no cable: this script built `** BUILD SUCCEEDED **`
+# signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, then
+# `devicectl device install app` and `devicectl device process launch --terminate-existing` put it on a
+# network-paired iPhone 16 Pro Max and started it. Still unverified: a bundle id colliding with another
+# Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch), and re-signing after the 7-day profile expiry.
+#
+# ⚠️ TWO GOTCHAS, because both present as some other, more alarming failure:
+#
+# 1. THE PHONE MUST BE UNLOCKED, or mounting the developer disk image fails with
+#    kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040. It reads like a pairing or transport
+#    fault; it is the lock screen. Unlock to the home screen and re-run.
+#
+# 2. THIS SCRIPT CANNOT MINT A FREE-TEAM PROFILE — only consume one. `xcodebuild` cannot reach the
+#    keychain-backed session of the Apple ID signed into Xcode from a non-GUI shell, so on a
+#    profile-less bundle it fails with "No Accounts: Add a new account in Accounts settings" +
+#    "No profiles for '<bundle id>' were found" EVEN THOUGH the Apple ID is signed in correctly.
+#    That message invites the wrong diagnosis ("I'm not signed in") — you are; there is simply no
+#    profile on disk yet. -allowProvisioningUpdates is still passed below because it does refresh an
+#    existing profile. So the free-tier cycle is: ⌘R once from the Xcode GUI to mint the 7-day
+#    profile, after which this scripted lane works unattended until it expires. See
+#    App-iOS/DEPLOY-TO-DEVICE.md and docs/08-building-operations.md (§Building the iOS app for a real device).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 INSTALL=0
 CONFIG="Debug"
+DEVICE_SELECTOR="${ORCH_IOS_DEVICE:-}"   # env default; --device wins over it
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --install) INSTALL=1; shift ;;
     --release) CONFIG="Release"; shift ;;
+    --device) DEVICE_SELECTOR="${2:-}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }; shift 2 ;;
+    --device=*) DEVICE_SELECTOR="${1#*=}"; shift ;;
     *) echo "error: unknown option '$1'" >&2; exit 1 ;;
   esac
 done
@@ -89,21 +108,39 @@ echo "built: $APP"
 echo "entitlements: $(codesign -d --entitlements :- "$APP" 2>/dev/null | tr -d '\0' \
   | grep -oE 'aps-environment|keychain-access-groups' | sort -u | paste -sd, -)  (must NOT list aps-environment)"
 
-# --- optionally install to a connected iPhone -----------------------------------------------------
+# --- optionally install to the paired iPhone ------------------------------------------------------
 if [[ "$INSTALL" == 1 ]]; then
-  # Extract the device Identifier (a standard 8-4-4-4-12 UUID) from `devicectl list devices`, robustly.
-  # The old `awk '{print $(NF-1)}'` counted columns from the end, but Name ("Allen's iPhone") and Model
-  # ("iPhone 15 Pro") are multi-word, so NF-1 landed on a Model word (e.g. "15"), never the UUID. Instead
-  # we filter to connected-iPhone rows and grep the one field that has a fixed, unambiguous shape — the
-  # Identifier UUID — which is immune to column count. (The Hostname column is `<udid>.coredevice.local`,
-  # an 8hex-16hex form that does NOT match the full-UUID pattern, so it can't be picked by mistake.)
-  DEVICE="$(xcrun devicectl list devices 2>/dev/null \
-    | awk '/iPhone/ && /connected/' \
-    | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-    | head -1)"
-  [ -n "$DEVICE" ] || { echo "error: no connected iPhone found (xcrun devicectl list devices)" >&2; exit 1; }
+  # Ask devicectl for JSON rather than scraping its table. `devicectl list devices --help` states that
+  # "JSON output to a user-provided file on disk is the ONLY supported interface for scripts/programs
+  # to consume command output" — and the table is exactly what broke this lane before: its State column
+  # renders a network-paired iPhone (the normal state once "Connect via network" is ticked) as
+  # `available (paired)`, so filtering rows for `connected` matched nothing and the install died after a
+  # good build. There is no `state` field in the JSON to key off either — that column is assembled from
+  # connectionProperties — so scripts/lib/ios-pick-device.py selects on device IDENTITY instead
+  # (platform/reality/deviceType) and never on connection state. See that file for the full policy;
+  # scripts/lib/ios-pick-device-test.sh pins it against captured JSON, no phone required.
+  #
+  # --json-output takes a path, so route it through a temp file we own and clean up. devicectl still
+  # prints its human table to stdout; drop that and keep stderr, which carries the real diagnosis when
+  # CoreDevice itself is unhappy (e.g. the XPC/CoreDeviceService errors you get in a sandbox).
+  DEVICES_JSON="$(mktemp -t orch-ios-devices)"
+  trap 'rm -f "$DEVICES_JSON"' EXIT
+  xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null \
+    || { echo "error: 'xcrun devicectl list devices' failed (see above)" >&2; exit 1; }
+  # Array, not ${VAR:+…}: a selector is routinely a name with a space in it ("Allen's iPhone"), and an
+  # unquoted conditional expansion would word-split it into two arguments.
+  PICK_ARGS=(--json "$DEVICES_JSON")
+  if [[ -n "$DEVICE_SELECTOR" ]]; then PICK_ARGS+=(--device "$DEVICE_SELECTOR"); fi
+  # `set -e` aborts here if the picker can't choose one device; it has already explained why on stderr.
+  DEVICE="$(scripts/lib/ios-pick-device.py "${PICK_ARGS[@]}")"
+
   echo "=== install to $DEVICE ==="
-  xcrun devicectl device install app --device "$DEVICE" "$APP"
-  echo "installed. First launch: on the iPhone, trust the developer profile in Settings ▸ General ▸ VPN & Device Management."
+  # A locked phone fails here with kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040, which
+  # reads like a pairing fault — say so up front rather than leaving that to be rediscovered.
+  xcrun devicectl device install app --device "$DEVICE" "$APP" \
+    || { echo "hint: is the iPhone unlocked? a locked phone fails the developer-disk-image mount (CoreDeviceError 12040)." >&2; exit 1; }
+  echo "installed. Launch it from the home screen, or:"
+  echo "  xcrun devicectl device process launch --device $DEVICE --terminate-existing $BUNDLE_ID"
+  echo "First install only: trust the developer profile on the iPhone in Settings ▸ General ▸ VPN & Device Management."
 fi
 echo "DONE"

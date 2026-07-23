@@ -209,10 +209,62 @@ device build sets `CODE_SIGN_ENTITLEMENTS=App-iOS/OrchestraiOS-nopush.entitlemen
 team. (The Simulator lane signs with `CODE_SIGNING_ALLOWED=NO` and ignores entitlements; the paid lane
 keeps `aps-environment` for real push.)
 
-Two operational consequences of the free tier:
+This lane is verified on real hardware (an iPhone 16 Pro Max, iOS 27 beta), **entirely over Wi-Fi with
+no cable**: the script produces a signed `.app` entitled `keychain-access-groups` only, and
+`devicectl device install app` / `device process launch` put it on the phone and start it. Pairing the
+phone once (Xcode ▸ Window ▸ Devices and Simulators ▸ **Connect via network**) is the only step that
+wants a cable.
 
-- **The provisioning profile lasts 7 days.** Re-deploy from Xcode weekly (cable or Wi-Fi to the Mac);
-  there is no TestFlight or App Store distribution on a personal team.
+### The GUI mints the profile; the script consumes it
+
+**`xcodebuild` cannot create a free-team provisioning profile from a non-GUI shell** — it can only use
+one that already exists on disk. Signing a bundle that has no profile yet fails with:
+
+```
+No Accounts: Add a new account in Accounts settings
+No profiles for 'com.orchestra.ios' were found
+```
+
+**even when the Apple ID is correctly signed into Xcode.** The CLI can't reach that account's
+keychain-backed session, so it reports the absence as "no account" — which reliably invites the wrong
+diagnosis. Read it as *"there is no profile on disk yet"*, not *"you are signed out"*.
+
+So the free-tier cycle has two speeds, and only the first needs a human:
+
+1. **Once per profile — ⌘R from the Xcode GUI.** This mints the 7-day development certificate and
+   profile. It is the only step that cannot be scripted.
+2. **Thereafter — `scripts/build-ios-device.sh --install`**, unattended, until the profile expires
+   ~7 days later. Then ⌘R once more. (A paid membership stretches this to a year.)
+
+### Picking the device
+
+`--install` selects the target from `devicectl list devices --json-output`, which is the only interface
+Apple supports for scripts (`devicectl`'s own help says so). It matches on device **identity** —
+`platform` / `reality` / `deviceType` — and deliberately never on connection state: a phone is the same
+phone whether it is `wired` on a cable or `localNetwork` across the room, and the human-facing State
+column renders a network-paired iPhone as `available (paired)`, so no allowlist of state words can be
+right. If the device is genuinely unusable, `devicectl device install` diagnoses it far more precisely
+than a status string could.
+
+With more than one iPhone available the script **refuses to guess** and lists the candidates rather
+than installing over the wrong phone's build. Name the one you want with `--device` (an identifier, a
+udid, or any part of the device name) or export `ORCH_IOS_DEVICE` to make it stick:
+
+```sh
+scripts/build-ios-device.sh --install --device 'Allen'
+```
+
+`scripts/lib/ios-pick-device.py` holds that policy and `scripts/lib/ios-pick-device-test.sh` pins it
+against captured `devicectl` JSON — network-paired, cable-attached, none, several, bad override — so
+the selection logic is testable without a phone in the room.
+
+Three operational consequences of the free tier:
+
+- **The phone must be unlocked** while installing. A locked phone fails the developer-disk-image mount
+  with `kAMDMobileImageMounterDeviceLocked` / `CoreDeviceError 12040`, which reads like a pairing or
+  transport fault and is nothing of the sort.
+- **The provisioning profile lasts 7 days**, and renewing it means ⌘R from the GUI (above); there is no
+  TestFlight or App Store distribution on a personal team.
 - **Real APNs push is out of scope.** A free Apple ID can't mint a `.p8` or enable the Push
   capability, so Orchestra's own push notifications don't work on this lane — "needs you" alerts come
   via the Claude and Codex mobile apps' own notifications instead. Board, terminals, and takeover need
@@ -226,6 +278,7 @@ Two operational consequences of the free tier:
 | `scripts/test.sh` | Tiered `swift test` (unit by default; `--contract` / `--e2e` / `--all`) with the CLT swift-testing flags. |
 | `scripts/lint-tests.sh` | Re-clumping guards: no sleeps / ambient paths / real forks / `makeReal` in the unit tier. Runs on `--all`. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
+| `scripts/build-ios-device.sh` | Build the iOS app signed for a **real iPhone** on a free personal team (no-push entitlements); `--install` also installs it over Wi-Fi, `--device` picks among several phones. Needs a profile minted once by ⌘R in the Xcode GUI — see [above](#building-the-ios-app-for-a-real-device-free-personal-team). |
 | `scripts/build-and-launch-app.sh` | Build & install the bundle, then **refresh the live instance**: quit + relaunch the app and restart the daemon on the new binary. Needed because `build-app.sh` only replaces the bundle on disk — the running app and the KeepAlive daemon keep executing the old code until they restart. Agent tmux sessions are left running (a code refresh, not a state reset — use `reset-state.sh` for a full teardown). `--debug` passes through; `--run` is dropped (it manages the relaunch itself). |
 | `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |
 | `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |
