@@ -246,6 +246,15 @@ path, which the trust gate does not cover: it succeeds even while the developer 
 scripted launch therefore smoke-tests the build but does **not** prove the app opens from the home
 screen — only step 3 does that.
 
+### Release by default
+
+The device lane builds **Release**; `--debug` opts into the unoptimized build when you actually want
+a debugger attached or usable symbols. This is the opposite of the Simulator lane
+(`scripts/ios-live.sh`, which defaults to Debug) and the two are deliberately not harmonized. A build
+that lands on a real phone is there to be *used*, and Debug's `-Onone` Swift is felt directly as UI
+lag in SwiftUI diffing and terminal rendering; the Simulator lane is a tight edit-run loop where a
+faster build beats a faster app. Each lane is optimized for what it is for.
+
 ### Picking the device
 
 `--install` selects the target from `devicectl list devices --json-output`, which is the only interface
@@ -288,7 +297,7 @@ Three operational consequences of the free tier:
 | `scripts/test.sh` | Tiered `swift test` (unit by default; `--contract` / `--e2e` / `--all`) with the CLT swift-testing flags. |
 | `scripts/lint-tests.sh` | Re-clumping guards: no sleeps / ambient paths / real forks / `makeReal` in the unit tier. Runs on `--all`. |
 | `scripts/build-app.sh` | Build & install `Orchestra.app` (`--run`, `--debug`). |
-| `scripts/build-ios-device.sh` | Build the iOS app signed for a **real iPhone** on a free personal team (no-push entitlements); `--install` also installs it over Wi-Fi, `--device` picks among several phones. Needs a profile minted once by ⌘R in the Xcode GUI — see [above](#building-the-ios-app-for-a-real-device-free-personal-team). |
+| `scripts/build-ios-device.sh` | Build the iOS app signed for a **real iPhone** on a free personal team (no-push entitlements). **Release by default** (`--debug` opts out); `--install` also installs it over Wi-Fi, `--device` picks among several phones. Needs a profile minted once by ⌘R in the Xcode GUI — see [above](#building-the-ios-app-for-a-real-device-free-personal-team). |
 | `scripts/build-and-launch-app.sh` | Build & install the bundle, then **refresh the live instance**: quit + relaunch the app and restart the daemon on the new binary. Needed because `build-app.sh` only replaces the bundle on disk — the running app and the KeepAlive daemon keep executing the old code until they restart. Agent tmux sessions are left running (a code refresh, not a state reset — use `reset-state.sh` for a full teardown). `--debug` passes through; `--run` is dropped (it manages the relaunch itself). |
 | `scripts/typecheck-app.sh` | Type-check the app sources without Xcode (pins the CLT toolchain via `toolchain.sh`). |
 | `scripts/reset-state.sh` | Boot out the daemon, kill the tmux server, delete the data dir + app prefs. `--worktrees` also wipes `~/.orchestra` (opt-in — worktrees may hold uncommitted work). |

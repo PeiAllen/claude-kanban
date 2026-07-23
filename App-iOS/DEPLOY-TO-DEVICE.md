@@ -82,6 +82,10 @@ ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install
 (Or drop `DEVELOPMENT_TEAM = XXXXXXXXXX` into the gitignored `App-iOS/DeviceSigning.local.xcconfig`
 and omit the env var. Your team id is in Xcode ▸ Settings ▸ Accounts ▸ your Apple ID ▸ team.)
 
+This builds **Release**, because a build on your actual phone is one you're going to *use* — Debug's
+unoptimized Swift is felt as UI lag while scrolling the board and rendering terminals. Add `--debug`
+on the rare occasion you want the unoptimized build to attach a debugger or get usable symbols.
+
 It prints the phone it chose. If you have **more than one** iPhone paired it refuses to guess and
 lists them — name the one you want, by identifier, udid, or any part of its name:
 

@@ -13,10 +13,11 @@
 # Accounts ▸ your Apple ID ▸ team. A free Apple ID gets a "Personal Team" with a valid id.
 #
 # Usage:
-#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed .app for a device
+#   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh            # build a signed RELEASE .app
 #   ORCH_IOS_TEAM_ID=XXXXXXXXXX scripts/build-ios-device.sh --install  # also install to the paired iPhone
 #   scripts/build-ios-device.sh --install --device 'Allen'             # pick one of several iPhones
 #                                                                        # (or export ORCH_IOS_DEVICE)
+#   scripts/build-ios-device.sh --install --debug                      # unoptimized build (debugger/symbols)
 #   ORCH_IOS_BUNDLE_ID=com.you.orchestra scripts/build-ios-device.sh   # override bundle id (free teams
 #                                                                        # often need a unique one)
 #
@@ -24,9 +25,12 @@
 # signing `keychain-access-groups` only (no aps-environment) for team 3Q39256L2K / com.orchestra.ios, then
 # `devicectl device install app` and `devicectl device process launch --terminate-existing` put it on a
 # network-paired iPhone 16 Pro Max and started it. Still unverified: a bundle id colliding with another
-# Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch), and re-signing after the 7-day profile expiry.
+# Apple ID (the ORCH_IOS_BUNDLE_ID escape hatch), re-signing after the 7-day profile expiry, and the
+# Release configuration specifically — that run predates the Debug→Release default flip below, so what
+# went on metal was a Debug build. Signing and install are configuration-independent, so this is a gap
+# in the evidence rather than a known problem.
 #
-# ⚠️ TWO GOTCHAS, because both present as some other, more alarming failure:
+# ⚠️ THREE GOTCHAS, because each presents as some other, more alarming failure:
 #
 # 1. THE PHONE MUST BE UNLOCKED, or mounting the developer disk image fails with
 #    kAMDMobileImageMounterDeviceLocked / CoreDeviceError 12040. It reads like a pairing or transport
@@ -51,11 +55,21 @@ cd "$(dirname "$0")/.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 INSTALL=0
-CONFIG="Debug"
+# RELEASE by default, unlike the Simulator lane (scripts/ios-live.sh), and the two are deliberately
+# NOT harmonized: this script's output goes on a real phone to be USED, where Debug's -Onone Swift is
+# felt directly as UI lag (SwiftUI diffing, terminal rendering). ios-live.sh is a tight
+# iterate-in-the-Simulator loop where a faster build beats a faster app, so Debug is right there.
+# Optimize each lane for what it is actually for; --debug below is the escape hatch for the rare
+# device build you mean to attach a debugger to or want usable symbols in.
+CONFIG="Release"
 DEVICE_SELECTOR="${ORCH_IOS_DEVICE:-}"   # env default; --device wins over it
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --install) INSTALL=1; shift ;;
+    --debug) CONFIG="Debug"; shift ;;
+    # Redundant with the default, but kept and kept MEANINGFUL: an older invocation asking for
+    # Release still gets Release, and selecting rather than ignoring keeps the two flags
+    # order-independent (last one wins) instead of silently letting --debug beat a later --release.
     --release) CONFIG="Release"; shift ;;
     --device) DEVICE_SELECTOR="${2:-}"; [ -n "$DEVICE_SELECTOR" ] || { echo "error: --device needs a value" >&2; exit 1; }; shift 2 ;;
     --device=*) DEVICE_SELECTOR="${1#*=}"; shift ;;
