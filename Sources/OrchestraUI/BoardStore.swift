@@ -427,6 +427,12 @@ public class BoardStore: ObservableObject {
     /// on a permission prompt or dead — a genuine block dominates; else **running** if ANY is active or
     /// being born — an active reviewer keeps the eye green even while a sibling has concluded; else
     /// **idle** — every attached agent has finished its turn.
+    ///
+    /// SUPERSEDED for rendering by `attentionLiveness(of:)` (BoardStore+Attention), which derives the
+    /// same three tiers from the attention fold so an amber eye and an amber chip are one fact — this
+    /// phase-only mapping misses a reviewer that asked a question or is nearly out of context. Desktop
+    /// reads the fold version; this remains only for iOS's "has any attached agent" check until slice 5
+    /// adopts the fold there, and should retire with it. Do NOT tint from it.
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }

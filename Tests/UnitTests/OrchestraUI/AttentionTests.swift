@@ -259,4 +259,19 @@ import Foundation
     @Test func quietCard_hasNoReasons() {
         #expect(reasons(card(phase: .live(.running))).isEmpty)
     }
+
+    // MARK: - chip text
+
+    @Test func chipText_topLabelThenOverflow() {
+        #expect(Attention.chipText([]) == nil)                                   // quiet ⇒ nothing renders
+        #expect(Attention.chipText([.init(.permission, "permission")]) == "permission")
+        #expect(Attention.chipText([.init(.permission, "permission"),
+                                    .init(.ctxCritical, "ctx 91%")]) == "permission +1")
+    }
+
+    @Test func subtreeChipText_countsCardsAndAgrees() {
+        #expect(Attention.subtreeChipText(0) == nil)
+        #expect(Attention.subtreeChipText(1) == "1 needs you")
+        #expect(Attention.subtreeChipText(3) == "3 need you")
+    }
 }

@@ -112,6 +112,21 @@ public enum Attention {
         return out.sorted { $0.reason.rawValue < $1.reason.rawValue }
     }
 
+    // MARK: - chip text (pure, so the strings are testable without a view)
+
+    /// The OWN chip's text: the top-priority label, with the rest folded into a "+N". nil ⇒ the card is
+    /// quiet and NOTHING renders — absence is the information, so there is no empty-chip state.
+    public static func chipText(_ signals: [AttentionSignal]) -> String? {
+        guard let top = signals.first else { return nil }
+        return signals.count > 1 ? "\(top.label) +\(signals.count - 1)" : top.label
+    }
+
+    /// The SUBTREE chip's text — how many descendant CARDS need you. nil below 1, same reason.
+    public static func subtreeChipText(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count == 1 ? "1 needs you" : "\(count) need you"
+    }
+
     /// The stall row: the generic detector AND the safety net. A conjunction — every guard below is a
     /// separate way for the quiet to be EXPLAINED, and an explained quiet is not a stall.
     ///

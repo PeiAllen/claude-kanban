@@ -669,6 +669,72 @@ private struct DebugLaunchHook: ViewModifier {
         }, width: 820), to: "\(dir)/25-hier-drill.png")
     }
 
+    // MARK: - Attention (slice 3b) fixtures
+
+    /// Every attention surface on one board (`ORCH_SHOW=attention`), arranged so the SCAN RULE is the
+    /// thing you check: solid amber appears only where a human is actually needed, and nowhere else.
+    ///
+    /// Covers the four states the slice ships — an OWN chip (permission), a stall (time-derived), a
+    /// declared question, and a SUBTREE rollup on an ancestor whose child is the one that stopped —
+    /// plus two controls that must stay quiet: a healthy running card, and a merge-request into an
+    /// OWNED parent, which wears a grey ⏱ and must never amber.
+    static func showAttention(model: BoardModel) {
+        let repo = DemoConfig.repoRoot
+
+        func mk(_ title: String, _ branch: String, _ col: Column, _ phase: Phase, _ order: Int,
+                desc: String = "", diff: DiffStat? = nil, tree: TreeStat? = nil,
+                ageMinutes: Double = 4, ctxPct: Double = 0, question: String? = nil,
+                access: CardAccess = .readWrite, parentBranch: String? = nil) -> Task {
+            var t = Task(title: title, repo: repo, branch: branch,
+                         cwd: "\(repo)/.worktrees/\(branch)", access: access,
+                         model: AgentModel(id: "claude-opus-4-8"),
+                         startIn: col == .plan ? .plan : .impl, column: col, order: order,
+                         phase: phase, initialPrompt: title, parentBranch: parentBranch)
+            t.desc = desc
+            t.diffStat = diff
+            t.treeStat = tree
+            t.ctxPct = ctxPct
+            if let q = question {
+                t.pendingQuestion = PendingQuestion(text: q, declaredAt: Date(timeIntervalSinceNow: -600))
+            }
+            // The stall row is TIME-derived, so the fixture has to age its cards past the threshold for
+            // the amber to exist at all.
+            t.phaseChangedAt = Date(timeIntervalSinceNow: -ageMinutes * 60)
+            t.updatedAt = t.phaseChangedAt
+            return t
+        }
+
+        // The control: healthy, working, quiet cluster intact — no amber anywhere on it.
+        let running = mk("live-wake-delivery", "feat/live-wake", .impl, .live(.running), 0,
+                         desc: "Wave 2/4 — lease/claim delivery",
+                         diff: DiffStat(filesChanged: 4, insertions: 38, deletions: 9))
+        // OWN chip: blocked mid-turn on a tool approval — the hardest block short of death.
+        let blocked = mk("pr/wake-endpoint", "pr/wake-endpoint", .impl,
+                         .live(.waiting(.permission)), 1, desc: "Wake endpoint + route ladder",
+                         diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28))
+        // OWN chip + overflow: a declared question on a card that is also nearly out of context.
+        let asking = mk("plan/codex-restart", "plan/codex-restart", .plan,
+                        .live(.waiting(.humanTurn)), 0, ageMinutes: 30, ctxPct: 91,
+                        question: "squash or rebase the wave?")
+        // The quiet control that must NOT amber: merge-requested into a parent a live card owns.
+        let owned = mk("pr/child-of-root", "pr/child", .review, .live(.waiting(.humanTurn)), 0,
+                       diff: DiffStat(filesChanged: 2, insertions: 21, deletions: 4),
+                       tree: TreeStat(state: .mergeRequested), ageMinutes: 90,
+                       parentBranch: "feat/orchestrator")
+        // The rollup pair: an idle ORCHESTRATOR whose stopped child owns the stall. Leaf attachment
+        // means the amber sits on the child and the parent shows "1 needs you" on L4 — one fact, one
+        // amber, aggregated once.
+        let orchestrator = mk("feat/orchestrator", "feat/orchestrator", .impl,
+                              .live(.waiting(.humanTurn)), 2, desc: "Wave C — attention system",
+                              tree: TreeStat(state: .inSync, mergedChildren: 2, plannedChildren: 4),
+                              ageMinutes: 40)
+        let stoppedChild = mk("pr/stopped-child", "pr/stopped", .impl, .live(.waiting(.humanTurn)), 3,
+                              diff: DiffStat(filesChanged: 9, insertions: 412, deletions: 96),
+                              ageMinutes: 40, parentBranch: "feat/orchestrator")
+
+        model.tasks = [running, blocked, asking, owned, orchestrator, stoppedChild]
+    }
+
     // MARK: - Card anatomy (slice 2a) fixtures
 
     /// Every card state the four-line anatomy has to survive, as one board. Used windowed
@@ -972,6 +1038,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "demo": DebugLaunchHook.showDemo(model: model)
             case "attached": DebugLaunchHook.showAttached(model: model)
             case "anatomy": DebugLaunchHook.showAnatomy(model: model)
+            case "attention": DebugLaunchHook.showAttention(model: model)
             default: break
             }
         }

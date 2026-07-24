@@ -13,18 +13,26 @@ struct DrillHeader: View {
 
     var body: some View {
         if let root = model.drillScopeCard {
-            VStack(alignment: .leading, spacing: 8) {
-                breadcrumb
-                banner(root)
-                // The root's OWN attached reviewers are embedded in its drill (the root is this banner,
-                // not a peekable card), so host them here as interactive rows — otherwise they'd be
-                // unreachable in their target's drill. Its lineage children are the board columns below.
-                let rows = model.drillHostedRows()
-                if !rows.isEmpty {
-                    VStack(spacing: 2) {
-                        ForEach(rows, id: \.task.id) { PeekRow(task: $0.task, depth: $0.depth) }
+            // One clock for the WHOLE header, not just the banner: the hosted rows below carry their own
+            // time-derived attention labels, and the banner's `SubtreeSegments` a time-derived count, so
+            // wrapping only `banner(root)` would leave those frozen until the next daemon broadcast.
+            TimelineView(.periodic(from: .now, by: 60)) { ctx in
+                VStack(alignment: .leading, spacing: 8) {
+                    breadcrumb
+                    banner(root, now: ctx.date)
+                    // The root's OWN attached reviewers are embedded in its drill (the root is this
+                    // banner, not a peekable card), so host them here as interactive rows — otherwise
+                    // they'd be unreachable in their target's drill. Its lineage children are the board
+                    // columns below.
+                    let rows = model.drillHostedRows()
+                    if !rows.isEmpty {
+                        VStack(spacing: 2) {
+                            ForEach(rows, id: \.task.id) {
+                                PeekRow(task: $0.task, depth: $0.depth, now: ctx.date)
+                            }
+                        }
+                        .padding(.leading, 4)
                     }
-                    .padding(.leading, 4)
                 }
             }
             .padding(.horizontal, 16).padding(.top, 12)
@@ -54,7 +62,7 @@ struct DrillHeader: View {
         }
     }
 
-    private func banner(_ root: OrchestraCore.Task) -> some View {
+    private func banner(_ root: OrchestraCore.Task, now: Date) -> some View {
         let sem = theme.statusColor(root.phaseDisplay)
         return HStack(spacing: 10) {
             // The root's own status pill (dot + state + time-in-state), the same fact the card showed.
@@ -72,7 +80,14 @@ struct DrillHeader: View {
             }
             Text("#\(root.shortId)").font(F.mono(9.5)).foregroundStyle(theme.text3)
 
-            SubtreeSegments(root: root)   // the root's OWN live-children bar (no rollup)
+            // The root's OWN attention only. Its subtree IS the board below — every card that needs you
+            // is already visible as a column citizen — so a rollup here would double-count the very
+            // thing you are looking at.
+            if let text = Attention.chipText(model.ownAttention(of: root, now: now)) {
+                AttentionChip(text: text)
+            }
+
+            SubtreeSegments(root: root, now: now)   // the root's OWN live-children bar (no rollup)
 
             Spacer(minLength: 8)
             // The root left the columns to become this banner, so this is how you reach its own agent.
