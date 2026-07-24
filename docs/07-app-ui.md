@@ -225,8 +225,17 @@ The same fold renders at four places, differing only in *subject*:
 | **Drill banner** | the scoped root itself | its own chip only, never a rollup |
 
 The **eye** is the same fact at a different granularity — per agent on a peek row, rolled up on L4 — so
-an amber eye and an amber chip can never disagree. **Absence is information**: a quiet card renders no
-chip at all, which is why there is no empty or "OK" state to read past.
+an amber eye and an amber chip can never disagree. On L4 that means a blocked reviewer is reported
+twice on one line, by the eye's tint and inside the chip's count: deliberate, because the eye says
+*which kind* of subordinate needs you and the chip says *how many* — the tint is not itself a solid
+amber chip, so the scan rule is unaffected. **Absence is information**: a quiet card renders no chip at
+all, which is why there is no empty or "OK" state to read past.
+
+One consequence of scoping the stall clock to the card and its reviewers (and not its descendants) is
+that amber can **move** as a tree winds down: a root already quiet past the threshold ambers first, and
+once its children have been quiet that long too the amber settles onto them while the root switches to
+the rollup. Both readings are true when they appear — the root really had been silent that long — but
+it's worth knowing the amber relocating downward is the system converging, not flickering.
 
 Anything time-derived here (a card stalls by going *quiet* past a threshold) needs a clock, not a
 daemon message — so each card, and the drill header, runs **one** `TimelineView` above all of its

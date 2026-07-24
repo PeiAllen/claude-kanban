@@ -169,6 +169,47 @@ import Foundation
         #expect(board([target, a, b]).attentionLiveness(of: target) == .idle)
     }
 
+    // MARK: - the flagship case: a parked review pass
+
+    /// The scenario the stall net was built for, end-to-end: a review pair concluded, nobody archived
+    /// them, and the whole constellation went quiet. The reviewers can't own it (attached never do), so
+    /// the TARGET does — which is the only way an unconsumed review surfaces at all.
+    @Test func parkedReviewPair_goesQuiet_theTargetOwnsTheStall() {
+        let target = card("01", branch: "feat/x")
+        let r1 = card("02", branch: "review/x", parentBranch: "feat/x", access: .readOnly)
+        let r2 = card("03", branch: "review/y", parentBranch: "feat/x", access: .readOnly)
+        let m = board([target, r1, r2])
+
+        #expect(m.ownAttention(of: target, now: late).contains { $0.reason == .stalled })
+        #expect(!m.ownAttention(of: r1, now: late).contains { $0.reason == .stalled })
+        #expect(!m.ownAttention(of: r2, now: late).contains { $0.reason == .stalled })
+    }
+
+    /// But a DEAD reviewer holds its own reason, so leaf attachment hands the amber to it and the target
+    /// reports through the rollup — the same "one fact, one amber" rule, reached via attachment.
+    @Test func deadReviewer_ownsTheAmber_andTheTargetDefersToTheRollup() {
+        let target = card("01", branch: "feat/x")
+        let dead = card("02", branch: "review/x", parentBranch: "feat/x",
+                        access: .readOnly, phase: .dead(.agentExited))
+        let m = board([target, dead])
+
+        #expect(m.ownAttention(of: dead, now: late).contains { $0.reason == .dead })
+        #expect(!m.ownAttention(of: target, now: late).contains { $0.reason == .stalled })
+        #expect(m.subtreeAttention(of: target, now: late) == 1)
+    }
+
+    // MARK: - row 3 liveness: a dead parent cannot merge for you
+
+    /// `lineageParent` only filters archived, so a dead-but-unarchived parent would otherwise read as
+    /// "owned" and silence the child completely — no merge amber AND stall-exempt.
+    @Test func mergeRequested_intoADeadParent_ambersForTheHuman() {
+        let deadParent = card("01", branch: "feat/root", phase: .dead(.agentExited))
+        let child = card("02", branch: "feat/child", parentBranch: "feat/root",
+                         treeStat: TreeStat(state: .mergeRequested))
+        let m = board([deadParent, child])
+        #expect(m.ownAttention(of: child, now: late).contains { $0.reason == .mergeRequested })
+    }
+
     // MARK: - the fold must not blow up on a deep chain
 
     /// Leaf attachment makes `ownAttention` and `subtreeAttention` mutually recursive. Recomputed

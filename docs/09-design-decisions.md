@@ -1164,7 +1164,10 @@ otherwise exempt it. The idle gate still applies, so a card that resumed running
 does not amber.
 
 **Two folds, one registry, all client-side** (`Attention` + `BoardStore+Attention`): **own** (a card's
-own reasons) and **subtree** (how many *descendants* hold at least one reason, self excluded). The eye
+own reasons) and **subtree** (how many *descendants* hold at least one reason, self excluded). Mind the
+near-homonyms in `OrchestraUI` until the phone adopts this: **`Attention.Reason` / `AttentionSignal`**
+are this registry; **`AttentionReason` / `AttentionItem`** are the phone's older, separate queue in
+`NeedsYouQueue`. The eye
 tint is derived from the same fold rather than from phase, so an amber eye and an amber chip are the
 same fact — which also means a reviewer that asked a question or is nearly out of context now ambers the
 eye, where a phase-only mapping saw only "blocked or dead". Rendering is in

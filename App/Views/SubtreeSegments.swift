@@ -54,7 +54,7 @@ struct SubtreeSegments: View {
             // The trailing edge the drill tile's leading placement keeps clear.
             if showsSubtreeAttention,
                let text = Attention.subtreeChipText(model.subtreeAttention(of: root, now: now)) {
-                AttentionChip(text: text)
+                AttentionChip(text: text, accessibilityText: "\(text) below this card")
                     .help("\(text) below this card — select it to see which")
             }
         }
@@ -82,8 +82,11 @@ struct SubtreeSegments: View {
     /// not the old phase-only mapping), so an amber eye and an amber chip are one fact. No `now`: an
     /// attached agent never stalls, so the tiers are time-independent.
     @ViewBuilder private func eye(compact: Bool) -> some View {
-        if let liveness = model.attentionLiveness(of: root) {
-            let count = model.attachedAgents(of: root).count
+        // One `attachedAgents` walk for both the tier and the count — it filters the whole board per
+        // call, and this line renders on every card on every tick.
+        let agents = model.attachedAgents(of: root)
+        if !agents.isEmpty, let liveness = model.attentionLiveness(of: root) {
+            let count = agents.count
             let tint = theme.eyeTint(liveness)
             HStack(spacing: 3) {
                 Image(systemName: "eye").font(F.ui(8.5))

@@ -13,6 +13,9 @@ import OrchestraUI
 struct AttentionChip: View {
     @Environment(\.theme) var theme: Theme
     let text: String
+    /// Spoken form. The own chip reads "Needs you: permission"; the subtree chip's text is already a
+    /// sentence ("2 need you"), so prefixing it would say "Needs you: 2 need you".
+    var accessibilityText: String? = nil
 
     var body: some View {
         Text(text)
@@ -24,6 +27,6 @@ struct AttentionChip: View {
             .padding(.vertical, 2)
             .background(Capsule(style: .continuous).fill(theme.attentionChipFill))
             .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("Needs you: \(text)")
+            .accessibilityLabel(accessibilityText ?? "Needs you: \(text)")
     }
 }

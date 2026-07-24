@@ -430,9 +430,10 @@ public class BoardStore: ObservableObject {
     ///
     /// SUPERSEDED for rendering by `attentionLiveness(of:)` (BoardStore+Attention), which derives the
     /// same three tiers from the attention fold so an amber eye and an amber chip are one fact — this
-    /// phase-only mapping misses a reviewer that asked a question or is nearly out of context. Desktop
-    /// reads the fold version; this remains only for iOS's "has any attached agent" check until slice 5
-    /// adopts the fold there, and should retire with it. Do NOT tint from it.
+    /// phase-only mapping misses a reviewer that asked a question or is nearly out of context. The
+    /// desktop reads the fold version; iOS still both gates and TINTS from this one
+    /// (`App-iOS/Views/AttachedAgentsInline.swift`), so it stays until the iOS slice adopts the fold,
+    /// and retires with it. Don't add new tint call sites.
     public func attachedLiveness(of target: Task) -> AttachedLiveness? {
         let agents = attachedAgents(of: target)
         guard !agents.isEmpty else { return nil }

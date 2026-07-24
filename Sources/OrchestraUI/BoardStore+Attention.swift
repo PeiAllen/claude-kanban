@@ -52,11 +52,13 @@ extension BoardStore {
 
     private func ownAttention(of c: Task, now: Date, memo: inout [UUID: [AttentionSignal]]) -> [AttentionSignal] {
         if let cached = memo[c.id] { return cached }
-        let canStall = !isAttached(c)
+        // Eligible to OWN a stall: not an attached reviewer (they surface through their target), and
+        // idle — `isStalled` gates on both anyway, so folding them in here is behaviour-preserving and
+        // skips the whole subtree walk for the running/dead/transient majority of a live board.
+        let canStall = !isAttached(c) && Attention.isIdle(c)
         // ONE subtree walk, reused for both the stall guard and leaf attachment — `descendants` is
         // itself an O(n) filter per node, so walking it twice per card is the difference between a
-        // cheap fold and a visible hitch on a deep chain. An attached agent skips it entirely (only
-        // the stall row consumes it, and a reviewer can't stall).
+        // cheap fold and a visible hitch on a deep chain.
         let kids = canStall ? descendants(of: c) : []
         // Leaf attachment: an ancestor whose descendants already hold attention reports them via the
         // rollup instead of ambering for the same silence. `contains` short-circuits on the first one —
@@ -66,7 +68,10 @@ extension BoardStore {
             for: c,
             attached: attachedAgents(of: c),
             descendants: kids,
-            parentOwned: lineageParent(of: c) != nil,
+            // "Owned" means a card that will actually DO the merge. A dead parent won't — it is itself
+            // ambering for recovery — so its child must route to the human rather than wait on a card
+            // that cannot act. (`lineageParent` only filters archived, so the liveness test is here.)
+            parentOwned: lineageParent(of: c).map { $0.phase.kind != .dead } ?? false,
             canStall: canStall,
             descendantHoldsAttention: holds,
             now: now)

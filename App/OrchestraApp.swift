@@ -768,7 +768,15 @@ private struct DebugLaunchHook: ViewModifier {
                               diff: DiffStat(filesChanged: 9, insertions: 412, deletions: 96),
                               ageMinutes: 40, parentBranch: "feat/orchestrator")
 
-        model.tasks = [running, blocked, asking, owned, orchestrator, stoppedChild]
+        // The LONGEST label the chip can carry. It exists in the fixture specifically so the narrow
+        // shot proves "never truncates" against the worst case rather than against "permission".
+        let drained = mk("feat/wave-b", "feat/wave-b", .impl, .live(.waiting(.humanTurn)), 4,
+                         desc: "Wave B — all children merged",
+                         tree: TreeStat(state: .inSync, mergedChildren: 4, plannedChildren: 4,
+                                        drained: true),
+                         ageMinutes: 55)
+
+        model.tasks = [running, blocked, asking, owned, orchestrator, stoppedChild, drained]
     }
 
     // MARK: - Card anatomy (slice 2a) fixtures

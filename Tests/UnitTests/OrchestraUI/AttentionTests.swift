@@ -105,9 +105,29 @@ import Foundation
         #expect(r.first?.label.hasPrefix("stalled ") == true)
     }
 
-    @Test func stall_timerBoundary_underT_isQuiet_overT_fires() {
+    /// Strictly greater than T — exactly-at-T is still quiet, so a `>`/`>=` slip is caught.
+    @Test func stall_timerBoundary_underT_isQuiet_atT_isQuiet_overT_fires() {
         #expect(!reasons(card(), now: t0.addingTimeInterval(T - 1)).contains { $0.reason == .stalled })
+        #expect(!reasons(card(), now: t0.addingTimeInterval(T)).contains { $0.reason == .stalled })
         #expect(reasons(card(), now: t0.addingTimeInterval(T + 1)).contains { $0.reason == .stalled })
+    }
+
+    /// The clock is the NEWER of `phaseChangedAt` and `updatedAt`: a card touched without a phase change
+    /// is not silent. Every other fixture sets the two equal, so this is what stops the `max` collapsing
+    /// to `phaseChangedAt` unnoticed.
+    @Test func stall_timerTakesTheNewerOfPhaseChangedAndUpdated() {
+        var touched = card()                                   // phaseChangedAt stays at t0…
+        touched.updatedAt = late.addingTimeInterval(-30)        // …but it was touched 30s ago
+        #expect(!reasons(touched, now: late).contains { $0.reason == .stalled })
+    }
+
+    /// ...and the card ITSELF is in the constellation, not just its reviewers: a card that moved
+    /// recently is not stalled even when every attached agent has been quiet for ages.
+    @Test func stall_timerIncludesTheCardItself_notOnlyItsAttachedAgents() {
+        let staleReviewer = card("02", access: .readOnly)                    // quiet since t0
+        let recentlyMoved = card(at: late.addingTimeInterval(-30))           // but the card just moved
+        #expect(!reasons(recentlyMoved, attached: [staleReviewer], now: late)
+            .contains { $0.reason == .stalled })
     }
 
     /// The timer spans the CONSTELLATION — the card plus its attached agents — so a reviewer that
@@ -177,9 +197,14 @@ import Foundation
         #expect(!reasons(card(), attached: [armedReviewer], now: late).contains { $0.reason == .stalled })
     }
 
-    /// A concluded (idle) reviewer does NOT defeat it — a parked review pair is exactly what the net
-    /// is meant to catch, and a dead one is equally settled.
-    @Test func stall_idleOrDeadAttachedAgentsStillStall() {
+    /// Concluded and dead reviewers are both SETTLED, so neither defeats the quiet check — a parked
+    /// review pair is exactly what the net exists to catch.
+    ///
+    /// Scope note: this is the pure predicate, with leaf attachment held at `false`. Through the store a
+    /// DEAD reviewer is also a descendant holding `.dead`, so leaf attachment defers the target instead
+    /// (the dead reviewer owns the amber). Both end-to-end outcomes are pinned in
+    /// `BoardStoreAttentionTests`; this one isolates the settled check.
+    @Test func stall_idleOrDeadAttachedAgentsAreSettled_soDoNotDefeatIt() {
         let idleReviewer = card("02", access: .readOnly)
         let deadReviewer = card("03", phase: .dead(.agentExited), access: .readOnly)
         #expect(reasons(card(), attached: [idleReviewer, deadReviewer], now: late).contains { $0.reason == .stalled })

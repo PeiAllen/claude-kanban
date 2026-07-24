@@ -17,11 +17,16 @@ struct PeekRow: View {
     let task: OrchestraCore.Task
     var depth: Int = 0
     /// From the enclosing card's (or drill header's) clock — the action label can be a stall, which
-    /// crosses its threshold on time alone.
-    var now: Date = .now
+    /// crosses its threshold on time alone. Deliberately NOT defaulted: a call site that forgot to
+    /// thread the clock would otherwise capture one timestamp at view init and freeze there, and the
+    /// symptom ("the stall label never appears") looks nothing like the cause. Make it a compile error.
+    let now: Date
 
     private var isSelected: Bool { model.selectedId == task.id }
-    private var isAttached: Bool { task.access == .readOnly }
+    /// The DERIVED attachment (a read-only card with a resolvable target), not bare `.readOnly` — a
+    /// read-only card with no target is an ordinary citizen, and giving it the eye branch would send it
+    /// down `attentionTier`'s now-free path, which is only sound for a genuine attached agent.
+    private var isAttached: Bool { model.isAttached(task) }
 
     /// Uniform compact row height. Fixing it lets the row use a `GeometryReader` for width without the
     /// reader's fill-both-axes behaviour blowing the row up — and one fixed height IS the spec ("row
