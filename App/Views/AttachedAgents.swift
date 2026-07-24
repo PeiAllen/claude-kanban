@@ -20,21 +20,48 @@ struct PeekRow: View {
     private var isSelected: Bool { model.selectedId == task.id }
     private var isAttached: Bool { task.access == .readOnly }
 
+    /// Uniform compact row height. Fixing it lets the row use a `GeometryReader` for width without the
+    /// reader's fill-both-axes behaviour blowing the row up — and one fixed height IS the spec ("row
+    /// height uniform"). Sized to the tallest zone (the title at `F.ui(11.5)`), a hair over its line box.
+    private let rowH: CGFloat = 18
+
+    /// The squish ladder — the loss order as the row narrows, matching the peek-row spec's precedence:
+    /// desc/note drops first, then the stage chip collapses word→letter, then the diffstat sheds its file
+    /// count (the lowest-value part — `+N −M` answers "how big"), then the whole diffstat drops. The title
+    /// (kept to its first few words) and the chip itself are never lost. `w` is the row's measured content
+    /// width; the real board floor is ~150pt, so a direct child keeps title+letter.
+    ///
+    /// SEAM for slice 3b (`feat/attention-system`): the own-attention **alert** lands in the action slot
+    /// AHEAD of the diffstat, at the TOP of the keep-order — shown at every width, even before the title's
+    /// words. 3b derives it from the attention registry (not an ad-hoc phase check), so it is deliberately
+    /// NOT built here; when it arrives it slots in at the `// alert` mark below. It MUST be intrinsically
+    /// sized (`.fixedSize()` + `.lineLimit(1)`, same discipline as the diffstat/chip) — a flexible alert
+    /// Text would wrap into a tall pill (the very bug this file fixes) or, if high-priority, push the title out.
     var body: some View {
         Button { model.selectAndEnterTerminal(task.id) } label: {
-            HStack(spacing: 7) {
-                Circle().fill(theme.statusColor(task.phaseDisplay).dot).frame(width: 6, height: 6)   // dot
-                Text(task.title).font(F.ui(11.5)).foregroundColor(theme.text)
-                    .lineLimit(1).layoutPriority(1)                                                   // title
-                if !task.cardLine.isEmpty {
-                    Text(task.cardLine).font(F.ui(10.5)).foregroundColor(theme.text3).lineLimit(1)    // desc/note (truncates first)
+            GeometryReader { geo in
+                let w = geo.size.width
+                HStack(spacing: 7) {
+                    Circle().fill(theme.statusColor(task.phaseDisplay).dot).frame(width: 6, height: 6)   // dot
+                    Text(task.title).font(F.ui(11.5)).foregroundColor(theme.text)
+                        .lineLimit(1).layoutPriority(1)                                                   // title — keeps its first words
+                    if w >= 280, !task.cardLine.isEmpty {
+                        Text(task.cardLine).font(F.ui(10.5)).foregroundColor(theme.text3).lineLimit(1)    // desc/note (drops first)
+                    }
+                    Spacer(minLength: 6)
+                    // alert — slice 3b's own-attention label goes HERE, ahead of the diffstat, highest keep-priority.
+                    if w >= 170, let stat = task.diffStat, stat.filesChanged > 0 {
+                        // `.fixedSize()` so a starved diffstat never wraps its `+N −M` digits char-by-char
+                        // into a tall pill (the peek-row bug). It drops out whole below 170 rather than
+                        // shrink; from 240 down it first sheds the file count (`showFiles`) so the title's
+                        // words survive the tightest pinch (wide diff + word chip) instead of crushing to "…".
+                        DiffStatNumbers(stat: stat, showFiles: w >= 240).fixedSize()                     // action slot: compact diff
+                    }
+                    chip(word: w >= 200)                                                                  // chip slot: word, or a single letter when tight
                 }
-                Spacer(minLength: 6)
-                if let stat = task.diffStat, stat.filesChanged > 0 {
-                    DiffStatNumbers(stat: stat)                                                       // action slot: compact diff
-                }
-                chip                                                                                  // chip slot
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)                    // fill + vertically centre in the fixed row
             }
+            .frame(height: rowH)
             .padding(.leading, CGFloat(depth) * 12)
             .padding(.horizontal, 8).padding(.vertical, 5)
             .background(
@@ -50,21 +77,31 @@ struct PeekRow: View {
 
     /// Attached reviewer → the eye (read-only, no workflow column). Lineage child → a stage-tinted
     /// column chip. The stage hue matches the L4 subtree segments (`theme.stageColor`).
-    @ViewBuilder private var chip: some View {
+    @ViewBuilder private func chip(word: Bool) -> some View {
         if isAttached {
             // Liveness-tinted eye — the same three-tier mapping as the L4 roll-up eye, for this one agent:
             // green (active) · grey (finished its turn) · amber (blocked on a permission prompt / dead).
             Image(systemName: "eye").font(F.ui(9))
                 .foregroundColor(theme.eyeTint(BoardStore.AttachedLiveness(phase: task.phase)))
         } else {
-            let c = theme.stageColor(task.column)
-            Text(stageLabel).font(F.ui(9, .medium)).tracking(0.3)
-                .foregroundColor(c.text)
-                .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(c.tint))
+            // Full stage word when the row has room (`word`), else a single-letter pill — the letter frees
+            // ~30pt so the title keeps its first few words instead of collapsing to "…". The form is chosen
+            // from the MEASURED row width (not `ViewThatFits`, which the greedy `.layoutPriority(1)` title
+            // starves to always pick the letter). `.lineLimit(1).fixedSize()` keeps it one horizontal line.
+            stagePill(word ? stageLabel : stageLetter, theme.stageColor(task.column))
         }
+    }
+    private func stagePill(_ text: String, _ c: SemColor) -> some View {
+        Text(text).font(F.ui(9, .medium)).tracking(0.3)
+            .foregroundColor(c.text)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(c.tint))
     }
     private var stageLabel: String {
         switch task.column { case .plan: return "PLAN"; case .impl: return "IMPL"; case .review: return "REVIEW" }
+    }
+    private var stageLetter: String {
+        switch task.column { case .plan: return "P"; case .impl: return "I"; case .review: return "R" }
     }
 }

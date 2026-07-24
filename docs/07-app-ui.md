@@ -81,6 +81,13 @@ level deeper (indented); the reveal follows the selection's ancestry, so a deep 
 opens. Clicking a row selects that card, opening its inspector/terminal; the row stays visible while
 selected, so Esc out of its terminal lands back on the row rather than into the void.
 
+The row is **one compact fixed-height line** — nothing wraps or stretches vertically — and it degrades by
+measured width so a narrow column stays legible. As the row narrows the loss order is: the note/desc drops,
+then the diffstat sheds its file count (`+N −M` — how big — outlives `Nf`), then the stage chip collapses
+from its word (`PLAN`/`IMPL`/`REVIEW`) to a single letter (`P`/`I`/`R`), then the diffstat drops entirely.
+The **title** (truncated to its first words) and the **chip** are never lost. The own-attention alert, when
+the attention system populates the action slot, sits at the top of this keep-order — shown at every width.
+
 **Drill — enter a root to re-scope the board to its subtree.** A **breadcrumb** (`‹ All projects /
 <root>`, each ancestor a click to re-scope) and a **banner** sit above the columns; the banner is the
 root's own status pill + identity + note/desc + ref + its **own** live-children segment bar (no subtree
