@@ -777,6 +777,15 @@ private struct DebugLaunchHook: ViewModifier {
                          ageMinutes: 55)
 
         model.tasks = [running, blocked, asking, owned, orchestrator, stoppedChild, drained]
+
+        // `ORCH_ATTENTION=peek` selects the orchestrator, which does two things at once: it reveals its
+        // subordinates as PEEK ROWS (the only way to see the row action slot — the stopped child's stall
+        // label beside the quiet owned-parent child) and it opens the inspector, which squeezes the
+        // columns. That squeeze is the real narrow test: `-inspectorWidth` alone changes nothing on a
+        // board with no inspector open, so a "narrow" shot without a selection is a no-op.
+        if ProcessInfo.processInfo.environment["ORCH_ATTENTION"] == "peek" {
+            model.selectedId = orchestrator.id
+        }
     }
 
     // MARK: - Card anatomy (slice 2a) fixtures

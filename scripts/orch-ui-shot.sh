@@ -274,4 +274,4 @@ echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on e
 # the orchestrator whose stopped child owns the amber); `27` re-shoots it narrow, because the own
 # chip replaces the quiet cluster at EVERY squish rung and must never truncate.
 shoot "26-attention-board"   env ORCH_SHOW=attention -- -inspectorWidth 392
-shoot "27-attention-narrow"  env ORCH_SHOW=attention -- -inspectorWidth 760
+shoot "27-attention-peek"    env ORCH_SHOW=attention ORCH_ATTENTION=peek -- -inspectorWidth 760
