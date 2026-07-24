@@ -10,7 +10,7 @@ import Foundation
 /// each conjunct gets its own negative test so a future edit can't silently drop one.
 @Suite struct AttentionTests {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
-    private var T: TimeInterval { Attention.Config().stallAfter }
+    private var T: TimeInterval { Attention.Thresholds().stallAfter }
 
     private func uuid(_ id: String) -> UUID {
         UUID(uuidString: "00000000-0000-0000-0000-0000000000\(id)")!   // id: exactly 2 hex chars
@@ -39,7 +39,7 @@ import Foundation
                          parentOwned: Bool = true, canStall: Bool = true,
                          descendantHoldsAttention: Bool = false,
                          now: Date? = nil, humanPaced: Bool = false,
-                         config: Attention.Config = .init()) -> [AttentionSignal] {
+                         config: Attention.Thresholds = .init()) -> [AttentionSignal] {
         Attention.ownReasons(for: c, attached: attached, descendants: descendants,
                              parentOwned: parentOwned, canStall: canStall,
                              descendantHoldsAttention: descendantHoldsAttention,

@@ -8,7 +8,7 @@ import Foundation
 /// are one fact. Pure over a hand-built `tasks` array and an injected `now` — no timers, no fs.
 @Suite @MainActor struct BoardStoreAttentionTests {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
-    private var T: TimeInterval { Attention.Config().stallAfter }
+    private var T: TimeInterval { Attention.Thresholds().stallAfter }
     private var late: Date { t0.addingTimeInterval(T + 80) }
 
     private func uuid(_ id: String) -> UUID {

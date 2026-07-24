@@ -41,7 +41,7 @@ public enum Attention {
         case ctxCritical     // context near-full — hand off soon
     }
 
-    public struct Config: Sendable, Equatable {
+    public struct Thresholds: Sendable, Equatable {
         /// How long a constellation must be quiet before it ambers. A UI constant (not daemon state):
         /// long enough that a thinking pause never trips it, short enough to catch a dead wave.
         public var stallAfter: TimeInterval
@@ -83,7 +83,7 @@ public enum Attention {
                                   descendantHoldsAttention: Bool,
                                   now: Date,
                                   humanPaced: Bool = false,
-                                  config: Config = .init()) -> [AttentionSignal] {
+                                  config: Thresholds = .init()) -> [AttentionSignal] {
         var out: [AttentionSignal] = []
 
         if c.phase.kind == .dead { out.append(.init(.dead, "dead")) }
@@ -137,7 +137,7 @@ public enum Attention {
                                  descendantHoldsAttention: Bool,
                                  now: Date,
                                  humanPaced: Bool,
-                                 config: Config) -> AttentionSignal? {
+                                 config: Thresholds) -> AttentionSignal? {
         // 1. Only a concluded card can stall. This gate is also what keeps a card that RESUMED
         //    running while still carrying a stale `mergeStalled` flag out of step 2.
         guard isIdle(c), !humanPaced else { return nil }
