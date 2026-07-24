@@ -5,8 +5,9 @@ import OrchestraKit
 
 /// The L4 subtree line (slice 2b): a card's subordinates summarised as a row of stage-coloured segments
 /// — one per LIVE lineage child, coloured by its column (plan=purple, impl=blue, review=teal) — followed
-/// by the attached-agents eye. The right side is intentionally left empty: the descendants-only attention
-/// chip lands there in slice 3b.
+/// by the attached-agents eye. This component ends with a trailing `Spacer` reserving the right edge for
+/// the slice-3b descendants-attention chip. `CardView.subtreeLine` prepends the `drill ›` tile at the
+/// LEADING edge (external to this view), so the trailing edge stays clear for that attention chip.
 ///
 /// Merged (green) and not-started (dashed) slots come from the daemon's `mergedChildren`/`plannedChildren`
 /// counters on `TreeStat`: a positive `mergedChildren` prepends that many green slots, a positive
@@ -37,7 +38,8 @@ struct SubtreeSegments: View {
             }
             eye(compact: !styles.isEmpty)
             Spacer(minLength: 0)
-            // right side reserved for the slice-3b descendants-attention chip
+            // Trailing edge reserved for the slice-3b descendants-attention chip. The drill tile leads
+            // the bar (prepended by `CardView.subtreeLine`), so this right edge stays clear for it.
         }
     }
 

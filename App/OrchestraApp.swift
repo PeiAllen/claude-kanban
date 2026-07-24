@@ -443,6 +443,32 @@ private struct DebugLaunchHook: ViewModifier {
         model.showOnboarding = false
     }
 
+    /// `ORCH_SHOW=subtree`: an orchestrator ROOT with three live lineage children (one per column) plus
+    /// merged/planned progress counters, so the board shows the root carrying its L4 subtree line — the
+    /// stage-coloured segment bar AND the hover-revealed `drill ›` chip at its trailing edge. The
+    /// children embed under the root (non-root descendants), so only the root is a column card.
+    static func showSubtree(model: BoardModel) {
+        let repo = DemoConfig.repoRoot
+        let rootBranch = "feat/board-hierarchy"
+        func mk(_ title: String, _ branch: String, _ col: Column, _ phase: Phase, _ order: Int,
+                parentBranch: String? = nil, treeStat: TreeStat? = nil) -> Task {
+            Task(title: title, repo: repo, branch: branch, cwd: "\(repo)/.worktrees/\(branch)",
+                 origin: .worktree, model: AgentModel(id: "claude-opus-4-8"),
+                 startIn: col == .plan ? .plan : .impl, column: col, order: order,
+                 phase: phase, initialPrompt: title, parentBranch: parentBranch, treeStat: treeStat)
+        }
+        model.tasks = [
+            mk("Board hierarchy: roots, peek & drill", rootBranch, .impl, .live(.running), 0,
+               treeStat: TreeStat(state: .inSync, behind: 0, mergedChildren: 2, plannedChildren: 5)),
+            mk("Peek rows layout", "feat/peek-row-layout", .impl, .live(.running), 1, parentBranch: rootBranch),
+            mk("Drill breadcrumb & banner", "feat/drill-banner", .plan, .live(.waiting(.humanTurn)), 2, parentBranch: rootBranch),
+            mk("Scope re-resolution", "feat/scope-resolve", .review, .live(.running), 3, parentBranch: rootBranch),
+        ]
+        model.selectedId = nil   // leave the root UNSELECTED so its L4 summary (not peek rows) shows
+        model.onboarded = true
+        model.showOnboarding = false
+    }
+
     /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
     /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
     static func snapshotDone(to path: String, model: BoardModel) {
@@ -793,6 +819,8 @@ private struct DebugLaunchHook: ViewModifier {
         case "expanded": model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
         case "peek":     model.selectedId = liveWake                       // reveal the root's peek rows
         case "drill":    if let id = liveWake { model.drillInto(id) }      // scope the board to its subtree
+        case "drill-selected":                                            // drilled AND the banner is the open card
+            if let id = liveWake { model.drillInto(id); model.selectedId = id }
         default:         break
         }
     }
@@ -991,6 +1019,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
             case "attached": DebugLaunchHook.showAttached(model: model)
+            case "subtree": DebugLaunchHook.showSubtree(model: model)
             case "anatomy": DebugLaunchHook.showAnatomy(model: model)
             default: break
             }
