@@ -96,11 +96,16 @@ work within scope unchanged (both already read `visibleTasks`). The scope re-res
 orchestrator) and clears to the top level when the branch loses its owner.
 
 **A visible mouse path in.** Because the drill is otherwise keyboard-only (`→`), a root that has a subtree
-carries two pointer affordances into it, both routing through the exact re-scope `→` runs: a **`drill ›`
-chip** that wakes with the card (like the id watermark) at the trailing edge of the L4 subtree line, its
-tooltip naming the key (`Drill into subtree — →`); and **double-clicking the root card** itself (the
-folder-open idiom — single click still selects and enters the terminal). Both are gated on the card
-actually having a lineage child, so the affordance never appears where drilling would no-op.
+carries pointer affordances into it, all routing through the exact re-scope `→` runs (each selects the
+root first, so the mouse path lands in the same place the keyboard one does). A **`drill ›` tile** — a
+sibling of the L4 segment squares, a chevron pointing into them — leads the segment bar (faint at rest so
+it's found without hover, fuller with the pointer on the card); it sits at the *leading* edge so the L4
+trailing edge stays clear for the descendants-attention chip. Its tooltip names the key
+(`Drill into subtree — →`). Selecting the root swaps the L4 summary for the inline peek rows, so the tile
+gives way to a **`drill into subtree ›` header** at the head of those rows — the same affordance, kept
+visible in the expanded state. And **double-clicking the root card** drills too (the folder-open idiom —
+single click still selects and enters the terminal). All are gated on the card actually having a lineage
+child, so nothing appears where drilling would no-op.
 
 **Keyboard is three-level.** `j`/`k` are the card axis — card-to-card, treating an expanded card and its
 rows as one unit (a selection on a row steps off the row's visible root). `↑`/`↓` are the row axis, walking
@@ -163,10 +168,11 @@ renders the attached-agents accordion as shipped.
   dominates; else **green** when any reviewer is active or being born (an active reviewer keeps the eye
   green even beside one that has concluded — a finished reviewer is *idle*, not attention); else **grey**
   when every attached reviewer has finished its turn. Labelled "N attached" when it's alone on the line.
-  The trailing edge carries the faint, hover-brightening **`drill ›` chip** on a root that has a subtree (see
-  [Hierarchy](#hierarchy-roots-peek-and-drill)); the descendants-only attention chip lands beside it in a
-  later slice. Selecting the card replaces this whole summary
-  with the subordinates as inline peek rows, which is how they're reached.
+  A faint **`drill ›` tile** — a sibling of the segment squares — leads the bar on a root that has a
+  subtree (see [Hierarchy](#hierarchy-roots-peek-and-drill)); the trailing edge stays reserved for the
+  descendants-only attention chip in a later slice. Selecting the card replaces this whole summary
+  with the subordinates as inline peek rows (which carry their own `drill into subtree ›` header), which
+  is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
   don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row

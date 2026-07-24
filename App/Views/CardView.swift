@@ -317,31 +317,31 @@ struct CardView: View {
     @ViewBuilder private var subtreeLine: some View {
         if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
-            HStack(spacing: 8) {
-                SubtreeSegments(root: task)
+            HStack(spacing: 6) {
                 drillChevron
+                SubtreeSegments(root: task)
             }
             .padding(.top, 6)
         }
     }
 
-    /// The mouse path into the subtree: a "drill ›" chip riding the L4 line's reserved trailing slot,
-    /// shown only on cards that actually have a subtree to enter (`hasLineageChildren` — the same gate
-    /// `→` obeys). Like the id watermark it's a faint watermark at rest — enough to be found, since the
-    /// whole gap is that drill was invisible — and brightens when the pointer is on the card. Its
-    /// tooltip names the key so the click teaches the keyboard, and its slot never reflows the segments.
+    /// The mouse path into the subtree: a small rounded tile — a sibling of the L4 segment squares — at
+    /// the LEADING edge of the bar, a chevron pointing INTO the segments it opens. Only on cards that
+    /// have a subtree to enter (`hasLineageChildren`, the gate `→` obeys). Faint at rest so it's found
+    /// without hover (the gap this fixes was invisibility), fuller with the pointer on the card. It leads
+    /// the bar so the L4 trailing edge stays clear for the slice-3b descendants-attention chip. Its
+    /// tooltip names the key so the click teaches the keyboard.
     @ViewBuilder private var drillChevron: some View {
         if model.hasLineageChildren(task) {
             Button(action: enterDrill) {
-                HStack(spacing: 2) {
-                    Text("drill").font(F.ui(8.5, .semibold)).tracking(0.2)
-                    Image(systemName: "chevron.right").font(F.ui(8, .bold))
-                }
-                .foregroundStyle(theme.text3)
-                .opacity(cardHover ? 1 : 0.4)
+                Image(systemName: "chevron.right")
+                    .font(F.ui(8, .bold))
+                    .foregroundStyle(theme.text2)
+                    .frame(width: 12, height: 12)
+                    .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(theme.chip))
+                    .opacity(cardHover ? 1 : 0.5)
             }
             .buttonStyle(.plain)
-            .fixedSize()
             .help("Drill into subtree — →")
             .animation(.easeOut(duration: 0.12), value: cardHover)
         }
@@ -358,10 +358,31 @@ struct CardView: View {
         if !rows.isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             VStack(spacing: 2) {
+                if model.hasLineageChildren(task) { peekDrillHeader }
                 ForEach(rows, id: \.task.id) { row in PeekRow(task: row.task, depth: row.depth) }
             }
             .padding(.top, 6)
         }
+    }
+
+    /// Selecting a root replaces its L4 summary (drill tile included) with these peek rows, so the mouse
+    /// path into the subtree would vanish exactly when you've focused the root to look into it. This
+    /// restores it: a `drill into subtree ›` header at the head of the expanded rows — same action as `→`
+    /// and the L4 tile. Only when there's a lineage subtree to enter, so a card showing only attached
+    /// reviewers (nothing to drill into) doesn't get it.
+    @ViewBuilder private var peekDrillHeader: some View {
+        Button(action: enterDrill) {
+            HStack(spacing: 3) {
+                Text("drill into subtree").font(F.ui(9, .medium)).tracking(0.2)
+                Image(systemName: "chevron.right").font(F.ui(7.5, .bold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(theme.text3)
+            .opacity(cardHover ? 1 : 0.6)
+        }
+        .buttonStyle(.plain)
+        .help("Drill into subtree — →")
+        .padding(.bottom, 1)
     }
 }
 
