@@ -237,15 +237,23 @@ echo "▶ capturing board hierarchy…"
 shoot "23-hier-toplevel" env ORCH_SHOW=anatomy ORCH_ANATOMY=single-repo -- -inspectorWidth 392
 shoot "24-hier-peek"     env ORCH_SHOW=anatomy ORCH_ANATOMY=peek        -- -inspectorWidth 392
 shoot "25-hier-drill"    env ORCH_SHOW=anatomy ORCH_ANATOMY=drill       -- -inspectorWidth 392
-# Deterministic ImageRenderer companions (no window / no cfprefsd) for the SAME three surfaces, plus a
-# narrow-column peek variant (24b) — the peek children carry long markdown-laden prompt-titles here, so
-# the rows must stay ONE compact fixed-height line with the stage chip holding its horizontal footprint,
-# never collapsing into a vertical pill. This writes 23/24/24b/25 straight into $OUT in one launch.
-snap_hier() { # writes 23/24/24b/25 hier PNGs into $OUT/det via ImageRenderer (window-free, cfprefsd-free)
-  [[ -n "$ONLY" && "*hier*" != $ONLY && "24b-hier-peek-narrow" != $ONLY ]] && return 0
+# Deterministic ImageRenderer companions (no window / no cfprefsd) for the SAME surfaces, plus two
+# narrow-column peek variants (24b mid, 24c at the real board floor) — the peek children carry long
+# markdown-laden prompt-titles here, so the rows must stay ONE compact fixed-height line and squish
+# gracefully (desc → chip word→letter → diff) instead of a chip collapsing into a vertical pill. This
+# writes 23/24/24b/24c/25 straight into $OUT/det in one launch.
+snap_hier() { # writes the hier PNGs into $OUT/det via ImageRenderer (window-free, cfprefsd-free)
+  local names="23-hier-toplevel 24-hier-peek 24b-hier-peek-narrow 24c-hier-peek-floor 25-hier-drill"
+  # Same glob idiom as shoot() (:140): the concrete name is the LHS literal, $ONLY the RHS pattern.
+  # Skip only when --only is set and matches NONE of the deterministic hier outputs.
+  if [[ -n "$ONLY" ]]; then
+    local matched=0 n
+    for n in $names; do [[ "$n" == $ONLY ]] && matched=1; done
+    [[ "$matched" == 0 ]] && return 0
+  fi
   mkdir -p "$OUT/det"
   HOME="$ISO_HOME" env ORCH_SNAPSHOT_HIER="$PWD/$OUT/det" ORCH_SNAP_DARK=1 "$BIN" >/dev/null 2>&1 || true
-  for n in 23-hier-toplevel 24-hier-peek 24b-hier-peek-narrow 25-hier-drill; do
+  for n in $names; do
     [[ -f "$OUT/det/$n.png" ]] && echo "  ✓ $OUT/det/$n.png (ImageRenderer)"
   done
 }
