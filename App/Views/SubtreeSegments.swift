@@ -26,6 +26,10 @@ struct SubtreeSegments: View {
     /// threshold with no daemon traffic at all), so this line must tick with L1 rather than wait for a
     /// broadcast.
     let now: Date
+    /// Whether to draw the descendants-only rollup chip. True on a board card. FALSE in the drill
+    /// banner: there the descendants ARE the columns below, each already showing its own chip, so a
+    /// rollup would count the very cards you are looking at a second time.
+    var showsSubtreeAttention: Bool = true
 
     private var liveChildren: [OrchestraCore.Task] {
         model.subordinates(of: root).filter { $0.access != .readOnly }
@@ -48,7 +52,8 @@ struct SubtreeSegments: View {
             eye(compact: !styles.isEmpty)
             Spacer(minLength: 0)
             // The trailing edge the drill tile's leading placement keeps clear.
-            if let text = Attention.subtreeChipText(model.subtreeAttention(of: root, now: now)) {
+            if showsSubtreeAttention,
+               let text = Attention.subtreeChipText(model.subtreeAttention(of: root, now: now)) {
                 AttentionChip(text: text)
                     .help("\(text) below this card — select it to see which")
             }

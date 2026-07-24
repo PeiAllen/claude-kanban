@@ -1172,7 +1172,9 @@ eye, where a phase-only mapping saw only "blocked or dead". Rendering is in
 
 **Adding a row:** check it passes the contract; check it is derivable from broadcast state (if not, the
 *field* is a daemon change first — the reason stays client-side); then add a predicate, a label, and a
-priority slot. It flows into both folds, every surface, and the phone's Needs You queue automatically.
+priority slot. It flows into both folds and every desktop surface automatically. The phone's Needs You
+queue is NOT yet fed by this registry — it still derives its own older reason set in `NeedsYouQueue`, and
+adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
 
 **Two rungs are deliberately deferred, and both are one edit away.** The *detected* sibling of row 4 —
 an in-terminal choices box, which blocks mid-turn exactly like a permission wait and self-clears by

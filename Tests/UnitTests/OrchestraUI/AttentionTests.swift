@@ -170,6 +170,13 @@ import Foundation
         #expect(!reasons(card(), attached: [workingReviewer], now: late).contains { $0.reason == .stalled })
     }
 
+    /// A reviewer that READS idle but has a message queued is about to speak — the delivery bit is part
+    /// of "settled", not a separate check, and dropping it from the attached branch must fail here.
+    @Test func stall_attachedAgentWithPendingDeliveryDefeatsIt() {
+        let armedReviewer = card("02", hasPendingDelivery: true, access: .readOnly)
+        #expect(!reasons(card(), attached: [armedReviewer], now: late).contains { $0.reason == .stalled })
+    }
+
     /// A concluded (idle) reviewer does NOT defeat it — a parked review pair is exactly what the net
     /// is meant to catch, and a dead one is equally settled.
     @Test func stall_idleOrDeadAttachedAgentsStillStall() {

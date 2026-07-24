@@ -93,7 +93,9 @@ struct DrillHeader: View {
                 AttentionChip(text: text)
             }
 
-            SubtreeSegments(root: root, now: now)   // the root's OWN live-children bar (no rollup)
+            // The root's OWN live-children bar, with the rollup chip explicitly OFF — the descendants
+            // are the columns below, each already carrying its own chip.
+            SubtreeSegments(root: root, now: now, showsSubtreeAttention: false)
 
             Spacer(minLength: 8)
         }

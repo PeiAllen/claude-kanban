@@ -169,6 +169,31 @@ import Foundation
         #expect(board([target, a, b]).attentionLiveness(of: target) == .idle)
     }
 
+    // MARK: - the fold must not blow up on a deep chain
+
+    /// Leaf attachment makes `ownAttention` and `subtreeAttention` mutually recursive. Recomputed
+    /// naively the recurrence is T(n) = T(n-1) + … + T(1) — EXPONENTIAL — so a deep PR chain would lock
+    /// the board at a 1 Hz render tick. This pins the memoized fold: the chain resolves promptly and
+    /// correctly. Depth is kept modest because the assertion is CORRECTNESS, not a stopwatch — but it is
+    /// still 2^15 folds without the memo, so a regression doesn't slow this test down, it stops it
+    /// finishing at all.
+    @Test func deepChain_foldsOncePerCard_andStaysCorrect() {
+        let depth = 16
+        var chain: [Task] = []
+        for i in 0..<depth {
+            chain.append(card(String(format: "%02x", i), branch: "feat/n\(i)",
+                              parentBranch: i == 0 ? nil : "feat/n\(i - 1)"))
+        }
+        let m = board(chain)
+
+        // Every card is quiet past T, so ONLY the deepest (which has no descendants to defer to) owns
+        // the stall; every ancestor reports it through the rollup.
+        let deepest = chain[depth - 1]
+        #expect(m.ownAttention(of: deepest, now: late).contains { $0.reason == .stalled })
+        #expect(!m.ownAttention(of: chain[0], now: late).contains { $0.reason == .stalled })
+        #expect(m.subtreeAttention(of: chain[0], now: late) == 1)
+    }
+
     // MARK: - row 3 through the real lineage seam
 
     /// root→main: no card owns `main`, so the merge is the human's to do.

@@ -20,17 +20,8 @@ extension BoardStore {
     /// it surfaces through its target's constellation. That also short-circuits the descendant walk
     /// and the leaf-attachment recursion, which only the stall row consumes.
     public func ownAttention(of c: Task, now: Date) -> [AttentionSignal] {
-        let canStall = !isAttached(c)
-        return Attention.ownReasons(
-            for: c,
-            attached: attachedAgents(of: c),
-            descendants: canStall ? descendants(of: c) : [],
-            parentOwned: lineageParent(of: c) != nil,
-            canStall: canStall,
-            // Leaf attachment: an ancestor whose descendants already hold attention reports them via
-            // the rollup instead of ambering for the same silence.
-            descendantHoldsAttention: canStall ? subtreeAttention(of: c, now: now) > 0 : false,
-            now: now)
+        var memo: [UUID: [AttentionSignal]] = [:]
+        return ownAttention(of: c, now: now, memo: &memo)
     }
 
     /// Whether `c` needs the human at all — the membership test the folds and the eye share.
@@ -42,13 +33,49 @@ extension BoardStore {
     ///
     /// Counts CARDS, not reasons: a descendant blocked on permission at 95% context is still one card
     /// that needs you. Self is excluded by construction (`descendants` never contains its root).
-    ///
-    /// Note the mutual recursion with `ownAttention` (which asks this for its leaf-attachment input).
-    /// It terminates because `descendants` strictly shrinks at each hop and `BoardTree.descendants` is
-    /// cycle-safe; memoize per render pass if a board ever grows large enough for the repeated walk to
-    /// matter.
     public func subtreeAttention(of c: Task, now: Date) -> Int {
-        descendants(of: c).filter { !ownAttention(of: $0, now: now).isEmpty }.count
+        var memo: [UUID: [AttentionSignal]] = [:]
+        return subtreeAttention(of: c, now: now, memo: &memo)
+    }
+
+    // MARK: - the memoized core
+    //
+    // `ownAttention` and `subtreeAttention` are MUTUALLY recursive: leaf attachment asks "does any
+    // descendant hold attention?", which is every descendant's own fold, which asks the same of ITS
+    // descendants. Terminating isn't the hard part (`descendants` strictly shrinks and is cycle-safe) —
+    // the cost is. Recomputed naively on a depth-n chain the recurrence is T(n) = T(n-1) + … + T(1),
+    // i.e. EXPONENTIAL, not quadratic: each card re-derives every suffix below it from scratch. At a
+    // 1 Hz render tick a deep PR chain would lock the board.
+    //
+    // One memo per top-level call collapses that to each card being folded at most once, because a
+    // card's reasons depend only on the board and `now`, both fixed for the duration of the call.
+
+    private func ownAttention(of c: Task, now: Date, memo: inout [UUID: [AttentionSignal]]) -> [AttentionSignal] {
+        if let cached = memo[c.id] { return cached }
+        let canStall = !isAttached(c)
+        // ONE subtree walk, reused for both the stall guard and leaf attachment — `descendants` is
+        // itself an O(n) filter per node, so walking it twice per card is the difference between a
+        // cheap fold and a visible hitch on a deep chain. An attached agent skips it entirely (only
+        // the stall row consumes it, and a reviewer can't stall).
+        let kids = canStall ? descendants(of: c) : []
+        // Leaf attachment: an ancestor whose descendants already hold attention reports them via the
+        // rollup instead of ambering for the same silence. `contains` short-circuits on the first one —
+        // the guard is a Bool, so counting the rest would be wasted work.
+        let holds = canStall && kids.contains { !ownAttention(of: $0, now: now, memo: &memo).isEmpty }
+        let signals = Attention.ownReasons(
+            for: c,
+            attached: attachedAgents(of: c),
+            descendants: kids,
+            parentOwned: lineageParent(of: c) != nil,
+            canStall: canStall,
+            descendantHoldsAttention: holds,
+            now: now)
+        memo[c.id] = signals
+        return signals
+    }
+
+    private func subtreeAttention(of c: Task, now: Date, memo: inout [UUID: [AttentionSignal]]) -> Int {
+        descendants(of: c).filter { !ownAttention(of: $0, now: now, memo: &memo).isEmpty }.count
     }
 
     /// The eye tier for ONE attached agent — what a peek row draws.
