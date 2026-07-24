@@ -659,12 +659,15 @@ private struct DebugLaunchHook: ViewModifier {
         // 24 — peek: selecting the root reveals its subordinates as five-zone rows in place of L4.
         model.selectedId = root.id
         renderPNG(framed(CardView(task: root)), to: "\(dir)/24-hier-peek.png")
-        // 24b/24c — the same peek rows squeezed into NARROW cards, exercising the width-driven squish
-        // ladder: the long prompt-titles truncate to one line (never wrap into a tall pill — the bug), and
-        // as the row narrows the desc drops, the stage chip collapses word→letter, and the diffstat drops,
-        // while the title keeps its first words. 24b is a mid width (word chip, diff, no desc); 24c is at
-        // the real board floor (letter chip, diff/desc gone, title still readable).
+        // 24b/24c/24d — the same peek rows squeezed into NARROW cards, exercising every rung of the
+        // width-driven squish ladder: the long prompt-titles truncate to one line (never wrap into a tall
+        // pill — the bug), and as the row narrows the desc drops, the stage chip collapses word→letter, the
+        // diffstat sheds its file count then drops, while the title keeps its first words. 24b is a mid
+        // width (word chip + `+I −M` diff); 24d is the TIGHTEST rung that still shows the diff (letter chip
+        // + diff coexisting — the pinch where a collision would hide); 24c is the real board floor (letter
+        // chip, diff/desc gone, title still readable).
         renderPNG(framed(CardView(task: root), width: 300), to: "\(dir)/24b-hier-peek-narrow.png")
+        renderPNG(framed(CardView(task: root), width: 255), to: "\(dir)/24d-hier-peek-pinch.png")
         renderPNG(framed(CardView(task: root), width: 222), to: "\(dir)/24c-hier-peek-floor.png")
         // 25 — drill: the breadcrumb + banner over the root's direct children (the scoped board).
         model.selectedId = nil

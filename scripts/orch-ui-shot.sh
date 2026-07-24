@@ -243,7 +243,7 @@ shoot "25-hier-drill"    env ORCH_SHOW=anatomy ORCH_ANATOMY=drill       -- -insp
 # gracefully (desc → chip word→letter → diff) instead of a chip collapsing into a vertical pill. This
 # writes 23/24/24b/24c/25 straight into $OUT/det in one launch.
 snap_hier() { # writes the hier PNGs into $OUT/det via ImageRenderer (window-free, cfprefsd-free)
-  local names="23-hier-toplevel 24-hier-peek 24b-hier-peek-narrow 24c-hier-peek-floor 25-hier-drill"
+  local names="23-hier-toplevel 24-hier-peek 24b-hier-peek-narrow 24d-hier-peek-pinch 24c-hier-peek-floor 25-hier-drill"
   # Same glob idiom as shoot() (:140): the concrete name is the LHS literal, $ONLY the RHS pattern.
   # Skip only when --only is set and matches NONE of the deterministic hier outputs.
   if [[ -n "$ONLY" ]]; then

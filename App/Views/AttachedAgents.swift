@@ -26,14 +26,17 @@ struct PeekRow: View {
     private let rowH: CGFloat = 18
 
     /// The squish ladder — the loss order as the row narrows, matching the peek-row spec's precedence:
-    /// desc/note drops first, the stage chip collapses word→letter, then the diffstat drops; the title
+    /// desc/note drops first, then the stage chip collapses word→letter, then the diffstat sheds its file
+    /// count (the lowest-value part — `+N −M` answers "how big"), then the whole diffstat drops. The title
     /// (kept to its first few words) and the chip itself are never lost. `w` is the row's measured content
     /// width; the real board floor is ~150pt, so a direct child keeps title+letter.
     ///
     /// SEAM for slice 3b (`feat/attention-system`): the own-attention **alert** lands in the action slot
     /// AHEAD of the diffstat, at the TOP of the keep-order — shown at every width, even before the title's
     /// words. 3b derives it from the attention registry (not an ad-hoc phase check), so it is deliberately
-    /// NOT built here; when it arrives it slots in at the `// alert` mark below with a high layoutPriority.
+    /// NOT built here; when it arrives it slots in at the `// alert` mark below. It MUST be intrinsically
+    /// sized (`.fixedSize()` + `.lineLimit(1)`, same discipline as the diffstat/chip) — a flexible alert
+    /// Text would wrap into a tall pill (the very bug this file fixes) or, if high-priority, push the title out.
     var body: some View {
         Button { model.selectAndEnterTerminal(task.id) } label: {
             GeometryReader { geo in
@@ -49,9 +52,10 @@ struct PeekRow: View {
                     // alert — slice 3b's own-attention label goes HERE, ahead of the diffstat, highest keep-priority.
                     if w >= 170, let stat = task.diffStat, stat.filesChanged > 0 {
                         // `.fixedSize()` so a starved diffstat never wraps its `+N −M` digits char-by-char
-                        // into a tall pill (the peek-row bug). It drops out whole below the threshold rather
-                        // than shrink — the row keeps title words instead of a squeezed number.
-                        DiffStatNumbers(stat: stat).fixedSize()                                           // action slot: compact diff
+                        // into a tall pill (the peek-row bug). It drops out whole below 170 rather than
+                        // shrink; from 240 down it first sheds the file count (`showFiles`) so the title's
+                        // words survive the tightest pinch (wide diff + word chip) instead of crushing to "…".
+                        DiffStatNumbers(stat: stat, showFiles: w >= 240).fixedSize()                     // action slot: compact diff
                     }
                     chip(word: w >= 200)                                                                  // chip slot: word, or a single letter when tight
                 }
