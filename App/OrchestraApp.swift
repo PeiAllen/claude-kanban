@@ -443,6 +443,32 @@ private struct DebugLaunchHook: ViewModifier {
         model.showOnboarding = false
     }
 
+    /// `ORCH_SHOW=subtree`: an orchestrator ROOT with three live lineage children (one per column) plus
+    /// merged/planned progress counters, so the board shows the root carrying its L4 subtree line — the
+    /// stage-coloured segment bar AND the hover-revealed `drill ›` chip at its trailing edge. The
+    /// children embed under the root (non-root descendants), so only the root is a column card.
+    static func showSubtree(model: BoardModel) {
+        let repo = DemoConfig.repoRoot
+        let rootBranch = "feat/board-hierarchy"
+        func mk(_ title: String, _ branch: String, _ col: Column, _ phase: Phase, _ order: Int,
+                parentBranch: String? = nil, treeStat: TreeStat? = nil) -> Task {
+            Task(title: title, repo: repo, branch: branch, cwd: "\(repo)/.worktrees/\(branch)",
+                 origin: .worktree, model: AgentModel(id: "claude-opus-4-8"),
+                 startIn: col == .plan ? .plan : .impl, column: col, order: order,
+                 phase: phase, initialPrompt: title, parentBranch: parentBranch, treeStat: treeStat)
+        }
+        model.tasks = [
+            mk("Board hierarchy: roots, peek & drill", rootBranch, .impl, .live(.running), 0,
+               treeStat: TreeStat(state: .inSync, behind: 0, mergedChildren: 2, plannedChildren: 5)),
+            mk("Peek rows layout", "feat/peek-row-layout", .impl, .live(.running), 1, parentBranch: rootBranch),
+            mk("Drill breadcrumb & banner", "feat/drill-banner", .plan, .live(.waiting(.humanTurn)), 2, parentBranch: rootBranch),
+            mk("Scope re-resolution", "feat/scope-resolve", .review, .live(.running), 3, parentBranch: rootBranch),
+        ]
+        model.selectedId = nil   // leave the root UNSELECTED so its L4 summary (not peek rows) shows
+        model.onboarded = true
+        model.showOnboarding = false
+    }
+
     /// Render the Done popover (with mock rows) straight to a PNG via `ImageRenderer` — headless,
     /// needs no Screen-Recording permission. Used by `ORCH_SNAPSHOT_DONE=/path.png` for UI review.
     static func snapshotDone(to path: String, model: BoardModel) {
@@ -659,6 +685,16 @@ private struct DebugLaunchHook: ViewModifier {
         // 24 — peek: selecting the root reveals its subordinates as five-zone rows in place of L4.
         model.selectedId = root.id
         renderPNG(framed(CardView(task: root)), to: "\(dir)/24-hier-peek.png")
+        // 24b/24c/24d — the same peek rows squeezed into NARROW cards, exercising every rung of the
+        // width-driven squish ladder: the long prompt-titles truncate to one line (never wrap into a tall
+        // pill — the bug), and as the row narrows the desc drops, the stage chip collapses word→letter, the
+        // diffstat sheds its file count then drops, while the title keeps its first words. 24b is a mid
+        // width (word chip + `+I −M` diff); 24d is the TIGHTEST rung that still shows the diff (letter chip
+        // + diff coexisting — the pinch where a collision would hide); 24c is the real board floor (letter
+        // chip, diff/desc gone, title still readable).
+        renderPNG(framed(CardView(task: root), width: 300), to: "\(dir)/24b-hier-peek-narrow.png")
+        renderPNG(framed(CardView(task: root), width: 255), to: "\(dir)/24d-hier-peek-pinch.png")
+        renderPNG(framed(CardView(task: root), width: 222), to: "\(dir)/24c-hier-peek-floor.png")
         // 25 — drill: the breadcrumb + banner over the root's direct children (the scoped board).
         model.selectedId = nil
         model.drillInto(root.id)
@@ -811,21 +847,31 @@ private struct DebugLaunchHook: ViewModifier {
             // + two attached wave reviewers, all on feat/live-wake. At the top level they embed (roots
             // only) and the root shows a stage-segment bar + eye; selecting the root reveals them as peek
             // rows; drilling the root scopes the board to just these. (ORCH_ANATOMY=peek/drill below.)
-            mk("pr/codex-clean-restart", "pr/codex-restart", .plan, .live(.running), 7,
+            // Real children carry PROMPT-DERIVED titles — long, wrapping-prone, markdown asterisks and
+            // all (the board shows the raw first line of the seed). This is what stresses the peek-row
+            // geometry: a long title must truncate to ONE line and leave the fixed-size stage chip its
+            // horizontal footprint, never starve it into a vertical pill.
+            mk("You are the **D (Codex clean-restart) card** — implement the clean-restart launch path",
+               "pr/codex-restart", .plan, .live(.running), 7,
                desc: "Codex clean-restart launch path", ageMinutes: 3, parentBranch: "feat/live-wake"),
-            mk("pr/lease-claim", "pr/lease-claim", .impl, .live(.running), 8,
+            mk("You are a PLANNING card. Produce a **layered** lease/claim delivery core plan for wave 2",
+               "pr/lease-claim", .impl, .live(.running), 8,
                desc: "Lease/claim delivery core",
                diff: DiffStat(filesChanged: 8, insertions: 188, deletions: 40), ageMinutes: 47,
                parentBranch: "feat/live-wake"),
-            mk("pr/claude-channels", "pr/claude-channels", .impl, .live(.waiting(.permission)), 9,
+            mk("You are the **D (Claude channels) card** — wire MCP channel push into the delivery arm",
+               "pr/claude-channels", .impl, .live(.waiting(.permission)), 9,
                desc: "MCP channel push wiring", ageMinutes: 9, parentBranch: "feat/live-wake"),
-            mk("pr/wake-route", "pr/wake-route", .review, .live(.waiting(.humanTurn)), 10,
+            mk("You are the **wake-endpoint + route-ladder** PR card for the live-wake-delivery redesign",
+               "pr/wake-route", .review, .live(.waiting(.humanTurn)), 10,
                desc: "Wake endpoint + route ladder",
                diff: DiffStat(filesChanged: 6, insertions: 134, deletions: 28), ageMinutes: 21,
                parentBranch: "feat/live-wake"),
-            mk("wave-2 review · claude", "review/wave2-claude", .impl, .live(.running), 11,
+            mk("You are the **FINAL PRE-MAIN REVIEW (Opus 4.8)** — review the accumulated wave-2 diff",
+               "review/wave2-claude", .impl, .live(.running), 11,
                ageMinutes: 6, access: .readOnly, parentBranch: "feat/live-wake"),
-            mk("wave-2 review · codex", "review/wave2-codex", .impl, .live(.running), 12,
+            mk("You are the **FINAL PRE-MAIN REVIEW (Codex Sol)** — review the accumulated wave-2 diff",
+               "review/wave2-codex", .impl, .live(.running), 12,
                ageMinutes: 6, access: .readOnly, parentBranch: "feat/live-wake"),
         ]
         model.onboarded = true
@@ -839,6 +885,8 @@ private struct DebugLaunchHook: ViewModifier {
         case "expanded": model.selectedId = model.tasks.first { $0.branch == "feat/attached" }?.id
         case "peek":     model.selectedId = liveWake                       // reveal the root's peek rows
         case "drill":    if let id = liveWake { model.drillInto(id) }      // scope the board to its subtree
+        case "drill-selected":                                            // drilled AND the banner is the open card
+            if let id = liveWake { model.drillInto(id); model.selectedId = id }
         default:         break
         }
     }
@@ -1037,6 +1085,7 @@ private struct DebugLaunchHook: ViewModifier {
             case "takeover": DebugLaunchHook.showTakeover(model: model)
             case "demo": DebugLaunchHook.showDemo(model: model)
             case "attached": DebugLaunchHook.showAttached(model: model)
+            case "subtree": DebugLaunchHook.showSubtree(model: model)
             case "anatomy": DebugLaunchHook.showAnatomy(model: model)
             case "attention": DebugLaunchHook.showAttention(model: model)
             default: break

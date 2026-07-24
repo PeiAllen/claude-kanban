@@ -5,7 +5,9 @@ import OrchestraKit
 
 /// The L4 subtree line: a card's subordinates summarised as a row of stage-coloured segments — one per
 /// LIVE lineage child, coloured by its column (plan=purple, impl=blue, review=teal) — then the
-/// attached-agents eye, then the descendants-only attention chip pinned right (slice 3b).
+/// attached-agents eye, then the descendants-only attention chip pinned to the trailing edge.
+/// `CardView.subtreeLine` prepends the `drill ›` tile at the LEADING edge (external to this view), which
+/// is what keeps the trailing edge clear for that chip.
 ///
 /// Attention splits by SUBJECT across the card: the card's own reasons live on L1, and everything
 /// below it aggregates here. So this chip counts DESCENDANTS only (self excluded) — "2 need you" means
@@ -45,6 +47,7 @@ struct SubtreeSegments: View {
             }
             eye(compact: !styles.isEmpty)
             Spacer(minLength: 0)
+            // The trailing edge the drill tile's leading placement keeps clear.
             if let text = Attention.subtreeChipText(model.subtreeAttention(of: root, now: now)) {
                 AttentionChip(text: text)
                     .help("\(text) below this card — select it to see which")

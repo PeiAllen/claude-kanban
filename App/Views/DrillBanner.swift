@@ -62,8 +62,14 @@ struct DrillHeader: View {
         }
     }
 
+    /// The banner IS the root card, laid flat — so clicking the box selects the root and opens its
+    /// agent, the same `selectAndEnterTerminal` a column card's click runs (this replaces the old
+    /// "open agent ↗" button). When that selection lands on the root, the box wears the accent border a
+    /// selected card wears, so "you are looking at the parent" reads at a glance. Only the box is the
+    /// click target: the hosted reviewer rows sit OUTSIDE it (in `body`'s VStack) and keep their own taps.
     private func banner(_ root: OrchestraCore.Task, now: Date) -> some View {
         let sem = theme.statusColor(root.phaseDisplay)
+        let isSelected = model.selectedId == root.id
         return HStack(spacing: 10) {
             // The root's own status pill (dot + state + time-in-state), the same fact the card showed.
             HStack(spacing: 6) {
@@ -90,19 +96,17 @@ struct DrillHeader: View {
             SubtreeSegments(root: root, now: now)   // the root's OWN live-children bar (no rollup)
 
             Spacer(minLength: 8)
-            // The root left the columns to become this banner, so this is how you reach its own agent.
-            Button { model.selectAndEnterTerminal(root.id) } label: {
-                Text("open agent ↗").font(F.ui(11)).foregroundStyle(theme.accent)
-            }
-            .buttonStyle(.plain)
-            .help("Open this root's own agent terminal")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.colBg)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(theme.hair, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isSelected ? theme.accent : theme.hair, lineWidth: isSelected ? 2 : 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onTapGesture { model.selectAndEnterTerminal(root.id) }
+        .help("Open this root's own agent terminal")
     }
 }

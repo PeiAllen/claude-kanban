@@ -205,6 +205,10 @@ shoot "13-diffstat-diff-tab" env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_INSPECTOR
 shoot "14-swap-392"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 392
 shoot "15-swap-320"          env ORCH_SHOW=shells ORCH_SHELLS_N=0 ORCH_TREE=stale -- -inspectorWidth 320
 
+# 16 — the L4 drill affordance: an unselected root with a live subtree shows the segment bar plus the
+# faint `drill ›` chip at the line's trailing edge (fix/drill-affordance).
+shoot "16-drill-affordance"  env ORCH_SHOW=subtree
+
 # Card anatomy (slice 2a — the four-line card). The `snap` shots are the primary gate: they render
 # through ImageRenderer, so they depend on neither window size, nor cfprefsd, nor Screen Recording,
 # and the ladder one sweeps widths in a single image. The windowed `shoot`s exist only to show the
@@ -237,6 +241,30 @@ echo "▶ capturing board hierarchy…"
 shoot "23-hier-toplevel" env ORCH_SHOW=anatomy ORCH_ANATOMY=single-repo -- -inspectorWidth 392
 shoot "24-hier-peek"     env ORCH_SHOW=anatomy ORCH_ANATOMY=peek        -- -inspectorWidth 392
 shoot "25-hier-drill"    env ORCH_SHOW=anatomy ORCH_ANATOMY=drill       -- -inspectorWidth 392
+# 26 — the drill banner IS the root card: clicking the box opens the root's agent (no more "open agent ↗"
+# button), and when that selection lands on the root the box wears the accent border (fix/drill-affordance).
+shoot "26-hier-drill-selected" env ORCH_SHOW=anatomy ORCH_ANATOMY=drill-selected -- -inspectorWidth 392
+# Deterministic ImageRenderer companions (no window / no cfprefsd) for the SAME surfaces, plus two
+# narrow-column peek variants (24b mid, 24c at the real board floor) — the peek children carry long
+# markdown-laden prompt-titles here, so the rows must stay ONE compact fixed-height line and squish
+# gracefully (desc → chip word→letter → diff) instead of a chip collapsing into a vertical pill. This
+# writes 23/24/24b/24c/25 straight into $OUT/det in one launch.
+snap_hier() { # writes the hier PNGs into $OUT/det via ImageRenderer (window-free, cfprefsd-free)
+  local names="23-hier-toplevel 24-hier-peek 24b-hier-peek-narrow 24d-hier-peek-pinch 24c-hier-peek-floor 25-hier-drill"
+  # Same glob idiom as shoot() (:140): the concrete name is the LHS literal, $ONLY the RHS pattern.
+  # Skip only when --only is set and matches NONE of the deterministic hier outputs.
+  if [[ -n "$ONLY" ]]; then
+    local matched=0 n
+    for n in $names; do [[ "$n" == $ONLY ]] && matched=1; done
+    [[ "$matched" == 0 ]] && return 0
+  fi
+  mkdir -p "$OUT/det"
+  HOME="$ISO_HOME" env ORCH_SNAPSHOT_HIER="$PWD/$OUT/det" ORCH_SNAP_DARK=1 "$BIN" >/dev/null 2>&1 || true
+  for n in $names; do
+    [[ -f "$OUT/det/$n.png" ]] && echo "  ✓ $OUT/det/$n.png (ImageRenderer)"
+  done
+}
+snap_hier
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
 

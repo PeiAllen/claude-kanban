@@ -82,17 +82,41 @@ level deeper (indented); the reveal follows the selection's ancestry, so a deep 
 opens. Clicking a row selects that card, opening its inspector/terminal; the row stays visible while
 selected, so Esc out of its terminal lands back on the row rather than into the void.
 
+The row is **one compact fixed-height line** — nothing wraps or stretches vertically — and it degrades by
+measured width so a narrow column stays legible. As the row narrows the loss order is: the note/desc drops,
+then the diffstat sheds its file count (`+N −M` — how big — outlives `Nf`), then the stage chip collapses
+from its word (`PLAN`/`IMPL`/`REVIEW`) to a single letter (`P`/`I`/`R`), then the diffstat drops entirely.
+The **title** (truncated to its first words) and the **chip** are never lost. The own-attention alert sits
+at the top of this keep-order — shown at every width, ahead of the diffstat: a row that needs you must say
+so even when there's no room left to say how big its diff is.
+
 **Drill — enter a root to re-scope the board to its subtree.** A **breadcrumb** (`‹ All projects /
 <root>`, each ancestor a click to re-scope) and a **banner** sit above the columns; the banner is the
 root's own status pill + identity + note/desc + ref + its **own** attention chip + its **own**
 live-children segment bar (no subtree rollup, and no rollup chip either — the descendants are the board
 below and report their own state, so aggregating them here would double-count what you are already
-looking at) + an **open agent ↗** action
-(the root left the columns to become the banner, so this reaches its terminal). The columns now hold the
+looking at). The banner **is** the root card
+laid flat: clicking the box selects the root and opens its agent (the same select-and-open a column card's
+click runs — the root left the columns to become the banner, so this is how you reach it), and while that
+selection is on the root the box wears the **accent border** a selected card wears, so "you're looking at
+the parent" reads at a glance. Its hosted reviewer rows sit below the box and keep their own clicks. The
+columns now hold the
 root's direct children; drilling is recursive for deeper subtrees, and drag-drop plus the freeform dock
 work within scope unchanged (both already read `visibleTasks`). The scope re-resolves by the root's
 `(repo, branch)` after every board change, so it survives the root card being succeeded (planning card →
 orchestrator) and clears to the top level when the branch loses its owner.
+
+**A visible mouse path in.** Because the drill is otherwise keyboard-only (`→`), a root that has a subtree
+carries pointer affordances into it, all routing through the exact re-scope `→` runs (each selects the
+root first, so the mouse path lands in the same place the keyboard one does). A **`drill ›` tile** — a
+sibling of the L4 segment squares, a chevron pointing into them — leads the segment bar (faint at rest so
+it's found without hover, fuller with the pointer on the card); it sits at the *leading* edge so the L4
+trailing edge stays clear for the descendants-attention chip. Its tooltip names the key
+(`Drill into subtree — →`). Selecting the root swaps the L4 summary for the inline peek rows, so the tile
+gives way to a **`drill into subtree ›` header** at the head of those rows — the same affordance, kept
+visible in the expanded state. And **double-clicking the root card** drills too (the folder-open idiom —
+single click still selects and enters the terminal). All are gated on the card actually having a lineage
+child, so nothing appears where drilling would no-op.
 
 **Keyboard is three-level.** `j`/`k` are the card axis — card-to-card, treating an expanded card and its
 rows as one unit (a selection on a row steps off the row's visible root). `↑`/`↓` are the row axis, walking
@@ -163,11 +187,14 @@ renders the attached-agents accordion as shipped.
   its turn. Labelled "N attached" when it's alone on the line. The eye's amber is the *same fact* as
   the chips: it reads the attention fold, so a reviewer that asked a question or is nearly out of
   context ambers it too, not only one that is blocked or dead.
-  Pinned right is the **descendants-only attention chip** ("2 need you") — how many cards *below* this
+  A faint **`drill ›` tile** — a sibling of the segment squares — leads the bar on a root that has a
+  subtree (see [Hierarchy](#hierarchy-roots-peek-and-drill)), which is what keeps the trailing edge clear
+  for the **descendants-only attention chip** ("2 need you") pinned there — how many cards *below* this
   one need the human, self excluded. Attention splits by subject: own reasons on L1, everything
   subordinate here, so position alone says whether to look at the card or into its tree.
-  Selecting the card (see [Hierarchy](#hierarchy-roots-peek-and-drill)) replaces this whole summary
-  with the subordinates as inline peek rows, which is how they're reached.
+  Selecting the card replaces this whole summary
+  with the subordinates as inline peek rows (which carry their own `drill into subtree ›` header), which
+  is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
   dim to 72% opacity. Tapping a card selects it and opens the inspector. During a `/` search, cards that
   don't match dim to 32%; during `f` [link-hint mode](#keyboard-navigation) each card wears a home-row

@@ -88,10 +88,26 @@ struct CardView: View {
         .opacity(dimmed ? 0.32 : ((isDead || ds.isStale) ? 0.72 : 1))
         .overlay(alignment: .topLeading) { hintBadge }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        // Double-click a root that has a subtree to drill in — the folder-open idiom, same re-scope
+        // as `→`. Only attached where it can act: registering a count-2 handler makes SwiftUI stall
+        // every single click to see if a second lands, so leaf cards keep an undelayed select.
+        .drillOnDoubleClick(enabled: model.hasLineageChildren(task)) { enterDrill() }
         .onHover { cardHover = $0 }
         // Clicking a card selects it AND descends into its agent terminal, so the glow, the
         // inspector ring, and the real keyboard first responder all agree after the click.
         .onTapGesture { model.selectAndEnterTerminal(task.id) }
+    }
+
+    /// Re-scope the board to this card's subtree — the shared path `→` and the drill affordances take.
+    /// Select the root first: `→` only ever fires with the root already selected (you selected it to
+    /// press the key), but a chip-click / double-click suppresses the card's own select, so without this
+    /// a mouse-drill would re-scope while the inspector still showed a now-out-of-scope card and no board
+    /// card was selected. Selecting the anchor keeps parity and lights the banner's "you're here" border.
+    private func enterDrill() {
+        let anchor = model.cardLevelAnchor(task.id)
+        model.selectedId = anchor
+        model.drillInto(anchor)
+        model.focusZone = .board
     }
 
     /// Dim when a `/` search is active and this card neither matches NOR hosts a matching attached row —
@@ -325,7 +341,33 @@ struct CardView: View {
     @ViewBuilder private func subtreeLine(now: Date) -> some View {
         if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
-            SubtreeSegments(root: task, now: now).padding(.top, 6)
+            HStack(spacing: 6) {
+                drillChevron
+                SubtreeSegments(root: task, now: now)
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    /// The mouse path into the subtree: a small rounded tile — a sibling of the L4 segment squares — at
+    /// the LEADING edge of the bar, a chevron pointing INTO the segments it opens. Only on cards that
+    /// have a subtree to enter (`hasLineageChildren`, the gate `→` obeys). Faint at rest so it's found
+    /// without hover (the gap this fixes was invisibility), fuller with the pointer on the card. It leads
+    /// the bar so the L4 trailing edge stays clear for the slice-3b descendants-attention chip. Its
+    /// tooltip names the key so the click teaches the keyboard.
+    @ViewBuilder private var drillChevron: some View {
+        if model.hasLineageChildren(task) {
+            Button(action: enterDrill) {
+                Image(systemName: "chevron.right")
+                    .font(F.ui(8, .bold))
+                    .foregroundStyle(theme.text2)
+                    .frame(width: 12, height: 12)
+                    .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(theme.chip))
+                    .opacity(cardHover ? 1 : 0.5)
+            }
+            .buttonStyle(.plain)
+            .help("Drill into subtree — →")
+            .animation(.easeOut(duration: 0.12), value: cardHover)
         }
     }
 
@@ -340,6 +382,7 @@ struct CardView: View {
         if !rows.isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             VStack(spacing: 2) {
+                if model.hasLineageChildren(task) { peekDrillHeader }
                 ForEach(rows, id: \.task.id) { row in
                     PeekRow(task: row.task, depth: row.depth, now: now)
                 }
@@ -347,9 +390,38 @@ struct CardView: View {
             .padding(.top, 6)
         }
     }
+
+    /// Selecting a root replaces its L4 summary (drill tile included) with these peek rows, so the mouse
+    /// path into the subtree would vanish exactly when you've focused the root to look into it. This
+    /// restores it: a `drill into subtree ›` header at the head of the expanded rows — same action as `→`
+    /// and the L4 tile. Only when there's a lineage subtree to enter, so a card showing only attached
+    /// reviewers (nothing to drill into) doesn't get it.
+    @ViewBuilder private var peekDrillHeader: some View {
+        Button(action: enterDrill) {
+            HStack(spacing: 3) {
+                Text("drill into subtree").font(F.ui(9, .medium)).tracking(0.2)
+                Image(systemName: "chevron.right").font(F.ui(7.5, .bold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(theme.text3)
+            .opacity(cardHover ? 1 : 0.6)
+        }
+        .buttonStyle(.plain)
+        .help("Drill into subtree — →")
+        .padding(.bottom, 1)
+    }
 }
 
 // MARK: - Helpers
+
+private extension View {
+    /// Attach double-click-to-drill only where a subtree exists. A count-2 tap gesture forces SwiftUI
+    /// to defer every single click on that view (waiting for a possible second), so we pay that cost
+    /// only on drillable roots and leave leaf cards' single-click selection instant.
+    @ViewBuilder func drillOnDoubleClick(enabled: Bool, _ action: @escaping () -> Void) -> some View {
+        if enabled { self.onTapGesture(count: 2, perform: action) } else { self }
+    }
+}
 
 /// A breathing pulse dot (ccPulse: opacity 1↔.35, scale 1↔.78).
 private struct BreathingDot: View {
