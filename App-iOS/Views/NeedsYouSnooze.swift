@@ -39,7 +39,7 @@ final class NeedsYouSnooze: ObservableObject {
     }
 
     /// The visible subset of a queue with snoozed rows removed.
-    func visible(_ items: [AttentionItem], now: Date = Date()) -> [AttentionItem] {
+    func visible(_ items: [NeedsYouRow], now: Date = Date()) -> [NeedsYouRow] {
         items.filter { !isSnoozed($0.id, now: now) }
     }
 }
