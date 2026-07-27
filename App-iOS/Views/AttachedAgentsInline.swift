@@ -23,7 +23,7 @@ struct AttachedExpandToggle: View {
         if let liveness = model.attachedLiveness(of: task) {
             let count = model.attachedAgents(of: task).count
             let expanded = model.isAttachedExpanded(task)
-            let tint = liveness == .allRunning ? theme.green.text : theme.amber.text
+            let tint = theme.eyeTint(liveness)
             Button { model.toggleAttachedExpanded(task) } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "eye").font(.system(size: 10, weight: .medium))
@@ -124,7 +124,7 @@ struct AttachedCountIndicator: View {
     var body: some View {
         if let liveness = model.attachedLiveness(of: task) {
             let count = model.attachedAgents(of: task).count
-            let tint = liveness == .allRunning ? theme.green.text : theme.amber.text
+            let tint = theme.eyeTint(liveness)
             HStack(spacing: 3) {
                 Image(systemName: "eye").font(.system(size: 10, weight: .medium))
                 Text("\(count)").font(.system(.caption2, design: .monospaced).weight(.semibold))
