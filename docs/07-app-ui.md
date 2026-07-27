@@ -74,9 +74,10 @@ descendants**, not reviewers.
 **Peek — select a root to reveal its subordinates as inline rows.** When a root (or any descendant) is
 selected, the card expands its `peekRows` inside its own frame, replacing the L4 summary: **lineage
 children first, then attached reviewers**, each a five-zone row — a status **dot** (the child's own phase)
-· **title** · **note/desc** (dim, truncates first) · **action slot** (a compact diffstat) · **chip slot**
-(a stage-tinted column chip — plan/impl/review — for a lineage child; the **eye** for an attached
-reviewer, which has no workflow column). Selecting a child that itself has subordinates expands them one
+· **title** · **note/desc** (dim, truncates first) · **action slot** (that row's own attention label if
+it needs you, else a compact diffstat — attention outranks the diff because the row's job is
+actionability) · **chip slot** (a stage-tinted column chip — plan/impl/review — for a lineage child;
+the **eye** for an attached reviewer, which has no workflow column, tinted per *that* agent). Selecting a child that itself has subordinates expands them one
 level deeper (indented); the reveal follows the selection's ancestry, so a deep grandchild's whole path
 opens. Clicking a row selects that card, opening its inspector/terminal; the row stays visible while
 selected, so Esc out of its terminal lands back on the row rather than into the void.
@@ -85,13 +86,16 @@ The row is **one compact fixed-height line** — nothing wraps or stretches vert
 measured width so a narrow column stays legible. As the row narrows the loss order is: the note/desc drops,
 then the diffstat sheds its file count (`+N −M` — how big — outlives `Nf`), then the stage chip collapses
 from its word (`PLAN`/`IMPL`/`REVIEW`) to a single letter (`P`/`I`/`R`), then the diffstat drops entirely.
-The **title** (truncated to its first words) and the **chip** are never lost. The own-attention alert, when
-the attention system populates the action slot, sits at the top of this keep-order — shown at every width.
+The **title** (truncated to its first words) and the **chip** are never lost. The own-attention alert sits
+at the top of this keep-order — shown at every width, ahead of the diffstat: a row that needs you must say
+so even when there's no room left to say how big its diff is.
 
 **Drill — enter a root to re-scope the board to its subtree.** A **breadcrumb** (`‹ All projects /
 <root>`, each ancestor a click to re-scope) and a **banner** sit above the columns; the banner is the
-root's own status pill + identity + note/desc + ref + its **own** live-children segment bar (no subtree
-rollup — the descendants are the board below and report their own state). The banner **is** the root card
+root's own status pill + identity + note/desc + ref + its **own** attention chip + its **own**
+live-children segment bar (no subtree rollup, and no rollup chip either — the descendants are the board
+below and report their own state, so aggregating them here would double-count what you are already
+looking at). The banner **is** the root card
 laid flat: clicking the box selects the root and opens its agent (the same select-and-open a column card's
 click runs — the root left the columns to become the banner, so this is how you reach it), and while that
 selection is on the root the box wears the **accent border** a selected card wears, so "you're looking at
@@ -145,16 +149,22 @@ renders the attached-agents accordion as shipped.
   nobody ever answered it), and the **model** as a dim pill. Those glyph colours say *who* the state
   waits on — blue for "this card's own agent will handle it", grey for "the parent card owes it",
   and a warning only when nobody answered at all — which is why none of them is amber: on the desktop
-  board, saturated amber is being reserved for "needs you". The glyph lives in `TreeBadge`, shared
+  board, saturated amber means "needs you" and nothing else (see [Attention](#attention-the-scan-rule)).
+  The glyph lives in `TreeBadge`, shared
   with the desktop [inspector header](#the-inspector) so the two can't drift, and hover names the
   parent branch. Absence is information: no glyph means nothing to say. (The iPhone client keeps its
   own tree-badge palette until the phone's card anatomy migrates in a later slice.)
+- **Own attention replaces the quiet cluster.** When the card itself needs the human, a solid amber
+  **attention chip** takes the cluster's slot outright — top reason plus a `+N` for any others — at
+  *every* squish rung. A card that needs you says so before it says how big its diff is, and the chip
+  never truncates or wraps, so it survives the narrowest column.
 - **Squish is an ordered drop, not truncation.** When a card runs short of width, `CardL1Layout`
   decides what goes and in what order — **model → treeStat glyph → the pill's state word → the
   diffstat** — and `CardView` hands those rungs to `ViewThatFits`, which picks the first that fits.
   The pill never wraps, and its dot and time-in-state never drop: fully squished, L1 is "● 47m",
   with the state still legible in the dot's colour. The size of a change outlives the label naming
-  the agent that made it.
+  the agent that made it. An attention chip is outside the ladder entirely — it is the one thing on
+  the strip that holds its width at every rung.
 - **L2 — identity, uncontested.** The card's title on its own line (up to 2 lines), so nothing
   competes with the name for width. A muted **source prefix** precedes it only when the board is
   ambiguous — i.e. holds more than one repo — naming a worktree card's repo; single-repo boards
@@ -171,13 +181,18 @@ renders the attached-agents accordion as shipped.
   its column — planning purple, implementing blue, in-review teal — so the bar reads left-to-right as
   progression; merged-green and dashed not-started slots appear once the daemon's child-progress
   counters land) followed by the **attached-agents eye** (`👁 N`), tinted by a **three-tier** roll-up:
-  **amber** when a reviewer needs the human now — blocked on a permission prompt, or dead — which
-  dominates; else **green** when any reviewer is active or being born (an active reviewer keeps the eye
-  green even beside one that has concluded — a finished reviewer is *idle*, not attention); else **grey**
-  when every attached reviewer has finished its turn. Labelled "N attached" when it's alone on the line.
+  **amber** when a reviewer needs the human now, which dominates; else **green** when any reviewer is
+  active or being born (an active reviewer keeps the eye green even beside one that has concluded — a
+  finished reviewer is *idle*, not attention); else **grey** when every attached reviewer has finished
+  its turn. Labelled "N attached" when it's alone on the line. The eye's amber is the *same fact* as
+  the chips: it reads the attention fold, so a reviewer that asked a question or is nearly out of
+  context ambers it too, not only one that is blocked or dead.
   A faint **`drill ›` tile** — a sibling of the segment squares — leads the bar on a root that has a
-  subtree (see [Hierarchy](#hierarchy-roots-peek-and-drill)); the trailing edge stays reserved for the
-  descendants-only attention chip in a later slice. Selecting the card replaces this whole summary
+  subtree (see [Hierarchy](#hierarchy-roots-peek-and-drill)), which is what keeps the trailing edge clear
+  for the **descendants-only attention chip** ("2 need you") pinned there — how many cards *below* this
+  one need the human, self excluded. Attention splits by subject: own reasons on L1, everything
+  subordinate here, so position alone says whether to look at the card or into its tree.
+  Selecting the card replaces this whole summary
   with the subordinates as inline peek rows (which carry their own `drill into subtree ›` header), which
   is how they're reached.
 - **Selection** draws an accent border + green shadow; waiting cards get an amber hairline; dead cards
@@ -187,6 +202,45 @@ renders the attached-agents accordion as shipped.
 
 Colors come from the theme's **semantic palette** — green (running), amber (waiting), gray (done), red
 (dead) — used consistently for dots, text, and tints.
+
+### Attention: the scan rule
+
+**Soft tinted = state. SOLID amber = needs you.** Nothing else on a board card is a saturated fill, so
+scanning for solid amber is a reliable way to find the work that is actually blocked on you — that
+property is the whole point, and it only holds because every other signal stays muted (the treeStat
+glyphs above are muted blue or grey precisely so they can't be mistaken for it).
+
+A card emits an attention reason **only when a human action is required** for work to proceed, or to
+stop waste — never merely because something is interesting or in progress. The rows, their priority,
+and why the set is closed live in
+[Design decisions § The attention system](09-design-decisions.md#the-attention-system).
+
+The same fold renders at four places, differing only in *subject*:
+
+| Surface | Subject | Shows |
+|---|---|---|
+| **L1 chip** | the card itself | top reason + `+N`, replacing the quiet cluster |
+| **L4 chip** | descendants only (self excluded) | "N need you" |
+| **Peek-row action slot** | that row's card | its top reason, else a compact diffstat |
+| **Drill banner** | the scoped root itself | its own chip only, never a rollup |
+
+The **eye** is the same fact at a different granularity — per agent on a peek row, rolled up on L4 — so
+an amber eye and an amber chip can never disagree. On L4 that means a blocked reviewer is reported
+twice on one line, by the eye's tint and inside the chip's count: deliberate, because the eye says
+*which kind* of subordinate needs you and the chip says *how many* — the tint is not itself a solid
+amber chip, so the scan rule is unaffected. **Absence is information**: a quiet card renders no chip at
+all, which is why there is no empty or "OK" state to read past.
+
+One consequence of scoping the stall clock to the card and its reviewers (and not its descendants) is
+that amber can **move** as a tree winds down: a root already quiet past the threshold ambers first, and
+once its children have been quiet that long too the amber settles onto them while the root switches to
+the rollup. Both readings are true when they appear — the root really had been silent that long — but
+it's worth knowing the amber relocating downward is the system converging, not flickering.
+
+Anything time-derived here (a card stalls by going *quiet* past a threshold) needs a clock, not a
+daemon message — so each card, and the drill header, runs **one** `TimelineView` above all of its
+surfaces. A per-line schedule would let L1 read "stalled 13m" while the same card's subtree count still
+claimed nobody needed you.
 
 ## The spawn sheet
 

@@ -4,10 +4,10 @@ import OrchestraCore
 import OrchestraKit
 
 /// One compact PEEK ROW for a subordinate, rendered INSIDE its root card while the root (or one of its
-/// descendants) is selected. Five zones (slice 2b, actionability-first): the child's OWN status **dot** ·
-/// **title** · **desc/note** (dim, lowest precedence, truncates first) · **action slot** (a compact
-/// diffstat for now; own-attention label is slice 3b) · **chip slot** — a stage-tinted column chip for a
-/// lineage child (plan/impl/review), or the **eye** for an attached read-only reviewer (no column).
+/// descendants) is selected. Five zones (actionability-first): the child's OWN status **dot** ·
+/// **title** · **desc/note** (dim, lowest precedence, truncates first) · **action slot** (its own
+/// attention label if it needs you, else a compact diffstat) · **chip slot** — a stage-tinted column
+/// chip for a lineage child (plan/impl/review), or the **eye** for an attached read-only reviewer.
 /// Indented by `depth` for a one-level-deeper reveal. Clicking selects the child, opening its inspector /
 /// terminal like any card; highlighted when it is the current selection, so Esc out of its terminal lands
 /// back on the visible row rather than into the void.
@@ -16,9 +16,17 @@ struct PeekRow: View {
     @Environment(\.theme) var theme: Theme
     let task: OrchestraCore.Task
     var depth: Int = 0
+    /// From the enclosing card's (or drill header's) clock — the action label can be a stall, which
+    /// crosses its threshold on time alone. Deliberately NOT defaulted: a call site that forgot to
+    /// thread the clock would otherwise capture one timestamp at view init and freeze there, and the
+    /// symptom ("the stall label never appears") looks nothing like the cause. Make it a compile error.
+    let now: Date
 
     private var isSelected: Bool { model.selectedId == task.id }
-    private var isAttached: Bool { task.access == .readOnly }
+    /// The DERIVED attachment (a read-only card with a resolvable target), not bare `.readOnly` — a
+    /// read-only card with no target is an ordinary citizen, and giving it the eye branch would send it
+    /// down `attentionTier`'s now-free path, which is only sound for a genuine attached agent.
+    private var isAttached: Bool { model.isAttached(task) }
 
     /// Uniform compact row height. Fixing it lets the row use a `GeometryReader` for width without the
     /// reader's fill-both-axes behaviour blowing the row up — and one fixed height IS the spec ("row
@@ -31,12 +39,12 @@ struct PeekRow: View {
     /// (kept to its first few words) and the chip itself are never lost. `w` is the row's measured content
     /// width; the real board floor is ~150pt, so a direct child keeps title+letter.
     ///
-    /// SEAM for slice 3b (`feat/attention-system`): the own-attention **alert** lands in the action slot
-    /// AHEAD of the diffstat, at the TOP of the keep-order — shown at every width, even before the title's
-    /// words. 3b derives it from the attention registry (not an ad-hoc phase check), so it is deliberately
-    /// NOT built here; when it arrives it slots in at the `// alert` mark below. It MUST be intrinsically
-    /// sized (`.fixedSize()` + `.lineLimit(1)`, same discipline as the diffstat/chip) — a flexible alert
-    /// Text would wrap into a tall pill (the very bug this file fixes) or, if high-priority, push the title out.
+    /// The own-attention **alert** sits in the action slot AHEAD of the diffstat, at the TOP of the
+    /// keep-order — shown at every width, because a row that needs you must say so even when there is no
+    /// room left to say how big its diff is. It comes from the attention registry (never an ad-hoc phase
+    /// check), and is intrinsically sized (`.fixedSize()` + `.lineLimit(1)`, the same discipline as the
+    /// diffstat and chip): a flexible alert Text would wrap into a tall pill — the bug this row's fixed
+    /// height exists to prevent — or push the title out.
     var body: some View {
         Button { model.selectAndEnterTerminal(task.id) } label: {
             GeometryReader { geo in
@@ -49,8 +57,14 @@ struct PeekRow: View {
                         Text(task.cardLine).font(F.ui(10.5)).foregroundColor(theme.text3).lineLimit(1)    // desc/note (drops first)
                     }
                     Spacer(minLength: 6)
-                    // alert — slice 3b's own-attention label goes HERE, ahead of the diffstat, highest keep-priority.
-                    if w >= 170, let stat = task.diffStat, stat.filesChanged > 0 {
+                    // alert — the own-attention label, ahead of the diffstat and at the TOP of the
+                    // keep-order: it survives every width, because a row that needs you must say so
+                    // even when there is no room left for how big its diff is. `AttentionChip` is
+                    // intrinsically sized (`.fixedSize()` + `.lineLimit(1)`), so it can't wrap into a
+                    // tall pill or push the title out.
+                    if let alert = Attention.chipText(model.ownAttention(of: task, now: now)) {
+                        AttentionChip(text: alert)
+                    } else if w >= 170, let stat = task.diffStat, stat.filesChanged > 0 {
                         // `.fixedSize()` so a starved diffstat never wraps its `+N −M` digits char-by-char
                         // into a tall pill (the peek-row bug). It drops out whole below 170 rather than
                         // shrink; from 240 down it first sheds the file count (`showFiles`) so the title's
@@ -79,10 +93,11 @@ struct PeekRow: View {
     /// column chip. The stage hue matches the L4 subtree segments (`theme.stageColor`).
     @ViewBuilder private func chip(word: Bool) -> some View {
         if isAttached {
-            // Liveness-tinted eye — the same three-tier mapping as the L4 roll-up eye, for this one agent:
-            // green (active) · grey (finished its turn) · amber (blocked on a permission prompt / dead).
+            // PER-AGENT tier for this one row (never the target roll-up, which would be nil here — a
+            // leaf reviewer has no attached agents of its own and the eye would vanish). Derived from
+            // the same attention fold as the chip: green (active) · grey (concluded) · amber (needs you).
             Image(systemName: "eye").font(F.ui(9))
-                .foregroundColor(theme.eyeTint(BoardStore.AttachedLiveness(phase: task.phase)))
+                .foregroundColor(theme.eyeTint(model.attentionTier(of: task)))
         } else {
             // Full stage word when the row has room (`word`), else a single-letter pill — the letter frees
             // ~30pt so the title keeps its first few words instead of collapsing to "…". The form is chosen

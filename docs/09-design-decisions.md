@@ -1110,6 +1110,91 @@ delivery reconciler — *before* the deliverability guard — so it arms even fo
 returns before delivering) and disarms when the queue drains, neither of which a wake- or confirm-only hook
 would catch. Stall detection reads it so a card with work still in flight is never mistaken for idle.
 
+### The attention system
+
+**The contract:** a card emits an attention reason **iff a human action is required** for work to
+proceed, or to stop waste. Not "interesting", not "in progress". Every row has to pass that test, and
+that is the only thing keeping amber trustworthy enough to scan for — the moment amber also means
+"busy", the board goes back to being a wall of colour you read card by card.
+
+**Done is declared; only stall is detected.** Done-ness is never inferred: the declarations are
+`merge-request` ("integrate me"), a move to Review ("review me"), and an attached agent concluding its
+turn (see [Done is DECLARED](#done-is-declared-merge-request-and-needs-input)). The stall row is the one
+detector, and it doubles as the **safety net** — a card that finishes but forgets to declare goes
+quiescent and ambers within `T`, so no completion is ever silently lost. That is why the net is a
+generic quiescence test rather than a list of known failure modes: it subsumes unarchived reviewer
+pairs, findings nobody consumed, silently-stopped agents, and forgotten declarations without naming any
+of them.
+
+**The registry** (priority order — how hard-blocked the work is; the L1 chip shows the first and folds
+the rest into a `+N`):
+
+| # | Reason | Predicate | Label |
+|---|--------|-----------|-------|
+| 1 | dead | `phase == .dead` | "dead" |
+| 2 | permission | `.live(.waiting(.permission))` | "permission" |
+| 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
+| 4 | needs input | `pendingQuestion != nil` | "question" |
+| 5 | stalled | quiescent past `T`, or a pre-computed merge give-up | "stalled Nm" / "merge stalled" / "wave done — move to Review?" |
+| 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
+
+Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
+merges it (a grey ⏱, quiet — the owning agent's business, not yours), so only an **unowned** target
+routes to the human. It never degrades into a stall, because a declared state explains the quiet.
+
+**Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
+the card must be idle; its attached agents settled; nothing in the card, its reviewers, *or* its subtree
+holding queued work (a descendant with a pending delivery is imminently active, and must not let an
+ancestor announce "wave done"); no descendant active; no declared state covering it; and nothing in the
+**constellation** — the card plus its attached agents — changed for longer than `T`. Descendants gate by
+*activity* only and never move that clock, because "is my subtree busy" and "how long have I been quiet"
+are different questions.
+
+Two rules keep one silence from producing several ambers. **Attached agents never own a stall** — a
+parked reviewer surfaces through its target's constellation, so an active target defeats the conjunction
+indefinitely and the leak lands on the target once the whole pass goes quiet. And **leaf attachment**:
+when a tree goes quiet the amber attaches at the cards that actually *stopped*, while ancestors report
+them through the L4 rollup instead of ambering for the same silence. One fact, one amber, aggregated
+once. A drained root has no children left, so it still owns its own "wave done" nudge — and a nudge is a
+reason plus a proposal, never an action: nothing here ever moves a card for you.
+
+`mergeStalled` folds into row 5 as a **pre-computed daemon input** with a sharper label, ahead of the
+declared-state suppression, because it rides alongside the very `mergeRequested` state that would
+otherwise exempt it. The idle gate still applies, so a card that resumed running carrying a stale flag
+does not amber.
+
+**Two folds, one registry, all client-side** (`Attention` + `BoardStore+Attention`): **own** (a card's
+own reasons) and **subtree** (how many *descendants* hold at least one reason, self excluded). Mind the
+near-homonyms in `OrchestraUI` until the phone adopts this: **`Attention.Reason` / `AttentionSignal`**
+are this registry; **`AttentionReason` / `AttentionItem`** are the phone's older, separate queue in
+`NeedsYouQueue`. The eye
+tint is derived from the same fold rather than from phase, so an amber eye and an amber chip are the
+same fact — which also means a reviewer that asked a question or is nearly out of context now ambers the
+eye, where a phase-only mapping saw only "blocked or dead". Rendering is in
+[App UI § Attention](07-app-ui.md#attention-the-scan-rule).
+
+**Adding a row:** check it passes the contract; check it is derivable from broadcast state (if not, the
+*field* is a daemon change first — the reason stays client-side); then add a predicate, a label, and a
+priority slot. It flows into both folds and every desktop surface automatically. The phone's Needs You
+queue is NOT yet fed by this registry — it still derives its own older reason set in `NeedsYouQueue`, and
+adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
+
+**Two rungs are deliberately deferred, and both are one edit away.** The *detected* sibling of row 4 —
+an in-terminal choices box (Claude's `AskUserQuestion`), which blocks mid-turn exactly like a permission
+wait and self-clears by state — funnels to the same "question" amber. It is deferred because the daemon
+can't yet *detect* an open box, not because none exists: `AskUserQuestion` is real and bridged Claude
+sessions have it, but a probe couldn't confirm the daemon sees it — whether an open box fires a hook the
+control plane receives, and whether it renders in the tmux pane or on the claude.ai surface, are both
+unverified (a freshly-launched non-bridged CLI didn't even expose the tool, so there was nothing to
+observe). Codex has no equivalent — its approval prompt is already row 2. So row 4 ships on the declared
+verb alone until a detectable producer is confirmed; the natural place that lands is the agent-channels
+work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
+status/hook surface a box signal would ride. Likewise the stall row's **human-paced exemption** — quiet that is a human's
+deliberate pacing rather than a stuck agent — needs a human-vs-injected turn signal that does not exist
+in broadcast state; the predicate takes the flag as a parameter so it threads in when one does. The
+accepted cost is that a card a human set down can amber after `T`; the alternative was synthesising a
+turn-source bit through the fenced report/delivery path for an edge case.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session

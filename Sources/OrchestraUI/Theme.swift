@@ -163,6 +163,15 @@ extension Theme {
         }
     }
 
+    /// The attention chip's SOLID amber fill — the only saturated fill on a board card. Every other
+    /// quiet fact is a muted tint or a soft state wash, which is what makes "scan for solid amber" a
+    /// rule you can trust rather than a habit.
+    public var attentionChipFill: Color { amber.dot }
+
+    /// Text on that fill. Near-black in BOTH modes: the fill is a saturated amber either way, so the
+    /// contrast comes from the ink, not from the theme.
+    public var attentionChipText: Color { Color(hex: 0x1D1D1F) }
+
     /// The attached-agents eye tint for a liveness tier — green (active) · grey (idle/all-concluded) ·
     /// amber (a reviewer needs the human now / died). The ONE place this mapping lives, shared by the L4
     /// roll-up eye and the per-row peek eye so both read the same.

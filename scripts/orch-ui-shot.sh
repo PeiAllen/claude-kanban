@@ -267,3 +267,11 @@ snap_hier() { # writes the hier PNGs into $OUT/det via ImageRenderer (window-fre
 snap_hier
 
 echo "▶ done → $OUT  (isolated tmux server '$ISO_TMUX_SOCKET' torn down on exit)"
+
+# --- slice 3b: the attention system -------------------------------------------------------------
+# The SCAN RULE is what these are for: solid amber must appear only where a human is genuinely
+# needed. `26` is the board (own chip, stall, question+overflow, and the L4 "1 needs you" rollup on
+# the orchestrator whose stopped child owns the amber); `27` re-shoots it narrow, because the own
+# chip replaces the quiet cluster at EVERY squish rung and must never truncate.
+shoot "26-attention-board"   env ORCH_SHOW=attention -- -inspectorWidth 392
+shoot "27-attention-peek"    env ORCH_SHOW=attention ORCH_ATTENTION=peek -- -inspectorWidth 760
