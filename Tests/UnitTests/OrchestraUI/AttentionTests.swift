@@ -105,6 +105,15 @@ import Foundation
         #expect(r.first?.label.hasPrefix("stalled ") == true)
     }
 
+    /// The stall duration rolls up into the board's `m`/`h`/`d` units (via `compactDuration`), so a
+    /// long-quiet card reads `stalled 2h` / `stalled 1d` like every other time stamp — not a flat
+    /// minute count (`130m`). `card()` is quiet since `t0`, so `now - t0` IS the quiet duration.
+    @Test func stall_label_rollsQuietDurationIntoHoursAndDays() {
+        #expect(reasons(card(), now: t0.addingTimeInterval(45 * 60)).first?.label == "stalled 45m")
+        #expect(reasons(card(), now: t0.addingTimeInterval(2 * 3600 + 5)).first?.label == "stalled 2h")
+        #expect(reasons(card(), now: t0.addingTimeInterval(25 * 3600)).first?.label == "stalled 1d")
+    }
+
     /// Strictly greater than T — exactly-at-T is still quiet, so a `>`/`>=` slip is caught.
     @Test func stall_timerBoundary_underT_isQuiet_atT_isQuiet_overT_fires() {
         #expect(!reasons(card(), now: t0.addingTimeInterval(T - 1)).contains { $0.reason == .stalled })

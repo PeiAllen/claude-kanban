@@ -178,6 +178,6 @@ public enum Attention {
         // 7. A drained tree that has gone quiet is a NUDGE — reason plus proposal. It never acts on
         //    its own; moving the card is always the human's call.
         if c.treeStat?.drained == true { return .init(.stalled, "wave done — move to Review?") }
-        return .init(.stalled, "stalled \(Int(quietFor / 60))m")
+        return .init(.stalled, "stalled \(compactDuration(quietFor))")
     }
 }
