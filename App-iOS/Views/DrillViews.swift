@@ -79,6 +79,10 @@ struct DrillHeaderIOS: View {
             if !root.cardLine.isEmpty {
                 Text(root.cardLine).font(.caption2).foregroundStyle(theme.text3).lineLimit(1)
             }
+            // Root identity — the `#shortId` ref at the right end of the context (design §Ref); the banner
+            // is the root card laid flat, so it carries the same identity a card row would.
+            Text("#\(root.shortId)")
+                .font(.system(.caption2, design: .monospaced)).foregroundStyle(theme.text3)
             // The root's OWN attention only — its subtree IS the pager below, so a rollup would double-count.
             if let text = Attention.chipText(model.ownAttention(of: root, now: now)) {
                 AttentionChipIOS(text: text)

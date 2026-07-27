@@ -22,8 +22,13 @@ struct NeedsYouTab: View {
 
     private var theme: Theme { Theme(scheme: scheme, accent: model.accent) }
 
+    /// The FULL attention set, before the snooze filter. `reconcile` keys on THIS, not `items`: a snoozed
+    /// card is dropped from `items`, so reconciling against `items` would read the snooze as "resolved" and
+    /// prune the very entry the tap just set — self-cancelling Snooze/Dismiss on the next render. Keying on
+    /// the unsnoozed set prunes a snooze only when the card genuinely leaves the fold (plan spec).
+    private var allRows: [NeedsYouRow] { model.needsYouRows(now: now) }
     /// The live queue with snoozed rows removed. Recomputes as the board changes and as `now` ticks.
-    private var items: [NeedsYouRow] { snooze.visible(model.needsYouRows(now: now)) }
+    private var items: [NeedsYouRow] { snooze.visible(allRows) }
 
     /// Group into reason sections once the flat list gets long (design §6: "Grouped by reason when the
     /// list is long"); a short queue reads better flat. Buckets by the row's TOP reason.
@@ -79,7 +84,7 @@ struct NeedsYouTab: View {
         .onReceive(tick) { now = $0 }
         // Prune stale snoozes whenever the attention set changes so a resolved-then-re-alerting card
         // isn't left suppressed.
-        .onChange(of: items.map(\.id)) { _, ids in
+        .onChange(of: allRows.map(\.id)) { _, ids in
             snooze.reconcile(activeIds: Set(ids))
         }
         // A tapped push deep-links here: open the pushed card (Recovery for a died card, else the peek).

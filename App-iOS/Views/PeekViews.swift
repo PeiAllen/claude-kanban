@@ -75,11 +75,11 @@ struct PeekRows: View {
     }
 }
 
-/// The visual for one peek row — five zones (design §"Peek rows"): dot (the child's OWN phase) · shortId ·
-/// title · action slot (own-attention label if any, else compact diff) · chip slot (lineage child → a
-/// stage-tinted column chip; attached reviewer → a liveness-tinted eye; columnless → "freeform"). Shared by
-/// the board row (a `Button` that selects) and the detail-header row (a `NavigationLink` that pushes) so
-/// the two can't drift.
+/// The visual for one peek row (design §"Peek rows"): dot (the child's OWN phase) · shortId · title ·
+/// desc/note (dim context, lowest precedence, truncates first) · action slot (own-attention label if any,
+/// else compact diff) · chip slot (lineage child → a stage-tinted column chip; attached reviewer → a
+/// liveness-tinted eye; columnless → "freeform"). Shared by the board row (a `Button` that selects) and the
+/// detail-header row (a `NavigationLink` that pushes) so the two can't drift.
 struct PeekRowLabel: View {
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
@@ -97,6 +97,16 @@ struct PeekRowLabel: View {
                 .font(.subheadline)
                 .foregroundStyle(theme.text)
                 .lineLimit(1)
+                .layoutPriority(1)          // title outranks the context zone, which truncates first
+            // Dim context zone (design §"Peek rows": desc/note, lowest precedence). Gives a quiet
+            // subordinate its hierarchy/work context; `layoutPriority` above lets it yield space to the title.
+            if !task.cardLine.isEmpty {
+                Text(task.cardLine)
+                    .font(.caption2)
+                    .foregroundStyle(theme.text3)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Spacer(minLength: 8)
             actionSlot
             chipSlot
@@ -157,29 +167,5 @@ struct PeekRow: View {
             PeekRowLabel(task: task, now: now, isSelected: model.selectedId == task.id)
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// A **non-interactive** `👁 N` count + liveness indicator for the card-detail header (parity with the
-/// desktop inspector's demoted badge). Self-hides unless the card has attached agents. Tinted by the
-/// fold-derived `attentionLiveness` (the phase-only `attachedLiveness` is retired at every iOS tint site).
-struct AttachedCountIndicator: View {
-    @EnvironmentObject private var model: BoardModel
-    @Environment(\.theme) private var theme: Theme
-    let task: Task
-
-    var body: some View {
-        let agents = model.attachedAgents(of: task)
-        if !agents.isEmpty, let liveness = model.attentionLiveness(of: task) {
-            let tint = theme.eyeTint(liveness)
-            HStack(spacing: 3) {
-                Image(systemName: "eye").font(.system(size: 10, weight: .medium))
-                Text("\(agents.count)").font(.system(.caption2, design: .monospaced).weight(.semibold))
-            }
-            .foregroundStyle(tint)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Capsule().fill(theme.chip))
-            .accessibilityLabel(agents.count == 1 ? "1 attached agent" : "\(agents.count) attached agents")
-        }
     }
 }

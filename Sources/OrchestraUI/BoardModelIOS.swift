@@ -99,21 +99,6 @@ public final class IOSBoardModel: BoardStore {
         drillScope = id
     }
 
-    /// Pop out one scope level: to the drilled root's own parent (deeper drills climb one at a time), or to
-    /// the top level at a forest root. Lands the selection on the root we just exited.
-    public func drillOut() {
-        guard let scope = drillScope, let card = tasks.first(where: { $0.id == scope }) else {
-            drillScope = nil; drillScopeKey = nil; return
-        }
-        if let parent = hierarchyParent(of: card) {
-            drillScopeKey = BranchKey(repo: parent.repo, branch: parent.branch)
-            drillScope = parent.id
-        } else {
-            drillScope = nil; drillScopeKey = nil
-        }
-        selectedId = scope
-    }
-
     /// Jump straight to a specific scope on the breadcrumb path (or the top level with `nil`).
     public func setDrillScope(_ id: UUID?) {
         guard let id, let card = tasks.first(where: { $0.id == id }) else {

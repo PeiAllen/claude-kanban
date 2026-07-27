@@ -330,4 +330,31 @@ final class AttachedAgentsGateTests: XCTestCase {
              model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
              order: 0, phase: .live(.running), initialPrompt: id, createdAt: at)
     }
+
+    // MARK: Needs You snooze — reconcile against the UNSNOOZED fold, not the filtered list
+
+    /// Regression: the Needs You tab reconciles snoozes against the full `needsYouRows` fold, NOT the
+    /// snooze-filtered `items` it renders. Reconciling against the filtered list is the self-cancel bug:
+    /// snoozing a still-active card drops it from `items`, `reconcile` reads that as "resolved" and prunes
+    /// the snooze the tap just set, so the row reappears on the next render. This pins the contract the
+    /// view relies on — a snooze survives while its card is in the fold, and is pruned only when it leaves.
+    func testSnoozeSurvivesReconcileWhileCardStaysInFold() {
+        let snooze = NeedsYouSnooze()
+        let x = worktree("01", branch: "x")
+        let y = worktree("02", branch: "y")
+        let fold = [NeedsYouRow(task: x, signals: [AttentionSignal(.stalled, "12m")]),
+                    NeedsYouRow(task: y, signals: [AttentionSignal(.stalled, "9m")])]
+
+        snooze.snooze(x.id, for: 3600)
+        // The tab hides x from what it renders...
+        XCTAssertEqual(snooze.visible(fold).map(\.id), [y.id])
+        // ...but reconciles against the FULL fold (x still needs you, just suppressed).
+        snooze.reconcile(activeIds: Set(fold.map(\.id)))
+        XCTAssertTrue(snooze.isSnoozed(x.id), "snooze must survive: x is still in the fold")
+        XCTAssertEqual(snooze.visible(fold).map(\.id), [y.id], "x stays suppressed, not re-alerted")
+
+        // When x genuinely resolves and leaves the fold, the snooze is pruned so a fresh alert later shows.
+        snooze.reconcile(activeIds: [y.id])
+        XCTAssertFalse(snooze.isSnoozed(x.id), "snooze pruned once the card leaves the fold")
+    }
 }
