@@ -1135,7 +1135,7 @@ the rest into a `+N`):
 | 2 | permission | `.live(.waiting(.permission))` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T`, or a pre-computed merge give-up | "stalled Nm" / "merge stalled" / "wave done — move to Review?" |
+| 5 | stalled | quiescent past `T`, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
 | 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent

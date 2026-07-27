@@ -5,16 +5,24 @@
 import SwiftUI
 import OrchestraKit
 
+/// The board's compact `3s`/`4m`/`2h`/`1d` duration ladder — one rung per unit, rolling up at
+/// 60s → 60m → 24h. Takes a raw interval so a caller that already holds a duration (the stall
+/// timer) renders it in the SAME units as the `Date`-based "time since" stamps, instead of a flat
+/// minute count that reads `130m` where every other stamp would say `2h`.
+public func compactDuration(_ seconds: TimeInterval) -> String {
+    let s = Int(max(0, seconds))
+    if s < 60 { return "\(s)s" }
+    let m = s / 60; if m < 60 { return "\(m)m" }
+    let h = m / 60; if h < 24 { return "\(h)h" }
+    return "\(h / 24)d"
+}
+
 /// Relative age like the board's `3s`/`4m`/`2h`/`1d` — the compact "time since" stamp shown on cards,
 /// the activity feed, and the agent capture line. One implementation for every surface (was copied
 /// five ways: desktop `CardView`, iOS `BoardCardCell`/`NeedsYouTab`/`ActivityFeedView`, and
 /// `CardDetailHeader.relativeDetailAge`).
 public func relativeAge(_ date: Date, now: Date = Date()) -> String {
-    let s = Int(max(0, now.timeIntervalSince(date)))
-    if s < 60 { return "\(s)s" }
-    let m = s / 60; if m < 60 { return "\(m)m" }
-    let h = m / 60; if h < 24 { return "\(h)h" }
-    return "\(h / 24)d"
+    compactDuration(now.timeIntervalSince(date))
 }
 
 /// How often a live `relativeAge` stamp needs re-rendering: every second while it still reads in
