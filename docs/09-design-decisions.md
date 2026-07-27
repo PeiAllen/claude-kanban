@@ -1180,12 +1180,16 @@ queue is NOT yet fed by this registry — it still derives its own older reason 
 adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
 
 **Two rungs are deliberately deferred, and both are one edit away.** The *detected* sibling of row 4 —
-an in-terminal choices box, which blocks mid-turn exactly like a permission wait and self-clears by
-state — funnels to the same "question" amber, but no agent Orchestra launches emits a signal a daemon
-can see today: the vanilla `claude` CLI has no `AskUserQuestion` tool (that box comes from the claude.ai
-bridge, which renders outside the terminal), and Codex has no equivalent, its approval prompt already
-being row 2. Wiring a detector now would be a capability with no producer, so row 4 ships on the
-declared verb alone. Likewise the stall row's **human-paced exemption** — quiet that is a human's
+an in-terminal choices box (Claude's `AskUserQuestion`), which blocks mid-turn exactly like a permission
+wait and self-clears by state — funnels to the same "question" amber. It is deferred because the daemon
+can't yet *detect* an open box, not because none exists: `AskUserQuestion` is real and bridged Claude
+sessions have it, but a probe couldn't confirm the daemon sees it — whether an open box fires a hook the
+control plane receives, and whether it renders in the tmux pane or on the claude.ai surface, are both
+unverified (a freshly-launched non-bridged CLI didn't even expose the tool, so there was nothing to
+observe). Codex has no equivalent — its approval prompt is already row 2. So row 4 ships on the declared
+verb alone until a detectable producer is confirmed; the natural place that lands is the agent-channels
+work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
+status/hook surface a box signal would ride. Likewise the stall row's **human-paced exemption** — quiet that is a human's
 deliberate pacing rather than a stuck agent — needs a human-vs-injected turn signal that does not exist
 in broadcast state; the predicate takes the flag as a parameter so it threads in when one does. The
 accepted cost is that a card a human set down can amber after `T`; the alternative was synthesising a

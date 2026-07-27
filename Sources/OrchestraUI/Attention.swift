@@ -91,13 +91,14 @@ public enum Attention {
         if c.treeStat?.state == .mergeRequested, !parentOwned {
             out.append(.init(.mergeRequested, "merge-requested"))
         }
-        // Row 4, DECLARED rung. The DETECTED sibling — an in-terminal choices box, which blocks
-        // mid-turn exactly like a permission wait and self-clears by state — funnels to this SAME
-        // amber and belongs right here as one more `||`. It is deferred, not dismissed: no agent
-        // Orchestra launches emits a detectable box today (the vanilla claude CLI has no
-        // AskUserQuestion tool; Codex has no equivalent), so wiring a detector now would be a
-        // capability with no producer. See docs/09.
-        // TODO(claude-channels): add the detected choices-box rung here once a signal exists.
+        // Row 4, DECLARED rung. The DETECTED sibling — an in-terminal choices box (AskUserQuestion),
+        // which blocks mid-turn exactly like a permission wait and self-clears by state — funnels to
+        // this SAME amber and belongs right here as one more `||`. Deferred because the DAEMON can't yet
+        // detect an open box (the tool exists on bridged sessions, but whether it fires a hook the
+        // control plane sees, and whether it renders in the tmux pane, are unverified — see docs/09),
+        // not because none exists. Codex's approval prompt is already row 2.
+        // TODO(orchestra://task/897d75 — agent-channels/status redesign): add the detected rung here
+        // once that work makes an open box detectable.
         if c.pendingQuestion != nil { out.append(.init(.question, "question")) }
 
         if canStall, let stall = isStalled(c, attached: attached, descendants: descendants,
