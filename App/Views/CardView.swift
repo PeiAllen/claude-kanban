@@ -43,13 +43,29 @@ struct CardView: View {
         return theme.cardBorder
     }
 
+    /// ONE clock for the whole card.
+    ///
+    /// Attention is partly TIME-derived (a card stalls by going quiet past T), and it renders on three
+    /// of the four lines — the L1 own chip, the L4 rollup count, and the peek-row action labels. If
+    /// only L1 ticked, a card could read "stalled 13m" while its own subtree count still said nobody
+    /// needed you, until an unrelated daemon broadcast happened along. So the schedule lives here,
+    /// above every surface, and `now` is threaded down rather than re-derived per line.
+    ///
+    /// Cadence follows the card's AGE (1 Hz while the stamp still reads in seconds, then once a
+    /// minute), which is strictly finer than the minute resolution the attention labels need.
     var body: some View {
+        TimelineView(.periodic(from: .now, by: ageRefreshInterval(task.phaseChangedAt))) { ctx in
+            cardBody(now: ctx.date)
+        }
+    }
+
+    private func cardBody(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            statusStrip
+            statusStrip(now: now)
             identityLine
             contextLine
-            subtreeLine
-            attachedRows
+            subtreeLine(now: now)
+            attachedRows(now: now)
         }
         .padding(model.density.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -127,22 +143,16 @@ struct CardView: View {
     /// about it are the same kind of information. When the line runs short, `CardL1Layout` decides
     /// what goes and in what order; `ViewThatFits` only measures, picking the first rung that fits.
     ///
-    /// The `TimelineView` is deliberately OUTSIDE `ViewThatFits`: inside, every one of the five
-    /// measured candidates would run its own 1 Hz schedule, and the winning rung could be chosen
-    /// against labels rendered at different instants. Live cards tick every second (seconds are
-    /// meaningful there); everything else ticks once a minute, which is all its age can change.
-    private var statusStrip: some View {
-        // Cadence follows the AGE, not the phase: 1 Hz while the stamp still reads in seconds, then
-        // once a minute. Keying it off `isRunning || isWaiting` left a just-spawned or just-dead card
-        // frozen at "· 0s" for its whole first minute — its age is in seconds too.
-        TimelineView(.periodic(from: .now, by: ageRefreshInterval(task.phaseChangedAt))) { ctx in
-            ViewThatFits(in: .horizontal) {
-                strip(CardL1Layout.rung(dropping: 0), now: ctx.date)
-                strip(CardL1Layout.rung(dropping: 1), now: ctx.date)
-                strip(CardL1Layout.rung(dropping: 2), now: ctx.date)
-                strip(CardL1Layout.rung(dropping: 3), now: ctx.date)
-                strip(CardL1Layout.rung(dropping: 4), now: ctx.date)
-            }
+    /// The card clock (`body`) is deliberately OUTSIDE this `ViewThatFits`: inside, every one of the
+    /// five measured candidates would run its own schedule, and the winning rung could be chosen
+    /// against labels rendered at different instants.
+    private func statusStrip(now: Date) -> some View {
+        ViewThatFits(in: .horizontal) {
+            strip(CardL1Layout.rung(dropping: 0), now: now)
+            strip(CardL1Layout.rung(dropping: 1), now: now)
+            strip(CardL1Layout.rung(dropping: 2), now: now)
+            strip(CardL1Layout.rung(dropping: 3), now: now)
+            strip(CardL1Layout.rung(dropping: 4), now: now)
         }
     }
 
@@ -150,6 +160,20 @@ struct CardView: View {
         HStack(spacing: 0) {
             pill(rung, now: now)
             Spacer(minLength: 8)
+            trailingCluster(rung, now: now)
+        }
+    }
+
+    /// The right end of L1: an OWN attention chip if the card needs you, else the quiet facts.
+    ///
+    /// Attention REPLACES the cluster outright rather than joining it, and does so at every rung — a
+    /// card that needs you should say so before it says how big its diff is, and the chip must survive
+    /// the narrowest column. That is the whole squish decision for this slot, which is why it doesn't
+    /// consult `rung` at all on the attention branch.
+    @ViewBuilder private func trailingCluster(_ rung: L1Rung, now: Date) -> some View {
+        if let text = Attention.chipText(model.ownAttention(of: task, now: now)) {
+            AttentionChip(text: text)
+        } else {
             quietCluster(rung)
         }
     }
@@ -314,12 +338,12 @@ struct CardView: View {
         guard let ts = task.treeStat else { return false }
         return ts.mergedChildren > 0 || ts.plannedChildren > 0
     }
-    @ViewBuilder private var subtreeLine: some View {
+    @ViewBuilder private func subtreeLine(now: Date) -> some View {
         if (!model.subordinates(of: task).isEmpty || hasProgressCounters), model.peekRows(of: task).isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             HStack(spacing: 6) {
                 drillChevron
-                SubtreeSegments(root: task)
+                SubtreeSegments(root: task, now: now)
             }
             .padding(.top, 6)
         }
@@ -353,13 +377,15 @@ struct CardView: View {
     /// INSIDE the card's frame when the card (or one of its descendants) is selected. `peekRows` carries
     /// the reveal + `/`-search gate and the one-level-deeper indent depth, so this is empty (and the card
     /// renders as today) whenever it shouldn't expand.
-    @ViewBuilder private var attachedRows: some View {
+    @ViewBuilder private func attachedRows(now: Date) -> some View {
         let rows = model.peekRows(of: task)
         if !rows.isEmpty {
             Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 9)
             VStack(spacing: 2) {
                 if model.hasLineageChildren(task) { peekDrillHeader }
-                ForEach(rows, id: \.task.id) { row in PeekRow(task: row.task, depth: row.depth) }
+                ForEach(rows, id: \.task.id) { row in
+                    PeekRow(task: row.task, depth: row.depth, now: now)
+                }
             }
             .padding(.top, 6)
         }
