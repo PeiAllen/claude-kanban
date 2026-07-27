@@ -106,8 +106,8 @@ final class AttachedAgentsGateTests: XCTestCase {
         XCTAssertTrue(model.cards(in: .impl).contains { $0.id == r2.id })
     }
 
-    /// The liveness roll-up that colours the badge: green all-running/being-born, amber on waiting/dead,
-    /// nil when none attached.
+    /// The three-tier liveness roll-up that colours the badge: needsAttention (permission block / dead)
+    /// dominates; else running (any active or being-born) dominates idle; else idle; nil when none attached.
     func testLivenessRollUp() {
         let model = BoardModel(platform: .ios)
         let target = worktree("01", branch: "feat/x")
@@ -115,11 +115,13 @@ final class AttachedAgentsGateTests: XCTestCase {
             worktree(id, branch: "r\(id)", access: .readOnly, parentBranch: "feat/x", phase: phase)
         }
         model.tasks = [target, reviewer("02", .live(.running)), reviewer("03", .launching)]
-        XCTAssertEqual(model.attachedLiveness(of: target), .allRunning)
+        XCTAssertEqual(model.attachedLiveness(of: target), .running)
 
+        // GREEN DOMINATES IDLE: a concluded (humanTurn) reviewer beside a running one stays green —
+        // a finished reviewer is idle, NOT attention.
         model.tasks = [target, reviewer("02", .live(.running)),
                        reviewer("03", .live(.waiting(.humanTurn)))]
-        XCTAssertEqual(model.attachedLiveness(of: target), .needsAttention)
+        XCTAssertEqual(model.attachedLiveness(of: target), .running)
 
         model.tasks = [target]
         XCTAssertNil(model.attachedLiveness(of: target))
