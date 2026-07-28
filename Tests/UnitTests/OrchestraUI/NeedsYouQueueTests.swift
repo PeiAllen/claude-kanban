@@ -2,24 +2,116 @@ import XCTest
 import OrchestraKit
 @testable import OrchestraUI
 
-/// The Needs You attention queue (mobile design §6): reason derivation, background-wait exclusion,
-/// urgency sort, and the send-keys gate chords. Pure logic — no daemon, no iOS Simulator.
+/// The Needs You attention queue (BT slice 5), re-homed onto the 3b `ownAttention` fold: membership is
+/// now the ONE contract (a card appears IFF a human action is required), the top signal drives the row,
+/// and the send-keys gate chords are unchanged. Pure logic over a hand-built `tasks` array + an injected
+/// `now` — no daemon, no iOS Simulator. (The per-reason derivation itself is covered in
+/// `BoardStoreAttentionTests`/`AttentionTests`; this pins the BUILDER — filter, sort, signal passthrough.)
+@MainActor
 final class NeedsYouQueueTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+    private var T: TimeInterval { Attention.Thresholds().stallAfter }
+    private var late: Date { t0.addingTimeInterval(T + 80) }
 
     private func card(_ title: String,
+                      parentBranch: String? = nil,
                       phase: Phase = .live(.running),
                       dead: DeadReason? = nil,
                       ctx: Double = 0,
+                      pendingQuestion: PendingQuestion? = nil,
+                      treeStat: TreeStat? = nil,
+                      hasPendingDelivery: Bool = false,
                       archived: Bool = false,
-                      updatedAt: Date = Date()) -> Task {
-        Task(title: title, repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
-             model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
-             deadReason: dead, phase: phase, ctxPct: ctx,
-             initialPrompt: title, archived: archived, updatedAt: updatedAt)
+                      at: Date? = nil) -> Task {
+        Task(title: title, pendingQuestion: pendingQuestion, repo: "/repo", branch: "feat/\(title)",
+             cwd: "/repo/.wt/\(title)", origin: .worktree, model: AgentModel(id: "claude-opus-4-8"),
+             startIn: .impl, column: .impl, order: 0, deadReason: dead, phase: phase,
+             phaseChangedAt: at ?? t0, ctxPct: ctx, initialPrompt: title, parentBranch: parentBranch,
+             treeStat: treeStat, hasPendingDelivery: hasPendingDelivery, archived: archived,
+             updatedAt: at ?? t0)
     }
 
-    /// A generic advertised agent for exercising UI routing. The UI target deliberately does not import
-    /// OrchestraCore, so it never reaches into a concrete adapter's shipped capability tuple.
+    @MainActor
+    private func modelWith(_ tasks: [Task], agents: [AgentInfo] = []) -> BoardModel {
+        let m = BoardModel(platform: .noop)
+        m.tasks = tasks
+        m.agents = agents
+        return m
+    }
+
+    // MARK: membership — the ONE contract (ownAttention non-empty)
+
+    func testMembershipIsOwnAttention() {
+        // A plain running card holds no reason → absent. A permission-blocked card and a dead card each
+        // hold one → present, top reason = that reason.
+        let m = modelWith([card("run", phase: .live(.running)),
+                           card("perm", phase: .live(.waiting(.permission))),
+                           card("dead", phase: .dead(.agentExited), dead: .agentExited)])
+        let rows = m.needsYouRows(now: t0)
+        XCTAssertEqual(Set(rows.map(\.task.title)), ["perm", "dead"])
+        XCTAssertEqual(rows.first(where: { $0.task.title == "perm" })?.topReason, .permission)
+        XCTAssertEqual(rows.first(where: { $0.task.title == "dead" })?.topReason, .dead)
+    }
+
+    /// The membership SHIFT this slice introduces: a bare idle `humanTurn` card no longer qualifies just
+    /// for being done — it enters the queue ONLY once it goes quiescent past the stall threshold.
+    func testBareIdleHumanTurnEntersOnlyOnStall() {
+        let idle = card("idle", phase: .live(.waiting(.humanTurn)), at: t0)
+        let m = modelWith([idle])
+        XCTAssertTrue(m.needsYouRows(now: t0).isEmpty, "a fresh idle card must not be in the queue")
+        let late = m.needsYouRows(now: late)
+        XCTAssertEqual(late.map(\.task.title), ["idle"])
+        XCTAssertEqual(late.first?.topReason, .stalled, "it enters only via the stall net")
+    }
+
+    func testArchivedExcluded() {
+        let m = modelWith([card("archived-dead", phase: .dead(.agentExited), dead: .agentExited, archived: true)])
+        XCTAssertTrue(m.needsYouRows(now: t0).isEmpty)
+    }
+
+    func testBackgroundWaitCardNeverAppears() {
+        // A card paused on a background task is reported .running by the adapters — a plain running card
+        // here, holding no reason, so it is excluded by construction.
+        let m = modelWith([card("bg-loop", phase: .live(.running)),
+                           card("blocked", phase: .live(.waiting(.permission)))])
+        XCTAssertEqual(m.needsYouRows(now: t0).map(\.task.title), ["blocked"])
+    }
+
+    // MARK: signals — labels + the multi-reason row
+
+    func testSignalsCarryTheirLabels() {
+        let m = modelWith([card("perm", phase: .live(.waiting(.permission)))])
+        let row = m.needsYouRows(now: t0).first
+        XCTAssertEqual(row?.signals.map(\.label), ["permission"])
+    }
+
+    func testMultiSignalRowTopReasonDrivesIt() {
+        // A card blocked on permission AND nearly out of context holds BOTH reasons; the row lists both,
+        // and the top (most hard-blocked) is permission.
+        let m = modelWith([card("both", phase: .live(.waiting(.permission)), ctx: 92)])
+        let row = m.needsYouRows(now: t0).first
+        XCTAssertEqual(row?.topReason, .permission)
+        XCTAssertEqual(row?.signals.map(\.reason), [.permission, .ctxCritical])
+    }
+
+    // MARK: sort — most-urgent-first, then longest-waiting within a reason
+
+    func testSortByTopReasonThenOldest() {
+        let old = t0.addingTimeInterval(-600)
+        let new = t0.addingTimeInterval(-60)
+        let perm = card("perm", phase: .live(.waiting(.permission)), at: new)
+        let died = card("died", phase: .dead(.agentExited), dead: .agentExited, at: new)
+        let ctx  = card("ctx", phase: .live(.running), ctx: 95, at: new)
+        // Two same-reason (permission) rows to prove the oldest-first tiebreak within a bucket.
+        let permOld = card("perm-old", phase: .live(.waiting(.permission)), at: old)
+
+        let order = modelWith([ctx, perm, died, permOld]).needsYouRows(now: t0).map(\.task.title)
+        // dead(0) < permission(1) [oldest first] < ctxCritical(5)
+        XCTAssertEqual(order, ["died", "perm-old", "perm", "ctx"])
+    }
+
+    // MARK: gate chords — agent-capability facts, not neutral-layer constants (unchanged by slice 5)
+
     private let standardGateCapabilities = AgentCapabilities(
         sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
         wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
@@ -30,186 +122,24 @@ final class NeedsYouQueueTests: XCTestCase {
                   models: [AgentModel(id: "m")], capabilities: standardGateCapabilities)
     }
 
-    // MARK: reason derivation
-
-    func testReasonMapsEachDaemonSignal() {
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("p", phase: .live(.waiting(.permission)))), .permission)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("h", phase: .live(.waiting(.humanTurn)))), .humanTurn)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("d", phase: .dead(.agentExited))), .died)
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("c", phase: .live(.running), ctx: 92)), .contextFull)
-    }
-
-    func testRunningCardWithNoSignalNeedsNothing() {
-        // A plain running card (the common case, incl. background-waits which stay .running) never surfaces.
-        XCTAssertNil(NeedsYouQueue.reason(for: card("r", phase: .live(.running))))
-        XCTAssertNil(NeedsYouQueue.reason(for: card("r", phase: .live(.running), ctx: 40)))
-    }
-
-    func testDeadCardSurfacesRegardlessOfStaleContext() {
-        // Context-full is gated to live (running/waiting) cards, but a real dead card still surfaces via .died
-        // regardless of a stale high ctxPct.
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("dead", phase: .dead(.agentExited), ctx: 99)), .died)
-        // And a finished/retired card (`.archived`) is NEVER dragged back in by a stale high ctxPct —
-        // context-full is gated to live cards, so it surfaces for nothing.
-        XCTAssertNil(NeedsYouQueue.reason(for: card("done", phase: .archived(teardownComplete: true), ctx: 99)))
-    }
-
-    func testPermissionOutranksContextWhenBoth() {
-        // A waiting-on-permission card that is also near-full surfaces for the stronger reason.
-        let t = card("both", phase: .live(.waiting(.permission)), ctx: 99)
-        XCTAssertEqual(NeedsYouQueue.reason(for: t), .permission)
-    }
-
-    func testContextThresholdBoundary() {
-        XCTAssertNil(NeedsYouQueue.reason(for: card("just-under", phase: .live(.running), ctx: 84)))
-        XCTAssertEqual(NeedsYouQueue.reason(for: card("at", phase: .live(.running), ctx: 85)), .contextFull)
-    }
-
-    // MARK: delivery-stuck / merge-stalled reasons (B5b) — RENDERED, never set here
-
-    private func stuckCard(_ title: String,
-                           phase: Phase = .live(.waiting(.humanTurn)),
-                           deliveryStuck: Bool = false,
-                           mergeStalled: Bool = false,
-                           treeState: TreeState = .inSync) -> Task {
-        let ts: TreeStat? = (mergeStalled || treeState != .inSync)
-            ? TreeStat(state: treeState, mergeStalled: mergeStalled) : nil
-        return Task(title: title, repo: "/repo", branch: "feat/x", cwd: "/repo/.wt/x",
-                    model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl, order: 0,
-                    phase: phase,
-                    deliveryStuckSince: deliveryStuck ? Date(timeIntervalSince1970: 1000) : nil,
-                    ctxPct: 0, initialPrompt: title, treeStat: ts)
-    }
-
-    func testDeliveryStuckSurfacesAndOutranksHumanTurn() {
-        // A stuck card waiting on the human surfaces as deliveryStuck (the specific reason), not humanTurn.
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("s", deliveryStuck: true)), .deliveryStuck)
-        // But permission and died still outrank it.
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("perm", phase: .live(.waiting(.permission)),
-                                                           deliveryStuck: true)), .permission)
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("dead", phase: .dead(.agentExited),
-                                                           deliveryStuck: true)), .died)
-    }
-
-    func testMergeStalledSurfacesInNeedsYou() {
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("m", mergeStalled: true)), .mergeStalled)
-        // Outranks a concurrent humanTurn (the stall is the one needing a human).
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("m", phase: .live(.waiting(.humanTurn)),
-                                                           mergeStalled: true)), .mergeStalled)
-    }
-
-    func testMergeStalledOutranksUnderlyingStale() {
-        // The sticky give-up flag is read INDEPENDENT of the underlying TreeState — a card that is both
-        // .stale AND mergeStalled surfaces the stall (04-tests §80), not dropped or masked.
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("stale-stalled", mergeStalled: true,
-                                                           treeState: .stale)), .mergeStalled)
-    }
-
-    func testDeliveryStuckOutranksMergeStalledWhenBoth() {
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("both", deliveryStuck: true, mergeStalled: true)),
-                       .deliveryStuck)
-    }
-
-    func testStuckClearsBackToUnderlyingReason() {
-        // Once unstuck, the card falls back to its underlying reason (here humanTurn).
-        XCTAssertEqual(NeedsYouQueue.reason(for: stuckCard("cleared", phase: .live(.waiting(.humanTurn)))),
-                       .humanTurn)
-        // A plain running card with no stuck flag and no other signal surfaces for nothing.
-        XCTAssertNil(NeedsYouQueue.reason(for: stuckCard("running", phase: .live(.running))))
-    }
-
-    // MARK: build — filtering + sort
-
-    func testArchivedCardsAreExcluded() {
-        let t = card("archived-dead", phase: .dead(.agentExited), archived: true)
-        XCTAssertTrue(NeedsYouQueue.build(from: [t]).isEmpty)
-    }
-
-    func testBackgroundWaitCardNeverAppears() {
-        // A card paused on a background task is reported .running by the adapters, so it is simply a
-        // running card here — excluded. (The exclusion is by construction, not a special case.)
-        let bg = card("bg-loop", phase: .live(.running))
-        let real = card("blocked", phase: .live(.waiting(.permission)))
-        let q = NeedsYouQueue.build(from: [bg, real])
-        XCTAssertEqual(q.map(\.task.title), ["blocked"])
-    }
-
-    func testSortIsMostUrgentFirstThenLongestWaiting() {
-        let now = Date()
-        let old = now.addingTimeInterval(-600)   // waiting longer
-        let new = now.addingTimeInterval(-60)
-        let perm   = card("perm",    phase: .live(.waiting(.permission)), updatedAt: new)
-        let died   = card("died",    phase: .dead(.agentExited),    dead: .agentExited, updatedAt: new)
-        let humanA = card("human-old", phase: .live(.waiting(.humanTurn)), updatedAt: old)
-        let humanB = card("human-new", phase: .live(.waiting(.humanTurn)), updatedAt: new)
-        let ctx    = card("ctx",     phase: .live(.running), ctx: 95, updatedAt: new)
-
-        let order = NeedsYouQueue.build(from: [ctx, humanB, humanA, died, perm]).map(\.task.title)
-        // permission > died > humanTurn (oldest-first within reason) > context
-        XCTAssertEqual(order, ["perm", "died", "human-old", "human-new", "ctx"])
-    }
-
-    // MARK: gate chords — now agent-capability facts, not neutral-layer constants (#4)
-
     func testGateChordsLiveOnAgentCapabilities() {
-        // The UI only consumes advertised chords. Each adapter owns the concrete tuple that supplies them.
         XCTAssertEqual(standardGateCapabilities.approveChord, [.named(.enter)])
         XCTAssertEqual(standardGateCapabilities.denyChord, [.named(.esc)])
     }
 
-    @MainActor
     func testUnknownAgentHasNoCapabilityProfile() {
-        let m = modelWith([])
-        XCTAssertNil(m.capabilities(for: "future-agent"))
+        XCTAssertNil(modelWith([]).capabilities(for: "future-agent"))
     }
 
-    @MainActor
-    func testUnknownAgentUsesSafeTerminalDefaults() {
-        let m = modelWith([])
-
-        XCTAssertEqual(m.terminalImagePaste(for: "future-agent"), .direct)
-        XCTAssertEqual(m.terminalPointerInput(for: "future-agent"), .applicationMouseReporting)
-    }
-
-    @MainActor
-    func testAdvertisedAgentControlsTerminalPolicy() {
-        let capabilities = AgentCapabilities(
-            sessionId: .discovered, telemetry: .fileTail, contextUsage: .tokens,
-            wakeTransport: .relaunch, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
-            authMode: .subscription, terminalImagePaste: .controlV,
-            terminalPointerInput: .nativeSelection)
-        let agent = AgentInfo(id: "other-agent", name: "Other", icon: "sparkle",
-                              models: [AgentModel(id: "m")], capabilities: capabilities)
-        let m = modelWith([], agents: [agent])
-
-        XCTAssertEqual(m.terminalImagePaste(for: "other-agent"), .controlV)
-        XCTAssertEqual(m.terminalPointerInput(for: "other-agent"), .nativeSelection)
-    }
-
-    @MainActor
     func testUnknownAgentCannotBorrowClaudePermissionKeys() {
         var unknown = card("permission", phase: .live(.waiting(.permission)))
         unknown.agentId = "future-agent"
         let m = modelWith([unknown])
-
         XCTAssertNil(m.permissionGateChord(unknown.id, \.approveChord))
         XCTAssertNil(m.permissionGateChord(unknown.id, \.denyChord))
     }
 
-    // MARK: permission gate — state guard + per-adapter chord routing (#4)
-
-    @MainActor
-    private func modelWith(_ tasks: [Task], agents: [AgentInfo] = []) -> BoardModel {
-        let m = BoardModel(platform: .noop)
-        m.tasks = tasks
-        m.agents = agents
-        return m
-    }
-
-    @MainActor
     func testGateFiresOnlyWhileWaitingOnPermission() {
-        // Only a card STILL blocked on a permission prompt yields a chord; anything else is a no-op so an
-        // approve/deny keystroke can't land in a now-live REPL and submit the composer.
         let perm = card("perm", phase: .live(.waiting(.permission)))
         let humanTurn = card("human", phase: .live(.waiting(.humanTurn)))
         let running = card("run", phase: .live(.running))
@@ -221,13 +151,10 @@ final class NeedsYouQueueTests: XCTestCase {
         XCTAssertNil(m.permissionGateChord(humanTurn.id, \.approveChord))
         XCTAssertNil(m.permissionGateChord(running.id, \.approveChord))
         XCTAssertNil(m.permissionGateChord(dead.id, \.approveChord))
-        XCTAssertNil(m.permissionGateChord(UUID(), \.approveChord))   // unknown card
+        XCTAssertNil(m.permissionGateChord(UUID(), \.approveChord))
     }
 
-    @MainActor
     func testGateChordComesFromTheCardsAgentCapability() {
-        // Prove the chord is routed per-adapter: a card whose agent advertises a DIFFERENT chord uses it,
-        // not a hardcoded Enter/Esc. (An empty chord means "no send-keys gate" → no-op.)
         let tabCaps = AgentCapabilities(
             sessionId: .seeded, telemetry: .hooksPush, contextUsage: .percent,
             wakeTransport: .nativeReinvoke, inboxDrain: .stopHook, readOnlyEnforcement: .sandboxed,
@@ -237,8 +164,7 @@ final class NeedsYouQueueTests: XCTestCase {
         var t = card("perm", phase: .live(.waiting(.permission)))
         t.agentId = "tabber"
         let m = modelWith([t], agents: [agent])
-
         XCTAssertEqual(m.permissionGateChord(t.id, \.approveChord), [.named(.tab)])
-        XCTAssertNil(m.permissionGateChord(t.id, \.denyChord))   // empty chord → no send-keys gate
+        XCTAssertNil(m.permissionGateChord(t.id, \.denyChord))
     }
 }

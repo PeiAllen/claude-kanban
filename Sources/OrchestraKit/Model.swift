@@ -11,6 +11,21 @@ public enum Column: String, Codable, Sendable, CaseIterable {
     public var displayName: String {
         switch self { case .plan: return "Plan"; case .impl: return "Implementation"; case .review: return "Review" }
     }
+
+    /// The compact stage word for a chip in a tight row (peek rows, subtree chips). `displayName` is
+    /// prose — "Implementation" is 14 characters and does not belong in a pill.
+    public var shortName: String {
+        switch self { case .plan: return "PLAN"; case .impl: return "IMPL"; case .review: return "REVIEW" }
+    }
+
+    /// The single-letter stage form, for rows too narrow even for `shortName`. Frees ~30pt so the row's
+    /// title keeps its first words instead of collapsing to "…".
+    ///
+    /// These two live here beside `displayName` for the same reason it does: the desktop peek row and
+    /// the phone peek row both render a stage chip, and a private copy on each side is how they drift.
+    public var letter: String {
+        switch self { case .plan: return "P"; case .impl: return "I"; case .review: return "R" }
+    }
 }
 
 /// Why a card is `.waiting` — carried inside `RunState.waiting` on the card's `phase`.
@@ -243,7 +258,7 @@ public enum StartIn: String, Codable, Sendable {
 // MARK: - Model identity
 
 /// A provider-agnostic model handle. `id` is the launch identifier handed to the adapter (e.g.
-/// `claude-opus-4-8`); `displayName` is the human label for the UI; `family` is a coarse provider
+/// `claude-opus-5`); `displayName` is the human label for the UI; `family` is a coarse provider
 /// bucket used for accenting. Adapters catalog their own models; the heuristics here only fill gaps
 /// for ids an adapter doesn't know (and for legacy persisted data).
 ///

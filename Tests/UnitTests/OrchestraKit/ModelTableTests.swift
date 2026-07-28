@@ -52,9 +52,9 @@ struct ModelCatalogTests {
 
     @Test("known model resolves to its offline context window")
     func knownModelHasWindow() {
-        let m = adapter.model(for: "claude-opus-4-8")
+        let m = adapter.model(for: "claude-opus-5")
         #expect(m.contextWindow == 200_000)
-        #expect(m.displayName == "Opus 4.8")
+        #expect(m.displayName == "Opus 5")
     }
 
     @Test("unknown model id falls back (heuristic, no window)")
@@ -83,7 +83,7 @@ struct ModelCatalogTests {
     @Test("test_ctxpct_from_model_table: tokens ÷ table contextWindow = ctxPct in the StatusReport")
     func ctxPctFromModelTable() throws {
         // The token-reporting (Codex-shaped) denominator path E1 provides for B2:
-        let model = adapter.model(for: "claude-opus-4-8")        // offline table → 200_000
+        let model = adapter.model(for: "claude-opus-5")          // offline table → 200_000
         let usedTokens = 40_000
         let pct = try #require(model.ctxPct(usedTokens: usedTokens))
         #expect(pct == 20.0)                                     // 40_000 / 200_000 * 100

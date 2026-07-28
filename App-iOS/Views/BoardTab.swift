@@ -23,6 +23,9 @@ struct BoardTab: View {
         NavigationStack {
             VStack(spacing: 0) {
                 ConnectionBanner(state: model.connectionState)
+                // Drill chrome (in-place re-scope): breadcrumb + root banner above the pager, which is
+                // scoped to the root's subtree by `visibleTasks`/`cards(in:)` reading `drillScope`.
+                if model.drillScope != nil { DrillHeaderIOS() }
                 PagerHeader(page: $page, counts: counts)
                 TabView(selection: $page) {
                     ForEach(BoardPage.allCases) { p in
@@ -132,9 +135,11 @@ private struct PagerHeader: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(p.title).font(.footnote.weight(active ? .semibold : .regular))
+                            .chipText()
                         Text("\(counts[p] ?? 0)")
                             .font(.caption2.weight(.semibold))
                             .monospacedDigit()
+                            .chipText()
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(active ? theme.accent.opacity(0.20) : theme.chip))
                     }
@@ -203,35 +208,34 @@ private struct BoardPageView: View {
 private struct MovableCard: View {
     let task: Task
     @EnvironmentObject var model: BoardModel
+    @Environment(\.theme) private var theme: Theme
     @State private var dragX: CGFloat = 0
 
-    /// Attached read-only agents to reveal inside this card right now (empty unless it's a target whose
-    /// accordion is expanded — `IOSBoardModel.showsInlineRows` gates it). Non-empty ⇒ square the card's
-    /// bottom + draw the connected rows block.
-    private var expandedRows: [Task] { model.expandedRows(for: task) }
+    /// This card's DIRECT subordinates to reveal right now (empty unless it's peek-expanded —
+    /// `IOSBoardModel.showsInlineRows` gates it). Non-empty ⇒ square the card's bottom + draw the rows.
+    private var peekRows: [Task] { model.expandedRows(for: task) }
 
     var body: some View {
+        // ONE card-level clock threads `now` through BOTH the card cell (L1/L4 attention) AND the peek
+        // rows below it, which are its sibling — a cell-only `TimelineView` would freeze the rows. 5s is
+        // well under the ~12-min stall threshold. (The status pill keeps its own 1s age clock inside.)
+        TimelineView(.periodic(from: .now, by: 5)) { ctx in
+            content(now: ctx.date)
+        }
+    }
+
+    @ViewBuilder private func content(now: Date) -> some View {
         if task.origin == .worktree {
-            // The header (move-gesture surface) + the inline accordion, as ONE visual card. The rows are
-            // siblings BELOW the gestured header — NOT under the move-gesture overlay — so their taps
-            // land (the overlay shadows nested taps). The `👁 N`/chevron toggle rides ABOVE the overlay
-            // (top-trailing) so ITS tap wins too (idb-verified for the corner-overlay case).
+            // The header (move-gesture surface) + the inline peek accordion, as ONE visual card. The rows
+            // are siblings BELOW the gestured header — NOT under the move-gesture overlay — so their taps
+            // land (the overlay shadows nested taps). The toggle + drill button ride ABOVE the overlay
+            // (top-trailing) so THEIR taps win too (idb-verified for the corner-overlay case).
             VStack(spacing: 0) {
-                BoardCardCell(task: task, expanded: !expandedRows.isEmpty)
+                BoardCardCell(task: task, expanded: !peekRows.isEmpty, now: now)
                     .contentShape(Rectangle())
                     // Tap-to-open and the tap-and-hold → drag-to-adjacent move (design §2/§3) are both
-                    // driven by a UIKit recognizer overlay, NOT SwiftUI gestures. A SwiftUI
-                    // `LongPressGesture.sequenced(before: DragGesture)` — even attached with
-                    // `.simultaneousGesture` — holds the gesture arena during its pending window and
-                    // starves the parent ScrollView's vertical pan and the paged TabView's horizontal
-                    // swipe, so a plain swipe starting on a card did nothing (empirically verified on a
-                    // Simulator with injected touches — the earlier `.simultaneousGesture` fix did not
-                    // actually let swipes through). A native `UILongPressGestureRecognizer` set to
-                    // recognize *simultaneously* with those parent pans does not starve them: a quick
-                    // swipe exceeds the press's allowable movement before the 0.3s gate, so the press
-                    // fails and the scroll/pager takes the touch; only a deliberate hold-then-drag fires
-                    // the press and moves the card. The overlay is the touch target, so it also carries
-                    // the tap (an underlying SwiftUI `.onTapGesture` would be shadowed by it).
+                    // driven by a UIKit recognizer overlay, NOT SwiftUI gestures — see LongPressMoveGesture
+                    // for why a SwiftUI sequenced gesture starves the parent ScrollView/pager.
                     .overlay(
                         LongPressMoveGesture(
                             onTap: { model.selectedId = task.id },
@@ -239,24 +243,43 @@ private struct MovableCard: View {
                             onEnded: { dx in commitMove(dx) }
                         )
                     )
-                    // The eye/chevron expand toggle — above the gesture overlay so its tap reveals the
-                    // rows instead of opening the card. Self-hides unless this card is a target.
+                    // The peek toggle + drill button — above the gesture overlay so their taps win. Drill
+                    // enters the subtree (in-place re-scope); the toggle reveals the peek rows.
                     .overlay(alignment: .topTrailing) {
-                        AttachedExpandToggle(task: task).padding(.top, 10).padding(.trailing, 12)
+                        HStack(spacing: 6) {
+                            if model.hasLineageChildren(task) { drillButton }
+                            PeekToggle(task: task)
+                        }
+                        .padding(.top, 10).padding(.trailing, 12)
                     }
-                    // Move menu on the HEADER only — long-pressing an attached-agent ROW below must not
-                    // surface the target card's "Move to…" menu.
+                    // Move menu on the HEADER only — long-pressing a peek ROW below must not surface the
+                    // parent card's "Move to…" menu.
                     .contextMenu { moveMenu }
-                if !expandedRows.isEmpty {
-                    AttachedAgentsRows(target: task)
+                if !peekRows.isEmpty {
+                    PeekRows(target: task, now: now)
                 }
             }
             .offset(x: dragX)
         } else {
-            BoardCardCell(task: task)
+            BoardCardCell(task: task, now: now)
                 .contentShape(Rectangle())
                 .onTapGesture { model.selectedId = task.id }
         }
+    }
+
+    /// Enter the card's subtree — in-place re-scope (design §3, iOS idiom). Anchors through
+    /// `cardLevelAnchor` so drilling from any card lands on a real visible root, then `drillInto` gates on
+    /// `hasLineageChildren`. Accent-tinted + a distinct glyph so it reads apart from the peek chevron.
+    private var drillButton: some View {
+        Button { model.drillInto(model.cardLevelAnchor(task.id)) } label: {
+            Image(systemName: "arrow.forward")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(theme.accent)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Capsule().fill(theme.accent.opacity(0.15)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Drill into subtree")
     }
 
     /// The "Move to…" context menu — every lifecycle column except this card's current one.

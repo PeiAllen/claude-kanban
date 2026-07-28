@@ -49,27 +49,13 @@ struct CardDetailHeader: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            // The revealed attached agents (gated by `showsInlineRows` = the tap-expand state). Each row is
-            // a `NavigationLink` that PUSHES the agent's detail onto whatever stack this detail is in —
-            // NOT a `selectedId` write. The card detail is presented from BOTH the Board tab
-            // (`navigationDestination(item: selectedCardBinding)`, selectedId-driven) AND the Needs You tab
-            // (its own `$route`, NOT selectedId); a selectedId write would be a dead tap on Needs You and a
-            // phantom push onto the offscreen Board stack. A NavigationLink is stack-relative, so it's
-            // correct from either — and it PUSHES (Back returns to this card) rather than replacing.
-            let rows = model.expandedRows(for: task)
-            if !rows.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { idx, agent in
-                        if idx > 0 { Rectangle().fill(theme.hair).frame(height: 0.5) }
-                        NavigationLink { CardDetailView(taskId: agent.id) } label: {
-                            AttachedAgentRowLabel(agent: agent)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.winBg))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
-            }
+            // The revealed subordinates (gated by `showsInlineRows` = the tap-expand state) — lineage
+            // children AND attached reviewers, one hop. This is the path that reveals a nested reviewer R2:
+            // R1's detail expands `subordinates(of: R1) = [R2]`. Each row is a `NavigationLink` that PUSHES
+            // the card's detail onto whatever stack this detail is in — NOT a `selectedId` write. The card
+            // detail is presented from BOTH the Board tab (selectedId-driven) AND the Needs You tab (its
+            // own `$route`); a `selectedId` write would be a dead tap on Needs You and a phantom Board push.
+            peekRowsSection
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -81,6 +67,27 @@ struct CardDetailHeader: View {
 
     private var breadcrumb: String {
         cardBreadcrumb(repo: task.repo, branch: task.branch, cwd: task.cwd, origin: task.origin)
+    }
+
+    /// The revealed peek rows (subordinates), each a stack-relative `NavigationLink`. Own clock so the
+    /// rows' time-derived own-attention labels tick without a daemon event.
+    @ViewBuilder private var peekRowsSection: some View {
+        let rows = model.expandedRows(for: task)
+        if !rows.isEmpty {
+            TimelineView(.periodic(from: .now, by: 5)) { ctx in
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { idx, sub in
+                        if idx > 0 { Rectangle().fill(theme.hair).frame(height: 0.5) }
+                        NavigationLink { CardDetailView(taskId: sub.id) } label: {
+                            PeekRowLabel(task: sub, now: ctx.date)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.winBg))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.hair, lineWidth: 0.5))
+            }
+        }
     }
 
     @ViewBuilder private func chipRow(stat: DiffStatChip.Size) -> some View {
@@ -101,10 +108,11 @@ struct CardDetailHeader: View {
             if let ts = task.treeStat {
                 TreeBadge(stat: ts, parentBranch: task.parentBranch)
             }
-            // The attached-agents affordance in the detail (parity with the board accordion): the
-            // `👁 N`/chevron expands the same read-only agents as inline rows below (self-hides unless
-            // this card is a target). Same tap-expand state as the board, so it stays consistent.
-            AttachedExpandToggle(task: task)
+            // The peek affordance in the detail (parity with the board accordion): the toggle expands the
+            // card's subordinates as inline rows below. Subordinates-gated (NOT `attachedLiveness`), so a
+            // nested reviewer's or a pure-lineage-child card's detail still reveals. Same tap-expand state
+            // as the board, so it stays consistent.
+            PeekToggle(task: task)
             Spacer(minLength: 6)
             if task.ctxPct > 0 { CtxGauge(pct: task.ctxPct, theme: theme) }
         }
