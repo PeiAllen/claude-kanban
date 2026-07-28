@@ -181,8 +181,10 @@ private struct ReasonHeader: View {
         HStack(spacing: 6) {
             Text(reason.emoji)
             Text(reason.bucketName).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text)
+                .chipText()
             Text("\(count)").font(.caption2.weight(.semibold)).monospacedDigit()
                 .foregroundStyle(theme.text2)
+                .chipText()
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Capsule().fill(theme.chip))
             Spacer()
@@ -387,6 +389,9 @@ private struct ReasonChip: View {
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(sem.text)
+        // A row can carry several of these; without an intrinsic size they squeeze each other and wrap
+        // their labels into tall towers, inflating the row.
+        .chipText()
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(primary ? sem.tint : Color.clear))
         .overlay(primary ? nil : Capsule().strokeBorder(sem.tint, lineWidth: 1))
@@ -415,6 +420,7 @@ private struct ActionButton: View {
             }
             .font(.footnote.weight(.semibold))
             .foregroundStyle(filled ? Color.white : tint.text)
+            .chipText()                 // "Approve"/"Recover" must never wrap when two buttons share a row
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(
                 Capsule().fill(filled ? tint.dot : tint.tint)

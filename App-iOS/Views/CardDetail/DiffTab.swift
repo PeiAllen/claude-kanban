@@ -165,6 +165,7 @@ struct DiffTab: View {
 
     private func statPill(_ s: String, _ c: SemColor) -> some View {
         Text(s).font(.caption2.weight(.semibold)).foregroundStyle(c.text)
+            .chipText()
             .padding(.horizontal, 6).padding(.vertical, 1.5)
             .background(Capsule().fill(c.tint))
     }

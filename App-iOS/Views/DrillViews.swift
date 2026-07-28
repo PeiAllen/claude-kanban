@@ -67,22 +67,29 @@ struct DrillHeaderIOS: View {
     private func banner(_ root: Task, now: Date) -> some View {
         let sem = theme.statusColor(root.phaseDisplay)
         return HStack(spacing: 8) {
+            // Status pill. `chipText()` (see `Chips.swift`) is what keeps "Dead · 5m" one line: as a
+            // flexible Text it got squeezed by the title beside it and wrapped into a three-line blob,
+            // dragging the whole banner's height with it.
             HStack(spacing: 6) {
                 Circle().fill(sem.dot).frame(width: 7, height: 7)
                 Text("\(theme.statusLabel(root.phaseDisplay)) · \(relativeAge(root.phaseChangedAt))")
                     .font(.caption2.weight(.semibold)).foregroundStyle(sem.text)
+                    .chipText()
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Capsule().fill(sem.tint))
 
-            Text(root.title).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text).lineLimit(1)
-            if !root.cardLine.isEmpty {
-                Text(root.cardLine).font(.caption2).foregroundStyle(theme.text3).lineLimit(1)
-            }
+            Text(root.title).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text)
+                .lineLimit(1).layoutPriority(1)     // the banner's flexible zone: truncates, never wraps
+            // No desc/note here, deliberately. The banner is the root's status strip + IDENTITY laid flat
+            // (design §55), and on a phone strip already carrying a status pill, the ref, an attention chip
+            // and the subtree line there is no width left for a dim note — it rendered as a single stray
+            // letter. The note still reads in full on the root's own card and in its detail.
             // Root identity — the `#shortId` ref at the right end of the context (design §Ref); the banner
             // is the root card laid flat, so it carries the same identity a card row would.
             Text("#\(root.shortId)")
                 .font(.system(.caption2, design: .monospaced)).foregroundStyle(theme.text3)
+                .chipText()
             // The root's OWN attention only — its subtree IS the pager below, so a rollup would double-count.
             if let text = Attention.chipText(model.ownAttention(of: root, now: now)) {
                 AttentionChipIOS(text: text)

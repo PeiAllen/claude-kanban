@@ -185,6 +185,7 @@ private struct CaptureRender: View {
                 .font(.system(size: 10, design: .monospaced))
         }
         .foregroundStyle(theme.text3)
+        .chipText()
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(Capsule().fill(theme.winBg.opacity(0.7)))
     }

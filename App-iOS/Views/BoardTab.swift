@@ -135,9 +135,11 @@ private struct PagerHeader: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(p.title).font(.footnote.weight(active ? .semibold : .regular))
+                            .chipText()
                         Text("\(counts[p] ?? 0)")
                             .font(.caption2.weight(.semibold))
                             .monospacedDigit()
+                            .chipText()
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(active ? theme.accent.opacity(0.20) : theme.chip))
                     }

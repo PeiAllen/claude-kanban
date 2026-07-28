@@ -264,6 +264,7 @@ private struct BlockREPLView: View {
                 ForEach(Self.examples, id: \.self) { ex in
                     Button { session.commandDraft = ex; sendCommand() } label: {
                         Text(ex).font(.system(.caption, design: .monospaced))
+                            .chipText()     // the example commands share a row; the prose above may wrap
                             .padding(.horizontal, 10).padding(.vertical, 5)
                             .background(Capsule().fill(theme.chip))
                             .foregroundStyle(theme.text2)
@@ -309,6 +310,7 @@ private struct BlockREPLView: View {
             } else if let code = block.exitCode, code != 0 {
                 Text("exit \(code)").font(.caption2.weight(.semibold))
                     .foregroundStyle(theme.red.text)
+                    .chipText()
                     .padding(.horizontal, 6).padding(.vertical, 1.5)
                     .background(Capsule().fill(theme.red.tint))
             }
@@ -442,6 +444,7 @@ private struct LiveShellView: View {
                             Text(w).font(.system(size: 11, design: .monospaced))
                         }
                         .foregroundStyle(active ? theme.text : theme.text2)
+                        .chipText()     // window names sit several-to-a-row; each keeps its natural width
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Capsule().fill(active ? theme.card : theme.chip))
                     }
@@ -502,6 +505,7 @@ private struct LiveShellView: View {
             } else {
                 Image(systemName: "desktopcomputer").font(.caption2).foregroundStyle(theme.text3)
                 Text("Desktop shell").font(.caption.weight(.semibold)).foregroundStyle(theme.text2)
+                    .chipText()
                 Spacer(minLength: 8)
                 Button { closeWindow(selectedWindow) } label: {
                     Label("Close", systemImage: "xmark").font(.caption.weight(.medium))

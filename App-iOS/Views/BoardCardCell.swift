@@ -217,6 +217,9 @@ private struct StatusPill: View {
         .foregroundStyle(sem.text)
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(sem.tint))
+        // Intrinsically sized, like the card-detail header's twin of this pill: without it a narrow card
+        // squeezes "Running · 3s" and wraps it into a multi-line blob that inflates the header's height.
+        .fixedSize()
     }
 }
 

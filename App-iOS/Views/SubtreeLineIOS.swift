@@ -73,26 +73,9 @@ struct SubtreeLineIOS: View {
                 Image(systemName: "eye").font(.system(size: 9, weight: .medium))
                 Text(compact ? "\(agents.count)" : "\(agents.count) attached")
                     .font(.system(.caption2, design: .monospaced).weight(.medium))
+                    .chipText()
             }
             .foregroundStyle(theme.eyeTint(liveness))
         }
-    }
-}
-
-/// A solid-amber attention chip (BT slice 5) — the phone's `AttentionChip`. Colour means state and only
-/// state: SATURATED amber is exclusively "needs you", so scanning for solid amber is the rule. Never
-/// truncates or wraps. Shared by the L1 own-attention chip and the L4 subtree rollup chip.
-struct AttentionChipIOS: View {
-    @Environment(\.theme) private var theme: Theme
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(.system(.caption2, design: .monospaced).weight(.semibold))
-            .foregroundStyle(theme.attentionChipText)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(theme.attentionChipFill))
     }
 }
