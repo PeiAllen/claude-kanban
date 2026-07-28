@@ -198,7 +198,7 @@ just-in-time from `capture-pane`).
 
 ### The Claude Code adapter
 
-`ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models — Opus 4.8,
+`ClaudeCodeAdapter` (`id = "claude-code"`, `bin = "claude"`) catalogs the available models — Opus 5,
 Fable 5, Sonnet 5, Haiku 4.5 — and assembles the `claude` command line:
 
 - **start**: `claude [--model <id>] [--permission-mode auto for plan] [read-only flags] [--session-id
