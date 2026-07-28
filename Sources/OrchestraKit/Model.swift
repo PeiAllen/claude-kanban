@@ -258,7 +258,7 @@ public enum StartIn: String, Codable, Sendable {
 // MARK: - Model identity
 
 /// A provider-agnostic model handle. `id` is the launch identifier handed to the adapter (e.g.
-/// `claude-opus-4-8`); `displayName` is the human label for the UI; `family` is a coarse provider
+/// `claude-opus-5`); `displayName` is the human label for the UI; `family` is a coarse provider
 /// bucket used for accenting. Adapters catalog their own models; the heuristics here only fill gaps
 /// for ids an adapter doesn't know (and for legacy persisted data).
 ///

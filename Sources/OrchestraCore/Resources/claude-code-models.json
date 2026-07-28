@@ -1,5 +1,5 @@
 [
-  { "id": "claude-opus-4-8",  "displayName": "Opus 4.8",  "family": "claude", "contextWindow": 200000,
+  { "id": "claude-opus-5",    "displayName": "Opus 5",    "family": "claude", "contextWindow": 200000,
     "flags": { "toolCall": true, "reasoning": true, "vision": true } },
   { "id": "claude-fable-5",   "displayName": "Fable 5",   "family": "claude", "contextWindow": 200000,
     "flags": { "toolCall": true, "reasoning": true, "vision": true } },
