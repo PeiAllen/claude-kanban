@@ -167,6 +167,7 @@ private struct AttentionRow: View {
     @State private var draft = ""
     @State private var busy = false          // guards the async gate/reply so a double-tap can't double-fire
     @FocusState private var replyFocused: Bool
+    @Environment(\.animationsActive) private var animationsActive
 
     private var task: Task { item.task }
     private var sem: SemColor {
@@ -231,8 +232,9 @@ private struct AttentionRow: View {
         HStack(spacing: 8) {
             ReasonChip(reason: item.reason, sem: sem)
             Spacer(minLength: 4)
-            // How long it has been waiting — ticks live so "3s" stays honest.
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            // How long it has been waiting — coarsens after the first minute, pauses when backgrounded.
+            TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: ageRefreshInterval(task.updatedAt)),
+                                                  paused: !animationsActive)) { ctx in
                 Text(waitingLabel + relativeAge(task.updatedAt, now: ctx.date))
                     .font(.caption2.weight(.medium)).foregroundStyle(theme.text3).monospacedDigit()
             }

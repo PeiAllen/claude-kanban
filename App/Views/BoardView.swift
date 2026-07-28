@@ -151,7 +151,9 @@ private struct ColumnView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: model.density.cardGap) {
+                    // Lazy so a card scrolled out of the column unrealizes — its `onDisappear` parks the
+                    // card's pulse/shimmer and age clock, so only on-screen cards animate or tick.
+                    LazyVStack(spacing: model.density.cardGap) {
                         ForEach(cards) { task in
                             CardView(task: task)
                                 .id(task.id)

@@ -71,6 +71,9 @@ private struct RootView: View {
     @AppStorage("orch_onboarding_done") private var onboardingDone = false
     @State private var showSetup = false
     @Environment(\.colorScheme) private var systemScheme
+    // Idle-CPU gate: backgrounding/inactivating the app parks every board pulse + live age clock (iOS
+    // suspends rendering when inactive anyway, but this also stops them the instant we resign active).
+    @Environment(\.scenePhase) private var scenePhase
     // Initial tab is Board; `ORCH_INITIAL_TAB` / `ORCH_DEV_TAB` (board|needs|settings) can seed a
     // different one so a headless screenshot gate lands deterministically. In DEBUG, `ORCH_T1_AUTOATTACH=1`
     // lands on the terminal harness. Absent env ⇒ Board (no behavior change).
@@ -135,6 +138,7 @@ private struct RootView: View {
         }
         .tint(model.accent.color(dark: accentDark))
         .preferredColorScheme(themeMode.colorScheme)
+        .environment(\.animationsActive, scenePhase == .active)
         // A tapped push deep-links to the card: switch to the Needs You tab, where NeedsYouTab consumes
         // `pendingCardId` to open the card (or Recovery, if dead). Design §6: the in-app queue is what
         // push notifications deep-link into.

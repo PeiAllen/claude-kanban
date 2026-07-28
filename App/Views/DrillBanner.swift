@@ -10,13 +10,15 @@ import OrchestraKit
 struct DrillHeader: View {
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+    /// Idle-CPU gate — pauses the header clock while the window is occluded/background.
+    @Environment(\.animationsActive) private var animationsActive
 
     var body: some View {
         if let root = model.drillScopeCard {
             // One clock for the WHOLE header, not just the banner: the hosted rows below carry their own
             // time-derived attention labels, and the banner's `SubtreeSegments` a time-derived count, so
             // wrapping only `banner(root)` would leave those frozen until the next daemon broadcast.
-            TimelineView(.periodic(from: .now, by: 60)) { ctx in
+            TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: 60), paused: !animationsActive)) { ctx in
                 VStack(alignment: .leading, spacing: 8) {
                     breadcrumb
                     banner(root, now: ctx.date)

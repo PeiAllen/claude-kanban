@@ -121,12 +121,15 @@ private struct DetailStatusPill: View {
     let updatedAt: Date
     let live: Bool
     @Environment(\.theme) private var theme: Theme
+    @Environment(\.animationsActive) private var animationsActive
 
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(sem.dot).frame(width: 7, height: 7)
             if live {
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                // Coarsen past the first minute, and pause when the app is backgrounded.
+                TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: ageRefreshInterval(updatedAt)),
+                                                      paused: !animationsActive)) { ctx in
                     Text(label + " · " + relativeAge(updatedAt, now: ctx.date))
                 }
             } else {
