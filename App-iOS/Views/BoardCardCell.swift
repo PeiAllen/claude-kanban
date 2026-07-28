@@ -8,10 +8,14 @@ import OrchestraUI
 /// context mini-gauge, diffstat, current-activity line.
 struct BoardCardCell: View {
     let task: Task
-    /// When the attached-agents accordion is expanded, the card's bottom corners square off so the
-    /// rows-block (`AttachedAgentsRows`) drawn directly below merges into one continuous frame (not a
-    /// separate tile). Default false — freeform cards and collapsed targets keep the full round.
+    /// When the peek accordion is expanded, the card's bottom corners square off so the `PeekRows` block
+    /// drawn directly below merges into one continuous frame (not a separate tile). Default
+    /// false — freeform cards and collapsed targets keep the full round. Also hides the L4 summary (the
+    /// rows replace it).
     var expanded: Bool = false
+    /// The card-level clock, from `MovableCard`'s `TimelineView` — attention is time-derived, so the L1
+    /// chip and the L4 subtree line must tick rather than wait for a daemon event.
+    var now: Date = .distantPast
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
 
@@ -44,6 +48,7 @@ struct BoardCardCell: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             footer
+            subtreeLine
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,10 +77,33 @@ struct BoardCardCell: View {
                 StatusPill(status: ds.statusKey, label: ds.label, sem: sem, updatedAt: task.updatedAt, live: isLive)
             }
             Spacer(minLength: 4)
-            if isFreeform {
+            // OWN attention (L1) — a compact SOLID amber chip is the "scan for solid amber = needs you"
+            // signal, and it replaces the quiet right-side cluster when present (design §"Card anatomy").
+            if let attn = Attention.chipText(model.ownAttention(of: task, now: now)) {
+                AttentionChipIOS(text: attn)
+            } else if isFreeform {
                 // Freeform still shows its live status on the right so the page isn't stripped of it.
                 StatusDot(sem: sem, live: isLive)
             }
+        }
+    }
+
+    // MARK: L4 — subtree line (segments · eye · descendants attention chip)
+
+    /// A root that has already SHIPPED all its children (no live subordinate but `mergedChildren > 0`)
+    /// keeps its progress bar, so the line shows on non-zero counters too.
+    private var hasProgressCounters: Bool {
+        guard let ts = task.treeStat else { return false }
+        return ts.mergedChildren > 0 || ts.plannedChildren > 0
+    }
+
+    /// The card's subordinates, summarised — shown whenever the card has a live subordinate OR non-zero
+    /// progress counters, and it is NOT peek-expanded (the peek rows replace the summary, so the two never
+    /// show at once). Non-interactive, so it lives in the card body (below the move-gesture overlay) safely.
+    @ViewBuilder private var subtreeLine: some View {
+        if !expanded, !model.subordinates(of: task).isEmpty || hasProgressCounters {
+            Rectangle().fill(theme.hair).frame(height: 0.5).padding(.top, 2)
+            SubtreeLineIOS(task: task, now: now).padding(.top, 2)
         }
     }
 
@@ -189,6 +217,9 @@ private struct StatusPill: View {
         .foregroundStyle(sem.text)
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(sem.tint))
+        // Intrinsically sized, like the card-detail header's twin of this pill: without it a narrow card
+        // squeezes "Running · 3s" and wraps it into a multi-line blob that inflates the header's height.
+        .fixedSize()
     }
 }
 

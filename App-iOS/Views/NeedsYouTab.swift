@@ -1,30 +1,40 @@
 import SwiftUI
+import Combine       // Timer.publish / .autoconnect for the render clock
 import OrchestraKit
 import OrchestraUI
 
-/// The **Needs You** attention queue (design §6): the cards blocked on the human, most-urgent-first,
-/// off the shared `BoardModel`. Each row carries a reason chip aligned to a real daemon signal
-/// (🔐 Permission · 🙋 Needs you · 💀 Died · ◔ Context near-full) and the inline action matched to it —
-/// Approve/Deny (via the shipped `send-keys` RPC), a quick reply (`send`), or a deep-link to Recovery.
-/// Background-waiting cards never appear (they stay `.running`; see `NeedsYouQueue`). Replaces F3's stub.
+/// The **Needs You** attention queue (design §6), re-homed (BT slice 5) onto the 3b `ownAttention` fold —
+/// the SAME definition of "needs you" the card L1/L4 chips, peek rows, and eye tint use. Each row shows
+/// the card's own reasons with their labels; the top (most hard-blocked) reason drives the row's section,
+/// color, and primary action — Approve/Deny (🔐), a quick reply (🙋 `send`), Recover (💀), or Open (the
+/// rest). Background-waiting cards never appear (they hold no reason). Membership is time-derived (a card
+/// stalls with no daemon traffic), so the tab ticks a `now`.
 struct NeedsYouTab: View {
     @EnvironmentObject private var model: BoardModel
     @EnvironmentObject private var snooze: NeedsYouSnooze
     @EnvironmentObject private var push: PushCoordinator
     @Environment(\.colorScheme) private var scheme
     @State private var route: NeedsYouRoute?
+    /// The render clock. The stall reason crosses its threshold with no broadcast, so the queue must tick
+    /// rather than wait for a daemon event. 15s is well under the ~12-min stall window.
+    @State private var now = Date()
+    private let tick = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
 
     private var theme: Theme { Theme(scheme: scheme, accent: model.accent) }
 
-    /// The live queue with snoozed rows removed. `updatedAt` ticks in `Task`, so this recomputes as the
-    /// board changes.
-    private var items: [AttentionItem] { snooze.visible(model.needsYouItems) }
+    /// The FULL attention set, before the snooze filter. `reconcile` keys on THIS, not `items`: a snoozed
+    /// card is dropped from `items`, so reconciling against `items` would read the snooze as "resolved" and
+    /// prune the very entry the tap just set — self-cancelling Snooze/Dismiss on the next render. Keying on
+    /// the unsnoozed set prunes a snooze only when the card genuinely leaves the fold (plan spec).
+    private var allRows: [NeedsYouRow] { model.needsYouRows(now: now) }
+    /// The live queue with snoozed rows removed. Recomputes as the board changes and as `now` ticks.
+    private var items: [NeedsYouRow] { snooze.visible(allRows) }
 
     /// Group into reason sections once the flat list gets long (design §6: "Grouped by reason when the
-    /// list is long"); a short queue reads better flat.
-    private var grouped: [(reason: AttentionReason, items: [AttentionItem])] {
-        AttentionReason.allCases.compactMap { r in
-            let xs = items.filter { $0.reason == r }
+    /// list is long"); a short queue reads better flat. Buckets by the row's TOP reason.
+    private var grouped: [(reason: Attention.Reason, items: [NeedsYouRow])] {
+        Attention.Reason.allCases.compactMap { r in
+            let xs = items.filter { $0.topReason == r }
             return xs.isEmpty ? nil : (r, xs)
         }
     }
@@ -57,12 +67,8 @@ struct NeedsYouTab: View {
             .navigationTitle("Needs You")
             .navigationDestination(item: $route) { route in
                 switch route {
-                // "Open card" / peek → the real tabbed card detail (M2). It resolves the live card by
-                // id itself (and shows its own closed-state placeholder if the card is gone).
                 case .peek(let id):
                     CardDetailView(taskId: id)
-                // "Recover" (died) → the real Recovery panel (M7). It needs a concrete `Task`; if the card
-                // has since resolved away, fall back to the gone-state note.
                 case .recover(let id):
                     if let task = card(id) {
                         RecoveryView(task: task)
@@ -75,13 +81,13 @@ struct NeedsYouTab: View {
             }
         }
         .environment(\.theme, theme)
+        .onReceive(tick) { now = $0 }
         // Prune stale snoozes whenever the attention set changes so a resolved-then-re-alerting card
         // isn't left suppressed.
-        .onChange(of: model.needsYouItems.map(\.id)) { _, ids in
+        .onChange(of: allRows.map(\.id)) { _, ids in
             snooze.reconcile(activeIds: Set(ids))
         }
         // A tapped push deep-links here: open the pushed card (Recovery for a died card, else the peek).
-        // Consume the id so it fires once. A died card routes to Recovery to match the row's own action.
         .onChange(of: push.pendingCardId) { _, id in openDeepLink(id) }
         .onAppear { openDeepLink(push.pendingCardId) }
     }
@@ -93,7 +99,7 @@ struct NeedsYouTab: View {
         push.consumeDeepLink()
     }
 
-    private func row(_ item: AttentionItem) -> some View {
+    private func row(_ item: NeedsYouRow) -> some View {
         AttentionRow(item: item, onOpen: { route = .peek(item.id) },
                      onRecover: { route = .recover(item.id) })
     }
@@ -116,6 +122,43 @@ enum NeedsYouRoute: Hashable, Identifiable {
     }
 }
 
+// MARK: - reason → UI (the ONE fold's reasons, given phone chrome)
+
+extension Attention.Reason {
+    /// The reason chip glyph.
+    var emoji: String {
+        switch self {
+        case .dead:           return "💀"
+        case .permission:     return "🔐"
+        case .mergeRequested: return "🔀"
+        case .question:       return "🙋"
+        case .stalled:        return "⏱"
+        case .ctxCritical:    return "◔"
+        }
+    }
+    /// The section-bucket name (grouped mode). Row chips show the signal's own `label` instead.
+    var bucketName: String {
+        switch self {
+        case .dead:           return "Died"
+        case .permission:     return "Permission"
+        case .mergeRequested: return "Merge"
+        case .question:       return "Question"
+        case .stalled:        return "Stalled"
+        case .ctxCritical:    return "Context"
+        }
+    }
+    func sem(_ theme: Theme) -> SemColor {
+        switch self {
+        case .dead:           return theme.red
+        case .permission:     return theme.amber
+        case .mergeRequested: return theme.amber
+        case .question:       return theme.blue
+        case .stalled:        return theme.amber
+        case .ctxCritical:    return theme.indigo
+        }
+    }
+}
+
 // MARK: - Empty state
 
 private struct EmptyQueue: View {
@@ -123,8 +166,6 @@ private struct EmptyQueue: View {
         ContentUnavailableView {
             Label("All caught up", systemImage: "checkmark.circle")
         } description: {
-            // The queue notes its own scope so an empty list reads as "genuinely nothing," not
-            // "the signal is broken" (design §6).
             Text("No agents need you. Cards on background tasks keep running and never wait here.")
         }
     }
@@ -133,15 +174,17 @@ private struct EmptyQueue: View {
 // MARK: - Section header (grouped mode)
 
 private struct ReasonHeader: View {
-    let reason: AttentionReason
+    let reason: Attention.Reason
     let count: Int
     @Environment(\.theme) private var theme: Theme
     var body: some View {
         HStack(spacing: 6) {
             Text(reason.emoji)
-            Text(reason.label).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text)
+            Text(reason.bucketName).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text)
+                .chipText()
             Text("\(count)").font(.caption2.weight(.semibold)).monospacedDigit()
                 .foregroundStyle(theme.text2)
+                .chipText()
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Capsule().fill(theme.chip))
             Spacer()
@@ -151,11 +194,11 @@ private struct ReasonHeader: View {
 
 // MARK: - One attention row
 
-/// A single queue row: reason chip + status, title, `repo/branch`, last activity, waiting age, and the
-/// inline action(s) matched to its reason. Its own `View` so the reply field / in-flight state stay
-/// local to the row instead of leaking into the tab.
+/// A single queue row: the top reason chip + all reason labels, title, `repo/branch`, last activity,
+/// waiting age, and the inline action(s) matched to the top reason. Its own `View` so the reply field /
+/// in-flight state stay local to the row.
 private struct AttentionRow: View {
-    let item: AttentionItem
+    let item: NeedsYouRow
     let onOpen: () -> Void
     let onRecover: () -> Void
 
@@ -169,16 +212,8 @@ private struct AttentionRow: View {
     @FocusState private var replyFocused: Bool
 
     private var task: Task { item.task }
-    private var sem: SemColor {
-        switch item.reason {
-        case .permission:    return theme.amber
-        case .humanTurn:     return theme.blue
-        case .died:          return theme.red
-        case .deliveryStuck: return theme.amber
-        case .mergeStalled:  return theme.red   // matches the card-face give-up badge
-        case .contextFull:   return theme.indigo
-        }
-    }
+    private var top: Attention.Reason { item.topReason }
+    private var sem: SemColor { top.sem(theme) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -194,13 +229,12 @@ private struct AttentionRow: View {
                     Spacer(minLength: 6)
                     Text("ctx \(Int(task.ctxPct))%")
                         .font(.caption2.weight(.medium).monospacedDigit())
-                        .foregroundStyle(task.ctxPct >= NeedsYouQueue.contextNearFullThreshold ? sem.text : theme.text3)
+                        .foregroundStyle(task.ctxPct >= Attention.Thresholds().ctxCriticalPct ? sem.text : theme.text3)
                 }
             }
-            // Precedence FLIPS here, deliberately. Everywhere else the authored note wins because
-            // `desc` is blank between turns — but a Needs-You row is by construction mid-turn and
-            // blocked, and `desc` is the agent's own "may I run this?" text. Showing the note there
-            // would hide the very question the human opened this tab to answer.
+            // Precedence FLIPS here, deliberately. Everywhere else the authored note wins because `desc`
+            // is blank between turns — but a Needs-You row is by construction mid-turn and blocked, and
+            // `desc` is the agent's own "may I run this?" text. Showing the note would hide the question.
             let line = task.desc.isEmpty ? (task.note ?? "") : task.desc
             if !line.isEmpty {
                 Text(line)
@@ -217,21 +251,21 @@ private struct AttentionRow: View {
             .strokeBorder(sem.tint, lineWidth: 1))
         .shadow(color: theme.shadowCard, radius: 3, x: 0, y: 1)
         .opacity(task.phaseDisplay == .dead ? 0.85 : 1)
-        // Whole-card tap opens the peek (design §6: tapping a queue row opens the card). The nested
-        // action buttons, overflow menu, and reply field are `Button`/`TextField` controls, so SwiftUI
-        // hands them the tap inside their own bounds first — this fires only on the empty row area.
-        // `.contentShape(Rectangle())` makes the padded card (not just its content) hittable.
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
     }
 
-    // MARK: header — reason chip + waiting age + status
+    // MARK: header — every reason label as a chip + waiting age
 
     private var header: some View {
-        HStack(spacing: 8) {
-            ReasonChip(reason: item.reason, sem: sem)
+        HStack(spacing: 6) {
+            // ALL the card's own reasons, most-urgent first (design: "own reasons listed with labels").
+            // The first is the top; the rest render dimmer so the primary reason still reads.
+            ForEach(Array(item.signals.enumerated()), id: \.offset) { idx, signal in
+                ReasonChip(reason: signal.reason, label: signal.label,
+                           sem: signal.reason.sem(theme), primary: idx == 0)
+            }
             Spacer(minLength: 4)
-            // How long it has been waiting — ticks live so "3s" stays honest.
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 Text(waitingLabel + relativeAge(task.updatedAt, now: ctx.date))
                     .font(.caption2.weight(.medium)).foregroundStyle(theme.text3).monospacedDigit()
@@ -247,11 +281,11 @@ private struct AttentionRow: View {
         }
     }
 
-    // MARK: actions — matched to the reason
+    // MARK: actions — matched to the TOP reason
 
     @ViewBuilder private var actions: some View {
         HStack(spacing: 8) {
-            switch item.reason {
+            switch top {
             case .permission:
                 ActionButton("Approve", systemImage: "checkmark", tint: theme.green, filled: true, busy: busy) {
                     run { await model.approvePermission(task.id) }
@@ -259,19 +293,16 @@ private struct AttentionRow: View {
                 ActionButton("Deny", systemImage: "xmark", tint: theme.red) {
                     run { await model.denyPermission(task.id) }
                 }
-            case .humanTurn:
+            case .question:
                 ActionButton("Reply", systemImage: "text.bubble", tint: theme.blue) {
                     withAnimation { replying.toggle() }
                     if replying { replyFocused = true }
                 }
-            case .died:
+            case .dead:
                 ActionButton("Recover", systemImage: "cross.case", tint: theme.red, filled: true) { onRecover() }
-            case .deliveryStuck, .mergeStalled:
-                // A stuck card needs the human to LOOK (retry/edit the queue, or answer the merge) — open
-                // the card is the right primitive; no gate/reply fits either cause.
+            case .mergeRequested, .stalled, .ctxCritical:
+                // Look at the card — no gate/reply fits (approve a merge, nudge a stall, hand off context).
                 ActionButton("Open", systemImage: "arrow.up.forward.square", tint: sem) { onOpen() }
-            case .contextFull:
-                ActionButton("Open", systemImage: "arrow.up.forward.square", tint: theme.indigo) { onOpen() }
             }
             Spacer(minLength: 0)
             overflow
@@ -279,8 +310,7 @@ private struct AttentionRow: View {
         .disabled(busy)
     }
 
-    /// The always-present secondary menu: open the card, snooze, dismiss (design §6: "plus open-card and
-    /// snooze/dismiss throughout").
+    /// The always-present secondary menu: open the card, snooze, dismiss.
     private var overflow: some View {
         Menu {
             Button { onOpen() } label: { Label("Open card", systemImage: "rectangle.stack") }
@@ -299,7 +329,7 @@ private struct AttentionRow: View {
         .accessibilityLabel("More actions")
     }
 
-    // MARK: inline reply (Needs-you rows) — drives the `send` RPC
+    // MARK: inline reply (question rows) — drives the `send` RPC
 
     private var replyField: some View {
         HStack(spacing: 8) {
@@ -345,19 +375,26 @@ private struct AttentionRow: View {
 
 // MARK: - Small pieces
 
-/// The reason chip (emoji + label) in the reason's semantic color.
+/// The reason chip (emoji + the signal's own label) in the reason's semantic color. The top reason is
+/// filled/tinted; secondary reasons render outlined so the primary still leads.
 private struct ReasonChip: View {
-    let reason: AttentionReason
+    let reason: Attention.Reason
+    let label: String
     let sem: SemColor
+    var primary: Bool = true
     var body: some View {
         HStack(spacing: 4) {
             Text(reason.emoji)
-            Text(reason.label)
+            Text(label)
         }
         .font(.caption2.weight(.semibold))
         .foregroundStyle(sem.text)
+        // A row can carry several of these; without an intrinsic size they squeeze each other and wrap
+        // their labels into tall towers, inflating the row.
+        .chipText()
         .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(sem.tint))
+        .background(Capsule().fill(primary ? sem.tint : Color.clear))
+        .overlay(primary ? nil : Capsule().strokeBorder(sem.tint, lineWidth: 1))
     }
 }
 
@@ -383,6 +420,7 @@ private struct ActionButton: View {
             }
             .font(.footnote.weight(.semibold))
             .foregroundStyle(filled ? Color.white : tint.text)
+            .chipText()                 // "Approve"/"Recover" must never wrap when two buttons share a row
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(
                 Capsule().fill(filled ? tint.dot : tint.tint)
@@ -394,8 +432,8 @@ private struct ActionButton: View {
 
 // MARK: - Pushed destinations (nav hooks)
 
-/// Shown when a `.recover` route resolves and the card has since left the board (resolved/removed
-/// elsewhere) — the peek route relies on `CardDetailView`'s own closed-state placeholder instead.
+/// Shown when a `.recover` route resolves and the card has since left the board — the peek route relies on
+/// `CardDetailView`'s own closed-state placeholder instead.
 private struct CardGone: View {
     @Environment(\.theme) private var theme: Theme
     var body: some View {
@@ -410,4 +448,3 @@ private struct CardGone: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 }
-

@@ -1,111 +1,51 @@
 import Foundation
 import OrchestraKit
 
-// Pure, view-free logic for the Needs You attention queue (mobile design §6). Kept in OrchestraUI (not
-// App-iOS) so `swift test` exercises the filtering / reason-derivation / sort without an iOS Simulator,
-// and so the `send-keys` gate wrapper below can reach `BoardStore`'s module-internal `client`. The
-// SwiftUI view (`App-iOS/Views/NeedsYouTab.swift`) only renders these decisions.
+// Pure, view-free logic for the Needs You attention queue (mobile design §6), re-homed (BT slice 5) onto
+// the 3b attention fold — the ONE definition of "needs you" shared with the L1/L4 card chips, peek rows,
+// the drill banner, and the eye tint. Kept in OrchestraUI (not App-iOS) so `swift test` exercises the
+// membership + sort without an iOS Simulator, and so the `send-keys` gate wrapper below can reach
+// `BoardStore`'s module-internal `client`. The SwiftUI view (`App-iOS/Views/NeedsYouTab.swift`) only
+// renders these decisions.
+//
+// The OLD hand-rolled `NeedsYouQueue.reason` (permission/died/deliveryStuck/mergeStalled/humanTurn/
+// context) is RETIRED: membership is now `ownAttention` verbatim, so a card appears IFF a human action is
+// required. Consequences of the single contract: a bare idle `humanTurn` no longer qualifies unless it
+// stalls past T, and the old 📪 delivery-stuck immediacy is gone (a stuck card surfaces only if it
+// independently stalls, never while still `.running`).
 
-/// Why a card is in the Needs You queue. Each case maps to a *real* daemon signal — there is no
-/// fabricated "blocked/error" bucket (design §6). The declaration order **is** the urgency order
-/// (`rawValue` ascending = most-urgent-first): unblock actively-halted work (permission) first, then
-/// recover dead cards, then the two "card stuck" signals (a queued message the arm can't deliver, then
-/// a merge-request the parent never answered), then reply to genuinely-done ones, then the soft context
-/// nudge last.
-public enum AttentionReason: Int, CaseIterable, Sendable, Equatable, Hashable {
-    case permission    // status == .waiting && waitReason == .permission — blocked on tool approval
-    case died          // status == .dead — needs recovery
-    case deliveryStuck // deliveryStuckSince != nil — the arm gave up delivering a queued message
-    case mergeStalled  // treeStat.mergeStalled — the merge-request loop gave up nudging the parent
-    case humanTurn     // status == .waiting && waitReason == .humanTurn — genuinely done, waiting on you
-    case contextFull   // derived from ctxPct — near-full; may still be running
-
-    /// The reason chip glyph (design §6: 🔐 / 💀 / 📪 / 🚧 / 🙋 / ◔).
-    public var emoji: String {
-        switch self {
-        case .permission:    return "🔐"
-        case .died:          return "💀"
-        case .deliveryStuck: return "📪"
-        case .mergeStalled:  return "🚧"
-        case .humanTurn:     return "🙋"
-        case .contextFull:   return "◔"
-        }
-    }
-
-    /// The reason chip label.
-    public var label: String {
-        switch self {
-        case .permission:    return "Permission"
-        case .died:          return "Died"
-        case .deliveryStuck: return "Delivery stuck"
-        case .mergeStalled:  return "Merge stalled"
-        case .humanTurn:     return "Needs you"
-        case .contextFull:   return "Context full"
-        }
-    }
-}
-
-/// One row of the Needs You queue: a card that needs the human, plus the single reason it surfaced for.
-public struct AttentionItem: Identifiable, Sendable, Equatable {
+/// One row of the Needs You queue: a card that needs the human, plus EVERY own-attention reason it holds
+/// (most-urgent first — `ownAttention`'s order). The top signal drives the row's urgency, section, and
+/// primary action; the rest render as extra labels.
+public struct NeedsYouRow: Identifiable, Sendable, Equatable {
     public let task: Task
-    public let reason: AttentionReason
+    /// Non-empty, most-urgent first (top = lowest `reason.rawValue`).
+    public let signals: [AttentionSignal]
     public var id: UUID { task.id }
-    public init(task: Task, reason: AttentionReason) { self.task = task; self.reason = reason }
-}
+    public init(task: Task, signals: [AttentionSignal]) { self.task = task; self.signals = signals }
 
-/// The Needs You queue's pure model: which cards need the human, why, and in what order (design §6).
-public enum NeedsYouQueue {
-    /// `ctxPct` at/above which a card is flagged **◔ Context near-full**. 85 gives the human runway to
-    /// act (wrap up / spawn a fresh card) before the 90%+ red zone where the model starts
-    /// compacting/degrading — and keeps the queue quiet below it.
-    public static let contextNearFullThreshold: Double = 85
-
-    /// The single reason a card surfaces for, or `nil` if it needs nothing right now. Precedence
-    /// (matches `AttentionReason`'s order): permission > died > deliveryStuck > mergeStalled > humanTurn
-    /// > context. The two stuck signals outrank `humanTurn` (they're the specific reason a human is
-    /// needed) but sit under `died` (a crash still wins recovery); `mergeStalled` is read independent of
-    /// the underlying `TreeState`, so a `.stale` AND stalled card surfaces the stall.
-    ///
-    /// **Background-waits are excluded by construction:** a card that yielded its turn to a background
-    /// task (`run_in_background` shell, subagent, `/loop`/cron wake) stays `.running` with *no* wait —
-    /// the adapters return no waiting report for it (see `ClaudeCodeAdapter` `stop` / `CodexAdapter`) —
-    /// so it matches none of these and never appears. Context-full is gated to live (running/waiting)
-    /// cards so a `.done` card is never dragged back in by a stale high `ctxPct`.
-    public static func reason(for t: Task,
-                              contextThreshold: Double = contextNearFullThreshold) -> AttentionReason? {
-        if t.waitReason == .permission { return .permission }
-        if t.phase.kind == .dead { return .died }
-        // Stuck signals outrank humanTurn — they're the specific reason the human is needed. The arm's
-        // delivery-stuck flag first, then the merge-request loop's sticky give-up flag; the latter is read
-        // independent of the underlying `TreeState` (a card can be `.stale` AND `mergeStalled` at once, and
-        // the stall is the one needing a human). B5b renders these; it never sets them.
-        if t.deliveryStuckSince != nil { return .deliveryStuck }
-        if t.treeStat?.mergeStalled == true { return .mergeStalled }
-        if t.waitReason == .humanTurn { return .humanTurn }
-        if case .live = t.phase, t.ctxPct >= contextThreshold { return .contextFull }
-        return nil
-    }
-
-    /// Build the attention queue off the live board: every non-archived card that needs the human,
-    /// **most-urgent-first** — sorted by reason priority, then longest-waiting (oldest `updatedAt`)
-    /// within a reason.
-    public static func build(from tasks: [Task],
-                             contextThreshold: Double = contextNearFullThreshold) -> [AttentionItem] {
-        tasks.compactMap { t -> AttentionItem? in
-            guard !t.archived, let r = reason(for: t, contextThreshold: contextThreshold) else { return nil }
-            return AttentionItem(task: t, reason: r)
-        }
-        .sorted {
-            $0.reason.rawValue != $1.reason.rawValue
-                ? $0.reason.rawValue < $1.reason.rawValue
-                : $0.task.updatedAt < $1.task.updatedAt
-        }
-    }
+    /// The top (most hard-blocked) reason — drives the section bucket and the primary action.
+    public var topReason: Attention.Reason { signals.first?.reason ?? .stalled }
 }
 
 public extension BoardStore {
-    /// The Needs You attention queue (design §6) computed off the live board — most-urgent-first.
-    var needsYouItems: [AttentionItem] { NeedsYouQueue.build(from: tasks) }
+    /// The Needs You attention queue computed off the live board — most-urgent-first. Every non-archived
+    /// card whose `ownAttention` is non-empty, sorted by top reason priority, then longest-waiting (oldest
+    /// `updatedAt`) within a reason. `now` is the render clock (injected in tests) — the stall row is
+    /// time-derived, so a card can enter/leave the queue as the clock ticks with no daemon traffic.
+    func needsYouRows(now: Date) -> [NeedsYouRow] {
+        tasks.compactMap { t -> NeedsYouRow? in
+            guard !t.archived else { return nil }
+            let signals = ownAttention(of: t, now: now)
+            guard !signals.isEmpty else { return nil }
+            return NeedsYouRow(task: t, signals: signals)
+        }
+        .sorted {
+            $0.topReason.rawValue != $1.topReason.rawValue
+                ? $0.topReason.rawValue < $1.topReason.rawValue
+                : $0.task.updatedAt < $1.task.updatedAt
+        }
+    }
 
     /// **Approve** a card's pending permission prompt — the concrete v1 gate mechanism (design §6 +
     /// phone-terminal-ux "Gates"): a captured-prompt key-send delivered to the card's live `agent` pane
@@ -140,5 +80,4 @@ public extension BoardStore {
         let chord = capabilities[keyPath: key]
         return chord.isEmpty ? nil : chord
     }
-
 }

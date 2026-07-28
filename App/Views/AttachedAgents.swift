@@ -113,10 +113,8 @@ struct PeekRow: View {
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(c.tint))
     }
-    private var stageLabel: String {
-        switch task.column { case .plan: return "PLAN"; case .impl: return "IMPL"; case .review: return "REVIEW" }
-    }
-    private var stageLetter: String {
-        switch task.column { case .plan: return "P"; case .impl: return "I"; case .review: return "R" }
-    }
+    // The stage vocabulary lives on `Column` (OrchestraKit) so this row and the phone's peek row render
+    // the same words — a private copy on each side is how the two drift.
+    private var stageLabel: String { task.column.shortName }
+    private var stageLetter: String { task.column.letter }
 }

@@ -68,15 +68,55 @@ final class AttachedAgentsGateTests: XCTestCase {
         XCTAssertEqual(model.attachedAgents(of: target).map(\.id), [reviewer.id])
     }
 
-    /// Fail-safe: a read-write card with the same lineage is NEVER embedded.
-    func testReadWriteNeverEmbedded() {
+    /// BT slice 5 INVERTS the old "read-write never embedded" invariant: at TOP LEVEL a read-write lineage
+    /// CHILD embeds behind its root (so the top level is roots-only), and becomes a column citizen only
+    /// inside a drill of its parent. (The old test asserted the child stays a citizen — the exact behaviour
+    /// this slice reverses.)
+    func testReadWriteLineageChildEmbedsAtTopLevel_citizenInDrill() {
         let model = BoardModel(platform: .ios)
-        let target = worktree("01", branch: "feat/x", column: .impl)
-        let rw = worktree("02", branch: "feat/x2", access: .readWrite,
-                          parentBranch: "feat/x", column: .impl)
-        model.tasks = [target, rw]
+        let root = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x", column: .impl)   // rw
+        model.tasks = [root, child]
 
-        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == rw.id })
+        // Top level: only the root is a citizen; the child embeds (reached via peek / drill).
+        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == root.id })
+        XCTAssertFalse(model.cards(in: .impl).contains { $0.id == child.id })
+        XCTAssertEqual(model.subordinates(of: root).map(\.id), [child.id])
+
+        // Drill into the root: the child is now the scope's direct citizen; the root leaves the columns.
+        model.drillInto(root.id)
+        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == child.id })
+        XCTAssertFalse(model.cards(in: .impl).contains { $0.id == root.id })
+    }
+
+    /// Roots-only top level, recursively: a grandchild embeds too — only the forest root is a citizen.
+    func testTopLevelShowsRootsOnly() {
+        let model = BoardModel(platform: .ios)
+        let root = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x", column: .impl)
+        let grandchild = worktree("03", branch: "feat/x3", parentBranch: "feat/x2", column: .impl)
+        let standalone = worktree("04", branch: "feat/y", column: .impl)   // its own root
+        model.tasks = [root, child, grandchild, standalone]
+
+        XCTAssertEqual(Set(model.cards(in: .impl).map(\.id)), [root.id, standalone.id])
+    }
+
+    /// Attachment never becomes citizenship under drill: a reviewer stays embedded both at top level and
+    /// inside a drill of its target (the plan-review invariant, on iOS).
+    func testAttachedAlwaysEmbedded_topLevelAndInDrill() {
+        let model = BoardModel(platform: .ios)
+        let root = worktree("01", branch: "feat/x", column: .impl)
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x", column: .impl)
+        let reviewer = worktree("03", branch: "review/x", access: .readOnly,
+                                parentBranch: "feat/x", column: .impl)
+        model.tasks = [root, child, reviewer]
+
+        XCTAssertFalse(model.cards(in: .impl).contains { $0.id == reviewer.id })   // embedded at top level
+        model.drillInto(root.id)
+        XCTAssertFalse(model.cards(in: .impl).contains { $0.id == reviewer.id })   // still embedded in drill
+        XCTAssertTrue(model.cards(in: .impl).contains { $0.id == child.id })       // child is the citizen
+        // ...and the drilled root hosts its own reviewer as a row (else it'd be unreachable in the drill).
+        XCTAssertEqual(model.drillHostedRows().map(\.id), [reviewer.id])
     }
 
     /// Fail-safe: a read-only reviewer whose parent branch has no live card derives no target, so it is
@@ -140,16 +180,16 @@ final class AttachedAgentsGateTests: XCTestCase {
         // Selecting the target does NOT reveal on iOS (selection drives full-screen nav, not the board).
         model.selectedId = target.id
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
-        XCTAssertFalse(model.isAttachedExpanded(target))
+        XCTAssertFalse(model.isPeekExpanded(target))
 
         // The tap toggle reveals.
-        model.toggleAttachedExpanded(target)
-        XCTAssertTrue(model.isAttachedExpanded(target))
+        model.togglePeek(target)
+        XCTAssertTrue(model.isPeekExpanded(target))
         XCTAssertEqual(model.expandedRows(for: target).map(\.id), [reviewer.id])
 
         // ...and collapses.
-        model.toggleAttachedExpanded(target)
-        XCTAssertFalse(model.isAttachedExpanded(target))
+        model.togglePeek(target)
+        XCTAssertFalse(model.isPeekExpanded(target))
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
     }
 
@@ -164,15 +204,15 @@ final class AttachedAgentsGateTests: XCTestCase {
         let target = worktree("01", branch: "feat/x")
         let reviewer = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
         model.tasks = [target, reviewer]
-        model.toggleAttachedExpanded(target)
+        model.togglePeek(target)
         XCTAssertEqual(model.expandedRows(for: target).map(\.id), [reviewer.id])
 
         // The reviewer leaves → target is no longer a target. (1) nothing renders...
         model.tasks = [target]
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)
         // ...(2) and the reap drops the id, so a returning reviewer does NOT silently re-open the card.
-        model.reapExpandedAttachedTargets()
-        XCTAssertFalse(model.expandedAttachedTargets.contains(target.id))
+        model.reapExpandedPeekTargets()
+        XCTAssertFalse(model.expandedPeekTargets.contains(target.id))
         model.tasks = [target, reviewer]
         XCTAssertTrue(model.expandedRows(for: target).isEmpty)   // stays collapsed until a fresh tap
     }
@@ -184,12 +224,12 @@ final class AttachedAgentsGateTests: XCTestCase {
         let target = worktree("01", branch: "feat/x")
         let reviewer = worktree("02", branch: "review/x", access: .readOnly, parentBranch: "feat/x")
         model.tasks = [target, reviewer]
-        model.toggleAttachedExpanded(target)
-        XCTAssertTrue(model.expandedAttachedTargets.contains(target.id))
+        model.togglePeek(target)
+        XCTAssertTrue(model.expandedPeekTargets.contains(target.id))
 
         model.tasks = []                       // card gone (snapshot replace)
-        model.reapExpandedAttachedTargets()
-        XCTAssertTrue(model.expandedAttachedTargets.isEmpty)
+        model.reapExpandedPeekTargets()
+        XCTAssertTrue(model.expandedPeekTargets.isEmpty)
     }
 
     /// The expand set is per-card and reaped when a card leaves the board (no leak).
@@ -201,14 +241,120 @@ final class AttachedAgentsGateTests: XCTestCase {
         let rb = worktree("04", branch: "rev/b", access: .readOnly, parentBranch: "feat/b")
         model.tasks = [a, ra, b, rb]
 
-        model.toggleAttachedExpanded(a)
-        XCTAssertTrue(model.isAttachedExpanded(a))
-        XCTAssertFalse(model.isAttachedExpanded(b))   // independent per card
+        model.togglePeek(a)
+        XCTAssertTrue(model.isPeekExpanded(a))
+        XCTAssertFalse(model.isPeekExpanded(b))   // independent per card
 
         // A leaves the board; the next toggle prunes its stale id.
         model.tasks = [b, rb]
-        model.toggleAttachedExpanded(b)
-        XCTAssertFalse(model.expandedAttachedTargets.contains(a.id))   // reaped
-        XCTAssertTrue(model.isAttachedExpanded(b))
+        model.togglePeek(b)
+        XCTAssertFalse(model.expandedPeekTargets.contains(a.id))   // reaped
+        XCTAssertTrue(model.isPeekExpanded(b))
+    }
+
+    // MARK: peek generalizes to lineage children (slice 5)
+
+    /// Peek is no longer attached-only: a root with a plain lineage child reveals it when tapped.
+    func testPeekRevealsLineageChildren() {
+        let model = BoardModel(platform: .ios)
+        let root = worktree("01", branch: "feat/x")
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x")
+        model.tasks = [root, child]
+
+        XCTAssertTrue(model.expandedRows(for: root).isEmpty)   // collapsed
+        model.togglePeek(root)
+        XCTAssertEqual(model.expandedRows(for: root).map(\.id), [child.id])
+    }
+
+    /// Reap keys on "has subordinates" now (not attached-liveness): a card whose LAST lineage child leaves
+    /// drops its expand id, on both the direct reap and a wholesale `tasks` replace.
+    func testPeekReapDropsIdWhenSubordinatesVanish() {
+        let model = BoardModel(platform: .ios)
+        let root = worktree("01", branch: "feat/x")
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x")
+        model.tasks = [root, child]
+        model.togglePeek(root)
+        XCTAssertTrue(model.expandedPeekTargets.contains(root.id))
+
+        model.tasks = [root]              // child gone → root has no subordinates
+        model.reapExpandedPeekTargets()
+        XCTAssertFalse(model.expandedPeekTargets.contains(root.id))
+    }
+
+    /// Nested-reviewer reachability (the plan-review MAJOR): in a chain `C ← R1 ← R2`, R2 is NOT in C's
+    /// peek (it hangs off R1), so it is reachable only via R1's own peek — which is exactly what the
+    /// subordinates-gated toggle in the detail expands. Both R1 and R2 are embedded (never board citizens).
+    func testNestedReviewerReachableViaIntermediate() {
+        let model = BoardModel(platform: .ios)
+        let root = worktree("01", branch: "feat/x")
+        let r1 = worktree("02", branch: "review1", access: .readOnly, parentBranch: "feat/x")
+        let r2 = worktree("03", branch: "review2", access: .readOnly, parentBranch: "review1")
+        model.tasks = [root, r1, r2]
+
+        XCTAssertFalse(model.visibleTasks.contains { $0.id == r1.id })   // both embedded
+        XCTAssertFalse(model.visibleTasks.contains { $0.id == r2.id })
+
+        model.togglePeek(root)
+        XCTAssertEqual(model.expandedRows(for: root).map(\.id), [r1.id])   // C's peek = R1 only, not R2
+        model.togglePeek(r1)
+        XCTAssertEqual(model.expandedRows(for: r1).map(\.id), [r2.id])     // R1's peek reveals R2
+    }
+
+    // MARK: drill scope reap (slice 5)
+
+    /// The drill retargets across card succession: when the scoped root's OWNING card is replaced by a
+    /// successor on the same branch, the drill follows the branch to the new owner rather than clearing.
+    func testDrillReapRetargetsOnBranchSuccession() {
+        let model = BoardModel(platform: .ios)
+        let planner = worktree("01", branch: "feat/x")
+        let child = worktree("02", branch: "feat/x2", parentBranch: "feat/x")
+        model.tasks = [planner, child]
+        model.drillInto(planner.id)
+        XCTAssertEqual(model.drillScope, planner.id)
+
+        // The planning card is replaced by an orchestrator on the SAME branch (a newer card).
+        let orchestrator = worktreeCreated("05", branch: "feat/x", at: Date(timeIntervalSince1970: 2_000_000))
+        model.tasks = [orchestrator, child]
+        model.reapDrillScope()
+        XCTAssertEqual(model.drillScope, orchestrator.id, "drill follows the branch to its new owner")
+
+        // The branch leaves entirely → the drill clears to the top level (never strands on a gone scope).
+        model.tasks = [child]
+        model.reapDrillScope()
+        XCTAssertNil(model.drillScope)
+    }
+
+    private func worktreeCreated(_ id: String, branch: String, at: Date) -> Task {
+        Task(id: uuid(id), title: "card-\(id)", repo: "/repo", branch: branch,
+             cwd: "/repo/.wt/\(branch)", origin: .worktree, access: .readWrite,
+             model: AgentModel(id: "claude-opus-4-8"), startIn: .impl, column: .impl,
+             order: 0, phase: .live(.running), initialPrompt: id, createdAt: at)
+    }
+
+    // MARK: Needs You snooze — reconcile against the UNSNOOZED fold, not the filtered list
+
+    /// Regression: the Needs You tab reconciles snoozes against the full `needsYouRows` fold, NOT the
+    /// snooze-filtered `items` it renders. Reconciling against the filtered list is the self-cancel bug:
+    /// snoozing a still-active card drops it from `items`, `reconcile` reads that as "resolved" and prunes
+    /// the snooze the tap just set, so the row reappears on the next render. This pins the contract the
+    /// view relies on — a snooze survives while its card is in the fold, and is pruned only when it leaves.
+    func testSnoozeSurvivesReconcileWhileCardStaysInFold() {
+        let snooze = NeedsYouSnooze()
+        let x = worktree("01", branch: "x")
+        let y = worktree("02", branch: "y")
+        let fold = [NeedsYouRow(task: x, signals: [AttentionSignal(.stalled, "12m")]),
+                    NeedsYouRow(task: y, signals: [AttentionSignal(.stalled, "9m")])]
+
+        snooze.snooze(x.id, for: 3600)
+        // The tab hides x from what it renders...
+        XCTAssertEqual(snooze.visible(fold).map(\.id), [y.id])
+        // ...but reconciles against the FULL fold (x still needs you, just suppressed).
+        snooze.reconcile(activeIds: Set(fold.map(\.id)))
+        XCTAssertTrue(snooze.isSnoozed(x.id), "snooze must survive: x is still in the fold")
+        XCTAssertEqual(snooze.visible(fold).map(\.id), [y.id], "x stays suppressed, not re-alerted")
+
+        // When x genuinely resolves and leaves the fold, the snooze is pruned so a fresh alert later shows.
+        snooze.reconcile(activeIds: [y.id])
+        XCTAssertFalse(snooze.isSnoozed(x.id), "snooze pruned once the card leaves the fold")
     }
 }

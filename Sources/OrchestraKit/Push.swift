@@ -45,8 +45,8 @@ public enum AttentionTransition {
     }
 
     /// The stuck trigger a card currently warrants, or `nil` if it is not stuck. Two independent causes,
-    /// delivery before merge (matching `NeedsYouQueue.reason(for:)`'s order): the delivery arm's
-    /// `deliveryStuckSince` flag, then the merge-request loop's sticky `TreeStat.mergeStalled` give-up flag.
+    /// delivery before merge: the delivery arm's `deliveryStuckSince` flag, then the merge-request loop's
+    /// sticky `TreeStat.mergeStalled` give-up flag.
     /// Pure — the sole authority on "which stuck", shared by the daemon tracker and the mac `BoardStore`.
     public static func currentStuckTrigger(_ task: Task) -> NotifyTrigger? {
         if task.deliveryStuckSince != nil { return .deliveryStuck }
@@ -64,8 +64,8 @@ public enum AttentionTransition {
     }
 
     /// The single notification a snapshot warrants — the phase edge and the stuck rise reconciled into ONE
-    /// trigger, with a precedence that mirrors `NeedsYouQueue.reason(for:)` so the banner/push can't disagree
-    /// with the queue: a recovery/permission-critical phase edge (`died`/`permission`) outranks a stuck rise,
+    /// trigger, with a fixed precedence over the push triggers (daemon-side; independent of the client's
+    /// `ownAttention` Needs You fold): a recovery/permission-critical phase edge (`died`/`permission`) outranks a stuck rise,
     /// which in turn outranks `needsYou`. The sole precedence authority for both the daemon tracker and the
     /// mac `BoardStore` — so the two paths can't drift. (The died/permission-vs-stuck collision needs a single
     /// event carrying BOTH a fresh death and a fresh stuck flip, which no single store write produces today;

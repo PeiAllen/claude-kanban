@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine       // Timer.publish / .autoconnect for the badge clock
 import OrchestraUI   // BoardModel + Theme + the platform-protocol Environment keys
 
 @main
@@ -102,8 +103,14 @@ private struct RootView: View {
         return !harnessKeys.contains { env[$0] != nil }
     }
 
-    /// The Needs You tab badge: the attention count with snoozed rows removed (0 renders no badge).
-    private var needsYouBadge: Int { snooze.visible(model.needsYouItems).count }
+    /// The Needs You tab badge: the attention count with snoozed rows removed (0 renders no badge). Fed a
+    /// ticking `badgeNow` (below) because the queue is time-derived — a card can cross the stall threshold
+    /// with no daemon traffic, and the badge must react so it never disagrees with the tab.
+    private var needsYouBadge: Int { snooze.visible(model.needsYouRows(now: badgeNow)).count }
+    /// Coarse clock for the badge only (the tab body has its own faster `TimelineView`). 30s is well under
+    /// the ~12-min stall threshold, so a stalling card lights the badge promptly without churn.
+    @State private var badgeNow = Date()
+    private let badgeTick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private var themeMode: ThemeMode { ThemeMode(rawValue: themeRaw) ?? .system }
     private var accentDark: Bool {
@@ -135,6 +142,7 @@ private struct RootView: View {
         }
         .tint(model.accent.color(dark: accentDark))
         .preferredColorScheme(themeMode.colorScheme)
+        .onReceive(badgeTick) { badgeNow = $0 }
         // A tapped push deep-links to the card: switch to the Needs You tab, where NeedsYouTab consumes
         // `pendingCardId` to open the card (or Recovery, if dead). Design §6: the in-app queue is what
         // push notifications deep-link into.

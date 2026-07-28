@@ -128,9 +128,8 @@ only, so a focused terminal keeps them for the pty. `Return`/`i` act on whicheve
 embedded card is never promoted to a standalone card; instead the match surfaces **in place** — its root
 auto-reveals the path to it (over the full subtree, so deep matches are found), the hit joins the `n`/`N`
 cycle ordered right after its root, and non-matches dim. The iPhone companion consumes the same shared
-derivation and `expandedRows` seam but owns its presentation (tap-driven reveal, a parent chip
-`attachedTarget ?? parentCard` for up-navigation); its roots/peek/drill are a later slice, so it still
-renders the attached-agents accordion as shipped.
+derivation and `expandedRows` seam but owns its presentation — see [The iPhone companion](#the-iphone-companion)
+for how roots, peek, and drill land in the phone's navigation.
 
 ## Cards
 
@@ -152,8 +151,9 @@ renders the attached-agents accordion as shipped.
   board, saturated amber means "needs you" and nothing else (see [Attention](#attention-the-scan-rule)).
   The glyph lives in `TreeBadge`, shared
   with the desktop [inspector header](#the-inspector) so the two can't drift, and hover names the
-  parent branch. Absence is information: no glyph means nothing to say. (The iPhone client keeps its
-  own tree-badge palette until the phone's card anatomy migrates in a later slice.)
+  parent branch. Absence is information: no glyph means nothing to say. (The iPhone client renders its
+  own views for these — the L1 amber chip, the L4 subtree line, the eye — over the *same* base-store
+  helpers; see [The iPhone companion](#the-iphone-companion).)
 - **Own attention replaces the quiet cluster.** When the card itself needs the human, a solid amber
   **attention chip** takes the cluster's slot outright — top reason plus a `+N` for any others — at
   *every* squish rung. A card that needs you says so before it says how big its diff is, and the chip
@@ -627,6 +627,32 @@ produced the other images in this chapter. Where the desktop puts meaning in a h
 has nowhere to put one, so glyph-only indicators — the [tree badge](#cards) on its board cells and in
 its card-detail header, for one — carry the same wording in an **accessibility label** instead, which is
 what VoiceOver reads and what a long-press surfaces.
+
+**Hierarchy on the phone.** The phone renders the same [roots, peek, and drill](#hierarchy-roots-peek-and-drill)
+surfaces as the desktop, over the *same* base-store derivations (`isEmbedded`, `subordinates`,
+`ownAttention`, `StageSegment`) — only the presentation is the phone's. The top-level pager holds **root
+cards only**: `IOSBoardModel` overrides `isEmbedded` with the same three rungs the desktop uses, so a
+non-root descendant embeds behind its root rather than appearing twice. **Peek** is **tap-toggled** (not
+selection-driven — a tap on a card pushes its full-screen detail, so peek needs its own control): a
+disclosure toggle rides the card's top-trailing corner, above the move-gesture overlay so its tap wins,
+and reveals the card's direct subordinates — lineage children first, then attached reviewers — as rows
+*below* the card; the expand set is **reaped** on both the live-event path and a wholesale reconnect so a
+departed card can't leave a stale open row. **Drill** is **in-place re-scope** (the idiom that fits the
+pager: one shared `drillScope` field the columns already read, where a pushed second board would fight
+itself): an accent **`→` button** on any card with a subtree enters it, a **breadcrumb** (`‹ All projects
+/ …`) plus a flattened **root banner** appear above the pager, and the pager re-homes to the root's direct
+children. Up-navigation reuses the one generic rule — the detail-header `attachedTarget ?? parentCard`
+chip. Each card also carries the **L1 own-attention chip**, the **L4 subtree line** (stage-coloured
+segments from the `TreeStat` counters, the eye, and the descendants-only attention chip), and the eye —
+all tinted from the attention fold, so an amber chip and an amber eye are one fact.
+
+**Needs You.** The [Needs You](#attention-the-scan-rule) tab is fed by the **one** attention fold —
+`ownAttention`, the same definition the card chips use — so a card appears there exactly when it needs a
+human, and each row lists the card's own reasons with their labels; the most-blocked reason drives the
+row's colour and its primary action (Approve/Deny, a quick reply, Recover, or Open). Because membership is
+that single contract, a card that is merely idle between turns no longer sits in the queue — it surfaces
+only once it declares a question, requests a merge a human must grant, or goes quiescent past the stall
+threshold.
 
 **Agent-terminal takeover.** A tmux **window has exactly one size at a time** — grouped sessions give each
 client its own current-window *selection* but never an independent per-window *size* — so a narrow phone
