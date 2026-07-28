@@ -66,9 +66,13 @@ struct ToolbarView: View {
 /// re-supplies the theme (which recomputes when dark mode / accent change).
 struct ToolbarControls: View {
     @EnvironmentObject var model: BoardModel
+    // Injected as an environmentObject by WindowConfigurator (this accessory host is outside ContentView's
+    // environment), so the MCP status dot parks with the rest of the board when the window is occluded.
+    @EnvironmentObject var activity: WindowActivityMonitor
     var body: some View {
         ControlsRow()
             .environment(\.theme, Theme(scheme: model.darkMode ? .dark : .light, accent: model.accent))
+            .environment(\.animationsActive, activity.active)
             .padding(.trailing, 14)
             .frame(height: ToolbarView.height)
             .fixedSize()
@@ -104,7 +108,7 @@ struct ControlsRow: View {
             _Concurrency.Task { await model.ensureDaemonAndStart() }
         } label: {
             HStack(spacing: 6) {
-                PulseDot(color: dotColor, size: 6, active: model.connected || model.connecting)
+                PulseDot(color: dotColor, size: 6, active: model.connected || model.connecting, period: 0.9)
                 Text(chipLabel)
                     .font(F.ui(10.5, .medium))
                     .foregroundStyle(theme.text)
@@ -236,28 +240,6 @@ struct ControlsRow: View {
 }
 
 // MARK: - Helpers
-
-/// A breathing pulse dot (ccPulse: opacity 1↔.35, scale 1↔.78).
-private struct PulseDot: View {
-    let color: Color
-    let size: CGFloat
-    var active: Bool = true
-    @State private var on = false
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .opacity(active ? (on ? 0.35 : 1) : 1)
-            .scaleEffect(active ? (on ? 0.78 : 1) : 1)
-            .onAppear {
-                guard active else { return }
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    on = true
-                }
-            }
-    }
-}
 
 /// The 3-bar equalizer glyph for the Activity button (bars 2px wide, heights 6/11/8).
 private struct EqualizerGlyph: View {

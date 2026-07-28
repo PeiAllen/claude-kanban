@@ -210,6 +210,7 @@ private struct AttentionRow: View {
     @State private var draft = ""
     @State private var busy = false          // guards the async gate/reply so a double-tap can't double-fire
     @FocusState private var replyFocused: Bool
+    @Environment(\.animationsActive) private var animationsActive
 
     private var task: Task { item.task }
     private var top: Attention.Reason { item.topReason }
@@ -266,7 +267,9 @@ private struct AttentionRow: View {
                            sem: signal.reason.sem(theme), primary: idx == 0)
             }
             Spacer(minLength: 4)
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            // How long it has been waiting — coarsens after the first minute, pauses when backgrounded.
+            TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: ageRefreshInterval(task.updatedAt)),
+                                                  paused: !animationsActive)) { ctx in
                 Text(waitingLabel + relativeAge(task.updatedAt, now: ctx.date))
                     .font(.caption2.weight(.medium)).foregroundStyle(theme.text3).monospacedDigit()
             }

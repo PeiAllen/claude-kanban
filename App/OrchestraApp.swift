@@ -94,10 +94,14 @@ struct ContentView: View {
     /// Non-nil only while the divider is being dragged — the live width that drives layout.
     @State private var dragWidth: Double? = nil
 
+    /// Drives the idle-CPU gate: false while the window is occluded/miniaturized or the app is
+    /// backgrounded, which parks every perpetual animation + live clock in the board.
+    @StateObject private var activity = WindowActivityMonitor()
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             theme.winBg.ignoresSafeArea()
-            WindowConfigurator(model: model)
+            WindowConfigurator(model: model, monitor: activity)
 
             VStack(spacing: 0) {
                 ToolbarView()
@@ -214,6 +218,9 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.18), value: model.showSpawn)
         .animation(.easeOut(duration: 0.15), value: model.showHelp)
         .animation(.easeOut(duration: 0.15), value: model.archiveConfirm)
+        // The idle-CPU gate for the whole board subtree — parks perpetual animations + live clocks when
+        // the window isn't being looked at (see WindowActivityMonitor).
+        .environment(\.animationsActive, activity.active)
         .modifier(DebugLaunchHook())
     }
 }
@@ -1228,17 +1235,72 @@ final class AutoWidthHostingView<Content: View>: NSHostingView<Content> {
 /// our toolbar occupies the same band as the traffic lights (the toolbar then lays itself out to line
 /// up — no runtime querying or moving of the OS buttons). Also disables move-by-background so the
 /// inspector resize handle works. Done from `viewDidMoveToWindow`, where the window already exists.
+/// Tracks whether the board window is actually being looked at, so the idle-CPU gate
+/// (`\.animationsActive`) can park the board's perpetual animations + live clocks when it isn't.
+///
+/// "Being looked at" = the window is on-screen and unobscured (`occlusionState` covers occluded,
+/// fully-covered, AND miniaturized) AND the app is the active app. Either failing drops `active` to
+/// false, which stops every breathing dot / shimmer / age-clock in the content and the toolbar. Bound to
+/// the one board window by `WindowConfigurator` once the window exists.
+@MainActor
+final class WindowActivityMonitor: ObservableObject {
+    @Published private(set) var active = true
+
+    // Mutated only on the main actor (in `bind`); read once in the nonisolated `deinit` after the last
+    // reference is gone, so there is no concurrent access — `nonisolated(unsafe)` lets deinit unregister.
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
+    private weak var window: NSWindow?
+
+    func bind(to window: NSWindow) {
+        guard self.window !== window else { return }
+        self.window = window
+        let nc = NotificationCenter.default
+        // Window-scoped: occlusion covers "another window fully covers us" and miniaturize, but the
+        // miniaturize/deminiaturize pair is observed too so a restore recomputes even on the rare AppKit
+        // build where occlusion doesn't re-fire for it.
+        for name in [NSWindow.didChangeOcclusionStateNotification,
+                     NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification] {
+            observers.append(nc.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.recompute() }
+            })
+        }
+        // App-scoped: backgrounding the app pauses too, even if our window stays fully visible behind
+        // another app's — the point is to stop burning CPU while the user is elsewhere.
+        for name in [NSApplication.didBecomeActiveNotification,
+                     NSApplication.didResignActiveNotification] {
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.recompute() }
+            })
+        }
+        recompute()
+    }
+
+    private func recompute() {
+        let visible = window?.occlusionState.contains(.visible) ?? true
+        active = visible && NSApplication.shared.isActive
+    }
+
+    deinit {
+        let nc = NotificationCenter.default
+        observers.forEach(nc.removeObserver)
+    }
+}
+
 struct WindowConfigurator: NSViewRepresentable {
     let model: BoardModel
-    func makeNSView(context: Context) -> NSView { ConfiguratorView(model: model) }
+    let monitor: WindowActivityMonitor
+    func makeNSView(context: Context) -> NSView { ConfiguratorView(model: model, monitor: monitor) }
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ConfiguratorView: NSView {
         let model: BoardModel
+        let monitor: WindowActivityMonitor
         private var installedAccessory = false
 
-        init(model: BoardModel) {
+        init(model: BoardModel, monitor: WindowActivityMonitor) {
             self.model = model
+            self.monitor = monitor
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { fatalError() }
@@ -1251,6 +1313,9 @@ struct WindowConfigurator: NSViewRepresentable {
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = false
 
+            // Start driving the idle-CPU gate off this window's occlusion/active state.
+            monitor.bind(to: window)
+
             // Host the interactive controls in a real title-bar accessory. Controls placed in the
             // SwiftUI content can't be clicked in this band: the bar shares the OS title-bar region,
             // whose container view sits ABOVE the content and swallows the mouse-down. A title-bar
@@ -1260,7 +1325,11 @@ struct WindowConfigurator: NSViewRepresentable {
                 installedAccessory = true
                 let acc = NSTitlebarAccessoryViewController()
                 acc.layoutAttribute = .right
-                let host = AutoWidthHostingView(rootView: ToolbarControls().environmentObject(model))
+                // The accessory is a SEPARATE hosting view outside ContentView's environment, so it gets
+                // the monitor as its own environmentObject — `ToolbarControls` re-publishes it as
+                // `\.animationsActive` so the MCP status dot parks with the rest when occluded.
+                let host = AutoWidthHostingView(
+                    rootView: ToolbarControls().environmentObject(model).environmentObject(monitor))
                 acc.view = host
                 window.addTitlebarAccessoryViewController(acc)
             }

@@ -260,6 +260,21 @@ never the card (a `try?` decode) — the field is new on this branch and only ev
 struct, so there is no cross-version migration, just card-preservation against a dev daemon's interim
 state.
 
+### Board animations pause when nobody is looking
+
+The board's perpetual decorations — the breathing status dots, the running-card shimmer — and its live
+age/stall clocks run **only while their window is actually being looked at**. Both clients drive one
+shared gate (`\.animationsActive` in `OrchestraUI`): the desktop sets it false when the window is
+occluded, miniaturized, or the app is not the active app (`NSWindow.occlusionState` + `NSApp.isActive`,
+via `WindowActivityMonitor`); the phone sets it false when `scenePhase != .active`. A false gate settles
+every `PulseDot`/shimmer to rest (which is what actually cancels a `repeatForever`) and swaps each card's
+`TimelineView` onto a `PausableTimelineSchedule` that emits no future ticks — so an idle board off-screen
+sits near 0% CPU instead of driving a per-frame animation storm through the compositor. On-screen, only
+cards that are actually realized animate (the columns are `LazyVStack`s, so a card scrolled out of view
+unrealizes and stops), and the age clocks tick at the coarsest interval the label needs (`ageRefreshInterval`:
+once a second only while the stamp reads in seconds, then once a minute). The gate re-renders immediately
+on the way back, so a stale stamp corrects the instant the window returns.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's

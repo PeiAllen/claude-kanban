@@ -200,13 +200,16 @@ private struct StatusPill: View {
     let updatedAt: Date
     let live: Bool
     @Environment(\.theme) private var theme: Theme
+    @Environment(\.animationsActive) private var animationsActive
 
     var body: some View {
         HStack(spacing: 6) {
             StatusDot(sem: sem, live: live)
             if live {
-                // Tick the age once a second so "Running · 3s" stays honest.
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                // Coarsen once the stamp reads in minutes (ageRefreshInterval: 1s only in the first minute,
+                // then 60s), and pause entirely while the app is backgrounded / this cell is scrolled off.
+                TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: ageRefreshInterval(updatedAt)),
+                                                      paused: !animationsActive)) { ctx in
                     Text(label + " · " + relativeAge(updatedAt, now: ctx.date))
                 }
             } else {
@@ -223,18 +226,13 @@ private struct StatusPill: View {
     }
 }
 
-/// A breathing pulse dot while the card is live (running/waiting), static otherwise.
+/// A breathing pulse dot while the card is live (running/waiting), static otherwise. The phone dot is
+/// opacity-only (no scale on a 7px dot); `PulseDot` carries the shared idle-CPU gating.
 private struct StatusDot: View {
     let sem: SemColor
     let live: Bool
-    @State private var on = false
     var body: some View {
-        Circle().fill(sem.dot).frame(width: 7, height: 7)
-            .opacity(live ? (on ? 0.4 : 1) : 1)
-            .onAppear {
-                guard live else { return }
-                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { on = true }
-            }
+        PulseDot(color: sem.dot, size: 7, active: live, dim: 0.4, scaleTo: nil)
     }
 }
 

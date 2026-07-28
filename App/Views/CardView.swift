@@ -17,6 +17,8 @@ struct CardView: View {
 
     @EnvironmentObject var model: BoardModel
     @Environment(\.theme) var theme: Theme
+    /// Idle-CPU gate — false while the window is occluded/background, which pauses this card's age clock.
+    @Environment(\.animationsActive) private var animationsActive
 
     /// Transient state for the id watermark: the post-copy checkmark flash, the pointer being over
     /// the card (which wakes the id), and over the id itself (which fills its chip).
@@ -54,7 +56,10 @@ struct CardView: View {
     /// Cadence follows the card's AGE (1 Hz while the stamp still reads in seconds, then once a
     /// minute), which is strictly finer than the minute resolution the attention labels need.
     var body: some View {
-        TimelineView(.periodic(from: .now, by: ageRefreshInterval(task.phaseChangedAt))) { ctx in
+        // Pausable so an occluded/background window stops the per-card, board-wide re-layout this clock
+        // drives; it re-renders immediately on the way back (see PausableTimelineSchedule).
+        TimelineView(PausableTimelineSchedule(.periodic(from: .now, by: ageRefreshInterval(task.phaseChangedAt)),
+                                              paused: !animationsActive)) { ctx in
             cardBody(now: ctx.date)
         }
     }
@@ -185,7 +190,7 @@ struct CardView: View {
     private func pill(_ rung: L1Rung, now: Date) -> some View {
         let age = relativeAge(task.phaseChangedAt, now: now)
         return HStack(spacing: 6) {
-            BreathingDot(color: sem.dot, size: 6, active: isRunning || isWaiting)
+            PulseDot(color: sem.dot, size: 6, active: isRunning || isWaiting)
             Text(rung.showsStateWord ? "\(ds.label) · \(age)" : age)
                 .font(F.ui(10.5, .semibold))
                 .tracking(0.0525)
@@ -423,31 +428,12 @@ private extension View {
     }
 }
 
-/// A breathing pulse dot (ccPulse: opacity 1↔.35, scale 1↔.78).
-private struct BreathingDot: View {
-    let color: Color
-    let size: CGFloat
-    var active: Bool
-    @State private var on = false
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .opacity(active ? (on ? 0.35 : 1) : 1)
-            .scaleEffect(active ? (on ? 0.78 : 1) : 1)
-            .onAppear {
-                guard active else { return }
-                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
-                    on = true
-                }
-            }
-    }
-}
-
-/// A 2px running shimmer bar: transparent → green → transparent, sweeping horizontally.
+/// A 2px running shimmer bar: transparent → green → transparent, sweeping horizontally. The sweep runs
+/// only while the window is being looked at (`\.animationsActive`) — an occluded/background board, or a
+/// card scrolled out of the lazy column, parks it at rest instead of driving a perpetual CA transaction.
 private struct ShimmerBar: View {
     let color: Color
+    @Environment(\.animationsActive) private var animationsActive
     @State private var phase: CGFloat = -1
 
     var body: some View {
@@ -461,11 +447,22 @@ private struct ShimmerBar: View {
             .opacity(0.9)
             .offset(x: phase * geo.size.width)
             .clipped()
-            .onAppear {
-                withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
-                    phase = 1
-                }
-            }
+            .onAppear { sync() }
+            .onDisappear { park() }
+            .onChange(of: animationsActive) { _, _ in sync() }
         }
+    }
+
+    private func sync() {
+        if animationsActive {
+            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { phase = 1 }
+        } else {
+            park()
+        }
+    }
+
+    /// Settle back to the left edge without a repeat, which ends the perpetual sweep.
+    private func park() {
+        withAnimation(.easeOut(duration: 0.2)) { phase = -1 }
     }
 }
