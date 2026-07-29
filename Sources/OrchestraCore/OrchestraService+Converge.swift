@@ -152,6 +152,16 @@ extension OrchestraService {
         let env = withEpoch(adapter.env, epoch)   // stamp the current generation into the session env
         let trustDecision = await resolveTrust(origin: task.origin, cwd: task.cwd, repo: task.repo)
         runtime[id]?.pendingReadiness = nil   // start clean so only THIS bring-up's signal can confirm it
+        // Mark this generation as owing a MACHINE opening turn iff the flavor delivers a daemon-supplied
+        // positional (a spawn/handoff seed, or a wake-delivered inbox batch). Its `promptText` must not be
+        // mistaken for a direct human turn by the human-paced setter — see `CardRuntime.seedTurnEpoch` and
+        // the report path. A promptless blank launch delivers no positional, so its first prompt IS human.
+        let deliversMachineTurn: Bool
+        switch flavor {
+        case .blank(_, let p): deliversMachineTurn = !(p ?? "").isEmpty
+        case .resume(let s):   deliversMachineTurn = !(s ?? "").isEmpty
+        }
+        runtime[id]?.seedTurnEpoch = deliversMachineTurn ? epoch : nil
 
         let argv: [String]
         // Startup-abort retry spec (folded from spawn-startup-abort-classification): captured only for a

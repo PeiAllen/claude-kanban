@@ -419,17 +419,43 @@ struct ReportTests {
         #expect(await humanPaced(env.svc, t.id) == true)
     }
 
-    /// A restart is a session replacement — it resets the card to the launching baseline (agent-paced),
-    /// so a card a human WAS pacing does not carry the exemption into a fresh blank session it may then
-    /// be set down in front of.
-    @Test("a restart resets humanPaced to false")
-    func humanPacedResetByRestart() async throws {
-        let (env, t) = try await spawned()
-        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
-        try await env.svc.report(t.id, StatusReport(promptText: "human"))
+    /// The launch's own MACHINE opening turn — a spawn/handoff seed, or a wake-delivered inbox batch —
+    /// reaches the report path as a `promptText`, and a resume lands `.waiting(.humanTurn)`, so without the
+    /// seed marker it would wrongly mark agent work human-paced (breaking the safety-net stall). The FIRST
+    /// stamped prompt of the launch generation is consumed as that machine turn; only the NEXT is human.
+    @Test("the launch's machine seed prompt is not human-paced; a later human prompt is")
+    func humanPacedSkipsTheMachineSeedTurn() async throws {
+        let (env, t) = try await spawned()      // spawns WITH a prompt → finishLaunch owes a machine turn at this epoch
+        let epoch = t.sessionEpoch
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        // Stamped with the launch epoch: this IS the seed's own prompt, even though it lands on the idle wait.
+        try await env.svc.report(t.id, StatusReport(promptText: "the machine seed"), observedEpoch: epoch)
+        #expect(await humanPaced(env.svc, t.id) == false)
+        // Marker consumed → the next prompt (after the turn concludes) is a genuine human turn.
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)), observedEpoch: epoch)
+        try await env.svc.report(t.id, StatusReport(promptText: "a real human follow-up"), observedEpoch: epoch)
         #expect(await humanPaced(env.svc, t.id) == true)
-        let relaunching = try await env.svc.restart(t.id)
-        #expect(relaunching.humanPaced == false)
+    }
+
+    /// humanPaced flips false only on a fresh AGENT-driving turn. A handoff SEED is exactly that, so it
+    /// clears the bit; a blank restart is NOT a new driver — it lands `awaitingFirstPrompt` (its own
+    /// exemption) — so it PRESERVES humanPaced. (The same preserve rule is what keeps an involuntary
+    /// daemon-reboot relaunch from re-stalling a human's cards.)
+    @Test("a handoff seed clears humanPaced; a blank restart preserves it")
+    func humanPacedClearedByHandoffNotBlankRestart() async throws {
+        func drive(_ env: ReturnType, _ id: UUID) async throws {
+            try await env.svc.report(id, StatusReport(run: .waiting(.humanTurn)))
+            try await env.svc.report(id, StatusReport(promptText: "human"))
+        }
+        let (env1, t1) = try await spawned()
+        try await drive(env1, t1.id)
+        let relaunching = try await env1.svc.restart(t1.id)           // blank restart → not a new driver
+        #expect(relaunching.humanPaced == true)
+
+        let (env2, t2) = try await spawned()
+        try await drive(env2, t2.id)
+        let handed = try await env2.svc.resume(t2.id, seed: "handoff context")   // seed → agent-driving
+        #expect(handed.humanPaced == false)
     }
 
     /// The `send` path classifies by delivery provenance: a human-sourced send makes the card human-paced;

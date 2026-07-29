@@ -121,8 +121,12 @@ extension OrchestraService {
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
             t.deadReason = nil; t.deadDetail = nil; t.deadResource = nil
-            t.humanPaced = false   // the launching context is the seed/handoff, not a human turn (see `Task.humanPaced`)
-            if let seed { t.pendingSeed = seed }   // folded handoff/wake seed rides the relaunch (carried #1)
+            // Human-pacing flips false only on a fresh AGENT-driving turn. A SEEDED resume (a handoff) is
+            // exactly that — the seed is the agent context that drives the next turn — so it clears the bit.
+            // A SEEDLESS resume is an idle-wake/recovery relaunch (no new driver), so it PRESERVES it: a
+            // human `send` already stamped the card human-paced before this wake, and clearing here would
+            // undo that (and re-stall the human's own cards on every recovery). See `Task.humanPaced`.
+            if let seed { t.pendingSeed = seed; t.humanPaced = false }   // folded handoff/wake seed rides the relaunch (carried #1)
             if let override {
                 // `pendingModel` is the launch intent and the ONLY thing `finishLaunch` trusts; `model` is
                 // set purely so the board reflects the re-seat at once. If the dying session's last
@@ -198,7 +202,9 @@ extension OrchestraService {
             $0.deadResource = nil
             $0.desc = ""
             $0.pendingSeed = nil   // a blank restart carries no seed
-            $0.humanPaced = false  // fresh session → agent-paced until a human drives it (see `Task.humanPaced`)
+            // humanPaced is deliberately NOT reset here: a blank restart is not a new driver, and it lands
+            // `awaitingFirstPrompt`, which is itself a stall exemption — the card is the human's move until
+            // they prompt it, at which point the report path re-derives pacing. See `Task.humanPaced`.
             if let override {      // re-seat: the launch intent (see `resume`), not just the display model
                 $0.pendingModel = override.id
                 $0.model = override
@@ -240,7 +246,8 @@ extension OrchestraService {
         if resumable {
             _ = await transition(id, to: .creatingWorktree, mutate: {
                 $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil
-                $0.humanPaced = false   // a reopen re-launches: agent-paced until a human drives it (see `Task.humanPaced`)
+                // A resumable reopen restores the card as it was — not a new driver — so humanPaced is
+                // preserved (see `Task.humanPaced`; the reset belongs only to a seeded handoff / agent send).
             })
         } else {
             let freshId: String?
@@ -260,7 +267,8 @@ extension OrchestraService {
                 $0.deadReason = nil
                 $0.deadDetail = nil
                 $0.deadResource = nil
-                $0.humanPaced = false   // blank reopen: agent-paced until a human drives it (see `Task.humanPaced`)
+                // Blank reopen lands `awaitingFirstPrompt` (itself a stall exemption), so no humanPaced
+                // reset is needed — the card is the human's move until they prompt it. See `Task.humanPaced`.
             })
         }
         guard let reopening = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }

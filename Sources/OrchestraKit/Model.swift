@@ -588,12 +588,16 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// The card's last DRIVING turn was a DIRECT human interaction — a prompt typed into a session that
     /// was idle-waiting on the human, or a human-sourced `send`. TRUE ⇒ the card is human-paced, and the
     /// stall row exempts it: a card a human is pacing must never amber "stalled", however long it idles
-    /// (see [the attention system](../../docs/09-design-decisions.md#the-attention-system)). FALSE for the spawn seed
-    /// and for any agent/inbox-delivered turn. It resets to FALSE at every session (re)launch — the
-    /// launching context is a seed/handoff, not a human turn — so a fresh session is agent-paced (and
-    /// stall-eligible) until a human drives it; that also means a blank restart the human sets down can
-    /// amber after `T`, the deliberate fail-safe (biasing toward SHOWING a stall never hides forgotten
-    /// work, the whole point of the row). The terminal-typing half rides Claude's `UserPromptSubmit` hook
+    /// (see [the attention system](../../docs/09-design-decisions.md#the-attention-system)). FALSE for the
+    /// spawn seed — a machine opening positional (seed / wake-delivered inbox) reaches the report path as a
+    /// `promptText` and a resume lands `.waiting(.humanTurn)`, so `finishLaunch` marks that generation and
+    /// the report path consumes the marker on its first prompt instead of reading the seed as a human turn.
+    /// It flips back to FALSE only on a fresh AGENT-driving turn — an agent/inbox delivery (a
+    /// `.card`-sourced `send`) or a handoff SEED — and is otherwise PRESERVED, including across a blank
+    /// restart and an involuntary daemon-reboot relaunch: a reboot is not a driving turn, and re-clearing
+    /// on every recovery would re-stall a human's own cards. A blank (re)launch needs no reset because it
+    /// lands `awaitingFirstPrompt`, itself a stall exemption, until a human prompts it. The terminal-typing
+    /// half rides Claude's `UserPromptSubmit` hook
     /// (`promptText`); Codex (`fileTail`) has no event distinguishing a human turn from an injected one, so
     /// a Codex card relies on the agent-agnostic `send`-path signal alone. Broadcast-only,
     /// decode-with-default (mirrors `hasPendingDelivery`); the client stall fold is its only consumer.

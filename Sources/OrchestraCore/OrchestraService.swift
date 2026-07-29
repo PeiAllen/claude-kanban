@@ -739,9 +739,16 @@ public actor OrchestraService {
         case .card:      paced = false
         case .orchestra: paced = nil
         }
-        if let paced, t.humanPaced != paced,
-           let (saved, rev) = try? await store.update(t.id, { $0.humanPaced = paced }) {
-            emit(.taskUpserted(saved), rev: rev)
+        if let paced {
+            // Compare INSIDE the update closure (against the live card, not the pre-await snapshot `t`, which
+            // could be stale after `enqueueIfUnknown`/`clearStuckIfSet` under a concurrent send). `store.update`
+            // no-ops when nothing changes, so a redundant same-value send stays inbox-only (no rev, no emit).
+            var flipped = false
+            if let (saved, rev) = try? await store.update(t.id, { c in
+                if c.humanPaced != paced { c.humanPaced = paced; flipped = true }
+            }), flipped {
+                emit(.taskUpserted(saved), rev: rev)
+            }
         }
         await wake(t.id)
         return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)

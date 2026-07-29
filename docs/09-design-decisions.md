@@ -1200,13 +1200,19 @@ direct human interaction — a chat card the owner stepped away from, a planning
 waiting on its own long exec after the human kicked it off. The discriminator is who drove the card
 **last**. The daemon carries it as
 `Task.humanPaced` (a wire-additive bit the client reads; the predicate takes it as a parameter): a prompt
-typed into a session that was idle-*waiting* on the human, or a human-sourced `send`, sets it; the spawn
-seed, an agent/inbox delivery, and every session (re)launch clear it — so a fresh session is agent-paced
-until a human drives it. That last rule is the deliberate fail-safe for a human-initiated blank restart:
-biasing an ambiguous case toward *showing* a stall can only ever surface a card early, never hide the
-forgotten work the row exists to catch. The launch's own seed prompt is excluded for free — it lands on a
-card that went straight to `.running`, never through the idle human-wait — so an agent-work card keeps its
-safety-net stall.
+typed into a session that was idle-*waiting* on the human, or a human-sourced `send`, sets it. It flips
+back to false only on a fresh **agent-driving** turn — an agent/inbox delivery (a `.card`-sourced `send`)
+or a handoff **seed** — and is otherwise **preserved**. Deliberately, a session (re)launch does *not*
+clear it on its own: an involuntary daemon-reboot relaunch is not a driving turn, and re-clearing on every
+recovery would re-stall a human's own cards after each restart (the very amber this row is retiring); a
+blank restart or reopen needs no reset either, because it lands `awaitingFirstPrompt` — the first
+exemption form — and stays exempt until a human prompts it. The **machine opening turn is the subtle
+case**: a spawn/handoff seed, or a wake-delivered inbox batch, reaches the report path as a `promptText`
+*exactly* like a typed prompt, and a resume lands `.waiting(.humanTurn)` (see `landing(of:)`) — so the
+seed would satisfy the gate and wrongly exempt agent work. `finishLaunch` marks the generation that owes
+such a turn; the report path consumes that marker on the generation's first prompt instead of reading it
+as human, so an agent-work card keeps its safety-net stall while a genuine follow-up (no seed owed) still
+sets the bit.
 
 **The terminal-typing half of the signal is Claude-only, by capability, not oversight.** It rides Claude's
 `UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex is a

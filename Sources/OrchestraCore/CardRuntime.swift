@@ -104,6 +104,13 @@ struct CardRuntime {
 
     /// F3 runaway-inject guard: consecutive auto-injects since the last genuine user prompt.
     var injectCount: Int = 0
+    /// The generation that owes a MACHINE opening turn: a launch whose flavor carries a positional the
+    /// daemon supplied (a spawn/handoff seed, or a wake-delivered inbox batch). That positional reaches
+    /// the report path as a `promptText` exactly like a typed prompt — and a resume lands
+    /// `.waiting(.humanTurn)` — so the human-paced setter consumes this marker on the FIRST prompt of the
+    /// generation instead of mistaking the seed for a direct human turn (which would wrongly exempt agent
+    /// work from the stall row). Set in `finishLaunch`, consumed once by `report()`. nil ⇒ no seed owed.
+    var seedTurnEpoch: Int? = nil
     /// Per-card monotonic seq guard for snapshot reports.
     var lastSeq: UInt64 = 0
     /// The reconciler's last observed tmux session state (boardSnapshot cache).
