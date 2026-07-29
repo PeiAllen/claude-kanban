@@ -1175,7 +1175,7 @@ the rest into a `+N`):
 | 2 | permission | `.live(.waiting(.permission))` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T`, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
+| 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
 | 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
@@ -1183,12 +1183,25 @@ merges it (a grey ⏱, quiet — the owning agent's business, not yours), so onl
 routes to the human. It never degrades into a stall, because a declared state explains the quiet.
 
 **Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
-the card must be idle; its attached agents settled; nothing in the card, its reviewers, *or* its subtree
-holding queued work (a descendant with a pending delivery is imminently active, and must not let an
-ancestor announce "wave done"); no descendant active; no declared state covering it; and nothing in the
-**constellation** — the card plus its attached agents — changed for longer than `T`. Descendants gate by
-*activity* only and never move that clock, because "is my subtree busy" and "how long have I been quiet"
-are different questions.
+the card must be idle *and not human-paced*; its attached agents settled; nothing in the card, its
+reviewers, *or* its subtree holding queued work (a descendant with a pending delivery is imminently
+active, and must not let an ancestor announce "wave done"); no descendant active; no declared state
+covering it; and nothing in the **constellation** — the card plus its attached agents — changed for
+longer than `T`. Descendants gate by *activity* only and never move that clock, because "is my subtree
+busy" and "how long have I been quiet" are different questions.
+
+**The human-paced exemption** is the first gate, and an absolute one: a card whose last *driving* turn was
+a direct human interaction never stalls, in any column, however long it idles — a chat card the owner
+stepped away from, or a planning card left for later, is being paced by a human, and the quiet is theirs
+to end, not a fault to flag. The discriminator is who drove the card **last**. The daemon carries it as
+`Task.humanPaced` (a wire-additive bit the client reads; the predicate takes it as a parameter): a prompt
+typed into a session that was idle-*waiting* on the human, or a human-sourced `send`, sets it; the spawn
+seed, an agent/inbox delivery, and every session (re)launch clear it — so a fresh session is agent-paced
+until a human drives it. That last rule is the deliberate fail-safe for a human-initiated blank restart:
+biasing an ambiguous case toward *showing* a stall can only ever surface a card early, never hide the
+forgotten work the row exists to catch. The launch's own seed prompt is excluded for free — it lands on a
+card that went straight to `.running`, never through the idle human-wait — so an agent-work card keeps its
+safety-net stall.
 
 Two rules keep one silence from producing several ambers. **Attached agents never own a stall** — a
 parked reviewer surfaces through its target's constellation, so an active target defeats the conjunction
@@ -1219,7 +1232,7 @@ priority slot. It flows into both folds and every desktop surface automatically.
 queue is NOT yet fed by this registry — it still derives its own older reason set in `NeedsYouQueue`, and
 adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
 
-**Two rungs are deliberately deferred, and both are one edit away.** The *detected* sibling of row 4 —
+**One rung is still deliberately deferred, and it is one edit away.** The *detected* sibling of row 4 —
 an in-terminal choices box (Claude's `AskUserQuestion`), which blocks mid-turn exactly like a permission
 wait and self-clears by state — funnels to the same "question" amber. It is deferred because the daemon
 can't yet *detect* an open box, not because none exists: `AskUserQuestion` is real and bridged Claude
@@ -1229,11 +1242,7 @@ unverified (a freshly-launched non-bridged CLI didn't even expose the tool, so t
 observe). Codex has no equivalent — its approval prompt is already row 2. So row 4 ships on the declared
 verb alone until a detectable producer is confirmed; the natural place that lands is the agent-channels
 work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
-status/hook surface a box signal would ride. Likewise the stall row's **human-paced exemption** — quiet that is a human's
-deliberate pacing rather than a stuck agent — needs a human-vs-injected turn signal that does not exist
-in broadcast state; the predicate takes the flag as a parameter so it threads in when one does. The
-accepted cost is that a card a human set down can amber after `T`; the alternative was synthesising a
-turn-source bit through the fenced report/delivery path for an edge case.
+status/hook surface a box signal would ride.
 
 ## Shipped feature history
 

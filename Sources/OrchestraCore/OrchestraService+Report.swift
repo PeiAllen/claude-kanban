@@ -144,6 +144,14 @@ extension OrchestraService {
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
                 resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
+                // Human-pacing: a prompt typed into a session that was idle-WAITING on the human is a DIRECT
+                // human turn — it paces the card, so the stall row must exempt it forever after (docs/09).
+                // Gated on the BEFORE phase being the idle human-wait, which is exactly what excludes the
+                // launch's own seed prompt: a spawn/handoff seed is submitted on a card that went straight
+                // launching → `.running` (prompt in flight), never through `.waiting(.humanTurn)`, so an
+                // agent-work card keeps its safety-net stall. Fenced like the writes below so a stale
+                // generation's delayed prompt can't mark a card human-paced.
+                if before.waitReason == .humanTurn, attributable { task.humanPaced = true }
                 // Both writes below are generation-fenced (see `staleGeneration`): a delayed prompt from the
                 // session a `restart` is replacing must neither clear the incoming generation's
                 // `awaitingFirstPrompt` — the RelaunchStepper would then find neither a transcript nor

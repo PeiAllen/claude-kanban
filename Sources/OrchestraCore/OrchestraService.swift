@@ -727,6 +727,22 @@ public actor OrchestraService {
         // owners), else a stuck cold card would get exactly one doomed wake instead of a full retry budget.
         runtime[t.id]?.deliveryAttempt = nil
         await clearStuckIfSet(t.id)
+        // Who is pacing the card now (stall exemption — see `Task.humanPaced`). A human-sourced send makes
+        // it human-paced; another card/agent delivering work makes it agent-paced (and flips a card a human
+        // WAS pacing back to stall-eligible). A system (`.orchestra`) delivery — teardown nudges and the
+        // like — carries no pacing signal, so it leaves the flag untouched. `InboxMessageSource`, not
+        // `ActivitySource`, is the classifier: it is the one that actually carries a `.human` case (the
+        // transport enum has none), set at the `send` verb boundary from `senderCard`.
+        let paced: Bool?
+        switch sender {
+        case .human:     paced = true
+        case .card:      paced = false
+        case .orchestra: paced = nil
+        }
+        if let paced, t.humanPaced != paced,
+           let (saved, rev) = try? await store.update(t.id, { $0.humanPaced = paced }) {
+            emit(.taskUpserted(saved), rev: rev)
+        }
         await wake(t.id)
         return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)
     }

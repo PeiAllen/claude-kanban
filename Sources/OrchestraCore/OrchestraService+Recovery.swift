@@ -121,6 +121,7 @@ extension OrchestraService {
         // again and an earlier attempt's finalize is dropped by the epoch fence (single-winner discipline).
         _ = await transition(id, to: .relaunching, mutate: { t in
             t.deadReason = nil; t.deadDetail = nil; t.deadResource = nil
+            t.humanPaced = false   // the launching context is the seed/handoff, not a human turn (see `Task.humanPaced`)
             if let seed { t.pendingSeed = seed }   // folded handoff/wake seed rides the relaunch (carried #1)
             if let override {
                 // `pendingModel` is the launch intent and the ONLY thing `finishLaunch` trusts; `model` is
@@ -197,6 +198,7 @@ extension OrchestraService {
             $0.deadResource = nil
             $0.desc = ""
             $0.pendingSeed = nil   // a blank restart carries no seed
+            $0.humanPaced = false  // fresh session → agent-paced until a human drives it (see `Task.humanPaced`)
             if let override {      // re-seat: the launch intent (see `resume`), not just the display model
                 $0.pendingModel = override.id
                 $0.model = override
@@ -238,6 +240,7 @@ extension OrchestraService {
         if resumable {
             _ = await transition(id, to: .creatingWorktree, mutate: {
                 $0.archived = false; $0.deadReason = nil; $0.deadDetail = nil; $0.deadResource = nil
+                $0.humanPaced = false   // a reopen re-launches: agent-paced until a human drives it (see `Task.humanPaced`)
             })
         } else {
             let freshId: String?
@@ -257,6 +260,7 @@ extension OrchestraService {
                 $0.deadReason = nil
                 $0.deadDetail = nil
                 $0.deadResource = nil
+                $0.humanPaced = false   // blank reopen: agent-paced until a human drives it (see `Task.humanPaced`)
             })
         }
         guard let reopening = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }

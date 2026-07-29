@@ -393,6 +393,56 @@ struct ReportTests {
         #expect(acts.contains { $0.kind == .statusChanged })
         #expect(!acts.contains { $0.kind == .statusChanged && $0.text.contains("ctx") })
     }
+
+    // MARK: - humanPaced (the stall-row human-pacing signal)
+
+    private func humanPaced(_ svc: OrchestraService, _ id: UUID) async -> Bool {
+        (await svc.list().first { $0.id == id })?.humanPaced ?? false
+    }
+
+    /// A prompt typed into an idle-WAITING session is a direct human turn and marks the card human-paced;
+    /// the launch's own seed prompt does not, because it lands while the card is `.running` (prompt in
+    /// flight) — never through `.waiting(.humanTurn)`. That split is what keeps an agent-work card's
+    /// safety-net stall alive while exempting a card a human is actually pacing.
+    @Test("a prompt on an idle-waiting card sets humanPaced; a prompt while running does not")
+    func humanPacedSetOnlyByAnIdleHumanTurn() async throws {
+        let (env, t) = try await spawned()
+        #expect(t.humanPaced == false)                                   // a fresh spawn seed ⇒ agent-paced
+        // A prompt echoed while the card is RUNNING (the launch seed being submitted) is not a fresh human
+        // turn: the card never sat in `.waiting(.humanTurn)`, so it stays agent-paced.
+        try await env.svc.report(t.id, StatusReport(run: .running))
+        try await env.svc.report(t.id, StatusReport(promptText: "seed echo"))
+        #expect(await humanPaced(env.svc, t.id) == false)
+        // Once the turn concludes and the card idle-waits, a prompt IS a direct human turn.
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        try await env.svc.report(t.id, StatusReport(promptText: "human follow-up"))
+        #expect(await humanPaced(env.svc, t.id) == true)
+    }
+
+    /// A restart is a session replacement — it resets the card to the launching baseline (agent-paced),
+    /// so a card a human WAS pacing does not carry the exemption into a fresh blank session it may then
+    /// be set down in front of.
+    @Test("a restart resets humanPaced to false")
+    func humanPacedResetByRestart() async throws {
+        let (env, t) = try await spawned()
+        try await env.svc.report(t.id, StatusReport(run: .waiting(.humanTurn)))
+        try await env.svc.report(t.id, StatusReport(promptText: "human"))
+        #expect(await humanPaced(env.svc, t.id) == true)
+        let relaunching = try await env.svc.restart(t.id)
+        #expect(relaunching.humanPaced == false)
+    }
+
+    /// The `send` path classifies by delivery provenance: a human-sourced send makes the card human-paced;
+    /// another card (an agent/orchestrator) delivering work flips it back to agent-paced.
+    @Test("a human send marks the card human-paced; a card send clears it")
+    func humanPacedBySendProvenance() async throws {
+        let (env, t) = try await spawned()
+        try await env.svc.report(t.id, StatusReport(run: .running))      // keep the opportunistic wake a no-op
+        _ = try await env.svc.send(t.id, "hey", sender: .human)
+        #expect(await humanPaced(env.svc, t.id) == true)
+        _ = try await env.svc.send(t.id, "delivering work", sender: .card(id: UUID(), title: "orchestrator"))
+        #expect(await humanPaced(env.svc, t.id) == false)
+    }
 }
 
 @Suite("report field-delta") struct ReportDeltaTests {

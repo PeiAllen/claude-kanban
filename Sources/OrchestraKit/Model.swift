@@ -585,6 +585,17 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// hasLiveLease`). Broadcast-only, maintained in the per-tick delivery reconciler — a later stall-
     /// detection slice reads it to keep a card with pending work from ambering. Never authoritative state.
     public var hasPendingDelivery: Bool
+    /// The card's last DRIVING turn was a DIRECT human interaction — a prompt typed into a session that
+    /// was idle-waiting on the human, or a human-sourced `send`. TRUE ⇒ the card is human-paced, and the
+    /// stall row exempts it: a card a human is pacing must never amber "stalled", however long it idles
+    /// (see [the attention system](../../docs/09-design-decisions.md#the-attention-system)). FALSE for the spawn seed
+    /// and for any agent/inbox-delivered turn. It resets to FALSE at every session (re)launch — the
+    /// launching context is a seed/handoff, not a human turn — so a fresh session is agent-paced (and
+    /// stall-eligible) until a human drives it; that also means a blank restart the human sets down can
+    /// amber after `T`, the deliberate fail-safe (biasing toward SHOWING a stall never hides forgotten
+    /// work, the whole point of the row). Broadcast-only, decode-with-default (mirrors
+    /// `hasPendingDelivery`); the client stall fold is its only consumer.
+    public var humanPaced: Bool
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
     public var initialPrompt: String  // the spawn prompt, persisted verbatim (title seed + Recovery panel)
@@ -630,6 +641,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         diffStat: DiffStat? = nil,
         treeStat: TreeStat? = nil,
         hasPendingDelivery: Bool = false,
+        humanPaced: Bool = false,
         archived: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -671,6 +683,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         self.diffStat = diffStat
         self.treeStat = treeStat
         self.hasPendingDelivery = hasPendingDelivery
+        self.humanPaced = humanPaced
         self.archived = archived
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -691,7 +704,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         case agentId, model, startIn, column, order, deadReason, deadDetail, deadResource
         case phase, sessionEpoch, phaseChangedAt, sessionDiscoverySince, pendingSeed, pendingModel, spawnBase
         case deliveryStuckSince
-        case ctxPct, diffStat, treeStat, hasPendingDelivery, agentSessionId, priorSessionIds, initialPrompt, archived
+        case ctxPct, diffStat, treeStat, hasPendingDelivery, humanPaced, agentSessionId, priorSessionIds, initialPrompt, archived
         case createdAt, updatedAt
         // Decode-only legacy keys — read to migrate a pre-Stage-2 record; never encoded.
         case status, waitReason
@@ -747,6 +760,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
         self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
         self.hasPendingDelivery = try c.decodeIfPresent(Bool.self, forKey: .hasPendingDelivery) ?? false
+        self.humanPaced = try c.decodeIfPresent(Bool.self, forKey: .humanPaced) ?? false
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""
@@ -833,6 +847,7 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(diffStat, forKey: .diffStat)
         try c.encodeIfPresent(treeStat, forKey: .treeStat)
         try c.encode(hasPendingDelivery, forKey: .hasPendingDelivery)
+        try c.encode(humanPaced, forKey: .humanPaced)
         try c.encodeIfPresent(agentSessionId, forKey: .agentSessionId)
         try c.encode(priorSessionIds, forKey: .priorSessionIds)
         try c.encode(initialPrompt, forKey: .initialPrompt)
@@ -886,6 +901,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // observes no change and writes nothing.
         apply(\.pendingQuestion)
         apply(\.awaitingFirstPrompt)
+        // The human-turn signal report() raises when a prompt lands on an idle-waiting card. Delta-gated
+        // like every field here: report() only ever sets it TRUE, so an ordinary telemetry snapshot (no
+        // change) writes nothing and never clobbers a FALSE a concurrent (re)launch reset.
+        apply(\.humanPaced)
         apply(\.title)
         apply(\.titleSource)       // the `.explicit` pin a mirrored /rename sets
         apply(\.lastSessionName)   // the mirror's delta baseline
