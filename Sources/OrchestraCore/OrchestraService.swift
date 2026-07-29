@@ -546,7 +546,11 @@ public actor OrchestraService {
             sessionEpoch: 1, phaseChangedAt: Date(),
             pendingSeed: nil, spawnBase: spawnBaseCarrier,
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
-            parentBranch: nil            // materialize re-derives + records the parent link from `spawnBase`
+            parentBranch: nil,           // materialize re-derives + records the parent link from `spawnBase`
+            // A PROMPTLESS spawn (no prompt AND no seed ⇒ awaitingFirstPrompt) is a "New agent" card the
+            // human made and hasn't moved on yet — human-paced by construction (its quiet is the human's
+            // move). A seeded/prompted spawn is agent work: not human-paced. See `Task.humanPaced`.
+            humanPaced: awaitingFirstPrompt
         )
         // Atomic dedup: if a concurrent same-id spawn won the race, `wasCreated == false` → return its card
         // AS-IS and emit nothing (idempotent). Scratch dir is id-named + idempotent and a worktree is

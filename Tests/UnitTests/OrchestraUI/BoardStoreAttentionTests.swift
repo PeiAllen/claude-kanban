@@ -56,11 +56,15 @@ import Foundation
         #expect(board([agentPaced]).ownAttention(of: agentPaced, now: late).contains { $0.reason == .stalled })
     }
 
-    /// The second human-pacing form, through the fold: a never-prompted "New agent" card (the freeform
-    /// dock's amber wall) is exempt by construction, from the `awaitingFirstPrompt` bit alone.
-    @Test func stall_awaitingFirstPromptCardIsExemptThroughTheFold() {
-        let newAgent = card("01", branch: "feat/x", awaitingFirstPrompt: true)
+    /// The fold keys on `humanPaced` alone: a "New agent" card is exempt because the daemon set
+    /// `humanPaced` at its promptless launch (a `awaitingFirstPrompt` card carries `humanPaced=true`), NOT
+    /// because the fold reads `awaitingFirstPrompt` — a card with `awaitingFirstPrompt=true` but
+    /// `humanPaced=false` (an agent-delivered provisional card) still stalls.
+    @Test func stall_foldKeysOnHumanPacedNotAwaitingFirstPrompt() {
+        let newAgent = card("01", branch: "feat/x", humanPaced: true, awaitingFirstPrompt: true)
         #expect(!board([newAgent]).ownAttention(of: newAgent, now: late).contains { $0.reason == .stalled })
+        let agentDelivered = card("02", branch: "feat/y", humanPaced: false, awaitingFirstPrompt: true)
+        #expect(board([agentDelivered]).ownAttention(of: agentDelivered, now: late).contains { $0.reason == .stalled })
     }
 
     // MARK: - attached agents never own a stall

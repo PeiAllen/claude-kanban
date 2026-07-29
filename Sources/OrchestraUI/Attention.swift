@@ -139,14 +139,15 @@ public enum Attention {
                                  now: Date,
                                  humanPaced: Bool,
                                  config: Thresholds) -> AttentionSignal? {
-        // 1. Only a concluded card can stall, and never one the human is pacing. Human-pacing has TWO
-        //    forms and both exempt: the card was DRIVEN last by a human (`humanPaced`), or it is still
-        //    AWAITING its first prompt (`awaitingFirstPrompt`) — a "New agent" card the human made and
-        //    hasn't moved on yet is human-paced by construction, and idling indefinitely is legitimate;
-        //    it's the human's move. (A seed-spawned delegated card is NOT awaiting a first prompt — its
-        //    seed is its first turn — so it stays stall-eligible.) This gate also keeps a card that
-        //    RESUMED running while still carrying a stale `mergeStalled` flag out of step 2.
-        guard isIdle(c), !humanPaced, !c.awaitingFirstPrompt else { return nil }
+        // 1. Only a concluded card can stall, and never one the human is pacing. `humanPaced` carries BOTH
+        //    forms of that as one bit: the human DROVE it last (typed/sent), or it is a card awaiting the
+        //    human's first move (a promptless "New agent" card — the daemon sets the bit at that launch, and
+        //    migrates legacy `awaitingFirstPrompt` cards on decode). A seed-spawned or agent-delivered card
+        //    is NOT human-paced, so it stays stall-eligible — which is what keeps an agent-driven card that
+        //    never cleared `awaitingFirstPrompt` (e.g. a Codex provisional card given work) in the net. This
+        //    gate also keeps a card that RESUMED running while carrying a stale `mergeStalled` flag out of
+        //    step 2.
+        guard isIdle(c), !humanPaced else { return nil }
 
         // 2. `mergeStalled` is a PRE-COMPUTED daemon input, not an emergent quiet: the merge-request
         //    loop already gave up on the parent, so it fires immediately with a sharper label —

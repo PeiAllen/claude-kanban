@@ -165,14 +165,15 @@ import Foundation
         #expect(!reasons(card(), now: late, humanPaced: true).contains { $0.reason == .stalled })
     }
 
-    /// A "New agent" card the human made but hasn't prompted yet is human-paced by construction — its
-    /// quiet is the human's move, not a fault — so it never stalls however long it idles. (The
-    /// screenshot that motivated this: a freeform dock of `awaitingFirstPrompt` cards all ambering.)
-    @Test func stall_awaitingFirstPromptIsExempt() {
-        #expect(!reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
-        // …and a card that HAS been prompted (the default) with no human-pacing still stalls, so the
-        // exemption is exactly the never-prompted case, not a blanket off-switch.
-        #expect(reasons(card(awaitingFirstPrompt: false), now: late).contains { $0.reason == .stalled })
+    /// The exemption is carried by `humanPaced` ALONE — `awaitingFirstPrompt` is NOT consulted by the
+    /// predicate. A "New agent" card the human made but hasn't prompted is exempt because the DAEMON sets
+    /// `humanPaced` at that promptless launch (and migrates legacy provisional cards on decode), not
+    /// because the client reads `awaitingFirstPrompt`. Keeping the predicate single-bit is what lets an
+    /// agent-delivered card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
+    /// still stall: the delivery flips `humanPaced` false, and the sticky flag no longer masks it.
+    @Test func stall_awaitingFirstPromptAloneDoesNotExempt() {
+        #expect(reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
+        #expect(!reasons(card(awaitingFirstPrompt: true), now: late, humanPaced: true).contains { $0.reason == .stalled })
     }
 
     @Test func stall_declaredQuestionSuppressesIt() {

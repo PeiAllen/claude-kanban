@@ -1175,7 +1175,7 @@ the rest into a `+N`):
 | 2 | permission | `.live(.waiting(.permission))` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T` and **not human-paced** (nor awaiting a first prompt), or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
+| 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
 | 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
@@ -1183,7 +1183,7 @@ merges it (a grey ⏱, quiet — the owning agent's business, not yours), so onl
 routes to the human. It never degrades into a stall, because a declared state explains the quiet.
 
 **Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
-the card must be idle, *not human-paced, and not awaiting its first prompt*; its attached agents settled; nothing in the card, its
+the card must be idle and *not human-paced*; its attached agents settled; nothing in the card, its
 reviewers, *or* its subtree holding queued work (a descendant with a pending delivery is imminently
 active, and must not let an ancestor announce "wave done"); no descendant active; no declared state
 covering it; and nothing in the **constellation** — the card plus its attached agents — changed for
@@ -1191,28 +1191,32 @@ longer than `T`. Descendants gate by *activity* only and never move that clock, 
 busy" and "how long have I been quiet" are different questions.
 
 **The human-paced exemption** is the first gate, and an absolute one: a card the human is pacing never
-stalls, in any column, however long it idles. It has **two forms**, and both exempt. The first is a card
-still **awaiting its first prompt** (`awaitingFirstPrompt`) — a "New agent" card the human made and hasn't
-moved on yet, whose quiet is the human's move to make, not a fault to flag; idling indefinitely is
-legitimate. (A seed-spawned delegated card is *not* awaiting a first prompt — its seed is its first turn —
-so it stays stall-eligible, exactly as specced.) The second is a card whose last *driving* turn was a
-direct human interaction — a chat card the owner stepped away from, a planning card left for later, or one
-waiting on its own long exec after the human kicked it off. The discriminator is who drove the card
-**last**. The daemon carries it as
-`Task.humanPaced` (a wire-additive bit the client reads; the predicate takes it as a parameter): a prompt
-typed into a session that was idle-*waiting* on the human, or a human-sourced `send`, sets it. It flips
-back to false only on a fresh **agent-driving** turn — an agent/inbox delivery (a `.card`-sourced `send`)
-or a handoff **seed** — and is otherwise **preserved**. Deliberately, a session (re)launch does *not*
-clear it on its own: an involuntary daemon-reboot relaunch is not a driving turn, and re-clearing on every
-recovery would re-stall a human's own cards after each restart (the very amber this row is retiring); a
-blank restart or reopen needs no reset either, because it lands `awaitingFirstPrompt` — the first
-exemption form — and stays exempt until a human prompts it. The **machine opening turn is the subtle
-case**: a spawn/handoff seed, or a wake-delivered inbox batch, reaches the report path as a `promptText`
-*exactly* like a typed prompt, and a resume lands `.waiting(.humanTurn)` (see `landing(of:)`) — so the
-seed would satisfy the gate and wrongly exempt agent work. `finishLaunch` marks the generation that owes
-such a turn; the report path consumes that marker on the generation's first prompt instead of reading it
-as human, so an agent-work card keeps its safety-net stall while a genuine follow-up (no seed owed) still
-sets the bit.
+stalls, in any column, however long it idles. It is carried by a single wire-additive bit,
+`Task.humanPaced` (the client reads it; the predicate takes it as a parameter), earned **two ways**. The
+card was **driven last by a human** — a prompt typed into a session that was idle-*waiting* on the human,
+or a human-sourced `send` (a chat card the owner stepped away from, a planning card left for later, or one
+waiting on its own long exec after the human kicked it off). *Or* the card is **awaiting the human's first
+move** — a promptless "New agent" card the human made and hasn't moved on yet, whose quiet is the human's
+to end; the daemon sets the bit at that launch, and migrates a legacy `awaitingFirstPrompt` card to it on
+decode (so a board full of already-idle provisional cards goes quiet the moment the field ships, no
+relaunch). Folding both into one bit — rather than also reading `awaitingFirstPrompt` in the predicate —
+is deliberate: `awaitingFirstPrompt` clears only on Claude's `promptText`, so on Codex it is *sticky*, and
+a predicate that trusted it would exempt an agent-driven Codex provisional card forever. Keying on
+`humanPaced` alone means an agent delivery flips the bit false and the card re-enters the net.
+
+It flips back to false only on a fresh **agent-driving** turn — an agent/inbox delivery (a `.card`-sourced
+`send`) or a handoff **seed** — and is **preserved** across a session-preserving relaunch: an involuntary
+daemon-reboot recovery, a seedless idle-wake, a resumable reopen. A reboot is not a driving turn, and
+re-clearing on every recovery would re-stall a human's own cards. A *voluntary blank* (re)launch — a
+promptless spawn, a blank restart/reopen, a `/clear` — instead *sets* the bit true: the card is now
+awaiting the human's first move again, so it is theirs to pace. (A seed-spawned or agent-delivered card is
+never awaiting a first prompt — its seed is its first turn — so it stays stall-eligible, exactly as
+specced.) The **machine opening turn is the subtle case**: a spawn/handoff seed, or a wake-delivered inbox
+batch, reaches the report path as a `promptText` *exactly* like a typed prompt, and a resume lands
+`.waiting(.humanTurn)` (see `landing(of:)`) — so the seed would satisfy the gate and wrongly exempt agent
+work. `finishLaunch` (and the reconciler's stepper-less adopt) marks the generation that owes such a turn;
+the report path consumes that marker on the generation's first prompt instead of reading it as human, so
+an agent-work card keeps its safety-net stall while a genuine follow-up (no seed owed) still sets the bit.
 
 **The terminal-typing half of the signal is Claude-only, by capability, not oversight.** It rides Claude's
 `UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex is a

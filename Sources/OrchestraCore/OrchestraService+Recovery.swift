@@ -202,9 +202,7 @@ extension OrchestraService {
             $0.deadResource = nil
             $0.desc = ""
             $0.pendingSeed = nil   // a blank restart carries no seed
-            // humanPaced is deliberately NOT reset here: a blank restart is not a new driver, and it lands
-            // `awaitingFirstPrompt`, which is itself a stall exemption — the card is the human's move until
-            // they prompt it, at which point the report path re-derives pacing. See `Task.humanPaced`.
+            $0.humanPaced = true   // blank restart lands `awaitingFirstPrompt` — the human's move again (see `Task.humanPaced`)
             if let override {      // re-seat: the launch intent (see `resume`), not just the display model
                 $0.pendingModel = override.id
                 $0.model = override
@@ -267,8 +265,7 @@ extension OrchestraService {
                 $0.deadReason = nil
                 $0.deadDetail = nil
                 $0.deadResource = nil
-                // Blank reopen lands `awaitingFirstPrompt` (itself a stall exemption), so no humanPaced
-                // reset is needed — the card is the human's move until they prompt it. See `Task.humanPaced`.
+                $0.humanPaced = true   // blank reopen lands `awaitingFirstPrompt` — the human's move (see `Task.humanPaced`)
             })
         }
         guard let reopening = await store.get(id) else { throw OrchestraError.unknownTask(id.uuidString) }

@@ -119,6 +119,9 @@ extension OrchestraService {
                     }
                     task.desc = ""
                     task.awaitingFirstPrompt = true
+                    // `/clear` wipes the context and returns the card to awaiting a first prompt — the
+                    // human's move again, so it is human-paced (its quiet is legitimate). See `Task.humanPaced`.
+                    if attributable { task.humanPaced = true }
                     // `/clear` replaces the session's whole context: whatever it was blocked on is gone.
                     // Fenced like the phase write beside it (and unlike `desc`/`awaitingFirstPrompt`,
                     // which are harmless either way) — erasing the incoming generation's question on the

@@ -585,22 +585,24 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// hasLiveLease`). Broadcast-only, maintained in the per-tick delivery reconciler — a later stall-
     /// detection slice reads it to keep a card with pending work from ambering. Never authoritative state.
     public var hasPendingDelivery: Bool
-    /// The card's last DRIVING turn was a DIRECT human interaction — a prompt typed into a session that
-    /// was idle-waiting on the human, or a human-sourced `send`. TRUE ⇒ the card is human-paced, and the
-    /// stall row exempts it: a card a human is pacing must never amber "stalled", however long it idles
-    /// (see [the attention system](../../docs/09-design-decisions.md#the-attention-system)). FALSE for the
-    /// spawn seed — a machine opening positional (seed / wake-delivered inbox) reaches the report path as a
-    /// `promptText` and a resume lands `.waiting(.humanTurn)`, so `finishLaunch` marks that generation and
-    /// the report path consumes the marker on its first prompt instead of reading the seed as a human turn.
-    /// It flips back to FALSE only on a fresh AGENT-driving turn — an agent/inbox delivery (a
-    /// `.card`-sourced `send`) or a handoff SEED — and is otherwise PRESERVED, including across a blank
-    /// restart and an involuntary daemon-reboot relaunch: a reboot is not a driving turn, and re-clearing
-    /// on every recovery would re-stall a human's own cards. A blank (re)launch needs no reset because it
-    /// lands `awaitingFirstPrompt`, itself a stall exemption, until a human prompts it. The terminal-typing
-    /// half rides Claude's `UserPromptSubmit` hook
-    /// (`promptText`); Codex (`fileTail`) has no event distinguishing a human turn from an injected one, so
-    /// a Codex card relies on the agent-agnostic `send`-path signal alone. Broadcast-only,
-    /// decode-with-default (mirrors `hasPendingDelivery`); the client stall fold is its only consumer.
+    /// The card is the human's to PACE, so the stall row exempts it: a human-paced card never ambers
+    /// "stalled", however long it idles (see
+    /// [the attention system](../../docs/09-design-decisions.md#the-attention-system)). ONE bit, TWO ways
+    /// to earn it: the card was DRIVEN last by a human (a prompt typed into an idle-waiting session, or a
+    /// human-sourced `send`), OR it is a card awaiting the human's first move (a promptless "New agent"
+    /// card — `true` at that launch, and legacy `awaitingFirstPrompt` cards migrate to `true` on decode).
+    /// It is `false` for a seed-spawned or agent-delivered card, and flips back to `false` on a fresh
+    /// AGENT-driving turn — an agent/inbox delivery (a `.card`-sourced `send`) or a handoff SEED — so an
+    /// agent-driven card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
+    /// still stalls. It is PRESERVED across a session-preserving relaunch (an involuntary daemon-reboot
+    /// recovery, a seedless idle-wake, a resumable reopen): a reboot is not a driving turn, and re-clearing
+    /// there would re-stall a human's own cards. The launch's own machine opening positional (seed /
+    /// wake-delivered inbox) reaches the report path as a `promptText` and a resume lands
+    /// `.waiting(.humanTurn)`, so `finishLaunch` marks that generation and the report path consumes the
+    /// marker on its first prompt rather than mistaking the seed for a human turn. The terminal-typing
+    /// signal rides Claude's `UserPromptSubmit` hook (`promptText`); Codex (`fileTail`) has no event
+    /// distinguishing a human turn from an injected one, so a Codex card leans on the agent-agnostic launch
+    /// + `send` classification. Broadcast-only, decode-with-default; the client stall fold is its only consumer.
     public var humanPaced: Bool
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
@@ -766,7 +768,11 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
         // cost the badge, never the whole record (`decodeIfPresent` rethrows; FailableTask drops the card).
         self.treeStat = (try? c.decodeIfPresent(TreeStat.self, forKey: .treeStat)) ?? nil
         self.hasPendingDelivery = try c.decodeIfPresent(Bool.self, forKey: .hasPendingDelivery) ?? false
-        self.humanPaced = try c.decodeIfPresent(Bool.self, forKey: .humanPaced) ?? false
+        // Migration: a record predating this field decodes as human-paced IFF it was awaiting its first
+        // prompt — that is exactly the "New agent" card the exemption must cover, and it lets a board full
+        // of already-idle provisional cards go quiet the moment the field ships, without a relaunch. A
+        // legacy already-prompted card decodes `false` and re-derives on its next human turn/send.
+        self.humanPaced = try c.decodeIfPresent(Bool.self, forKey: .humanPaced) ?? self.awaitingFirstPrompt
         self.agentSessionId = try c.decodeIfPresent(String.self, forKey: .agentSessionId)
         self.priorSessionIds = try c.decodeIfPresent([String].self, forKey: .priorSessionIds) ?? []
         self.initialPrompt = try c.decodeIfPresent(String.self, forKey: .initialPrompt) ?? ""

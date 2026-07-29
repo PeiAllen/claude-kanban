@@ -437,25 +437,39 @@ struct ReportTests {
         #expect(await humanPaced(env.svc, t.id) == true)
     }
 
-    /// humanPaced flips false only on a fresh AGENT-driving turn. A handoff SEED is exactly that, so it
-    /// clears the bit; a blank restart is NOT a new driver — it lands `awaitingFirstPrompt` (its own
-    /// exemption) — so it PRESERVES humanPaced. (The same preserve rule is what keeps an involuntary
-    /// daemon-reboot relaunch from re-stalling a human's cards.)
-    @Test("a handoff seed clears humanPaced; a blank restart preserves it")
-    func humanPacedClearedByHandoffNotBlankRestart() async throws {
-        func drive(_ env: ReturnType, _ id: UUID) async throws {
-            try await env.svc.report(id, StatusReport(run: .waiting(.humanTurn)))
-            try await env.svc.report(id, StatusReport(promptText: "human"))
-        }
+    /// A handoff hands the card a fresh AGENT-driving SEED, so it clears human-pacing. A blank restart
+    /// instead lands `awaitingFirstPrompt` — the human's move again — so it SETS human-paced, even on a
+    /// card that was agent-paced (proving it is set, not merely preserved).
+    @Test("a handoff seed clears humanPaced; a blank restart sets it (the human's move)")
+    func humanPacedClearedByHandoffSetByBlankRestart() async throws {
+        // A seeded spawn is agent-paced; a blank restart makes it the human's move.
         let (env1, t1) = try await spawned()
-        try await drive(env1, t1.id)
-        let relaunching = try await env1.svc.restart(t1.id)           // blank restart → not a new driver
+        #expect(t1.humanPaced == false)
+        let relaunching = try await env1.svc.restart(t1.id)
         #expect(relaunching.humanPaced == true)
 
+        // A human-paced card handed a seed (a handoff) becomes agent-paced.
         let (env2, t2) = try await spawned()
-        try await drive(env2, t2.id)
+        try await env2.svc.report(t2.id, StatusReport(run: .waiting(.humanTurn)))
+        try await env2.svc.report(t2.id, StatusReport(promptText: "human"))
+        #expect(await humanPaced(env2.svc, t2.id) == true)
         let handed = try await env2.svc.resume(t2.id, seed: "handoff context")   // seed → agent-driving
         #expect(handed.humanPaced == false)
+    }
+
+    /// A promptless "New agent" spawn is human-paced by construction (the human's first move is pending).
+    /// The BLOCKER-2 case: an agent (`.card`) send delivering work flips it agent-paced, so it is NOT
+    /// permanently exempt — even though `awaitingFirstPrompt` stays set (which on Codex never clears).
+    @Test("a promptless spawn is human-paced; a card send to it makes it agent-paced")
+    func humanPacedPromptlessSpawnFlipsOnAgentDelivery() async throws {
+        let env = TestEnv.make()
+        let repo = TestEnv.repo(env.base)
+        let t = try await TestEnv.spawnAndAwaitLive(env.svc, SpawnInput(id: UUID(), prompt: "", repo: repo, branch: "b"))
+        #expect(t.awaitingFirstPrompt == true)   // promptless ⇒ awaiting the human's first move
+        #expect(t.humanPaced == true)            // …and human-paced by construction
+        try await env.svc.report(t.id, StatusReport(run: .running))   // keep the opportunistic wake a no-op
+        _ = try await env.svc.send(t.id, "do the work", sender: .card(id: UUID(), title: "orchestrator"))
+        #expect(await humanPaced(env.svc, t.id) == false)             // agent delivery ⇒ stall-eligible again
     }
 
     /// The `send` path classifies by delivery provenance: a human-sourced send makes the card human-paced;

@@ -166,8 +166,12 @@ extension OrchestraService {
                         // downstream corrects it — it must derive the landing here. Falls back to `.waiting` if
                         // the adapter is momentarily unavailable (never worse than the old hardcode).
                         let adopted = try? registry.get(t.agentId)
-                        let land = adopted.map { landing(of: deriveLaunchFlavor(t, $0)) }
-                            ?? .waiting(.humanTurn)
+                        let adoptFlavor = adopted.map { deriveLaunchFlavor(t, $0) }
+                        let land = adoptFlavor.map { landing(of: $0) } ?? .waiting(.humanTurn)
+                        // Adopt jumps `.launching→.live` WITHOUT a stepper, so it must also mark a seeded
+                        // opening turn the report path would otherwise read as human — the same COMPANION
+                        // duty as the `pendingSeed` clear below. (Done before the clear, which reads it not.)
+                        if let adoptFlavor { markSeedTurn(t.id, flavor: adoptFlavor, epoch: probed) }
                         // Mirror the Launch/RelaunchStepper's COMPANION cleanup, not just its landing: both
                         // clear `pendingSeed` on the successful `→ live` transition. Adopt jumps straight to
                         // live WITHOUT the stepper, so a crash between "session consumed the seed + came up"
