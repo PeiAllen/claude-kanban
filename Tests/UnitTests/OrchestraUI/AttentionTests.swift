@@ -24,9 +24,11 @@ import Foundation
                       pendingQuestion: PendingQuestion? = nil,
                       ctxPct: Double = 0,
                       hasPendingDelivery: Bool = false,
+                      awaitingFirstPrompt: Bool = false,
                       access: CardAccess = .readWrite,
                       at: Date? = nil) -> Task {
-        Task(id: uuid(id), title: "card-\(id)", pendingQuestion: pendingQuestion,
+        Task(id: uuid(id), title: "card-\(id)", awaitingFirstPrompt: awaitingFirstPrompt,
+             pendingQuestion: pendingQuestion,
              repo: "/repo", branch: "feat/\(id)", cwd: "/repo/.wt/\(id)",
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
@@ -161,6 +163,16 @@ import Foundation
 
     @Test func stall_humanPacedIsExempt() {
         #expect(!reasons(card(), now: late, humanPaced: true).contains { $0.reason == .stalled })
+    }
+
+    /// A "New agent" card the human made but hasn't prompted yet is human-paced by construction — its
+    /// quiet is the human's move, not a fault — so it never stalls however long it idles. (The
+    /// screenshot that motivated this: a freeform dock of `awaitingFirstPrompt` cards all ambering.)
+    @Test func stall_awaitingFirstPromptIsExempt() {
+        #expect(!reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
+        // …and a card that HAS been prompted (the default) with no human-pacing still stalls, so the
+        // exemption is exactly the never-prompted case, not a blanket off-switch.
+        #expect(reasons(card(awaitingFirstPrompt: false), now: late).contains { $0.reason == .stalled })
     }
 
     @Test func stall_declaredQuestionSuppressesIt() {

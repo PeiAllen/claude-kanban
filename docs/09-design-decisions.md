@@ -1175,7 +1175,7 @@ the rest into a `+N`):
 | 2 | permission | `.live(.waiting(.permission))` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
+| 5 | stalled | quiescent past `T` and **not human-paced** (nor awaiting a first prompt), or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
 | 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
@@ -1183,17 +1183,22 @@ merges it (a grey ⏱, quiet — the owning agent's business, not yours), so onl
 routes to the human. It never degrades into a stall, because a declared state explains the quiet.
 
 **Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
-the card must be idle *and not human-paced*; its attached agents settled; nothing in the card, its
+the card must be idle, *not human-paced, and not awaiting its first prompt*; its attached agents settled; nothing in the card, its
 reviewers, *or* its subtree holding queued work (a descendant with a pending delivery is imminently
 active, and must not let an ancestor announce "wave done"); no descendant active; no declared state
 covering it; and nothing in the **constellation** — the card plus its attached agents — changed for
 longer than `T`. Descendants gate by *activity* only and never move that clock, because "is my subtree
 busy" and "how long have I been quiet" are different questions.
 
-**The human-paced exemption** is the first gate, and an absolute one: a card whose last *driving* turn was
-a direct human interaction never stalls, in any column, however long it idles — a chat card the owner
-stepped away from, or a planning card left for later, is being paced by a human, and the quiet is theirs
-to end, not a fault to flag. The discriminator is who drove the card **last**. The daemon carries it as
+**The human-paced exemption** is the first gate, and an absolute one: a card the human is pacing never
+stalls, in any column, however long it idles. It has **two forms**, and both exempt. The first is a card
+still **awaiting its first prompt** (`awaitingFirstPrompt`) — a "New agent" card the human made and hasn't
+moved on yet, whose quiet is the human's move to make, not a fault to flag; idling indefinitely is
+legitimate. (A seed-spawned delegated card is *not* awaiting a first prompt — its seed is its first turn —
+so it stays stall-eligible, exactly as specced.) The second is a card whose last *driving* turn was a
+direct human interaction — a chat card the owner stepped away from, a planning card left for later, or one
+waiting on its own long exec after the human kicked it off. The discriminator is who drove the card
+**last**. The daemon carries it as
 `Task.humanPaced` (a wire-additive bit the client reads; the predicate takes it as a parameter): a prompt
 typed into a session that was idle-*waiting* on the human, or a human-sourced `send`, sets it; the spawn
 seed, an agent/inbox delivery, and every session (re)launch clear it — so a fresh session is agent-paced
@@ -1202,6 +1207,16 @@ biasing an ambiguous case toward *showing* a stall can only ever surface a card 
 forgotten work the row exists to catch. The launch's own seed prompt is excluded for free — it lands on a
 card that went straight to `.running`, never through the idle human-wait — so an agent-work card keeps its
 safety-net stall.
+
+**The terminal-typing half of the signal is Claude-only, by capability, not oversight.** It rides Claude's
+`UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex is a
+`fileTail` agent with no such event: a human message and a daemon-injected continuation (both typed into
+the TUI as user input) land in the rollout identically, so there is no telemetry that distinguishes a
+human turn from an injected one. Rather than risk a false *human-paced* — which would break the safety net
+for an agent-work Codex card, the one failure worse than a spurious stall — Codex relies solely on the
+`send`-path signal, which is agent-agnostic (the daemon classifies the sender itself). The residue is that
+a Codex card paced purely by terminal typing can still amber after `T` — the same benign fail-safe
+direction, and no worse than before this row existed.
 
 Two rules keep one silence from producing several ambers. **Attached agents never own a stall** — a
 parked reviewer surfaces through its target's constellation, so an active target defeats the conjunction

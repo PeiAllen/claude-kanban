@@ -23,8 +23,10 @@ import Foundation
                       treeStat: TreeStat? = nil,
                       hasPendingDelivery: Bool = false,
                       humanPaced: Bool = false,
+                      awaitingFirstPrompt: Bool = false,
                       at: Date? = nil) -> Task {
-        Task(id: uuid(id), title: "card-\(id)", pendingQuestion: pendingQuestion,
+        Task(id: uuid(id), title: "card-\(id)", awaitingFirstPrompt: awaitingFirstPrompt,
+             pendingQuestion: pendingQuestion,
              repo: "/repo", branch: branch, cwd: "/repo/.wt/\(branch)",
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
@@ -52,6 +54,13 @@ import Foundation
         // Same card, agent-paced (the default), still stalls — proving the exemption is the ONLY difference.
         let agentPaced = card("02", branch: "feat/y", humanPaced: false)
         #expect(board([agentPaced]).ownAttention(of: agentPaced, now: late).contains { $0.reason == .stalled })
+    }
+
+    /// The second human-pacing form, through the fold: a never-prompted "New agent" card (the freeform
+    /// dock's amber wall) is exempt by construction, from the `awaitingFirstPrompt` bit alone.
+    @Test func stall_awaitingFirstPromptCardIsExemptThroughTheFold() {
+        let newAgent = card("01", branch: "feat/x", awaitingFirstPrompt: true)
+        #expect(!board([newAgent]).ownAttention(of: newAgent, now: late).contains { $0.reason == .stalled })
     }
 
     // MARK: - attached agents never own a stall

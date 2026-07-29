@@ -593,8 +593,10 @@ public struct Task: Codable, Identifiable, Sendable, Equatable {
     /// launching context is a seed/handoff, not a human turn — so a fresh session is agent-paced (and
     /// stall-eligible) until a human drives it; that also means a blank restart the human sets down can
     /// amber after `T`, the deliberate fail-safe (biasing toward SHOWING a stall never hides forgotten
-    /// work, the whole point of the row). Broadcast-only, decode-with-default (mirrors
-    /// `hasPendingDelivery`); the client stall fold is its only consumer.
+    /// work, the whole point of the row). The terminal-typing half rides Claude's `UserPromptSubmit` hook
+    /// (`promptText`); Codex (`fileTail`) has no event distinguishing a human turn from an injected one, so
+    /// a Codex card relies on the agent-agnostic `send`-path signal alone. Broadcast-only,
+    /// decode-with-default (mirrors `hasPendingDelivery`); the client stall fold is its only consumer.
     public var humanPaced: Bool
     public var agentSessionId: String?  // CURRENT agent-native id; seeded at spawn, maintained across /clear etc.
     public var priorSessionIds: [String]  // superseded ids (e.g. after `/clear`), newest-last
