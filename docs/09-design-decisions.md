@@ -275,6 +275,31 @@ unrealizes and stops), and the age clocks tick at the coarsest interval the labe
 once a second only while the stamp reads in seconds, then once a minute). The gate re-renders immediately
 on the way back, so a stale stamp corrects the instant the window returns.
 
+### Embedded terminals stop *rendering* when nobody is looking — but keep ingesting
+
+The same `\.animationsActive` gate parks the embedded agent/shell terminals' **rendering** while keeping
+their PTY/stream ingestion live, so the buffer is current the instant the user returns. A streaming
+terminal's cost is the per-frame paint (SwiftTerm's `drawTerminalContents`) plus the caret's perpetual
+blink animation, both of which run at stream rate regardless of visibility — a visible-but-not-frontmost
+window (another app foregrounded) kept repainting and burning both app CPU and, via the caret's infinite
+`CABasicAnimation`, the compositor. SwiftTerm is a read-only dependency, so the parking lives in Orchestra's
+own view subclasses (`ScrollableTerminalView` on macOS, `ParkableTerminalView` on iOS): when
+`TerminalRenderParkingPolicy.shouldPark(animationsActive:onScreen:)` is true they swallow SwiftTerm's
+`setNeedsDisplay` invalidations (so `draw` never fires — the expensive path), record a single deferred
+redraw, and freeze the caret animation by halting the view's layer timeline (`layer.speed = 0`, since the
+caret's own blink API is `internal` to SwiftTerm). Ingestion is untouched, so `feed`/`Terminal.parse` keep
+the emulator buffer current; unpark thaws the layer and coalesces one full repaint of the now-current
+buffer. The view stays mounted, visible, and first-responder throughout, so nothing regresses while an agent
+is actually being watched. `onScreen` also parks a terminal that's off-screen while its window is otherwise
+active; on the desktop the mounted terminals additionally *unmount* when scrolled out / collapsed / a
+non-selected shell tab, which is strictly stronger than parking. The phone's non-attaching **capture
+preview** (the Agent tab's `capture-pane` scrape) parks on the same signal — its poll loop is keyed on the
+gate, so an inactive/background scene stops hitting the daemon and resumes with an immediate refresh on
+return. A residual floor remains under a *continuously* streaming parked terminal — SwiftTerm still runs its
+per-burst `updateDisplay` bookkeeping (dirty-range + caret glyph) even with the paint suppressed, and that
+is internal to the read-only dependency — but the dominant paint + compositor cost is gone, and an idle
+(waiting) agent parks to near-zero.
+
 ### Terminal bytes bypass the daemon
 
 The control plane carries commands, state, and events — never PTY bytes. SwiftTerm and the CLI's
