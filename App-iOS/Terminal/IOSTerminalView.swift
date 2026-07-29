@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import SwiftTerm
 import OrchestraKit   // KeyName.bytes + applyControlModifier (sticky-Ctrl transform)
+import OrchestraUI    // TerminalRenderParkingPolicy + \.animationsActive gate
 
 /// A live SwiftTerm iOS terminal bound to a `TerminalByteChannel`. This is the one place the phone
 /// runs a real terminal emulator; T2 (phone-owned shell) and T4 (agent takeover) reuse it verbatim,
@@ -44,6 +45,15 @@ struct IOSTerminalView: UIViewRepresentable {
     /// Kept optional so the existing debug/read-only terminal uses remain ordinary terminal links.
     var onOpenImage: ((UUID) -> Void)? = nil
 
+    /// Whether this terminal is on-screen. Combined with `\.animationsActive` (scene active) it drives
+    /// render-parking — see `TerminalRenderParkingPolicy`. Defaults true; these live terminals are shown
+    /// one-at-a-time full-screen (takeover / shell tab), so the scene gate is the usual driver.
+    var visible: Bool = true
+
+    /// The idle gate (iOS: `scenePhase == .active`). Reading it makes SwiftUI re-run `updateUIView` when
+    /// the scene activates/deactivates, so the terminal parks and unparks with the rest of the app.
+    @Environment(\.animationsActive) private var animationsActive
+
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(makeChannel: makeChannel, shouldReconnect: shouldReconnect,
                             onOpenImage: onOpenImage)
@@ -52,7 +62,7 @@ struct IOSTerminalView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> TerminalView {
-        let term = TerminalView(frame: .zero)
+        let term = ParkableTerminalView(frame: .zero)
         term.terminalDelegate = context.coordinator
         term.font = UIFont.monospacedSystemFont(ofSize: control?.fontSize ?? 13, weight: .regular)
         term.nativeBackgroundColor = UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1)
@@ -114,6 +124,8 @@ struct IOSTerminalView: UIViewRepresentable {
             term.addGestureRecognizer(linkTap)
             context.coordinator.linkTap = linkTap
         }
+        term.renderingParked = TerminalRenderParkingPolicy.shouldPark(
+            animationsActive: animationsActive, onScreen: visible)
         return term
     }
 
@@ -121,6 +133,11 @@ struct IOSTerminalView: UIViewRepresentable {
         // The same terminal coordinator survives SwiftUI re-renders, while the selected card can change.
         // Refresh this closure rather than capturing the first route and fetching an image for a stale card.
         context.coordinator.onOpenImage = onOpenImage
+        // Park/unpark rendering with the scene gate + on-screen state. SwiftUI re-runs this when
+        // `animationsActive` (scenePhase) flips, so a backgrounded/inactive scene stops painting while its
+        // channel keeps the buffer current.
+        (uiView as? ParkableTerminalView)?.renderingParked = TerminalRenderParkingPolicy.shouldPark(
+            animationsActive: animationsActive, onScreen: visible)
         // Takeover chrome (T4) drives font + Select through the `control` handle; the Terminal-tab live
         // shell (T2) has no control and passes `selectMode` directly. Reflect whichever is active.
         if let control {

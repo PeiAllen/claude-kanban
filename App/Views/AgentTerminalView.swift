@@ -39,6 +39,15 @@ struct AgentTerminalView: NSViewRepresentable {
     /// When set, a dead pane auto-re-attaches while this returns true (a `.live` card on a live link).
     /// nil (default) → no auto-reattach, so ShellTabsView's shells opt out unchanged.
     var attachWhileLiveGate: (() -> Bool)? = nil   // named distinctly from the Coordinator's own `attachWhileLive`
+    /// Whether this terminal is on-screen (visible, not scrolled out / collapsed / a non-selected tab).
+    /// Combined with `\.animationsActive` (window/app looked-at) it drives render-parking — see
+    /// `TerminalRenderParkingPolicy`. Defaults true; a container that can hide the terminal passes false.
+    var visible: Bool = true
+
+    /// The idle gate from the animation fix: false when the window is occluded/miniaturized or the app is
+    /// inactive. Reading it here makes SwiftUI re-run `updateNSView` when it flips, so the terminal parks
+    /// and unparks with the rest of the board.
+    @Environment(\.animationsActive) private var animationsActive
 
     init(socket: String = Config.tmuxSocket, session: String, window: String = "agent",
          host: TerminalHost = .local,
@@ -48,7 +57,8 @@ struct AgentTerminalView: NSViewRepresentable {
          loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil,
          onTranscriptImageUnavailable: ((String) -> Void)? = nil,
          onFocused: (() -> Void)? = nil,
-         attachWhileLiveGate: (() -> Bool)? = nil) {
+         attachWhileLiveGate: (() -> Bool)? = nil,
+         visible: Bool = true) {
         self.socket = socket; self.session = session; self.window = window; self.host = host
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
@@ -58,6 +68,7 @@ struct AgentTerminalView: NSViewRepresentable {
         self.onTranscriptImageUnavailable = onTranscriptImageUnavailable
         self.onFocused = onFocused
         self.attachWhileLiveGate = attachWhileLiveGate
+        self.visible = visible
     }
 
     #if canImport(SwiftTerm)
@@ -96,6 +107,8 @@ struct AgentTerminalView: NSViewRepresentable {
         // The view has no window yet at make time, so we can't grab focus now. Flag it and let the view
         // claim first responder the instant it's actually mounted (see ScrollableTerminalView).
         if autofocus { term.claimFocusOnMount = true }
+        term.renderingParked = TerminalRenderParkingPolicy.shouldPark(
+            animationsActive: animationsActive, onScreen: visible)
         return term
     }
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
@@ -118,6 +131,11 @@ struct AgentTerminalView: NSViewRepresentable {
             terminal.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
                 coordinator?.openTranscriptImage(referenceID)
             }
+            // Park/unpark rendering with the window/app gate + this terminal's on-screen state. SwiftUI
+            // re-runs `updateNSView` when `animationsActive` flips (it's read above), so this tracks the
+            // window being occluded/backgrounded and the row being scrolled out / collapsed.
+            terminal.renderingParked = TerminalRenderParkingPolicy.shouldPark(
+                animationsActive: animationsActive, onScreen: visible)
         }
         let isLive = context.coordinator.attachWhileLive()
         if context.coordinator.attached != target {
@@ -436,6 +454,63 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// its retries before the view was ever in a window, so focus never landed). `viewDidMoveToWindow`
     /// is the exact lifecycle hook — no guessing.
     var claimFocusOnMount = false
+
+    /// Render-parking (see `TerminalRenderParkingPolicy`). When true — the window is occluded/
+    /// miniaturized / the app is inactive, or this terminal is scrolled out / collapsed — the view stops
+    /// doing per-frame paint and freezes the caret, while its `tmux attach` keeps feeding the emulator
+    /// buffer. SwiftTerm streams `feed → queuePendingDisplay → updateDisplay → setNeedsDisplay → draw`
+    /// at stream rate regardless of visibility; `draw(drawTerminalContents)` is the expensive part and
+    /// the sole WindowServer/CPU cost while nobody's looking. We can't touch the read-only SwiftTerm
+    /// source, so we intercept at the two public seams a subclass owns:
+    ///   • the `setNeedsDisplay(_:)` funnel every redraw routes through — swallowed while parked (marking
+    ///     a single deferred redraw), so no `draw` fires and the whole `drawTerminalContents` cost is gone;
+    ///   • the caret's perpetual `CABasicAnimation` — its API is `internal` to SwiftTerm and continuous
+    ///     output re-arms it even after SwiftTerm's own resign-main disable, so we freeze the layer's
+    ///     timeline with `layer.speed = 0` (which halts every animation in this view's layer subtree,
+    ///     the caret sublayer included) and restore it on unpark.
+    /// The view stays mounted, visible, and first-responder throughout, so nothing regresses while
+    /// actually watching — unpark just thaws the layer and coalesces one full repaint of the now-current
+    /// buffer.
+    var renderingParked = false {
+        didSet {
+            guard renderingParked != oldValue else { return }
+            if renderingParked {
+                // Metal is off in Orchestra, so `setNeedsDisplay` is the only paint funnel — nothing to
+                // intercept on a Metal path. Freeze the caret animation compositing on the render server.
+                wantsLayer = true
+                layer?.speed = 0
+            } else {
+                // Thaw the caret timeline, then coalesce every invalidation swallowed while parked into a
+                // single full repaint — the emulator buffer stayed current under the live `tmux attach`,
+                // so this one draw brings the view fully up to date with no catch-up burst.
+                layer?.speed = 1
+                layer?.beginTime = 0
+                if deferredRedraw {
+                    deferredRedraw = false
+                    super.setNeedsDisplay(bounds)
+                }
+            }
+        }
+    }
+    /// Set while parked whenever SwiftTerm asked to redraw; consumed by a single repaint on unpark.
+    private var deferredRedraw = false
+
+    /// Swallow SwiftTerm's stream-rate redraw requests while parked (recording that a redraw is owed),
+    /// so `draw(_:)` — and thus the expensive `drawTerminalContents` — never runs off-screen. When not
+    /// parked this is the stock behaviour. This is the one funnel `updateDisplay` invalidates through
+    /// (`setNeedsDisplay(region)`); intercepting it here needs no access to SwiftTerm internals.
+    override func setNeedsDisplay(_ invalidRect: NSRect) {
+        if renderingParked { deferredRedraw = true; return }
+        super.setNeedsDisplay(invalidRect)
+    }
+
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if renderingParked && newValue { deferredRedraw = true; return }
+            super.needsDisplay = newValue
+        }
+    }
 
     /// Fired when this terminal takes keyboard focus by a mouse click (see the shared monitor below).
     /// The owner uses it to sync `focusZone` so the inspector focus ring / context chip stay truthful

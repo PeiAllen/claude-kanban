@@ -124,6 +124,10 @@ private struct CaptureRender: View {
     let onOpenImage: (UUID) -> Void
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
+    /// The scene gate (iOS: `scenePhase == .active`). The capture scrape is the phone's non-attaching
+    /// terminal *preview*, so it parks on the same signal the live terminals do — no daemon polling while
+    /// the scene is inactive/background. Keyed into `.task` below so a scene flip restarts the loop.
+    @Environment(\.animationsActive) private var animationsActive
 
     @State private var frame: CaptureResult?
     @State private var lastUpdated: Date?
@@ -143,7 +147,10 @@ private struct CaptureRender: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomTrailing) { footer.padding(8) }
-        .task(id: cardId) { await pollLoop() }
+        // Keyed on the card AND the scene gate: a scene flip cancels+restarts the loop, so leaving the
+        // scene stops polling (the last frame stays on screen) and returning polls immediately (fresh at
+        // once). `.task` already self-cancels when the tab/detail goes away.
+        .task(id: "\(cardId.uuidString):\(animationsActive)") { await pollLoop() }
     }
 
     @ViewBuilder private var content: some View {
@@ -199,7 +206,10 @@ private struct CaptureRender: View {
 
     /// Self-cancelling poll: SwiftUI cancels this `.task` when the tab/view goes away, so the loop stops
     /// when the Agent tab isn't visible. A `nil` capture (transient RPC miss) keeps the last good frame.
+    /// Parked (scene inactive/background) → return without polling; the last frame stays and the `.task`
+    /// key restarts this loop — polling again immediately — the moment the scene comes back.
     private func pollLoop() async {
+        guard animationsActive else { return }
         while !_Concurrency.Task.isCancelled {
             if let c = await model.captureAgentPane(cardId) {
                 frame = c
