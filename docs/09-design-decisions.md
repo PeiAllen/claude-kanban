@@ -1225,8 +1225,12 @@ the TUI as user input) land in the rollout identically, so there is no telemetry
 human turn from an injected one. Rather than risk a false *human-paced* — which would break the safety net
 for an agent-work Codex card, the one failure worse than a spurious stall — Codex relies solely on the
 `send`-path signal, which is agent-agnostic (the daemon classifies the sender itself). The residue is that
-a Codex card paced purely by terminal typing can still amber after `T` — the same benign fail-safe
-direction, and no worse than before this row existed.
+a Codex card paced purely by terminal typing — including typing into the inspector's live terminal, which
+delivers keystrokes straight to the pane — can still amber after `T`, the same benign fail-safe direction,
+and no worse than before this row existed. **TODO — fix at the Codex app-server migration:** the right
+signal is not the agent's telemetry at all but the CLIENT's — the app knows a human is at the keyboard
+when they type into the inspector, so an app-side "human drove this" mark on terminal input closes the gap
+agent-agnostically (for Claude too), and the app-server's richer telemetry is the moment to wire it.
 
 Two rules keep one silence from producing several ambers. **Attached agents never own a stall** — a
 parked reviewer surfaces through its target's constellation, so an active target defeats the conjunction
