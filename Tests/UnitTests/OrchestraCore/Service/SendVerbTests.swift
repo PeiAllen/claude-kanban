@@ -163,7 +163,7 @@ struct SendVerbTests {
         #expect(try await env.svc.inboxPeek(card.id).map(\.text) == ["stuck-msg", "try again"])
     }
 
-    @Test("send emits no task-upsert on a running, non-stuck card (the inbox rev exception)")
+    @Test("a send that doesn't change pacing emits no task-upsert (the inbox rev exception)")
     func sendEmitsNoTaskEvent() async throws {
         let env = TestEnv.make()
         let card = try await liveCard(env)
@@ -173,11 +173,36 @@ struct SendVerbTests {
         await yieldBriefly()
         let baseline = await collector.upserts.count
 
-        try await env.svc.send(card.id, "queued", messageId: UUID())
+        // `.orchestra` (a system delivery) carries no pacing signal, so it never touches `humanPaced`: the
+        // send stays a pure inbox mutation and bumps no board rev.
+        try await env.svc.send(card.id, "queued", messageId: UUID(), sender: .orchestra)
         await yieldBriefly()
 
         #expect(await collector.upserts.count == baseline)              // the send bumped no board rev
         #expect(try await env.svc.inboxPeek(card.id).count == 1)        // yet the message IS durable
+    }
+
+    /// The exception to the exception: `humanPaced` IS board state (the client's stall-row exemption reads
+    /// it), so a send that FLIPS it must reach the board. A human send to an agent-paced card does exactly
+    /// one such flip; a redundant second human send changes nothing and is inbox-only again.
+    @Test("a human send that flips humanPaced emits exactly one task-upsert")
+    func humanSendFlippingPacingEmits() async throws {
+        let env = TestEnv.make()
+        let card = try await liveCard(env)                               // spawn seed ⇒ agent-paced
+        let collector = EventCollector()
+        await collector.start(await env.svc.subscribe())
+        try await env.svc.report(card.id, StatusReport(run: .running))   // wake no-ops
+        await yieldBriefly()
+        let baseline = await collector.upserts.count
+
+        try await env.svc.send(card.id, "hey", messageId: UUID(), sender: .human)
+        await yieldBriefly()
+        #expect(await collector.upserts.count == baseline + 1)           // false→true is a board change
+        #expect(try #require(await env.svc.store.get(card.id)).humanPaced == true)
+
+        try await env.svc.send(card.id, "again", messageId: UUID(), sender: .human)
+        await yieldBriefly()
+        #expect(await collector.upserts.count == baseline + 1)           // already human-paced ⇒ no new upsert
     }
 
     // MARK: editor stuck-reset seam (B5a-owed)

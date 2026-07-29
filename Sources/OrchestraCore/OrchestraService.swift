@@ -546,7 +546,11 @@ public actor OrchestraService {
             sessionEpoch: 1, phaseChangedAt: Date(),
             pendingSeed: nil, spawnBase: spawnBaseCarrier,
             ctxPct: 0, agentSessionId: sid, initialPrompt: folded ?? input.prompt,
-            parentBranch: nil            // materialize re-derives + records the parent link from `spawnBase`
+            parentBranch: nil,           // materialize re-derives + records the parent link from `spawnBase`
+            // A PROMPTLESS spawn (no prompt AND no seed ⇒ awaitingFirstPrompt) is a "New agent" card the
+            // human made and hasn't moved on yet — human-paced by construction (its quiet is the human's
+            // move). A seeded/prompted spawn is agent work: not human-paced. See `Task.humanPaced`.
+            humanPaced: awaitingFirstPrompt
         )
         // Atomic dedup: if a concurrent same-id spawn won the race, `wasCreated == false` → return its card
         // AS-IS and emit nothing (idempotent). Scratch dir is id-named + idempotent and a worktree is
@@ -727,6 +731,29 @@ public actor OrchestraService {
         // owners), else a stuck cold card would get exactly one doomed wake instead of a full retry budget.
         runtime[t.id]?.deliveryAttempt = nil
         await clearStuckIfSet(t.id)
+        // Who is pacing the card now (stall exemption — see `Task.humanPaced`). A human-sourced send makes
+        // it human-paced; another card/agent delivering work makes it agent-paced (and flips a card a human
+        // WAS pacing back to stall-eligible). A system (`.orchestra`) delivery — teardown nudges and the
+        // like — carries no pacing signal, so it leaves the flag untouched. `InboxMessageSource`, not
+        // `ActivitySource`, is the classifier: it is the one that actually carries a `.human` case (the
+        // transport enum has none), set at the `send` verb boundary from `senderCard`.
+        let paced: Bool?
+        switch sender {
+        case .human:     paced = true
+        case .card:      paced = false
+        case .orchestra: paced = nil
+        }
+        if let paced {
+            // Compare INSIDE the update closure (against the live card, not the pre-await snapshot `t`, which
+            // could be stale after `enqueueIfUnknown`/`clearStuckIfSet` under a concurrent send). `store.update`
+            // no-ops when nothing changes, so a redundant same-value send stays inbox-only (no rev, no emit).
+            var flipped = false
+            if let (saved, rev) = try? await store.update(t.id, { c in
+                if c.humanPaced != paced { c.humanPaced = paced; flipped = true }
+            }), flipped {
+                emit(.taskUpserted(saved), rev: rev)
+            }
+        }
         await wake(t.id)
         return SendResult(messageId: messageId, card: await store.get(t.id) ?? t)
     }

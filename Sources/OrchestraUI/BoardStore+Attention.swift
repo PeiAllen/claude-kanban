@@ -74,7 +74,11 @@ extension BoardStore {
             parentOwned: lineageParent(of: c).map { $0.phase.kind != .dead } ?? false,
             canStall: canStall,
             descendantHoldsAttention: holds,
-            now: now)
+            now: now,
+            // The human-paced exemption: a card whose last driving turn was a direct human interaction
+            // never stalls, however long it idles. The daemon computes the bit (`Task.humanPaced`); the
+            // stall row just honours it.
+            humanPaced: c.humanPaced)
         memo[c.id] = signals
         return signals
     }

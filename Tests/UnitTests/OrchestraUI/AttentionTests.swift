@@ -24,9 +24,11 @@ import Foundation
                       pendingQuestion: PendingQuestion? = nil,
                       ctxPct: Double = 0,
                       hasPendingDelivery: Bool = false,
+                      awaitingFirstPrompt: Bool = false,
                       access: CardAccess = .readWrite,
                       at: Date? = nil) -> Task {
-        Task(id: uuid(id), title: "card-\(id)", pendingQuestion: pendingQuestion,
+        Task(id: uuid(id), title: "card-\(id)", awaitingFirstPrompt: awaitingFirstPrompt,
+             pendingQuestion: pendingQuestion,
              repo: "/repo", branch: "feat/\(id)", cwd: "/repo/.wt/\(id)",
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
@@ -161,6 +163,17 @@ import Foundation
 
     @Test func stall_humanPacedIsExempt() {
         #expect(!reasons(card(), now: late, humanPaced: true).contains { $0.reason == .stalled })
+    }
+
+    /// The exemption is carried by `humanPaced` ALONE — `awaitingFirstPrompt` is NOT consulted by the
+    /// predicate. A "New agent" card the human made but hasn't prompted is exempt because the DAEMON sets
+    /// `humanPaced` at that promptless launch (and migrates legacy provisional cards on decode), not
+    /// because the client reads `awaitingFirstPrompt`. Keeping the predicate single-bit is what lets an
+    /// agent-delivered card that never cleared `awaitingFirstPrompt` (a Codex provisional card given work)
+    /// still stall: the delivery flips `humanPaced` false, and the sticky flag no longer masks it.
+    @Test func stall_awaitingFirstPromptAloneDoesNotExempt() {
+        #expect(reasons(card(awaitingFirstPrompt: true), now: late).contains { $0.reason == .stalled })
+        #expect(!reasons(card(awaitingFirstPrompt: true), now: late, humanPaced: true).contains { $0.reason == .stalled })
     }
 
     @Test func stall_declaredQuestionSuppressesIt() {

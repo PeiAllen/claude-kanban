@@ -22,20 +22,49 @@ import Foundation
                       pendingQuestion: PendingQuestion? = nil,
                       treeStat: TreeStat? = nil,
                       hasPendingDelivery: Bool = false,
+                      humanPaced: Bool = false,
+                      awaitingFirstPrompt: Bool = false,
                       at: Date? = nil) -> Task {
-        Task(id: uuid(id), title: "card-\(id)", pendingQuestion: pendingQuestion,
+        Task(id: uuid(id), title: "card-\(id)", awaitingFirstPrompt: awaitingFirstPrompt,
+             pendingQuestion: pendingQuestion,
              repo: "/repo", branch: branch, cwd: "/repo/.wt/\(branch)",
              origin: .worktree, access: access, model: AgentModel(id: "claude-opus-4-8"),
              startIn: .impl, column: .impl, order: 0, phase: phase,
              phaseChangedAt: at ?? t0, ctxPct: ctxPct, initialPrompt: id,
              parentBranch: parentBranch, treeStat: treeStat,
-             hasPendingDelivery: hasPendingDelivery, createdAt: t0, updatedAt: at ?? t0)
+             hasPendingDelivery: hasPendingDelivery, humanPaced: humanPaced,
+             createdAt: t0, updatedAt: at ?? t0)
     }
 
     private func board(_ tasks: [Task]) -> BoardModel {
         let m = BoardModel(platform: .noop)
         m.tasks = tasks
         return m
+    }
+
+    // MARK: - the human-paced exemption flows from the Task field through the fold
+
+    /// The board fold reads `Task.humanPaced` and threads it into the stall predicate: a quiescent idle
+    /// card past `T` emits NOTHING when the bit is set, and still stalls when it is not. This is the wiring
+    /// the pure `AttentionTests.stall_humanPacedIsExempt` cannot see (that one passes the flag directly);
+    /// here it must travel from the card field, through `ownAttention`, to the row.
+    @Test func stall_humanPacedCardFieldIsExemptThroughTheFold() {
+        let paced = card("01", branch: "feat/x", humanPaced: true)
+        #expect(!board([paced]).ownAttention(of: paced, now: late).contains { $0.reason == .stalled })
+        // Same card, agent-paced (the default), still stalls — proving the exemption is the ONLY difference.
+        let agentPaced = card("02", branch: "feat/y", humanPaced: false)
+        #expect(board([agentPaced]).ownAttention(of: agentPaced, now: late).contains { $0.reason == .stalled })
+    }
+
+    /// The fold keys on `humanPaced` alone: a "New agent" card is exempt because the daemon set
+    /// `humanPaced` at its promptless launch (a `awaitingFirstPrompt` card carries `humanPaced=true`), NOT
+    /// because the fold reads `awaitingFirstPrompt` — a card with `awaitingFirstPrompt=true` but
+    /// `humanPaced=false` (an agent-delivered provisional card) still stalls.
+    @Test func stall_foldKeysOnHumanPacedNotAwaitingFirstPrompt() {
+        let newAgent = card("01", branch: "feat/x", humanPaced: true, awaitingFirstPrompt: true)
+        #expect(!board([newAgent]).ownAttention(of: newAgent, now: late).contains { $0.reason == .stalled })
+        let agentDelivered = card("02", branch: "feat/y", humanPaced: false, awaitingFirstPrompt: true)
+        #expect(board([agentDelivered]).ownAttention(of: agentDelivered, now: late).contains { $0.reason == .stalled })
     }
 
     // MARK: - attached agents never own a stall

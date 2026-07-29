@@ -1175,7 +1175,7 @@ the rest into a `+N`):
 | 2 | permission | `.live(.waiting(.permission))` | "permission" |
 | 3 | awaiting your merge | `treeStat.state == .mergeRequested` **and no live card owns the target branch** | "merge-requested" |
 | 4 | needs input | `pendingQuestion != nil` | "question" |
-| 5 | stalled | quiescent past `T`, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
+| 5 | stalled | quiescent past `T` and **not human-paced**, or a pre-computed merge give-up | "stalled &lt;age&gt;" (the board's `45m`/`2h`/`1d` ladder) / "merge stalled" / "wave done — move to Review?" |
 | 6 | context critical | `ctxPct ≥ 85` | "ctx N%" |
 
 Row 3 is the root→main case in practice: a child's parent branch always has an owning card, whose agent
@@ -1183,12 +1183,54 @@ merges it (a grey ⏱, quiet — the owning agent's business, not yours), so onl
 routes to the human. It never degrades into a stall, because a declared state explains the quiet.
 
 **Stall is a conjunction of ways the quiet can be *explained*,** and each conjunct is a separate guard:
-the card must be idle; its attached agents settled; nothing in the card, its reviewers, *or* its subtree
-holding queued work (a descendant with a pending delivery is imminently active, and must not let an
-ancestor announce "wave done"); no descendant active; no declared state covering it; and nothing in the
-**constellation** — the card plus its attached agents — changed for longer than `T`. Descendants gate by
-*activity* only and never move that clock, because "is my subtree busy" and "how long have I been quiet"
-are different questions.
+the card must be idle and *not human-paced*; its attached agents settled; nothing in the card, its
+reviewers, *or* its subtree holding queued work (a descendant with a pending delivery is imminently
+active, and must not let an ancestor announce "wave done"); no descendant active; no declared state
+covering it; and nothing in the **constellation** — the card plus its attached agents — changed for
+longer than `T`. Descendants gate by *activity* only and never move that clock, because "is my subtree
+busy" and "how long have I been quiet" are different questions.
+
+**The human-paced exemption** is the first gate, and an absolute one: a card the human is pacing never
+stalls, in any column, however long it idles. It is carried by a single wire-additive bit,
+`Task.humanPaced` (the client reads it; the predicate takes it as a parameter), earned **two ways**. The
+card was **driven last by a human** — a prompt typed into a session that was idle-*waiting* on the human,
+or a human-sourced `send` (a chat card the owner stepped away from, a planning card left for later, or one
+waiting on its own long exec after the human kicked it off). *Or* the card is **awaiting the human's first
+move** — a promptless "New agent" card the human made and hasn't moved on yet, whose quiet is the human's
+to end; the daemon sets the bit at that launch, and migrates a legacy `awaitingFirstPrompt` card to it on
+decode (so a board full of already-idle provisional cards goes quiet the moment the field ships, no
+relaunch). Folding both into one bit — rather than also reading `awaitingFirstPrompt` in the predicate —
+is deliberate: `awaitingFirstPrompt` clears only on Claude's `promptText`, so on Codex it is *sticky*, and
+a predicate that trusted it would exempt an agent-driven Codex provisional card forever. Keying on
+`humanPaced` alone means an agent delivery flips the bit false and the card re-enters the net.
+
+It flips back to false only on a fresh **agent-driving** turn — an agent/inbox delivery (a `.card`-sourced
+`send`) or a handoff **seed** — and is **preserved** across a session-preserving relaunch: an involuntary
+daemon-reboot recovery, a seedless idle-wake, a resumable reopen. A reboot is not a driving turn, and
+re-clearing on every recovery would re-stall a human's own cards. A *voluntary blank* (re)launch — a
+promptless spawn, a blank restart/reopen, a `/clear` — instead *sets* the bit true: the card is now
+awaiting the human's first move again, so it is theirs to pace. (A seed-spawned or agent-delivered card is
+never awaiting a first prompt — its seed is its first turn — so it stays stall-eligible, exactly as
+specced.) The **machine opening turn is the subtle case**: a spawn/handoff seed, or a wake-delivered inbox
+batch, reaches the report path as a `promptText` *exactly* like a typed prompt, and a resume lands
+`.waiting(.humanTurn)` (see `landing(of:)`) — so the seed would satisfy the gate and wrongly exempt agent
+work. `finishLaunch` (and the reconciler's stepper-less adopt) marks the generation that owes such a turn;
+the report path consumes that marker on the generation's first prompt instead of reading it as human, so
+an agent-work card keeps its safety-net stall while a genuine follow-up (no seed owed) still sets the bit.
+
+**The terminal-typing half of the signal is Claude-only, by capability, not oversight.** It rides Claude's
+`UserPromptSubmit` hook, which reports the typed prompt (`promptText`) as a distinct event. Codex is a
+`fileTail` agent with no such event: a human message and a daemon-injected continuation (both typed into
+the TUI as user input) land in the rollout identically, so there is no telemetry that distinguishes a
+human turn from an injected one. Rather than risk a false *human-paced* — which would break the safety net
+for an agent-work Codex card, the one failure worse than a spurious stall — Codex relies solely on the
+`send`-path signal, which is agent-agnostic (the daemon classifies the sender itself). The residue is that
+a Codex card paced purely by terminal typing — including typing into the inspector's live terminal, which
+delivers keystrokes straight to the pane — can still amber after `T`, the same benign fail-safe direction,
+and no worse than before this row existed. **TODO — fix at the Codex app-server migration:** the right
+signal is not the agent's telemetry at all but the CLIENT's — the app knows a human is at the keyboard
+when they type into the inspector, so an app-side "human drove this" mark on terminal input closes the gap
+agent-agnostically (for Claude too), and the app-server's richer telemetry is the moment to wire it.
 
 Two rules keep one silence from producing several ambers. **Attached agents never own a stall** — a
 parked reviewer surfaces through its target's constellation, so an active target defeats the conjunction
@@ -1219,7 +1261,7 @@ priority slot. It flows into both folds and every desktop surface automatically.
 queue is NOT yet fed by this registry — it still derives its own older reason set in `NeedsYouQueue`, and
 adopting the fold is part of the iOS slice; until then a new row reaches the desktop only.
 
-**Two rungs are deliberately deferred, and both are one edit away.** The *detected* sibling of row 4 —
+**One rung is still deliberately deferred, and it is one edit away.** The *detected* sibling of row 4 —
 an in-terminal choices box (Claude's `AskUserQuestion`), which blocks mid-turn exactly like a permission
 wait and self-clears by state — funnels to the same "question" amber. It is deferred because the daemon
 can't yet *detect* an open box, not because none exists: `AskUserQuestion` is real and bridged Claude
@@ -1229,11 +1271,7 @@ unverified (a freshly-launched non-bridged CLI didn't even expose the tool, so t
 observe). Codex has no equivalent — its approval prompt is already row 2. So row 4 ships on the declared
 verb alone until a detectable producer is confirmed; the natural place that lands is the agent-channels
 work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
-status/hook surface a box signal would ride. Likewise the stall row's **human-paced exemption** — quiet that is a human's
-deliberate pacing rather than a stuck agent — needs a human-vs-injected turn signal that does not exist
-in broadcast state; the predicate takes the flag as a parameter so it threads in when one does. The
-accepted cost is that a card a human set down can amber after `T`; the alternative was synthesising a
-turn-source bit through the fenced report/delivery path for an edge case.
+status/hook surface a box signal would ride.
 
 ## Shipped feature history
 

@@ -119,6 +119,9 @@ extension OrchestraService {
                     }
                     task.desc = ""
                     task.awaitingFirstPrompt = true
+                    // `/clear` wipes the context and returns the card to awaiting a first prompt — the
+                    // human's move again, so it is human-paced (its quiet is legitimate). See `Task.humanPaced`.
+                    if attributable { task.humanPaced = true }
                     // `/clear` replaces the session's whole context: whatever it was blocked on is gone.
                     // Fenced like the phase write beside it (and unlike `desc`/`awaitingFirstPrompt`,
                     // which are harmless either way) — erasing the incoming generation's question on the
@@ -144,6 +147,20 @@ extension OrchestraService {
             // First prompt after restart/clear re-titles the card.
             if let prompt = ev.promptText, !prompt.isEmpty {
                 resetInjectCount(id)   // a genuine user turn ends any F3 auto-inject loop (loop guard reset)
+                // Human-pacing: a prompt typed into a session that was idle-WAITING on the human is a DIRECT
+                // human turn — it paces the card, so the stall row must exempt it forever after (docs/09).
+                // But a MACHINE opening positional (a spawn/handoff seed, or a wake-delivered inbox batch)
+                // reaches here as a `promptText` too, and a resume lands `.waiting(.humanTurn)` (see
+                // `landing(of:)` in PhaseStepper), so the seed would satisfy the gate and wrongly exempt
+                // AGENT work from the stall row. `finishLaunch` marks the generation that owes such a turn;
+                // the FIRST prompt of that generation consumes the marker and is NOT treated as human — only
+                // a prompt with no machine turn owed, on an idle human-wait, is. Fenced (`attributable`) so a
+                // stale generation's delayed prompt can't mark a card human-paced.
+                let machineSeedTurn: Bool
+                if let se = runtime[id]?.seedTurnEpoch, se == observedEpoch { machineSeedTurn = true }
+                else { machineSeedTurn = false }
+                if machineSeedTurn { runtime[id]?.seedTurnEpoch = nil }
+                else if before.waitReason == .humanTurn, attributable { task.humanPaced = true }
                 // Both writes below are generation-fenced (see `staleGeneration`): a delayed prompt from the
                 // session a `restart` is replacing must neither clear the incoming generation's
                 // `awaitingFirstPrompt` — the RelaunchStepper would then find neither a transcript nor
