@@ -114,12 +114,6 @@ public class BoardStore: ObservableObject {
         capabilities(for: agentId)?.terminalImagePaste ?? .direct
     }
 
-    /// Preserve host text selection until an advertised agent explicitly opts into terminal mouse
-    /// reporting. This is the safe presentation fallback for a just-arrived or future agent.
-    public func terminalPointerInput(for agentId: String) -> AgentCapabilities.TerminalPointerInput {
-        capabilities(for: agentId)?.terminalPointerInput ?? .applicationMouseReporting
-    }
-
     /// Non-nil while the archive-confirm dialog is up (keyboard `a` path only). Holds the card id
     /// awaiting confirmation; ⏎ archives, esc/⌘W cancels. Deliberate UI actions (buttons, palette)
     /// archive directly and never set this.

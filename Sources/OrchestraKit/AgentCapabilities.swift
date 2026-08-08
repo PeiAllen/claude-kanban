@@ -86,17 +86,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         }
     }
 
-    /// How the host routes pointer presses and drags while this agent has enabled terminal mouse
-    /// tracking. Application reporting preserves the long-standing terminal behavior; native selection
-    /// leaves press-and-drag with SwiftTerm so streamed output cannot clear a host text selection.
-    public enum TerminalPointerInput: String, Sendable, Equatable, Codable, CaseIterable {
-        case applicationMouseReporting, nativeSelection
-
-        public var allowsApplicationMouseReporting: Bool {
-            self == .applicationMouseReporting
-        }
-    }
-
     public let sessionId: SessionId
     public let telemetry: Telemetry
     public let contextUsage: ContextUsage
@@ -105,7 +94,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
     public let readOnlyEnforcement: ReadOnlyEnforcement
     public let authMode: AuthMode
     public let terminalImagePaste: TerminalImagePaste
-    public let terminalPointerInput: TerminalPointerInput
     public let readinessConfirmation: ReadinessConfirmation
 
     /// The key chord the Needs-You gate sends to APPROVE a `waitReason == .permission` prompt, and the
@@ -122,7 +110,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
                 wakeTransport: WakeTransport, inboxDrain: InboxDrain,
                 readOnlyEnforcement: ReadOnlyEnforcement, authMode: AuthMode,
                 terminalImagePaste: TerminalImagePaste = .direct,
-                terminalPointerInput: TerminalPointerInput = .applicationMouseReporting,
                 readinessConfirmation: ReadinessConfirmation = .sessionStartHook,
                 approveChord: [KeyToken] = [.named(.enter)],
                 denyChord: [KeyToken] = [.named(.esc)]) {
@@ -134,7 +121,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         self.readOnlyEnforcement = readOnlyEnforcement
         self.authMode = authMode
         self.terminalImagePaste = terminalImagePaste
-        self.terminalPointerInput = terminalPointerInput
         self.readinessConfirmation = readinessConfirmation
         self.approveChord = approveChord
         self.denyChord = denyChord
@@ -142,7 +128,7 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case sessionId, telemetry, contextUsage, wakeTransport, inboxDrain, readOnlyEnforcement, authMode
-        case terminalImagePaste, terminalPointerInput, readinessConfirmation, approveChord, denyChord
+        case terminalImagePaste, readinessConfirmation, approveChord, denyChord
     }
 
     /// Capability payloads cross the daemon/client boundary. Decode additive fields with their historical
@@ -158,8 +144,6 @@ public struct AgentCapabilities: Sendable, Equatable, Codable {
         authMode = try c.decode(AuthMode.self, forKey: .authMode)
         terminalImagePaste = try c.decodeIfPresent(TerminalImagePaste.self, forKey: .terminalImagePaste)
             ?? .direct
-        terminalPointerInput = try c.decodeIfPresent(TerminalPointerInput.self, forKey: .terminalPointerInput)
-            ?? .applicationMouseReporting
         readinessConfirmation = try c.decodeIfPresent(ReadinessConfirmation.self, forKey: .readinessConfirmation)
             ?? .sessionStartHook
         approveChord = try c.decodeIfPresent([KeyToken].self, forKey: .approveChord) ?? [.named(.enter)]

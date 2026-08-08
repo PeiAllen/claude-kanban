@@ -25,7 +25,6 @@ struct AgentTerminalView: NSViewRepresentable {
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste
-    var terminalPointerInput: AgentCapabilities.TerminalPointerInput
     /// Fetches a daemon-owned image payload for a deliberate opaque transcript-link activation. The
     /// terminal never receives a source path or a general URL handler.
     var loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil
@@ -53,7 +52,6 @@ struct AgentTerminalView: NSViewRepresentable {
          host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
          terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
-         terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting,
          loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil,
          onTranscriptImageUnavailable: ((String) -> Void)? = nil,
          onFocused: (() -> Void)? = nil,
@@ -63,7 +61,6 @@ struct AgentTerminalView: NSViewRepresentable {
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
         self.terminalImagePaste = terminalImagePaste
-        self.terminalPointerInput = terminalPointerInput
         self.loadTranscriptImage = loadTranscriptImage
         self.onTranscriptImageUnavailable = onTranscriptImageUnavailable
         self.onFocused = onFocused
@@ -75,6 +72,7 @@ struct AgentTerminalView: NSViewRepresentable {
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         ScrollableTerminalView.installScrollMonitorIfNeeded()
         let term = ScrollableTerminalView(frame: .zero)
+        term.installClipboardOSCHandler()
         term.processDelegate = context.coordinator
         term.font = Self.terminalFont
         // SwiftTerm v1.13.0 defaults its 256-colour palette to a "base16 LAB" strategy that re-derives
@@ -91,7 +89,6 @@ struct AgentTerminalView: NSViewRepresentable {
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
         term.terminalImagePaste = terminalImagePaste
-        term.terminalPointerInput = terminalPointerInput
         term.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
             coordinator?.openTranscriptImage(referenceID)
         }
@@ -127,7 +124,6 @@ struct AgentTerminalView: NSViewRepresentable {
             terminal.termWindow = window
             terminal.onBecameFirstResponder = onFocused
             terminal.terminalImagePaste = terminalImagePaste
-            terminal.terminalPointerInput = terminalPointerInput
             terminal.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
                 coordinator?.openTranscriptImage(referenceID)
             }
@@ -518,8 +514,24 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
-    var terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting {
-        didSet { allowMouseReporting = terminalPointerInput.allowsApplicationMouseReporting }
+
+    /// Own OSC 52 — the clipboard escape — instead of leaving it to SwiftTerm's built-in handler.
+    ///
+    /// Selection inside these terminals belongs to tmux, which copies by writing OSC 52 to this view.
+    /// SwiftTerm's built-in handler performs the copy, but it also answers the *read* form
+    /// (`ESC ] 52 ; c ; ?`) from `clipboardRead`, which `LocalProcessTerminalView` implements as the real
+    /// `NSPasteboard` — so an agent, or anything it runs, could read the user's clipboard by printing one
+    /// escape sequence. A registered handler takes precedence over the built-in, so this keeps the copy
+    /// and drops the read. `TerminalClipboardOSC` holds the (unit-tested) parsing.
+    func installClipboardOSCHandler() {
+        getTerminal().registerOscHandler(code: 52) { payload in
+            guard let text = TerminalClipboardOSC.decodeCopy(payload: payload) else { return }
+            DispatchQueue.main.async {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.writeObjects([text as NSString])
+            }
+        }
     }
 
     /// `LocalProcessTerminalView` must retain itself as the terminal's actual downstream delegate so it
