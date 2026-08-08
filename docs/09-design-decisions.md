@@ -1294,7 +1294,11 @@ Two details make tmux ownership feel right rather than merely correct. tmux's de
 the behavior originally read as "dragging doesn't select anything", and the reason the native selector
 looked like a fix. The embedded config keeps the highlight instead when the user is **reading history**
 (already scrolled up, so the pane is already frozen) and keeps the cancel at the **live bottom**, so a
-running agent's pane can never appear frozen.
+running agent's pane can never appear frozen. And the app registers its own **OSC 52** handler over
+SwiftTerm's: the built-in performs the copy, but it also answers the *read* form from
+`clipboardRead` — which `LocalProcessTerminalView` implements as the real `NSPasteboard` — so any program
+in a terminal could exfiltrate the user's clipboard with one escape sequence. Orchestra's handler copies
+and never answers a query.
 
 ## Shipped feature history
 

@@ -381,7 +381,10 @@ selection or a scroll position to the TEXT: presses, drags, and the wheel all go
 Wheel events are forwarded on the alternate screen and fall back to SwiftTerm's native scrollback
 otherwise. A drag therefore selects in tmux copy mode, and the embedded config keeps the highlight when
 the user is **reading history** (already scrolled up) but copies and leaves copy mode at the **live
-bottom**, so an agent's pane can never look frozen.
+bottom**, so an agent's pane can never look frozen. The app registers its own **OSC 52** handler
+(`TerminalClipboardOSC`) over SwiftTerm's: a copy still reaches the pasteboard, and a clipboard *query*
+is never answered, so a program in a terminal cannot read the user's clipboard by printing an escape
+sequence.
 
 The terminal's child process is chosen by a **`TerminalHost`**: `.local` runs `tmux -L <socket> attach`
 directly, while `.remote(controlPath, sshTarget)` — used when the active connection is a remote box —
