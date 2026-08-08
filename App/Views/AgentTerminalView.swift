@@ -25,7 +25,6 @@ struct AgentTerminalView: NSViewRepresentable {
     var foreground: SwiftUI.Color
     var autofocus: Bool          // grab keyboard focus when the view mounts (e.g. opening a card)
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste
-    var terminalPointerInput: AgentCapabilities.TerminalPointerInput
     /// Fetches a daemon-owned image payload for a deliberate opaque transcript-link activation. The
     /// terminal never receives a source path or a general URL handler.
     var loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil
@@ -53,7 +52,6 @@ struct AgentTerminalView: NSViewRepresentable {
          host: TerminalHost = .local,
          background: SwiftUI.Color, foreground: SwiftUI.Color, autofocus: Bool = false,
          terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct,
-         terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting,
          loadTranscriptImage: ((UUID) async throws -> TranscriptImagePayload)? = nil,
          onTranscriptImageUnavailable: ((String) -> Void)? = nil,
          onFocused: (() -> Void)? = nil,
@@ -63,7 +61,6 @@ struct AgentTerminalView: NSViewRepresentable {
         self.background = background; self.foreground = foreground
         self.autofocus = autofocus
         self.terminalImagePaste = terminalImagePaste
-        self.terminalPointerInput = terminalPointerInput
         self.loadTranscriptImage = loadTranscriptImage
         self.onTranscriptImageUnavailable = onTranscriptImageUnavailable
         self.onFocused = onFocused
@@ -91,7 +88,6 @@ struct AgentTerminalView: NSViewRepresentable {
         term.termWindow = window        // tag so FocusBridge can target agent vs shell terminals
         term.onBecameFirstResponder = onFocused
         term.terminalImagePaste = terminalImagePaste
-        term.terminalPointerInput = terminalPointerInput
         term.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
             coordinator?.openTranscriptImage(referenceID)
         }
@@ -127,7 +123,6 @@ struct AgentTerminalView: NSViewRepresentable {
             terminal.termWindow = window
             terminal.onBecameFirstResponder = onFocused
             terminal.terminalImagePaste = terminalImagePaste
-            terminal.terminalPointerInput = terminalPointerInput
             terminal.configureImageLinkHandler { [weak coordinator = context.coordinator] referenceID in
                 coordinator?.openTranscriptImage(referenceID)
             }
@@ -518,9 +513,6 @@ final class ScrollableTerminalView: LocalProcessTerminalView {
     /// `public`-not-`open` in SwiftTerm, so we can't override it — hence the click monitor instead.)
     var onBecameFirstResponder: (() -> Void)?
     var terminalImagePaste: AgentCapabilities.TerminalImagePaste = .direct
-    var terminalPointerInput: AgentCapabilities.TerminalPointerInput = .applicationMouseReporting {
-        didSet { allowMouseReporting = terminalPointerInput.allowsApplicationMouseReporting }
-    }
 
     /// `LocalProcessTerminalView` must retain itself as the terminal's actual downstream delegate so it
     /// can resize and write to its pty. A proxy adds the narrow opaque-image hook while forwarding every

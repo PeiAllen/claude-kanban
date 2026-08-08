@@ -1273,6 +1273,29 @@ verb alone until a detectable producer is confirmed; the natural place that land
 work (`orchestra://task/897d75` — "Redesign agent status and inbox delivery"), which reworks exactly the
 status/hook surface a box signal would ride.
 
+### Whoever owns the scroll owns the pointer
+
+A terminal selection is only meaningful if it is anchored to the **text**. Inside an Orchestra terminal
+the text lives in tmux: tmux holds the 50k-line history, and the outer SwiftTerm sees only the single
+alternate screen tmux repaints. A selection SwiftTerm holds is therefore anchored to a screen row, so the
+next repaint — a wheel scroll forwarded to tmux, or the agent simply printing a line — slides different
+text under a stationary highlight. It looks like the selection is moving with the screen, and the text
+that gets copied is not the text that was selected.
+
+So pointer ownership is **not** an adapter choice. Presses, drags, and the wheel all go to tmux, for every
+agent; a per-agent `TerminalPointerInput` capability that let Codex opt into SwiftTerm's native selector
+was retired, because "native selection" cannot be correct while tmux owns the scrollback. If a future TUI
+enables its own mouse capture and makes drags unreachable, the answer is a **user-toggled select mode**
+(the shape the phone already uses — it also stops forwarding the wheel, so the frozen screen and the
+selection agree), not a per-agent default that silently trades a correct selection for a scrollable one.
+
+Two details make tmux ownership feel right rather than merely correct. tmux's default drag-end is
+`copy-selection-and-cancel`, which copies and then drops the highlight the instant the button comes up —
+the behavior originally read as "dragging doesn't select anything", and the reason the native selector
+looked like a fix. The embedded config keeps the highlight instead when the user is **reading history**
+(already scrolled up, so the pane is already frozen) and keeps the cancel at the **live bottom**, so a
+running agent's pane can never appear frozen.
+
 ## Shipped feature history
 
 The v1 architecture (daemon + control plane + two-way hook protocol + per-card worktree + session

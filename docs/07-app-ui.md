@@ -374,11 +374,14 @@ The **agent chrome** stacks, top to bottom:
 (no daemon byte-proxying). It prefers a Nerd Font (for powerline/git glyphs), applies the app theme to
 SwiftTerm's colors (including OSC 10/11 so TUIs like Claude Code detect the theme), forces a UTF-8
 locale and `TERM=xterm-256color`, and attaches via the grouped **view session** so opening a shell
-never yanks the agent terminal. Each adapter declares whether pointer presses and drags reach its TUI or
-SwiftTerm's native selector: Codex opts into native selection so copied text survives streamed output,
-while Claude and adapters that do not explicitly opt in retain application mouse reporting. Mouse-wheel
-scrolling is still forwarded to tmux on the alternate screen and falls back to SwiftTerm's native
-scrollback otherwise.
+never yanks the agent terminal.
+
+**The pointer belongs to tmux, for every agent.** tmux holds the scrollback, so only tmux can anchor a
+selection or a scroll position to the TEXT: presses, drags, and the wheel all go to the same owner.
+Wheel events are forwarded on the alternate screen and fall back to SwiftTerm's native scrollback
+otherwise. A drag therefore selects in tmux copy mode, and the embedded config keeps the highlight when
+the user is **reading history** (already scrolled up) but copies and leaves copy mode at the **live
+bottom**, so an agent's pane can never look frozen.
 
 The terminal's child process is chosen by a **`TerminalHost`**: `.local` runs `tmux -L <socket> attach`
 directly, while `.remote(controlPath, sshTarget)` — used when the active connection is a remote box —

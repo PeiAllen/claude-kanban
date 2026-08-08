@@ -340,8 +340,6 @@ public extension AgentCapabilities {
         readOnlyEnforcement: .sandboxed,
         authMode: .subscription,
         terminalImagePaste: .controlV,
-        // Claude's interactive terminal controls rely on its existing mouse reporting behavior.
-        terminalPointerInput: .applicationMouseReporting,
         // Claude fires SessionStart(startup) on a fresh launch and SessionStart(resume) on a relaunch, both
         // via hooksPush — one hook capability confirms BOTH being-born phases.
         readinessConfirmation: .sessionStartHook)
