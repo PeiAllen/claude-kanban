@@ -486,6 +486,33 @@ public struct NoteFile: Codable, Sendable, Equatable {
     }
 }
 
+/// One live change to a note the daemon is watching: WHICH note moved, and its new content hash.
+///
+/// Deliberately a NOTIFICATION, not the content. The event stays a few dozen bytes and the client
+/// re-fetches through the shipped `changedNotes` RPC, so a large note can never blow the wire.
+public struct NoteChange: Codable, Sendable, Equatable {
+    public let cardId: UUID
+    public let path: String          // worktree-relative, matching NoteFile.path
+    /// The note's new content hash, or `nil` when the file was DELETED. Deletion has to be reportable:
+    /// dropping it would leave the reader displaying a note that no longer exists.
+    public let contentHash: String?
+    public init(cardId: UUID, path: String, contentHash: String?) {
+        self.cardId = cardId; self.path = path; self.contentHash = contentHash
+    }
+}
+
+/// One asset a note references (an image), fetched by the reader's scheme handler. The phone cannot
+/// read the daemon's disk, so the daemon reads it — and the desktop uses the same path, so both
+/// surfaces render identically.
+public struct NoteAsset: Codable, Sendable, Equatable {
+    public let path: String
+    public let mimeType: String
+    public let base64: String
+    public init(path: String, mimeType: String, base64: String) {
+        self.path = path; self.mimeType = mimeType; self.base64 = base64
+    }
+}
+
 public struct Task: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID            // tmux session = "orchestra-\(id)"
 
