@@ -145,7 +145,7 @@ final class KeyboardController {
         case .archive:              model.requestArchiveSelected(); return true
         case .openInZed:            model.openZedSelected(); return true
         case .openNotes:            model.openNotesSelected(); return true
-        case .toggleDiff:           model.inspectorMode = (model.inspectorMode == .agent ? .diff : .agent); return true
+        case .toggleDiff:           model.inspectorMode = model.inspectorMode.next; return true
         case .openInbox:            model.requestInboxOpen = true; return true
         case .copy(let t):          model.copySelected(t); return true
         case .beginYank:            pendingY = true; return true

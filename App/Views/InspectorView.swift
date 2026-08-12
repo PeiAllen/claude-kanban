@@ -23,10 +23,10 @@ struct InspectorView: View {
                         // the board; the binding routes to the selected card's entry.
                         HeaderBar(task: t, mode: Binding(get: { model.inspectorMode },
                                                          set: { model.inspectorMode = $0 }))
-                        if model.inspectorMode == .diff {
-                            DiffInspectorView(task: t)
-                        } else {
-                            AgentChrome(task: t)
+                        switch model.inspectorMode {
+                        case .diff:  DiffInspectorView(task: t)
+                        case .notes: NoteReaderView(task: t)
+                        case .agent: AgentChrome(task: t)
                         }
                     }
                 }
@@ -99,6 +99,7 @@ private struct HeaderBar: View {
             Picker("", selection: $mode) {
                 Text("Agent").tag(InspectorMode.agent)
                 Text("Diff").tag(InspectorMode.diff)
+                Text("Notes").tag(InspectorMode.notes)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -137,7 +138,7 @@ private struct HeaderBar: View {
                 HStack(spacing: 6) {
                     Image(systemName: "note.text").font(F.ui(13, .semibold)).foregroundColor(theme.text)
                     if !compact {
-                        Text("Open notes").font(F.ui(12, .semibold)).foregroundColor(theme.text)
+                        Text("Open in Obsidian").font(F.ui(12, .semibold)).foregroundColor(theme.text)
                     }
                 }
                 .padding(.horizontal, compact ? 7 : 11)
@@ -145,7 +146,7 @@ private struct HeaderBar: View {
                 .surface(theme.card, corner: 8, hair: theme.hair)
             }
             .buttonStyle(.plain)
-            .help("Open this card's changed notes in its worktree (Obsidian)")
+            .help("Open this card's worktree as an Obsidian vault, jumped to its changed notes")
 
             // Live-delivery card actions — hidden for a dead card (recovery owns that state).
             if task.phaseDisplay != .dead {
