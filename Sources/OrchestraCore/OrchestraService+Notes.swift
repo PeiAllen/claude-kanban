@@ -29,9 +29,14 @@ extension OrchestraService {
     /// hundred documents — a phone pays for every byte, and the reader opens one file at a time.
     public func listDocuments(_ id: UUID) async throws -> [DocRef] {
         let t = try await require(id)
-        // Documents are a property of the WORKING DIRECTORY, not of the card, so there is no card-kind
-        // gate here: a freeform or scratch card has documents exactly like a worktree card does.
-        try resolver.assertAllowed(t.cwd)
+        // NO card-kind gate and NO `assertAllowed(t.cwd)`. Documents are a property of the WORKING
+        // DIRECTORY, so a freeform or scratch card has them exactly like a worktree card does — and
+        // the repo allowlist is the wrong question for a cwd. `allowedRoots` is
+        // [reposRoot, worktreesRoot] + allowlist, which a borrowed card's arbitrary directory and a
+        // scratch dir both fail; it guards paths a CLIENT NAMES, and `cwd` is the card's own recorded
+        // directory, already authorized at spawn (worktree: derived by Orchestra; borrowed: the trust
+        // ledger; scratch: created by Orchestra). Containment is enforced where it matters — every
+        // document path is realpath-checked against this cwd in `readDocument`.
         let l = launcher, cwd = t.cwd
         let parentRef = resolvedParentRef(t)
         return try await offActor {
@@ -57,8 +62,7 @@ extension OrchestraService {
     /// endpoint uses, so a client cannot read an arbitrary file by naming it here.
     public func readDocument(_ id: UUID, path: String) async throws -> String {
         let t = try await require(id)
-        try resolver.assertAllowed(t.cwd)
-        let cwd = t.cwd, pathResolver = resolver
+        let cwd = t.cwd
         return try await offActor {
             guard DocumentDiscovery.isDocument(path), !DocumentDiscovery.isPruned(relativePath: path)
             else { throw OrchestraError.invalidParams("\(path) is not a readable document") }
@@ -69,7 +73,6 @@ extension OrchestraService {
             guard abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
                 throw OrchestraError.pathNotAllowed(path)
             }
-            try pathResolver.assertAllowed(abs)
             guard let data = FileManager.default.contents(atPath: abs) else {
                 throw OrchestraError.io("cannot read \(path)")
             }
@@ -88,7 +91,7 @@ extension OrchestraService {
     /// orphaned stream, repaired at the next call — which is why this needs no teardown protocol.
     public func syncNoteWatches() async {
         let cards = await store.snapshot().tasks
-            .filter { !$0.archived && $0.origin == .worktree }
+            .filter { !$0.archived && !$0.cwd.isEmpty }
             .map { (id: $0.id, worktree: $0.cwd) }
         await noteWatches.sync(cards: cards)
     }
@@ -105,17 +108,18 @@ extension OrchestraService {
     /// (git-reported `.md` for one card).
     public func noteAsset(_ id: UUID, notePath: String, assetPath: String) async throws -> NoteAsset {
         let t = try await require(id)
-        guard t.origin == .worktree else { throw OrchestraError.invalidParams("not a worktree card") }
-        try resolver.assertAllowed(t.cwd)
+        // No card-kind gate and no cwd allowlist check — see `listDocuments` for why. Containment
+        // comes from the realpath check in `readNoteAsset`, not from `allowedRoots`.
         // Capture everything the hop needs BEFORE it: `offActor` takes a Sendable closure, so reaching
         // back for an actor-isolated property inside it is a compile error.
-        let l = launcher, cwd = t.cwd, pathResolver = resolver
+        let l = launcher, cwd = t.cwd
         let parentRef = resolvedParentRef(t)
         return try await offActor {
-            // GATE 1 — the note must be one this card actually changed. Paths only: `changedNotes`
-            // would read the full content of every changed note just to test membership.
-            guard l.changedNotes(worktree: cwd, parentRef: parentRef).contains(notePath) else {
-                throw OrchestraError.invalidParams("\(notePath) is not one of this card's changed notes")
+            // GATE 1 — the note must be a document this workspace actually has. Discovery, not the
+            // git-derived changed set: a gitignored note is a perfectly valid document to read.
+            guard DocumentDiscovery.isDocument(notePath),
+                  !DocumentDiscovery.isPruned(relativePath: notePath) else {
+                throw OrchestraError.invalidParams("\(notePath) is not a readable document")
             }
             // GATE 2 — the asset must be referenced BY that note. The allowlist is derived from the
             // note read off DISK, never from anything a client supplied.
@@ -130,13 +134,13 @@ extension OrchestraService {
             guard allowed.contains(path) else {
                 throw OrchestraError.invalidParams("\(assetPath) is not referenced by \(notePath)")
             }
-            return try Self.readNoteAsset(path, cwd: cwd, resolver: pathResolver)
+            return try Self.readNoteAsset(path, cwd: cwd)
         }
     }
 
     /// GATES 3-5, split out so the containment/type/size rules live in one place. `path` is already
     /// normalized and allowlisted by the caller.
-    static func readNoteAsset(_ path: String, cwd: String, resolver: PathResolver) throws -> NoteAsset {
+    static func readNoteAsset(_ path: String, cwd: String) throws -> NoteAsset {
         // GATE 3 — REALPATH containment. Do NOT substitute `NSString.standardizingPath`: it collapses
         // `..` lexically and leaves symlinks intact, so a worktree containing `notes/pics -> /` would
         // let `notes/pics/etc/hosts` pass a textual prefix check while resolving outside the worktree.
@@ -145,8 +149,6 @@ extension OrchestraService {
         guard abs == root || abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
             throw OrchestraError.pathNotAllowed(path)
         }
-        try resolver.assertAllowed(abs)          // independent second containment check
-
         // GATE 4 — image types only.
         let ext = (abs as NSString).pathExtension.lowercased()
         guard let mime = noteAssetMimeTypes[ext] else {

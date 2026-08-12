@@ -178,6 +178,34 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
         #expect(w.cancelCount == 1)
     }
 
+    /// Two cards on ONE working directory share a stream and both hear about a change. Documents are a
+    /// property of the directory, so this is the case the reframe exists for.
+    @Test("cards sharing a workspace share one stream and both get the event")
+    func cardsSharingAWorkspaceShareOneStream() async throws {
+        let w = FakeWatcher(); let hash = Locked<String?>("h1")
+        let (svc, got) = makeService(w, hash: hash)
+        let other = UUID()
+        await svc.sync(cards: [(id: card, worktree: wtInput), (id: other, worktree: wtInput)])
+        #expect(await svc.activeStreamCount == 1)          // one directory, one stream
+        w.fire(abs)
+        try await pollUntil("both cards hear it", timeout: .seconds(5)) {
+            got.withLock { Set($0.map(\.cardId)) } == [card, other]
+        }
+        // ...and the file was hashed ONCE, not once per card.
+        #expect(got.withLock { $0.map(\.path) } == [rel, rel])
+    }
+
+    @Test("a card leaving a shared workspace does not cancel the other's stream")
+    func aCardLeavingASharedWorkspaceKeepsTheStream() async {
+        let w = FakeWatcher(); let hash = Locked<String?>("h")
+        let (svc, _) = makeService(w, hash: hash)
+        let other = UUID()
+        await svc.sync(cards: [(id: card, worktree: wtInput), (id: other, worktree: wtInput)])
+        await svc.sync(cards: [(id: other, worktree: wtInput)])
+        #expect(await svc.activeStreamCount == 1)
+        #expect(w.cancelCount == 0)                        // the stream was never torn down
+    }
+
     @Test("a missed transition self-heals at the next sync")
     func syncRepairsAMissedTransition() async {
         // The property that replaces rollback and race handling: reconciling from the desired set means

@@ -94,13 +94,30 @@ struct NoteAssetServiceTests {
         }
     }
 
-    @Test("a non-worktree card has no assets at all")
-    func noteAssetRefusesANonWorktreeCard() async throws {
+    /// Documents are a property of the WORKING DIRECTORY, so a scratch card has them too. This used to
+    /// be a card-kind refusal; the gate was removed deliberately, and the containment that matters is
+    /// the realpath check, not the card's origin.
+    @Test("a scratch card lists and reads its own documents")
+    func aScratchCardHasDocuments() async throws {
+        let env = TestEnv.make()
+        let t = try await TestEnv.spawnAndAwaitLive(
+            env.svc, SpawnInput(id: UUID(), prompt: "scratch", scratch: true))
+        try "# Scratch\n\nbody\n".write(toFile: t.cwd + "/plan.md",
+                                          atomically: true, encoding: .utf8)
+        let docs = try await env.svc.listDocuments(t.id)
+        #expect(docs.map(\.path) == ["plan.md"])
+        // Discovery is git-independent, and a scratch dir is not a repo — so no status, correctly.
+        #expect(docs.first?.status == nil)
+        #expect(try await env.svc.readDocument(t.id, path: "plan.md").contains("body"))
+    }
+
+    @Test("a document path may not escape the working directory")
+    func readDocumentRefusesAnEscape() async throws {
         let env = TestEnv.make()
         let t = try await TestEnv.spawnAndAwaitLive(
             env.svc, SpawnInput(id: UUID(), prompt: "scratch", scratch: true))
         await #expect(throws: OrchestraError.self) {
-            _ = try await env.svc.noteAsset(t.id, notePath: "a.md", assetPath: "b.png")
+            _ = try await env.svc.readDocument(t.id, path: "../../../../etc/hosts.md")
         }
     }
 }

@@ -242,8 +242,11 @@ extension OrchestraService {
         //     Riding the tick is the whole lifecycle: `sync` is an idempotent diff, so a card that
         //     gained or lost a worktree is picked up within one poll interval and a missed transition
         //     self-heals. There is no per-card hook to forget and no teardown protocol to get wrong.
+        //     EVERY live card with a working directory, not just worktree cards: documents belong to
+        //     the directory, so a freeform or scratch card has them too. Cards sharing a directory
+        //     share one stream.
         await noteWatches.sync(cards: tasks
-            .filter { !$0.archived && $0.origin == .worktree }
+            .filter { !$0.archived && !$0.cwd.isEmpty }
             .map { (id: $0.id, worktree: $0.cwd) })
     }
 
