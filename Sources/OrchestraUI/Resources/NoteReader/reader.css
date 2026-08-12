@@ -1,0 +1,89 @@
+/*
+ * The note reader's stylesheet.
+ *
+ * Colors come from CSS custom properties that Swift sets from the app's Theme, so the page matches the
+ * inspector rather than only the OS appearance. Every property has a fallback, but the fallbacks are a
+ * safety net, not the design: if Swift stops sending a theme, the page stays legible instead of drawing
+ * near-black text on a dark panel.
+ */
+
+:root { color-scheme: light dark; }
+
+html, body { background: transparent; }
+
+body {
+  margin: 0;
+  padding: 16px 18px 28px;
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--text, #1d1d1f);
+  -webkit-text-size-adjust: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* One block per top-level markdown token. The negative margin lets the selection tint bleed past the
+   text without shifting layout when a block becomes selected. */
+.block {
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: 6px;
+  scroll-margin-top: 12px;
+}
+
+.block.sel {
+  background: var(--sel, rgba(10, 120, 255, 0.16));
+  box-shadow: inset 2px 0 0 var(--accent, #0a78ff);
+}
+
+/* ~1s, matching the daemon's coalescing window closely enough that a burst of agent writes reads as
+   one change rather than a strobe. */
+.block.flash { animation: orch-flash 1s ease-out; }
+@keyframes orch-flash {
+  from { background: var(--flash, rgba(255, 196, 0, 0.38)); }
+  to   { background: transparent; }
+}
+
+/* On the phone a block is tapped, not dragged through, so suppress the text cursor affordance. */
+body[data-platform="ios"] .block { cursor: default; }
+
+h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
+h1 { font-size: 1.6em; } h2 { font-size: 1.35em; } h3 { font-size: 1.15em; }
+
+p, ul, ol, blockquote, table, pre { margin: 0.6em 0; }
+li { margin: 0.2em 0; }
+
+a { color: var(--accent, #0a78ff); }
+
+code {
+  font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--code, rgba(127, 127, 127, 0.12));
+  padding: 0.12em 0.34em;
+  border-radius: 4px;
+}
+
+/* Wide content scrolls INSIDE its own box; the page itself must never scroll horizontally. */
+pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--code, rgba(127, 127, 127, 0.12));
+}
+pre code { background: none; padding: 0; }
+
+blockquote {
+  margin-left: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent, #0a78ff);
+  color: var(--text2, inherit);
+  opacity: 0.9;
+}
+
+table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+th, td { border: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); padding: 5px 9px; text-align: left; }
+th { background: var(--code, rgba(127, 127, 127, 0.1)); }
+
+img { max-width: 100%; height: auto; border-radius: 6px; }
+
+hr { border: none; border-top: 1px solid var(--hair, rgba(127, 127, 127, 0.3)); margin: 1.4em 0; }
+
+/* KaTeX display math can overflow on a phone; give it its own scroller rather than the page. */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
