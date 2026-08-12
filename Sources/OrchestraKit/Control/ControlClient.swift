@@ -331,6 +331,19 @@ public final class ControlClient: @unchecked Sendable {
         try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
     }
 
+    /// Every document in the card's working directory — path + optional git status, NO content.
+    /// Discovery is a git-independent filesystem walk, so a gitignored `notes/` lists exactly like a
+    /// tracked `docs/`, and most results carry no status because git has nothing to say about them.
+    public func listDocuments(_ ref: String) async throws -> [DocRef] {
+        try await call("listDocuments", .object(["ref": .string(ref)]), as: [DocRef].self)
+    }
+
+    /// One document's content, fetched on demand when the reader opens it.
+    public func readDocument(_ ref: String, path: String) async throws -> String {
+        try await call("readDocument", .object(["ref": .string(ref), "path": .string(path)]),
+                       as: String.self)
+    }
+
     /// Bytes for an image the note at `note` references. Scoped to that note's OWN references, so the
     /// endpoint is not a general worktree file read — see `OrchestraService.noteAsset`'s five gates.
     public func noteAsset(_ ref: String, note: String, asset: String) async throws -> NoteAsset {

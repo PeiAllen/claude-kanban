@@ -486,6 +486,40 @@ public struct NoteFile: Codable, Sendable, Equatable {
     }
 }
 
+/// WHICH tree a document was discovered in.
+///
+/// There is exactly one root today — the card's working directory — and this enum exists so there can
+/// be more without a wire break. A later change puts Orchestra's own planning documents outside the
+/// work tree and the reader walks two roots; encoding a bare relative path would silently hardcode
+/// "one root == the working directory" into the protocol.
+public enum DocRoot: String, Codable, Sendable {
+    /// The card's working directory. Documents are a property of the WORKSPACE, not of the card — two
+    /// cards on one directory list the same documents, the same way they show the same diff.
+    case workspace
+}
+
+/// One document the reader can open: where it is, and what git can say about it. NO CONTENT.
+///
+/// The list and the content are deliberately separate calls. Shipping content with the list is fine
+/// for three changed notes and wrong for two hundred discovered documents — different payload budget,
+/// different caching, and a phone pays for every byte.
+public struct DocRef: Codable, Sendable, Equatable, Identifiable {
+    public let root: DocRoot
+    /// Relative to `root`, never absolute.
+    public let path: String
+    /// `M`/`A` when git can speak about this file, `nil` otherwise. MOST documents have no status —
+    /// discovery is git-independent, so a file that is committed and unchanged, or sitting in a
+    /// directory git ignores, simply has nothing to report. That is correct, not missing data.
+    public let status: NoteStatus?
+
+    public var id: String { "\(root.rawValue):\(path)" }
+    public var name: String { (path as NSString).lastPathComponent }
+
+    public init(root: DocRoot = .workspace, path: String, status: NoteStatus? = nil) {
+        self.root = root; self.path = path; self.status = status
+    }
+}
+
 /// One live change to a note the daemon is watching: WHICH note moved, and its new content hash.
 ///
 /// Deliberately a NOTIFICATION, not the content. The event stays a few dozen bytes and the client

@@ -7,13 +7,15 @@ import Testing
 /// user would notice going wrong, and none of them are visible in a screenshot.
 @Suite @MainActor struct NoteReaderModelTests {
 
-    private func note(_ body: String, at path: String = "docs/a.md") -> NoteFile {
-        NoteFile(path: path, status: .modified, content: body)
+    private func doc(_ path: String = "docs/a.md", _ status: NoteStatus? = .modified) -> DocRef {
+        DocRef(path: path, status: status)
     }
 
-    private func loaded(_ files: [NoteFile]) async -> NoteReaderModel {
+    /// A model with one document already open, so the tests can get straight to the behaviour.
+    private func opened(_ body: String, path: String = "docs/a.md") async -> NoteReaderModel {
         let m = NoteReaderModel()
-        await m.load { files }
+        await m.loadList { [self.doc(path)] }
+        await m.open(self.doc(path)) { _ in body }
         return m
     }
 
@@ -21,27 +23,27 @@ import Testing
 
     @Test("a change while composing does not move the text")
     func aChangeWhileComposingIsDeferredNotApplied() async {
-        let m = await loaded([note("# A\n\nfirst\n")])
+        let m = await opened("# A\n\nfirst\n")
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
         m.draft = "why?"
 
-        await m.noteChanged { [self.note("# A\n\nSECOND\n")] }
-        #expect(m.current?.content.contains("first") == true)   // untouched mid-sentence
+        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
+        #expect(m.content?.contains("first") == true)   // untouched mid-sentence
     }
 
     @Test("closing the compose field applies the deferred change once")
     func closingComposeAppliesTheDeferredRefresh() async {
-        let m = await loaded([note("# A\n\nfirst\n")])
+        let m = await opened("# A\n\nfirst\n")
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
-        await m.noteChanged { [self.note("# A\n\nSECOND\n")] }
+        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
 
         m.cancelComment()
-        await m.applyPendingRefresh { [self.note("# A\n\nSECOND\n")] }
-        #expect(m.current?.content.contains("SECOND") == true)
+        await m.applyPendingRefresh(list: { [self.doc()] }, read: { _ in "# A\n\nSECOND\n" })
+        #expect(m.content?.contains("SECOND") == true)
 
         // ...and it is not applied twice.
         var fetches = 0
-        await m.applyPendingRefresh { fetches += 1; return [] }
+        await m.applyPendingRefresh(list: { fetches += 1; return [] }, read: { _ in nil })
         #expect(fetches == 0)
     }
 
@@ -49,12 +51,12 @@ import Testing
 
     @Test("the quote is frozen at SELECTION, not re-derived at send")
     func theQuoteIsFrozenAtSelectionNotAtSend() async {
-        let m = await loaded([note("# H\n\noriginal line\n")])
+        let m = await opened("# H\n\noriginal line\n")
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
         m.draft = "is this right?"
 
         // The file moves underneath while the user is typing.
-        await m.noteChanged { [self.note("# H\n\ncompletely different\n")] }
+        await m.changed(path: "docs/a.md", list: { [self.doc()] }, read: { _ in "# H\n\ncompletely different\n" })
 
         var sent: String?
         await m.send { sent = $0; return true }
@@ -65,7 +67,7 @@ import Testing
 
     @Test("the frozen quote carries its heading path and line range")
     func theQuoteCarriesItsAnchor() async {
-        let m = await loaded([note("# Design\n\n## Contract\n\nthe claim\n")])
+        let m = await opened("# Design\n\n## Contract\n\nthe claim\n")
         m.select(NoteSelection(blockIndex: 2, startLine: 5, endLine: 5))
         m.draft = "source?"
         var sent: String?
@@ -77,7 +79,7 @@ import Testing
 
     @Test("send is disabled until there is both an anchor and a draft")
     func sendIsDisabledWithoutAnAnchorOrADraft() async {
-        let m = await loaded([note("# A\n\nbody\n")])
+        let m = await opened("# A\n\nbody\n")
         #expect(!m.canSend)                                   // no selection
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
         #expect(!m.canSend)                                   // no draft
@@ -89,7 +91,7 @@ import Testing
 
     @Test("a failed send keeps the draft so it can be retried")
     func aFailedSendKeepsTheDraft() async {
-        let m = await loaded([note("# A\n\nbody\n")])
+        let m = await opened("# A\n\nbody\n")
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
         m.draft = "keep me"
         await m.send { _ in false }
@@ -99,7 +101,7 @@ import Testing
 
     @Test("a successful send clears the anchor and the draft")
     func aSuccessfulSendClears() async {
-        let m = await loaded([note("# A\n\nbody\n")])
+        let m = await opened("# A\n\nbody\n")
         m.select(NoteSelection(blockIndex: 1, startLine: 3, endLine: 3))
         m.draft = "done"
         await m.send { _ in true }
@@ -118,20 +120,19 @@ import Testing
         // Modelled deterministically rather than with a race: the OLD load runs a COMPLETE newer load
         // from inside its own fetch, so by the time OLD returns its epoch is provably stale. No gate,
         // no timing, no flake.
-        let m = await loaded([note("v1")])
-        let old = note("OLD"), new = note("NEW")
-        await m.load {
-            await m.load { [new] }      // a newer load starts AND finishes first
-            return [old]                // ...then the older one returns
+        let m = await opened("v1")
+        await m.open(doc()) { _ in
+            await m.open(self.doc()) { _ in "NEW" }   // a newer open starts AND finishes first
+            return "OLD"                              // ...then the older one returns
         }
-        #expect(m.current?.content == "NEW")
+        #expect(m.content == "NEW")
     }
 
     @Test("a vanished note falls back to another rather than showing nothing")
     func aDeletedNoteFallsBack() async {
-        let m = await loaded([note("a", at: "docs/a.md"), note("b", at: "docs/b.md")])
-        m.selectedPath = "docs/a.md"
-        await m.load { [self.note("b", at: "docs/b.md")] }        // a.md was deleted
-        #expect(m.selectedPath == "docs/b.md")
+        let m = await opened("a", path: "docs/a.md")
+        await m.loadList { [self.doc("docs/b.md")] }              // a.md was deleted
+        #expect(m.selected == nil)                                // and the reader stops showing it
+        #expect(m.content == nil)
     }
 }

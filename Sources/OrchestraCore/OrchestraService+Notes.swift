@@ -19,6 +19,68 @@ extension OrchestraService {
         return try await offActor { l.changedNoteFiles(worktree: cwd, parentRef: self.resolvedParentRef(t)) }
     }
 
+    /// Every document in the card's working directory — path + whatever git can say, NO CONTENT.
+    ///
+    /// Discovery is a pruned filesystem walk, deliberately git-independent: a gitignored `notes/` must
+    /// be found exactly like a tracked `docs/`. Git runs afterwards ONLY to decorate the subset it
+    /// knows about, so most results carry no status, which is correct rather than missing data.
+    ///
+    /// Content is a separate call. Shipping it here is fine for three changed notes and wrong for two
+    /// hundred documents — a phone pays for every byte, and the reader opens one file at a time.
+    public func listDocuments(_ id: UUID) async throws -> [DocRef] {
+        let t = try await require(id)
+        // Documents are a property of the WORKING DIRECTORY, not of the card, so there is no card-kind
+        // gate here: a freeform or scratch card has documents exactly like a worktree card does.
+        try resolver.assertAllowed(t.cwd)
+        let l = launcher, cwd = t.cwd
+        let parentRef = resolvedParentRef(t)
+        return try await offActor {
+            let discovered = DocumentDiscovery.walk(root: cwd)
+            // Git's opinion, where it has one. A non-repo, or a card with no resolvable base, simply
+            // yields no statuses — the walk already found the files.
+            let statuses = Dictionary(
+                l.changedMarkdown(worktree: cwd, parentRef: parentRef)
+                    .map { ($0.path, $0.added ? NoteStatus.added : .modified) },
+                uniquingKeysWith: { a, _ in a })
+            let refs = discovered.map { DocRef(path: $0, status: statuses[$0]) }
+            // CHANGED FIRST, then everything else, each alphabetical. What the agent just touched is
+            // what the reviewer came for; the rest is browsable below it.
+            return refs.sorted {
+                let (a, b) = ($0.status != nil, $1.status != nil)
+                return a == b ? $0.path < $1.path : a
+            }
+        }
+    }
+
+    /// One document's content. Size-capped like `changedNoteFiles`, so a pathological file cannot blow
+    /// the wire. The path must be one `listDocuments` would return — the same membership rule the asset
+    /// endpoint uses, so a client cannot read an arbitrary file by naming it here.
+    public func readDocument(_ id: UUID, path: String) async throws -> String {
+        let t = try await require(id)
+        try resolver.assertAllowed(t.cwd)
+        let cwd = t.cwd, pathResolver = resolver
+        return try await offActor {
+            guard DocumentDiscovery.isDocument(path), !DocumentDiscovery.isPruned(relativePath: path)
+            else { throw OrchestraError.invalidParams("\(path) is not a readable document") }
+            // REALPATH containment, same rule as the asset endpoint: `standardizingPath` would leave a
+            // symlink intact and let `notes/x -> /` escape a textual prefix check.
+            let abs = PathResolver.canonical((cwd as NSString).appendingPathComponent(path))
+            let root = PathResolver.canonical(cwd)
+            guard abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+                throw OrchestraError.pathNotAllowed(path)
+            }
+            try pathResolver.assertAllowed(abs)
+            guard let data = FileManager.default.contents(atPath: abs) else {
+                throw OrchestraError.io("cannot read \(path)")
+            }
+            var content = String(decoding: data, as: UTF8.self)
+            if content.utf8.count > Launcher.noteContentCap {
+                content = String(content.prefix(Launcher.noteContentCap)) + "\n… (document truncated)\n"
+            }
+            return content
+        }
+    }
+
     /// Reconcile the daemon's note watches against the live worktree cards.
     ///
     /// Idempotent and self-healing, so call it freely: at boot after recovery, once a card's worktree

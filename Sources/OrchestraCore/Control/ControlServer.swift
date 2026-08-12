@@ -200,6 +200,21 @@ public final class ControlServer: @unchecked Sendable {
             }
             let task = try await service.resolveRef(ref)
             return try JSONValue(encodable: try await service.changedNotes(task.id))
+        case "listDocuments":
+            // The reader's document list: path + optional git status, NO content. Split from
+            // `readDocument` on purpose — shipping content with the list is fine for three changed
+            // notes and wrong for two hundred documents. Internal + app-only, like `changedNotes`.
+            guard let p = req.params, let ref = p.optString("ref") else {
+                throw OrchestraError.invalidParams("listDocuments needs ref")
+            }
+            let task = try await service.resolveRef(ref)
+            return try JSONValue(encodable: try await service.listDocuments(task.id))
+        case "readDocument":
+            guard let p = req.params, let ref = p.optString("ref"), let path = p.optString("path") else {
+                throw OrchestraError.invalidParams("readDocument needs ref + path")
+            }
+            let task = try await service.resolveRef(ref)
+            return .string(try await service.readDocument(task.id, path: path))
         case "noteAsset":
             // An image a note references, read by the daemon so the phone — which cannot reach the
             // daemon's disk — renders the same page the desktop does. Internal + app-only, like

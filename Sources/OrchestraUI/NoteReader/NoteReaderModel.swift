@@ -4,7 +4,11 @@ import OrchestraKit
 
 /// The reader's decision logic, split from its view so it can be tested without SwiftUI.
 ///
-/// Three behaviours here are subtle enough to be worth stating up front:
+/// The list and the content are SEPARATE loads. Shipping content with the list is fine for three
+/// changed notes and wrong for two hundred discovered documents — a phone pays for every byte, and the
+/// reader only ever displays one document at a time.
+///
+/// Three behaviours here are subtle enough to state up front:
 ///
 ///  - **The quote is frozen at SELECTION time.** Refresh is paused while composing and the file may
 ///    move underneath, so re-deriving the excerpt at send time could quote text the user never saw.
@@ -15,68 +19,114 @@ import OrchestraKit
 ///    coming.
 @MainActor
 public final class NoteReaderModel: ObservableObject {
-    @Published public private(set) var notes: [NoteFile] = []
-    @Published public private(set) var loading = true
-    @Published public var selectedPath: String?
+    /// Every document in the working directory, changed-first (the daemon sorts).
+    @Published public private(set) var documents: [DocRef] = []
+    /// The open document's content, fetched on demand. `nil` while loading or on failure.
+    @Published public private(set) var content: String?
+    @Published public private(set) var loadingList = true
+    @Published public private(set) var loadingContent = false
+    @Published public private(set) var selected: DocRef?
+
+    /// The document-list filter. Most workspaces have far more documents than a chip bar can show.
+    @Published public var search = ""
+    /// Whether the picker is showing. Opens automatically when nothing is selected yet.
+    @Published public var browsing = false
 
     /// The frozen anchor for the comment being written. Non-nil once the user picks a passage.
     @Published public private(set) var comment: NoteComment?
     @Published public var draft = ""
     @Published public private(set) var sending = false
 
-    /// True while the compose field is open. Live refresh is held off for exactly this window.
     public var composing: Bool { comment != nil }
-    /// A change arrived while composing; applied when the field closes.
     private var pendingRefresh = false
-    /// Monotonic load counter. A response whose epoch is stale is discarded.
-    private var loadEpoch = 0
+    private var listEpoch = 0
+    private var contentEpoch = 0
 
     public init() {}
 
-    public var current: NoteFile? {
-        notes.first { $0.path == selectedPath } ?? notes.first
+    /// The filtered list. Matches on the whole relative path, not just the filename, so `docs/api`
+    /// narrows the way a reader expects.
+    public var visibleDocuments: [DocRef] {
+        let q = search.trimmed.lowercased()
+        guard !q.isEmpty else { return documents }
+        return documents.filter { $0.path.lowercased().contains(q) }
     }
 
     /// Send is disabled while a request is in flight. That is the ONLY double-send guard, and it is
-    /// deliberate: a comment carries no dedup key, because a deliberate re-send is meaningful and must
+    /// deliberate: a comment carries no dedup key, because a repeated comment is meaningful and must
     /// never be silently suppressed.
     public var canSend: Bool { !sending && !draft.trimmed.isEmpty && comment != nil }
 
     // MARK: - loading
 
-    /// Fetch the card's changed notes. Epoch-gated, so an older in-flight load can never overwrite a
-    /// newer one.
-    public func load(fetch: () async -> [NoteFile]) async {
-        loadEpoch &+= 1
-        let mine = loadEpoch
+    /// Fetch the document LIST. Keeps the current selection if it survived, else opens the first.
+    public func loadList(fetch: () async -> [DocRef]) async {
+        listEpoch &+= 1
+        let mine = listEpoch
         let fetched = await fetch()
-        guard mine == loadEpoch else { return }        // a newer load already won
-        notes = fetched
-        if selectedPath == nil || !fetched.contains(where: { $0.path == selectedPath }) {
-            selectedPath = fetched.first?.path
+        guard mine == listEpoch else { return }        // a newer load already won
+        documents = fetched
+        loadingList = false
+        if let sel = selected, !fetched.contains(where: { $0.path == sel.path }) {
+            // The open document was deleted. Stop showing it rather than leaving stale text on screen.
+            selected = nil
+            content = nil
+            cancelComment()                            // its anchor no longer refers to anything
         }
-        loading = false
+        // Deliberately does NOT auto-select: `selected` must never be set without its content having
+        // been fetched, or the reader claims a document is open while showing nothing. Choosing what
+        // to open belongs to the caller, which can await the content load.
+        if selected == nil { browsing = true }
+    }
+
+    /// Open a document: fetch its content. Epoch-gated separately from the list, so a slow content
+    /// load for a document the user has already navigated away from cannot land.
+    public func open(_ doc: DocRef, fetch: (String) async -> String?) async {
+        selected = doc
+        browsing = false
+        cancelComment()                                // an anchor belongs to the document it came from
+        loadingContent = true
+        contentEpoch &+= 1
+        let mine = contentEpoch
+        let body = await fetch(doc.path)
+        guard mine == contentEpoch else { return }
+        content = body
+        loadingContent = false
     }
 
     /// A live change for this card. Held while composing so the text cannot move mid-sentence.
-    public func noteChanged(fetch: @escaping () async -> [NoteFile]) async {
+    public func changed(path: String?, list: () async -> [DocRef],
+                        read: @escaping (String) async -> String?) async {
         guard !composing else { pendingRefresh = true; return }
-        await load(fetch: fetch)
+        await refresh(list: list, read: read)
     }
 
     /// Apply anything that arrived while the compose field was open.
-    public func applyPendingRefresh(fetch: @escaping () async -> [NoteFile]) async {
+    public func applyPendingRefresh(list: () async -> [DocRef],
+                                    read: @escaping (String) async -> String?) async {
         guard pendingRefresh else { return }
         pendingRefresh = false
-        await load(fetch: fetch)
+        await refresh(list: list, read: read)
+    }
+
+    /// Re-read the list AND the open document. The list can change too — an agent creating a document
+    /// is exactly as interesting as one editing it.
+    private func refresh(list: () async -> [DocRef], read: (String) async -> String?) async {
+        await loadList(fetch: list)
+        guard let sel = selected else { return }
+        contentEpoch &+= 1
+        let mine = contentEpoch
+        let body = await read(sel.path)
+        guard mine == contentEpoch else { return }
+        content = body
     }
 
     // MARK: - selecting + commenting
 
-    /// Freeze a comment against the note as it reads RIGHT NOW.
+    /// Freeze a comment against the document as it reads RIGHT NOW.
     public func select(_ selection: NoteSelection) {
-        guard let note = current else { return }
-        comment = NoteComment.capture(path: note.path, source: note.content,
+        guard let doc = selected, let body = content else { return }
+        comment = NoteComment.capture(path: doc.path, source: body,
                                       startLine: selection.startLine, endLine: selection.endLine)
     }
 
@@ -85,8 +135,8 @@ public final class NoteReaderModel: ObservableObject {
         draft = ""
     }
 
-    /// Build the message, hand it to `send`, and clear on success. Returns the text that was sent so a
-    /// caller can assert on it.
+    /// Build the message, hand it to `deliver`, and clear on success. Returns the sent text so a caller
+    /// can assert on it.
     @discardableResult
     public func send(_ deliver: (String) async -> Bool) async -> String? {
         guard let c = comment, !draft.trimmed.isEmpty, !sending else { return nil }

@@ -72,11 +72,15 @@ actor NoteWatchService {
             let token = watcher.watch(directory: root) { [weak self] event in
                 guard let self else { return }
                 // CHEAPEST GATE FIRST. A worktree root is watched recursively, so a build floods this
-                // with .git / .build / node_modules churn. A suffix check costs nothing; hashing does
-                // not, so nothing but markdown ever reaches the file read.
-                let md = event.paths.filter { $0.lowercased().hasSuffix(".md") }
-                guard !md.isEmpty || event.needsRescan else { return }
-                let changed = Set(md.map { PathResolver.canonical($0) })
+                // with .git / .build / node_modules churn. An extension check costs nothing; hashing
+                // does not, so nothing but a document ever reaches a file read.
+                //
+                // The predicate is DocumentDiscovery's, shared on purpose: if the watcher and the
+                // walk disagreed, a change under a denied directory would emit an event for a
+                // document the list never shows.
+                let docs = event.paths.filter { DocumentDiscovery.isDocument($0) }
+                guard !docs.isEmpty || event.needsRescan else { return }
+                let changed = Set(docs.map { PathResolver.canonical($0) })
                 _Concurrency.Task {
                     await self.observe(cardId: id, root: root,
                                        changed: changed, rescan: event.needsRescan)
@@ -98,14 +102,17 @@ actor NoteWatchService {
             : changed
         for abs in targets.sorted() {
             guard abs.hasPrefix(prefix) else { continue }     // never leave the card's own tree
+            let rel = String(abs.dropFirst(prefix.count))
+            // The same pruning the walk applies, so the watcher can never surface a document the
+            // list will not show.
+            guard !DocumentDiscovery.isPruned(relativePath: rel) else { continue }
             let now = hash(abs)
             // `lastHash[abs]` is a double optional: `.none` = never seen, `.some(nil)` = known absent.
             if let seen = lastHash[abs], seen == now { continue }   // suppress unchanged
             lastHash[abs] = now
             // `nil` means the file is GONE. That is reportable: suppressing it would leave the reader
             // displaying a note that no longer exists.
-            emit(NoteChange(cardId: cardId, path: String(abs.dropFirst(prefix.count)),
-                            contentHash: now))
+            emit(NoteChange(cardId: cardId, path: rel, contentHash: now))
         }
     }
 }

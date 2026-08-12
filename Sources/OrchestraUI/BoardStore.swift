@@ -1275,6 +1275,15 @@ public class BoardStore: ObservableObject {
     public func changedNotes(_ id: UUID) async -> [NoteFile] {
         (try? await client.changedNotes(id.uuidString)) ?? []
     }
+    /// The card's documents — list only, no content. `[]` on any error so the reader degrades to an
+    /// empty state rather than failing.
+    public func listDocuments(_ id: UUID) async -> [DocRef] {
+        (try? await client.listDocuments(id.uuidString)) ?? []
+    }
+    /// One document's content, fetched when the reader opens it. `nil` on failure.
+    public func readDocument(_ id: UUID, path: String) async -> String? {
+        try? await client.readDocument(id.uuidString, path: path)
+    }
     /// Bytes for an image the note at `note` references, read by the daemon and scoped to that note's
     /// own references. `nil` on any failure — a missing image renders as a broken image, which is
     /// strictly better than failing the whole page.
