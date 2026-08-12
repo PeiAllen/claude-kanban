@@ -25,7 +25,7 @@ struct InspectorView: View {
                                                          set: { model.inspectorMode = $0 }))
                         switch model.inspectorMode {
                         case .diff:  DiffInspectorView(task: t)
-                        case .notes: NoteReaderView(task: t)
+                        case .documents: DocumentReaderView(task: t)
                         case .agent: AgentChrome(task: t)
                         }
                     }
@@ -99,7 +99,7 @@ private struct HeaderBar: View {
             Picker("", selection: $mode) {
                 Text("Agent").tag(InspectorMode.agent)
                 Text("Diff").tag(InspectorMode.diff)
-                Text("Notes").tag(InspectorMode.notes)
+                Text("Docs").tag(InspectorMode.documents)
             }
             .pickerStyle(.segmented)
             .labelsHidden()

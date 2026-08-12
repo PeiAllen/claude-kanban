@@ -9,13 +9,13 @@ import UIKit
 #endif
 
 /// What the page reports back. A block index and a 1-based inclusive source line range — nothing else.
-public struct NoteSelection: Equatable, Sendable {
+public struct DocumentSelection: Equatable, Sendable {
     public let blockIndex: Int
     public let startLine: Int
     public let endLine: Int
 }
 
-/// The shared WKWebView that renders a note on BOTH platforms.
+/// The shared WKWebView that renders a document on BOTH platforms.
 ///
 /// One renderer, two gestures: the Mac keeps native text selection and reports an arbitrary range; the
 /// phone disables text interaction entirely and reports the block you tap. An arbitrary text range is
@@ -30,12 +30,12 @@ public struct NoteSelection: Equatable, Sendable {
 ///    then quotes those lines from its own copy of the file.
 ///  - Navigation is refused after the initial load. A note is not a browser.
 @MainActor
-struct NoteWebView {
+struct DocumentWebView {
     let markdown: String
-    let notePath: String
+    let documentPath: String
     let theme: Theme
-    let assetProvider: @Sendable (String) async -> NoteAsset?
-    let onSelect: (NoteSelection) -> Void
+    let assetProvider: @Sendable (String) async -> DocumentAsset?
+    let onSelect: (DocumentSelection) -> Void
 
     /// `WKUserContentController` retains its handler STRONGLY. Registering the coordinator directly
     /// leaks the webview AND the coordinator for the app's lifetime, so a weak proxy sits between them.
@@ -52,14 +52,14 @@ struct NoteWebView {
     /// lets the non-Sendable `onSelect` closure cross into the coordinator without a data-race warning.
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-        var onSelect: (NoteSelection) -> Void
+        var onSelect: (DocumentSelection) -> Void
         /// The most recent payload, held until the page is ready. `evaluateJavaScript` routinely races
         /// the initial load — `window.orchestra` does not exist until reader.js has executed — so the
         /// first render is queued and flushed from `didFinish`.
         private var pending: [String: Any]?
         private var loaded = false
 
-        init(onSelect: @escaping (NoteSelection) -> Void) { self.onSelect = onSelect }
+        init(onSelect: @escaping (DocumentSelection) -> Void) { self.onSelect = onSelect }
 
         func push(_ payload: [String: Any], into web: WKWebView) {
             guard loaded else { pending = payload; return }
@@ -86,7 +86,7 @@ struct NoteWebView {
                   let start = d["startLine"] as? Int,
                   let end = d["endLine"] as? Int,
                   block >= 0, start >= 1, end >= start else { return }
-            onSelect(NoteSelection(blockIndex: block, startLine: start, endLine: end))
+            onSelect(DocumentSelection(blockIndex: block, startLine: start, endLine: end))
         }
 
         func webView(_ web: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -114,8 +114,8 @@ struct NoteWebView {
 
     fileprivate func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
-        cfg.setURLSchemeHandler(NoteSchemeHandler(assetProvider: assetProvider),
-                                forURLScheme: NoteSchemeHandler.scheme)
+        cfg.setURLSchemeHandler(DocumentSchemeHandler(assetProvider: assetProvider),
+                                forURLScheme: DocumentSchemeHandler.scheme)
         cfg.userContentController.add(WeakScriptMessageHandler(coordinator), name: "orchestraSelection")
         #if os(iOS)
         // Kill native text interaction at the ENGINE level. CSS `-webkit-user-select: none` leaves the
@@ -135,7 +135,7 @@ struct NoteWebView {
         web.backgroundColor = .clear
         web.scrollView.backgroundColor = .clear
         #endif
-        web.load(URLRequest(url: NoteSchemeHandler.pageURL))
+        web.load(URLRequest(url: DocumentSchemeHandler.pageURL))
         return web
     }
 
@@ -154,10 +154,10 @@ struct NoteWebView {
         return [
             "markdown": markdown,
             "platform": platformKey,
-            // The note's DIRECTORY resolves relative image sources; its full PATH keys the flash
+            // The document's DIRECTORY resolves relative image sources; its full PATH keys the flash
             // baseline, so switching files does not flash every block.
-            "noteDir": (notePath as NSString).deletingLastPathComponent,
-            "notePath": notePath,
+            "documentDir": (documentPath as NSString).deletingLastPathComponent,
+            "documentPath": documentPath,
             "theme": colors,
         ]
     }
@@ -172,7 +172,7 @@ struct NoteWebView {
 }
 
 #if os(macOS)
-extension NoteWebView: NSViewRepresentable {
+extension DocumentWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onSelect = onSelect
@@ -180,7 +180,7 @@ extension NoteWebView: NSViewRepresentable {
     }
 }
 #else
-extension NoteWebView: UIViewRepresentable {
+extension DocumentWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.onSelect = onSelect

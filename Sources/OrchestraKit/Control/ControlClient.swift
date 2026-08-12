@@ -339,11 +339,11 @@ public final class ControlClient: @unchecked Sendable {
     }
 
     /// Bytes for an image the note at `note` references. Scoped to that note's OWN references, so the
-    /// endpoint is not a general worktree file read — see `OrchestraService.noteAsset`'s five gates.
-    public func noteAsset(_ ref: String, note: String, asset: String) async throws -> NoteAsset {
-        try await call("noteAsset", .object([
+    /// endpoint is not a general worktree file read — see `OrchestraService.documentAsset`'s five gates.
+    public func documentAsset(_ ref: String, note: String, asset: String) async throws -> DocumentAsset {
+        try await call("documentAsset", .object([
             "ref": .string(ref), "note": .string(note), "asset": .string(asset),
-        ]), as: NoteAsset.self)
+        ]), as: DocumentAsset.self)
     }
 
     /// Typed convenience over the `spawnRepos` verb — absolute paths to the git repos under the daemon's

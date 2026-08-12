@@ -43,7 +43,7 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
 /// The daemon-owned note watcher. There is no per-client registration here by design — the daemon
 /// watches every live worktree card for its OWN reasons, exactly as it derives `shellsChanged` from
 /// tmux — so this suite has no subscribers, no refcounts, and no connection identity to exercise.
-@Suite struct NoteWatchServiceTests {
+@Suite struct DocumentWatchServiceTests {
     private let card = UUID()
     /// What a card's `cwd` looks like BEFORE canonicalization. `/tmp` is a symlink to `/private/tmp` on
     /// macOS, so using it here is deliberate: it proves the service canonicalizes, which is the whole
@@ -63,9 +63,9 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
     //   negative ("it did not emit") -> yieldBriefly, which drains the hop without a wall-clock sleep
 
     private func makeService(_ w: FakeWatcher, hash: Locked<String?>)
-        -> (NoteWatchService, Locked<[NoteChange]>) {
-        let got = Locked<[NoteChange]>([])
-        let svc = NoteWatchService(watcher: w,
+        -> (DocumentWatchService, Locked<[DocumentChange]>) {
+        let got = Locked<[DocumentChange]>([])
+        let svc = DocumentWatchService(watcher: w,
                                    hash: { _ in hash.withLock { $0 } },
                                    emit: { c in got.withLock { $0.append(c) } })
         return (svc, got)
@@ -74,7 +74,7 @@ final class FakeWatcher: FileWatching, @unchecked Sendable {
     // MARK: - what reaches a client
 
     @Test("a changed note emits once, with its new hash")
-    func emitsWhenAWatchedNoteChanges() async throws {
+    func emitsWhenAWatchedDocumentChanges() async throws {
         let w = FakeWatcher(); let hash = Locked<String?>("h1")
         let (svc, got) = makeService(w, hash: hash)
         await svc.sync(cards: [(id: card, worktree: wtInput)])

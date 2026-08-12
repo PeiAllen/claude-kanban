@@ -2,20 +2,20 @@ import Foundation
 import Testing
 @testable import OrchestraKit
 
-/// The allowlist behind `noteAsset`. This is what turns "any image-extension file in the worktree"
+/// The allowlist behind `documentAsset`. This is what turns "any image-extension file in the worktree"
 /// into "the images THIS note points at", so the tests here are a security boundary, not a nicety.
 ///
 /// A reference form that is MISSED degrades to a broken image. A form that is wrongly INCLUDED widens
 /// the daemon's file-read surface — so the negative cases matter more than the positive ones.
 @Suite struct MarkdownAssetsTests {
     private func refs(_ s: String, _ dir: String = "docs") -> Set<String> {
-        MarkdownAssets.referencedImages(in: s, noteDir: dir)
+        MarkdownAssets.referencedImages(in: s, documentDir: dir)
     }
 
     // MARK: - forms that must be found
 
-    @Test("an inline image resolves against the note's directory")
-    func inlineImageResolvesAgainstTheNoteDirectory() {
+    @Test("an inline image resolves against the document's directory")
+    func inlineImageResolvesAgainstTheDocumentDirectory() {
         #expect(refs("![board](images/board.png)") == ["docs/images/board.png"])
     }
 

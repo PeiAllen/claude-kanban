@@ -6,11 +6,11 @@ import OrchestraKit
 /// One surface for the whole loop: browse the workspace's documents, read one, pick a passage, write a
 /// comment, send it to this card's agent — and watch the document refresh itself as the agent edits.
 @MainActor
-public struct NoteReaderView: View {
+public struct DocumentReaderView: View {
     public let task: Task
     @EnvironmentObject private var model: BoardModel
     @Environment(\.theme) private var theme: Theme
-    @StateObject private var reader = NoteReaderModel()
+    @StateObject private var reader = DocumentReaderModel()
     @FocusState private var composeFocused: Bool
 
     public init(task: Task) { self.task = task }
@@ -28,7 +28,7 @@ public struct NoteReaderView: View {
             }
             // A live change for THIS card. The model holds it while composing so text cannot move
             // under the user mid-sentence.
-            .onChange(of: model.noteChanges[task.id]) { _, change in
+            .onChange(of: model.documentChanges[task.id]) { _, change in
                 guard let change else { return }
                 _Concurrency.Task {
                     await reader.changed(path: change.path, list: fetchList, read: fetchBody)
@@ -156,11 +156,11 @@ public struct NoteReaderView: View {
 
     @ViewBuilder private var documentBody: some View {
         if let doc = reader.selected, let body = reader.content {
-            NoteWebView(markdown: body,
-                        notePath: doc.path,
+            DocumentWebView(markdown: body,
+                        documentPath: doc.path,
                         theme: theme,
                         assetProvider: { asset in
-                            await model.noteAsset(task.id, note: doc.path, asset: asset)
+                            await model.documentAsset(task.id, note: doc.path, asset: asset)
                         },
                         onSelect: { reader.select($0); composeFocused = true })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -238,7 +238,7 @@ public struct NoteReaderView: View {
         }
     }
 
-    private func statusBadge(_ status: NoteStatus) -> some View {
+    private func statusBadge(_ status: DocumentStatus) -> some View {
         let c: SemColor = status == .added ? theme.green : theme.amber
         return Text(status.rawValue)
             .font(.system(size: 10, weight: .bold, design: .monospaced))

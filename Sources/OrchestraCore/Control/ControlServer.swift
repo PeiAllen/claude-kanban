@@ -206,7 +206,7 @@ public final class ControlServer: @unchecked Sendable {
             }
             let task = try await service.resolveRef(ref)
             return .string(try await service.readDocument(task.id, path: path))
-        case "noteAsset":
+        case "documentAsset":
             // An image a note references, read by the daemon so the phone — which cannot reach the
             // daemon's disk — renders the same page the desktop does. Internal + app-only, like
             // `changedNotes`: NOT a registry Command, so it never becomes an MCP tool.
@@ -215,11 +215,11 @@ public final class ControlServer: @unchecked Sendable {
             // endpoint degenerates into an arbitrary worktree image read.
             guard let p = req.params, let ref = p.optString("ref"),
                   let note = p.optString("note"), let asset = p.optString("asset") else {
-                throw OrchestraError.invalidParams("noteAsset needs ref + note + asset")
+                throw OrchestraError.invalidParams("documentAsset needs ref + note + asset")
             }
             let task = try await service.resolveRef(ref)
             return try JSONValue(encodable:
-                try await service.noteAsset(task.id, notePath: note, assetPath: asset))
+                try await service.documentAsset(task.id, documentPath: note, assetPath: asset))
         case "media":
             // App-only transcript image retrieval. The caller supplies an opaque id, never a filesystem
             // path, and the service scopes it to the card's current session epoch.

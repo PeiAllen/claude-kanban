@@ -5,7 +5,7 @@ import OrchestraKit
 /// The reader's decision logic, split from its view so it can be tested without SwiftUI.
 ///
 /// The list and the content are SEPARATE loads. Shipping content with the list is fine for three
-/// changed notes and wrong for two hundred discovered documents — a phone pays for every byte, and the
+/// changed documents and wrong for two hundred discovered documents — a phone pays for every byte, and the
 /// reader only ever displays one document at a time.
 ///
 /// Three behaviours here are subtle enough to state up front:
@@ -18,7 +18,7 @@ import OrchestraKit
 ///    older response overwrites the newer one and nothing repairs it, because no further event is
 ///    coming.
 @MainActor
-public final class NoteReaderModel: ObservableObject {
+public final class DocumentReaderModel: ObservableObject {
     /// Every document in the working directory, changed-first (the daemon sorts).
     @Published public private(set) var documents: [DocRef] = []
     /// The open document's content, fetched on demand. `nil` while loading or on failure.
@@ -33,7 +33,7 @@ public final class NoteReaderModel: ObservableObject {
     @Published public var browsing = false
 
     /// The frozen anchor for the comment being written. Non-nil once the user picks a passage.
-    @Published public private(set) var comment: NoteComment?
+    @Published public private(set) var comment: DocumentComment?
     @Published public var draft = ""
     @Published public private(set) var sending = false
 
@@ -124,9 +124,9 @@ public final class NoteReaderModel: ObservableObject {
     // MARK: - selecting + commenting
 
     /// Freeze a comment against the document as it reads RIGHT NOW.
-    public func select(_ selection: NoteSelection) {
+    public func select(_ selection: DocumentSelection) {
         guard let doc = selected, let body = content else { return }
-        comment = NoteComment.capture(path: doc.path, source: body,
+        comment = DocumentComment.capture(path: doc.path, source: body,
                                       startLine: selection.startLine, endLine: selection.endLine)
     }
 

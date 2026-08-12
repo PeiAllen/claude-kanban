@@ -245,7 +245,7 @@ extension OrchestraService {
         //     EVERY live card with a working directory, not just worktree cards: documents belong to
         //     the directory, so a freeform or scratch card has them too. Cards sharing a directory
         //     share one stream.
-        await noteWatches.sync(cards: tasks
+        await documentWatches.sync(cards: tasks
             .filter { !$0.archived && !$0.cwd.isEmpty }
             .map { (id: $0.id, worktree: $0.cwd) })
     }

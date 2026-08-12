@@ -2,20 +2,20 @@ import SwiftUI
 import OrchestraKit
 import OrchestraUI
 
-/// The phone's Notes tab: a thin navigation wrapper around the SHARED reader.
+/// The phone's Docs tab: a thin navigation wrapper around the SHARED reader.
 ///
 /// Everything that used to live here — the file switcher, the markdown rendering, the content fetch —
-/// now lives in `OrchestraUI.NoteReaderView`, which the desktop inspector uses too. One renderer, one
+/// now lives in `OrchestraUI.DocumentReaderView`, which the desktop inspector uses too. One renderer, one
 /// selection model, one comment flow; the only per-platform difference is the gesture, and that is
 /// handled inside the webview.
-struct NotesPage: View {
+struct DocumentsPage: View {
     let task: Task
     @Environment(\.theme) private var theme: Theme
 
     var body: some View {
-        NoteReaderView(task: task)
+        DocumentReaderView(task: task)
             .background(theme.winBg)
-            .navigationTitle("Notes")
+            .navigationTitle("Docs")
             .navigationBarTitleDisplayMode(.inline)
     }
 }

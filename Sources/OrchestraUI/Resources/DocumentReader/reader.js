@@ -14,7 +14,7 @@
   let platform = "mac";
   let blocks = [];          // [{start, end, raw, token, hash}]
   let prevHashes = null;    // multiset of the previous render's block hashes
-  let prevNoteKey = null;   // which note that multiset describes
+  let prevDocKey = null;    // which document that multiset describes
 
   marked.use(markedKatex({ throwOnError: false }));
 
@@ -39,17 +39,17 @@
   }
 
   // Rewrite note-relative image sources so they resolve against the NOTE's directory, not the page's.
-  // The page lives at `orchestra-note://note/index.html`, so a note at `docs/07-app-ui.md` referencing
+  // The page lives at `orchestra-doc://doc/index.html`, so a document at `docs/07-app-ui.md` referencing
   // `images/board.png` would otherwise request `<worktree>/images/board.png` instead of
   // `<worktree>/docs/images/board.png`. The usual fix — <base href> — is closed off on purpose by the
   // CSP's `base-uri 'none'`, so rewrite explicitly and keep the CSP intact.
-  function resolveAssets(el, noteDir) {
+  function resolveAssets(el, documentDir) {
     el.querySelectorAll("img[src]").forEach((img) => {
       const src = img.getAttribute("src") || "";
       // Leave `data:` and any explicit scheme alone; the CSP decides whether they may load.
       if (!src || /^[a-z][a-z0-9+.\-]*:/i.test(src) || src.startsWith("//")) return;
-      const joined = src.startsWith("/") ? src.slice(1) : (noteDir ? noteDir + "/" + src : src);
-      img.setAttribute("src", "orchestra-note://note/" + normalizePath(joined));
+      const joined = src.startsWith("/") ? src.slice(1) : (documentDir ? documentDir + "/" + src : src);
+      img.setAttribute("src", "orchestra-doc://doc/" + normalizePath(joined));
     });
   }
 
@@ -102,9 +102,9 @@
     applyTheme(opts.theme);
 
     // Flash means "this note changed under you", so the baseline is PER NOTE. Without this, switching
-    // files diffs the new note against the previous note's hashes and flashes essentially everything.
-    const noteKey = opts.notePath || "";
-    if (noteKey !== prevNoteKey) { prevHashes = null; prevNoteKey = noteKey; }
+    // files diffs the new note against the previous document's hashes and flashes essentially everything.
+    const docKey = opts.documentPath || "";
+    if (docKey !== prevDocKey) { prevHashes = null; prevDocKey = docKey; }
 
     const src = NORMALIZE(markdown);
     const laid = layout(src);
@@ -135,7 +135,7 @@
       el.innerHTML = DOMPurify.sanitize(renderBlock(b, laid.links), {
         ADD_TAGS: ["semantics", "annotation"], ADD_ATTR: ["encoding"],
       });
-      resolveAssets(el, opts.noteDir);          // AFTER sanitize, so the sanitizer saw the original
+      resolveAssets(el, opts.documentDir);          // AFTER sanitize, so the sanitizer saw the original
       // Flash only genuinely NEW content. Matching by hash multiset (not by index) means inserting a
       // block flashes just that block instead of everything below it.
       if (prevHashes) {

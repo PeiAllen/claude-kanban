@@ -2,16 +2,16 @@ import Foundation
 
 /// A late-bound sink for note changes.
 ///
-/// `OrchestraService` builds its `NoteWatchService` as a stored property, so the emit closure cannot
+/// `OrchestraService` builds its `DocumentWatchService` as a stored property, so the emit closure cannot
 /// capture `self` — `self` is not usable until every stored property is initialized. The service
 /// constructs this box first, hands it to the watcher, then wires the real sink once initialization
 /// completes. Emitting before the sink is set is a silent no-op, which is correct: nothing can be
 /// watching yet.
-final class NoteEmitBox: @unchecked Sendable {
+final class DocumentEmitBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var sink: (@Sendable (NoteChange) -> Void)?
-    func set(_ s: @escaping @Sendable (NoteChange) -> Void) { lock.withLock { sink = s } }
-    func emit(_ change: NoteChange) { (lock.withLock { sink })?(change) }
+    private var sink: (@Sendable (DocumentChange) -> Void)?
+    func set(_ s: @escaping @Sendable (DocumentChange) -> Void) { lock.withLock { sink = s } }
+    func emit(_ change: DocumentChange) { (lock.withLock { sink })?(change) }
 }
 
 /// Daemon-owned note watching: ONE stream per live worktree card, watching that card's tree.
@@ -28,7 +28,7 @@ final class NoteEmitBox: @unchecked Sendable {
 ///
 /// A change emits only when the content HASH moves — the same "never broadcast an unchanged value" rule
 /// the report pipeline follows — so a touch, or a rewrite with identical bytes, wakes nobody.
-actor NoteWatchService {
+actor DocumentWatchService {
     /// One watch per WORKING DIRECTORY, fanned out to every card sitting on it. Documents are a
     /// property of the directory, not of the card — two cards on one workspace see the same documents
     /// — so they share a stream and one hash per file, and each still gets its own event.
@@ -36,14 +36,14 @@ actor NoteWatchService {
 
     private let watcher: any FileWatching
     private let hash: @Sendable (String) -> String?
-    private let emit: @Sendable (NoteChange) -> Void
+    private let emit: @Sendable (DocumentChange) -> Void
 
     private var streams: [String: Stream] = [:]        // canonical root -> its watch
     private var lastHash: [String: String?] = [:]      // canonical abs path -> last seen digest
 
     init(watcher: any FileWatching,
          hash: @escaping @Sendable (String) -> String?,
-         emit: @escaping @Sendable (NoteChange) -> Void) {
+         emit: @escaping @Sendable (DocumentChange) -> Void) {
         self.watcher = watcher; self.hash = hash; self.emit = emit
     }
 
@@ -121,9 +121,9 @@ actor NoteWatchService {
             if let seen = lastHash[abs], seen == now { continue }   // suppress unchanged
             lastHash[abs] = now
             // `nil` means the file is GONE. That is reportable: suppressing it would leave the reader
-            // displaying a note that no longer exists.
+            // displaying a document that no longer exists.
             // One file hashed once, fanned out to every card on this workspace.
-            for cardId in cards { emit(NoteChange(cardId: cardId, path: rel, contentHash: now)) }
+            for cardId in cards { emit(DocumentChange(cardId: cardId, path: rel, contentHash: now)) }
         }
     }
 }

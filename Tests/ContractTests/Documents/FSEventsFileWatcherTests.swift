@@ -5,7 +5,7 @@ import TestSupport
 
 /// The REAL FSEvents watcher against a real filesystem. This tier exists because the OS event stream is
 /// irreducible — the same split `Launcher`'s real-git calls already use: the primitive is pinned here,
-/// and the logic layered on top (`NoteWatchService`) is unit-tested against a fake.
+/// and the logic layered on top (`DocumentWatchService`) is unit-tested against a fake.
 ///
 /// These tests also cover a memory-safety contract that no unit test can reach. Without
 /// `kFSEventStreamCreateFlagUseCFTypes`, the SDK hands the callback a raw `char **` (FSEvents.h:215-219)

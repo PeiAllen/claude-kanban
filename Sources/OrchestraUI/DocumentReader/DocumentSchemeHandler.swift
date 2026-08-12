@@ -4,8 +4,8 @@ import OrchestraKit
 
 /// Serves the reader over a PRIVATE scheme. Two kinds of request:
 ///
-///   `orchestra-note://note/index.html`, `…/reader.js`, `…/vendor/…`  → a BUNDLED file
-///   anything else                                                     → an image the note references
+///   `orchestra-doc://doc/index.html`, `…/reader.js`, `…/vendor/…`  → a BUNDLED file
+///   anything else                                                     → an image the document references
 ///
 /// WHY A CUSTOM SCHEME, NOT `loadFileURL` OR `loadHTMLString`
 ///
@@ -15,26 +15,26 @@ import OrchestraKit
 /// the app's filesystem entirely out of the page's reach, and composes with a nested sandboxed iframe
 /// later. This is what Capacitor and comparable offline-web apps do for the same reasons.
 ///
-/// The handler holds NO note identity. `assetProvider` is built by the view with the card and the note
-/// already bound, so there is exactly one source of truth for which note's assets may be served.
-final class NoteSchemeHandler: NSObject, WKURLSchemeHandler {
-    static let scheme = "orchestra-note"
-    static let host = "note"
+/// The handler holds NO note identity. `assetProvider` is built by the view with the card and the document
+/// already bound, so there is exactly one source of truth for which document's assets may be served.
+final class DocumentSchemeHandler: NSObject, WKURLSchemeHandler {
+    static let scheme = "orchestra-doc"
+    static let host = "doc"
     static var pageURL: URL { URL(string: "\(scheme)://\(host)/index.html")! }
 
     private let root: URL?
-    private let assetProvider: @Sendable (String) async -> NoteAsset?
+    private let assetProvider: @Sendable (String) async -> DocumentAsset?
     private let lock = NSLock()
     private var live: Set<ObjectIdentifier> = []
 
     /// FAILS SOFT on a missing resource bundle. A force-unwrap here would crash a Release device build
     /// — iOS installs are Release-only, so a bundling mistake surfaces there first. A nil root serves
     /// 404s and the reader renders empty instead of taking the app down.
-    init(assetProvider: @escaping @Sendable (String) async -> NoteAsset?) {
-        self.root = NoteReaderBundle.root
+    init(assetProvider: @escaping @Sendable (String) async -> DocumentAsset?) {
+        self.root = DocumentReaderBundle.root
         self.assetProvider = assetProvider
         super.init()
-        assert(root != nil, "NoteReader resources are missing from the app bundle")
+        assert(root != nil, "DocumentReader resources are missing from the app bundle")
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
@@ -43,7 +43,7 @@ final class NoteSchemeHandler: NSObject, WKURLSchemeHandler {
         let rel = String(url.path.drop(while: { $0 == "/" }))
 
         // Bundled first. Containment is COMPONENT-WISE, not a substring prefix: with a root ending in
-        // `NoteReader`, a bare `hasPrefix` would also accept a sibling `NoteReader-private/…`.
+        // `DocumentReader`, a bare `hasPrefix` would also accept a sibling `DocumentReader-private/…`.
         if let root {
             let rootPath = root.standardizedFileURL.path
             let candidate = root.appendingPathComponent(rel).standardizedFileURL
@@ -55,8 +55,8 @@ final class NoteSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         // Otherwise it is an image the current note references. `rel` is already worktree-relative,
-        // because reader.js rewrote every img[src] against the note's directory before requesting it.
-        // The daemon re-validates against that note's own references, so a bad path fails there too.
+        // because reader.js rewrote every img[src] against the document's directory before requesting it.
+        // The daemon re-validates against that document's own references, so a bad path fails there too.
         _Concurrency.Task { [assetProvider] in
             let asset = await assetProvider(rel)
             await MainActor.run {

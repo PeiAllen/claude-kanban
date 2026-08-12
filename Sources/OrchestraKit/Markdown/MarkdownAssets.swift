@@ -1,21 +1,21 @@
 import Foundation
 
-/// The set of LOCAL images a note references — the allowlist behind the `noteAsset` endpoint.
+/// The set of LOCAL images a document references — the allowlist behind the `documentAsset` endpoint.
 ///
 /// This is what keeps that endpoint from being a general worktree file read. Without it the daemon
-/// serves any image-extension file under any card's worktree; with it, it serves only what the note
+/// serves any image-extension file under any card's worktree; with it, it serves only what the document
 /// being read actually points at.
 ///
 /// Scanning errs toward EXCLUSION. A reference form this misses degrades to a broken image, which is
 /// visible and harmless. A form it wrongly includes widens the daemon's read surface, which is not. In
 /// particular only the image form `![…](…)` counts — `[text](…)` is a link, and treating links as
-/// images would re-widen the allowlist to any path a note happens to mention.
+/// images would re-widen the allowlist to any path a document happens to mention.
 public enum MarkdownAssets {
 
     /// Worktree-relative paths of every local image `source` references, each resolved against
-    /// `noteDir` and normalized. Remote URLs and `data:` URIs are excluded: the CSP blocks the first,
+    /// `documentDir` and normalized. Remote URLs and `data:` URIs are excluded: the CSP blocks the first,
     /// and the page never asks the daemon for the second.
-    public static func referencedImages(in source: String, noteDir: String) -> Set<String> {
+    public static func referencedImages(in source: String, documentDir: String) -> Set<String> {
         let text = stripFencedCode(MarkdownOutline.normalized(source))
         var out = Set<String>()
 
@@ -28,16 +28,16 @@ public enum MarkdownAssets {
 
         // `![alt](target)` — target may be <bracketed> and may carry a "title".
         for m in matches(inlineImagePattern, in: text) {
-            add(target(fromInline: m[1]), to: &out, noteDir: noteDir)
+            add(target(fromInline: m[1]), to: &out, documentDir: documentDir)
         }
         // `![alt][label]` and the collapsed `![label][]`.
         for m in matches(refImagePattern, in: text) {
             let label = (m[2].isEmpty ? m[1] : m[2]).lowercased()
-            if let dest = definitions[label] { add(dest, to: &out, noteDir: noteDir) }
+            if let dest = definitions[label] { add(dest, to: &out, documentDir: documentDir) }
         }
         // Raw `<img src=…>`, since the settled format keeps formatting HTML.
         for m in matches(imgTagPattern, in: text) {
-            add(m[1].isEmpty ? m[2] : m[1], to: &out, noteDir: noteDir)
+            add(m[1].isEmpty ? m[2] : m[1], to: &out, documentDir: documentDir)
         }
         return out
     }
@@ -65,7 +65,7 @@ public enum MarkdownAssets {
     /// `<img … src="…">` with either quote style.
     private static let imgTagPattern = #"(?i)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#
 
-    /// Drop fenced code before scanning, so a note that DOCUMENTS markdown syntax cannot widen its own
+    /// Drop fenced code before scanning, so a document that DOCUMENTS markdown syntax cannot widen its own
     /// allowlist by containing an example image reference.
     private static func stripFencedCode(_ s: String) -> String {
         var kept: [Substring] = []
@@ -101,7 +101,7 @@ public enum MarkdownAssets {
         return s
     }
 
-    private static func add(_ raw: String, to set: inout Set<String>, noteDir: String) {
+    private static func add(_ raw: String, to set: inout Set<String>, documentDir: String) {
         let src = raw.trimmingCharacters(in: .whitespaces)
         guard !src.isEmpty, !src.hasPrefix("//") else { return }
         // Anything carrying a scheme is remote or inline; neither is ours to serve.
@@ -112,7 +112,7 @@ public enum MarkdownAssets {
             }
         }
         let joined = src.hasPrefix("/") ? String(src.dropFirst())
-                                        : (noteDir.isEmpty ? src : noteDir + "/" + src)
+                                        : (documentDir.isEmpty ? src : documentDir + "/" + src)
         let path = normalize(joined)
         guard !path.isEmpty else { return }
         set.insert(path)

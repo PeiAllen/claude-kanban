@@ -11,7 +11,7 @@ import Foundation
 /// the human writes the remark, and the author decides whether to answer, to edit, or both. An
 /// instruction like "address this in the document" forces one response mode, and for a question comment
 /// it makes the document messy.
-public struct NoteComment: Equatable, Sendable {
+public struct DocumentComment: Equatable, Sendable {
     /// Relative to the card's working directory, exactly as `DocRef.path` gives it.
     public let path: String
     /// 1-based and inclusive. `nil` omits the `:a-b` suffix.
@@ -31,9 +31,9 @@ public struct NoteComment: Equatable, Sendable {
     /// Freeze a comment against `source`. `source` may be raw file text — it is normalized here, so no
     /// caller has to remember to do it.
     public static func capture(path: String, source: String,
-                               startLine: Int, endLine: Int) -> NoteComment {
+                               startLine: Int, endLine: Int) -> DocumentComment {
         let norm = MarkdownOutline.normalized(source)
-        return NoteComment(
+        return DocumentComment(
             path: path,
             startLine: startLine,
             endLine: endLine,

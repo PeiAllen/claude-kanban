@@ -1,5 +1,5 @@
 #!/bin/bash
-# Vendor the note reader's JS/CSS/fonts into the OrchestraUI resource bundle.
+# Vendor the document reader's JS/CSS/fonts into the OrchestraUI resource bundle.
 #
 # Re-runnable, and it pins exact versions so the vendored tree is reproducible. NETWORK IS REQUIRED,
 # so run this UNSANDBOXED. The output is COMMITTED — the app never fetches anything at runtime, which
@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DEST=Sources/OrchestraUI/Resources/NoteReader/vendor
+DEST=Sources/OrchestraUI/Resources/DocumentReader/vendor
 MARKED=18.0.9
 MKE=5.1.10
 KATEX=0.18.4

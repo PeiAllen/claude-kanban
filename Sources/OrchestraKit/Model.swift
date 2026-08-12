@@ -469,9 +469,9 @@ public struct TreeStat: Codable, Sendable, Equatable {
 
 // MARK: - Notes (the phone's Notes page)
 
-/// Whether a changed note is modified vs the branch base (`M`) or newly added (`A`). Deletions never
-/// appear — a deleted note has nothing to render. Wire form is the bare git status letter.
-public enum NoteStatus: String, Codable, Sendable { case modified = "M", added = "A" }
+/// Whether a changed document is modified vs the branch base (`M`) or newly added (`A`). Deletions never
+/// appear — a deleted document has nothing to render. Wire form is the bare git status letter.
+public enum DocumentStatus: String, Codable, Sendable { case modified = "M", added = "A" }
 
 /// WHICH tree a document was discovered in.
 ///
@@ -488,7 +488,7 @@ public enum DocRoot: String, Codable, Sendable {
 /// One document the reader can open: where it is, and what git can say about it. NO CONTENT.
 ///
 /// The list and the content are deliberately separate calls. Shipping content with the list is fine
-/// for three changed notes and wrong for two hundred discovered documents — different payload budget,
+/// for three changed documents and wrong for two hundred discovered documents — different payload budget,
 /// different caching, and a phone pays for every byte.
 public struct DocRef: Codable, Sendable, Equatable, Identifiable {
     public let root: DocRoot
@@ -497,35 +497,35 @@ public struct DocRef: Codable, Sendable, Equatable, Identifiable {
     /// `M`/`A` when git can speak about this file, `nil` otherwise. MOST documents have no status —
     /// discovery is git-independent, so a file that is committed and unchanged, or sitting in a
     /// directory git ignores, simply has nothing to report. That is correct, not missing data.
-    public let status: NoteStatus?
+    public let status: DocumentStatus?
 
     public var id: String { "\(root.rawValue):\(path)" }
     public var name: String { (path as NSString).lastPathComponent }
 
-    public init(root: DocRoot = .workspace, path: String, status: NoteStatus? = nil) {
+    public init(root: DocRoot = .workspace, path: String, status: DocumentStatus? = nil) {
         self.root = root; self.path = path; self.status = status
     }
 }
 
-/// One live change to a note the daemon is watching: WHICH note moved, and its new content hash.
+/// One live change to a document the daemon is watching: WHICH note moved, and its new content hash.
 ///
 /// Deliberately a NOTIFICATION, not the content. The event stays a few dozen bytes and the client
-/// re-fetches through the shipped `changedNotes` RPC, so a large note can never blow the wire.
-public struct NoteChange: Codable, Sendable, Equatable {
+/// re-fetches through the shipped `changedNotes` RPC, so a large document can never blow the wire.
+public struct DocumentChange: Codable, Sendable, Equatable {
     public let cardId: UUID
     public let path: String          // relative to the card's working directory
-    /// The note's new content hash, or `nil` when the file was DELETED. Deletion has to be reportable:
-    /// dropping it would leave the reader displaying a note that no longer exists.
+    /// The document's new content hash, or `nil` when the file was DELETED. Deletion has to be reportable:
+    /// dropping it would leave the reader displaying a document that no longer exists.
     public let contentHash: String?
     public init(cardId: UUID, path: String, contentHash: String?) {
         self.cardId = cardId; self.path = path; self.contentHash = contentHash
     }
 }
 
-/// One asset a note references (an image), fetched by the reader's scheme handler. The phone cannot
+/// One asset a document references (an image), fetched by the reader's scheme handler. The phone cannot
 /// read the daemon's disk, so the daemon reads it — and the desktop uses the same path, so both
 /// surfaces render identically.
-public struct NoteAsset: Codable, Sendable, Equatable {
+public struct DocumentAsset: Codable, Sendable, Equatable {
     public let path: String
     public let mimeType: String
     public let base64: String
@@ -1365,12 +1365,12 @@ public enum Event: Codable, Sendable, Equatable {
     case shellsChanged(ShellWindowsState)
     /// A note the daemon watches changed on disk. Live-only — NOT ring-replayed (only `.activity` is),
     /// and NOT durable card state (`Task` is untouched). Carries a hash, never content: the client
-    /// re-fetches through the shipped `changedNotes` RPC, so a large note can never blow the wire.
+    /// re-fetches through the shipped `changedNotes` RPC, so a large document can never blow the wire.
     ///
     /// There is nothing to reconcile on reconnect. The daemon watches every live worktree card on its
     /// own account rather than per-client, so a reconnecting client simply starts receiving these
     /// again — unlike `.shellsChanged`, which needs a companion `sessions` call.
-    case noteChanged(NoteChange)
+    case documentChanged(DocumentChange)
 }
 
 /// Every event notification to clients is wrapped with the board `rev` at emit, so a client can

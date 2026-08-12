@@ -113,8 +113,8 @@ public actor OrchestraService {
     /// every mutation. Injected in tests so each temp dir gets its own file.
     let watchStore: WatchRegistryStore
     /// Live note watching for the reader's auto-refresh. Daemon-owned: one stream per live worktree
-    /// card, reconciled by `syncNoteWatches`, with no per-client registration to leak.
-    let noteWatches: NoteWatchService
+    /// card, reconciled by `syncDocumentWatches`, with no per-client registration to leak.
+    let documentWatches: DocumentWatchService
     /// Break a runaway Stop→inject→Stop loop after this many consecutive auto-injects (reset by a real
     /// prompt). The per-card count lives in `CardRuntime.injectCount`.
     public let maxConsecutiveInjects = 25
@@ -213,7 +213,7 @@ public actor OrchestraService {
                 watchStore: WatchRegistryStore = WatchRegistryStore(),
                 // Injectable so a unit test can drive note watching from a fake instead of real
                 // FSEvents. Production passes nil and gets the platform watcher below.
-                noteWatcher: (any FileWatching)? = nil,
+                documentWatcher: (any FileWatching)? = nil,
                 orchestraBin: String = siblingBinary("orchestra"),
                 orchestraMCPBin: String = siblingBinary("orchestra-mcp"),
                 clock: any Clock<Duration> = ContinuousClock(),
@@ -249,19 +249,19 @@ public actor OrchestraService {
         self.sessions = sessions ?? SessionManager()
         self.launcher = launcher ?? Launcher(resolver: r)
         // Note watching is daemon-owned: one stream per live worktree card, reconciled by
-        // `syncNoteWatches`. CoreServices is Darwin-only and this daemon cross-compiles to static
+        // `syncDocumentWatches`. CoreServices is Darwin-only and this daemon cross-compiles to static
         // Linux, so the platform watcher is fenced and Linux degrades to manual refresh.
         #if canImport(CoreServices)
-        let fw = noteWatcher ?? FSEventsFileWatcher()
+        let fw = documentWatcher ?? FSEventsFileWatcher()
         #else
-        let fw = noteWatcher ?? NoopFileWatcher()
+        let fw = documentWatcher ?? NoopFileWatcher()
         #endif
-        let emitBox = NoteEmitBox()
-        self.noteWatches = NoteWatchService(
+        let emitBox = DocumentEmitBox()
+        self.documentWatches = DocumentWatchService(
             watcher: fw,
             hash: { path in
                 guard let d = FileManager.default.contents(atPath: path) else { return nil }
-                return NoteContentHash.hex(d)
+                return DocumentContentHash.hex(d)
             },
             emit: { [emitBox] change in emitBox.emit(change) })
         // Seed the lastRev mirror synchronously (nonisolated peek — no await), BEFORE server.start()
@@ -272,7 +272,7 @@ public actor OrchestraService {
         // Every stored property is set, so `self` is usable now — this is why the sink is late-bound.
         emitBox.set { [weak self] change in
             guard let self else { return }
-            _Concurrency.Task { await self.emitNoteChanged(change) }
+            _Concurrency.Task { await self.emitDocumentChanged(change) }
         }
     }
 
@@ -325,7 +325,7 @@ public actor OrchestraService {
 
     /// Ephemeral: stamps the current board rev via the `lastRev` mirror, exactly like `emitActivity`.
     /// Called once per genuinely-changed note — the watcher already suppressed unchanged content.
-    func emitNoteChanged(_ change: NoteChange) { emit(.noteChanged(change), rev: lastRev) }
+    func emitDocumentChanged(_ change: DocumentChange) { emit(.documentChanged(change), rev: lastRev) }
 
     // MARK: - test-support (rev)
 

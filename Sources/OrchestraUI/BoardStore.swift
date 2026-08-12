@@ -156,11 +156,11 @@ public class BoardStore: ObservableObject {
     /// a `.phone` owner means the desktop shows the placeholder and stays detached from the tmux window.
     @Published public var agentOwners: [UUID: AgentTerminalOwnerState] = [:]
 
-    /// The last live change seen for each card's watched notes — a NOTIFICATION cursor, never content.
-    /// The reader observes it and re-fetches through `changedNotes`, so a large note never rides the
+    /// The last live change seen for each card's watched documents — a NOTIFICATION cursor, never content.
+    /// The reader observes it and re-fetches through `changedNotes`, so a large document never rides the
     /// event bus. Live-only, so it is deliberately not seeded from a snapshot: the daemon watches on
     /// its own account, so a reconnecting client simply starts receiving these again.
-    @Published public private(set) var noteChanges: [UUID: NoteChange] = [:]
+    @Published public private(set) var documentChanges: [UUID: DocumentChange] = [:]
 
     // Preferences (host props in the prototype).
     @AppStorage("orch_accent") public var accentRaw = Accent.blue.rawValue
@@ -888,7 +888,7 @@ public class BoardStore: ObservableObject {
         case .taskRemoved(let id):
             guard env.rev > max(baselineRev, appliedRev[id] ?? Int.min) else { return }
             appliedRev[id] = env.rev; apply(env.event)
-        case .activity, .agentTerminalOwner, .shellsChanged, .noteChanged:
+        case .activity, .agentTerminalOwner, .shellsChanged, .documentChanged:
             apply(env.event)
         }
     }
@@ -915,7 +915,7 @@ public class BoardStore: ObservableObject {
                 // An archived card keeps no note cursor. This is the ARCHIVE path — a card is archived
                 // through `.taskUpserted(archived: true)`, NOT `.taskRemoved` — so reaping only in
                 // `.taskRemoved` would leave the cursor behind for the process's lifetime.
-                noteChanges[t.id] = nil
+                documentChanges[t.id] = nil
             } else {
                 // Prior snapshot of an *existing* card, captured before we overwrite it. `nil` for a
                 // freshly-appended card — so new cards and the post-reconnect refresh (which sets
@@ -947,7 +947,7 @@ public class BoardStore: ObservableObject {
             if archiveConfirm == id { archiveConfirm = nil }
             // Reap per-card shell state so it doesn't accumulate for the process's lifetime.
             // (`shellOpen` is derived from `shellWindows`, so clearing that clears it too.)
-            shellWindows[id] = nil; selectedShell[id] = nil; noteChanges[id] = nil
+            shellWindows[id] = nil; selectedShell[id] = nil; documentChanges[id] = nil
         case .activity(let item):
             // Dedup by id (#3): the daemon replays its whole activity ring to EVERY `subscribe`, so each
             // reconnect (which re-subscribes) would otherwise re-insert up to 200 items the board already
@@ -963,12 +963,12 @@ public class BoardStore: ObservableObject {
         case .shellsChanged(let s):
             // Live shell open/close from ANY surface (this client, another desktop, or the phone).
             ingestShellsChanged(s)
-        case .noteChanged(let change):
+        case .documentChanged(let change):
             // A note this card's agent edited. Store the cursor ONLY — the reader re-fetches through
-            // the shipped `changedNotes` RPC, so a large note never rides the event bus. Not rev-gated:
+            // the shipped `changedNotes` RPC, so a large document never rides the event bus. Not rev-gated:
             // like shells and owner state, this carries its own dedup (the daemon suppresses an
             // unchanged content hash before it ever broadcasts).
-            noteChanges[change.cardId] = change
+            documentChanges[change.cardId] = change
         }
     }
 
@@ -1278,11 +1278,11 @@ public class BoardStore: ObservableObject {
     public func readDocument(_ id: UUID, path: String) async -> String? {
         try? await client.readDocument(id.uuidString, path: path)
     }
-    /// Bytes for an image the note at `note` references, read by the daemon and scoped to that note's
+    /// Bytes for an image the document at `note` references, read by the daemon and scoped to that document's
     /// own references. `nil` on any failure — a missing image renders as a broken image, which is
     /// strictly better than failing the whole page.
-    public func noteAsset(_ id: UUID, note: String, asset: String) async -> NoteAsset? {
-        try? await client.noteAsset(id.uuidString, note: note, asset: asset)
+    public func documentAsset(_ id: UUID, note: String, asset: String) async -> DocumentAsset? {
+        try? await client.documentAsset(id.uuidString, note: note, asset: asset)
     }
     public func openInZed(_ id: UUID) async {
         let t = (tasks + archived).first { $0.id == id }
@@ -1301,12 +1301,12 @@ public class BoardStore: ObservableObject {
             let total = r["total"]?.intValue ?? 0
             let where_ = t.map { ($0.cwd as NSString).lastPathComponent } ?? "worktree"
             let title: String
-            if total == 0 { title = "Opening worktree notes…" }
-            else if opened < total { title = "Opening \(opened) of \(total) changed notes…" }
-            else { title = "Opening \(total) changed note\(total == 1 ? "" : "s")…" }
+            if total == 0 { title = "Opening worktree documents…" }
+            else if opened < total { title = "Opening \(opened) of \(total) changed documents…" }
+            else { title = "Opening \(total) changed document\(total == 1 ? "" : "s")…" }
             toast(title, sub: where_)
         } catch {
-            toast("Couldn't open notes", sub: "\(error)", color: .red)
+            toast("Couldn't open documents", sub: "\(error)", color: .red)
         }
     }
     public func saveConfig(_ cfg: Config) async {

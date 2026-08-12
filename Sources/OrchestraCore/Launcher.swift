@@ -14,7 +14,7 @@ public struct Launcher: Sendable {
     /// Per-document byte cap for `readDocument` — a pathological file is truncated with a sentinel so
     /// the wire payload stays bounded, mirroring `diffText`'s cap. Documents are markdown, so this
     /// virtually never fires.
-    static let noteContentCap = 256 * 1024
+    static let documentContentCap = 256 * 1024
 
     /// "Open notes" — open the card's WORKTREE as an Obsidian vault, laid out with its notes each in its
     /// own tab: the gitignored `notes/` vault (plans + designs, scanned off disk) plus any other markdown
