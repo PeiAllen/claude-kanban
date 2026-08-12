@@ -1342,6 +1342,14 @@ public enum Event: Codable, Sendable, Equatable {
     /// ring-replayed; a (re)connecting client reconciles via the `sessions` RPC in
     /// `refreshShellPanels`. NOT durable card state (`Task` is untouched).
     case shellsChanged(ShellWindowsState)
+    /// A note the daemon watches changed on disk. Live-only — NOT ring-replayed (only `.activity` is),
+    /// and NOT durable card state (`Task` is untouched). Carries a hash, never content: the client
+    /// re-fetches through the shipped `changedNotes` RPC, so a large note can never blow the wire.
+    ///
+    /// There is nothing to reconcile on reconnect. The daemon watches every live worktree card on its
+    /// own account rather than per-client, so a reconnecting client simply starts receiving these
+    /// again — unlike `.shellsChanged`, which needs a companion `sessions` call.
+    case noteChanged(NoteChange)
 }
 
 /// Every event notification to clients is wrapped with the board `rev` at emit, so a client can

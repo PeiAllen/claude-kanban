@@ -331,6 +331,14 @@ public final class ControlClient: @unchecked Sendable {
         try await call("changedNotes", .object(["ref": .string(ref)]), as: [NoteFile].self)
     }
 
+    /// Bytes for an image the note at `note` references. Scoped to that note's OWN references, so the
+    /// endpoint is not a general worktree file read — see `OrchestraService.noteAsset`'s five gates.
+    public func noteAsset(_ ref: String, note: String, asset: String) async throws -> NoteAsset {
+        try await call("noteAsset", .object([
+            "ref": .string(ref), "note": .string(note), "asset": .string(asset),
+        ]), as: NoteAsset.self)
+    }
+
     /// Typed convenience over the `spawnRepos` verb — absolute paths to the git repos under the daemon's
     /// reposRoot, which also serve as the freeform dir candidates, for the Spawn sheet's repo/dir pickers.
     /// The phone can't browse the daemon's disk, so the daemon enumerates for it.

@@ -18,4 +18,101 @@ extension OrchestraService {
         let l = launcher, cwd = t.cwd
         return try await offActor { l.changedNoteFiles(worktree: cwd, parentRef: self.resolvedParentRef(t)) }
     }
+
+    /// Reconcile the daemon's note watches against the live worktree cards.
+    ///
+    /// Idempotent and self-healing, so call it freely: at boot after recovery, once a card's worktree
+    /// exists, and when a card is archived or its worktree goes. A missed call costs a late or briefly
+    /// orphaned stream, repaired at the next call — which is why this needs no teardown protocol.
+    public func syncNoteWatches() async {
+        let cards = await store.snapshot().tasks
+            .filter { !$0.archived && $0.origin == .worktree }
+            .map { (id: $0.id, worktree: $0.cwd) }
+        await noteWatches.sync(cards: cards)
+    }
+
+    /// Bytes for an image THE NOTE REFERENCES.
+    ///
+    /// Five gates, in order: the note is one this card changed; the asset appears as an image
+    /// reference IN that note; the resolved path sits inside the worktree by REALPATH; it carries an
+    /// image extension; and it is a regular file within the size cap.
+    ///
+    /// Gate 2 is what keeps this from being an arbitrary worktree file read. Without it the endpoint
+    /// serves any image-extension file anywhere under any card's worktree — a wider capability than
+    /// anything the daemon ships today, and wider than `listDir` (names only) or `changedNotes`
+    /// (git-reported `.md` for one card).
+    public func noteAsset(_ id: UUID, notePath: String, assetPath: String) async throws -> NoteAsset {
+        let t = try await require(id)
+        guard t.origin == .worktree else { throw OrchestraError.invalidParams("not a worktree card") }
+        try resolver.assertAllowed(t.cwd)
+        // Capture everything the hop needs BEFORE it: `offActor` takes a Sendable closure, so reaching
+        // back for an actor-isolated property inside it is a compile error.
+        let l = launcher, cwd = t.cwd, pathResolver = resolver
+        let parentRef = resolvedParentRef(t)
+        return try await offActor {
+            // GATE 1 — the note must be one this card actually changed. Paths only: `changedNotes`
+            // would read the full content of every changed note just to test membership.
+            guard l.changedNotes(worktree: cwd, parentRef: parentRef).contains(notePath) else {
+                throw OrchestraError.invalidParams("\(notePath) is not one of this card's changed notes")
+            }
+            // GATE 2 — the asset must be referenced BY that note. The allowlist is derived from the
+            // note read off DISK, never from anything a client supplied.
+            let noteAbs = (cwd as NSString).appendingPathComponent(notePath)
+            guard let noteData = FileManager.default.contents(atPath: noteAbs) else {
+                throw OrchestraError.io("cannot read \(notePath)")
+            }
+            let allowed = MarkdownAssets.referencedImages(
+                in: String(decoding: noteData, as: UTF8.self),
+                noteDir: (notePath as NSString).deletingLastPathComponent)
+            let path = MarkdownAssets.normalize(assetPath)
+            guard allowed.contains(path) else {
+                throw OrchestraError.invalidParams("\(assetPath) is not referenced by \(notePath)")
+            }
+            return try Self.readNoteAsset(path, cwd: cwd, resolver: pathResolver)
+        }
+    }
+
+    /// GATES 3-5, split out so the containment/type/size rules live in one place. `path` is already
+    /// normalized and allowlisted by the caller.
+    static func readNoteAsset(_ path: String, cwd: String, resolver: PathResolver) throws -> NoteAsset {
+        // GATE 3 — REALPATH containment. Do NOT substitute `NSString.standardizingPath`: it collapses
+        // `..` lexically and leaves symlinks intact, so a worktree containing `notes/pics -> /` would
+        // let `notes/pics/etc/hosts` pass a textual prefix check while resolving outside the worktree.
+        let abs = PathResolver.canonical((cwd as NSString).appendingPathComponent(path))
+        let root = PathResolver.canonical(cwd)
+        guard abs == root || abs.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+            throw OrchestraError.pathNotAllowed(path)
+        }
+        try resolver.assertAllowed(abs)          // independent second containment check
+
+        // GATE 4 — image types only.
+        let ext = (abs as NSString).pathExtension.lowercased()
+        guard let mime = noteAssetMimeTypes[ext] else {
+            throw OrchestraError.invalidParams("\(ext) is not a renderable note asset")
+        }
+
+        // GATE 5 — STAT BEFORE READING. `contents(atPath:)` loads the whole file, so checking the cap
+        // afterwards would let a multi-gigabyte `.png` exhaust the daemon before it was rejected. The
+        // regular-file check matters too: a fifo under an allowed extension would block forever.
+        let attrs = try FileManager.default.attributesOfItem(atPath: abs)
+        guard (attrs[.type] as? FileAttributeType) == .typeRegular else {
+            throw OrchestraError.invalidParams("\(path) is not a regular file")
+        }
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? Int.max
+        guard size <= noteAssetCap else {
+            throw OrchestraError.invalidParams("asset is \(size) bytes; the cap is \(noteAssetCap)")
+        }
+        guard let data = FileManager.default.contents(atPath: abs) else {
+            throw OrchestraError.io("cannot read \(path)")
+        }
+        return NoteAsset(path: path, mimeType: mime, base64: data.base64EncodedString())
+    }
+
+    /// SVG is included deliberately: an `<img src=…svg>` cannot run script — only an SVG loaded as a
+    /// document or a frame can — and the reader only ever references assets from `<img>`.
+    static let noteAssetMimeTypes: [String: String] = [
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+        "webp": "image/webp", "svg": "image/svg+xml", "avif": "image/avif",
+    ]
+    static let noteAssetCap = 8 * 1024 * 1024
 }

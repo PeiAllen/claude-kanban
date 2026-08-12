@@ -1,5 +1,19 @@
 import Foundation
 
+/// A late-bound sink for note changes.
+///
+/// `OrchestraService` builds its `NoteWatchService` as a stored property, so the emit closure cannot
+/// capture `self` — `self` is not usable until every stored property is initialized. The service
+/// constructs this box first, hands it to the watcher, then wires the real sink once initialization
+/// completes. Emitting before the sink is set is a silent no-op, which is correct: nothing can be
+/// watching yet.
+final class NoteEmitBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sink: (@Sendable (NoteChange) -> Void)?
+    func set(_ s: @escaping @Sendable (NoteChange) -> Void) { lock.withLock { sink = s } }
+    func emit(_ change: NoteChange) { (lock.withLock { sink })?(change) }
+}
+
 /// Daemon-owned note watching: ONE stream per live worktree card, watching that card's tree.
 ///
 /// The daemon holds these because IT wants them, not because a client asked. That is the whole reason

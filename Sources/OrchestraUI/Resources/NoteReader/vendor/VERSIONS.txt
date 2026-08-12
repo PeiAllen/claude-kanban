@@ -1,0 +1,4 @@
+marked 18.0.9
+marked-katex-extension 5.1.10
+katex 0.18.4
+dompurify 3.4.13
